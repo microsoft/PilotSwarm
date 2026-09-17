@@ -1,0 +1,623 @@
+# Plugin Architecture & Layering Guide
+
+PilotSwarm's plugin system lets you extend every part of the runtime — agents, skills, MCP servers, tools, and model providers — through a layered architecture that separates built-in system behavior from application customization. This guide is the complete technical reference for how plugins are structured, loaded, and merged.
+
+For practical examples, see [Blog 1: Test Swarm CLI](./examples/blog-test-swarm-cli.md) and [Blog 2: Travel Event Scanner SDK](./examples/blog-travel-event-scanner-sdk.md).
+
+---
+
+## 1. What Is a Plugin?
+
+A plugin is a directory containing any combination of:
+
+| Component | Location | Format |
+|-----------|----------|--------|
+| Agents | `agents/*.agent.md` | YAML frontmatter + markdown |
+| Skills | `skills/<name>/SKILL.md` | YAML frontmatter + markdown |
+| MCP servers | `.mcp.json` at directory root | JSON object |
+| Metadata + UI branding | `plugin.json` at directory root | JSON |
+
+Agents are optional. Use skills for reusable methods and domain knowledge,
+tools/MCP for executable integrations, and agents for authored workflows with
+choreography, checks, and expected outputs. A skills-only or integrations-only
+package is valid; see [Building Packages](../../building-agent-packages.md)
+for the upload format, including packaged worker tools. Model providers remain
+deployment/runtime configuration.
+
+`plugin.json` is now used by the shipped UI layers for app branding. In addition to human-readable metadata, it may contain:
+
+- `tui.title` — app title for the terminal/tab and root system-session heading
+- `tui.splash` — inline terminal-markup splash text
+- `tui.splashFile` — path to a text file containing the splash markup
+- `portal.branding.title` — browser portal title shown in the header and shared UI
+- `portal.branding.pageTitle` — browser tab title
+- `portal.branding.splash` / `portal.branding.splashFile` — browser portal splash markup
+- `portal.branding.logoFile` — brand logo shown on the splash, sign-in gate, and signed-in header
+- `portal.branding.faviconFile` — optional browser tab icon override; if omitted, the portal reuses `logoFile`
+- `portal.ui.loadingMessage` / `portal.ui.loadingCopy` — browser portal startup copy
+- `portal.auth.signInTitle` / `portal.auth.signInMessage` / `portal.auth.signInLabel` — browser sign-in screen copy
+
+Flat legacy `portal.title` / `portal.pageTitle` / `portal.loadingMessage` keys
+are still accepted, but nested `portal.branding` / `portal.ui` is preferred.
+
+Portal auth itself is configured separately from plugin metadata. The portal
+ships with a provider-based auth layer: `none` by default, plus optional Entra
+ID and identity-aware proxy support. That keeps a single identity system from
+being baked into portal core.
+
+---
+
+## 2. Three-Tier Loading Model
+
+PilotSwarm loads plugins in a strict four-stage pipeline. Each stage can override or extend the previous.
+
+### Tier 1: System (`packages/sdk/plugins/system/`)
+
+Always loaded. Cannot be disabled. Provides the foundational behavior every session needs.
+
+```text
+packages/sdk/plugins/system/
+├── agents/
+│   └── default.agent.md        # Embedded framework base prompt
+└── skills/
+    └── html-visuals/
+        └── SKILL.md             # discover on demand or explicitly preload
+```
+
+The system `default.agent.md` file is special — it becomes the embedded PilotSwarm framework base. It is not treated as an application-overridable `default.agent.md`, and it is never listed as a selectable agent.
+
+**"Always loaded" describes the tier, not its skills.** A plugin's skills are read
+into the worker's skill registry. Sessions can discover and load relevant skills
+on demand, or an agent can preload a skill by naming it in `skills:` frontmatter
+— see [Skills](#5-skills). Undeclared skills remain reusable without a named
+agent wrapper. Guidance that every session must have belongs in the base prompt;
+methods needed only for some tasks belong in skills.
+
+### Tier 2: Management (`packages/sdk/plugins/mgmt/`)
+
+Loaded by default. Opt out by passing `disableManagementAgents: true` to `PilotSwarmWorker`.
+
+```text
+packages/sdk/plugins/mgmt/
+├── agents/
+│   ├── pilotswarm.agent.md      # Master orchestrator (system agent)
+│   ├── resourcemgr.agent.md     # Infrastructure monitoring (system agent)
+│   ├── sweeper.agent.md         # Session cleanup (system agent)
+│   ├── facts-manager.agent.md   # Facts hygiene (system agent)
+│   └── agent-tuner.agent.md     # Agent-prompt tuning (system agent)
+└── skills/
+    ├── sweeper/                 # Cleanup domain knowledge
+    ├── resourcemgr/
+    ├── cost-latency-analysis/
+    ├── graph-debug/
+    └── orchestration-session-lifecycle/
+```
+
+Management agents have `system: true` and are started automatically by the worker. They run as long-lived background sessions with their own durable orchestrations. They inherit the embedded PilotSwarm framework base, but they do not inherit application `default.agent.md` overlays.
+
+### Tier 3: Application (`pluginDirs`)
+
+Your custom plugins. Pass one or more directories via the `pluginDirs` option:
+
+```typescript
+const worker = new PilotSwarmWorker({
+  githubToken: process.env.GITHUB_TOKEN,
+  databaseConnectionString: process.env.DATABASE_URL,
+  pluginDirs: ["./plugins/my-app"],
+});
+```
+
+Directory structure follows the same layout:
+
+```text
+plugins/my-app/
+├── plugin.json
+├── .mcp.json
+├── agents/
+│   ├── default.agent.md
+│   └── analyst.agent.md
+└── skills/
+    └── data-analysis/
+        └── SKILL.md
+```
+
+An app's `default.agent.md` becomes an application-level overlay layered beneath the embedded PilotSwarm framework base.
+
+### Tier 4: Direct Config (Inline)
+
+Override everything with inline options on `PilotSwarmWorker`:
+
+```typescript
+const worker = new PilotSwarmWorker({
+  githubToken: process.env.GITHUB_TOKEN,
+  databaseConnectionString: process.env.DATABASE_URL,
+  skillDirectories: ["./extra-skills"],
+  customAgents: [
+    {
+      name: "reviewer",
+      description: "Code review agent",
+      prompt: "You are a code reviewer. Be thorough.",
+      tools: ["bash", "grep"],
+    },
+  ],
+  mcpServers: {
+    "my-api": {
+      type: "http",
+      url: "https://api.example.com/mcp",
+      tools: ["search"],
+    },
+  },
+});
+```
+
+---
+
+## 3. Agent Definitions (`.agent.md`)
+
+Agents are defined as Markdown files with YAML frontmatter. The frontmatter declares metadata and the body provides the system prompt.
+
+### Field Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | **Yes** | Unique agent identifier. Used for selection and collision resolution. |
+| `description` | string | No | Short description shown in agent lists. |
+| `tools` | string[] | No | Tool names this agent can access. |
+| `skills` | string[] | No | Skill names to preload into this agent's context from the plugin skill directories. |
+| `system` | boolean | No | If `true`, agent is auto-started by the worker as a background session. |
+| `id` | string | No | Deterministic slug for system agents (e.g. `"sweeper"`). Used to derive a stable session UUID. |
+| `title` | string | No | Display name in session lists. Falls back to capitalized `name` + " Agent". |
+| `parent` | string | No | Parent system agent's `id`. Makes this agent a child spawned by the parent. |
+| `splash` | string | No | Blessed markup banner shown in the TUI when the session is selected. |
+| `initialPrompt` | string | No | First prompt sent when a system agent is created. |
+| `initialRequiredTool` | string | No | Schema-v3 contract requiring this declared tool to execute during the initial turn. PilotSwarm corrects once, then fails closed. |
+
+### Example Agent File
+
+```markdown
+---
+name: analyst
+description: Analyzes datasets and produces summary reports.
+tools:
+  - bash
+  - write_artifact
+  - read_artifact
+skills:
+  - data-analysis
+---
+
+# Data Analyst Agent
+
+You are a data analyst. When given a dataset:
+
+1. Load and inspect the data structure.
+2. Compute summary statistics.
+3. Write findings to a markdown report using `write_artifact`.
+4. Include the `artifact://` link from the write result in your response.
+
+Be concise. Use tables for numeric summaries.
+```
+
+---
+
+## 4. Special Agents
+
+### `default.agent.md`
+
+The agent with `name: default` has unique behavior:
+
+- In the embedded PilotSwarm system layer, it becomes the framework base prompt.
+- In app plugin directories, it becomes the app-wide default overlay layered under the framework base.
+- It is never listed as a selectable agent.
+- It defines app-wide rules that should apply to your app's sessions.
+- PilotSwarm management agents do not inherit app `default.agent.md` overlays.
+
+### System Agents (`system: true`)
+
+System agents are background sessions started automatically when the worker launches. They require an `id` field, which is hashed into a deterministic UUID so the session persists across worker restarts.
+
+Root system agents (no `parent` field) are started directly. Child system agents (with a `parent` field) are spawned by the parent at runtime via `spawn_agent(agent_name="<name>")`.
+
+Example hierarchy:
+
+```text
+pilotswarm (root, system: true, id: "pilotswarm")
+├── sweeper (system: true, id: "sweeper", parent: "pilotswarm")
+└── resourcemgr (system: true, id: "resourcemgr", parent: "pilotswarm")
+```
+
+---
+
+## 5. Skills
+
+Skills inject domain knowledge into the LLM context. They are directories, not standalone files.
+
+Skills load from every configured plugin skill directory into the worker's skill
+registry. Two ways a skill reaches a model, and they cost very differently:
+
+1. **Declared (eager).** An agent names it in its `skills:` frontmatter. The
+   worker splices `[PRELOADED SKILL: <name>]` plus the whole body into that
+   agent's system message, on every turn, for the life of the session.
+2. **Discovered (progressive).** `search_capabilities` finds visible static,
+   published, and curated skills by goal; `load_skill` returns the selected
+   instructions on demand. Existing skill names and `search_skills` remain
+   supported. Only the methods needed for the task need to be loaded.
+
+Two consequences worth designing around:
+
+- **Declaring a skill is not free.** Reserve `skills:` for knowledge an agent
+  needs on *every* turn. If the model can decide when it needs a skill, let it
+  load it. Write the `description` for that decision: it is the one line the
+  model sees before choosing.
+- **Visibility applies to discovery and loading.** A user-scope package's
+  skills are available to its owner's sessions, including generic sessions;
+  publishing a skill does not require an agent to declare it. The owner's
+  enabled package copy shadows the shared copy with the same name. Explicit
+  `skills:` preloads still work and carry their whole body on every turn.
+
+With Base Agent V2, the prompt indexes deployment and session-owner-authored
+skills and workflows by metadata. The runtime skill catalog and SDK skill
+directories likewise include those sources only. A named agent may still
+preload deployment skills and skills from its own package; a shared skill from
+another publisher cannot enter that prompt through a declared name collision.
+Other users' shared packages remain searchable and can be used when the
+session owner explicitly requests them. Base V1 retains the previous catalog.
+
+### Directory Structure
+
+```text
+skills/
+└── data-analysis/
+    ├── SKILL.md          # Required — frontmatter + knowledge body
+    └── tools.json        # Optional — declares tool dependencies
+```
+
+### SKILL.md Format
+
+```markdown
+---
+name: data-analysis
+description: Knowledge for analyzing structured datasets
+---
+
+When analyzing data, follow these steps:
+
+1. Always validate the data schema before computing statistics.
+2. Check for null values and outliers.
+3. Prefer median over mean for skewed distributions.
+4. Report sample size alongside every metric.
+```
+
+### tools.json Format
+
+```json
+{
+  "tools": ["bash", "write_artifact"]
+}
+```
+
+Dependency metadata is not an access grant. Loading skill instructions does
+not attach executable integrations; discover and activate needed permitted
+tools/MCP with `use_package`, or declare them on a named agent. Actual session
+and deployment restrictions still apply.
+
+### Skill vs. Agent
+
+| Aspect | Skill | Agent |
+|--------|-------|-------|
+| Purpose | Reusable methods and domain knowledge | Authored workflow and its declared configuration |
+| File | `SKILL.md` in a named directory | `*.agent.md` |
+| Instructions | Loaded as needed, or explicitly preloaded | Named session prompt; also loadable as reference |
+| Tool binding | Loading text grants no tools | Explicit `tools`/`mcpServers` declarations; runtime policy applies |
+| Entry point | `load_skill` after discovery | Select by name, or consult with `load_agent_guidelines` |
+| Collision | Additive (all directories combined) | Name collision → last tier wins |
+
+When a generic or named session applies another agent's instructions as
+reference, it tells the user the authored agent name and any material
+adaptations. Loading those instructions does not change identity, execute
+`initialPrompt`, start schedules, or inherit permissions. Use direct work or
+native tasks for bounded work; use durable sessions for independent ownership,
+schedules, work beyond the turn, or an explicit named-entry-point request.
+
+---
+
+## 6. MCP Server Configuration
+
+MCP (Model Context Protocol) servers extend agent capabilities with external tools. Configure them in a `.mcp.json` file at the root of any plugin directory.
+
+The merged `.mcp.json` maps form the deployment **catalog** — configuring a server does *not* grant it to every session. An agent receives a server by naming it in its `.agent.md` frontmatter:
+
+```yaml
+schemaVersion: 2
+mcpServers:          # named references into the catalog
+  - code-search
+inheritDefaultMcpServers: true   # also receive the deployment default set
+```
+
+Servers tagged `"default": true` in `.mcp.json` form the deployment default set, granted only to agents with `inheritDefaultMcpServers: true` (the tag is PilotSwarm-only and is stripped before configs reach the Copilot CLI). A base (`default.agent.md`) agent may opt in the same way, which applies its grants to every session. Unknown references are dropped with a load-time warning. Direct worker-config `mcpServers` (inline options, tier 4) keep their legacy every-session semantics.
+
+### Format
+
+The file is a JSON object where each key is a server name:
+
+```json
+{
+  "code-search": {
+    "command": "node",
+    "args": ["./mcp-servers/code-search.js"],
+    "tools": ["search_code", "get_file"],
+    "env": {
+      "INDEX_PATH": "${SEARCH_INDEX}"
+    },
+    "cwd": "/app",
+    "timeout": 30000
+  },
+  "remote-api": {
+    "type": "http",
+    "url": "https://api.example.com/mcp",
+    "tools": ["query", "summarize"],
+    "headers": {
+      "Authorization": "Bearer ${API_TOKEN}"
+    }
+  }
+}
+```
+
+### Server Types
+
+| Type | Transport | Key Fields |
+|------|-----------|------------|
+| `local` / `stdio` | Subprocess (stdin/stdout) | `command`, `args`, `env`, `cwd`, `timeout` |
+| `http` | HTTP request/response | `url`, `headers`, `timeout` |
+| `sse` | Server-Sent Events | `url`, `headers`, `timeout` |
+
+The `type` field defaults to `local` if omitted and `command` is present.
+
+### Environment Variable Expansion
+
+All string values support `${VAR_NAME}` syntax. Variables are expanded from `process.env` at load time:
+
+```json
+{
+  "my-server": {
+    "type": "http",
+    "url": "${MCP_SERVER_URL}",
+    "headers": {
+      "Authorization": "Bearer ${MCP_TOKEN}"
+    },
+    "tools": ["*"]
+  }
+}
+```
+
+Unresolved variables expand to empty strings.
+
+---
+
+## 7. Tool Registration (Code Layer)
+
+Tools add callable functions to the LLM's repertoire. Unlike agents and skills (file-based), tools are defined in TypeScript/JavaScript and registered on the worker.
+
+### Defining a Tool
+
+```typescript
+import { defineTool } from "pilotswarm-sdk";
+
+const greetTool = defineTool("greet", {
+  description: "Greet a user by name",
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The user's name" },
+    },
+    required: ["name"],
+  },
+  handler: async ({ name }) => {
+    return { message: `Hello, ${name}!` };
+  },
+});
+```
+
+### Registering on the Worker
+
+```typescript
+import { PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
+
+const fetchUrlTool = defineTool("fetch_url", {
+  description: "Fetch content from a URL",
+  parameters: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "URL to fetch" },
+    },
+    required: ["url"],
+  },
+  handler: async ({ url }) => {
+    const res = await fetch(url);
+    return { status: res.status, body: await res.text() };
+  },
+});
+
+const worker = new PilotSwarmWorker({
+  githubToken: process.env.GITHUB_TOKEN,
+  databaseConnectionString: process.env.DATABASE_URL,
+});
+
+worker.registerTools([fetchUrlTool]);
+```
+
+### Client-Side Tool References
+
+The client never holds tool handler functions (they aren't serializable). Instead, it references tools by name:
+
+```typescript
+const session = await client.createSession({
+  toolNames: ["greet", "fetch_url"],
+});
+```
+
+The worker resolves these names against its tool registry at execution time. This separation is what allows the client and worker to run on different machines.
+
+---
+
+## 8. Model Providers
+
+The model catalog declares provider **types** and model capabilities. Runtime
+provider instances carry identity, credentials, defaults, limits, allowances,
+and holds in CMS. Do not put live keys in the checked-in catalog.
+
+### File Format (`.model_providers.json`)
+
+> **Easiest way to get started:** Keep the bundled GitHub Copilot type, start
+> the portal with a bootstrap key if needed, then create a shared or personal
+> provider instance in Admin Console → Model Providers.
+
+```json
+{
+  "providers": [
+    {
+      "id": "github-copilot",
+      "type": "github",
+      "models": [
+        { "name": "claude-opus-4.6", "description": "Most capable. Deep reasoning.", "cost": "high" },
+        { "name": "claude-sonnet-4.6", "description": "Strong all-rounder.", "cost": "medium" },
+        { "name": "gpt-4.1", "description": "GPT-4.1 via GitHub Copilot.", "cost": "medium" }
+      ]
+    },
+    {
+      "id": "azure-openai",
+      "type": "azure",
+      "baseUrl": "https://my-resource.openai.azure.com/openai",
+      "apiVersion": "2024-04-01-preview",
+      "models": [
+        { "name": "gpt-4.1", "description": "GPT-4.1 full model.", "cost": "medium" },
+        { "name": "gpt-4.1-mini", "description": "Fast, cost-effective variant.", "cost": "low" }
+      ]
+    }
+  ]
+}
+```
+
+> **Runtime filtering:** A catalog type is not selectable by itself. The model
+> picker and `list_available_models` show only shared/personal runtime provider
+> instances the viewer can use.
+
+### Provider Types
+
+| Type | Auth | Endpoint |
+|------|------|----------|
+| `github` | `githubToken` (Copilot API) | Automatic — no `baseUrl` needed |
+| `azure` | `apiKey` | `baseUrl` pointing to Azure OpenAI resource |
+| `openai` | `apiKey` | `https://api.openai.com/v1` |
+| `anthropic` | `apiKey` | `https://api.anthropic.com` |
+
+### Credentials
+
+Credentials are write-only runtime provider data. Create shared/personal
+instances through Admin Console or `PilotSwarmManagementClient`; never check
+credentials into the model catalog. `env:VAR_NAME` references in legacy local
+catalogs remain bootstrap compatibility only.
+
+### Qualified Model Names
+
+Models are identified by runtime `provider:model` strings (for example
+`team-copilot:claude-opus-4`). Bare model names resolve only when exactly one
+eligible provider serves them; ambiguous names are rejected with candidates.
+
+### Discovery Order
+
+1. **Explicit path** — `modelProvidersPath` option on `PilotSwarmWorker`
+2. **Auto-discover** — searches for `.model_providers.json` in the current working directory, parent directories (up to 5 levels), and `/app/`
+3. **Environment variable fallback** — builds a config from `LLM_ENDPOINT`, `LLM_API_KEY`, `GITHUB_TOKEN` (legacy, for backwards compatibility)
+
+---
+
+## 9. Loading Order & Merge Semantics
+
+The complete loading pipeline:
+
+```text
+┌─────────────────────────────────────────────────────┐
+│  Tier 1: System plugins (always)                    │
+│    → embedded framework base prompt                 │
+│    → skills/html-visuals  (registry only)           │
+├─────────────────────────────────────────────────────┤
+│  Tier 2: Management plugins (unless disabled)       │
+│    → pilotswarm, sweeper, resourcemgr agents        │
+│    → sweeper, resourcemgr, graph-debug, …           │
+│      (registry only)                                │
+├─────────────────────────────────────────────────────┤
+│  Tier 3: Application plugins (pluginDirs)           │
+│    → custom agents, skills, MCP servers             │
+├─────────────────────────────────────────────────────┤
+│  Tier 4: Direct config (inline options)             │
+│    → skillDirectories, customAgents, mcpServers     │
+│      (inline mcpServers: every session — legacy;    │
+│       plugin .mcp.json: catalog, per-agent opt-in)  │
+├─────────────────────────────────────────────────────┤
+│  Prompt composition                                 │
+│    → framework base + app default + agent + runtime │
+└─────────────────────────────────────────────────────┘
+```
+
+### Collision Rules
+
+| Component | Collision Behavior |
+|-----------|-------------------|
+| Agents | Name collision → **later tier wins** (agent is replaced) |
+| Skills | Directories are additive, but the registry is keyed by skill **name** → **later tier wins** (an app skill named `sweeper` replaces the mgmt one) |
+| MCP servers | Name collision → **later tier wins** (server config is replaced) |
+| Tools | Last `registerTools()` call wins for the same tool name |
+| `default.agent.md` | Embedded framework base plus optional app overlay |
+
+### Prompt Composition
+
+PilotSwarm composes system prompts with explicit layers:
+
+```text
+[PilotSwarm framework base]
+[app default.agent.md overlay, if any]
+[active agent prompt, if any]
+[runtime context overlay, if any]
+```
+
+Those layers are now mapped into the GitHub Copilot SDK's structured system-prompt sections rather than concatenated into one monolithic string. This does not change how apps organize `default.agent.md`, named agents, or skills on disk; it only changes how the runtime feeds those layers to the SDK.
+
+PilotSwarm's own management agents use:
+
+```text
+[PilotSwarm framework base]
+[management agent prompt]
+```
+
+---
+
+## 10. Best Practices
+
+**Keep plugins focused.** Each plugin directory should represent a single application or feature domain. Don't mix unrelated agents and skills in the same directory.
+
+**Use the embedded framework layer for invariants.** If a rule must apply to every session without exception, keep it in PilotSwarm's embedded framework prompt. Use your app's `default.agent.md` for app-wide overlays.
+
+**Choose the artifact that fits the capability.** Extract reusable methods and
+domain knowledge into discoverable skills. Put executable integrations in
+tools/MCP. Use agents for authored workflows, without requiring a named wrapper
+for every skill or tool.
+
+**Name tools descriptively.** Tool names are string references that flow through duroxide serialization. Names like `fetch_url` are better than `f` or `tool1`.
+
+**Use `env:` for secrets.** Never hardcode API keys in `model_providers.json` or `.mcp.json`. Use `env:VAR_NAME` and `${VAR_NAME}` syntax respectively.
+
+**Disable management agents in tests.** Set `disableManagementAgents: true` to avoid spawning sweeper and resource manager during integration tests.
+
+**Use `plugin.json` for documentation and TUI branding.** It remains the right place to record your plugin's name, version, and author, and the CLI/TUI also reads it for app title and splash configuration.
+
+```json
+{
+  "name": "travel-scanner",
+  "description": "Event scanning and itinerary planning tools for travel apps.",
+  "version": "0.2.0",
+  "author": "Your Name"
+}
+```
+
+**Test tool handlers independently.** Since tools are plain async functions wrapped in `defineTool()`, you can unit test them without standing up a full PilotSwarm worker.

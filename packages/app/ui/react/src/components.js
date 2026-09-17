@@ -1,0 +1,2556 @@
+import React from "react";
+import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
+import {
+    applyActiveHighlightRuns,
+    computeLegacyLayout,
+    getPromptInputRows,
+    selectActiveSession,
+    selectAdminConsole,
+    selectAdminProviderCreateModal,
+    selectChatPaneChrome,
+    selectLiveActivityLines,
+    selectChatLines,
+    selectOutboxOverlayLines,
+    selectActivityPane,
+    selectWorkerDetailsPane,
+    selectArtifactUploadModal,
+    selectArtifactPickerModal,
+    selectFilesFilterModal,
+    selectFilesView,
+    selectHistoryFormatModal,
+    INSPECTOR_TABS,
+    selectInspector,
+    selectLogFilterModal,
+    selectModelPickerModal,
+    selectReasoningEffortPickerModal,
+    selectContextTierPickerModal,
+    selectRenameSessionModal,
+    selectSessionAgentPickerModal,
+    selectShareSessionModal,
+    selectSessionGroupNameModal,
+    selectSessionGroupPickerModal,
+    selectSessionOwnerFilterModal,
+    selectStatusBar,
+    selectThemePickerModal,
+    selectHelpModal,
+    selectConfirmModal,
+    selectVisibleSessionRows,
+} from "pilotswarm/ui-core";
+import { useUiPlatform } from "./platform.js";
+import { useControllerSelector } from "./use-controller-state.js";
+
+const PANE_GAP_X = 0;
+const PANE_GAP_Y = 0;
+
+function shallowEqualObject(left, right) {
+    if (Object.is(left, right)) return true;
+    if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (const key of leftKeys) {
+        if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+        if (!Object.is(left[key], right[key])) return false;
+    }
+    return true;
+}
+
+function shallowEqualArray(left, right, itemEqual = Object.is) {
+    if (Object.is(left, right)) return true;
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+        if (!itemEqual(left[index], right[index])) return false;
+    }
+    return true;
+}
+
+function countWrappedTextLines(text, width) {
+    const safeWidth = Math.max(1, Number(width) || 1);
+    const value = String(text || "");
+    if (!value) return 1;
+
+    const segments = value.split("\n");
+    let total = 0;
+
+    for (const segment of segments) {
+        if (!segment) {
+            total += 1;
+            continue;
+        }
+
+        let start = 0;
+        while (start < segment.length) {
+            const maxEnd = Math.min(start + safeWidth, segment.length);
+            let end = maxEnd;
+
+            if (maxEnd < segment.length) {
+                for (let index = maxEnd - 1; index > start; index -= 1) {
+                    if (!/\s/u.test(segment[index] || "")) continue;
+                    if (!/\S/u.test(segment[index - 1] || "")) continue;
+                    end = index;
+                    break;
+                }
+            }
+
+            if (end <= start) end = maxEnd;
+            total += 1;
+            start = end;
+            while (start < segment.length && /\s/u.test(segment[start] || "")) {
+                start += 1;
+            }
+        }
+    }
+
+    return Math.max(1, total);
+}
+
+function shallowEqualChatChrome(left, right) {
+    if (Object.is(left, right)) return true;
+    if (!left || !right) return false;
+    return Object.is(left.color, right.color)
+    && Object.is(left.animateTitleRight, right.animateTitleRight)
+    && shallowEqualArray(left.title, right.title, shallowEqualObject)
+        && (Object.is(left.titleRight, right.titleRight)
+            || shallowEqualArray(left.titleRight, right.titleRight, shallowEqualObject));
+}
+
+function readProcessRssBytes() {
+    try {
+        const runtimeProcess = globalThis?.process;
+        const memoryUsage = runtimeProcess?.memoryUsage;
+        if (typeof memoryUsage?.rss === "function") {
+            const rss = Number(memoryUsage.rss());
+            return Number.isFinite(rss) && rss > 0 ? rss : null;
+        }
+        if (typeof memoryUsage === "function") {
+            const rss = Number(memoryUsage.call(runtimeProcess)?.rss);
+            return Number.isFinite(rss) && rss > 0 ? rss : null;
+        }
+    } catch {}
+    return null;
+}
+
+function formatProcessRssTitleRuns(rssBytes) {
+    if (!Number.isFinite(rssBytes) || rssBytes <= 0) return null;
+    const rssMb = Math.round(rssBytes / (1024 * 1024));
+    return [
+        { text: "rss ", color: "gray" },
+        { text: `${rssMb}M`, color: "white", bold: true },
+    ];
+}
+
+// The signed-in identity shown in the sessions header. Admins are marked with
+// a leading "(*)" so an operator can tell at a glance they hold elevated rights.
+function formatSignedInIdentityLabel(auth) {
+    const principal = auth?.principal;
+    if (!principal) return null;
+    const base = principal.displayName || principal.email || principal.subject || null;
+    if (!base) return null;
+    const isAdmin = auth?.authorization?.role === "admin"
+        || (Array.isArray(principal.roles) && principal.roles.includes("admin"));
+    return isAdmin ? `(*) ${base}` : base;
+}
+
+function buildSessionTitleRightRuns(rssRuns, versionLabel = null, identityLabel = null) {
+    const titleRuns = [];
+    // Signed-in identity (multi-user deployments) sits left of the rss gauge
+    // so it's always visible without giving up a whole line.
+    const normalizedIdentityLabel = typeof identityLabel === "string" ? identityLabel.trim() : "";
+    if (normalizedIdentityLabel) {
+        titleRuns.push({ text: normalizedIdentityLabel, color: "yellow", bold: true });
+    }
+    if (Array.isArray(rssRuns) && rssRuns.length > 0) {
+        if (titleRuns.length > 0) titleRuns.push({ text: "  ", color: "gray" });
+        titleRuns.push(...rssRuns);
+    }
+    const normalizedVersionLabel = typeof versionLabel === "string" ? versionLabel.trim() : "";
+    if (!normalizedVersionLabel) return titleRuns.length > 0 ? titleRuns : null;
+    if (titleRuns.length > 0) {
+        titleRuns.push({ text: "  ", color: "gray" });
+    }
+    titleRuns.push({ text: normalizedVersionLabel, color: "cyan", bold: true });
+    return titleRuns;
+}
+
+function useProcessRssTitleRuns(sampleIntervalMs = 2000) {
+    const [rssBytes, setRssBytes] = React.useState(() => readProcessRssBytes());
+
+    React.useEffect(() => {
+        if (readProcessRssBytes() == null) return undefined;
+        const update = () => {
+            const nextRssBytes = readProcessRssBytes();
+            if (nextRssBytes == null) return;
+            setRssBytes((currentRssBytes) => (currentRssBytes === nextRssBytes ? currentRssBytes : nextRssBytes));
+        };
+        update();
+        const timer = setInterval(update, sampleIntervalMs);
+        return () => clearInterval(timer);
+    }, [sampleIntervalMs]);
+
+    return React.useMemo(() => formatProcessRssTitleRuns(rssBytes), [rssBytes]);
+}
+
+function buildSingleSessionMap(sessionId, session) {
+    return sessionId && session ? { [sessionId]: session } : {};
+}
+
+function normalizeInspectorLine(line) {
+    return typeof line === "string"
+        ? { text: line, color: "white" }
+        : line;
+}
+
+function renderInspectorPanel(platform, inspector, meta, width, height, frame) {
+    const tabLine = (inspector.tabs || INSPECTOR_TABS).map((tab) => ({
+        text: tab === inspector.activeTab ? `[${tab}] ` : `${tab} `,
+        color: tab === inspector.activeTab ? "magenta" : "gray",
+        bold: tab === inspector.activeTab,
+    }));
+    const normalizedLines = (inspector.lines || []).map(normalizeInspectorLine);
+    const normalizedStickyLines = (inspector.stickyLines || []).map(normalizeInspectorLine);
+    const stickyLines = inspector.activeTab === "sequence"
+        ? [tabLine, ...normalizedStickyLines]
+        : [];
+    const lines = inspector.activeTab === "sequence"
+        ? normalizedLines
+        : [tabLine, ...normalizedLines];
+
+    return React.createElement(platform.Panel, {
+        title: inspector.title,
+        color: "magenta",
+        focused: meta.focused,
+        width,
+        height,
+        stickyLines,
+        marginBottom: PANE_GAP_Y,
+        lines,
+        scrollOffset: meta.inspectorScroll,
+        scrollMode: inspector.activeTab === "sequence"
+            ? "bottom"
+            : inspector.activeTab === "logs" && meta.inspectorFollowBottom
+                ? "bottom"
+                : "top",
+        paneId: "inspector",
+        paneLabel: inspector.activeTab === "sequence" ? "Sequence" : "Inspector",
+        frame,
+    });
+}
+
+function fitText(value, maxWidth) {
+    const text = String(value || "");
+    if (maxWidth <= 0) return "";
+    if (text.length <= maxWidth) return text;
+    if (maxWidth === 1) return text.slice(0, 1);
+    return `${text.slice(0, maxWidth - 1)}...`;
+}
+
+function buildWorkspacePaneFrames(layout) {
+    const leftX = 0;
+    const rightX = layout.leftHidden ? 0 : layout.leftWidth + (layout.rightHidden ? 0 : PANE_GAP_X);
+    const activityY = layout.inspectorHidden ? 0 : layout.inspectorPaneHeight + PANE_GAP_Y;
+
+    return {
+        sessions: layout.leftHidden ? null : {
+            x: leftX,
+            y: 0,
+            width: layout.leftWidth,
+            height: layout.sessionPaneHeight,
+        },
+        chat: layout.leftHidden ? null : {
+            x: leftX,
+            y: layout.sessionPaneHeight + PANE_GAP_Y,
+            width: layout.leftWidth,
+            height: layout.chatPaneHeight,
+        },
+        inspector: layout.rightHidden || layout.inspectorHidden ? null : {
+            x: rightX,
+            y: 0,
+            width: layout.rightWidth,
+            height: layout.inspectorPaneHeight,
+        },
+        activity: layout.rightHidden || layout.activityHidden ? null : {
+            x: rightX,
+            y: activityY,
+            width: layout.rightWidth,
+            height: layout.activityPaneHeight,
+        },
+        fullscreenFiles: {
+            x: 0,
+            y: 0,
+            width: layout.totalWidth,
+            height: layout.bodyHeight,
+        },
+        fullscreenPane: {
+            x: 0,
+            y: 0,
+            width: layout.totalWidth,
+            height: layout.bodyHeight,
+        },
+    };
+}
+
+const SessionList = React.memo(function SessionList({ controller, maxRows, width, height, frame, versionLabel = null }) {
+    const platform = useUiPlatform();
+    const rssTitleRuns = useProcessRssTitleRuns();
+    const sessionView = useControllerSelector(controller, (state) => ({
+        sessions: state.sessions,
+        mode: state.connection?.mode || "local",
+        brandingTitle: state.branding?.title || "PilotSwarm",
+        focused: state.ui.focusRegion === "sessions",
+        // Who am I signed in as (null on identity-less/local deployments);
+        // admins are prefixed with "(*)".
+        identityLabel: formatSignedInIdentityLabel(state.auth),
+    }), shallowEqualObject);
+    const titleRightRuns = React.useMemo(
+        () => buildSessionTitleRightRuns(rssTitleRuns, versionLabel, sessionView.identityLabel),
+        [rssTitleRuns, versionLabel, sessionView.identityLabel],
+    );
+    const selectorState = React.useMemo(() => ({
+        sessions: sessionView.sessions,
+        connection: { mode: sessionView.mode },
+        branding: { title: sessionView.brandingTitle },
+    }), [sessionView.brandingTitle, sessionView.mode, sessionView.sessions]);
+    const rows = React.useMemo(
+        () => selectVisibleSessionRows(selectorState, maxRows),
+        [selectorState, maxRows],
+    );
+    const lines = React.useMemo(() => (
+        rows.length === 0
+            ? [{ text: "No sessions yet. Press n to create one.", color: "gray" }]
+            : rows.map((row) => (row.active
+                ? applyActiveHighlightRuns(row.runs, { preserveColors: true })
+                : row.runs))
+    ), [rows]);
+
+    return React.createElement(platform.Panel, {
+        title: [{ text: "Sessions", color: "yellow", bold: true }],
+        titleRight: titleRightRuns,
+        color: "yellow",
+        focused: sessionView.focused,
+        width,
+        height,
+        marginBottom: PANE_GAP_Y,
+        lines,
+        paneId: "sessions",
+        paneLabel: "Sessions",
+        frame,
+    });
+});
+
+const ChatPane = React.memo(function ChatPane({ controller, width, height, frame }) {
+    const platform = useUiPlatform();
+    const chatView = useControllerSelector(controller, (state) => {
+        const activeSessionId = state.sessions.activeSessionId;
+        return {
+            activeSessionId,
+            activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
+            activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
+            // Viewer identity — so the transcript can say "You" for the viewer's
+            // own messages (and tag the owner) in shared sessions.
+            authPrincipal: state.auth?.principal || null,
+            branding: state.branding,
+            connectionError: state.connection.error,
+            connectionMode: state.connection.mode,
+            chatScroll: state.ui.scroll.chat,
+            followBottom: state.ui.followBottom?.chat !== false,
+            focused: state.ui.focusRegion === "chat",
+        };
+    }, shallowEqualObject);
+    const contentWidth = Math.max(20, width - 4);
+    const selectorState = React.useMemo(() => {
+        const historyMap = new Map();
+        if (chatView.activeSessionId && chatView.activeHistory) {
+            historyMap.set(chatView.activeSessionId, chatView.activeHistory);
+        }
+        return {
+            branding: chatView.branding,
+            auth: { principal: chatView.authPrincipal },
+            connection: {
+                error: chatView.connectionError,
+                mode: chatView.connectionMode,
+            },
+            ui: {},
+            sessions: {
+                activeSessionId: chatView.activeSessionId,
+                byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
+            },
+            history: {
+                bySessionId: historyMap,
+            },
+            // The queued-prompt overlay reads state.outbox; without it here the
+            // TUI ChatPane's synthetic selectorState always saw an empty outbox
+            // and rendered no "queued prompts: N" even though the item was
+            // durably queued in the real store.
+            outbox: {
+                bySessionId: chatView.activeSessionId && chatView.activeOutbox
+                    ? { [chatView.activeSessionId]: chatView.activeOutbox }
+                    : {},
+            },
+        };
+    }, [
+        chatView.activeHistory,
+        chatView.activeSessionId,
+        chatView.activeSession,
+        chatView.activeOutbox,
+        chatView.authPrincipal,
+        chatView.branding,
+        chatView.connectionError,
+        chatView.connectionMode,
+    ]);
+    const chrome = React.useMemo(
+        () => selectChatPaneChrome(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+    const animatedDots = useAnimatedDots(Boolean(chrome?.animateTitleRight));
+    const animatedTitleRight = React.useMemo(
+        () => appendAnimatedDotsToRuns(chrome?.titleRight, animatedDots),
+        [animatedDots, chrome?.titleRight],
+    );
+    const startupError = !chatView.activeSessionId && chatView.connectionError;
+    const elements = React.useMemo(() => (startupError
+        ? [
+            { kind: "markup", value: chatView.branding.splash },
+            { text: "", color: "gray" },
+            { text: "Startup failed", color: "red", bold: true },
+            { text: chatView.connectionError, color: "white" },
+            { text: "", color: "gray" },
+            { text: "Check env credentials and model provider config, then relaunch.", color: "yellow" },
+        ]
+        : selectChatLines(selectorState, contentWidth)), [chatView.branding.splash, chatView.connectionError, contentWidth, selectorState, startupError]);
+    const running = String(chatView.activeSession?.status || "").toLowerCase() === "running";
+    const spinnerFrame = useSpinnerFrame(running);
+    const liveActivityLines = React.useMemo(
+        () => (startupError ? [] : selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: contentWidth })),
+        [selectorState, startupError, spinnerFrame, contentWidth],
+    );
+    const outboxLines = React.useMemo(
+        () => (startupError ? [] : selectOutboxOverlayLines(selectorState, contentWidth)),
+        [selectorState, startupError, contentWidth],
+    );
+    // The queued-prompt overlay and the live "Working" strip are pinned in the
+    // bottom-sticky region (outbox above, strip at the very bottom), so they
+    // stay put at the foot of the pane instead of scrolling inline with the
+    // transcript — matching the portal. The transcript itself stays crisp.
+    const bottomStickyLines = React.useMemo(
+        () => (outboxLines.length > 0 || liveActivityLines.length > 0
+            ? [...outboxLines, ...liveActivityLines]
+            : []),
+        [outboxLines, liveActivityLines],
+    );
+
+    return React.createElement(platform.Panel, {
+        title: chrome.title,
+        titleRight: animatedTitleRight,
+        color: chrome.color,
+        focused: chatView.focused,
+        width,
+        height,
+        lines: elements,
+        bottomStickyLines,
+        scrollOffset: chatView.chatScroll,
+        scrollMode: chatView.followBottom ? "bottom" : "top",
+        paneId: "chat",
+        paneLabel: "Chat",
+        frame,
+    });
+});
+
+const FilesBrowser = React.memo(function FilesBrowser({ controller, width, height, shellTitle, focused = false, frame, showFullscreenTitle = false, embedded = false }) {
+    const platform = useUiPlatform();
+    const filesState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        sessionsFlat: state.sessions.flat,
+        filesBySessionId: state.files.bySessionId,
+        filesFullscreen: Boolean(state.files.fullscreen),
+        selectedArtifactId: state.files.selectedArtifactId,
+        filesFilter: state.files.filter,
+        filePreviewScroll: state.ui.scroll.filePreview,
+    }), shallowEqualObject);
+    const contentWidth = Math.max(20, width - 4);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: filesState.activeSessionId,
+            byId: filesState.activeSessionId && filesState.activeSession
+                ? { [filesState.activeSessionId]: filesState.activeSession }
+                : {},
+            flat: filesState.sessionsFlat,
+        },
+        files: {
+            bySessionId: filesState.filesBySessionId,
+            fullscreen: filesState.filesFullscreen,
+            selectedArtifactId: filesState.selectedArtifactId,
+            filter: filesState.filesFilter,
+        },
+        ui: {
+            scroll: {
+                filePreview: filesState.filePreviewScroll,
+            },
+        },
+    }), [filesState]);
+    const filesView = React.useMemo(() => selectFilesView(selectorState, {
+        listWidth: Math.max(8, contentWidth - 4),
+        previewWidth: Math.max(8, contentWidth - 4),
+    }), [contentWidth, selectorState]);
+    const title = shellTitle
+        || (showFullscreenTitle ? filesView.fullscreenTitle : filesView.panelTitle || filesView.listTitle)
+        || [{ text: "Files", color: "magenta", bold: true }];
+    const availablePanelsHeight = Math.max(9, height - 4);
+    const maxListPanelHeight = Math.max(5, Math.min(10, Math.floor(availablePanelsHeight * 0.35)));
+    let listPanelHeight = Math.max(5, Math.min(maxListPanelHeight, (filesView.listBodyLines || []).length + 2));
+    let previewPanelHeight = Math.max(5, availablePanelsHeight - listPanelHeight - 1);
+    const minPreviewPanelHeight = 8;
+    if (previewPanelHeight < minPreviewPanelHeight) {
+        const deficit = minPreviewPanelHeight - previewPanelHeight;
+        listPanelHeight = Math.max(5, listPanelHeight - deficit);
+        previewPanelHeight = Math.max(5, availablePanelsHeight - listPanelHeight - 1);
+    }
+    const listContentRows = Math.max(1, listPanelHeight - 2);
+    const listScrollOffset = Math.max(0, filesView.selectedIndex - Math.floor(listContentRows / 2));
+    const listFrame = !embedded && frame
+        ? {
+            x: frame.x + 2,
+            y: frame.y + 2,
+            width: contentWidth,
+            height: listPanelHeight,
+        }
+        : null;
+    const previewFrame = !embedded && frame
+        ? {
+            x: frame.x + 2,
+            y: frame.y + 2 + listPanelHeight + 1,
+            width: contentWidth,
+            height: previewPanelHeight,
+        }
+        : null;
+
+    const tabLine = INSPECTOR_TABS.map((tab) => ({
+        text: tab === "files" ? `[${tab}] ` : `${tab} `,
+        color: tab === "files" ? "magenta" : "gray",
+        bold: tab === "files",
+    }));
+
+    const content = React.createElement(platform.Column, { width: contentWidth },
+        React.createElement(platform.Lines, {
+            lines: [tabLine],
+        }),
+        React.createElement(platform.Panel, {
+            title: filesView.listTitle,
+            color: "gray",
+            focused: false,
+            width: contentWidth,
+            height: listPanelHeight,
+            lines: filesView.listBodyLines || filesView.listLines.slice(1),
+            scrollOffset: listScrollOffset,
+            scrollMode: "top",
+            marginBottom: 1,
+            paneId: "files:list",
+            paneLabel: "Files list",
+            frame: listFrame,
+        }),
+        React.createElement(platform.Panel, {
+            title: filesView.previewTitle,
+            color: "gray",
+            focused: false,
+            width: contentWidth,
+            height: previewPanelHeight,
+            lines: filesView.previewLines,
+            scrollOffset: filesView.previewScrollOffset,
+            scrollMode: "top",
+            paneId: "files:preview",
+            paneLabel: "File preview",
+            frame: previewFrame,
+        }),
+    );
+
+    if (embedded) {
+        return content;
+    }
+
+    return React.createElement(platform.Panel, {
+        title,
+        color: "magenta",
+        focused,
+        width,
+        height,
+        marginBottom: PANE_GAP_Y,
+        paneId: "inspector",
+        paneLabel: "Inspector",
+        frame,
+    }, content);
+});
+
+const InspectorFilesPane = React.memo(function InspectorFilesPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const shellState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: shellState.activeSessionId,
+            byId: buildSingleSessionMap(shellState.activeSessionId, shellState.activeSession),
+        },
+        ui: {
+            inspectorTab: "files",
+        },
+    }), [shellState.activeSession, shellState.activeSessionId]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return React.createElement(platform.Panel, {
+        title: inspector.title,
+        color: "magenta",
+        focused: meta.focused,
+        width,
+        height,
+        marginBottom: PANE_GAP_Y,
+        paneId: "inspector",
+        paneLabel: "Inspector",
+        frame,
+    }, React.createElement(FilesBrowser, {
+        controller,
+        width,
+        height,
+        frame,
+        focused: meta.focused,
+        embedded: true,
+    }));
+});
+
+const InspectorSequencePane = React.memo(function InspectorSequencePane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const sequenceState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        activeOrchestration: state.sessions.activeSessionId
+            ? state.orchestration.bySessionId?.[state.sessions.activeSessionId] || null
+            : null,
+        histories: state.history.bySessionId,
+        expandedTurns: state.ui.sequenceExpandedTurns,
+        selectedTurn: state.ui.sequenceSelectedTurn,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: sequenceState.activeSessionId,
+            byId: buildSingleSessionMap(sequenceState.activeSessionId, sequenceState.activeSession),
+        },
+        history: {
+            bySessionId: sequenceState.histories,
+        },
+        orchestration: {
+            bySessionId: sequenceState.activeSessionId && sequenceState.activeOrchestration
+                ? { [sequenceState.activeSessionId]: sequenceState.activeOrchestration }
+                : {},
+        },
+        ui: {
+            inspectorTab: "sequence",
+        },
+    }), [
+        sequenceState.activeOrchestration,
+        sequenceState.activeSession,
+        sequenceState.activeSessionId,
+        sequenceState.histories,
+    ]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, {
+            width: contentWidth,
+            sequenceExpansion: {
+                expandedTurns: sequenceState.expandedTurns || [],
+                selectedTurn: sequenceState.selectedTurn ?? null,
+            },
+        }),
+        [contentWidth, selectorState, sequenceState.expandedTurns, sequenceState.selectedTurn],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorLogsPane = React.memo(function InspectorLogsPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const logsState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        logs: state.logs,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: logsState.activeSessionId,
+            byId: buildSingleSessionMap(logsState.activeSessionId, logsState.activeSession),
+        },
+        logs: logsState.logs,
+        ui: {
+            inspectorTab: "logs",
+        },
+    }), [logsState.activeSession, logsState.activeSessionId, logsState.logs]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorHistoryPane = React.memo(function InspectorHistoryPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const historyState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        executionHistory: state.executionHistory,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: historyState.activeSessionId,
+            byId: buildSingleSessionMap(historyState.activeSessionId, historyState.activeSession),
+        },
+        executionHistory: historyState.executionHistory,
+        ui: {
+            inspectorTab: "history",
+        },
+    }), [historyState.activeSession, historyState.activeSessionId, historyState.executionHistory]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorNodesPane = React.memo(function InspectorNodesPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const nodesState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        sessionsById: state.sessions.byId,
+        sessionsFlat: state.sessions.flat,
+        histories: state.history.bySessionId,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: nodesState.activeSessionId,
+            byId: nodesState.sessionsById,
+            flat: nodesState.sessionsFlat,
+        },
+        history: {
+            bySessionId: nodesState.histories,
+        },
+        ui: {
+            inspectorTab: "nodes",
+        },
+    }), [
+        nodesState.activeSessionId,
+        nodesState.histories,
+        nodesState.sessionsById,
+        nodesState.sessionsFlat,
+    ]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorStatsPane = React.memo(function InspectorStatsPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const statsState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        sessionStats: state.sessionStats,
+        fleetStats: state.fleetStats,
+        statsViewMode: state.ui.statsViewMode,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: statsState.activeSessionId,
+            byId: buildSingleSessionMap(statsState.activeSessionId, statsState.activeSession),
+        },
+        sessionStats: statsState.sessionStats,
+        fleetStats: statsState.fleetStats,
+        ui: {
+            inspectorTab: "stats",
+            statsViewMode: statsState.statsViewMode,
+        },
+    }), [
+        statsState.activeSession,
+        statsState.activeSessionId,
+        statsState.fleetStats,
+        statsState.sessionStats,
+        statsState.statsViewMode,
+    ]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorPane = React.memo(function InspectorPane({ controller, width, height, frame }) {
+    const inspectorMeta = useControllerSelector(controller, (state) => ({
+        inspectorTab: state.ui.inspectorTab,
+        inspectorScroll: state.ui.scroll.inspector,
+        inspectorFollowBottom: state.ui.followBottom?.inspector !== false,
+        focused: state.ui.focusRegion === "inspector",
+    }), shallowEqualObject);
+    if (inspectorMeta.inspectorTab === "files") {
+        return React.createElement(InspectorFilesPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "sequence") {
+        return React.createElement(InspectorSequencePane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "logs") {
+        return React.createElement(InspectorLogsPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "history") {
+        return React.createElement(InspectorHistoryPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "stats") {
+        return React.createElement(InspectorStatsPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    return React.createElement(InspectorNodesPane, {
+        controller,
+        width,
+        height,
+        frame,
+        meta: inspectorMeta,
+    });
+});
+
+const ActivityPane = React.memo(function ActivityPane({ controller, width, height, maxLines, frame }) {
+    const platform = useUiPlatform();
+    const activityState = useControllerSelector(controller, (state) => {
+        const activeSessionId = state.sessions.activeSessionId;
+        return {
+            sessionsById: state.sessions.byId,
+            activeSessionId,
+            activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
+            activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            scroll: state.ui.scroll.activity,
+            followBottom: state.ui.followBottom?.activity !== false,
+            focused: state.ui.focusRegion === "activity",
+            // On the Node Map tab this pane IS the worker-details pane, so it
+            // needs the registry, the selection, and every session/history.
+            inspectorTab: state.ui.inspectorTab,
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
+            adminWorkers: state.admin?.workers,
+            branding: state.branding,
+            historyBySessionId: state.history.bySessionId,
+            sessionsFlat: state.sessions.flat,
+        };
+    }, shallowEqualObject);
+    const nodeMode = activityState.inspectorTab === "nodes";
+    const selectorState = React.useMemo(() => {
+        const historyMap = new Map();
+        if (activityState.activeSessionId && activityState.activeHistory) {
+            historyMap.set(activityState.activeSessionId, activityState.activeHistory);
+        }
+        return {
+            branding: activityState.branding,
+            admin: { workers: activityState.adminWorkers },
+            ui: { nodeMapSelectedNode: activityState.nodeMapSelectedNode },
+            sessions: {
+                activeSessionId: activityState.activeSessionId,
+                byId: activityState.sessionsById,
+                flat: activityState.sessionsFlat,
+            },
+            history: {
+                bySessionId: nodeMode ? activityState.historyBySessionId : historyMap,
+            },
+        };
+    }, [
+        activityState.activeHistory, activityState.activeSessionId, activityState.sessionsById,
+        activityState.adminWorkers, activityState.branding, activityState.historyBySessionId,
+        activityState.nodeMapSelectedNode, activityState.sessionsFlat, nodeMode,
+    ]);
+    const activity = React.useMemo(
+        () => (nodeMode ? selectWorkerDetailsPane(selectorState) : selectActivityPane(selectorState, maxLines)),
+        [maxLines, nodeMode, selectorState],
+    );
+
+    return React.createElement(platform.Panel, {
+        title: activity.title,
+        color: "gray",
+        focused: activityState.focused,
+        width,
+        height,
+        lines: activity.lines,
+        scrollOffset: activityState.scroll,
+        scrollMode: activityState.followBottom ? "bottom" : "top",
+        paneId: "activity",
+        paneLabel: "Activity",
+        frame,
+    });
+});
+
+const PromptBar = React.memo(function PromptBar({ controller, rows }) {
+    const platform = useUiPlatform();
+    const promptState = useControllerSelector(controller, (state) => {
+        const activeSessionId = state.sessions.activeSessionId;
+        const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
+        const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+            ? state.outbox.bySessionId[activeSessionId]
+            : [];
+        return {
+            prompt: state.ui.prompt,
+            promptCursor: state.ui.promptCursor,
+            focused: state.ui.focusRegion === "prompt",
+            answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
+            editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
+            hasOutbox: outbox.length > 0,
+            hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
+        };
+    }, shallowEqualObject);
+    return React.createElement(platform.Input, {
+        label: promptState.answeringQuestion ? "answer" : promptState.editingPending ? "pending" : "you",
+        value: promptState.prompt,
+        cursorIndex: promptState.promptCursor,
+        focused: promptState.focused,
+        placeholder: promptState.answeringQuestion
+            ? "Type an answer and press Enter"
+            : promptState.editingPending
+                ? "Edit pending prompt, Enter sends batch, Esc cancels"
+                : promptState.hasOutbox
+                    ? "Type a message and press Enter to queue it"
+            : "Type a message and press Enter",
+        rows,
+    });
+});
+
+const StatusBar = React.memo(function StatusBar({ controller }) {
+    const platform = useUiPlatform();
+    const statusState = useControllerSelector(controller, (state) => ({
+        connected: state.connection.connected,
+        workersOnline: state.connection.workersOnline,
+        focusRegion: state.ui.focusRegion,
+        inspectorTab: state.ui.inspectorTab,
+        fullscreenPane: state.ui.fullscreenPane || null,
+        logsAvailable: state.logs.available,
+        logsTailing: state.logs.tailing,
+        filesFullscreen: Boolean(state.files.fullscreen),
+        mode: state.connection.mode,
+        statusText: state.ui.statusText,
+        modal: state.ui.modal,
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        selectedIds: state.sessions.selectedIds,
+        selectMode: state.sessions.selectMode,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        connection: {
+            connected: statusState.connected,
+            workersOnline: statusState.workersOnline,
+            mode: statusState.mode,
+        },
+        ui: {
+            focusRegion: statusState.focusRegion,
+            inspectorTab: statusState.inspectorTab,
+            fullscreenPane: statusState.fullscreenPane,
+            statusText: statusState.statusText,
+            modal: statusState.modal,
+        },
+        logs: {
+            available: statusState.logsAvailable,
+            tailing: statusState.logsTailing,
+        },
+        files: {
+            fullscreen: statusState.filesFullscreen,
+        },
+        sessions: {
+            activeSessionId: statusState.activeSessionId,
+            selectedIds: statusState.selectedIds,
+            selectMode: statusState.selectMode,
+            byId: statusState.activeSessionId && statusState.activeSession
+                ? { [statusState.activeSessionId]: statusState.activeSession }
+                : {},
+        },
+    }), [statusState]);
+    const status = React.useMemo(() => selectStatusBar(selectorState), [selectorState]);
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120 };
+    const innerWidth = Math.max(20, (viewport.width || 120) - 4);
+    const rightMax = Math.min(Math.max(18, Math.floor(innerWidth * 0.45)), innerWidth - 8);
+    const leftMax = Math.max(8, innerWidth - rightMax - 3);
+
+    return React.createElement(platform.StatusLine, {
+        left: fitText(status.left, leftMax),
+        right: fitText(status.right, rightMax),
+    });
+});
+
+function ModelPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectModelPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(46, Math.min(modal.idealWidth || 68, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(6, Math.min(8, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No models available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Model Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ModelPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ModelPickerModal, { state });
+}
+
+function ReasoningEffortPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectReasoningEffortPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(46, Math.min(modal.idealWidth || 64, (viewport.width || 120) - 16));
+    const listHeight = Math.max(7, Math.min(modal.rows.length + 2, 10, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(6, Math.min(8, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No reasoning efforts available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Reasoning Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ReasoningEffortPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ReasoningEffortPickerModal, { state });
+}
+
+function ContextTierPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectContextTierPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(46, Math.min(modal.idealWidth || 64, (viewport.width || 120) - 16));
+    const listHeight = Math.max(7, Math.min(modal.rows.length + 2, 10, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(6, Math.min(8, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No context windows available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Context Window",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ContextTierPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ContextTierPickerModal, { state });
+}
+
+function SessionAgentPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionAgentPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(50, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(9, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No agents available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Agent Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionAgentPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionAgentPickerModal, { state });
+}
+
+function SessionGroupPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionGroupPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(50, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(9, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No groups available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Move Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionGroupPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionGroupPickerModal, { state });
+}
+
+function SessionGroupNameModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionGroupNameModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(6, Math.min(7, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [[
+                    { text: "> ", color: "cyan", bold: true },
+                    { text: modal.value || modal.placeholder || "", color: modal.value ? "white" : "gray" },
+                ]],
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Preview",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionGroupNameModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionGroupNameModal, { state });
+}
+
+function SessionOwnerFilterModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionOwnerFilterModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(54, Math.min(modal.idealWidth || 76, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(9, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No session filters available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Session Filter",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionOwnerFilterModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        auth: rootState.auth,
+        sessions: {
+            ownerFilter: rootState.sessions.ownerFilter,
+        },
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionOwnerFilterModal, { state });
+}
+
+function RenameSessionModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectRenameSessionModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(6, Math.min(7, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(6, Math.min(7, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "title",
+                value: modal.value,
+                cursorIndex: modal.cursorIndex,
+                focused: true,
+                placeholder: modal.placeholder,
+                rows: 1,
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Rename Rules",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function RenameSessionModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(RenameSessionModal, { state });
+}
+
+function ShareSessionModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectShareSessionModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(6, Math.min((modal.detailsLines?.length || 0) + 2, 14, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(4, Math.min(5, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "grant",
+                value: modal.value,
+                cursorIndex: modal.cursorIndex,
+                focused: true,
+                placeholder: modal.placeholder,
+                rows: 1,
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Share Rules",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ShareSessionModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ShareSessionModal, { state });
+}
+
+function ArtifactUploadModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectArtifactUploadModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(58, Math.min(modal.idealWidth || 74, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(6, Math.min(7, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(7, Math.min(8, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "path",
+                value: modal.value,
+                cursorIndex: modal.cursorIndex,
+                focused: true,
+                placeholder: modal.placeholder,
+                rows: 1,
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Attach Rules",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ArtifactUploadModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        branding: rootState.branding,
+        sessions: {
+            activeSessionId: rootState.sessions.activeSessionId,
+            byId: rootState.sessions.byId,
+        },
+        ui: {
+            modal: rootState.ui.modal,
+            promptAttachments: rootState.ui.promptAttachments,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ArtifactUploadModal, { state });
+}
+
+function ArtifactPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectArtifactPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(54, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(9, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No artifacts available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Artifact Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ThemePickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectThemePickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(54, Math.min(modal.idealWidth || 76, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(8, Math.min(10, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No themes available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Theme Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ThemePickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+            themeId: rootState.ui.themeId,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ThemePickerModal, { state });
+}
+
+function ArtifactPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+        files: {
+            bySessionId: rootState.files.bySessionId,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ArtifactPickerModal, { state });
+}
+
+function HelpModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectHelpModal(state);
+    if (!modal) return null;
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 80, (viewport.width || 120) - 8));
+    const height = Math.max(10, Math.min(modal.rows.length + 2, (viewport.height || 40) - 6));
+    const contentRows = Math.max(1, height - 2);
+    const maxOffset = Math.max(0, modal.rows.length - contentRows);
+    const scrollOffset = Math.max(0, Math.min(modal.selectedRowIndex - Math.floor(contentRows / 2), maxOffset));
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height,
+                lines: modal.rows,
+                scrollOffset,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function HelpModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: { modal: rootState.ui.modal },
+    }), shallowEqualObject);
+    return React.createElement(HelpModal, { state });
+}
+
+function renderFilterModal(platform, modal) {
+    if (!modal) return null;
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const paneGap = 1;
+    const rawPaneWidths = modal.panes.map((pane) => Math.max(20, Math.min(pane.idealWidth || 24, 36)));
+    const idealContentWidth = rawPaneWidths.reduce((sum, value) => sum + value, 0) + Math.max(0, rawPaneWidths.length - 1) * paneGap;
+    const width = Math.max(76, Math.min(modal.idealWidth || (idealContentWidth + 4), (viewport.width || 120) - 6));
+    const availablePaneWidth = Math.max(18, width - 4 - (Math.max(0, rawPaneWidths.length - 1) * paneGap));
+    const paneWidths = [...rawPaneWidths];
+    let totalPaneWidth = paneWidths.reduce((sum, value) => sum + value, 0);
+    while (totalPaneWidth > availablePaneWidth) {
+        let shrank = false;
+        for (let index = 0; index < paneWidths.length && totalPaneWidth > availablePaneWidth; index += 1) {
+            if (paneWidths[index] <= 18) continue;
+            paneWidths[index] -= 1;
+            totalPaneWidth -= 1;
+            shrank = true;
+        }
+        if (!shrank) break;
+    }
+    const paneHeight = Math.max(8, Math.min(12, (viewport.height || 40) - 18));
+    const helpHeight = Math.max(5, Math.min(7, (viewport.height || 40) - paneHeight - 10));
+    const modalHeight = paneHeight + helpHeight + 5;
+    const contentWidth = width - 4;
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Panel, {
+            title: modal.title,
+            color: "cyan",
+            focused: false,
+            width,
+            height: modalHeight,
+            fillColor: "surface",
+        },
+        React.createElement(platform.Column, { width: contentWidth },
+            React.createElement(platform.Row, { marginBottom: 1 },
+                modal.panes.map((pane, index) => React.createElement(platform.Panel, {
+                    key: pane.id || index,
+                    title: pane.title,
+                    color: "cyan",
+                    focused: Boolean(pane.focused),
+                    width: paneWidths[index],
+                    height: paneHeight,
+                    lines: pane.lines,
+                    scrollOffset: 0,
+                    scrollMode: "top",
+                    marginRight: index === modal.panes.length - 1 ? 0 : paneGap,
+                    fillColor: "surface",
+                })),
+            ),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width: contentWidth,
+                height: helpHeight,
+                lines: modal.helpLines || [modal.footerRuns],
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        )));
+}
+
+function LogFilterModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectLogFilterModal(state);
+    return renderFilterModal(platform, modal);
+}
+
+function LogFilterModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+        logs: {
+            filter: rootState.logs.filter,
+        },
+    }), shallowEqualObject);
+    return React.createElement(LogFilterModal, { state });
+}
+
+function FilesFilterModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectFilesFilterModal(state);
+    return renderFilterModal(platform, modal);
+}
+
+function FilesFilterModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+        files: {
+            filter: rootState.files.filter,
+        },
+    }), shallowEqualObject);
+    return React.createElement(FilesFilterModal, { state });
+}
+
+function HistoryFormatModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectHistoryFormatModal(state);
+    return renderFilterModal(platform, modal);
+}
+
+function HistoryFormatModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+        executionHistory: {
+            format: rootState.executionHistory?.format || "pretty",
+        },
+    }), shallowEqualObject);
+    return React.createElement(HistoryFormatModal, { state });
+}
+
+function ConfirmModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectConfirmModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(52, Math.min(72, (viewport.width || 120) - 12));
+    const contentWidth = Math.max(24, width - 4);
+    const messageLineCount = countWrappedTextLines(modal.message, contentWidth);
+    const lines = [
+        [{ text: modal.message, color: "white" }],
+        [{ text: "", color: "gray" }],
+        [
+            { text: "Confirm:", color: "gray" },
+            { text: " Enter", color: "green", bold: true },
+            { text: ` or y to ${String(modal.confirmLabel || "confirm").toLowerCase()}`, color: "white" },
+        ],
+        [
+            { text: "Cancel :", color: "gray" },
+            { text: " Esc", color: "red", bold: true },
+            { text: " or n to cancel", color: "white" },
+        ],
+    ];
+    const height = Math.max(
+        7,
+        Math.min((viewport.height || 40) - 8, messageLineCount + 5),
+    );
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "yellow",
+                focused: true,
+                width,
+                height,
+                lines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ConfirmModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ConfirmModal, { state });
+}
+
+function formatAdminPrincipalLabelTui(principal) {
+    if (!principal) return "Unknown user";
+    const name = String(principal.displayName || "").trim();
+    const email = String(principal.email || "").trim();
+    if (name && email && name.toLowerCase() !== email.toLowerCase()) return `${name} <${email}>`;
+    if (name) return name;
+    if (email) return email;
+    const provider = String(principal.provider || "").trim();
+    const subject = String(principal.subject || "").trim();
+    return [provider, subject].filter(Boolean).join(":") || "user";
+}
+
+function buildAdminPackagesLines(view) {
+    // TUI parity for Admin → Packages: the same selector view-model the web
+    // workspace renders, as text — settings tree, selected package detail,
+    // files, and a preview head. Keys: a/g switch sections, j/k select,
+    // r refresh (wired via the ADMIN_* commands).
+    const lines = [];
+    const packages = view.packages || {};
+    lines.push([{ text: "Settings", color: "cyan", bold: true }]);
+    for (const row of view.settingsTree || []) {
+        const indent = "  ".repeat(row.depth || 0);
+        if (row.kind === "group") {
+            lines.push([{ text: `${indent}${row.label} (${row.count ?? 0})`, color: "gray" }]);
+            continue;
+        }
+        const marker = row.selected ? "› " : "  ";
+        const badge = row.kind === "package" ? `[${row.scope === "shared" ? "S" : "U"}] ` : "";
+        const version = row.kind === "package" && row.semver ? `  ${row.semver}` : "";
+        lines.push([
+            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected },
+            { text: `${badge}${row.label}${version}${row.kind === "package" && !row.enabled ? "  [disabled]" : ""}`,
+              color: row.selected ? "white" : (row.kind === "package" && !row.enabled ? "gray" : "white"),
+              bold: row.selected },
+        ]);
+    }
+    if (packages.loading) lines.push([{ text: "  loading packages...", color: "gray" }]);
+    if (packages.error) lines.push([{ text: `  ! ${packages.error}`, color: "red" }]);
+    lines.push([{ text: "", color: "gray" }]);
+
+    const detail = packages.detail;
+    if (detail) {
+        lines.push([
+            { text: detail.name, color: "white", bold: true },
+            { text: `  ${detail.scope}${detail.enabled ? "" : "  disabled"}`, color: detail.scope === "shared" ? "cyan" : "yellow" },
+        ]);
+        if (detail.loading) lines.push([{ text: "loading package...", color: "gray" }]);
+        if (detail.error) lines.push([{ text: `! ${detail.error}`, color: "red", bold: true }]);
+        if (detail.description) lines.push([{ text: detail.description, color: "gray" }]);
+        lines.push([
+            { text: "Version ", color: "gray" },
+            { text: detail.activeSemver ? `${detail.activeSemver} · ${detail.activeSha12 || "?"} · ${detail.sizeText}` : "none", color: "white" },
+        ]);
+        if (detail.fleet) lines.push([{ text: "Fleet   ", color: "gray" }, { text: detail.fleet.text, color: "green" }]);
+        if (detail.agents.length) {
+            lines.push([{ text: "Agents  ", color: "gray" }, { text: detail.agents.map((a) => a.name).join(", "), color: "white" }]);
+        }
+        if (detail.versions.length) {
+            lines.push([{ text: "Versions", color: "cyan", bold: true }]);
+            for (const version of detail.versions.slice(0, 6)) {
+                lines.push([
+                    { text: version.active ? " ● " : "   ", color: "green" },
+                    { text: `${version.semver}  ${version.sha12}  ${version.dateText}`, color: version.active ? "white" : "gray" },
+                ]);
+            }
+        }
+        if (detail.actionError) lines.push([{ text: `! ${detail.actionError}`, color: "red" }]);
+        const workspace = packages.workspace;
+        if (workspace?.loading) lines.push([{ text: "loading files...", color: "gray" }]);
+        if (workspace?.error) lines.push([{ text: `! files: ${workspace.error}`, color: "red" }]);
+        if (workspace?.fileError) lines.push([{ text: `! preview: ${workspace.fileError}`, color: "red" }]);
+        if (workspace?.treeRows?.length) {
+            lines.push([{ text: "", color: "gray" }]);
+            lines.push([{ text: `Files · ${packages.selectedName}@${workspace.semver || "?"}`, color: "cyan", bold: true }]);
+            for (const row of workspace.treeRows.slice(0, 14)) {
+                const indent = "  ".repeat(row.depth || 0);
+                lines.push([
+                    { text: `  ${indent}${row.type === "dir" ? (row.expanded ? "▾ " : "▸ ") : "  "}`, color: "gray" },
+                    { text: row.label, color: row.selected ? "green" : (row.type === "dir" ? "cyan" : "white"), bold: row.selected },
+                    ...(row.sizeText ? [{ text: `  ${row.sizeText}`, color: "gray" }] : []),
+                ]);
+            }
+            if (workspace.treeRows.length > 14) {
+                lines.push([{ text: `  … ${workspace.treeRows.length - 14} more`, color: "gray" }]);
+            }
+            if (workspace.file && !workspace.file.isBinary && workspace.file.text) {
+                lines.push([{ text: "", color: "gray" }]);
+                lines.push([{ text: `Preview · ${workspace.file.path}`, color: "cyan", bold: true }]);
+                for (const textLine of workspace.file.text.split("\n").slice(0, 12)) {
+                    lines.push([{ text: `  ${textLine.slice(0, 100)}`, color: "gray" }]);
+                }
+            }
+        }
+        // The package's own CHANGELOG, last in the pane.
+        //
+        // Bottom placement is deliberate: it is the narrative, read after the
+        // facts above it. An agent-authored version signs its entry here, so
+        // this is also where a reviewer learns whether a human or the Agent
+        // Manager wrote the version they are looking at.
+        if (packages.changelog) {
+            const entryLines = String(packages.changelog).split("\n");
+            lines.push([{ text: "", color: "gray" }]);
+            lines.push([{ text: "Changelog", color: "cyan", bold: true }]);
+            for (const raw of entryLines.slice(0, 20)) {
+                const text = raw.slice(0, 100);
+                if (/^##+\s/.test(raw)) {
+                    // Version headings carry the semver — the anchor a reader scans for.
+                    lines.push([{ text: `  ${text.replace(/^#+\s*/, "")}`, color: "white", bold: true }]);
+                } else if (/^_?signed:/i.test(raw.trim())) {
+                    lines.push([{ text: `  ${text}`, color: "green" }]);
+                } else {
+                    lines.push([{ text: `  ${text}`, color: "gray" }]);
+                }
+            }
+            if (entryLines.length > 20) {
+                lines.push([{ text: `  … ${entryLines.length - 20} more lines`, color: "gray" }]);
+            }
+        }
+    } else {
+        lines.push([{ text: packages.empty
+            ? "No packages yet — add skills, tools, MCP integrations, or agents in the portal or `pilotswarm agents push ./dir`."
+            : "Select a package (j/k) to see detail and files.", color: "gray" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push([
+        { text: " j/k ", color: "green", bold: true }, { text: "select  ", color: "gray" },
+        { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
+function buildAdminWorkersLines(view) {
+    // TUI parity for Admin → Workers: the worker-registry table as text.
+    const lines = [];
+    const workers = view.workers || {};
+    const counts = workers.counts || {};
+    lines.push([
+        { text: "Workers", color: "cyan", bold: true },
+        { text: workers.summaryText ? `  ${workers.summaryText}` : "", color: "gray" },
+    ]);
+    if (workers.loading) lines.push([{ text: "  loading workers...", color: "gray" }]);
+    if (workers.error) lines.push([{ text: `  ! ${workers.error}`, color: "red", bold: true }]);
+    if (workers.empty && !workers.loading) {
+        lines.push([{ text: "  No workers registered — workers appear on their first heartbeat.", color: "gray" }]);
+    }
+    let lastPool = null;
+    for (const row of workers.rows || []) {
+        if (row.pool !== lastPool) {
+            lastPool = row.pool;
+            lines.push([{ text: `  ${row.pool}`, color: "gray", bold: true }]);
+        }
+        const phaseColor = row.phase === "ready" ? "green" : row.phase === "draining" ? "red" : "yellow";
+        lines.push([
+            { text: row.live ? "   ● " : "   ○ ", color: row.live ? "green" : "gray" },
+            { text: row.id, color: row.live ? "white" : "gray", bold: row.live },
+            { text: `  ${row.phase}`, color: phaseColor },
+            { text: `  ${row.agoText}`, color: "gray" },
+            ...(row.uptimeText ? [{ text: `  up ${row.uptimeText}`, color: "gray" }] : []),
+            ...(row.rssText ? [{ text: `  ${row.rssText}`, color: "gray" }] : []),
+            ...(row.sessions != null ? [{ text: `  ${row.sessions} sess`, color: "gray" }] : []),
+            ...(row.pkgText ? [{ text: `  pkgs ${row.pkgText}`, color: row.pkgText.includes("error") ? "red" : "gray" }] : []),
+            ...(row.sdkVersion ? [{ text: `  v${row.sdkVersion}`, color: "gray" }] : []),
+        ]);
+    }
+    if (counts.draining) {
+        lines.push([{ text: `  ${counts.draining} draining`, color: "red" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push([
+        { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Packages  ", color: "gray" },
+        { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
+function buildAdminModelProviderLines(view) {
+    const providers = view.modelProviders || {};
+    const lines = [];
+    const configured = (entry) => entry?.configured?.model || "automatic";
+    const effective = (entry) => entry?.effective?.model || "blocked — no usable provider";
+    lines.push([{ text: "Model Providers", color: "cyan", bold: true }]);
+    if (providers.loading) lines.push([{ text: "Loading providers and defaults...", color: "gray" }]);
+    if (providers.error || providers.mutation?.error) {
+        lines.push([{ text: `! ${providers.mutation?.error || providers.error}`, color: "red", bold: true }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    if (providers.page !== "shared") {
+        lines.push([{ text: "My Providers", color: "white", bold: true }]);
+        if (!(providers.myProviders || []).length) {
+            lines.push([{ text: "  No personal providers.", color: "gray" }]);
+        }
+        for (const provider of providers.myProviders || []) {
+            const selected = providers.selection?.providerName === provider.name;
+            lines.push([
+                { text: selected ? "› " : "  ", color: selected ? "green" : "gray", bold: selected },
+                { text: provider.name, color: selected ? "white" : "gray", bold: selected },
+                ...(view.isAdmin ? [{ text: provider.systemUseEnabled ? "  [system]" : "  [user]", color: provider.systemUseEnabled ? "green" : "gray" }] : []),
+            ]);
+        }
+        lines.push([{ text: "", color: "gray" }]);
+        lines.push([{ text: "My Session Default", color: "white", bold: true }]);
+        lines.push([{ text: `  configured  ${configured(providers.mySessionDefault)}`, color: "gray" }]);
+        lines.push([{ text: `  effective   ${effective(providers.mySessionDefault)}`, color: "cyan" }]);
+    } else if (view.isAdmin) {
+        lines.push([{ text: "Shared Providers", color: "white", bold: true }]);
+        if (!(providers.sharedProviders || []).length) {
+            lines.push([{ text: "  No shared providers.", color: "gray" }]);
+        }
+        for (const provider of providers.sharedProviders || []) {
+            const selected = providers.selection?.providerName === provider.name;
+            lines.push([
+                { text: selected ? "› " : "  ", color: selected ? "green" : "gray", bold: selected },
+                { text: provider.name, color: selected ? "white" : "gray", bold: selected },
+                { text: "  [shared]", color: "green" },
+            ]);
+        }
+        lines.push([{ text: `  Cluster Session Default  ${configured(providers.clusterSessionDefault)}`, color: "gray" }]);
+        lines.push([{ text: `  System Session Default   ${configured(providers.systemSessionDefault)}`, color: "gray" }]);
+        lines.push([{ text: "", color: "gray" }]);
+        lines.push([{ text: "System Agent Overrides", color: "white", bold: true }]);
+        if (!(providers.systemAgentRoutes || []).length) {
+            lines.push([{ text: "  No registered or overridden system agents.", color: "gray" }]);
+        }
+        for (const route of providers.systemAgentRoutes || []) {
+            const selected = providers.selection?.agentId === route.agentId;
+            lines.push([
+                { text: selected ? "› " : "  ", color: selected ? "green" : "gray", bold: selected },
+                { text: route.title, color: selected ? "white" : "gray", bold: selected },
+                { text: `  ${route.effectiveModel || "blocked"}`, color: "cyan" },
+                { text: route.override ? "  [override]" : "  [system default]", color: route.override ? "yellow" : "gray" },
+            ]);
+        }
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    if (providers.page !== "shared") {
+        lines.push([
+            { text: " e ", color: "green", bold: true }, { text: "add  ", color: "gray" },
+            { text: "U ", color: "yellow", bold: true }, { text: "update key  ", color: "gray" },
+            { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
+            { text: "u ", color: "cyan", bold: true }, { text: "my default  ", color: "gray" },
+            ...(view.isAdmin ? [{ text: "t ", color: "yellow", bold: true }, { text: "system use  ", color: "gray" }] : []),
+        ]);
+    } else if (view.isAdmin) {
+        lines.push([
+            { text: " E ", color: "green", bold: true }, { text: "add  ", color: "gray" },
+            { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
+            { text: "l ", color: "cyan", bold: true }, { text: "cluster default  ", color: "gray" },
+            { text: "s ", color: "cyan", bold: true }, { text: "system default  ", color: "gray" },
+            { text: " C/T/H ", color: "yellow", bold: true }, { text: "next system default + Complete/Terminate/Hard Delete restart  ", color: "gray" },
+            { text: "Tab ", color: "cyan", bold: true }, { text: "providers/agents  ", color: "gray" },
+            { text: "j/k ", color: "cyan", bold: true }, { text: "select  ", color: "gray" },
+            { text: "o ", color: "yellow", bold: true }, { text: "cycle override", color: "gray" },
+        ]);
+    }
+    lines.push([
+        { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "m/M ", color: "cyan", bold: true }, { text: "my/shared  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Packages  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
+function buildAdminConsoleLines(view) {
+    const lines = [];
+    if (view.isAdmin && view.adminPolicyLabel) lines.push([{ text: view.adminPolicyLabel, color: "gray" }]);
+    lines.push([
+        { text: "Signed in as ", color: "gray" },
+        { text: formatAdminPrincipalLabelTui(view.principal), color: "white", bold: true },
+    ]);
+    if (view.principal?.provider || view.principal?.subject) {
+        lines.push([
+            { text: "Principal     ", color: "gray" },
+            { text: `${view.principal?.provider || "?"}:${view.principal?.subject || "?"}`, color: "gray" },
+        ]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+
+    if (view.loadError) {
+        lines.push([{ text: `! ${view.loadError}`, color: "red", bold: true }]);
+        lines.push([{ text: "", color: "gray" }]);
+    }
+
+    if (view.section === "packages") {
+        lines.push(...buildAdminPackagesLines(view));
+        return lines;
+    }
+
+    if (view.section === "workers") {
+        lines.push(...buildAdminWorkersLines(view));
+        return lines;
+    }
+
+    if (view.section === "providers") {
+        lines.push(...buildAdminModelProviderLines(view));
+        return lines;
+    }
+
+    lines.push([{ text: "GitHub Copilot key", color: "cyan", bold: true }]);
+    lines.push([
+        { text: "Status  ", color: "gray" },
+        {
+            text: view.ghcpKey.configured ? "configured (overrides env GITHUB_TOKEN)" : "not configured (env GITHUB_TOKEN fallback)",
+            color: view.ghcpKey.configured ? "green" : "yellow",
+        },
+    ]);
+    lines.push([
+        { text: "        ", color: "gray" },
+        { text: view.ghcpKey.statusText, color: view.ghcpKey.error ? "red" : "gray" },
+    ]);
+    lines.push([{ text: "", color: "gray" }]);
+
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    if (view.ghcpKey.editing) {
+        lines.push([
+            { text: " Enter ", color: "green", bold: true },
+            { text: "save  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true },
+            { text: "cancel", color: "gray" },
+        ]);
+    } else {
+        lines.push([
+            { text: " e ", color: "green", bold: true },
+            { text: view.ghcpKey.configured ? "replace key  " : "set key  ", color: "gray" },
+            ...(view.ghcpKey.configured
+                ? [{ text: "c ", color: "yellow", bold: true }, { text: "clear key  ", color: "gray" }]
+                : []),
+            { text: "r ", color: "cyan", bold: true },
+            { text: view.loading ? "refreshing..." : "refresh", color: "gray" },
+        ]);
+        lines.push([
+            { text: " a ", color: "cyan", bold: true },
+            { text: "Packages  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true },
+            { text: "close console and return to workspace", color: "gray" },
+        ]);
+    }
+
+    return lines;
+}
+
+function AdminConsolePanel({ controller, width, height, frame }) {
+    const platform = useUiPlatform();
+    const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
+    const lines = React.useMemo(() => buildAdminConsoleLines(view), [view]);
+    return React.createElement(platform.Panel, {
+        title: "Admin Console",
+        color: "cyan",
+        focused: true,
+        width,
+        height,
+        lines,
+        scrollOffset: 0,
+        scrollMode: "top",
+        frame,
+        fillColor: "surface",
+    });
+}
+
+function AdminGhcpKeyEditorModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectAdminGhcpKeyEditorModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(7, Math.min(8, (viewport.height || 40) - detailsHeight - 8));
+
+    const statusLines = [];
+    if (modal.error) {
+        statusLines.push([{ text: `! ${modal.error}`, color: "red", bold: true }]);
+    } else if (modal.saving) {
+        statusLines.push([{ text: "Saving...", color: "yellow" }]);
+    }
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "key",
+                // Render a masked value so on-screen viewers cannot
+                // capture the secret. The cursor index is preserved as-is
+                // because the masked length matches the source length.
+                value: modal.displayValue,
+                cursorIndex: modal.cursorIndex,
+                focused: !modal.saving,
+                placeholder: modal.placeholder,
+                rows: 1,
+                readOnly: modal.saving,
+            }),
+            statusLines.length > 0
+                ? React.createElement(platform.Panel, {
+                    title: "Status",
+                    color: modal.error ? "red" : "yellow",
+                    focused: false,
+                    width,
+                    height: 3,
+                    lines: statusLines,
+                    scrollOffset: 0,
+                    scrollMode: "top",
+                    marginBottom: 1,
+                    fillColor: "surface",
+                })
+                : null,
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function AdminGhcpKeyEditorModalContainer({ controller }) {
+    // Project the slice this overlay actually depends on so the modal
+    // does not re-render on unrelated state churn (orchestration events,
+    // skill usage, etc.).
+    const state = useControllerSelector(controller, (rootState) => ({
+        admin: rootState.admin,
+    }), shallowEqualObject);
+    return React.createElement(AdminGhcpKeyEditorModal, { state });
+}
+
+function AdminProviderCreateModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectAdminProviderCreateModal(state);
+    if (!modal) return null;
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const statusLines = modal.error
+        ? [[{ text: `! ${modal.error}`, color: "red", bold: true }]]
+        : modal.saving ? [[{ text: "Creating provider...", color: "yellow" }]] : [];
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: Math.max(5, (modal.detailsLines?.length || 0) + 2),
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: modal.label,
+                value: modal.displayValue,
+                cursorIndex: modal.cursorIndex,
+                focused: !modal.saving,
+                placeholder: modal.placeholder,
+                rows: 1,
+                readOnly: modal.saving,
+            }),
+            statusLines.length ? React.createElement(platform.Panel, {
+                title: "Status", color: modal.error ? "red" : "yellow", focused: false,
+                width, height: 3, lines: statusLines, scrollOffset: 0, scrollMode: "top", marginBottom: 1, fillColor: "surface",
+            }) : null,
+            React.createElement(platform.Panel, {
+                title: "Help", color: "cyan", focused: false,
+                width, height: 6, lines: modal.helpLines, scrollOffset: 0, scrollMode: "top", fillColor: "surface",
+            })));
+}
+
+function AdminProviderCreateModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({ admin: rootState.admin }), shallowEqualObject);
+    return React.createElement(AdminProviderCreateModal, { state });
+}
+
+export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
+    const platform = useUiPlatform();
+    const layoutState = useControllerSelector(controller, (state) => ({
+        paneAdjust: state.ui.layout?.paneAdjust ?? 0,
+        sessionPaneAdjust: state.ui.layout?.sessionPaneAdjust ?? 0,
+        activityPaneAdjust: state.ui.layout?.activityPaneAdjust ?? 0,
+        promptRows: getPromptInputRows(state.ui.prompt),
+        inspectorTab: state.ui.inspectorTab,
+        filesFullscreen: Boolean(state.files?.fullscreen),
+        fullscreenPane: state.ui.fullscreenPane || null,
+        themeId: state.ui.themeId,
+        viewportWidth: state.ui.layout?.viewportWidth ?? 120,
+        viewportHeight: state.ui.layout?.viewportHeight ?? 40,
+        adminVisible: Boolean(state.admin?.visible),
+        adminEditing: Boolean(state.admin?.ghcpKey?.editing),
+    }), shallowEqualObject);
+    const viewportWidth = layoutState.viewportWidth;
+    const viewportHeight = layoutState.viewportHeight;
+    const layout = React.useMemo(
+        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.fullscreenPane),
+        [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
+    );
+    const frames = buildWorkspacePaneFrames(layout);
+    const sessionRows = Math.max(3, (layout.fullscreenPane === "sessions" ? layout.bodyHeight : layout.sessionPaneHeight) - 2);
+    const activityRows = Math.max(3, (layout.fullscreenPane === "activity" ? layout.bodyHeight : layout.activityPaneHeight) - 2);
+    const filesFullscreenActive = layoutState.inspectorTab === "files" && layoutState.filesFullscreen;
+    const fullscreenPaneActive = filesFullscreenActive ? null : layoutState.fullscreenPane;
+    const workspaceHeight = Math.max(10, layout.bodyHeight);
+
+    React.useEffect(() => {
+        if (typeof controller.setViewport === "function") {
+            controller.setViewport({ width: viewportWidth, height: viewportHeight });
+        }
+    }, [controller, viewportHeight, viewportWidth]);
+
+    React.useEffect(() => {
+        if (typeof platform.setTheme === "function") {
+            platform.setTheme(layoutState.themeId);
+        }
+    }, [layoutState.themeId, platform]);
+
+    platform.clearSelectablePanes?.();
+
+    return React.createElement(platform.Root, null,
+        React.createElement(platform.Row, { flexGrow: 1 },
+            layoutState.adminVisible
+                ? React.createElement(AdminConsolePanel, {
+                    controller,
+                    width: layout.totalWidth,
+                    height: workspaceHeight,
+                    frame: frames.fullscreenPane,
+                })
+                : filesFullscreenActive
+                ? React.createElement(FilesBrowser, {
+                    controller,
+                    width: layout.totalWidth,
+                    height: workspaceHeight,
+                    frame: frames.fullscreenFiles,
+                    showFullscreenTitle: true,
+                })
+                : fullscreenPaneActive === "sessions"
+                    ? React.createElement(SessionList, {
+                        controller,
+                        width: layout.totalWidth,
+                        height: workspaceHeight,
+                        maxRows: sessionRows,
+                        frame: frames.fullscreenPane,
+                        versionLabel,
+                    })
+                    : fullscreenPaneActive === "chat"
+                        ? React.createElement(ChatPane, {
+                            controller,
+                            width: layout.totalWidth,
+                            height: workspaceHeight,
+                            frame: frames.fullscreenPane,
+                        })
+                        : fullscreenPaneActive === "inspector"
+                            ? React.createElement(InspectorPane, {
+                                controller,
+                                width: layout.totalWidth,
+                                height: workspaceHeight,
+                                frame: frames.fullscreenPane,
+                            })
+                            : fullscreenPaneActive === "activity"
+                                ? React.createElement(ActivityPane, {
+                                    controller,
+                                    width: layout.totalWidth,
+                                    height: workspaceHeight,
+                                    maxLines: activityRows,
+                                    frame: frames.fullscreenPane,
+                                })
+                : [
+                    !layout.leftHidden && React.createElement(platform.Column, { key: "left", width: layout.leftWidth, marginRight: layout.rightHidden ? 0 : PANE_GAP_X, flexGrow: 0 },
+                        React.createElement(SessionList, {
+                            controller,
+                            width: layout.leftWidth,
+                            height: layout.sessionPaneHeight,
+                            maxRows: sessionRows,
+                            frame: frames.sessions,
+                            versionLabel,
+                        }),
+                        React.createElement(ChatPane, {
+                            controller,
+                            width: layout.leftWidth,
+                            height: layout.chatPaneHeight,
+                            frame: frames.chat,
+                        }),
+                    ),
+                    !layout.rightHidden && React.createElement(platform.Column, { key: "right", width: layout.rightWidth, flexGrow: 0 },
+                        !layout.inspectorHidden && React.createElement(InspectorPane, {
+                            controller,
+                            width: layout.rightWidth,
+                            height: layout.inspectorPaneHeight,
+                            frame: frames.inspector,
+                        }),
+                        !layout.activityHidden && React.createElement(ActivityPane, {
+                            controller,
+                            width: layout.rightWidth,
+                            height: layout.activityPaneHeight,
+                            maxLines: activityRows,
+                            frame: frames.activity,
+                        }),
+                    ),
+                ],
+        ),
+        React.createElement(StatusBar, { controller }),
+        React.createElement(PromptBar, { controller, rows: layoutState.promptRows }),
+        React.createElement(RenameSessionModalContainer, { controller }),
+        React.createElement(ShareSessionModalContainer, { controller }),
+        React.createElement(ArtifactUploadModalContainer, { controller }),
+        React.createElement(ArtifactPickerModalContainer, { controller }),
+        React.createElement(HelpModalContainer, { controller }),
+        React.createElement(ModelPickerModalContainer, { controller }),
+        React.createElement(ReasoningEffortPickerModalContainer, { controller }),
+        React.createElement(ContextTierPickerModalContainer, { controller }),
+        React.createElement(ThemePickerModalContainer, { controller }),
+        React.createElement(SessionAgentPickerModalContainer, { controller }),
+        React.createElement(SessionGroupPickerModalContainer, { controller }),
+        React.createElement(SessionGroupNameModalContainer, { controller }),
+        React.createElement(SessionOwnerFilterModalContainer, { controller }),
+        React.createElement(LogFilterModalContainer, { controller }),
+        React.createElement(FilesFilterModalContainer, { controller }),
+        React.createElement(HistoryFormatModalContainer, { controller }),
+        React.createElement(ConfirmModalContainer, { controller }),
+        React.createElement(AdminProviderCreateModalContainer, { controller }),
+    );
+}

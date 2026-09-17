@@ -1,0 +1,538 @@
+import { NATIVE_TASK_NAMES, validateNativeTaskTools, type NativeTaskTools } from "./native-task-policy.js";
+/**
+ * Agent loader — reads .agent.md files with YAML frontmatter from disk.
+ *
+ * Agent file format (standard Copilot .agent.md):
+ *   ---
+ *   name: planner
+ *   description: Creates structured plans for complex tasks.
+ *   tools:
+ *     - view
+ *     - grep
+ *   ---
+ *
+ *   # Planner Agent
+ *   You are a planning agent...
+ *
+ * The YAML frontmatter becomes CustomAgentConfig fields (name, description, tools).
+ * The markdown body becomes the agent's `prompt`.
+ *
+ * @module
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+// ─── System Agent UUID ──────────────────────────────────────────
+
+/**
+ * Derive a deterministic UUID from a system agent ID slug.
+ * All workers and clients produce the same UUID for the same slug.
+ */
+export function systemAgentUUID(slug: string): string {
+    const hash = crypto.createHash("sha256")
+        .update("pilotswarm-system-agent:")
+        .update(slug)
+        .digest("hex");
+    return [
+        hash.slice(0, 8),
+        hash.slice(8, 12),
+        hash.slice(12, 16),
+        hash.slice(16, 20),
+        hash.slice(20, 32),
+    ].join("-");
+}
+
+/**
+ * Derive a deterministic UUID for a system child agent from its parent session
+ * and child slug. This keeps system children like sweeper/resource manager
+ * stable across restarts while avoiding collisions between different parents.
+ */
+export function systemChildAgentUUID(parentSessionId: string, slug: string): string {
+    const hash = crypto.createHash("sha256")
+        .update("pilotswarm-system-child-agent:")
+        .update(parentSessionId)
+        .update(":")
+        .update(slug)
+        .digest("hex");
+    return [
+        hash.slice(0, 8),
+        hash.slice(8, 12),
+        hash.slice(12, 16),
+        hash.slice(16, 20),
+        hash.slice(20, 32),
+    ].join("-");
+}
+
+// ─── Types ───────────────────────────────────────────────────────
+
+export interface AgentConfig {
+    name: string;
+    description?: string;
+    prompt: string;
+    tools?: string[] | null;
+    /** Skill names to preload from the session's configured skill directories. */
+    skills?: string[];
+    /**
+     * Named references to deployment-catalog MCP servers (entries in the
+     * merged `.mcp.json` map) this agent's sessions should receive. Inline
+     * server definitions are not accepted in frontmatter — define the server
+     * in the plugin's `.mcp.json` (which puts it in the catalog) and
+     * reference it here by name. Declared refs that miss the catalog are
+     * dropped with a warning at load time. Agents using this field should
+     * declare `schemaVersion: 2` so older loaders skip the file instead of
+     * silently dropping its MCP servers.
+     */
+    mcpServers?: string[];
+    /**
+     * When true, the agent also receives the deployment's default MCP set
+     * (catalog servers tagged `"default": true` in `.mcp.json`). Defaults to
+     * false — an agent gets no MCP servers unless it declares or inherits
+     * them.
+     */
+    inheritDefaultMcpServers?: boolean;
+    /** Explicit per-native-task external tool allowlists (schemaVersion 4). */
+    nativeTaskTools?: NativeTaskTools;
+    /** If true, this is a system agent started automatically by workers. */
+    system?: boolean;
+    /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
+    id?: string;
+    /** Display title for the session list (e.g. "Resource Manager Agent"). Falls back to capitalized name + " Agent". */
+    title?: string;
+    /** Parent system agent ID slug (e.g. "pilotswarm"). Makes this a sub-agent of the parent. */
+    parent?: string;
+    /** Splash banner (terminal markup) shown in the TUI when the session is selected. */
+    splash?: string;
+    /** Narrow-viewport splash variant, swapped in when the main splash art is wider than the pane (mobile portal, narrow terminals). */
+    splashMobile?: string;
+    /** Initial prompt to send when the system agent is first created. */
+    initialPrompt?: string;
+    /** Declared tool with a registered handler that must run during the named agent's initial prompt turn. */
+    initialRequiredTool?: string;
+    /** Source plugin namespace (e.g. "pilotswarm", "smelter"). Set by the worker during plugin loading. */
+    namespace?: string;
+    /** Internal: identifies which prompt layering path this agent should use. */
+    promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
+    /**
+     * App-assigned CRAWLER role. When `true`, a session bound to this agent
+     * receives the privileged crawl queue when a graph store is configured.
+     * Graph extraction/fill is app-specific, so the app sets `crawler: true` in
+     * its own crawler agent's frontmatter. The role is derived from this
+     * definition on the worker every turn — never inherited from a parent
+     * session.
+     */
+    crawler?: boolean;
+    /** @deprecated Use `crawler: true`; accepted as a compatibility alias. */
+    harvester?: boolean;
+    /**
+     * Frontmatter schema version. Defaults to 1 when the file omits it. Higher integers
+     * indicate forward-incompatible frontmatter shapes the loader may reject in the future.
+     */
+    schemaVersion?: number;
+    /**
+     * Author-supplied version label for this agent definition. PilotSwarm-authored system
+     * agents use SemVer; app authors may use any meaningful non-empty string.
+     */
+    version?: string;
+    /**
+     * Names of the agents that spawn this one. Purely descriptive — it does
+     * not gate anything at runtime; the picker uses it to nest an agent under
+     * whichever entry point creates it, so a package's composition is visible
+     * before you start a session with it.
+     *
+     * An agent with no `startedBy` is an ENTRY POINT of its package. A package
+     * may have one, several, or none, which is why there is no `main` field to
+     * keep honest — the shape falls out of the graph.
+     */
+    startedBy?: string[];
+    /**
+     * Whether a person may start this agent as a top-level session directly.
+     * Defaults to `true` when `startedBy` is absent and `false` when it is
+     * present: something written to be called by another agent usually reads
+     * as broken when started cold. Set it explicitly to publish a sub-agent
+     * that is also useful on its own.
+     */
+    supportsDirectStart?: boolean;
+    /** Absolute path the agent was loaded from, when known. Used for diagnostics. */
+    sourcePath?: string;
+}
+
+export interface AgentDefinitionIssue {
+    code: "initial_required_tool_schema" | "initial_required_tool_not_declared" | "native_task_policy";
+    message: string;
+}
+
+export function validateAgentDefinition(
+    agent: Pick<AgentConfig, "schemaVersion" | "tools" | "initialRequiredTool" | "nativeTaskTools">,
+): AgentDefinitionIssue[] {
+    const requiredTool = typeof agent.initialRequiredTool === "string"
+        ? agent.initialRequiredTool.trim()
+        : "";
+    const issues: AgentDefinitionIssue[] = [];
+    if (agent.nativeTaskTools !== undefined) {
+        try {
+            if (agent.schemaVersion !== 4) throw new Error("nativeTaskTools requires schemaVersion 4");
+            validateNativeTaskTools(agent.nativeTaskTools);
+        } catch (error: any) { issues.push({code: "native_task_policy", message: error.message}); }
+    }
+    if (!requiredTool) return issues;
+    if (![3, 4].includes(agent.schemaVersion ?? 1)) {
+        issues.push({
+            code: "initial_required_tool_schema",
+            message: "initialRequiredTool requires schemaVersion 3 so older workers skip rather than silently ignore the contract",
+        });
+    }
+    if (!agent.tools?.includes(requiredTool)) {
+        issues.push({
+            code: "initial_required_tool_not_declared",
+            message: `initialRequiredTool "${requiredTool}" must also appear in tools`,
+        });
+    }
+    return issues;
+}
+
+export interface LoadAgentFilesOptions {
+    /** Package validation keeps invalid definitions long enough to report structured issue codes. */
+    includeInvalid?: boolean;
+}
+
+/**
+ * `supportsDirectStart` with its default applied. The default is the inverse
+ * of "is a sub-agent", so a package that declares neither field behaves
+ * exactly as it did before the fields existed.
+ */
+export function agentSupportsDirectStart(agent: {
+    startedBy?: string[] | null;
+    supportsDirectStart?: boolean | null;
+} | null | undefined): boolean {
+    if (typeof agent?.supportsDirectStart === "boolean") return agent.supportsDirectStart;
+    return !(Array.isArray(agent?.startedBy) && agent.startedBy.length > 0);
+}
+
+// ─── Frontmatter Parser ─────────────────────────────────────────
+
+/**
+ * Keys whose value may be a YAML block scalar (`|` literal, `>` folded).
+ *
+ * `description` belongs here because a multi-line description is the natural
+ * way to write one, and the failure is silent: the value lands as the literal
+ * "|" and the indented body is dropped on the floor. That shipped — the Agent
+ * Manager's description read "|" in every picker and listing.
+ */
+const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "description"]);
+
+/**
+ * Parse YAML frontmatter from an .agent.md file.
+ * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
+ */
+function parseAgentFrontmatter(content: string): {
+    meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
+    body: string;
+} {
+    const meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
+
+    if (!content.startsWith("---")) {
+        return { meta, body: content };
+    }
+
+    const endIdx = content.indexOf("\n---", 3);
+    if (endIdx === -1) {
+        return { meta, body: content };
+    }
+
+    const yamlBlock = content.slice(4, endIdx); // skip opening "---\n"
+    const lines = yamlBlock.split("\n");
+    // Parse only the explicitly supported nested mapping; reject malformed policy.
+    const nativeIndex = lines.findIndex(line => /^nativeTaskTools:/.test(line));
+    if (nativeIndex >= 0) {
+        if (lines.filter(line => /^nativeTaskTools:/.test(line)).length !== 1) throw new Error("Duplicate nativeTaskTools declaration");
+        if (lines[nativeIndex].trim() !== "nativeTaskTools:") throw new Error("nativeTaskTools requires an indented task mapping");
+        const policy: Record<string, string[]> = {};
+        let task: string | undefined;
+        let end = nativeIndex + 1;
+        for (; end < lines.length && !/^[^\s#]/.test(lines[end]); end++) {
+            const line = lines[end];
+            if (!line.trim() || line.trim().startsWith("#")) continue;
+            const key = /^  ([\w-]+):\s*(\[.*\])?\s*$/.exec(line);
+            if (key) {
+                task = key[1];
+                if (!(NATIVE_TASK_NAMES as readonly string[]).includes(task)) throw new Error(`Unknown native task: ${task}`);
+                if (Object.hasOwn(policy, task)) throw new Error(`Duplicate native task: ${task}`);
+                policy[task] = key[2] ? key[2].slice(1,-1).split(",").map(t => t.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean) : [];
+            } else {
+                const item = /^    - ([\w./-]+)\s*$/.exec(line);
+                if (!item || !task) throw new Error("Malformed nativeTaskTools entry");
+                policy[task].push(item[1]);
+            }
+        }
+        validateNativeTaskTools(policy);
+        meta.nativeTaskTools = policy;
+        lines.splice(nativeIndex, end-nativeIndex);
+    }
+    let currentKey: string | null = null;
+    let multilineValue: string[] | null = null;
+    let currentBlockStyle: string | null = null;
+
+    const flushMultiline = () => {
+        if (multilineValue !== null && currentKey) {
+            const val = multilineValue.join("\n").trimEnd();
+            if (currentKey === "splash") meta.splash = val;
+            else if (currentKey === "splashMobile") meta.splashMobile = val;
+            else if (currentKey === "initialPrompt") {
+                // For > (folded) scalars, collapse newlines to spaces
+                meta.initialPrompt = currentBlockStyle === ">" ? val.replace(/\n/g, " ").trim() : val;
+            }
+            else if (currentKey === "description") {
+                // A description is one paragraph wherever it is displayed, so
+                // both styles collapse to a single line.
+                meta.description = val.replace(/\n/g, " ").trim();
+            }
+            multilineValue = null;
+            currentBlockStyle = null;
+        }
+    };
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        // Collecting multiline block scalar value (YAML | syntax)
+        if (multilineValue !== null) {
+            // A new top-level key ends the block
+            if (/^[a-zA-Z]/.test(line) && line.includes(":")) {
+                flushMultiline();
+                // fall through to key-value parsing below
+            } else {
+                // Strip 2-space indent if present, preserve content
+                multilineValue.push(line.startsWith("  ") ? line.slice(2) : line);
+                continue;
+            }
+        }
+
+        // YAML comment — never a key or a list item. Skipped before the
+        // key-value branch so a comment containing a colon cannot clobber
+        // currentKey and orphan the list items that follow it. (Comments
+        // inside splash/initialPrompt block scalars are preserved above.)
+        if (trimmed.startsWith("#")) continue;
+
+        // YAML list item (e.g. "  - view")
+        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers" || currentKey === "startedBy")) {
+            let item = trimmed.slice(2).trim();
+            if ((item.startsWith('"') && item.endsWith('"') && item.length >= 2) ||
+                (item.startsWith("'") && item.endsWith("'") && item.length >= 2)) {
+                item = item.slice(1, -1);
+            }
+            if (currentKey === "tools") {
+                if (!meta.tools) meta.tools = [];
+                meta.tools.push(item);
+            } else if (currentKey === "startedBy") {
+                if (!meta.startedBy) meta.startedBy = [];
+                meta.startedBy.push(item);
+            } else if (currentKey === "skills") {
+                if (!meta.skills) meta.skills = [];
+                meta.skills.push(item);
+            } else {
+                if (!meta.mcpServers) meta.mcpServers = [];
+                meta.mcpServers.push(item);
+            }
+            continue;
+        }
+
+        // Key-value pair
+        const colonIdx = line.indexOf(":");
+        if (colonIdx === -1) continue;
+
+        const key = line.slice(0, colonIdx).trim();
+        let value = line.slice(colonIdx + 1).trim();
+
+        // Strip surrounding quotes
+        if ((value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+        }
+
+        currentKey = key;
+
+        // Block scalars are detected before the per-key branches below: those
+        // assign `value` verbatim, so a `key: |` reaching them would store the
+        // literal "|" and orphan the indented lines that follow.
+        if (BLOCK_SCALAR_KEYS.has(key) && (value === "|" || value === ">")) {
+            currentBlockStyle = value;
+            multilineValue = [];
+        }
+        else if (key === "name") meta.name = value;
+        else if (key === "description") meta.description = value;
+        else if (key === "system") meta.system = value === "true";
+        else if (key === "crawler") meta.crawler = value === "true";
+        else if (key === "harvester") meta.harvester = value === "true";
+        else if (key === "id") meta.id = value;
+        else if (key === "title") meta.title = value;
+        else if (key === "parent") meta.parent = value;
+        else if (key === "schemaVersion") {
+            const n = Number(value);
+            if (Number.isFinite(n) && n > 0) meta.schemaVersion = Math.floor(n);
+        }
+        else if (key === "version") meta.version = value;
+        else if (key === "tools" && value) {
+            // Inline array: tools: [view, grep]
+            meta.tools = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "tools" && !value) {
+            // Will be followed by list items
+            meta.tools = [];
+        } else if (key === "skills" && value) {
+            meta.skills = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "skills" && !value) {
+            meta.skills = [];
+        } else if (key === "mcpServers" && value) {
+            // Inline array: mcpServers: [github, jira]
+            meta.mcpServers = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "mcpServers" && !value) {
+            meta.mcpServers = [];
+        } else if (key === "startedBy" && value) {
+            // Inline array: startedBy: [editor-in-chief, triager]
+            meta.startedBy = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "startedBy" && !value) {
+            meta.startedBy = [];
+        } else if (key === "supportsDirectStart" && (value === "true" || value === "false")) {
+            // Explicit only. A bare `supportsDirectStart:` with no value must
+            // stay UNDECLARED so the default still applies — reading it as
+            // false (which `value === "true"` would) silently drops an entry
+            // point out of the startable set over a missing word.
+            meta.supportsDirectStart = value === "true";
+        } else if (key === "inheritDefaultMcpServers") {
+            meta.inheritDefaultMcpServers = value === "true";
+        } else if (key === "splash") {
+            meta.splash = value;
+        } else if (key === "splashMobile") {
+            meta.splashMobile = value;
+        } else if (key === "initialPrompt") {
+            meta.initialPrompt = value;
+        } else if (key === "initialRequiredTool") {
+            meta.initialRequiredTool = value || undefined;
+        }
+    }
+
+    flushMultiline();
+
+    const body = content.slice(endIdx + 4).trimStart(); // skip closing "---\n"
+    return { meta, body };
+}
+
+// ─── Loader ─────────────────────────────────────────────────────
+
+/**
+ * Load all .agent.md files from a directory and convert to CustomAgentConfig[].
+ *
+ * @param agentsDir - Path to the agents directory.
+ * @returns Array of agent configs. Files that fail to parse are skipped with a warning.
+ */
+export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions = {}): AgentConfig[] {
+    const absDir = path.resolve(agentsDir);
+
+    if (!fs.existsSync(absDir)) {
+        return [];
+    }
+
+    const entries = fs.readdirSync(absDir, { withFileTypes: true });
+    const agents: AgentConfig[] = [];
+
+    for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".agent.md")) continue;
+
+        const filePath = path.join(absDir, entry.name);
+
+        try {
+            const content = fs.readFileSync(filePath, "utf-8");
+            const { meta, body } = parseAgentFrontmatter(content);
+
+            if (!meta.name) {
+                // Derive name from filename: planner.agent.md → planner
+                meta.name = entry.name.replace(/\.agent\.md$/, "");
+            }
+
+            if (!body.trim()) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: empty prompt body`);
+                continue;
+            }
+
+            if (meta.schemaVersion !== undefined && ![1, 2, 3, 4].includes(meta.schemaVersion)) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1, 2, 3, or 4`);
+                continue;
+            }
+
+            // MCP-bearing frontmatter is a schemaVersion-2 shape: version-1
+            // loaders load the file but silently drop the MCP fields, which
+            // for an MCP-dependent agent is worse than not loading at all.
+            // (`inheritDefaultMcpServers: false` is inert everywhere, so it
+            // does not trigger this.)
+            if ((meta.mcpServers?.length || meta.inheritDefaultMcpServers === true) && (meta.schemaVersion ?? 1) < 2) {
+                console.warn(`[agent-loader] ${entry.name}: declares MCP servers but schemaVersion ${meta.schemaVersion ?? 1}; declare 'schemaVersion: 2' so older loaders skip this agent instead of silently dropping its MCP configuration.`);
+            }
+
+            const crawler = meta.crawler === true || meta.harvester === true;
+            const agent: AgentConfig = {
+                name: meta.name,
+                description: meta.description,
+                prompt: body,
+                tools: meta.tools && meta.tools.length > 0 ? meta.tools : null,
+                skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
+                mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
+                inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
+                nativeTaskTools: meta.nativeTaskTools,
+                system: meta.system,
+                id: meta.id,
+                title: meta.title,
+                parent: meta.parent,
+                splash: meta.splash,
+                splashMobile: meta.splashMobile,
+                initialPrompt: meta.initialPrompt,
+                initialRequiredTool: meta.initialRequiredTool,
+                crawler,
+                harvester: crawler,
+                schemaVersion: meta.schemaVersion,
+                version: meta.version,
+                startedBy: meta.startedBy && meta.startedBy.length > 0 ? meta.startedBy : undefined,
+                supportsDirectStart: meta.supportsDirectStart,
+                sourcePath: filePath,
+            };
+            const definitionIssues = validateAgentDefinition(agent);
+            if (definitionIssues.length > 0 && !options.includeInvalid) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: ${definitionIssues.map((issue) => issue.message).join("; ")}`);
+                continue;
+            }
+            agents.push(agent);
+            if (meta.schemaVersion === undefined) {
+                console.warn(`[agent-loader] ${entry.name}: missing frontmatter 'schemaVersion'. Defaulting to 1; add 'schemaVersion: 1' to silence this warning.`);
+            }
+            if (!meta.version) {
+                console.warn(`[agent-loader] ${entry.name}: missing frontmatter 'version'. Add 'version: x.y.z' (or any non-empty label) to track agent prompt changes.`);
+            }
+        } catch (err: any) {
+            console.warn(`[agent-loader] Failed to parse ${entry.name}: ${err.message}`);
+        }
+    }
+
+    return agents;
+}
+
+/**
+ * Names of every agent bundled with the SDK itself (system, mgmt, and
+ * optional default-agents tiers), INCLUDING system agents. This is the
+ * reserved-name set agent packages validate against — a package must not
+ * shadow sweeper/resourcemgr/etc. even though those never appear in
+ * creatable catalogs.
+ */
+export function listBundledAgentNames(): string[] {
+    const pluginsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "plugins");
+    const names: string[] = [];
+    for (const tier of ["system", "mgmt", "default-agents"]) {
+        const agentsDir = path.join(pluginsRoot, tier, "agents");
+        if (!fs.existsSync(agentsDir)) continue;
+        for (const agent of loadAgentFiles(agentsDir)) {
+            names.push(agent.name);
+            if (agent.id && agent.id !== agent.name) names.push(agent.id);
+        }
+    }
+    return names;
+}

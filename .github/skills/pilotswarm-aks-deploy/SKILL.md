@@ -1,0 +1,313 @@
+---
+name: pilotswarm-aks-deploy
+description: Deploy PilotSwarm to AKS using the repo's canonical scripts and checks. Use when refreshing secrets, building/pushing the worker image, rolling out to AKS, or verifying provider/model changes in the live cluster.
+---
+
+# PilotSwarm AKS Deploy
+
+Use this skill when the user wants to deploy PilotSwarm to AKS, refresh AKS env/secret state, or verify the live cluster after a rollout.
+
+Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and treat secret/env changes as part of the deploy surface, not as an afterthought.
+
+This skill deploys `pilotswarm` only. Do not roll the same change into downstream projects or other clusters (for example `waldemort` or an app repo with a vendored PilotSwarm copy) unless the user explicitly asks for that separate deployment.
+
+## Canonical Targets
+
+- Kubernetes context: resolve `K8S_CONTEXT` from `.env.remote`
+- Namespace: resolve `K8S_NAMESPACE` from `.env.remote`
+- Worker deployment: `copilot-runtime-worker`
+- Portal deployment: `pilotswarm-portal`
+- Worker image: `${ACR_NAME}.azurecr.io/copilot-runtime-worker:latest`
+- Portal image: `${ACR_NAME}.azurecr.io/pilotswarm-portal:latest`
+- ACR: resolve `ACR_NAME` from `.env.remote`
+- Azure subscription/resource ownership: prove from the active account, ingress IP, and ACR resource rather than assuming a resource group
+- Portal DNS: resolve from live `pilotswarm-portal-ingress` and verify against public DNS
+- Postgres server: resolve the host from `.env.remote` `DATABASE_URL`
+- Location: derive from the proven AKS/public-IP resources
+
+Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.sh` sources `.env.remote` after parsing the environment, so the `.env.remote` value wins. Set `ACR_NAME` in `.env.remote` if you need to override the default.
+
+Set `AZURE_SUBSCRIPTION_ID` in `.env.remote`. The `az` CLI keeps its active subscription in `~/.azure` — **global** state shared by every terminal and editor window — so deploying another environment (chk lives in a different subscription) from a second VS Code window silently repoints this one. The deploy scripts pass `--subscription "$AZURE_SUBSCRIPTION_ID"` to every `az acr` call when the variable is set, which turns that drift into a no-op instead of a confusing `The resource with name '<acr>' … could not be found in subscription '…'`. Unset, the scripts fall back to ambient `az` state and the drift returns.
+
+Subscription IDs are not recorded in this repo. Resolve the value the same way this skill resolves every other piece of topology — from the live resources — and put it in `.env.remote`, which is gitignored:
+
+```bash
+az account list --output table          # pick the one owning the ACR below
+az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourceGroups/...
+```
+
+## Canonical Files
+
+- Worker deploy script: `scripts/deploy-aks.sh` — **worker only**; it does
+  not build or roll the portal.
+- Portal deploy script: `scripts/deploy-portal.sh` — builds/pushes the
+  portal image and rolls `pilotswarm-portal`.
+- **"Update the cluster" means running BOTH scripts.** The 2026-07-04
+  v0.4.1 rollout ran only `deploy-aks.sh` and left the portal serving the
+  previous bundle until `deploy-portal.sh` was run separately. Do not
+  report a cluster deploy complete until the portal-served asset hash has
+  changed:
+  ```bash
+  PORTAL_HOST=$(kubectl get ingress pilotswarm-portal-ingress -n "$K8S_NAMESPACE" \
+    -o jsonpath='{.spec.rules[0].host}')
+  curl -sk "https://$PORTAL_HOST/" | grep -oE "assets/index-[A-Za-z0-9_-]+\.js"
+  ```
+- Remote reset script: `scripts/reset-db-aks.sh` (wraps `scripts/db-reset.js`) — **never part of a deploy**; see the `pilotswarm-aks-reset` skill and the NO RESETS rule below.
+- Worker manifest: `deploy/k8s/worker-deployment.yaml`
+- Portal manifest: `deploy/k8s/portal-deployment.yaml`
+- Portal ingress: `deploy/k8s/portal-ingress.yaml`
+- Worker Dockerfile: `deploy/Dockerfile.worker`
+- Portal Dockerfile: `deploy/Dockerfile.portal`
+- Namespace manifest: `deploy/k8s/namespace.yaml`
+- AKS guide: `docs/developer/deploy/aks.md`
+- Model catalog template: `.model_providers.example.json`
+- Real runtime catalog: `.model_providers.json`
+
+## Core Learnings
+
+- Use `docker buildx build --platform linux/amd64` for AKS images. Do not use a plain `docker build` from Apple Silicon for cluster deploys.
+- **Images build through an npm mirror, not public npm.** Microsoft-managed devices are hard-blocked from `registry.npmjs.org`, and **containers inherit the block** — a Docker build gets no special egress. Proven 2026-07-31: host `curl` → `http=000` (socket not connected), in-container `fetch` → `ECONNRESET`, in-container `fetch` of `https://packagefeedproxy.microsoft.io/npm/` → `200`. Both Dockerfiles take an `NPM_REGISTRY` build arg (`ARG NPM_REGISTRY` + `ENV npm_config_registry`) that `deploy-aks.sh` and `deploy-portal.sh` pass through from `.env.remote`, where `NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/` is set. It defaults to public npm when unset, so unmanaged machines are unaffected. npm's `replace-registry-host` (default `npmjs`) rewrites the lockfile's `resolved` URLs onto the mirror, so `package-lock.json` stays authoritative and integrity hashes still gate every tarball.
+  - **Any hand-rolled `docker buildx build` must pass `--build-arg NPM_REGISTRY="$NPM_REGISTRY"`** or it will fail at `npm ci` on a managed device. The repo scripts do this for you, and the manual recipes in this skill, `pilotswarm-corp-aks-deploy`, and `pilotswarm-aks-reset` carry it. The commands in `docs/developer/deploy/aks.md` do NOT — add the arg if you copy from there.
+  - **`az acr build` is the exact opposite: do NOT pass `NPM_REGISTRY`.** The build runs on an Azure build agent with unrestricted access to public npm, so the corp mirror buys nothing there — and its 7-day quarantine actively breaks the build. Sourcing `.env.remote` into the shell that launches `az acr build` is enough to poison it, because the mirror is set there for the *local* path. Observed 2026-08-02: `npm error 404 … GET https://packagefeedproxy.microsoft.io/npm/vite/-/vite-7.3.6.tgz — Cannot find the file … in feed 'npm-public'`, on a version that was fine on public npm. Rule of thumb: **mirror for local builds, public npm for ACR builds.**
+  - A cached `npm ci` layer hides all of this — a build can succeed having never touched the network. Do not read a green build as proof the mirror path works; that only holds on a cold cache (`--no-cache`, a lockfile change, a pruned builder, or a fresh clone).
+  - Reaching the mirror is not the same as finding your package on it. The feed imposes a deliberate **7-day quarantine** on newly published versions, so a same-week `pilotswarm-sdk` release will 404 there regardless of this wiring.
+  - When the deployment must consume the just-published PilotSwarm packages,
+    do not wait out the quarantine and do not quietly fall back to workspace
+    source. Use the three `.tgz` assets attached to the GitHub Release and the
+    release-tarball workflow below. ACR still supplies public-npm access for
+    third-party transitive dependencies; PilotSwarm package bytes come from
+    the downloaded release assets.
+  - `deploy/Dockerfile.starter` still lacks the arg.
+- The deploy target is the AKS cluster, not the local namespace. Use `copilot-runtime`, not the local `pilotswarm` namespace.
+- The deploy script prefers `.env.remote`, then `.env`, and pushes env-backed provider keys into the Kubernetes secret.
+- `.model_providers.example.json` is the checked-in shareable model-catalog template. The real `.model_providers.json` is local and gitignored so personal service URLs can stay out of source control.
+- The legacy Dockerfiles copy `.model_providers.json*` from the build context, so a stale private catalog can override correct released metadata. Never overwrite the private file to prepare a release image. Build from an explicit checked-in deploy catalog and verify `/app/.model_providers.json` plus `listModels()` after rollout.
+- Provider visibility is still controlled by env-backed keys at worker startup, not by which providers appear in the template.
+- Secret updates matter for model selectors. Workers load provider availability at startup, so removed keys do not take effect until the secret is refreshed and the pods restart.
+- The AKS rollout needs a valid `acr-pull` registry secret wired into the worker deployment. Refresh that pull secret as part of deployment, not only the env secret.
+- During destructive resets, do not drop the `duroxide` schema immediately after scaling the deployment to `0`. Wait until the worker pods are actually gone, or old prepared statements can trip Postgres errors like `cached plan must not change result type`.
+- When the active default model is an Azure OpenAI deployment, the Kubernetes secret must include the matching Azure OpenAI key. A missing `AZURE_OAI_KEY` can leave workers booting with an invalid default model.
+- If `ANTHROPIC_API_KEY` is intentionally removed from the deploy env, refresh the Kubernetes secret and restart workers, then verify Anthropic models disappeared from selectors or `list_available_models`.
+- Old worker pods in another namespace can still poll the same database and cause nondeterminism. Check all namespaces if behavior looks impossible.
+- After a destructive reset, healthy workers will immediately recreate the built-in system sessions. Verify the fresh root `PilotSwarm Agent` instead of expecting the catalog to stay empty.
+- The AKS rollout needs a valid `acr-pull` registry secret wired into the worker and portal deployments. ACR tokens expire — if pods show `ErrImagePull` / `401 Unauthorized`, refresh the `acr-pull` secret:
+  ```bash
+  ACR_TOKEN=$(az acr login --name "$ACR_NAME" --expose-token --query accessToken -o tsv) && \
+  kubectl create secret docker-registry acr-pull -n copilot-runtime \
+    --docker-server="$ACR_NAME.azurecr.io" \
+    --docker-username=00000000-0000-0000-0000-000000000000 \
+    --docker-password="$ACR_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+  ```
+- When starting all workers simultaneously against a fresh DB, duroxide migrations can race. Duroxide 0.1.19+ uses advisory locks to handle this safely — workers that lose the race will retry and succeed. Earlier versions crash on duplicate migration keys.
+- Portal listens on port 3001 (HTTP) internally; TLS termination happens at the app-routing nginx ingress.
+- Portal is publicly accessible with Entra ID as the sole access gate.
+- VPN Gateway P2S is a feature of the **GitOps IaC path** (`deploy/scripts/deploy.mjs` + base-infra bicep), not this legacy `scripts/deploy-aks.sh` flow. If a user mentions VPN-enabled stamps, route them to the `pilotswarm-new-env-deploy` skill ("Optional: VPN Gateway P2S" section) and `docs/developer/deploy/aks.md`. Two operator-visible costs to surface up-front when discussing VPN: **45+ minutes** added to the first deploy (gateway provisioning is the long pole) and **~$450/month** runtime cost for `VpnGw2AZ` + Azure Private DNS Resolver (~$280 gateway + ~$170 resolver inbound endpoint). The Resolver is co-provisioned with the VPN gateway because P2S clients cannot reach 168.63.129.16 through the tunnel — without it, clients cannot resolve the portal Private DNS Zone hostname. Generation1 SKUs including `VpnGw1AZ` are excluded — they silently drop OpenVPN+AAD HardResetClientV2 packets. Subsequent param-change deploys are minutes, not 45+.
+
+## Default Deploy Workflow
+
+If the user requires runtime configuration and model defaults to remain
+unchanged, do not run legacy scripts that recreate `copilot-runtime-secrets`
+or reapply deployment settings from local files. Run the same full
+`./scripts/run-tests.sh --all-providers` gate, build with the canonical
+Dockerfiles, and update only container image references to verified immutable
+digests. Record and compare the existing pod specs, secret data hashes, model
+defaults, and catalog hashes before/after. Roll the portal before MCP. This is
+an image-only variant of the deploy, with no data reset or config refresh.
+
+1. Inspect the deploy surface.
+   - Run `git status --short`.
+   - Review `.model_providers.example.json`, the real `.model_providers.json` when the user has asked for local config changes, `scripts/deploy-aks.sh`, and `deploy/k8s/worker-deployment.yaml` if model/env/deploy behavior changed.
+
+2. Verify the target env and cluster assumptions.
+   - Prefer `.env.remote` for AKS deploys.
+   - Confirm the current context/namespace before changing remote state.
+  - Confirm the active Azure subscription before public-IP ownership, ACR, or deploy operations. A blank ownership result often indicates the wrong subscription, not an unowned IP.
+   - If the change removes a provider key, plan to verify the live model surface after rollout.
+
+3. Use the canonical deploy script unless there is a concrete reason not to.
+   Deploys are always non-destructive: sessions, orchestrations, and facts
+   survive every deploy. There is no reset step or reset flag in a deploy.
+   - Full deploy:
+     ```bash
+     ./scripts/deploy-aks.sh
+     ```
+   - Reuse existing image:
+     ```bash
+     ./scripts/deploy-aks.sh --skip-build
+     ```
+   - Skip the local test gate only when the user explicitly accepts the risk:
+     ```bash
+     ./scripts/deploy-aks.sh --skip-tests
+     ```
+
+4. If a manual deploy is needed, follow the same order as the script.
+   - Refresh the Kubernetes secret from the current env.
+   - Refresh the `acr-pull` image-pull secret from ACR credentials/token.
+   - Run the local test gate unless explicitly skipped.
+   - Never fold a database reset into a manual deploy sequence — a reset is a separate operation (see the NO RESETS rule).
+   - Build the SDK:
+     ```bash
+     npm run build -w packages/sdk
+     ```
+   - Login to ACR:
+     ```bash
+     az acr login --name "$ACR_NAME"
+     ```
+   - Build and push the image:
+     ```bash
+     docker buildx build \
+         --platform linux/amd64 \
+         -f deploy/Dockerfile.worker \
+         --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
+         -t "$ACR_NAME.azurecr.io/copilot-runtime-worker:latest" \
+         --push .
+     ```
+   - Apply namespace/deployment manifests and restart the deployment.
+
+5. Verify the rollout.
+   - Check rollout status:
+     ```bash
+     kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=120s
+     ```
+   - Check pod readiness:
+     ```bash
+     kubectl get pods -n copilot-runtime -l app.kubernetes.io/component=worker
+     ```
+   - Check recent logs:
+     ```bash
+     kubectl logs -n copilot-runtime -l app.kubernetes.io/component=worker --prefix --tail=50
+     ```
+   - If image correctness matters, inspect the running image IDs from the pods.
+  - Wait for old ReplicaSet pods to disappear before choosing a pod for file/catalog checks; rollout completion can overlap with terminating pods.
+   - If the rollout stalls in `ErrImagePull` or `ImagePullBackOff`, inspect the pod events first; a stale `acr-pull` secret is a likely cause.
+
+6. Verify model-surface changes when env keys changed.
+   - If a provider key was added or removed, do not stop at "pods are Running".
+   - Verify the live selector surface in the TUI or through `list_available_models`.
+  - Inspect the embedded runtime catalog too; compiled metadata support does not prove the image contains the intended catalog values.
+   - For Anthropic removal specifically, confirm Anthropic entries no longer appear after the restart.
+
+7. If the deploy followed a destructive reset, verify the rebuilt system baseline.
+   - Confirm the recreated `PilotSwarm Agent` is present and not failed.
+   - Confirm the expected system children (`Sweeper Agent`, `Resource Manager Agent`, `Facts Manager`) were respawned.
+
+## GitHub Release Tarball Deploy
+
+Use this path when the user says the AKS images must pull PilotSwarm packages
+from GitHub Release tarballs, or when a same-week release is quarantined by the
+corporate npm mirror. It is a package-source change, not a database reset.
+
+1. Wait for release assets.
+   - Require the npm workflow and its `Attach package tarballs to the Release`
+     job to succeed.
+   - Verify the Release contains the expected app, SDK, and Horizon Store
+     tarballs, then download them into a temporary ignored directory with
+     `gh release download <tag> --pattern '*.tgz' --dir <temp-dir>`.
+   - Record SHA-256 for every asset and extract each `package/package.json` to
+     verify package name and version. Do not trust filenames alone.
+
+2. Build a minimal temporary image context.
+   - A private root `package.json` should depend on all three local assets with
+     `file:release/<asset>.tgz`; `npm install --omit=dev --force` then installs
+     the PilotSwarm package trees from those bytes while resolving only
+     third-party dependencies through public npm.
+   - Copy `scripts/postinstall.js` from the exact release tag and run it after
+     installation so the Copilot SDK ESM compatibility patch is preserved.
+   - Preserve existing manifest/runtime paths with symlinks:
+     `/app/packages/sdk -> ../node_modules/pilotswarm-sdk`,
+     `/app/packages/horizon-store -> ../node_modules/pilotswarm-horizon-store`,
+     and `/app/packages/app -> ../node_modules/pilotswarm`.
+   - The worker package does not ship `examples/worker.js`; copy that bootstrap
+     from the exact release tag into the worker image, but keep all SDK/app
+     implementation bytes sourced from the tarballs.
+   - Inject `deploy/config/model_providers.ghcp.json` from the exact release tag
+     as `/app/.model_providers.json`. Never copy the private gitignored catalog.
+   - Label both images with `org.opencontainers.image.version`,
+     `org.opencontainers.image.revision`, `io.pilotswarm.package-source`, and
+     the three asset hashes (`io.pilotswarm.sdk.sha256`,
+     `io.pilotswarm.horizon-store.sha256`, `io.pilotswarm.app.sha256`). These
+     labels are the cheap pre-rollout proof of package provenance.
+
+3. Build in ACR from inside the temporary context.
+   - Use `az acr build` without `NPM_REGISTRY`; ACR can reach public npm and the
+     corporate mirror would reintroduce quarantine failures.
+   - `az acr build --file` resolves relative to its current source context.
+     `pushd` into the temporary context and use `--file Dockerfile.worker .` or
+     `--file Dockerfile.portal .`; passing a bare filename while standing at
+     the repo root fails before submission.
+   - Build `copilot-runtime-worker:latest` and
+     `pilotswarm-portal:latest`. The latter also backs the MCP deployment.
+
+4. Prove provenance before rollout.
+   - Inspect `:latest` digests in ACR and use
+     `docker buildx imagetools inspect --format '{{json .Image.Config.Labels}}'`
+     to confirm the tag, commit, Release URL, and asset hashes.
+   - Do not roll an earlier source-context fallback image merely because its
+     ACR build succeeded; only the labeled tarball image is the candidate.
+
+5. Roll without rebuilding.
+   - Refresh workers with `./scripts/deploy-aks.sh --skip-build` (add
+     `--skip-tests` only with explicit user approval), then run
+     `./scripts/deploy-portal.sh --skip-build`.
+   - If the cluster has `pilotswarm-mcp`, wait for portal readiness and run
+     `./scripts/deploy-mcp.sh --skip-build` so it adopts the same digest.
+
+6. Verify package identity, not just readiness.
+   - Check every running `imageID` equals the expected ACR digest and that pods
+     have zero restarts.
+   - In a worker and portal pod, read the three
+     `/app/node_modules/<package>/package.json` versions and require the release
+     version. Verify `/app/.model_providers.json` hashes to the checked-in
+     deployment catalog.
+   - Extract `package/web/dist/index.html` from the downloaded app tarball and
+     require its `assets/index-*.js` value to match both the portal pod and the
+     public portal. This proves the browser is serving the attached asset, not
+     merely another image with the same semantic version.
+   - Verify health, DNS/ingress, TLS, serious-log scans, and workers across all
+     namespaces. MCP initialize requires
+     `Accept: application/json, text/event-stream`; omitting it produces a
+     correct `-32000 Not Acceptable` response, not a server failure.
+   - Remove the temporary build context and downloaded assets, then confirm the
+     tracked worktree is unchanged.
+
+## Secret Hygiene Rules
+
+- Treat secret refresh as part of deployment, not a separate optional step.
+- The deploy script already pushes:
+  - `DATABASE_URL`
+  - `GITHUB_TOKEN` when present
+  - `AZURE_STORAGE_*` when present
+  - `AZURE_FW_GLM5_KEY`
+  - `AZURE_KIMI_K25_KEY`
+  - `AZURE_OAI_KEY`
+  - `AZURE_GPT51_KEY`
+  - `AZURE_MODEL_ROUTER_KEY`
+  - `ANTHROPIC_API_KEY`
+- If a provider should disappear from selectors, make sure the corresponding env var is absent in the deploy env and then verify the restarted cluster reflects it.
+
+## Verification Fallbacks
+
+- If `kubectl` or `kubelogin` is flaky locally, use `az aks command invoke` for cluster-side verification instead of assuming rollout state.
+- If local admin credentials are disabled, prefer the same cluster-side verification path rather than trying to force `--admin`.
+
+## Extra Checks For Weird Behavior
+
+- If live embedding checks time out, inspect unfinished test embedder loops before changing test deadlines. `cleanup-test-schemas.js` preserves run IDs whose temporary directories are less than six hours old, and its HorizonDB cleanup covers `ps_test_facts_*`, not the provider tests' generated `hzt_*`/`hzg_*` schemas. Completed test runs can therefore leave loops consuming scheduler capacity.
+  - For test-data cleanup, first inventory the exact generated schemas and their `hz-embed-*-cron:<schema>` instance IDs. Check for active test runners and preserve resources belonging to active runs.
+  - Cancel only those test instances through `df.cancel`, remove their AGE graphs through `drop_graph`, then drop the inventoried test schemas and unset only their schema-specific `hz_<schema>_<suffix>` variables. Do not clear shared durable variables or reset runtime data.
+  - A broad `hzg_*` match is unsafe: named evaluation graphs such as `hzg_eval` and `hzg_sw_*` are not generated integration-test fixtures. Preserve those and all non-test workflows.
+  - Rerun `./scripts/run-tests.sh --with-horizondb embedder` with the original assertions, deadlines, and parallelism. On 2026-09-07, removing 14 orphan test loops cleared the three embedding timeouts; all 17 lifecycle/outcome checks then passed in 204 seconds without code or configuration changes.
+- Check for old worker pods across all namespaces:
+  ```bash
+  kubectl get pods --all-namespaces -l app.kubernetes.io/component=worker --no-headers
+  ```
+- If the cluster looks healthy but behavior is stale, confirm the running pods are actually on the expected image and secret revision.
+- If the portal image also backs a separate MCP deployment, roll MCP only after the portal is Ready and smoke its public initialize route. Inspect previous logs for transient portal 502s if MCP restarted.
+
+## Rules
+
+- **NO RESETS unless the user explicitly asks.** Deploys never reset data. A database reset (`scripts/reset-db-aks.sh`) is a separate, deliberate operation that requires the user to have literally asked for a wipe in the current conversation — "deploy", "redeploy", "update the cluster", or an orchestration-version change is NOT such a request. When an orchestration change would benefit from a reset, say so and stop; do not run one.
+- Never deploy without explicit user permission.
+- Never skip the reset warning when orchestration behavior changed.
+- Never assume a missing local env var means the live cluster already dropped that provider.
+- Prefer repo scripts over handcrafted one-off deploy sequences.

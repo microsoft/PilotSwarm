@@ -1,0 +1,223 @@
+# Agent Contracts
+
+These are the behavior contracts that should stay aligned across prompts, tool descriptions, runtime validation, tests, and docs.
+
+When any of these change, update all five layers together.
+
+## 1. `default.agent.md` Is The Base Prompt
+
+Contract:
+
+- `default.agent.md` is not a selectable agent
+- its markdown body becomes the always-on base system prompt for all sessions on the worker
+- it still applies when a session or agent provides a prompt overlay
+
+Why it matters:
+
+- app-wide rules like `wait`, artifact handling, or sub-agent behavior belong here
+- users should not have to rediscover those rules in each agent file
+
+## 2. Named Agents And `agent_name`
+
+Contract:
+
+- if an agent is already known by name, spawn it with `spawn_agent(agent_name="...")`
+- before generic or native delegation, inspect `ps_list_agents` when an adequate current catalog is not in context; it lists caller-visible static and enabled published agents
+- prefer the specialist whose description, declared tools, skills and source access fit the job; pass the returned `agent_name` unchanged, including an explicit shared reference when needed
+- `required_tool` is not a supported spawn argument; stale requests fail with discovery guidance rather than silently creating a generic child
+- `task=` supplies the assignment for either named or custom children; a named agent uses its `initialPrompt` when no task is supplied
+- the selected agent's own `initialRequiredTool` remains its startup requirement; the caller does not choose a startup tool
+- a selected static namespace is preserved in its binding across workers and refresh, so same-name definitions cannot exchange prompts, tools or MCP grants
+- named children always load their own declared tools (including an empty list) plus platform defaults; they do not inherit the parent's package tools or custom persona and cannot override the definition with `tool_names` or `system_message`
+- each child's explicit `contract` crosses SDK creation and durable startup; a grandchild does not inherit its parent's own child contract
+- parent links and nesting depth survive creation and first message on different API clients; invalid/cyclic ancestry fails before starting the child
+- do not pass package-owned tools through `tool_names`; package prompt, skills, startup contract, and handlers stay attached to their owning named-agent definition
+- known system agents like `sweeper` and `resourcemgr` should not be created via `task="..."`
+
+Why it matters:
+
+- named agents carry canonical metadata
+- discovery and spawning use the same shared/private visibility and package-copy selection rules across workers
+- system-agent titles and IDs depend on that named-agent path
+- generic `task=` spawns can lose `agentId`, `title`, and expected behavior
+
+## 3. Tools Live On The Worker
+
+Contract:
+
+- agent files and sessions reference tool names
+- worker code registers the actual tool handlers
+- clients never own the real tool handlers
+
+Why it matters:
+
+- this is the core client/worker serialization boundary
+- remote mode only works if workers own the executable tool code
+
+## 4. Agent `tools` Are Filters, Not Implementations
+
+Contract:
+
+- `tools` in `.agent.md` or inline agent config only limit what the agent may use
+- they do not automatically create or register the tool
+
+Why it matters:
+
+- listing a tool name in a prompt file without registering it on the worker should not be treated as sufficient
+
+## 5. Sub-Agent Model Selection Must Be Exact
+
+Contract:
+
+- `list_available_models` is the source of truth
+- if a sub-agent should use a different model, the caller must use an exact returned `provider:model` value
+- prompts and runtime validation should reject guessed or shortened names
+
+Why it matters:
+
+- available models can differ across environments and deployments
+- prompt-only model recall is not reliable enough
+
+## 6. Recurring Timers Have Two Shapes
+
+Contract:
+
+- use `cron(seconds=N, reason="...")` for fixed-interval recurring work
+- use `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules
+- do not implement wall-clock schedules by waking every N minutes to inspect the current time
+- either `cron(action="cancel")` or `cron_at(action="cancel")` clears the active recurring schedule
+
+Why it matters:
+
+- calendar schedules should spend one LLM turn per intended fire, not one turn per no-op clock check
+- timezone and DST semantics belong in runtime-owned scheduling, not prompt math
+
+## 7. Child Wake Policy Is Contract Data
+
+Contract:
+
+- `contract` is a named argument on `spawn_agent`; there is no separate contract tool
+- `spawn_agent(..., contract={ wakeOn: "any" | "material_change" | "completion" })` controls autonomous parent wake-ups
+- contracts may also include compact `purpose`, `successCriteria`, `expectedFacts`, `expectedArtifacts`, and `validationMode` fields when required outputs matter
+- missing or invalid `wakeOn` defaults to `material_change`
+- finite delegated work whose result the parent needs uses `material_change`; an ordinary final reply leaves the child alive and idle
+- `completion` is reserved for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict
+- after validating a finite child's required outputs, the parent closes it explicitly with `complete_agent`
+- `message_agent(..., contract_patch={ wakeOn: "..." })` can change the policy while a child is running
+- explicit reads such as `check_agents` and `wait_for_agents` still show quiet heartbeat status
+- qualifying updates wake the parent automatically; a parent must not schedule `wait` or `cron` solely to poll `check_agents`
+- parent timers remain appropriate for independent deadlines, retries, or external checks that cannot notify the session
+
+Why it matters:
+
+- watcher children should not spend parent LLM turns for clear no-op heartbeats
+- finite task results wake the parent without falsely treating the still-idle child as terminal
+- material changes, terminal states, and unknown updates remain visible conservatively
+- reactive wake-ups avoid no-op parent turns that only rediscover children are still running
+
+## 8. Prompt-Only Rules Need Runtime Backstops
+
+Contract:
+
+- if a rule must always hold, do not rely only on prompt text
+- add runtime validation or normalization for critical cases
+
+Examples:
+
+- normalize mistaken named-agent spawns where safe
+
+## 9. Child Results Declare Output References
+
+Contract:
+
+- `complete_agent.result` and `cancel_agent.partial_result` use a structured result
+- produced facts are declared as `factsWritten: [{ key: "..." }]`
+- produced artifacts are declared as `artifactsWritten: [{ path: "..." }]`
+- string arrays and compatibility aliases such as `outputs`, `factKeys`,
+	`evidenceFactKeys`, `artifactPaths`, and `artifactPointers` are normalized by exact match
+- a missing declaration is reported as `missing_fact_reference` or
+	`missing_artifact_reference`; this does not claim the underlying store entry is absent
+
+Why it matters:
+
+- contract validation and store existence are separate questions
+- explicit references let parents find outputs without copying child transcripts
+
+## 10. Child Model Configuration Inherits As A Unit
+
+Contract:
+
+- without a spawn override, children inherit the parent's current durable model,
+	reasoning effort, and context tier
+- explicit `model` and `reasoning_effort` override only those requested fields
+- the final child SDK creation call receives all three model configuration fields
+
+Why it matters:
+
+- model identity, reasoning effort, and context-window tier jointly define runtime behavior
+- dropping the context tier can silently shrink a child session's available context
+
+## 11. Long Waits May Migrate Unless Affinity Is Preserved
+
+Contract:
+
+- long durable waits may resume on a different worker
+- if an agent is waiting on worker-local state, it must call `wait(..., preserveWorkerAffinity: true)`
+- prompts, tool descriptions, and tests should all describe this consistently
+
+Why it matters:
+
+- node-local work is the main exception to the usual "durable waits can resume anywhere" model
+- the LLM needs an explicit, reliable way to opt into preserving worker affinity
+- reject invalid sub-agent model overrides
+- preserve orchestration behavior even if prompt wording drifts
+
+## 12. Artifact Rules Should Be Visible And Durable
+
+Contract:
+
+- if an agent creates a file users should retrieve, it should write the artifact and export it
+- prompts can instruct this, but runtime and UI paths should also assume artifact links are part of the product surface
+
+Why it matters:
+
+- artifact links are how durable outputs move back to the user
+- losing the export step produces confusing “the file exists somewhere” behavior
+
+## 13. Session Summary State Is Structured (RETIRED)
+
+Session summaries were removed in v0.5.36 — `update_session_summary` no
+longer exists and no agent should be instructed to maintain summary state.
+The session canvas (`draw_canvas`) superseded it as the standing at-a-glance
+surface. Data-layer columns linger for a few releases; instructions must not.
+
+## 14. Cross-Session Request/Response Uses Reply Tooling
+
+Contract:
+
+- `send_session_message(..., expects_response=true)` queues an asynchronous request into the target session
+- the target session must call `reply_session_message(request_id=..., session_id=<sender>, body=...)` to return the answer
+- answering only in the target session's own chat transcript does not deliver a response to the sender
+- request and response protocol prompts are durable transcript items and should render as dedicated session request/reply cards in shared UI surfaces
+- ordinary sessions may send requests or replies to system sessions; the same terminal-state, self-message, orchestration-live, and rate-limit guards still apply
+
+Why it matters:
+
+- cross-session coordination should be auditable and durable
+- the sender needs a structured response event, not an answer stranded in another transcript
+
+## 15. Change Procedure
+
+If you change one of these contracts, update:
+
+1. prompt or agent/skill file
+2. tool descriptions or schemas
+3. runtime behavior
+4. tests
+5. docs
+
+Good companion docs:
+
+- [Working On PilotSwarm](../contributing/working-on-pilotswarm.md)
+- [Building Agents For SDK Apps](../building/sdk-agents.md)
+- [Building Agents For CLI Apps](../building/cli-agents.md)

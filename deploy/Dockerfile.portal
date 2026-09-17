@@ -1,0 +1,91 @@
+# Portal image: Express API + browser-native React workspace.
+# Includes the shared CLI/SDK/UI stack so the portal can talk directly to PilotSwarm sessions.
+#
+# Build with: docker buildx build --platform linux/amd64 -f deploy/Dockerfile.portal ...
+
+# trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
+# (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
+FROM node:24-trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace root manifests
+COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/app/package.json ./packages/app/
+# horizon-store package.json must be present BEFORE `npm ci` so npm creates the
+# node_modules/@pilotswarm/horizon-store workspace symlink the management client's
+# dynamic import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
+COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY scripts/postinstall.js ./scripts/
+
+# Install all deps including devDeps (Vite build happens in-image). `npm ci`
+# refuses to drift from the committed package-lock.json so the image is
+# byte-reproducible from this SHA. Matches the deploy/Dockerfile.starter
+# pattern (the third in-repo image-build flow). `--force` preserves the
+# peer-dep tolerance the legacy `npm install` flow relied on.
+#
+# NPM_REGISTRY lets a build that cannot reach registry.npmjs.org (corporate
+# networks routinely block or reset it) install from a mirror instead. It
+# defaults to the public registry, so an unset build arg behaves exactly as
+# before. npm rewrites the lockfile's registry.npmjs.org `resolved` URLs onto
+# the configured registry (replace-registry-host defaults to `npmjs`), so the
+# lockfile stays authoritative and the image stays reproducible.
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=${NPM_REGISTRY}
+RUN npm ci --force
+
+# Copy built SDK dist + plugins
+COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY packages/sdk/plugins/ ./packages/sdk/plugins/
+COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+
+# horizon-store built output + runtime-read migrations (sibling layout: the
+# migrator resolves ../../migrations from dist/src/).
+COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
+
+# Copy CLI (plain JS)
+COPY packages/app/tui/bin/ ./packages/app/tui/bin/
+COPY packages/app/tui/src/ ./packages/app/tui/src/
+COPY packages/app/tui/tui-splash.txt packages/app/tui/tui-splash-mobile.txt ./packages/app/tui/
+COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
+
+# Copy UI packages (plain JS)
+COPY packages/app/ui/core/src/ ./packages/app/ui/core/src/
+COPY packages/app/ui/react/src/ ./packages/app/ui/react/src/
+
+# Copy api-client (plain ESM, no build step) — imported by both the portal
+# server (api/router.js) and the browser bundle (browser-transport.js).
+COPY packages/sdk/api/index.js packages/sdk/api/index.d.ts ./packages/sdk/api/
+COPY packages/sdk/api/src/ ./packages/sdk/api/src/
+
+# Copy portal sources
+COPY packages/app/web/server.js packages/app/web/auth.js packages/app/web/authz.js packages/app/web/config.js packages/app/web/runtime.js packages/app/web/index.html ./packages/app/web/
+COPY packages/app/web/auth/ ./packages/app/web/auth/
+COPY packages/app/web/api/ ./packages/app/web/api/
+COPY packages/app/web/src/ ./packages/app/web/src/
+COPY packages/app/web/vite.config.ts packages/app/web/tsconfig.json ./packages/app/web/
+
+# MCP server (prebuilt dist — same layout the npm package ships). Runs from
+# this image with a command override; see deploy/k8s/mcp-deployment.yaml.
+COPY packages/app/mcp/dist/ ./packages/app/mcp/dist/
+
+# Build the browser app
+RUN npm run build:web --workspace=packages/app
+
+# AKS legacy-bootstrap catalog. Never copy the private gitignored local catalog
+# into a released/deployed image; runtime provider state lives in CMS after the
+# one-time compatibility seed.
+COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
+
+EXPOSE 3001
+
+# Run as non-root
+USER node
+
+ENTRYPOINT ["node", "packages/app/web/server.js"]

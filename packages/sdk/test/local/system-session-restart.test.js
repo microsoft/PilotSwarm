@@ -1,0 +1,313 @@
+import { describe, expect, it } from "vitest";
+import { PilotSwarmManagementClient } from "../../src/management-client.js";
+import { systemAgentUUID } from "../../src/agent-loader.js";
+import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
+
+function makeRow(sessionId, overrides = {}) {
+    return {
+        sessionId,
+        orchestrationId: `session-${sessionId}`,
+        title: "Restartable Agent",
+        titleLocked: false,
+        state: "running",
+        model: "test:model",
+        reasoningEffort: null,
+        createdAt: new Date(1_000),
+        updatedAt: new Date(1_000),
+        lastActiveAt: new Date(1_000),
+        deletedAt: null,
+        currentIteration: 0,
+        lastError: null,
+        waitReason: null,
+        parentSessionId: null,
+        isSystem: true,
+        agentId: "restartable",
+        splash: null,
+        groupId: null,
+        shortSummary: null,
+        summaryState: null,
+        summaryUpdatedAt: null,
+        owner: null,
+        ...overrides,
+    };
+}
+
+function createRestartHarness() {
+    const agent = {
+        name: "restartable",
+        id: "restartable",
+        title: "Restartable Agent",
+        system: true,
+        prompt: "You are restartable.",
+        initialPrompt: "Bootstrap now.",
+        tools: ["read_facts"],
+        namespace: "test-app",
+        promptLayerKind: "app-system-agent",
+    };
+    const sessionId = systemAgentUUID(agent.id);
+    const rows = new Map([[sessionId, makeRow(sessionId)]]);
+    const calls = [];
+
+    const catalog = {
+        providers: {
+            lookupUserId: async () => null,
+            allCredentials: async () => [{
+                name: "test", typeId: "test", class: "shared", ownerUserId: null,
+                baseUrl: "https://example.invalid", secretRef: { kind: "apiKey", value: "test-key" },
+            }],
+            getDefaults: async () => ({
+                cluster: { provider: null, model: null, reasoning: null, context: null },
+                mine: { provider: null, model: null, reasoning: null, context: null },
+                system: { provider: "test", model: "test:model", reasoning: null, context: null },
+                systemUpdatedBy: null,
+                systemUpdatedAt: null,
+            }),
+            listSystemAgentModels: async () => [{
+                agentId: "restartable",
+                provider: "test",
+                model: "test:sonnet-4.6",
+                reasoning: "high",
+                context: null,
+                updatedBy: 1,
+                updatedAt: new Date().toISOString(),
+            }],
+            claimSystemRestart: async () => "claimed",
+            finishSystemRestart: async () => true,
+        },
+        async getSession(id) {
+            const row = rows.get(id);
+            return row && !row.deletedAt ? row : null;
+        },
+        async createSession(id, opts = {}) {
+            const previous = rows.get(id) || makeRow(id);
+            rows.set(id, {
+                ...previous,
+                ...opts,
+                sessionId: id,
+                state: "pending",
+                deletedAt: null,
+                isSystem: opts.isSystem ?? previous.isSystem,
+                agentId: opts.agentId ?? previous.agentId,
+                model: opts.model ?? previous.model,
+                splash: opts.splash ?? previous.splash,
+                parentSessionId: opts.parentSessionId ?? previous.parentSessionId,
+                createdAt: previous.createdAt || new Date(1_000),
+                updatedAt: new Date(2_000),
+            });
+            calls.push({ type: "createSession", id, opts });
+        },
+        async updateSession(id, updates = {}) {
+            const previous = rows.get(id) || makeRow(id);
+            rows.set(id, {
+                ...previous,
+                ...updates,
+                updatedAt: new Date(3_000),
+            });
+            calls.push({ type: "updateSession", id, updates });
+        },
+        async archiveSystemSessionForRestart(id, state, lastError) {
+            const row = rows.get(id);
+            if (row && !row.isSystem) throw new Error("Cannot archive non-system session for system restart");
+            rows.set(id, {
+                ...row,
+                state,
+                lastError,
+                orchestrationId: null,
+                currentIteration: 0,
+                deletedAt: new Date(4_000),
+                updatedAt: new Date(4_000),
+            });
+            calls.push({ type: "archiveSystemSessionForRestart", id, state, lastError });
+        },
+    };
+
+    const duroxide = {
+        async getInstanceInfo() {
+            return { status: "Running", orchestrationVersion: "1.0.test" };
+        },
+        async getStatus() {
+            return { status: "Running", customStatus: JSON.stringify({ status: rows.get(sessionId)?.state || "running" }), customStatusVersion: 1 };
+        },
+        async enqueueEvent(orchId, name, body) {
+            calls.push({ type: "enqueueEvent", orchId, name, body: JSON.parse(body) });
+        },
+        async cancelInstance(orchId, reason) {
+            calls.push({ type: "cancelInstance", orchId, reason });
+        },
+        async deleteInstance(orchId, recursive) {
+            calls.push({ type: "deleteInstance", orchId, recursive });
+        },
+        async startOrchestrationVersioned(orchId, name, input, version) {
+            calls.push({ type: "startOrchestrationVersioned", orchId, name, input, version });
+        },
+    };
+
+    const facts = {
+        async deleteSessionFactsForSession(id) {
+            calls.push({ type: "deleteSessionFactsForSession", id });
+        },
+    };
+
+    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused", systemAgents: [agent] });
+    mgmt._started = true;
+    mgmt._catalog = catalog;
+    mgmt._duroxideClient = duroxide;
+    mgmt._factStore = facts;
+    const modelDescriptors = [
+        {
+            qualifiedName: "test:model",
+            providerId: "test",
+            providerType: "test-provider",
+            modelName: "model",
+        },
+        {
+            qualifiedName: "test:sonnet-4.6",
+            providerId: "test",
+            providerType: "test-provider",
+            modelName: "sonnet-4.6",
+            supportedReasoningEfforts: ["low", "medium", "high"],
+            defaultReasoningEffort: "medium",
+        },
+    ];
+    mgmt._modelProviders = {
+        defaultModel: "test:model",
+        allModels: modelDescriptors,
+        normalize: (ref) => modelDescriptors.some((model) => model.qualifiedName === ref) ? ref : undefined,
+        getDescriptor: (ref) => modelDescriptors.find((model) => model.qualifiedName === ref),
+        resolve: (ref) => modelDescriptors.some((model) => model.qualifiedName === ref)
+            ? { providerId: "test", type: "openai", modelName: ref.slice("test:".length), sdkProvider: {} }
+            : undefined,
+        getModelsByProvider: () => [{ providerId: "test", type: "openai", models: modelDescriptors }],
+        allProviders: [{ id: "test", type: "openai", baseUrl: "https://example.invalid", models: modelDescriptors.map((model) => ({ name: model.modelName })) }],
+    };
+    mgmt._systemAgents = [agent];
+
+    return { mgmt, rows, calls, agent, sessionId };
+}
+
+function callTypes(calls) {
+    return calls.map((call) => call.type);
+}
+
+describe("system session restart management", () => {
+    it("switches a system session model through the durable set_model command without restarting", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+
+        await mgmt.setSessionModel(sessionId, "test:sonnet-4.6");
+
+        const commandCall = calls.find((call) => call.type === "enqueueEvent");
+        assert(commandCall, "system model switch should enqueue a durable command");
+        assertEqual(commandCall.orchId, `session-${sessionId}`, "system model switch targets the existing orchestration");
+        assertEqual(commandCall.name, "messages", "system model switch uses the orchestration message queue");
+        assertEqual(commandCall.body.cmd, "set_model", "system model switch should use the normal set_model command");
+        assertEqual(commandCall.body.args.model, "test:sonnet-4.6", "system model switch command should carry target model");
+        assert(
+            !("reasoningEffort" in commandCall.body.args),
+            "switch without explicit effort must omit reasoningEffort (absent key = preserve current effort; the descriptor default must not be injected)",
+        );
+        assertEqual(commandCall.body.args.source, "user", "control-plane system switch source");
+        assertEqual(rows.get(sessionId).deletedAt, null, "system model switch should not archive/delete the CMS row");
+        assertEqual(rows.get(sessionId).state, "running", "system model switch should leave the existing row running until command processing");
+        assert(!callTypes(calls).includes("cancelInstance"), "system model switch should not cancel the orchestration");
+        assert(!callTypes(calls).includes("deleteInstance"), "system model switch should not delete the orchestration");
+        assert(!callTypes(calls).includes("archiveSystemSessionForRestart"), "system model switch should not archive for restart");
+        assert(!callTypes(calls).includes("startOrchestrationVersioned"), "system model switch should not recreate the system agent");
+        assert(!callTypes(calls).includes("deleteSessionFactsForSession"), "system model switch should not clear session facts");
+    });
+
+    it("carries an explicitly requested reasoning effort on a system session model switch", async () => {
+        const { mgmt, calls, sessionId } = createRestartHarness();
+
+        await mgmt.setSessionModel(sessionId, "test:sonnet-4.6", { reasoningEffort: "high" });
+
+        const commandCall = calls.find((call) => call.type === "enqueueEvent");
+        assert(commandCall, "system model switch should enqueue a durable command");
+        assertEqual(commandCall.body.args.model, "test:sonnet-4.6", "switch command carries the target model");
+        assertEqual(commandCall.body.args.reasoningEffort, "high", "explicit effort must be carried in the command");
+    });
+
+    it("hard-deletes a system session through the privileged restart path and recreates it", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+
+        const result = await mgmt.restartSystemSession("restartable", {
+            disposition: "hard_delete",
+            reason: "test reset",
+        });
+
+        assertEqual(result.sessionId, sessionId, "restart result should identify the deterministic system session");
+        assertEqual(result.disposition, "hard_delete", "restart result disposition");
+        assertEqual(rows.get(sessionId).isSystem, true, "replacement row should be a system session again");
+        assertEqual(rows.get(sessionId).state, "running", "replacement row should be running");
+        assert(callTypes(calls).includes("archiveSystemSessionForRestart"), "restart should archive the previous CMS row");
+        assert(callTypes(calls).includes("deleteSessionFactsForSession"), "restart should clear session-scoped facts");
+        const startCall = calls.find((call) => call.type === "startOrchestrationVersioned");
+        assert(startCall, "restart should start a new orchestration");
+        assertEqual(startCall.input.prompt, "Bootstrap now.", "replacement should use the system agent initial prompt");
+        assertEqual(startCall.input.isSystem, true, "replacement orchestration input should be marked system");
+        assertEqual(startCall.input.config.model, "test:sonnet-4.6", "manual restart uses the persisted per-agent override");
+        assertEqual(startCall.input.config.reasoningEffort, "high", "manual restart uses the override effort");
+    });
+
+    it("clears an existing context tier when restart explicitly requests null", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+        rows.get(sessionId).contextTier = "long_context";
+
+        await mgmt.restartSystemSession("restartable", {
+            disposition: "hard_delete",
+            model: "test:model",
+            contextTier: null,
+            modelResolutionSource: "system_default",
+        });
+
+        assertEqual(rows.get(sessionId).contextTier, null, "replacement CMS tuple clears context tier");
+        const startCall = calls.find((call) => call.type === "startOrchestrationVersioned");
+        assertEqual(startCall.input.config.contextTier, null, "replacement durable config carries explicit null");
+    });
+
+    it("refuses an unusable persisted route before tearing down the live system session", async () => {
+        const { mgmt, calls } = createRestartHarness();
+        mgmt._catalog.providers.allCredentials = async () => [{
+            name: "test", typeId: "test", class: "shared", ownerUserId: null,
+            baseUrl: null, secretRef: {},
+        }];
+
+        await expect(mgmt.restartSystemSession("restartable", {
+            disposition: "hard_delete",
+        })).rejects.toThrow(/cannot run model|No usable provider/);
+        assert(!callTypes(calls).includes("deleteInstance"), "invalid route must not delete the live orchestration");
+        assert(!callTypes(calls).includes("archiveSystemSessionForRestart"), "invalid route must not archive the live CMS row");
+    });
+
+    it("terminates before restarting when requested", async () => {
+        const { mgmt, calls } = createRestartHarness();
+
+        await mgmt.restartSystemSession("restartable", {
+            disposition: "terminate",
+            reason: "operator requested",
+        });
+
+        const cancelCall = calls.find((call) => call.type === "cancelInstance");
+        assert(cancelCall, "terminate disposition should cancel the existing orchestration");
+        assertIncludes(cancelCall.reason, "operator requested", "terminate reason should be forwarded");
+        assert(callTypes(calls).includes("startOrchestrationVersioned"), "terminate disposition should start a replacement");
+    });
+
+    it("marks complete before restarting when requested", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+        mgmt.sendCommand = async (id, command) => {
+            calls.push({ type: "sendCommand", id, command });
+            rows.set(id, { ...rows.get(id), state: "completed" });
+        };
+
+        await mgmt.restartSystemSession(sessionId, {
+            disposition: "complete",
+            reason: "finished current maintenance cycle",
+        });
+
+        const commandCall = calls.find((call) => call.type === "sendCommand");
+        assert(commandCall, "complete disposition should send a done command first");
+        assertEqual(commandCall.command.cmd, "done", "complete disposition command");
+        assert(callTypes(calls).includes("startOrchestrationVersioned"), "complete disposition should start a replacement");
+        assert(!callTypes(calls).includes("cancelInstance"), "complete disposition should not force-cancel first");
+    });
+});

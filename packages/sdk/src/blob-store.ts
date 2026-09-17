@@ -1,0 +1,1229 @@
+/**
+ * @file Azure Blob Storage backing for {@link SessionStateStore} +
+ * {@link ArtifactStore}.
+ *
+ * This module supports two coexisting authentication modes; the legacy
+ * mode is preserved verbatim so the in-cluster `scripts/deploy-aks.sh`
+ * flow, local Docker storage, and CI all keep working untouched.
+ *
+ * - **Connection-string (legacy, default)**: pass `AZURE_STORAGE_CONNECTION_STRING`.
+ *   `AccountName` + `AccountKey` are parsed from the conn string into a
+ *   `StorageSharedKeyCredential`, which is reused to mint short-lived
+ *   read-only SAS URLs in {@link SessionBlobStore.generateArtifactSasUrl}.
+ *
+ * - **Managed identity (opt-in, bicep-deploy flow)**: set
+ *   `PILOTSWARM_USE_MANAGED_IDENTITY=1` *and*
+ *   `AZURE_STORAGE_ACCOUNT_URL=https://<account>.blob.core.windows.net`.
+ *   The factory uses {@link DefaultAzureCredential} (workload-identity in
+ *   AKS, `az login`/env creds locally). No shared key is available, so
+ *   `generateArtifactSasUrl()` throws with
+ *   `code = "NotSupportedInManagedIdentityMode"` and callers must stream
+ *   artifacts through the worker (see TUI/portal proxy paths) rather
+ *   than handing a direct SAS URL to the client.
+ *
+ * Selection is done by {@link createSessionBlobStore}; see that function
+ * for the precedence rules. `useManagedIdentity` is *not* inferred from
+ * the absence of a connection string — it is an explicit opt-in flag so
+ * unmigrated stamps stay on the legacy path.
+ */
+import {
+    BlobServiceClient,
+    ContainerClient,
+    StorageSharedKeyCredential,
+    generateBlobSASQueryParameters,
+    BlobSASPermissions,
+    SASProtocol,
+} from "@azure/storage-blob";
+import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { faultPoint } from "./fault-injection.js";
+import {
+    SnapshotConflictError,
+    isLegacyEpoch,
+    type SnapshotCommitInput,
+    type SnapshotCommitResult,
+    type SnapshotHydrateResult,
+    type SnapshotProbe,
+    type VersionedSnapshotStore,
+} from "./snapshot-protocol.js";
+import {
+    DEFAULT_SESSION_STATE_DIR,
+    type ArtifactDownloadResult,
+    type ArtifactMetadata,
+    type SessionMetadata,
+    type SessionStateStore,
+    type ArtifactStore,
+    type ArtifactUploadOptions,
+    DEFAULT_SNAPSHOT_CODEC,
+    archiveSessionDir,
+    buildMetadata,
+    extractSessionArchive,
+    isBinaryArtifactContentType,
+    normalizeArtifactContentType,
+    parseEpochSnapshotName,
+    resolveArtifactFileUpload,
+    resolveArtifactUpload,
+    resolveSnapshotCodec,
+    waitForSessionSnapshot,
+    type SnapshotCodec,
+} from "./session-store.js";
+
+/**
+ * Epoch-chain snapshot blob: `S.e<E>.tar.br`, one blob per chain. The name
+ * must NEVER end `.tar.gz` — that is the only shape shipped resource-manager
+ * purge binaries collect as delete candidates, and this name invisibility
+ * (not fail-closed parsing in new code) is what protects retained epochs
+ * from an old binary. See the key-shape invariant in snapshot-protocol.ts.
+ */
+export function epochSnapshotBlobName(sessionId: string, epoch: number): string {
+    return `${sessionId}.e${epoch}.tar.br`;
+}
+
+/**
+ * Snapshot-blob metadata for a CAS commit, written atomically with the
+ * content by single-shot Put Blob. Epoch chains additionally carry
+ * `psepoch` — the key already scopes them; the field makes listings
+ * self-describing.
+ */
+export function snapshotCommitBlobMetadata(args: {
+    version: number;
+    turnKey: string;
+    contentHash: string;
+    codec: SnapshotCodec;
+    rawSizeBytes: number;
+    epoch?: number;
+}): Record<string, string> {
+    return {
+        psver: String(args.version),
+        psturnkey: args.turnKey,
+        pssha: args.contentHash,
+        pscodec: args.codec,
+        psraw: String(args.rawSizeBytes),
+        ...(isLegacyEpoch(args.epoch) ? {} : { psepoch: String(args.epoch) }),
+    };
+}
+
+function formatBlobLogValue(value: unknown): string {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function logBlobStore(
+    level: "info" | "warn" | "error",
+    sessionId: string,
+    message: string,
+    details: Record<string, unknown> = {},
+): void {
+    const suffix = Object.entries(details)
+        .filter(([, value]) => value !== undefined && value !== null && value !== "")
+        .map(([key, value]) => `${key}=${formatBlobLogValue(value)}`)
+        .join(" ");
+    const line =
+        `[SessionBlobStore] session=${sessionId} orch=session-${sessionId} ${message}` +
+        (suffix ? ` ${suffix}` : "");
+
+    if (level === "warn") {
+        console.warn(line);
+        return;
+    }
+    if (level === "error") {
+        console.error(line);
+        return;
+    }
+    console.info(line);
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error ?? "");
+}
+
+/**
+ * Configuration for constructing a {@link SessionBlobStore} against an
+ * already-built `ContainerClient`. Used by the managed-identity path
+ * (where there is no connection string to parse) and by tests that want
+ * to inject a mocked client.
+ *
+ * @internal
+ */
+export interface SessionBlobStoreClientConfig {
+    containerClient: ContainerClient;
+    containerName: string;
+    /**
+     * Optional `StorageSharedKeyCredential` used solely to mint
+     * read-only SAS URLs in {@link SessionBlobStore.generateArtifactSasUrl}.
+     * In managed-identity mode this is intentionally `null`/absent —
+     * SAS generation will throw `NotSupportedInManagedIdentityMode` so
+     * callers (TUI / portal) know to proxy downloads through the worker
+     * instead of relying on shared-key SAS.
+     */
+    sharedKeyCredential?: StorageSharedKeyCredential | null;
+    sessionStateDir?: string;
+}
+
+/**
+ * Manages session state in Azure Blob Storage.
+ *
+ * - `dehydrate()` — tar + upload session dir, remove local files
+ * - `hydrate()` — download + untar session dir
+ * - `checkpoint()` — tar + upload without removing local files
+ * - `exists()` / `delete()` — blob lifecycle
+ *
+ * Two construction modes:
+ * - **Connection string** (legacy / local / `scripts/deploy-aks.sh`):
+ *   `new SessionBlobStore(connectionString, containerName?, sessionStateDir?)`.
+ *   Parses `AccountName` + `AccountKey` out of the conn string for SAS URL
+ *   generation. This is what every current caller uses.
+ * - **Managed identity** (new bicep-deploy flow when
+ *   `PILOTSWARM_USE_MANAGED_IDENTITY=1`): construct via
+ *   {@link createSessionBlobStore} or pass a {@link SessionBlobStoreClientConfig}.
+ *   No shared key is available, so SAS URL generation throws.
+ *
+ * @internal
+ */
+export class SessionBlobStore implements SessionStateStore, ArtifactStore, VersionedSnapshotStore {
+    private containerClient: ContainerClient;
+    private containerName: string;
+    private credential: StorageSharedKeyCredential | null = null;
+    private sessionStateDir: string;
+    private snapshotSizeBySession = new Map<string, number>();
+
+    constructor(
+        connectionStringOrConfig: string | SessionBlobStoreClientConfig,
+        containerName: string = "copilot-sessions",
+        sessionStateDir?: string,
+    ) {
+        if (typeof connectionStringOrConfig === "string") {
+            // Legacy connection-string path. Identical to the pre-MI
+            // behaviour — every existing caller hits this branch.
+            const connectionString = connectionStringOrConfig;
+            this.containerName = containerName;
+            this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+            const blobService = BlobServiceClient.fromConnectionString(connectionString);
+            this.containerClient = blobService.getContainerClient(containerName);
+
+            // Parse account name + key from connection string for SAS generation
+            const accountMatch = connectionString.match(/AccountName=([^;]+)/i);
+            const keyMatch = connectionString.match(/AccountKey=([^;]+)/i);
+            if (accountMatch && keyMatch) {
+                this.credential = new StorageSharedKeyCredential(accountMatch[1], keyMatch[1]);
+            }
+        } else {
+            // Pre-built ContainerClient path (used by managed-identity mode
+            // and by tests). The caller has already chosen a credential —
+            // we just record what's needed for SAS minting.
+            const cfg = connectionStringOrConfig;
+            this.containerClient = cfg.containerClient;
+            this.containerName = cfg.containerName;
+            this.sessionStateDir = cfg.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+            this.credential = cfg.sharedKeyCredential ?? null;
+        }
+    }
+
+    /**
+     * Dehydrate a session: tar, upload, remove local files.
+     * Frees the worker slot for another session.
+     */
+    async dehydrate(sessionId: string, meta?: Record<string, unknown>, epoch?: number): Promise<void> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        logBlobStore("info", sessionId, "dehydrate start", {
+            container: this.containerName,
+            dir: sessionDir,
+            reason: meta?.reason,
+            ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+        });
+        // Versioned-snapshot fence: the committed chain (lifecycle protocol)
+        // already holds this session's durable state, and an unconditional
+        // legacy Put would replace both content and the CAS metadata
+        // (psver/psturnkey/pssha). Degrade to release: free local files.
+        try {
+            const head = await this.headSnapshot(sessionId, epoch);
+            if (head.exists && !head.legacy) {
+                logBlobStore("warn", sessionId, "dehydrate skipped upload: versioned snapshot exists; releasing local files only", {
+                    container: this.containerName,
+                    version: head.version,
+                });
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                return;
+            }
+        } catch (probeErr: unknown) {
+            logBlobStore("warn", sessionId, "dehydrate version probe failed; proceeding with legacy upload", {
+                container: this.containerName,
+                error: errorMessage(probeErr),
+            });
+        }
+        // Epoch chains are versioned-only: the Put below writes the legacy
+        // (epoch-0) family (`S.tar.gz`) and must never run for epoch >= 1.
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `dehydrate(${sessionId}) reached the legacy upload path with epoch ${epoch}; epoch chains commit via commitSnapshot`,
+            );
+        }
+        const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
+        if (!snapshot.ready) {
+            logBlobStore("warn", sessionId, "dehydrate snapshot not ready", {
+                container: this.containerName,
+                missing: snapshot.missing.join(", ") || "unknown",
+            });
+            throw new Error(
+                `Session state directory not ready during dehydrate: ${sessionId} (${sessionDir}). ` +
+                `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
+            );
+        }
+
+        const codec = DEFAULT_SNAPSHOT_CODEC;
+        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar`);
+        try {
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
+            const tarSizeBytes = fs.existsSync(tarPath) ? fs.statSync(tarPath).size : undefined;
+
+            // Upload tar. The `pscodec` metadata on the tar blob is what the
+            // read path decodes by — brotli has no magic bytes, so an
+            // unversioned legacy blob without it is assumed gzip.
+            const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
+            logBlobStore("info", sessionId, "dehydrate upload tar", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+                tarSizeBytes,
+                codec,
+            });
+            await tarBlob.uploadFile(tarPath, { metadata: { pscodec: codec, psraw: String(rawSizeBytes) } });
+
+            // Upload metadata
+            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { ...meta, codec, rawSizeBytes });
+            this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
+            const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+            const metaJson = JSON.stringify(metadata);
+            logBlobStore("info", sessionId, "dehydrate upload metadata", {
+                container: this.containerName,
+                blob: `${sessionId}.meta.json`,
+                metadataBytes: metaJson.length,
+            });
+            await metaBlob.upload(metaJson, metaJson.length);
+
+            // Remove local files
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            logBlobStore("info", sessionId, "dehydrate complete", {
+                container: this.containerName,
+                tarSizeBytes,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "dehydrate failed", {
+                container: this.containerName,
+                error: errorMessage(error),
+            });
+            throw error;
+        } finally {
+            // Always clean up temp tar
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+    }
+
+    /**
+     * Hydrate a session: download tar from blob, extract to local disk.
+     * No-op if local session files already exist.
+     */
+    async hydrate(sessionId: string, epoch?: number): Promise<void> {
+        // Legacy whole-dir restore; epoch chains hydrate via hydrateSnapshot
+        // (atomic swap), so this path never sees them.
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `hydrate(${sessionId}) is the legacy path; epoch ${epoch} chains hydrate via hydrateSnapshot`,
+            );
+        }
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        logBlobStore("info", sessionId, "hydrate start", {
+            container: this.containerName,
+            dir: sessionDir,
+        });
+
+        // Always download from blob — overwrite any stale local files
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+
+        const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
+        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar`);
+
+        try {
+            logBlobStore("info", sessionId, "hydrate download tar", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+            });
+            const response = await tarBlob.downloadToFile(tarPath);
+            const codec = resolveSnapshotCodec((response.metadata as Record<string, string> | undefined)?.pscodec);
+            await extractSessionArchive(this.sessionStateDir, tarPath, codec);
+            logBlobStore("info", sessionId, "hydrate complete", {
+                container: this.containerName,
+                restoredDir: sessionDir,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "hydrate failed", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+                error: errorMessage(error),
+            });
+            throw error;
+        } finally {
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+    }
+
+    /**
+     * Checkpoint: upload current session state to blob without removing local files.
+     * Used for crash resilience — the session stays warm in memory.
+     */
+    async checkpoint(sessionId: string, epoch?: number): Promise<void> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        if (!fs.existsSync(sessionDir)) {
+            logBlobStore("info", sessionId, "checkpoint skipped", {
+                container: this.containerName,
+                reason: "local session dir missing",
+            });
+            return;
+        }
+        // Versioned-snapshot fence (see dehydrate): never clobber the
+        // CAS-protected chain with an unversioned legacy write.
+        try {
+            const head = await this.headSnapshot(sessionId, epoch);
+            if (head.exists && !head.legacy) {
+                logBlobStore("warn", sessionId, "checkpoint skipped: versioned snapshot exists", {
+                    container: this.containerName,
+                    version: head.version,
+                });
+                return;
+            }
+        } catch (probeErr: unknown) {
+            logBlobStore("warn", sessionId, "checkpoint version probe failed; proceeding with legacy upload", {
+                container: this.containerName,
+                error: errorMessage(probeErr),
+            });
+        }
+        // Epoch chains are versioned-only (see dehydrate).
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `checkpoint(${sessionId}) reached the legacy upload path with epoch ${epoch}; epoch chains commit via commitSnapshot`,
+            );
+        }
+
+        const codec = DEFAULT_SNAPSHOT_CODEC;
+        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar`);
+        try {
+            logBlobStore("info", sessionId, "checkpoint start", {
+                container: this.containerName,
+                dir: sessionDir,
+            });
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
+            const tarSizeBytes = fs.existsSync(tarPath) ? fs.statSync(tarPath).size : undefined;
+
+            const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
+            await tarBlob.uploadFile(tarPath, { metadata: { pscodec: codec, psraw: String(rawSizeBytes) } });
+
+            // Update metadata to reflect checkpoint (not full dehydration)
+            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint", codec, rawSizeBytes });
+            this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
+            const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+            const metaJson = JSON.stringify(metadata);
+            await metaBlob.upload(metaJson, metaJson.length);
+            logBlobStore("info", sessionId, "checkpoint complete", {
+                container: this.containerName,
+                tarSizeBytes,
+                metadataBytes: metaJson.length,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "checkpoint failed", {
+                container: this.containerName,
+                error: errorMessage(error),
+            });
+            throw error;
+        } finally {
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+    }
+
+    /** Size-cache key: legacy family caches under the bare id, epoch chains under their blob name. */
+    private sizeCacheKey(sessionId: string, epoch?: number): string {
+        return isLegacyEpoch(epoch) ? sessionId : epochSnapshotBlobName(sessionId, epoch!);
+    }
+
+    async getSnapshotSizeBytes(sessionId: string, epoch?: number): Promise<number | undefined> {
+        const cached = this.snapshotSizeBySession.get(this.sizeCacheKey(sessionId, epoch));
+        if (Number.isFinite(cached)) return cached;
+
+        // Epoch chains keep no meta.json mirror (key-shape invariant) — the
+        // blob's own content length is the stored size.
+        if (!isLegacyEpoch(epoch)) {
+            const blobName = epochSnapshotBlobName(sessionId, epoch!);
+            try {
+                const props = await this.containerClient.getBlockBlobClient(blobName).getProperties();
+                const sizeBytes = Number(props.contentLength);
+                if (Number.isFinite(sizeBytes)) {
+                    this.snapshotSizeBySession.set(this.sizeCacheKey(sessionId, epoch), sizeBytes);
+                    return sizeBytes;
+                }
+            } catch (error: any) {
+                if (error?.statusCode !== 404) {
+                    logBlobStore("warn", sessionId, "snapshot size read failed", {
+                        container: this.containerName,
+                        blob: blobName,
+                        error: errorMessage(error),
+                    });
+                }
+            }
+            return undefined;
+        }
+
+        const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+        try {
+            if (!(await metaBlob.exists())) {
+                return undefined;
+            }
+            const response = await metaBlob.download(0);
+            const chunks: Buffer[] = [];
+            for await (const chunk of response.readableStreamBody!) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
+            const metadata = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as SessionMetadata;
+            const sizeBytes = Number(metadata?.sizeBytes);
+            if (Number.isFinite(sizeBytes)) {
+                this.snapshotSizeBySession.set(sessionId, sizeBytes);
+                return sizeBytes;
+            }
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "snapshot size read failed", {
+                container: this.containerName,
+                blob: `${sessionId}.meta.json`,
+                error: errorMessage(error),
+            });
+        }
+
+        return undefined;
+    }
+
+    /** Check if a dehydrated session exists in blob storage. */
+    async exists(sessionId: string, epoch?: number): Promise<boolean> {
+        const blobName = this.snapshotBlobName(sessionId, epoch);
+        const tarBlob = this.containerClient.getBlockBlobClient(blobName);
+        try {
+            const exists = await tarBlob.exists();
+            logBlobStore("info", sessionId, "exists probe", {
+                container: this.containerName,
+                blob: blobName,
+                exists,
+            });
+            return exists;
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "exists probe failed", {
+                container: this.containerName,
+                blob: blobName,
+                error: errorMessage(error),
+            });
+            throw error;
+        }
+    }
+
+    /** Delete a dehydrated session from blob storage (epoch >= 1: only that epoch's chain). */
+    async delete(sessionId: string, epoch?: number): Promise<void> {
+        logBlobStore("info", sessionId, "delete start", {
+            container: this.containerName,
+            ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+        });
+        try {
+            if (isLegacyEpoch(epoch)) {
+                await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
+                await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+            } else {
+                // One blob per epoch chain, no meta.json mirror — nothing else to collect.
+                await this.containerClient.getBlockBlobClient(epochSnapshotBlobName(sessionId, epoch!)).deleteIfExists();
+            }
+            logBlobStore("info", sessionId, "delete complete", {
+                container: this.containerName,
+                ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "delete failed", {
+                container: this.containerName,
+                error: errorMessage(error),
+            });
+            throw error;
+        }
+    }
+
+    /**
+     * Remove the legacy family AND every epoch chain for the session (real
+     * session deletion). Epoch objects are enumerated by prefix and deleted
+     * ONLY when the fail-closed parser accepts the name — anything else
+     * under the prefix is logged and left alone.
+     */
+    async deleteAllEpochs(sessionId: string): Promise<void> {
+        await this.delete(sessionId);
+        const prefix = `${sessionId}.e`;
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+            const parsed = parseEpochSnapshotName(sessionId, blob.name);
+            if (!parsed) {
+                logBlobStore("warn", sessionId, "deleteAllEpochs leaving unparseable name alone", {
+                    container: this.containerName,
+                    blob: blob.name,
+                });
+                continue;
+            }
+            await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
+        }
+    }
+
+    // ─── Versioned CAS contract (session-lifecycle-protocol §3.1) ───
+    //
+    // The version is an explicit counter in the tar blob's metadata
+    // (`psver`, plus `psturnkey` + `pssha`), written atomically with the
+    // content by single-shot Put Blob. The ETag is never the version — it is
+    // the atomicity token binding each HEAD to the conditional PUT that
+    // follows it (`If-Match`). A blob without `psver` is a legacy snapshot
+    // (probe reports version 0 / legacy). Two footguns, per the store
+    // proposal: never staged Put Block uploads (the condition only applies
+    // at commit and concurrent stagers interleave), and never Set Blob
+    // Metadata for version bumps (it would decouple counter from content).
+
+    private static readonly COMMIT_MAX_ATTEMPTS = 5;
+    private static readonly SINGLE_SHOT_MAX_BYTES = 256 * 1024 * 1024;
+
+    private snapshotBlobName(sessionId: string, epoch?: number): string {
+        return isLegacyEpoch(epoch) ? `${sessionId}.tar.gz` : epochSnapshotBlobName(sessionId, epoch!);
+    }
+
+    private probeFromMetadata(
+        metadata: Record<string, string> | undefined,
+        etag: string | undefined,
+    ): SnapshotProbe & { etag?: string; codec?: SnapshotCodec } {
+        const codec = resolveSnapshotCodec(metadata?.pscodec);
+        const raw = Number(metadata?.psraw);
+        const version = Number(metadata?.psver);
+        if (!Number.isFinite(version) || version < 1) {
+            return { exists: true, version: 0, legacy: true, codec, ...(etag ? { etag } : {}) };
+        }
+        return {
+            exists: true,
+            version,
+            ...(metadata?.psturnkey ? { turnKey: metadata.psturnkey } : {}),
+            ...(metadata?.pssha ? { contentHash: metadata.pssha } : {}),
+            ...(Number.isFinite(raw) ? { rawSizeBytes: raw } : {}),
+            codec,
+            ...(etag ? { etag } : {}),
+        };
+    }
+
+    private async headSnapshot(sessionId: string, epoch?: number): Promise<SnapshotProbe & { etag?: string }> {
+        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
+        try {
+            const props = await blob.getProperties();
+            return this.probeFromMetadata(props.metadata as Record<string, string> | undefined, props.etag);
+        } catch (error: any) {
+            if (error?.statusCode === 404) return { exists: false, version: 0 };
+            throw error;
+        }
+    }
+
+    async probeSnapshot(sessionId: string, epoch?: number): Promise<SnapshotProbe> {
+        const { etag: _etag, ...probe } = await this.headSnapshot(sessionId, epoch);
+        return probe;
+    }
+
+    async commitSnapshot(sessionId: string, input: SnapshotCommitInput, epoch?: number): Promise<SnapshotCommitResult> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
+        if (!snapshot.ready) {
+            throw new Error(
+                `Session state directory not ready during commit: ${sessionId} (${sessionDir}). ` +
+                `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
+            );
+        }
+
+        // Epoch chains pin brotli — their names bake `.tar.br` (key-shape
+        // invariant) — rather than tracking the default.
+        const codec: SnapshotCodec = isLegacyEpoch(epoch) ? DEFAULT_SNAPSHOT_CODEC : "brotli";
+        const tarPath = path.join(os.tmpdir(), `ps-commit-${sessionId}-${process.pid}-${Date.now()}.tar`);
+        try {
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
+            const body = fs.readFileSync(tarPath);
+            if (body.length > SessionBlobStore.SINGLE_SHOT_MAX_BYTES) {
+                throw new Error(
+                    `Session snapshot for ${sessionId} is ${body.length} bytes — over the ` +
+                    `${SessionBlobStore.SINGLE_SHOT_MAX_BYTES} single-shot commit cap. ` +
+                    `Audit the session workspace for files that belong in tar excludes.`,
+                );
+            }
+            const contentHash = crypto.createHash("sha256").update(body).digest("hex");
+            const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
+
+            for (let attempt = 1; attempt <= SessionBlobStore.COMMIT_MAX_ATTEMPTS; attempt++) {
+                const head = await this.headSnapshot(sessionId, epoch);
+
+                if (head.exists && head.version === input.baseVersion + 1 && head.turnKey === input.turnKey) {
+                    logBlobStore("info", sessionId, "commit already landed (idempotent retry)", {
+                        version: head.version,
+                        turnKey: input.turnKey,
+                    });
+                    return {
+                        version: head.version,
+                        contentHash: head.contentHash ?? "",
+                        ...(head.rawSizeBytes != null ? { rawSizeBytes: head.rawSizeBytes } : {}),
+                        alreadyCommitted: true,
+                    };
+                }
+                if (head.exists && head.version !== input.baseVersion) {
+                    throw new SnapshotConflictError(sessionId, input.baseVersion, head.version, head.turnKey);
+                }
+                // head.exists && version === baseVersion (legacy counts as 0),
+                // or !exists (any baseVersion commits as a fresh chain — the
+                // store lost data and the worker's copy is the only truth).
+                const version = head.exists ? head.version + 1 : input.baseVersion + 1;
+                const conditions = head.exists && head.etag
+                    ? { ifMatch: head.etag }
+                    : { ifNoneMatch: "*" };
+                faultPoint("store.commit.before-write");
+                try {
+                    await blob.upload(body, body.length, {
+                        conditions,
+                        metadata: snapshotCommitBlobMetadata({
+                            version,
+                            turnKey: input.turnKey,
+                            contentHash,
+                            codec,
+                            rawSizeBytes,
+                            epoch,
+                        }),
+                    });
+                    faultPoint("store.commit.after-write");
+                    if (isLegacyEpoch(epoch)) {
+                        // Legacy compat: keep <sessionId>.meta.json fresh so
+                        // getSnapshotSizeBytes and older tooling keep working.
+                        // Unconditional + best-effort — it is informational only.
+                        // Epoch chains keep NO meta.json mirror: nothing
+                        // epoch-scoped may end `.meta.json` (key-shape invariant).
+                        try {
+                            const metadata: SessionMetadata = {
+                                ...buildMetadata(tarPath, sessionId, { reason: "turn-commit" }),
+                                version,
+                                turnKey: input.turnKey,
+                                contentHash,
+                                codec,
+                                rawSizeBytes,
+                            };
+                            this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
+                            const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+                            const metaJson = JSON.stringify(metadata);
+                            await metaBlob.upload(metaJson, metaJson.length);
+                        } catch (metaErr: unknown) {
+                            logBlobStore("warn", sessionId, "commit meta.json refresh failed (non-fatal)", {
+                                error: errorMessage(metaErr),
+                            });
+                        }
+                    } else {
+                        this.snapshotSizeBySession.set(this.sizeCacheKey(sessionId, epoch), body.length);
+                    }
+                    logBlobStore("info", sessionId, "commit complete", {
+                        version,
+                        turnKey: input.turnKey,
+                        tarSizeBytes: body.length,
+                        rawSizeBytes,
+                        codec,
+                        attempt,
+                        ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+                    });
+                    return { version, contentHash, sizeBytes: body.length, rawSizeBytes, alreadyCommitted: false };
+                } catch (error: any) {
+                    // 412 Precondition Failed (If-Match lost the race) or
+                    // 409 BlobAlreadyExists (If-None-Match create race):
+                    // re-HEAD and re-evaluate — the winner may have been our
+                    // own prior attempt (idempotent success) or a foreign
+                    // writer (conflict), both handled at the top of the loop.
+                    const status = error?.statusCode;
+                    if (status === 412 || status === 409) {
+                        logBlobStore("warn", sessionId, "commit CAS race, re-evaluating", {
+                            attempt,
+                            status,
+                        });
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error(`Snapshot commit for ${sessionId} exhausted CAS retries`);
+        } finally {
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+    }
+
+    async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
+        const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
+
+        // One download response carries body + metadata consistently.
+        let metadata: Record<string, string> | undefined;
+        let tarSizeBytes: number | undefined;
+        try {
+            const response = await blob.downloadToFile(tarPath, 0);
+            metadata = response.metadata as Record<string, string> | undefined;
+            try { tarSizeBytes = fs.statSync(tarPath).size; } catch {}
+            const codec = resolveSnapshotCodec(metadata?.pscodec);
+
+            fs.mkdirSync(this.sessionStateDir, { recursive: true });
+            const tempRoot = fs.mkdtempSync(path.join(this.sessionStateDir, `.ps-hydrate-${sessionId}-`));
+            try {
+                await extractSessionArchive(tempRoot, tarPath, codec);
+                const extracted = path.join(tempRoot, sessionId);
+                if (!fs.existsSync(extracted)) {
+                    throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
+                }
+                faultPoint("store.hydrate.before-swap");
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                fs.renameSync(extracted, sessionDir);
+            } finally {
+                fs.rmSync(tempRoot, { recursive: true, force: true });
+            }
+        } finally {
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+
+        const probe = this.probeFromMetadata(metadata, undefined);
+        logBlobStore("info", sessionId, "versioned hydrate complete", {
+            version: probe.version,
+            legacy: probe.legacy,
+            ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+        });
+        return {
+            version: probe.version,
+            ...(probe.turnKey ? { turnKey: probe.turnKey } : {}),
+            ...(probe.contentHash ? { contentHash: probe.contentHash } : {}),
+            ...(tarSizeBytes != null ? { sizeBytes: tarSizeBytes } : {}),
+            ...(probe.rawSizeBytes != null ? { rawSizeBytes: probe.rawSizeBytes } : {}),
+            ...(probe.legacy ? { legacy: true } : {}),
+        };
+    }
+
+    // ─── Artifact Storage ────────────────────────────────────
+
+    private artifactBlobPath(sessionId: string, filename: string): string {
+        // Sanitize filename — strip path separators
+        const safe = filename.replace(/[/\\]/g, "_");
+        return `artifacts/${sessionId}/${safe}`;
+    }
+
+    /**
+     * Upload an artifact file (e.g. .md) to blob storage.
+     * Max 1MB content.
+     */
+    async uploadArtifact(
+        sessionId: string,
+        filename: string,
+        content: string | Buffer,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const safeFilename = path.basename(String(filename || "").trim());
+        const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const uploadedAt = new Date().toISOString();
+        await blob.upload(body, body.length, {
+            blobHTTPHeaders: { blobContentType: metadata.contentType },
+            metadata: artifactBlobMetadata(uploadedAt, metadata),
+        });
+        return {
+            filename: safeFilename,
+            uploadedAt,
+            ...metadata,
+        };
+    }
+
+    /**
+     * Data-plane write: stream a worker-local file straight to blob storage.
+     * The body never transits a buffer larger than the SDK's block size —
+     * and, crucially, never transits a model context window.
+     */
+    async uploadArtifactFromFile(
+        sessionId: string,
+        filename: string,
+        filePath: string,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const safeFilename = path.basename(String(filename || "").trim() || filePath);
+        const { metadata } = await resolveArtifactFileUpload(filePath, contentType, {
+            source: "file",
+            sourceDetail: filePath,
+            ...opts,
+        });
+        const blobPath = this.artifactBlobPath(sessionId, safeFilename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const uploadedAt = new Date().toISOString();
+        await blob.uploadFile(filePath, {
+            blobHTTPHeaders: { blobContentType: metadata.contentType },
+            metadata: artifactBlobMetadata(uploadedAt, metadata),
+        });
+        return { filename: safeFilename, uploadedAt, ...metadata };
+    }
+
+    /**
+     * Server-side copy between sessions. Bytes move store-to-store through
+     * this process; no model tokens, no worker filesystem.
+     */
+    async copyArtifact(
+        fromSessionId: string,
+        fromFilename: string,
+        toSessionId: string,
+        toFilename?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const source = await this.downloadArtifact(fromSessionId, fromFilename);
+        return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
+            source: "copy",
+            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            ...opts,
+        });
+    }
+
+    /**
+     * Download an artifact file from blob storage.
+     * Returns the file content as a string.
+     */
+    async downloadArtifact(sessionId: string, filename: string): Promise<ArtifactDownloadResult> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const response = await blob.download(0);
+        const chunks: Buffer[] = [];
+        for await (const chunk of response.readableStreamBody!) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        const body = Buffer.concat(chunks);
+        const contentType = normalizeArtifactContentType(response.contentType || undefined);
+        return {
+            filename: path.basename(filename),
+            sizeBytes: Number(response.contentLength) || body.length,
+            contentType,
+            isBinary: isBinaryArtifactContentType(contentType),
+            uploadedAt: response.lastModified?.toISOString() || new Date().toISOString(),
+            source: (response.metadata?.source as ArtifactMetadata["source"]) || "agent",
+            ...artifactMetadataFromBlobMetadata(response.metadata),
+            body,
+        };
+    }
+
+    async statArtifact(sessionId: string, filename: string): Promise<ArtifactMetadata | null> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        try {
+            const properties = await blob.getProperties();
+            const contentType = normalizeArtifactContentType(properties.contentType || undefined);
+            return {
+                filename: path.basename(filename),
+                sizeBytes: Number(properties.contentLength) || 0,
+                contentType,
+                isBinary: isBinaryArtifactContentType(contentType),
+                uploadedAt: properties.lastModified?.toISOString() || new Date().toISOString(),
+                source: (properties.metadata?.source as ArtifactMetadata["source"]) || "agent",
+                ...artifactMetadataFromBlobMetadata(properties.metadata),
+            };
+        } catch (err: any) {
+            if (err?.statusCode === 404) return null;
+            throw err;
+        }
+    }
+
+    async setArtifactPinned(sessionId: string, filename: string, pinned: boolean): Promise<ArtifactMetadata> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const properties = await blob.getProperties();
+        const merged: Record<string, string> = { ...(properties.metadata || {}) };
+        if (pinned) merged.pinned = "1";
+        else delete merged.pinned;
+        await blob.setMetadata(merged);
+        const stat = await this.statArtifact(sessionId, filename);
+        if (!stat) throw new Error(`Artifact not found after pin update: ${filename}`);
+        return stat;
+    }
+
+    async downloadArtifactText(sessionId: string, filename: string): Promise<string> {
+        const result = await this.downloadArtifact(sessionId, filename);
+        if (result.isBinary) {
+            const error = new Error(`Artifact '${filename}' is binary and cannot be read as text.`) as Error & Record<string, unknown>;
+            error.code = "ARTIFACT_IS_BINARY";
+            error.contentType = result.contentType;
+            error.sizeBytes = result.sizeBytes;
+            throw error;
+        }
+        return result.body.toString("utf8");
+    }
+
+    /**
+     * List artifact files for a session.
+     * Returns filenames (not full blob paths).
+     */
+    async listArtifacts(sessionId: string): Promise<ArtifactMetadata[]> {
+        const prefix = `artifacts/${sessionId}/`;
+        const files: ArtifactMetadata[] = [];
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+            const filename = blob.name.slice(prefix.length);
+            const blobClient = this.containerClient.getBlockBlobClient(blob.name);
+            const properties = await blobClient.getProperties();
+            const contentType = normalizeArtifactContentType(properties.contentType || undefined);
+            files.push({
+                filename,
+                sizeBytes: Number(properties.contentLength) || 0,
+                contentType,
+                isBinary: isBinaryArtifactContentType(contentType),
+                uploadedAt: properties.lastModified?.toISOString() || new Date().toISOString(),
+                source: (properties.metadata?.source as ArtifactMetadata["source"]) || "agent",
+                ...artifactMetadataFromBlobMetadata(properties.metadata),
+            });
+        }
+        return files;
+    }
+
+    async deleteArtifact(sessionId: string, filename: string): Promise<boolean> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const result = await this.containerClient.getBlockBlobClient(blobPath).deleteIfExists();
+        return result.succeeded === true;
+    }
+
+    /**
+     * Check if an artifact exists.
+     */
+    async artifactExists(sessionId: string, filename: string): Promise<boolean> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        return this.containerClient.getBlockBlobClient(blobPath).exists();
+    }
+
+    /**
+     * Generate a short-lived read-only SAS URL for an artifact.
+     * The TUI uses this to download files without needing blob credentials.
+     *
+     * @param sessionId  Session that owns the artifact
+     * @param filename   Artifact filename
+     * @param expiryMinutes  How long the URL is valid (default: 1 minute)
+     * @returns Full SAS URL string
+     */
+    generateArtifactSasUrl(
+        sessionId: string,
+        filename: string,
+        expiryMinutes = 1,
+    ): string {
+        if (!this.credential) {
+            // Managed-identity mode: there is no shared key on this
+            // instance, so we cannot mint a shared-key SAS. We
+            // intentionally do *not* fall back to user-delegation key
+            // (UDK) SAS here — UDK refresh introduces non-trivial
+            // lifetime tracking, and the portal/TUI proxy path is a
+            // simpler answer that already works. Callers that hit this
+            // branch should switch to streaming the artifact through the
+            // worker rather than handing the client a direct SAS URL.
+            const error = new Error(
+                "Cannot generate SAS URL: SessionBlobStore is in managed-identity mode " +
+                "(no shared-key credential available). Stream the artifact through " +
+                "downloadArtifact/downloadArtifactText instead.",
+            ) as Error & { code: string };
+            error.code = "NotSupportedInManagedIdentityMode";
+            throw error;
+        }
+
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const now = new Date();
+        const expiresOn = new Date(now.getTime() + expiryMinutes * 60_000);
+
+        const sas = generateBlobSASQueryParameters(
+            {
+                containerName: this.containerName,
+                blobName: blobPath,
+                permissions: BlobSASPermissions.parse("r"),
+                startsOn: now,
+                expiresOn,
+                protocol: SASProtocol.Https,
+            },
+            this.credential,
+        );
+
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        return `${blob.url}?${sas.toString()}`;
+    }
+
+    /**
+     * Delete all artifacts for a session. Pinned artifacts survive unless
+     * `includePinned` is set — a parent's cleanup or failure must not
+     * destroy deliverables that were explicitly marked to outlive it.
+     */
+    async deleteArtifacts(sessionId: string, opts: { includePinned?: boolean } = {}): Promise<number> {
+        const prefix = `artifacts/${sessionId}/`;
+        let count = 0;
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix, includeMetadata: true })) {
+            if (!opts.includePinned && blob.metadata?.pinned === "1") continue;
+            await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
+            count++;
+        }
+        return count;
+    }
+}
+
+/** Serialize artifact provenance fields into blob metadata (string-valued, lowercase-safe keys). */
+function artifactBlobMetadata(
+    uploadedAt: string,
+    metadata: Omit<ArtifactMetadata, "filename" | "uploadedAt">,
+): Record<string, string> {
+    return {
+        source: metadata.source,
+        uploadedAt,
+        ...(metadata.sha256 ? { sha256: metadata.sha256 } : {}),
+        ...(metadata.sourceDetail ? { sourcedetail: metadata.sourceDetail } : {}),
+        ...(metadata.pinned ? { pinned: "1" } : {}),
+    };
+}
+
+/** Parse provenance fields back out of blob metadata (keys may come back lowercased). */
+function artifactMetadataFromBlobMetadata(
+    blobMetadata: Record<string, string> | undefined,
+): Partial<ArtifactMetadata> {
+    if (!blobMetadata) return {};
+    const sourceDetail = blobMetadata.sourcedetail ?? blobMetadata.sourceDetail;
+    return {
+        ...(blobMetadata.sha256 ? { sha256: blobMetadata.sha256 } : {}),
+        ...(sourceDetail ? { sourceDetail } : {}),
+        ...(blobMetadata.pinned === "1" ? { pinned: true } : {}),
+    };
+}
+
+// ─── Factory ─────────────────────────────────────────────────────────────
+
+/**
+ * Environment shape consumed by {@link createSessionBlobStore}. We accept a
+ * loose `Record<string, string | undefined>` so callers can pass either
+ * `process.env` or a curated env map (the deploy orchestrator's
+ * `loadEnv()` output, the worker's `options`, etc.) without juggling
+ * types.
+ *
+ * @internal
+ */
+export interface SessionBlobStoreEnv {
+    /**
+     * Blob-specific managed-identity flag — takes precedence over
+     * `PILOTSWARM_USE_MANAGED_IDENTITY` whenever it is set (to any
+     * value, truthy or not).
+     *
+     * Deploy overlays (bicep-deploy / waldemort) set THIS name for blob
+     * auth while reusing the unsuffixed name for database AAD auth, so
+     * the two can legitimately disagree (blob=1, db=0). Reading only the
+     * unsuffixed name here made the portal silently fall back to the
+     * filesystem artifact store while workers wrote to blob — agents
+     * could exchange artifacts, but every portal/TUI/MCP download and
+     * listing returned "not found".
+     */
+    PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?: string;
+    /**
+     * `1` / `true` selects managed-identity mode. When set, the factory
+     * requires `AZURE_STORAGE_ACCOUNT_URL` and ignores any
+     * `AZURE_STORAGE_CONNECTION_STRING` value.
+     *
+     * Legacy/shared name: also doubles as the database AAD flag in some
+     * deploys — prefer `PILOTSWARM_BLOB_USE_MANAGED_IDENTITY` for blob.
+     *
+     * Why a flag and not "MI iff conn string is absent"? Because we want
+     * the legacy code path (connection string → shared-key credential →
+     * shared-key SAS) to remain the default for the existing
+     * `scripts/deploy-aks.sh` flow, local Docker storage, CI, and any
+     * stamp that hasn't migrated. The flag is the explicit opt-in that
+     * the bicep-deploy orchestrator sets in the worker overlay
+     * ConfigMap.
+     */
+    PILOTSWARM_USE_MANAGED_IDENTITY?: string;
+    /** `https://<account>.blob.core.windows.net` — required in MI mode. */
+    AZURE_STORAGE_ACCOUNT_URL?: string;
+    AZURE_STORAGE_CONNECTION_STRING?: string;
+    AZURE_STORAGE_CONTAINER?: string;
+}
+
+/**
+ * Pick the right `SessionBlobStore` implementation based on env. Returns
+ * `null` when no Azure storage backing is configured (caller falls back
+ * to the filesystem store).
+ *
+ * Selection (first match wins):
+ *   1. MI flag truthy + `AZURE_STORAGE_ACCOUNT_URL` → managed-identity
+ *      mode. The MI flag is `PILOTSWARM_BLOB_USE_MANAGED_IDENTITY` when
+ *      set (blob-specific, wins even when explicitly falsy), else the
+ *      legacy shared `PILOTSWARM_USE_MANAGED_IDENTITY`. Uses
+ *      {@link DefaultAzureCredential}, which picks up the
+ *      workload-identity token in AKS or `az login` / env-var creds
+ *      locally. SAS URL minting will throw — callers must proxy
+ *      downloads.
+ *   2. `AZURE_STORAGE_CONNECTION_STRING` set → legacy connection-string
+ *      mode. Identical to pre-MI behaviour. Used by the existing
+ *      `scripts/deploy-aks.sh` flow, local Docker storage, CI, and any
+ *      stamp that hasn't switched the flag on.
+ *   3. `AZURE_STORAGE_ACCOUNT_URL` set but neither credential path
+ *      enabled → throw. An account URL with no way to authenticate is a
+ *      misconfiguration; silently handing the caller `null` (→ empty
+ *      filesystem store) is how the portal served "artifact not found"
+ *      for months of blob-backed worker writes.
+ *   4. Otherwise → `null`.
+ *
+ * @internal
+ */
+export function createSessionBlobStore(
+    env: SessionBlobStoreEnv,
+    opts: { sessionStateDir?: string } = {},
+): SessionBlobStore | null {
+    const containerName =
+        (env.AZURE_STORAGE_CONTAINER || "").trim() || "copilot-sessions";
+    const blobMiFlag = (env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY || "").trim();
+    const useMi = blobMiFlag !== ""
+        ? isTruthyFlag(blobMiFlag)
+        : isTruthyFlag(env.PILOTSWARM_USE_MANAGED_IDENTITY);
+    const accountUrl = (env.AZURE_STORAGE_ACCOUNT_URL || "").trim();
+    const connStr = (env.AZURE_STORAGE_CONNECTION_STRING || "").trim();
+
+    if (useMi) {
+        if (!accountUrl) {
+            throw new Error(
+                "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY/PILOTSWARM_USE_MANAGED_IDENTITY is set but AZURE_STORAGE_ACCOUNT_URL is not. " +
+                "Set AZURE_STORAGE_ACCOUNT_URL to https://<account>.blob.core.windows.net (the bicep-deploy worker-env ConfigMap wires this automatically).",
+            );
+        }
+        const credential: TokenCredential = new DefaultAzureCredential();
+        const blobService = new BlobServiceClient(accountUrl, credential);
+        const containerClient = blobService.getContainerClient(containerName);
+        return new SessionBlobStore({
+            containerClient,
+            containerName,
+            sharedKeyCredential: null,
+            sessionStateDir: opts.sessionStateDir,
+        });
+    }
+
+    if (connStr) {
+        return new SessionBlobStore(connStr, containerName, opts.sessionStateDir);
+    }
+
+    if (accountUrl) {
+        throw new Error(
+            `AZURE_STORAGE_ACCOUNT_URL is set (${accountUrl}) but no blob credential path is enabled: ` +
+            "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY / PILOTSWARM_USE_MANAGED_IDENTITY are not truthy and " +
+            "AZURE_STORAGE_CONNECTION_STRING is unset. Refusing to fall back to the filesystem artifact " +
+            "store — it would silently diverge from blob-backed peers. Enable managed identity, provide " +
+            "a connection string, or unset AZURE_STORAGE_ACCOUNT_URL to opt into filesystem storage.",
+        );
+    }
+
+    return null;
+}
+
+function isTruthyFlag(value: string | undefined): boolean {
+    if (!value) return false;
+    const v = value.trim().toLowerCase();
+    return v === "1" || v === "true" || v === "yes" || v === "on";
+}

@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilotswarm-portal-ingress
+  namespace: copilot-runtime
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Image attachment uploads are base64 JSON up to ~5.4 MB (4 MB decoded
+    # cap) on the artifact PUT route; nginx's 1 MB default rejects them with
+    # 413 before the app's own 8 MB route limit can apply.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: portal
+spec:
+  ingressClassName: webapprouting.kubernetes.azure.com
+  tls:
+  - hosts:
+    - __PORTAL_HOST__
+    secretName: keyvault-pilotswarm-portal-tls
+  rules:
+  - host: __PORTAL_HOST__
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pilotswarm-portal
+            port:
+              number: 3001

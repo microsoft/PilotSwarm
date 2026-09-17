@@ -1,0 +1,354 @@
+/**
+ * pilotswarm — A durable execution runtime for GitHub Copilot SDK agents.
+ *
+ * Client access goes through a deployment's Web API (web mode — the
+ * supported mode; no database or storage credentials in the caller):
+ *
+ * @example
+ * ```typescript
+ * import { PilotSwarmClient } from "pilotswarm-sdk";
+ *
+ * const client = new PilotSwarmClient({ apiUrl: "https://portal.example.com" });
+ * await client.start();
+ *
+ * const session = await client.createSession();
+ * const response = await session.sendAndWait("Hello!");
+ * ```
+ *
+ * Workers always run backend-side against the datastore directly:
+ *
+ * @example
+ * ```typescript
+ * import { PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
+ *
+ * const worker = new PilotSwarmWorker({ store, githubToken });
+ * worker.registerTools([myTool]);
+ * await worker.start();
+ * ```
+ *
+ * Direct client construction (`new PilotSwarmClient({ store })`) remains for
+ * trusted server-side embedding and internal testing.
+ */
+
+export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
+export type { SessionEventHandler } from "./client.js";
+export { PilotSwarmWorker } from "./worker.js";
+export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
+export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
+export { FeatureFlagCache } from "./feature-flag-cache.js";
+export { FeatureStore } from "./feature-store.js";
+export { FEATURE_OPERATION_SPECS, featureToolParameters } from "./feature-tools.js";
+export type { FeatureViewer, FeatureView, FeatureMutation, FeatureMutationResult } from "./feature-store.js";
+export { PilotSwarmManagementClient, createManagementClient } from "./management-client.js";
+export type { PilotSwarmWebOptions } from "./web/api-connection.js";
+export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
+export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
+export type { SharedManagementSurface } from "./web/web-management-client.js";
+export { createManagementOps } from "./web/generated-op-methods.js";
+export type { ManagementOps } from "./web/generated-op-methods.js";
+export { WebFactStore, WebEnhancedFactStore, createWebFactStore } from "./web/web-fact-store.js";
+export { WebGraphStore, createWebGraphStore } from "./web/web-graph-store.js";
+export type {
+    PilotSwarmSessionView,
+    SessionPageCursor,
+    ListSessionsPageOptions,
+    PilotSwarmSessionPage,
+    ModelSummary,
+    SessionStatusChange,
+    SessionOrchestrationStats,
+    ExecutionHistoryEvent,
+    PilotSwarmManagementClientOptions,
+    RestartSystemSessionOptions,
+    RestartSystemSessionResult,
+    SystemSessionRestartDisposition,
+    ModelDefaultInput,
+    SystemModelDefaultInput,
+    ResolvedModelDefault,
+} from "./management-client.js";
+export { SessionManager } from "./session-manager.js";
+export { ManagedSession } from "./managed-session.js";
+export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
+export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
+export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
+// Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
+export { horizonConfigFromEnv } from "./horizon-env.js";
+export type { HorizonEnvConfig } from "./horizon-env.js";
+export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
+export type { StorageConfig, RuntimeStorageConfig, DuroxideStorageConfig, StorageConfigLegacyOptions } from "./storage-config.js";
+export { runtimeStorageProviders, duroxideStorageProviders, getRuntimeStorageProvider, getDuroxideStorageProvider } from "./storage-providers.js";
+export type { RuntimeStorageProvider, DuroxideStorageProvider } from "./storage-providers.js";
+export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
+export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
+export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
+export { normalizeUserRole } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue } from "./cms.js";
+export type {
+    FactStore,
+    FactRecord,
+    StoreFactInput,
+    StoredFactResult,
+    ReadFactsQuery,
+    DeleteFactInput,
+    DeletedFactResult,
+    DeletedFactsResult,
+    FactsStatsRow,
+    FactsTombstoneStats,
+    ForcePurgeFactsInput,
+    FactsNamespace,
+    AccessContext,
+    SetFactsCrawledInput,
+    SetFactsCrawledScopeKey,
+    EnhancedFactStore,
+    FactsCapabilities,
+    SearchMode,
+    SearchWeights,
+    SearchOpts,
+    SimilarOpts,
+    ScoredFact,
+    SearchResult,
+    EmbedderStatus,
+    EmbedderLoopStatus,
+    EmbeddingEndpointConfig,
+} from "./facts-store.js";
+// Graph store contract (optional, separately injected — enhancedfactstore 07 D2)
+export { isGraphStore, scopeKeyAccessible, DEFAULT_GRAPH_NAMESPACE } from "./graph-store.js";
+export type {
+    GraphStore,
+    GraphNodeInput,
+    GraphEdgeInput,
+    GraphNodeQuery,
+    GraphEdgeQuery,
+    GraphNamespaceQuery,
+    GraphNodeRef,
+    GraphNodeHit,
+    GraphEdgeRef,
+    GraphEdgeHit,
+    GraphEvidenceRemovalResult,
+    SubGraph,
+    GraphNamespaceFrontmatter,
+    GraphNamespaceInfo,
+    GraphNamespaceInput,
+    GraphNamespaceListQuery,
+    GraphNamespaceDeleteResult,
+} from "./graph-store.js";
+export type {
+    SessionStateStore,
+    SessionMetadata,
+    ArtifactStore,
+    ArtifactMetadata,
+    ArtifactDownloadResult,
+    ArtifactUploadOptions,
+    ArtifactEncoding,
+    ArtifactSource,
+} from "./session-store.js";
+export type {
+    PilotSwarmClientOptions,
+    PilotSwarmWorkerOptions,
+    ManagedSessionConfig,
+    PilotSwarmSessionStatus,
+    PilotSwarmSessionInfo,
+    SessionOwnerInfo,
+    SessionContextUsage,
+    SessionCompactionSnapshot,
+    TurnAction,
+    TurnResult,
+    CapturedEvent,
+    UserInputRequest,
+    UserInputResponse,
+    UserInputHandler,
+    CommandMessage,
+    CommandResponse,
+    OrchestrationInput,
+    SubAgentEntry,
+    SessionPolicy,
+    SendAttachmentInput,
+    PromptAttachmentRef,
+} from "./types.js";
+export {
+    IMAGE_ATTACHMENT_CONTENT_TYPES,
+    ATTACHMENT_MAX_BYTES,
+    ATTACHMENTS_MAX_COUNT,
+    ATTACHMENTS_MAX_TOTAL_BYTES,
+    sanitizePromptAttachmentRefs,
+} from "./types.js";
+
+// Skills loader
+export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
+export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
+export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames } from "./mcp-loader.js";
+export {
+    readCanvasKv, writeCanvasKv, validateCanvasKvKey, canvasKvGlobMatches, resolveCanvasKvViewer, decideCanvasKvWrite,
+    CanvasKvError, CANVAS_KV_KEY_MAX, CANVAS_KV_VALUE_MAX_BYTES, CANVAS_KV_MAX_KEYS, CANVAS_KV_MAX_BYTES, CANVAS_KV_LIST_PAGE,
+} from "./canvas-kv.js";
+export type { CanvasKvPrincipal, CanvasKvEntry, CanvasKvMe, CanvasKvBy, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvReadResult, CanvasKvStore } from "./canvas-kv.js";
+export { publishCanvasApp, findCanvasApp, rankCanvasAppHits, CANVAS_APP_DESCRIPTION_MIN } from "./canvas-app-catalog.js";
+export type { CanvasAppCatalogDeps, PublishCanvasAppArgs, CanvasAppHit } from "./canvas-app-catalog.js";
+export { canvasArtifactFilename, normalizeCanvasSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
+export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NAME_RE, CANVAS_INTERFACE_MAX_BYTES } from "./canvas-app-manifest.js";
+export type { CanvasAppInterface } from "./canvas-app-manifest.js";
+export type { McpAllowlistAgent } from "./mcp-loader.js";
+export type { Skill } from "./skills.js";
+// Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
+export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
+// Sweeper Agent tools
+export { createSweeperTools } from "./sweeper-tools.js";
+// Fact tools
+export { createFactTools } from "./facts-tools.js";
+export { createGraphTools } from "./graph-tools.js";
+// Inspect tools (read_agent_events, etc.)
+export { createInspectTools } from "./inspect-tools.js";
+export { createProviderTools, holdsProviderTools, PROVIDER_TOOL_NAMES } from "./provider-tools.js";
+export { ProviderStore, ProviderError } from "./provider-store.js";
+export { bootstrapProviders, buildRuntimeRegistry, loadProviderTypes } from "./provider-catalog.js";
+// Resource Manager Agent tools
+export { createResourceManagerTools } from "./resourcemgr-tools.js";
+// Model providers
+export { loadModelProviders, loadModelProviderTypes, ModelProviderRegistry } from "./model-providers.js";
+export { providerTypeUsesWorkloadIdentity, toSdkProviderType } from "./model-providers.js";
+// Workload Identity Federation — a provider type that stores no key and mints
+// a short-lived token per request from the identity the worker already holds.
+export {
+    AnthropicWifCredentials, anthropicWifCredentials, attachWorkloadIdentity,
+    readAnthropicWifSettings, resetAnthropicWifCredentials, WifExchangeError,
+} from "./wif-credentials.js";
+export type { AnthropicWifSettings, WifIdentitySource, WifSettingsResult } from "./wif-credentials.js";
+export { resolveRuntimeModelSelection, firstRuntimeModel } from "./provider-catalog.js";
+export type { RuntimeModelSelection, RuntimeModelResolutionSource } from "./provider-catalog.js";
+// A BYOK reasoning effort rides on the provider baseUrl as a path prefix —
+// exported so the proxy that strips it (grimfanda
+// deploy/openai-compat-proxy.mjs) has one place to read the contract from.
+export {
+    REASONING_EFFORT_PATH_PREFIX,
+    applyReasoningEffortToProviderConfig,
+    decodeReasoningEffortFromBaseUrl,
+    encodeReasoningEffortInBaseUrl,
+} from "./model-providers.js";
+export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider, ReasoningEffort, ContextTier } from "./model-providers.js";
+export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
+export type { PromptLayeringKind } from "./prompt-layering.js";
+export {
+    buildSchemaIdentifier,
+    renderPromptLayerManifest,
+    buildPromptLayersEventPayload,
+} from "./prompt-layers.js";
+export type {
+    PromptLayerDescriptor,
+    PromptLayerKind,
+    PromptLayerType,
+    PromptLayersEventPayload,
+} from "./prompt-layers.js";
+export {
+    normalizeWakeOn,
+    readWakeOn,
+    classifyChildUpdate,
+    shouldWakeParentForChildUpdate,
+    shouldWakeParentForChildDigest,
+    isHeartbeatText,
+    DEFAULT_CHILD_WAKE_POLICY,
+} from "./child-notifications.js";
+export type {
+    ChildWakePolicy,
+    ChildUpdateClassification,
+    ChildUpdateSnapshot,
+    ParentWakeDecisionInput,
+    ParentWakeDecision,
+} from "./child-notifications.js";
+export {
+    normalizeCronAtInput,
+    computeCronAtNextFire,
+    classifyRecurrence,
+    isValidTimezone,
+    describeCronAt,
+} from "./cron-at.js";
+export type {
+    CronAtSchedule,
+    CronAtInput,
+    CronAtNextFire,
+    CronAtNormalizeResult,
+    CronAtRecurrence,
+} from "./cron-at.js";
+
+// Debug utilities
+export {
+    exchangeClusteredStrategy,
+    listSelectionStrategies,
+    registerSelectionStrategy,
+    resolveSelectionStrategy,
+    scoreByExchangeProximity,
+    selectTranscript,
+} from "./transcript-selection.js";
+export type {
+    SelectableMessage,
+    SelectionElision,
+    SelectionOptions,
+    SelectionResult,
+    TranscriptSelectionStrategy,
+} from "./transcript-selection.js";
+
+export { SessionDumper } from "./session-dumper.js";
+
+// ─── Agent packages (docs/proposals/agent-packages.md) ───────────
+export {
+    agentPackagesArtifactSessionId,
+    agentPackageArtifactFilename,
+    agentPackageTarSha256,
+    isValidSemver,
+    compareSemver,
+    normalizeAgentName,
+    packAgentPackage,
+    readAgentPackageTarGz,
+    extractAgentPackageTarGz,
+    validateAgentPackageDir,
+    // A manifest-layout package only validates against its staged canonical
+    // tree, so any caller validating before publish needs to stage first —
+    // otherwise it reports failures that publishing would have resolved.
+    stageAgentPackageDir,
+    AGENT_PACKAGE_MAX_COMPRESSED_BYTES,
+} from "./agent-package-format.js";
+export type {
+    AgentPackageIssue,
+    AgentPackageManifest,
+    AgentPackageValidation,
+    PackedAgentPackage,
+} from "./agent-package-format.js";
+export {
+    publishAgentPackageDir,
+    publishPackedAgentPackage,
+    fetchAgentPackageTarGz,
+    deleteAgentPackageEverywhere,
+    AgentPackageValidationError,
+} from "./agent-package-service.js";
+export type { PublishOutcome } from "./agent-package-service.js";
+export {
+    installAgentPackages,
+    loadAgentPackageTools,
+} from "./agent-package-installer.js";
+export type {
+    AgentPackageInstallResult,
+    InstalledAgentPackage,
+} from "./agent-package-installer.js";
+export type {
+    WorkerRow,
+    WorkerPhase,
+    WorkerHeartbeatInput,
+    EffectiveDirective,
+    FleetDirectiveRow,
+    AgentPackageScope,
+    AgentPrincipal,
+    AgentPackageSummary,
+    AgentPackageDetail,
+    AgentPackageEditorInfo,
+    AgentPackageVersionRow,
+    AgentPackageInstallEntry,
+    AgentWorkerStateRow,
+    PublishAgentPackageInput,
+    PublishAgentPackageResult,
+} from "./cms.js";
+
+// Re-export defineTool from Copilot SDK for convenience
+export { defineTool } from "@github/copilot-sdk";
+export { createToolFactsAccessor, TOOL_PRIVATE_FACT_PREFIX } from "./tool-facts-accessor.js";
+export type { ToolFactsAccessor, ToolFactsScope, ToolFactsScopeOptions } from "./tool-facts-accessor.js";
+export { normalizeToolOnlyPrefixes, isToolOnlyFactKey } from "./facts-tools.js";
+
+export type { NativeTaskTools, NativeTaskName } from "./native-task-policy.js";

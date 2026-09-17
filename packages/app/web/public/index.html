@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PilotSwarm</title>
+  <link rel="stylesheet" href="/xterm/css/xterm.css" />
+  <style>
+    :root {
+      --app-background: #ffffff;
+      --app-foreground: #1f2328;
+      --overlay-background: #ffffff;
+      --overlay-foreground: #1f2328;
+      --hint-color: #3d444d;
+      --modal-backdrop: rgba(31, 35, 40, 0.28);
+      --modal-background: #ffffff;
+      --modal-border: #d0d7de;
+      --modal-foreground: #1f2328;
+      --modal-muted: #57606a;
+      --modal-selected-background: #ddf4ff;
+      --modal-selected-border: #0969da;
+      --modal-selected-foreground: #0550ae;
+    }
+    .hidden { display: none !important; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--app-background);
+      color: var(--app-foreground);
+    }
+    /* ── Top bar ─────────────────────────────────────────────── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 36px;
+      padding: 0 12px;
+      background: #24292f;
+      color: #ffffff;
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      font-size: 13px;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+    #topbar .brand { font-weight: 600; }
+    #topbar .user-area { display: flex; align-items: center; gap: 10px; }
+    #topbar .user-name { opacity: 0.85; font-size: 12px; }
+    #topbar button {
+      background: transparent;
+      color: #ffffff;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+      padding: 3px 10px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    #topbar button:hover { background: rgba(255,255,255,0.1); }
+    /* ── Layout ──────────────────────────────────────────────── */
+    #app-wrapper {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+    }
+    #terminal-area {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #terminal { position: absolute; inset: 0; }
+    /* ── Not-signed-in graphic ───────────────────────────────── */
+    #signed-out-screen {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: var(--app-background);
+      color: var(--app-foreground);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      z-index: 12;
+    }
+    #signed-out-screen.hidden { display: none; }
+    #signed-out-screen .lock-icon { font-size: 48px; opacity: 0.3; }
+    #signed-out-screen .message { font-size: 15px; opacity: 0.6; text-align: center; line-height: 1.6; }
+    #signed-out-screen button {
+      background: #0078d4;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 24px;
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #signed-out-screen button:hover { background: #106ebe; }
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--overlay-background);
+      color: var(--overlay-foreground);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      font-size: 15px;
+      z-index: 10; transition: opacity 0.3s;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    .spinner { display: inline-block; width: 16px; text-align: center; }
+    #copy-hint {
+      position: fixed; bottom: 4px; right: 8px;
+      color: var(--hint-color);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      font-size: 12px;
+      z-index: 5; pointer-events: none;
+    }
+    #theme-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: var(--modal-backdrop);
+      z-index: 15;
+    }
+    #theme-modal-backdrop.hidden {
+      display: none;
+    }
+    #theme-modal {
+      width: min(520px, calc(100vw - 24px));
+      max-height: min(640px, calc(100vh - 80px));
+      overflow-y: auto;
+      border: 1px solid var(--modal-border);
+      border-radius: 14px;
+      background: var(--modal-background);
+      color: var(--modal-foreground);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      padding: 18px;
+    }
+    .theme-modal-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .theme-modal-title {
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .theme-modal-subtitle {
+      color: var(--modal-muted);
+      font-size: 12px;
+      line-height: 1.45;
+      text-align: right;
+    }
+    #theme-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .theme-option {
+      width: 100%;
+      border: 1px solid var(--modal-border);
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      padding: 12px 14px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .theme-option.is-selected {
+      background: var(--modal-selected-background);
+      border-color: var(--modal-selected-border);
+      color: var(--modal-selected-foreground);
+    }
+    .theme-option-title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .theme-option-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .theme-option-current {
+      border: 1px solid var(--modal-border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--modal-muted);
+    }
+    .theme-option.is-selected .theme-option-current {
+      border-color: var(--modal-selected-border);
+      color: inherit;
+    }
+    .theme-option-description {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--modal-muted);
+      margin-bottom: 10px;
+    }
+    .theme-option.is-selected .theme-option-description {
+      color: inherit;
+      opacity: 0.8;
+    }
+    .theme-option-swatches {
+      display: flex;
+      gap: 8px;
+    }
+    .theme-swatch {
+      width: 22px;
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--modal-border);
+    }
+    @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
+  </style>
+</head>
+<body>
+  <div id="app-wrapper">
+    <div id="topbar">
+      <span class="brand">PilotSwarm</span>
+      <div class="user-area">
+        <span id="topbar-user" class="user-name"></span>
+        <button id="topbar-signin-btn" class="hidden" onclick="window.__portalSignIn && window.__portalSignIn()">Sign In</button>
+        <button id="topbar-signout-btn" class="hidden" onclick="window.__portalSignOut && window.__portalSignOut()">Sign Out</button>
+      </div>
+    </div>
+    <div id="terminal-area">
+      <div id="overlay">
+        <span>Connecting to PilotSwarm<span class="spinner" id="dots">...</span></span>
+      </div>
+      <div id="signed-out-screen" class="hidden">
+        <div class="lock-icon">&#x1F512;</div>
+        <div class="message">Sign in with your Microsoft account<br/>to access PilotSwarm</div>
+        <button onclick="window.__portalSignIn && window.__portalSignIn()">Sign in with Microsoft</button>
+      </div>
+      <div id="copy-hint">Select text to copy · ⌥Enter for multiline · Shift+T themes</div>
+      <div id="terminal"></div>
+  <div id="theme-modal-backdrop" class="hidden" aria-hidden="true">
+    <div id="theme-modal" role="dialog" aria-modal="true" aria-labelledby="theme-modal-title">
+      <div class="theme-modal-header">
+        <div class="theme-modal-title" id="theme-modal-title">Theme Picker</div>
+        <div class="theme-modal-subtitle">Shift+T toggle · Up/Down or j/k move · Enter apply · Esc close</div>
+      </div>
+      <div id="theme-options"></div>
+    </div>
+  </div>
+    </div><!-- /terminal-area -->
+  </div><!-- /app-wrapper -->
+  <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

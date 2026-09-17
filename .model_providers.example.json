@@ -1,0 +1,268 @@
+{
+    "providers": [
+        {
+            "id": "github-copilot",
+            "type": "github",
+            "models": [
+                {
+                    "name": "claude-opus-5",
+                    "description": "Claude Opus 5.0. Newest flagship Claude through GitHub Copilot — deepest reasoning for the hardest, longest-horizon tasks.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 200000,
+                        "long_context": 936000
+                    }
+                },
+                {
+                    "name": "claude-opus-4.8",
+                    "description": "Claude Opus 4.8. Most capable Claude option for the hardest analysis and reasoning tasks through GitHub Copilot.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 200000,
+                        "long_context": 936000
+                    }
+                },
+                {
+                    "name": "gpt-6-astra",
+                    "description": "GPT-6 Astra via GitHub Copilot. 272K default or 872K extended prompt budget within a 1M-token total context window.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 872000
+                    }
+                },
+                {
+                    "name": "gpt-5.6-sol",
+                    "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-sol-fast",
+                    "description": "GPT-5.6 Sol Fast (internal only) via GitHub Copilot. Same capability tier and ~921K-token window as Sol, tuned for lower latency; costs about twice Sol per token.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-luna",
+                    "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-terra",
+                    "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "claude-sonnet-5",
+                    "description": "Claude Sonnet 5. Latest Sonnet — strong all-rounder with improved reasoning and coding over 4.6.",
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 200000,
+                        "long_context": 936000
+                    }
+                }
+            ]
+        },
+        {
+            "id": "azure-openai",
+            "type": "openai",
+            "baseUrl": "https://your-foundry-resource.services.ai.azure.com/openai/v1",
+            "models": [
+                {
+                    "name": "gpt-5.4",
+                    "description": "GPT-5.4 via Azure AI Foundry. High reasoning effort, advanced multi-turn and coding tasks.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini via Azure AI Foundry. Faster and cheaper than full GPT-5.4, with stronger general capability than nano for everyday coding and chat tasks.",
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.4-nano",
+                    "description": "GPT-5.4 Nano via Azure OpenAI. Lightweight, fast, cost-efficient for simpler tasks.",
+                    "cost": "low",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                }
+            ]
+        },
+        {
+            "id": "anthropic",
+            "type": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "models": [
+                {
+                    "name": "claude-opus-4-6",
+                    "description": "Claude Opus 4.6 (latest). Most capable. Deep reasoning, complex multi-step tasks.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "claude-sonnet-4-6",
+                    "description": "Claude Sonnet 4.6 (latest). Fast, capable all-rounder.",
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "high"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                }
+            ]
+        },
+        {
+            "id": "anthropic-wif",
+            "type": "anthropic-wif",
+            "baseUrl": "https://api.anthropic.com",
+            "models": [
+                {
+                    "name": "claude-opus-5",
+                    "description": "Claude Opus 5. Deepest reasoning, for the hardest and longest-horizon tasks. No API key: the worker authenticates with its own workload identity.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "claude-sonnet-5",
+                    "description": "Claude Sonnet 5. Fast, capable all-rounder.",
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                }
+            ]
+        }
+    ]
+}

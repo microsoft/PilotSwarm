@@ -1,0 +1,1558 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { commandResponseKey } from "../../src/types.ts";
+import { parseChildUpdate } from "../../src/orchestration/agents.ts";
+
+let mockSession;
+let mockManager;
+
+vi.mock("../../src/session-proxy.js", () => ({
+    createSessionProxy: (_ctx, _sessionId, _affinityKey, config) => {
+        mockSession._currentConfig = config;
+        return mockSession;
+    },
+    createSessionManagerProxy: () => mockManager,
+}));
+
+const STOP = Symbol("stop");
+
+function createHarness({ messages = [], inputOverrides = {} } = {}) {
+    const values = new Map();
+    const scheduledMessages = [...messages]
+        .map((entry) => ({
+            atMs: entry.atMs ?? 0,
+            payload: entry.payload,
+        }))
+        .sort((left, right) => left.atMs - right.atMs);
+
+    const state = {
+        nowMs: 0,
+        runTurnCall: null,
+        continueAsNew: null,
+        sentToSessions: [],
+        recordedEvents: [],
+        sentCommands: [],
+        cmsUpdates: [],
+        deletedSessions: [],
+    };
+
+    mockSession = {
+        needsHydration: vi.fn(() => ({ effect: "needsHydration" })),
+        hydrate: vi.fn(() => ({ effect: "hydrate" })),
+        checkpoint: vi.fn(() => ({ effect: "checkpoint" })),
+        dehydrate: vi.fn(() => ({ effect: "dehydrate" })),
+        destroy: vi.fn(() => ({ effect: "destroy" })),
+        runTurn: vi.fn((prompt, bootstrap, iteration, opts) => ({
+            effect: "runTurn",
+            prompt,
+            bootstrap,
+            iteration,
+            opts,
+            systemPrompt: mockSession._currentConfig?.turnSystemPrompt,
+        })),
+    };
+
+    mockManager = {
+        loadKnowledgeIndex: vi.fn(() => ({ effect: "loadKnowledgeIndex" })),
+        recordSessionEvent: vi.fn((sessionId, events) => ({ effect: "recordSessionEvent", sessionId, events })),
+        summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
+        listChildSessions: vi.fn(() => ({ effect: "listChildSessions" })),
+        getOrchestrationStats: vi.fn((sessionId) => ({ effect: "getOrchestrationStats", sessionId })),
+        getSessionStatus: vi.fn((sessionId) => ({ effect: "getSessionStatus", sessionId })),
+        sendCommandToSession: vi.fn((sessionId, command) => ({ effect: "sendCommandToSession", sessionId, command })),
+        sendToSession: vi.fn((sessionId, prompt) => ({ effect: "sendToSession", sessionId, prompt })),
+        updateCmsState: vi.fn((sessionId, nextState, lastError, waitReason) => ({
+            effect: "updateCmsState",
+            sessionId,
+            state: nextState,
+            lastError,
+            waitReason,
+        })),
+        getDescendantSessionIds: vi.fn((sessionId) => ({ effect: "getDescendantSessionIds", sessionId })),
+        deleteSession: vi.fn((sessionId, reason) => ({ effect: "deleteSession", sessionId, reason })),
+    };
+
+    const ctx = {
+        traceInfo: () => {},
+        setCustomStatus: () => {},
+        getValue: (key) => (values.has(key) ? values.get(key) : null),
+        setValue: (key, value) => values.set(key, value),
+        clearValue: (key) => values.delete(key),
+        utcNow: () => ({ effect: "utcNow" }),
+        dequeueEvent: () => ({ effect: "dequeueEvent" }),
+        scheduleTimer: (ms) => ({ effect: "scheduleTimer", ms }),
+        race: (left, right) => ({ effect: "race", left, right }),
+        continueAsNewVersioned: (input, version) => ({ effect: "continueAsNewVersioned", input, version }),
+        newGuid: () => ({ effect: "newGuid" }),
+    };
+
+    function nextMessageIfReady(nowMs) {
+        const next = scheduledMessages[0];
+        if (!next || next.atMs > nowMs) return null;
+        return scheduledMessages.shift().payload;
+    }
+
+    function normalizePayload(payload) {
+        return typeof payload === "string" ? payload : JSON.stringify(payload);
+    }
+
+    function resolveBlockingDequeue() {
+        const next = scheduledMessages.shift();
+        if (!next) throw new Error("Blocking dequeue requested with no queued messages.");
+        state.nowMs = Math.max(state.nowMs, next.atMs);
+        return normalizePayload(next.payload);
+    }
+
+    function resolveRace(left, right) {
+        // Stop-turn race (orchestration v1.0.56+): processPrompt yields
+        // race(runTurnTask, dequeueEvent(stopTurn.<iteration>)) instead of a
+        // bare runTurn. The harness treats reaching runTurn as its stopping
+        // point exactly like the old direct yield; callers resume the
+        // generator with the race envelope { index: 0, value: turnResult }.
+        if (left?.effect === "runTurn") {
+            state.runTurnCall = left;
+            return STOP;
+        }
+        const timerMs = right?.effect === "scheduleTimer" ? right.ms : 0;
+        const next = scheduledMessages[0];
+        if (left?.effect === "dequeueEvent" && next && next.atMs <= state.nowMs) {
+            scheduledMessages.shift();
+            return { index: 0, value: normalizePayload(next.payload) };
+        }
+        if (left?.effect === "dequeueEvent" && next && next.atMs < state.nowMs + timerMs) {
+            scheduledMessages.shift();
+            state.nowMs = next.atMs;
+            return { index: 0, value: normalizePayload(next.payload) };
+        }
+
+        state.nowMs += timerMs;
+        return { index: 1, value: undefined };
+    }
+
+    function resolve(effect) {
+        if (effect == null) return undefined;
+        switch (effect.effect) {
+            case "utcNow":
+                return state.nowMs;
+            case "needsHydration":
+                return false;
+            case "hydrate":
+            case "checkpoint":
+            case "dehydrate":
+            case "destroy":
+            case "loadKnowledgeIndex":
+            case "recordSessionEvent":
+                state.recordedEvents.push({ sessionId: effect.sessionId, events: effect.events });
+                return undefined;
+            case "summarizeSession":
+                return undefined;
+            case "listChildSessions":
+                return JSON.stringify(inputOverrides.listedChildren ?? inputOverrides.subAgents ?? []);
+            case "getOrchestrationStats":
+                return inputOverrides.orchestrationStats ?? {
+                    historyEventCount: 0,
+                    historySizeBytes: 0,
+                    queuePendingCount: 0,
+                    kvUserKeyCount: 0,
+                    kvTotalValueBytes: 0,
+                };
+            case "getSessionStatus": {
+                if (typeof inputOverrides.getSessionStatus === "function") {
+                    const value = inputOverrides.getSessionStatus(effect.sessionId, state);
+                    return typeof value === "string" ? value : JSON.stringify(value);
+                }
+                const statusMap = inputOverrides.sessionStatuses ?? {};
+                const value = statusMap[effect.sessionId] ?? { status: "running" };
+                return typeof value === "string" ? value : JSON.stringify(value);
+            }
+            case "sendCommandToSession":
+                state.sentCommands.push({ sessionId: effect.sessionId, command: effect.command });
+                return undefined;
+            case "sendToSession":
+                state.sentToSessions.push({ sessionId: effect.sessionId, prompt: effect.prompt });
+                return undefined;
+            case "updateCmsState":
+                state.cmsUpdates.push({
+                    sessionId: effect.sessionId,
+                    state: effect.state,
+                    lastError: effect.lastError,
+                    waitReason: effect.waitReason,
+                });
+                return undefined;
+            case "getDescendantSessionIds":
+                return [...(inputOverrides.descendantIdsBySessionId?.[effect.sessionId] ?? [])];
+            case "deleteSession":
+                state.deletedSessions.push({ sessionId: effect.sessionId, reason: effect.reason });
+                return undefined;
+            case "newGuid":
+                return "generated-affinity";
+            case "dequeueEvent":
+                return resolveBlockingDequeue();
+            case "race":
+                return resolveRace(effect.left, effect.right);
+            case "continueAsNewVersioned":
+                state.continueAsNew = effect;
+                return undefined;
+            case "runTurn":
+                state.runTurnCall = effect;
+                return STOP;
+            default:
+                throw new Error(`Unknown effect: ${JSON.stringify(effect)}`);
+        }
+    }
+
+    async function runUntilRunTurn() {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        const gen = handler(ctx, {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            cronSchedule: {
+                intervalSeconds: 180,
+                reason: "refresh summary",
+            },
+            activeTimerState: {
+                remainingMs: 180_000,
+                originalDurationMs: 180_000,
+                reason: "refresh summary",
+                type: "cron",
+            },
+            ...inputOverrides,
+        });
+
+        let input;
+        for (let step = 0; step < 400; step += 1) {
+            const next = gen.next(input);
+            if (next.done) {
+                return {
+                    done: true,
+                    value: next.value,
+                    state,
+                };
+            }
+
+            const resolved = resolve(next.value);
+            if (resolved === STOP) {
+                return {
+                    done: false,
+                    runTurnCall: state.runTurnCall,
+                    state,
+                };
+            }
+            input = resolved;
+        }
+
+        throw new Error("Exceeded step limit before reaching runTurn.");
+    }
+
+    async function runThroughTurn(turnResult) {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        let currentInput = {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            cronSchedule: {
+                intervalSeconds: 180,
+                reason: "refresh summary",
+            },
+            activeTimerState: {
+                remainingMs: 180_000,
+                originalDurationMs: 180_000,
+                reason: "refresh summary",
+                type: "cron",
+            },
+            ...inputOverrides,
+        };
+
+        for (let execution = 0; execution < 10; execution += 1) {
+            const gen = handler(ctx, currentInput);
+            let input;
+            for (let step = 0; step < 800; step += 1) {
+                const next = gen.next(input);
+                if (next.done) {
+                    return {
+                        done: true,
+                        value: next.value,
+                        state,
+                    };
+                }
+
+                state.continueAsNew = null;
+                const resolved = resolve(next.value);
+                if (resolved === STOP) {
+                    input = { index: 0, value: turnResult };
+                    continue;
+                }
+                input = resolved;
+
+                if (state.continueAsNew) {
+                    return {
+                        done: false,
+                        continueAsNew: state.continueAsNew,
+                        state,
+                    };
+                }
+            }
+        }
+
+        throw new Error("Exceeded step limit before orchestration continued as new.");
+    }
+
+    async function runUntilSecondRunTurn(firstTurnResult) {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        let currentInput = {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            cronSchedule: {
+                intervalSeconds: 180,
+                reason: "refresh summary",
+            },
+            activeTimerState: {
+                remainingMs: 180_000,
+                originalDurationMs: 180_000,
+                reason: "refresh summary",
+                type: "cron",
+            },
+            ...inputOverrides,
+        };
+        let runTurnCount = 0;
+
+        for (let execution = 0; execution < 10; execution += 1) {
+            const gen = handler(ctx, currentInput);
+            let input;
+            for (let step = 0; step < 1000; step += 1) {
+                const next = gen.next(input);
+                if (next.done) {
+                    return {
+                        done: true,
+                        value: next.value,
+                        state,
+                    };
+                }
+
+                state.continueAsNew = null;
+                const resolved = resolve(next.value);
+                if (resolved === STOP) {
+                    runTurnCount += 1;
+                    if (runTurnCount === 1) {
+                        input = { index: 0, value: firstTurnResult };
+                        continue;
+                    }
+                    return {
+                        done: false,
+                        runTurnCall: state.runTurnCall,
+                        state,
+                    };
+                }
+                input = resolved;
+
+                if (state.continueAsNew) {
+                    currentInput = state.continueAsNew.input;
+                    break;
+                }
+            }
+        }
+
+        throw new Error("Exceeded step limit before reaching the second runTurn.");
+    }
+
+    async function runUntilDone() {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        let currentInput = {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            ...inputOverrides,
+        };
+
+        for (let execution = 0; execution < 20; execution += 1) {
+            const gen = handler(ctx, currentInput);
+            let input;
+            for (let step = 0; step < 800; step += 1) {
+                const next = gen.next(input);
+                if (next.done) {
+                    return {
+                        done: true,
+                        value: next.value,
+                        state,
+                        values,
+                    };
+                }
+
+                state.continueAsNew = null;
+                const resolved = resolve(next.value);
+                if (resolved === STOP) {
+                    throw new Error("Unexpected runTurn during shutdown harness test.");
+                }
+                input = resolved;
+
+                if (state.continueAsNew) {
+                    currentInput = state.continueAsNew.input;
+                    break;
+                }
+            }
+
+            if (!state.continueAsNew) {
+                throw new Error("Exceeded step limit before orchestration completed.");
+            }
+        }
+
+        throw new Error("Exceeded execution limit before orchestration completed.");
+    }
+
+    async function runUntilBlockedOrContinueAsNew() {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        const gen = handler(ctx, {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            ...inputOverrides,
+        });
+
+        let input;
+        for (let step = 0; step < 800; step += 1) {
+            const next = gen.next(input);
+            if (next.done) {
+                return { done: true, value: next.value, state };
+            }
+
+            state.continueAsNew = null;
+            if (next.value?.effect === "dequeueEvent" && scheduledMessages.length === 0) {
+                return { blocked: true, state };
+            }
+
+            const resolved = resolve(next.value);
+            if (resolved === STOP) {
+                return { blocked: false, runTurnCall: state.runTurnCall, state };
+            }
+            input = resolved;
+
+            if (state.continueAsNew) {
+                return { blocked: false, continueAsNew: state.continueAsNew, state };
+            }
+        }
+
+        throw new Error("Exceeded step limit before blocking or continuing as new.");
+    }
+
+    return {
+        runUntilRunTurn,
+        runThroughTurn,
+        runUntilSecondRunTurn,
+        runUntilDone,
+        runUntilBlockedOrContinueAsNew,
+        state,
+        values,
+    };
+}
+
+// Use the real command producer and child shutdown handler before delivering
+// their output to the full parent orchestration harness. This fixture also runs
+// unchanged against the pre-fix source for the negative-control reproduction.
+async function captureParentRequestedCleanup(action) {
+    const { handleSubAgentAction, beginGracefulShutdown } = await import("../../src/orchestration/agents.ts");
+    const { createInitialState, deriveOptions } = await import("../../src/orchestration/state.ts");
+    const commands = [], messages = [], events = [];
+    const tracked = { orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "idle", result: "AUDIT RESULT" };
+    function runtime(input) {
+        const values = new Map();
+        const options = deriveOptions(input);
+        return {
+            input, options, state: createInitialState(input, options),
+            ctx: { traceInfo() {}, setCustomStatus() {},
+                getValue: key => values.get(key), setValue: (key, value) => values.set(key, value),
+                clearValue: key => values.delete(key), utcNow: () => 0,
+            },
+            manager: {
+                sendCommandToSession: (sessionId, command) => { commands.push({ sessionId, command }); },
+                listChildSessions: () => "[]",
+                sendToSession: (sessionId, prompt) => { messages.push({ sessionId, prompt }); },
+                recordSessionEvent: (sessionId, entries) => { events.push({ sessionId, entries }); },
+                updateCmsState() {}, getDescendantSessionIds: () => [], deleteSession() {},
+            },
+            session: { destroy() {} },
+        };
+    }
+    // In-memory activity results are immediately available; yield them back to
+    // the generator exactly as the real orchestration receives activity results.
+    function settle(generator) {
+        let next = generator.next();
+        for (let step = 0; !next.done && step < 100; step++) next = generator.next(next.value);
+        expect(next.done, "cleanup must settle").toBe(true);
+    }
+    const parent = runtime({ sessionId: "parent-session", config: {}, iteration: 5, subAgents: [tracked] });
+    settle(handleSubAgentAction(parent, { type: action, agentId: tracked.orchId }));
+    expect(commands).toHaveLength(1);
+    expect(commands[0].sessionId).toBe(tracked.sessionId);
+    const child = runtime({ sessionId: tracked.sessionId, parentSessionId: "parent-session", config: {}, iteration: 5 });
+    settle(beginGracefulShutdown(child, commands[0].command.cmd, commands[0].command));
+    expect(child.state.orchestrationResult).toBe({ complete_agent: "done", cancel_agent: "cancelled", delete_agent: "deleted" }[action]);
+    return { messages, events, tracked };
+}
+
+describe("parent cleanup round trip", () => {
+    beforeEach(() => { vi.resetModules(); });
+
+    it.each(["complete_agent", "cancel_agent", "delete_agent"])("%s does not schedule another parent model call", async action => {
+        const cleanup = await captureParentRequestedCleanup(action);
+        // The parent's final answer has already been delivered. Only the actual
+        // child shutdown output is queued; no user prompt or scheduled work.
+        const harness = createHarness({
+            messages: cleanup.messages.map(message => ({ atMs: 0, payload: { prompt: message.prompt } })),
+            inputOverrides: {
+                isSystem: false, cronSchedule: undefined, activeTimerState: undefined,
+                subAgents: [cleanup.tracked],
+                sessionStatuses: { "child-session-1": { status: action === "complete_agent" ? "completed" : "cancelled", result: action === "complete_agent" ? "done" : "cancelled", resultSource: "orchestration" } },
+            },
+        });
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+        expect(result.runTurnCall, "a cleanup acknowledgement must not become a new work prompt").toBeUndefined();
+        expect(result.blocked).toBe(true);
+        expect(cleanup.events.some(event => event.sessionId === "parent-session"
+            && event.entries.some(entry => entry.eventType === "session.child_cleanup_completed"))).toBe(true);
+    });
+});
+
+describe("orchestration child update batching", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    it("batches descendant-triggered turns into one digest after 30 seconds", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=7]\nWaiting for source one",
+                    },
+                },
+                {
+                    atMs: 5_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-2 type=completed iter=7]\nChild two done",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Monitor source one", status: "running" },
+                    { orchId: "agent-2", sessionId: "child-session-2", task: "Summarize source two", status: "running" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        // 1.0.71: the internal prompt is still the user text; the digest now
+        // trails it as a <system_context> block instead of moving to the
+        // system message (that is what cost the provider prefix cache).
+        expect(result.runTurnCall.prompt.startsWith(
+            "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.",
+        )).toBe(true);
+        expect(result.runTurnCall.prompt).toContain("<system_context>");
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("This is an internal orchestration wake-up caused by child session updates");
+        expect(result.runTurnCall.systemPrompt).toContain("Agent agent-1");
+        expect(result.runTurnCall.systemPrompt).toContain("Agent agent-2");
+        expect(result.runTurnCall.systemPrompt).toContain("Child two done");
+        expect(result.state.nowMs).toBe(30_000);
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not extend the 30 second digest window when later child updates arrive", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=8]\nFirst signal",
+                    },
+                },
+                {
+                    atMs: 20_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=8]\nLatest signal",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.state.nowMs).toBe(30_000);
+        expect(result.runTurnCall.systemPrompt).toContain("Latest signal");
+        expect(result.runTurnCall.systemPrompt).not.toContain("First signal");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the latest child update even when the update type stays the same", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=8]\nWaiting on source A",
+                    },
+                },
+                {
+                    atMs: 5_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=8]\nWaiting on source B",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.state.nowMs).toBe(30_000);
+        expect(result.runTurnCall.systemPrompt).toContain("Waiting on source B");
+        expect(result.runTurnCall.systemPrompt).not.toContain("Waiting on source A");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes the child digest into a user turn while keeping the user prompt primary", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=9]\nWaiting on reporter",
+                    },
+                },
+                {
+                    atMs: 10_000,
+                    payload: {
+                        prompt: "Stop checking every outlet and just tell me the top two stories.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Watch the reporter", status: "running" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.state.nowMs).toBe(10_000);
+        expect(result.runTurnCall.prompt.startsWith("Stop checking every outlet and just tell me the top two stories.")).toBe(true);
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Waiting on reporter");
+        expect(result.runTurnCall.systemPrompt).toContain('There is an active recurring schedule every 180 seconds for "refresh summary".');
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires the next interrupted cron wake-up at the original scheduled time", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 60_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9]\nFinished a chunk",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilSecondRunTurn({
+            type: "completed",
+            content: "Still monitoring.",
+        });
+
+        // 1.0.71: the internal prompt is still the user text; the digest now
+        // trails it as a <system_context> block instead of moving to the
+        // system message (that is what cost the provider prefix cache).
+        expect(result.runTurnCall.prompt.startsWith(
+            "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.",
+        )).toBe(true);
+        expect(result.runTurnCall.prompt).toContain("<system_context>");
+        expect(result.state.nowMs).toBe(180_000);
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(2);
+    });
+
+    it("treats a ready child digest as buffered work before blocking for new messages", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                pendingChildDigest: {
+                    startedAtMs: 0,
+                    ready: true,
+                    updates: [
+                        {
+                            sessionId: "child-session-1",
+                            updateType: "completed",
+                            content: "Child finished while the parent was between executions",
+                            observedAtMs: 0,
+                        },
+                    ],
+                },
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "completed" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Child finished while the parent was between executions");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes cycleOrigin to cron timer turns only", async () => {
+        const cronHarness = createHarness();
+        const cronResult = await cronHarness.runUntilRunTurn();
+        expect(cronResult.runTurnCall.opts).toEqual(expect.objectContaining({ cycleOrigin: "cron" }));
+
+        const promptHarness = createHarness({
+            messages: [{ atMs: 0, payload: { prompt: "ordinary user prompt" } }],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+            },
+        });
+        const promptResult = await promptHarness.runUntilRunTurn();
+        expect(promptResult.runTurnCall.opts?.cycleOrigin).toBeUndefined();
+    });
+
+    it("suppresses quiet cron-origin child completions at the child source", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                sessionId: "child-session-1",
+                parentSessionId: "parent-session",
+                config: { childContract: { wakeOn: "material_change" } },
+            },
+        });
+
+        const result = await harness.runThroughTurn({
+            type: "completed",
+            content: "Quiet.",
+        });
+
+        expect(result.state.sentToSessions).toEqual([]);
+        expect(result.state.recordedEvents.some((entry) =>
+            entry.events?.some((event) =>
+                event.eventType === "session.child_update_suppressed"
+                && event.data?.classification === "heartbeat"
+                && event.data?.cycleOrigin === "cron",
+            ),
+        )).toBe(true);
+    });
+
+    it("forwards material report_cycle cron completions with cycle metadata", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                sessionId: "child-session-1",
+                parentSessionId: "parent-session",
+                config: { childContract: { wakeOn: "material_change" } },
+            },
+        });
+
+        await harness.runThroughTurn({
+            type: "completed",
+            content: "Verbose prose that should not be parsed.",
+            cycleReport: { status: "material", summary: "New blocker found." },
+        });
+
+        expect(harness.state.sentToSessions[0]).toEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            prompt: expect.stringContaining("[CHILD_UPDATE from=child-session-1 type=completed iter=6 cycle=cron status=material]"),
+        }));
+        expect(harness.state.sentToSessions[0].prompt).toContain("New blocker found.");
+    });
+
+    it("preserves cycle metadata when batching child updates", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9 cycle=cron status=material]\nNew blocker found.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running", contract: { wakeOn: "material_change" } },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("New blocker found.");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("wakes the parent for the Waldemort finite task result under material_change", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=df018b8e-a512-4fd8-a835-9363d9b3cfe0 type=completed iter=2]\nResolution complete. All 11 customers were processed and the result fact was stored.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    {
+                        orchId: "session-df018b8e-a512-4fd8-a835-9363d9b3cfe0",
+                        sessionId: "df018b8e-a512-4fd8-a835-9363d9b3cfe0",
+                        task: "Resolve authoritative customer anchors",
+                        status: "running",
+                        contract: { wakeOn: "material_change" },
+                    },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("All 11 customers were processed");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+        expect(result.state.recordedEvents.some((entry) =>
+            entry.events?.some((event) => event.eventType === "session.child_update_suppressed"),
+        )).toBe(false);
+    });
+
+    it("parses legacy and cycle child update headers, rejecting malformed headers", () => {
+        expect(parseChildUpdate("[CHILD_UPDATE from=child-session-1 type=completed iter=9 verdict=success]\nDone")).toEqual({
+            sessionId: "child-session-1",
+            updateType: "completed",
+            content: "Done",
+            verdict: "success",
+        });
+        expect(parseChildUpdate("[CHILD_UPDATE from=child-session-1 type=completed iter=9 cycle=cron status=blocked]\nBlocked")).toEqual({
+            sessionId: "child-session-1",
+            updateType: "completed",
+            content: "Blocked",
+            cycleOrigin: "cron",
+            cycleStatus: "blocked",
+        });
+        expect(parseChildUpdate("[CHILD_UPDATE cycle=cron status=material]\nMissing fields")).toBe(null);
+    });
+
+    it("preserves terminal completion verdict through digest completion policy", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9 verdict=success]\nChild finished cleanly.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running", contract: { wakeOn: "completion" } },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Child finished cleanly.");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves blocked cycle metadata through digest completion policy", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9 cycle=cron status=blocked]\nBlocked reading source.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running", contract: { wakeOn: "completion" } },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Blocked reading source.");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not dehydrate again when an idle timer fires after the session is already dehydrated", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                blobEnabled: true,
+                needsHydration: true,
+                cronSchedule: undefined,
+                activeTimerState: {
+                    remainingMs: 0,
+                    originalDurationMs: 60_000,
+                    reason: "idle timeout",
+                    type: "idle",
+                },
+            },
+        });
+
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+
+        expect(result.blocked).toBe(true);
+        expect(mockSession.dehydrate).not.toHaveBeenCalled();
+    });
+
+    it("ignores child updates from sessions that are no longer tracked", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9]\nCompleted by parent",
+                    },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                subAgents: [],
+            },
+        });
+
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+
+        expect(mockManager.getSessionStatus).not.toHaveBeenCalled();
+        expect(mockSession.runTurn).not.toHaveBeenCalled();
+        if (result.continueAsNew) {
+            expect(result.continueAsNew.input.pendingChildDigest).toBeUndefined();
+        }
+    });
+});
+
+describe("orchestration shutdown semantics", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    it("waits for active children before completing the parent", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "done", id: "done-cmd", args: { reason: "Finished" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=6]\nChild finished cleanly",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "completed" : "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("done");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "done" }),
+            }),
+        ]);
+        expect(result.state.cmsUpdates).toContainEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            state: "completed",
+            lastError: null,
+            waitReason: null,
+        }));
+        expect(mockSession.destroy).toHaveBeenCalledTimes(1);
+
+        const response = JSON.parse(result.values.get(commandResponseKey("done-cmd")));
+        expect(response.result?.ok).toBe(true);
+        expect(response.cmd).toBe("done");
+    });
+
+    it("completes a live idle child even when its tracked task status is already completed", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "done", id: "done-stale-task", args: { reason: "Finished" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=6]\nChild session completed cleanly",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "completed" },
+                ],
+                listedChildren: [
+                    {
+                        orchId: "agent-1",
+                        sessionId: "child-session-1",
+                        title: "Child work",
+                        status: "idle",
+                        isSystem: false,
+                    },
+                ],
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "completed" : "idle" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("done");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "done" }),
+            }),
+        ]);
+    });
+
+    it("waits for active children before cancelling the parent", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "cancel", id: "cancel-cmd", args: { reason: "Stop now" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=cancelled iter=6]\nChild cancelled cleanly",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "cancelled" : "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("cancelled");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "cancel" }),
+            }),
+        ]);
+        expect(result.state.cmsUpdates).toContainEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            state: "cancelled",
+            lastError: null,
+            waitReason: null,
+        }));
+
+        const response = JSON.parse(result.values.get(commandResponseKey("cancel-cmd")));
+        expect(response.result?.ok).toBe(true);
+        expect(response.cmd).toBe("cancel");
+    });
+
+    it("uses the cancel route before deleting the subtree", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "delete", id: "delete-cmd", args: { reason: "Clean up" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=cancelled iter=6]\nChild cancelled for deletion",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                descendantIdsBySessionId: {
+                    "parent-session": ["child-session-1", "grandchild-session-1"],
+                },
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "cancelled" : "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("deleted");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "cancel" }),
+            }),
+        ]);
+        expect(result.state.deletedSessions).toEqual([
+            { sessionId: "child-session-1", reason: "Ancestor parent-session deleted: Clean up" },
+            { sessionId: "grandchild-session-1", reason: "Ancestor parent-session deleted: Clean up" },
+            { sessionId: "parent-session", reason: "Clean up" },
+        ]);
+
+        const response = JSON.parse(result.values.get(commandResponseKey("delete-cmd")));
+        expect(response.result?.ok).toBe(true);
+        expect(response.cmd).toBe("delete");
+    });
+
+    it("fails the parent when graceful completion exceeds the shutdown timeout", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "done", id: "done-timeout", args: { reason: "Finished" } },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                getSessionStatus: () => ({ status: "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("failed");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "done" }),
+            }),
+        ]);
+        expect(result.state.cmsUpdates).toContainEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            state: "failed",
+            lastError: expect.stringContaining("Graceful done timed out after 60s"),
+            waitReason: null,
+        }));
+
+        const response = JSON.parse(result.values.get(commandResponseKey("done-timeout")));
+        expect(response.error).toContain("Graceful done timed out after 60s");
+    });
+});
+
+describe("wait_for_agents resolution on child completion", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    it("resolves an explicit barrier by polling after cleanup sends no child work prompt", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                cronSchedule: undefined,
+                waitingForAgentIds: ["agent-1"],
+                activeTimerState: { remainingMs: 0, originalDurationMs: 30_000, reason: "waiting for cleanup", type: "agent-poll", agentIds: ["agent-1"] },
+                subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "running", result: "AUDIT RESULT" }],
+                sessionStatuses: { "child-session-1": { status: "completed", result: "done", resultSource: "orchestration" } },
+            },
+        });
+        const result = await harness.runUntilRunTurn();
+        expect(result.runTurnCall.prompt).toContain("Sub-agent completed");
+        expect(result.runTurnCall.prompt).toContain("AUDIT RESULT");
+        expect(result.runTurnCall.prompt).not.toContain("Result: done");
+    });
+
+    it("finishes parent shutdown by polling when descendants send no cleanup prompt", async () => {
+        const harness = createHarness({
+            messages: [{ atMs: 0, payload: { type: "cmd", cmd: "done", id: "close-parent" } }],
+            inputOverrides: {
+                subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "idle" }],
+                getSessionStatus: (_id, state) => ({ status: state.nowMs >= 5000 ? "completed" : "running" }),
+            },
+        });
+        const result = await harness.runUntilDone();
+        expect(result.value).toBe("done");
+        expect(mockSession.runTurn).not.toHaveBeenCalled();
+        expect(result.state.sentCommands[0].command).toMatchObject({ cmd: "done", requestedBy: "parent-session" });
+        expect(JSON.parse(result.values.get(commandResponseKey("close-parent"))).result.ok).toBe(true);
+    });
+
+    it("resolves the wait when a completed child update races the child's auto-resumed wait timer", async () => {
+        // Regression: the child answers (CHILD_UPDATE type=completed) and then
+        // auto-resumes the remainder of the wait timer the parent's message
+        // interrupted, so the parent's live-status probe sees "waiting" at the
+        // moment it applies the update. That probe must not downgrade the
+        // explicit completion — downgrading deadlocks wait_for_agents (the idle
+        // child may never speak again and the fallback poll cannot re-derive
+        // "completed" from an idle probe).
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=2]\nCHILD FINAL: BLUE",
+                    },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Ask the parent for the token", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "waiting" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("Sub-agent completed");
+        expect(result.runTurnCall.prompt).toContain("CHILD FINAL: BLUE");
+        expect(result.state.runTurnCall).not.toBeNull();
+    });
+
+    it("still downgrades to waiting on a deliberate wait-type child update", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=2]\nStill waiting on the source",
+                    },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track the source", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "waiting" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+
+        // The wait must NOT resolve: no "Sub-agent completed" followup. A
+        // digest wake-up turn or continue-as-new is fine; resolution is not.
+        expect(result.runTurnCall?.prompt ?? "").not.toContain("Sub-agent completed");
+        if (result.continueAsNew) {
+            expect(result.continueAsNew.input.waitingForAgentIds).toEqual(["agent-1"]);
+        }
+    });
+});
+
+// Store-wins Layer 2 (docs/proposals/snapshot-store-wins.md): the 1.0.59
+// orchestration records session.snapshot_lineage_jump when the adopted store
+// version jumps past prior+1 — a discarded/foreign turn published in the gap
+// and this turn hydrated + committed on top. Driven end-to-end through the real
+// turn harness. (Version-ceremony + freeze-boundary guards live in
+// snapshot-lineage-jump.test.js.)
+describe("snapshot_lineage_jump behaviour (store-wins Layer 2)", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    const lineageJumpEvents = (state) =>
+        state.recordedEvents
+            .flatMap((e) => e.events ?? [])
+            .filter((ev) => ev.eventType === "session.snapshot_lineage_jump");
+
+    it("records a lineage jump when the adopted store version exceeds prior+1", async () => {
+        // Prior mirror 169; the activity returns 171 — a discarded/foreign turn
+        // published 170 in the gap and this turn hydrated + committed 171.
+        const harness = createHarness({ inputOverrides: { snapshotVersion: 169 } });
+        const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 171 });
+        const jumps = lineageJumpEvents(res.state);
+        expect(jumps).toHaveLength(1);
+        expect(jumps[0].data).toEqual({ from: 169, to: 171, direction: "forward" });
+    });
+
+    it("records a BACKWARD lineage jump when the adopted version regresses below prior", async () => {
+        // Store restored from an older backup: mirror 169, the activity hydrates
+        // and commits a version below the mirror. A fresh markerless worker emits
+        // no snapshot_regressed, so the orchestration mirror is the only witness
+        // to the regression — the latest must flag it (F4).
+        const harness = createHarness({ inputOverrides: { snapshotVersion: 169 } });
+        const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 120 });
+        const jumps = lineageJumpEvents(res.state);
+        expect(jumps).toHaveLength(1);
+        expect(jumps[0].data).toEqual({ from: 169, to: 120, direction: "backward" });
+    });
+
+    it("records NO lineage jump on a normal +1 advance", async () => {
+        const harness = createHarness({ inputOverrides: { snapshotVersion: 169 } });
+        const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 170 });
+        expect(lineageJumpEvents(res.state)).toHaveLength(0);
+    });
+});
+
+// Idle-child wake (observed live on waldemort-chk, 2026-07-22): a spawned
+// ops-analyst answered and parked idle at 18:12; its parent sat in
+// wait_for_agents polling the child every 30s for 72 minutes because the
+// poll had no mapping for "idle", and the child's completion notify was
+// suppressible by the wake contract. Nothing woke the parent until a human
+// asked "are we stuck?". These tests pin the three closures: the poll maps
+// idle/input_required as wait-settling, a first report from an expected
+// child fast-paths the digest when everything has gone quiet, and a child's
+// FIRST completion always reaches the parent regardless of contract.
+describe("idle-child wake", () => {
+    it("agent-poll resolves a wait when the child parks idle", async () => {
+        const harness = createHarness({
+            messages: [],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: {
+                    remainingMs: 30_000,
+                    originalDurationMs: 30_000,
+                    reason: "waiting for 1 agent(s)",
+                    type: "agent-poll",
+                    agentIds: ["agent-1"],
+                },
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle", result: "ANALYSIS: root cause found" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("went quiet after answering");
+        expect(result.runTurnCall.prompt).toContain("ANALYSIS: root cause found");
+    });
+
+    it("agent-poll surfaces a child blocked on input instead of polling forever", async () => {
+        const harness = createHarness({
+            messages: [],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: {
+                    remainingMs: 30_000,
+                    originalDurationMs: 30_000,
+                    reason: "waiting for 1 agent(s)",
+                    type: "agent-poll",
+                    agentIds: ["agent-1"],
+                },
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Gather approvals", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "input_required", result: "Which subscription should I use?" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("blocked waiting for an answer");
+    });
+
+    it("a non-terminal child update whose status probe reports idle settles the wait", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { prompt: "[CHILD_UPDATE from=child-session-1 type=progress iter=2]\nstill going" },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("went quiet after answering");
+    });
+
+    it("first report from an expected child delivers the digest immediately once all agents settle", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 1_000,
+                    payload: { prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=2]\nDone: results stored" },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running", expectsReport: true },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates");
+        expect(result.runTurnCall.systemPrompt).toContain("Done: results stored");
+        // Fast path: delivered at the update's arrival time (small harness
+        // ticks aside), not after the 30s batch window.
+        expect(result.state.nowMs).toBeLessThan(5_000);
+    });
+
+    it("without an outstanding expectation the digest keeps the normal batch window", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 1_000,
+                    payload: { prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=2]\nDone: results stored" },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates");
+        expect(result.state.nowMs).toBeGreaterThanOrEqual(30_000);
+    });
+
+    it("a spawned child's first final answer notifies the parent despite a completion-only contract", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "do the task" } },
+                { atMs: 5_000, payload: { prompt: "follow-up ping" } },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                isSystem: false,
+                parentSessionId: "parent-session-id",
+                nestingLevel: 1,
+                config: { childContract: { wakeOn: "completion" } },
+            },
+        });
+
+        // The harness driver cannot cleanly park a promptless child after its
+        // final turn; the observable contract is the captured notify effect.
+        await harness.runThroughTurn({ type: "completed", content: "TASK DONE: findings attached" }).catch(() => {});
+
+        expect(harness.state.sentToSessions.some((entry) =>
+            entry.sessionId === "parent-session-id"
+            && /\[CHILD_UPDATE from=parent-session type=completed/.test(entry.prompt)
+            && entry.prompt.includes("TASK DONE: findings attached"),
+        )).toBe(true);
+    });
+
+    it("later completions respect the wake contract once the first report landed", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "do the task again" } },
+                { atMs: 5_000, payload: { prompt: "follow-up ping" } },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                isSystem: false,
+                parentSessionId: "parent-session-id",
+                nestingLevel: 1,
+                config: { childContract: { wakeOn: "completion" } },
+                reportedFirstCompletionToParent: true,
+            },
+        });
+
+        await harness.runThroughTurn({ type: "completed", content: "routine follow-up answer" }).catch(() => {});
+
+        expect(harness.state.sentToSessions.some((entry) => entry.sessionId === "parent-session-id")).toBe(false);
+        expect(harness.state.recordedEvents.some((entry) =>
+            entry.events?.some((event) => event.eventType === "session.child_update_suppressed"),
+        )).toBe(true);
+    });
+});
