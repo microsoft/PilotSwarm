@@ -9,11 +9,11 @@ Build layered CLI/TUI apps on top of the shipped PilotSwarm interface.
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- CLI guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
-- CLI agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
-- Keybindings: `https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/keybindings.md`
-- DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- Source quickstart: `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- CLI guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
+- CLI agent guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
+- Keybindings: `https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/keybindings.md`
+- DevOps sample: `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Preferred Structure
 
@@ -79,7 +79,7 @@ Do not guess these answers when the user has not provided them. Offer the standa
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input for LOCAL
   mode (embedded workers). Remote attach needs only the portal URL:
-  `npx pilotswarm remote --api-url <url>` (auto Entra sign-in;
+  `pilotswarm remote --api-url <url>` (auto Entra sign-in;
   `--device-code` for headless hosts).
 - If the app needs a custom model catalog, check in a type-only
   `.model_providers.example.json` and create the real `.model_providers.json`
@@ -130,7 +130,7 @@ Do not guess these answers when the user has not provided them. Offer the standa
   - `"start:remote": "./scripts/run.sh remote"` for remote
 - Use `.env` for local mode and `.env.remote` for remote mode. The script selects the right file based on the mode argument.
 - Include preflight checks (env file exists, plugin dir exists, worker module exists for local).
-- Use `exec npx pilotswarm ...` for local and `exec npx pilotswarm remote ...` for remote.
+- Use `exec pilotswarm ...` for local and `exec pilotswarm remote ...` for remote.
 - Make the script executable and verify the executable bit after creation.
 - Keep compatibility workarounds in the launcher or `postinstall` scripts, not scattered across README steps.
 

@@ -71,12 +71,12 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/affandar/PilotSwarm",
+        "url": "https://github.com/microsoft/PilotSwarm",
         "directory": "packages/sdk"
     },
-    "homepage": "https://github.com/affandar/PilotSwarm/tree/main/packages/sdk",
+    "homepage": "https://github.com/microsoft/PilotSwarm/tree/main/packages/sdk",
     "bugs": {
-        "url": "https://github.com/affandar/PilotSwarm/issues"
+        "url": "https://github.com/microsoft/PilotSwarm/issues"
     },
     "dependencies": {
         "@azure/identity": "^4.13.1",

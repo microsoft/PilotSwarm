@@ -16,9 +16,8 @@ runtime — pick the one you're using:
 
 → **Browser portal** (mouse + keyboard, mobile-friendly): [user-guide/portal.md](./portal.md)
 
-If you haven't installed PilotSwarm yet, the
-[Docker Quickstart](../quickstart/docker.md) gets both
-surfaces running with a single command.
+If you haven't installed PilotSwarm yet, start with the
+[local setup guide](../quickstart/local.md).
 
 ## What both surfaces share
 

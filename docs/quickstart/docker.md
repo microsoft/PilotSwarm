@@ -1,5 +1,9 @@
 # PilotSwarm Starter Docker Quickstart
 
+> Historical guide for images published from the original personal repository.
+> The Microsoft repository currently distributes package tarballs through
+> GitHub Releases. For the supported setup path, see [Local Setup](./local.md).
+
 PilotSwarm can be up and running in a few minutes from a single Docker image.
 
 This starter image gives you:

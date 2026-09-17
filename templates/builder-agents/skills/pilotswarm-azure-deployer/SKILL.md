@@ -9,11 +9,11 @@ Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker and br
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- AKS deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
-- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md`
-- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
-- DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- Source quickstart: `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- AKS deployment guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
+- Configuration guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/reference/configuration.md`
+- Plugin architecture: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
+- DevOps sample: `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Preferred Outputs
 
@@ -91,7 +91,7 @@ Also call out the Azure resources the user must provision:
   callers. `DATABASE_URL` / blob / `HORIZON_*` secrets go ONLY to worker and
   portal pods.
 - Client connect story to document in rollout notes: TUI
-  `npx pilotswarm remote --api-url <url>`; SDK `new PilotSwarmClient({ apiUrl })`;
+  `pilotswarm remote --api-url <url>`; SDK `new PilotSwarmClient({ apiUrl })`;
   MCP `pilotswarm-mcp --api-url <url>`; Entra deployments sign in
   interactively or via `PILOTSWARM_API_TOKEN`.
 - Post-rollout validation: `GET /api/v1/health` returns

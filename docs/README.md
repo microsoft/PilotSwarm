@@ -2,12 +2,12 @@
 
 Five sections, in reading order. Pick your door.
 
-## 1. [Quick Start](./quickstart/docker.md)
+## 1. [Quick Start](./quickstart/local.md)
 
 Running in minutes.
 
-- [Docker Quickstart](./quickstart/docker.md) — the fastest path: browser portal + SSH TUI + two workers from one `pilotswarm-starter` image
 - [Local Setup](./quickstart/local.md) — from source: install, PostgreSQL, first run
+- [Release tarballs](../README.md#package-tarballs) — install the three PilotSwarm packages from a GitHub Release
 
 ## 2. [User Guide](./user-guide/README.md)
 

@@ -9,12 +9,12 @@ Build browser portal experiences on top of the shipped PilotSwarm web portal.
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- Portal guide: `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
-- SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
-- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
-- AKS deployment: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
-- DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- Source quickstart: `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- Portal guide: `https://github.com/microsoft/PilotSwarm/blob/main/packages/app/web/README.md`
+- SDK guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
+- Plugin architecture: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
+- AKS deployment: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
+- DevOps sample: `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Personal multi-session workspaces
 

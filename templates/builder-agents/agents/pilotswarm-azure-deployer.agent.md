@@ -35,14 +35,14 @@ performs all datastore operations on callers' behalf. Wire deployments so:
 
 - `DATABASE_URL`, blob and `HORIZON_*` secrets are delivered ONLY to worker
   and portal pods — never to client machines or client-side config
-- users attach with just the portal URL: TUI via `npx pilotswarm remote
+- users attach with just the portal URL: TUI via `pilotswarm remote
   --api-url <url>`, SDK apps via `new PilotSwarmClient({ apiUrl })`, MCP via
   `pilotswarm-mcp --api-url <url>`
 - portal auth (none | entra) gates the entire API; on Entra deployments the
   TUI/MCP sign in interactively or via `PILOTSWARM_API_TOKEN`
 - validate rollouts with `GET /api/v1/health` (`{ ok, started, mode,
   apiVersion }`) and `GET /api/v1/bootstrap` (models + creatable agents)
-- Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
+- Reference: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md`
 
 ## Deployment Topology
 
@@ -83,12 +83,12 @@ Only proceed after the user confirms.
 - the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
 - the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
 - the installed `pilotswarm-three-tier` skill (when the user chooses three-tier topology)
-- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
-- `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
-- `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/reference/configuration.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/packages/app/web/README.md`
+- `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Constraints
 

@@ -7,7 +7,7 @@ const SEC_HEADERS = {
     Accept: "application/json",
     "Accept-Encoding": "gzip, deflate",
     "User-Agent": process.env.SEC_USER_AGENT
-        || "PilotSwarm Finance Research Lab/0.1 github.com/affandar/PilotSwarm",
+        || "PilotSwarm Finance Research Lab/0.1 github.com/microsoft/PilotSwarm",
 };
 
 const MARKET_RANGES = new Set(["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max"]);

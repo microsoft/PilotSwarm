@@ -3,9 +3,8 @@
 This guide walks through setting up a fully working PilotSwarm environment
 from scratch — the durable execution runtime for GitHub Copilot SDK agents.
 
-If you want the fastest possible first-run path, start with the
-[Starter Docker Quickstart](./docker.md) and come
-back here when you want the full source-based setup.
+This guide runs PilotSwarm from source. Package tarballs for released versions
+are attached to [GitHub Releases](https://github.com/microsoft/PilotSwarm/releases).
 
 By the end you'll have:
 
@@ -33,94 +32,42 @@ Optional (for AKS deployment): see [Deploying to AKS](../developer/deploy/aks.md
 ## Step 1: Clone and Install
 
 ```bash
-git clone https://github.com/affandar/pilotswarm.git
-cd pilotswarm
-npm install
+git clone https://github.com/microsoft/PilotSwarm.git
+cd PilotSwarm
+npm ci
 npm run build
 ```
 
 ### Installing the CLI on its own
 
-You do **not** need the repo to use the CLI. To talk to a deployment that
-someone else runs — create sessions, manage agent packages, open the TUI —
-install the `pilotswarm` package globally:
+After a GitHub Release is available, sign in to the internal repository and
+install all three matching npm-format tarballs. The `pilotswarm` tarball
+provides four binaries: `pilotswarm` (TUI + subcommands), `pilotswarm-cli`
+(alias), `pilotswarm-web` (portal server), and `pilotswarm-mcp` (MCP server).
 
 ```bash
-npm install -g pilotswarm
-
+gh auth login
+scripts/install-from-release.sh X.Y.Z
 pilotswarm --help
 pilotswarm auth login --api-url https://<your-portal>
 pilotswarm agents list
 ```
 
-That package provides four binaries: `pilotswarm` (TUI + subcommands),
-`pilotswarm-cli` (alias), `pilotswarm-web` (portal server), and
-`pilotswarm-mcp` (MCP server).
+Omit the version to install the latest GitHub Release. The script downloads
+`pilotswarm-sdk`, `pilotswarm-horizon-store`, and `pilotswarm` from that
+Release, verifies their package names and versions, then installs them in one
+command. Use `--registry <url>` for transitive dependencies from a configured
+mirror, `--prefix <dir>` for a different install location, `--keep` to save the
+tarballs, or `--dry-run` to inspect the download without installing.
 
-**Pin the version** when you want repeatable installs rather than the moving
-`latest` tag: `npm install -g pilotswarm@0.5.29`.
-
-#### If your network blocks the public npm registry
-
-Corporate-managed devices are often blocked from `registry.npmjs.org` and
-routed through an internal mirror, which may also hold newly published
-versions for several days. Two fallbacks, in order of preference:
-
-**1. Install through your mirror.** Point npm at it for this install only:
-
-```bash
-npm install -g pilotswarm --registry https://<your-npm-mirror>/
-```
-
-If the mirror 404s on a recent version, it has not cleared the mirror's
-quarantine window yet — install the latest version it does carry:
-
-```bash
-npm view pilotswarm versions --registry https://<your-npm-mirror>/ | tail -5
-npm install -g pilotswarm@<version-it-has> --registry https://<your-npm-mirror>/
-```
-
-**2. Download the tarball and install from the file.** Every npm package is a
-plain `.tgz`, so any HTTP client can fetch it and npm can install from disk —
-no registry access needed at install time:
-
-```bash
-# Resolve the tarball URL (swap in your mirror if npmjs.org is blocked)
-npm view pilotswarm dist.tarball
-# → https://registry.npmjs.org/pilotswarm/-/pilotswarm-0.5.29.tgz
-
-curl -fL -o pilotswarm.tgz https://registry.npmjs.org/pilotswarm/-/pilotswarm-0.5.29.tgz
-npm install -g ./pilotswarm.tgz
-```
-
-The URL is predictable — `<registry>/pilotswarm/-/pilotswarm-<version>.tgz` —
-so you can construct it by hand for any version, and carry the file to an
-air-gapped machine. `npm install -g ./file.tgz` still resolves that package's
-**dependencies** from your configured registry; on a fully offline host, use
-`npm pack` on a connected machine and copy the whole `node_modules` tree, or
-run from a clone as below.
-
-**3. Use the release-tarball install script.** Every GitHub Release attaches
-the three package tarballs `npm publish` produced. The script below resolves
-the latest release (or the version you name), downloads them, checks each
-declares the expected version, and installs all three in one `npm install -g`
-so the app's same-version dependencies come from the files:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/affandar/PilotSwarm/main/scripts/install-from-release.sh | bash -s -- 0.5.57
-# or, from a clone:
-scripts/install-from-release.sh                 # latest release
-scripts/install-from-release.sh 0.5.57 --registry https://<your-npm-mirror>/
-```
-
-`--prefix <dir>` installs under a prefix instead of npm's global one,
-`--keep` leaves the tarballs in `./dist-tarballs`, and `--dry-run` stops
-before installing. Transitive dependencies still resolve from your registry
-or the `--registry` you pass.
+You can also download the assets with `gh release download` and install the
+three local `.tgz` files together. GitHub Release tarballs contain the
+PilotSwarm packages; npm still resolves their other dependencies through your
+configured registry.
 
 #### Running from a clone (unreleased changes)
 
-A global install gives you the last **published** release. To use changes that
+A global install gives you a released build. To use changes that
 have not shipped yet — including subcommands added since that release — run
 the repo's entry point directly:
 
@@ -134,42 +81,33 @@ An alias makes this painless:
 alias psw='node /path/to/pilotswarm/packages/app/tui/bin/tui.js'
 ```
 
-If you have both a global install and a clone, remember the global one wins on
+If you have both a global install and a clone, the global binary may win on
 `PATH`. `npm uninstall -g pilotswarm` removes it (and all four binaries).
 
 ### Using as a dependency in another project
 
-If you're building your own app on top of the runtime:
+Download the `pilotswarm-sdk` tarball from a GitHub Release, then install it
+from a local path in your application:
 
 ```bash
 cd your-project
+npm install /path/to/pilotswarm-sdk-X.Y.Z.tgz
+```
 
-# Published npm package
-npm install pilotswarm-sdk
+For local development against a checkout, use a file reference or `npm link`:
 
-# Option A: file reference (local development)
-npm install ../path/to/pilotswarm/packages/sdk
-
-# Option B: npm link (symlink — changes reflected immediately)
-cd /path/to/pilotswarm && npm link
+```bash
+npm install ../path/to/PilotSwarm/packages/sdk
+# or:
+cd /path/to/PilotSwarm && npm link
 cd /path/to/your-project && npm link pilotswarm-sdk
 ```
 
-Either way, import from `pilotswarm-sdk`:
+Import from `pilotswarm-sdk`:
 
 ```typescript
 import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
 ```
-
-If you want the published terminal UI package as well:
-
-```bash
-npm install pilotswarm
-```
-
-The latest published release is `0.4.0` for `pilotswarm-sdk`,
-`pilotswarm-horizon-store`, and `pilotswarm` (the app package with the TUI, portal, and MCP bins). Pin that version in applications when
-you want repeatable installs instead of the moving npm `latest` tag.
 
 Inside this repo, the recommended terminal UI path is
 [`run.sh`](../../run.sh) or
@@ -360,7 +298,7 @@ portal URL. Logs stream over the Web API; no `DATABASE_URL` or `kubectl`
 required:
 
 ```bash
-npx pilotswarm remote --api-url https://portal.example.com
+node packages/app/tui/bin/tui.js remote --api-url https://portal.example.com
 ```
 
 Auth is discovered from the deployment: no-auth deployments start
@@ -369,7 +307,7 @@ the terminal (tokens are cached at `~/.config/pilotswarm/auth/`). You can
 also sign in ahead of time:
 
 ```bash
-npx pilotswarm auth login --api-url https://portal.example.com
+node packages/app/tui/bin/tui.js auth login --api-url https://portal.example.com
 ```
 
 `PILOTSWARM_API_URL` in the environment (or in `.env.remote`) works instead

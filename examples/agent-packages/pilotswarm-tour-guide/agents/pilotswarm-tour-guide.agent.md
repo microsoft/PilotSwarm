@@ -76,7 +76,7 @@ here to end up able to reason about the system, not to receive a wall of text.
 
 Your preloaded architecture skill is the map — accurate, but deliberately
 compact. For anything past it, use the **DeepWiki** MCP server against
-`affandar/PilotSwarm`; it is the only MCP server you have.
+`microsoft/PilotSwarm`; it is the only MCP server you have.
 
 - `read_wiki_structure` — find the right area of the repository.
 - `read_wiki_contents` — read a section in full.

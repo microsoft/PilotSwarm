@@ -6,12 +6,12 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/affandar/pilotswarm.git",
+        "url": "git+https://github.com/microsoft/PilotSwarm.git",
         "directory": "packages/app"
     },
-    "homepage": "https://github.com/affandar/pilotswarm#readme",
+    "homepage": "https://github.com/microsoft/PilotSwarm#readme",
     "bugs": {
-        "url": "https://github.com/affandar/pilotswarm/issues"
+        "url": "https://github.com/microsoft/PilotSwarm/issues"
     },
     "engines": {
         "node": ">=24"

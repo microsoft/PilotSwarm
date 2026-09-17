@@ -30,19 +30,19 @@ Your job is to create or update application code in the user's repository, not t
 
 - the installed `pilotswarm-portal-builder` skill
 - the installed `pilotswarm-agent-versioning` skill when creating or editing portal-exposed `plugin/agents/*.agent.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
-- `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/packages/app/web/README.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
+- `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Web API Topology (what the portal is)
 
 The portal server is not just the browser UI host — it **hosts the deployment's
 Web API** (HTTP `/api/v1` + WebSocket `/api/v1/ws`), which is the single
 integration surface for every client: the browser portal itself, the TUI in
-remote mode (`npx pilotswarm remote --api-url`), SDK apps
+remote mode (`pilotswarm remote --api-url`), SDK apps
 (`new PilotSwarmClient({ apiUrl })`), the MCP server (`pilotswarm-mcp
 --api-url`), and any custom UX built on the zero-dependency
 `pilotswarm-sdk/api` package. Consequences for portal work:
@@ -54,7 +54,7 @@ remote mode (`npx pilotswarm remote --api-url`), SDK apps
   `GET /api/v1/bootstrap` (`creatableAgents`), which is why `PLUGIN_DIRS`
   packaging matters
 - custom web UXes are supported first-class: see
-  `https://github.com/affandar/pilotswarm/blob/main/docs/api/building-a-custom-ux.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/api/building-a-custom-ux.md`
 
 ## Constraints
 

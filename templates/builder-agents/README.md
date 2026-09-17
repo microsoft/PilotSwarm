@@ -115,14 +115,14 @@ cp -R templates/builder-agents/skills/* .github/skills/
 ## Topology Baseline (all templates assume this)
 
 Every deployment exposes one integration surface: the portal's Web API
-(`/api/v1` + `/api/v1/ws`). Clients — TUI (`npx pilotswarm remote --api-url`),
+(`/api/v1` + `/api/v1/ws`). Clients — TUI (`pilotswarm remote --api-url`),
 SDK apps (`new PilotSwarmClient({ apiUrl })`), the MCP server
 (`pilotswarm-mcp --api-url`), and custom UXes on `pilotswarm-sdk/api` —
 hold only the portal URL (plus an Entra token where auth is enabled). Only
 workers and the portal server itself hold `DATABASE_URL`/blob/`HORIZON_*`
 secrets. Direct `{ store }` client construction is for single-process demos,
 tests, and cleanup scripts. See
-`https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`.
+`https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md`.
 
 ## Canonical References
 
@@ -134,24 +134,24 @@ ownership and shares. Admin access to privileged system sessions remains;
 this mode is not complete isolation from administrators.
 See the AKS guide below for rollout order and the accepted system-session exception.
 
-- Starter Docker quickstart:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- Source quickstart:
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
 - CLI guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
 - Portal guide:
-  `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/packages/app/web/README.md`
 - CLI agent guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
 - SDK guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
 - SDK agent guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-agents.md`
 - Plugin architecture:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
 - AKS deployment:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
 - DevOps sample:
-  `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+  `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Maintenance Rule
 

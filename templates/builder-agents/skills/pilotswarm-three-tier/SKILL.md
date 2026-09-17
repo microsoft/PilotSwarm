@@ -5,7 +5,7 @@ description: "Reference for adding a Tier 3 worker AKS cluster to a PilotSwarm d
 
 # PilotSwarm Three-Tier Architecture
 
-Reference for extending a standard two-tier PilotSwarm AKS deployment (clients → portal Web API on Control AKS) with a dedicated Tier 3 worker cluster for ephemeral work pods. Tier-1 clients (TUI `npx pilotswarm remote --api-url`, SDK apps, MCP) attach to the portal's `/api/v1` — they hold no database credentials.
+Reference for extending a standard two-tier PilotSwarm AKS deployment (clients → portal Web API on Control AKS) with a dedicated Tier 3 worker cluster for ephemeral work pods. Tier-1 clients (TUI `pilotswarm remote --api-url`, SDK apps, MCP) attach to the portal's `/api/v1` — they hold no database credentials.
 
 ## When to Use Three-Tier
 
@@ -21,7 +21,7 @@ Two-tier remains the default for lightweight, short-lived agent workloads.
 
 ```text
 Tier 1 — Laptop (TUI)
-  │  npx pilotswarm remote ...
+  │  pilotswarm remote ...
   │  Pure UI, no agents, no tools
   ▼
 Tier 2 — Control AKS Cluster

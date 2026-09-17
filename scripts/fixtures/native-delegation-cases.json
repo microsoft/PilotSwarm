@@ -23,7 +23,7 @@
     "expected": [
       "durable"
     ],
-    "prompt": "Assign an agent to each of microsoft/duroxide, microsoft/pg_durable, and affandar/PilotSwarm to monitor CI overnight, investigate failures as they appear, and send me a consolidated report tomorrow at 9am America/Los_Angeles. The monitoring must keep going after this conversation turn ends."
+    "prompt": "Assign an agent to each of microsoft/duroxide, microsoft/pg_durable, and microsoft/PilotSwarm to monitor CI overnight, investigate failures as they appear, and send me a consolidated report tomorrow at 9am America/Los_Angeles. The monitoring must keep going after this conversation turn ends."
   },
   {
     "id": "wide-fanout",

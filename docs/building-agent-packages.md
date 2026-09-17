@@ -430,16 +430,13 @@ Every registry operation is available from the terminal. The CLI talks to a
 deployment's Web API, so your own sign-in decides what you may see and change
 — no database credentials anywhere.
 
-**Getting the CLI** (full detail, including corporate-network fallbacks:
+**Getting the CLI** (full detail:
 [Getting Started → Installing the CLI on its own](./quickstart/local.md#installing-the-cli-on-its-own)):
 
 ```sh
-npm install -g pilotswarm
-
-# Blocked from registry.npmjs.org? Use your mirror, or fetch the tarball:
-npm install -g pilotswarm --registry https://<your-npm-mirror>/
-curl -fL -o pilotswarm.tgz https://registry.npmjs.org/pilotswarm/-/pilotswarm-<version>.tgz
-npm install -g ./pilotswarm.tgz
+gh auth login
+# From a PilotSwarm checkout:
+scripts/install-from-release.sh X.Y.Z
 ```
 
 To use subcommands that have not been published yet, run the repo entry point

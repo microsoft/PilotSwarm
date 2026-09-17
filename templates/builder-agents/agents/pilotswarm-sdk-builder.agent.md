@@ -37,11 +37,11 @@ Your job is to create or update the user's application code, plugin files, and w
 - the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
 - the installed `pilotswarm-hybrid-datastore` skill when the app needs stock PostgreSQL runtime storage plus HorizonDB enhanced facts/search/graph
 - the installed `pilotswarm-knowledge-harvester` skill when the app needs to ingest sources into durable searchable knowledge or an open knowledge graph (a `crawler: true` agent + the optional EnhancedFactStore / GraphStore providers)
-- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
-- `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-agents.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
+- `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Web API Topology (how everything connects)
 
@@ -62,11 +62,11 @@ teach it in generated READMEs:
 - **Facts & the knowledge graph** are available to clients over the API:
   `createWebFactStore(api)` / `createWebGraphStore(api)` implement the SDK's
   `FactStore`/`GraphStore` interfaces over HTTP.
-- The **TUI** attaches with `npx pilotswarm remote --api-url <url>` (auto
+- The **TUI** attaches with `pilotswarm remote --api-url <url>` (auto
   Entra sign-in; `pilotswarm auth login|status|logout` to manage, and
   `--device-code` for headless hosts). The **MCP server** attaches with
   `pilotswarm-mcp --api-url <url>`.
-- Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
+- Reference: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
 

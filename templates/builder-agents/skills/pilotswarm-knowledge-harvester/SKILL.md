@@ -25,11 +25,11 @@ graph-shaping behavior needs to be domain-specific.
 
 ## Canonical References
 
-- Enhanced facts + graph config: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md#enhanced-facts--knowledge-graph-optional`
-- Facts table + graph model: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/facts.md`
-- Worked sample app: `https://github.com/affandar/pilotswarm/tree/main/examples/horizon-harvester`
-- Deploying a harvester as a service: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/harvester.md`
-- Env vars: `https://github.com/affandar/pilotswarm/blob/main/.env.example` (`HORIZON_*` block)
+- Enhanced facts + graph config: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/reference/configuration.md#enhanced-facts--knowledge-graph-optional`
+- Facts table + graph model: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/facts.md`
+- Worked sample app: `https://github.com/microsoft/PilotSwarm/tree/main/examples/horizon-harvester`
+- Deploying a harvester as a service: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/harvester.md`
+- Env vars: `https://github.com/microsoft/PilotSwarm/blob/main/.env.example` (`HORIZON_*` block)
 
 ## When To Use This Pattern
 

@@ -37,11 +37,11 @@ Your job is to create or update application code in the user's repository, not t
 
 - the installed `pilotswarm-cli-builder` skill
 - the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/keybindings.md`
-- `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/keybindings.md`
+- `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Web API Topology (how the TUI connects)
 
@@ -49,7 +49,7 @@ The shipped TUI has two modes:
 
 - **Local** (`pilotswarm local` / `run.sh local`): boots embedded workers
   in-process against `DATABASE_URL` — the local dev loop.
-- **Remote** (`npx pilotswarm remote --api-url <portal-url>`): the supported
+- **Remote** (`pilotswarm remote --api-url <portal-url>`): the supported
   way to attach to any deployment. The TUI needs only the portal URL — no
   `DATABASE_URL`, no kubectl; logs stream over the API, and on Entra-secured
   deployments the TUI opens the browser for interactive sign-in automatically
@@ -60,7 +60,7 @@ Scaffold `.env` accordingly: `DATABASE_URL` belongs to the local/worker side;
 `GITHUB_TOKEN` is an optional bootstrap credential, not the long-term provider
 configuration. Runtime shared/personal providers are created in Admin Console
 or through management APIs. Remote attach instructions carry only the portal
-URL. Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
+URL. Reference: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
 
