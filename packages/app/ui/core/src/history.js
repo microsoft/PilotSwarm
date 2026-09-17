@@ -1,0 +1,1593 @@
+import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
+import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
+import { formatCompactionActivityRuns } from "./context-usage.js";
+import { canonicalSystemTitle } from "./system-titles.js";
+import { matchesSessionError } from "./session-warning.js";
+import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
+import { buildSessionWarning } from "./session-errors.js";
+import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
+
+export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
+export const HISTORY_EVENT_LIMIT_STEPS = [
+    DEFAULT_HISTORY_EVENT_LIMIT,
+    1_000,
+    3_000,
+    10_000,
+];
+
+// The event types buildHistoryModel can render as chat transcript items.
+// Passed as the server-side filter when paging backward for chat history, so
+// noisy sessions (thousands of tool/orchestration events between messages)
+// load transcript pages instead of raw-stream pages.
+export const CHAT_HISTORY_EVENT_TYPES = [
+    ...CHAT_CALL_EVENT_TYPES,
+    ...CHAT_CALL_EVENT_TYPES.filter(type => type !== "session.agent_spawned").map(type => `native.${type}`),
+    "user.message",
+    "assistant.message",
+    // Needed to distinguish interim assistant output from the final answer
+    // when an older transcript page is loaded.
+    "session.turn_completed",
+    "session.turn_stopped",
+    // Warnings belong at the error's position in the transcript, including
+    // after recovery and when paging backward through a noisy session.
+    "session.error",
+    "subagent.started",
+    "subagent.configured",
+    "subagent.completed",
+    "subagent.failed",
+    "native.task_updated",
+    "system.message",
+    // Session regeneration boundary — rendered as an inline epoch divider in
+    // the transcript, so it must survive backward chat-history paging.
+    "session.epoch_committed",
+    // A refused regeneration — surfaced inline so the optimistic "regeneration
+    // accepted" ack is corrected by the real outcome (e.g. cooldown/too_young).
+    "session.regenerate_refused",
+    // A regeneration that was accepted and then FAILED downstream (archive or
+    // distill). Previously invisible: the tool returns an optimistic ack on
+    // enqueue, so a failure left the agent reporting success while the epoch
+    // silently never flipped. Observed live — two attempts died on
+    // ARTIFACT_TOO_LARGE with nothing shown in the transcript.
+    "session.regenerate_failed",
+    // Canvas revisions — kept in backward chat paging so the TUI's artifact
+    // link line survives history loads (the portal skips the line either way).
+    "session.canvas_updated",
+];
+
+// Build the inline transcript divider marking a session-regeneration epoch
+// flip (proposal M2). The epoch_committed seq IS the epoch boundary, so the
+// divider lands between the archived (old-epoch) turns and the fresh ones.
+function buildEpochDividerItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const epoch = Number.isFinite(data.toEpoch) ? data.toEpoch : (Number(data.epoch) || 0);
+    const turnsArchived = Number.isFinite(data.turnsArchived) ? data.turnsArchived : null;
+    return {
+        id: `${event.sessionId}:${event.seq}:epoch`,
+        kind: "epoch-divider",
+        role: "epoch-divider",
+        epoch,
+        turnsArchived,
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+// A refused regeneration attempt, rendered inline so the truth (e.g. cooldown,
+// too_young) corrects the optimistic "regeneration accepted" the tool returns.
+function buildRegenRefusedItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    return {
+        id: `${event.sessionId}:${event.seq}:regen-refused`,
+        kind: "regen-refused",
+        role: "regen-refused",
+        reason: typeof data.reason === "string" ? data.reason : "unknown",
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+function buildRegenFailedItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const rawError = typeof data.error === "string" ? data.error : "";
+    return {
+        id: `${event.sessionId}:${event.seq}:regen-failed`,
+        kind: "regen-failed",
+        role: "regen-failed",
+        stage: typeof data.stage === "string" ? data.stage : "unknown",
+        error: rawError,
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+function buildSessionWarningItem(event) {
+    const completed = event.eventType === "session.turn_completed" && event.data?.resultType === "error";
+    if (event.eventType !== "session.error" && !completed) return null;
+    const warning = buildSessionWarning(event);
+    if (!warning) return null;
+    return {
+        ...warning,
+        errorText: warning.text,
+        sourceEventType: event.eventType,
+        ...(completed ? { turnCompletedSeq: event.seq } : {}),
+        time: formatTimestamp(event.createdAt),
+    };
+}
+
+function appendSessionWarning(chat, event) {
+    const warning = buildSessionWarningItem(event);
+    if (!warning) return;
+    if (chat.some((item) => item.id === warning.id
+        || (item.turnCompletedSeq != null && item.turnCompletedSeq === event.seq))) return;
+    // Tool disclosures can arrive between the SDK error and the failed-turn
+    // summary. They do not start a different conversation/failure episode.
+    const previousIndex = chat.findLastIndex(item => item.kind !== "chat-call" && item.kind !== "native-task-group");
+    const previous = chat[previousIndex];
+    // A runtime error and its failed-turn summary can describe one failure.
+    // Retain the original anchor; subsequent failed turns remain distinct.
+    if (previous?.kind === "session-warning"
+        && previous.sourceEventType === "session.error"
+        && previous.turnCompletedSeq == null
+        && event.eventType === "session.turn_completed"
+        && matchesSessionError(previous.errorText, warning.errorText)) {
+        chat[previousIndex] = { ...previous, turnCompletedSeq: event.seq };
+        return;
+    }
+    chat.push(warning);
+}
+
+const parentChatCallTypes = new Set(CHAT_CALL_EVENT_TYPES);
+function appendParentChatCall(chat, event) {
+    if (appendNativeTaskCall(chat, event)) return;
+    if (!parentChatCallTypes.has(event?.eventType)) return;
+    const data = event?.data || {};
+    // Native tasks have their own abridged disclosure. Generic call cards
+    // would duplicate them and reveal the full native prompt/arguments.
+    const name = data.toolName || data.name;
+    const namespace = `${event.sessionId}:${data.durableSessionId || ""}`;
+    const keys = [data.toolCallId && `call:${data.toolCallId}`, data.requestId && `request:${data.requestId}`].filter(Boolean);
+    // An empty diagnostic completion has neither a call to update nor useful
+    // content. Keep it in Activity without evicting real conversation cards.
+    const hasContent = name || data.arguments != null || data.args != null || data.result != null || data.output != null
+        || data.error || data.partialOutput || data.progressMessage || data.childSessionId || data.agentId || data.task;
+    if (!keys.length && !hasContent) return;
+    const parentCall = !name && chat.some(item => item.kind === "chat-call" && item.namespace === namespace
+        && item.callKeys.some(key => keys.includes(key)));
+    const nativeCall = name === "task" || Boolean(!name && !parentCall && data.toolCallId && chat.some(item =>
+        item.kind === "native-task-group" && item.tasks.some(task => task.toolCallId === data.toolCallId)));
+    if (!nativeCall) appendChatCall(chat, event);
+}
+
+function clampHistoryItems(items, maxItems) {
+    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    const safeMax = Math.max(DEFAULT_HISTORY_EVENT_LIMIT, Number(maxItems) || DEFAULT_HISTORY_EVENT_LIMIT);
+    return list.length > safeMax ? list.slice(-safeMax) : list;
+}
+
+function normalizeMessageText(text) {
+    return String(text || "").replace(/\r\n/g, "\n").trim();
+}
+
+function formatCronTimestamp(value) {
+    if (!value) return "";
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    try {
+        return date.toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+            timeZoneName: "short",
+        }).replace(/,\s*/g, " ").replace(/\s+/g, " ").trim();
+    } catch {
+        return date.toISOString().replace(/\.000Z$/, "Z");
+    }
+}
+
+const REHYDRATION_NOTICE_PREFIX_RE = /^The session was dehydrated and has been rehydrated on a new worker(?: \([^)]+\))?\./i;
+const REHYDRATION_NOTICE_FULL_RE = /^The session was dehydrated and has been rehydrated on a new worker(?: \([^)]+\))?\.\s*The LLM conversation history is preserved\.?/i;
+
+export function isRehydrationNoticeText(text) {
+    return REHYDRATION_NOTICE_PREFIX_RE.test(normalizeMessageText(text));
+}
+
+export function stripLeadingRehydrationNoticeText(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const stripped = normalized.replace(REHYDRATION_NOTICE_FULL_RE, "").trimStart();
+    if (stripped !== normalized) return stripped.trim();
+    if (isRehydrationNoticeText(normalized)) {
+        return normalized.replace(REHYDRATION_NOTICE_PREFIX_RE, "").trim();
+    }
+    return normalized;
+}
+
+// The runtime neutralizes a FORGED `[SYSTEM:` marker by inserting a zero-width
+// character after the bracket, so a collaborator cannot inject system guidance
+// (orchestration/utils.ts). That neutralizer runs when the queued message is
+// consumed — AFTER the runtime has appended its own timer/cron notice to the
+// same text — so a GENUINE notice on a message from anyone but the session
+// owner arrives neutralized too. Match both spellings, or those notices print
+// as raw prose in the transcript.
+const NOTICE_MARKER_INVISIBLES = "[\\u200b-\\u200f\\u2060-\\u2064\\ufeff]*";
+const SYSTEM_NOTICE_LINE_RE = new RegExp(`^\\s*\\[${NOTICE_MARKER_INVISIBLES}SYSTEM:`, "i");
+const SYSTEM_NOTICE_SINGLE_LINE_RE = new RegExp(`^\\s*\\[${NOTICE_MARKER_INVISIBLES}SYSTEM:\\s*(.*?)\\]\\s*$`, "i");
+const SYSTEM_NOTICE_OPENING_RE = new RegExp(`^\\s*\\[${NOTICE_MARKER_INVISIBLES}SYSTEM:\\s*`, "i");
+
+function splitSystemNoticeSegments(text) {
+    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+    const segments = [];
+    let textLines = [];
+
+    function flushText() {
+        if (textLines.length === 0) return;
+        segments.push({
+            kind: "text",
+            text: textLines.join("\n"),
+        });
+        textLines = [];
+    }
+
+    for (let index = 0; index < lines.length;) {
+        const line = lines[index];
+        if (!SYSTEM_NOTICE_LINE_RE.test(line)) {
+            textLines.push(line);
+            index += 1;
+            continue;
+        }
+
+        const singleLineMatch = SYSTEM_NOTICE_SINGLE_LINE_RE.exec(line);
+        if (singleLineMatch) {
+            flushText();
+            segments.push({
+                kind: "system",
+                text: singleLineMatch[1].trim(),
+            });
+            index += 1;
+            continue;
+        }
+
+        const noticeLines = [line.replace(SYSTEM_NOTICE_OPENING_RE, "")];
+        let closingIndex = -1;
+        for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+            const closingLine = lines[cursor];
+            if (closingLine.trim() === "]") {
+                closingIndex = cursor;
+                break;
+            }
+
+            if (/\]\s*$/.test(closingLine.trim())) {
+                const closingContent = closingLine.replace(/\]\s*$/, "");
+                if (closingContent.trim()) {
+                    noticeLines.push(closingContent);
+                }
+                closingIndex = cursor;
+                break;
+            }
+
+            noticeLines.push(closingLine);
+        }
+
+        if (closingIndex === -1) {
+            textLines.push(line);
+            index += 1;
+            continue;
+        }
+
+        flushText();
+        segments.push({
+            kind: "system",
+            text: noticeLines.join("\n").trim(),
+        });
+        index = closingIndex + 1;
+    }
+
+    flushText();
+    return segments;
+}
+
+function extractVisibleChatText(text, role) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n");
+    if (role === "user" || role === "assistant") {
+        return splitSystemNoticeSegments(normalized)
+            .filter((segment) => segment.kind === "text")
+            .map((segment) => segment.text)
+            .join("\n")
+            .trim();
+    }
+    return normalized.trim();
+}
+
+function extractEmbeddedSystemNoticeTexts(text, role) {
+    if (role !== "user" && role !== "assistant") return [];
+    return splitSystemNoticeSegments(text)
+        .filter((segment) => segment.kind === "system")
+        .map((segment) => segment.text)
+        .filter(Boolean);
+}
+
+function comparableMessageText(message) {
+    const normalized = normalizeMessageText(message?.text || "");
+    if (!normalized) return "";
+    if (message?.role === "user" || message?.role === "assistant") {
+        const visibleText = extractVisibleChatText(normalized, message.role);
+        if (visibleText) return visibleText;
+    }
+    return stripLeadingRehydrationNoticeText(normalized);
+}
+
+export function parseAskedAndAnsweredExchange(text) {
+    const source = String(text || "").replace(/\r\n/g, "\n").trim();
+    const prefix = 'The user was asked: "';
+    if (!source.startsWith(prefix) || !source.endsWith('"')) return null;
+    // Multi-writer sessions include the answering participant in the runtime
+    // wrapper. This is still an agent question followed by a human answer,
+    // not a human-authored copy of the entire question. Identity comes from
+    // the event's sender metadata, never from this display-only wrapper.
+    const marker = /"\nThe user responded(?: \(answered by [^\r\n]+?\))?: "/g;
+    marker.lastIndex = prefix.length;
+    const match = marker.exec(source);
+    if (!match) return null;
+
+    const question = source.slice(prefix.length, match.index);
+    const answer = source.slice(marker.lastIndex, -1);
+    if (!question.trim() || !answer.trim()) return null;
+    return { question, answer };
+}
+
+function hasVisibleMessageText(text) {
+    return normalizeMessageText(stripTerminalMarkupTags(text)).length > 0;
+}
+
+function isInternalSystemLikeText(text) {
+    const normalized = normalizeMessageText(text);
+    if (!normalized) return false;
+
+    return SYSTEM_NOTICE_LINE_RE.test(normalized)
+        || /^\[CHILD_UPDATE\b/i.test(normalized)
+        || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
+        || /^Buffered child updates arrived /i.test(normalized)
+        || /^There is an active recurring schedule every /i.test(normalized)
+        || /^It remains active automatically after this turn completes/i.test(normalized)
+        || /^Sub-agent spawned successfully\./i.test(normalized)
+        || /^Message sent to sub-agent /i.test(normalized)
+        || /^No sub-agents have been spawned yet\./i.test(normalized)
+        || /^Sub-agent status report \(/i.test(normalized)
+        || /^Active sessions \(/i.test(normalized)
+        || /^Sub-agents completed:/i.test(normalized)
+        || /^Sub-agent .* has been (completed gracefully|cancelled|deleted)\./i.test(normalized)
+        || /^The runtime recovered this session after the worker lost the live Copilot session\./i.test(normalized)
+        || /^The runtime recovered this session after the live Copilot session was lost on a worker\./i.test(normalized)
+        || /^The runtime is replaying this turn after a worker restart/i.test(normalized)
+        || /^The runtime detected missing Copilot session state for /i.test(normalized)
+        || /^(spawn_agent|message_agent|check_agents|wait_for_agents|complete_agent|cancel_agent|delete_agent) failed/i.test(normalized);
+}
+
+function isSessionMessageText(text) {
+    return /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalizeMessageText(text));
+}
+
+function parseSessionMessageHeaderField(header, key) {
+    const source = String(header || "");
+    const marker = `${key}=`;
+    const start = source.indexOf(marker);
+    if (start < 0) return "";
+    const rest = source.slice(start + marker.length);
+    const nextMarkers = [
+        " request_id=",
+        " from=",
+        " subject=",
+        " reason=",
+        " expects_response=",
+        " expires_at=",
+        " verdict=",
+    ];
+    let end = rest.length;
+    for (const nextMarker of nextMarkers) {
+        const index = rest.indexOf(nextMarker);
+        if (index >= 0) end = Math.min(end, index);
+    }
+    return rest.slice(0, end).trim();
+}
+
+function buildSessionMessageChatCard(event, text) {
+    const source = normalizeMessageText(text);
+    if (!source) return null;
+
+    const requestMatch = /^\[SESSION_MESSAGE\s+([^\]]+)\]\n?/i.exec(source);
+    if (requestMatch) {
+        const header = requestMatch[1];
+        const bodyMarker = "\nRequest body:\n";
+        const bodyIndex = source.indexOf(bodyMarker);
+        const body = bodyIndex >= 0
+            ? source.slice(bodyIndex + bodyMarker.length).trim()
+            : source.slice(requestMatch[0].length).trim();
+        const requestId = parseSessionMessageHeaderField(header, "request_id");
+        const from = parseSessionMessageHeaderField(header, "from");
+        const subject = parseSessionMessageHeaderField(header, "subject");
+        const expectsResponse = /\bexpects_response=true\b/i.test(header);
+        const lines = [
+            from ? `From: session-${shortSessionId(from)}` : "",
+            requestId ? `Request ID: ${requestId}` : "",
+            subject ? `Subject: ${subject}` : "",
+            expectsResponse ? "Response: required" : "Response: not required",
+            "",
+            body,
+        ].filter((line, index) => index === 4 || String(line || "").trim());
+        return {
+            id: `${event.sessionId}:${event.seq}`,
+            role: "system",
+            text: lines.join("\n"),
+            time: formatTimestamp(event.createdAt),
+            createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+            cardTitle: expectsResponse ? "Session Request" : "Session Message",
+            agentCallPreview: body,
+            cardTitleColor: "cyan",
+            cardBorderColor: "cyan",
+        };
+    }
+
+    const responseMatch = /^\[SESSION_MESSAGE_RESPONSE\s+([^\]]+)\]\n?/i.exec(source);
+    if (responseMatch) {
+        const header = responseMatch[1];
+        const replyIntroRe = /^This is the requested cross-session response\.[^\n]*\n\n?/i;
+        const body = source.slice(responseMatch[0].length).trim().replace(replyIntroRe, "").trim();
+        const requestId = parseSessionMessageHeaderField(header, "request_id");
+        const from = parseSessionMessageHeaderField(header, "from");
+        const verdict = parseSessionMessageHeaderField(header, "verdict") || "answered";
+        const lines = [
+            from ? `From: session-${shortSessionId(from)}` : "",
+            requestId ? `Request ID: ${requestId}` : "",
+            verdict ? `Verdict: ${verdict}` : "",
+            "",
+            body,
+        ].filter((line, index) => index === 3 || String(line || "").trim());
+        return {
+            id: `${event.sessionId}:${event.seq}`,
+            role: "system",
+            text: lines.join("\n"),
+            time: formatTimestamp(event.createdAt),
+            createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+            cardTitle: "Session Reply",
+            agentCallPreview: body,
+            cardTitleColor: "green",
+            cardBorderColor: "green",
+        };
+    }
+
+    return null;
+}
+
+function deriveChatRole(event, fallbackRole, text) {
+    if (event?.eventType === "system.message") return "system";
+    if ((fallbackRole === "user" || fallbackRole === "assistant") && isInternalSystemLikeText(text)) return "system";
+    return fallbackRole;
+}
+
+function sharesClientMessageId(left, right) {
+    const leftIds = Array.isArray(left?.clientMessageIds) ? left.clientMessageIds : [];
+    const rightIds = Array.isArray(right?.clientMessageIds) ? right.clientMessageIds : [];
+    if (leftIds.length === 0 || rightIds.length === 0) return null; // unknown
+    return leftIds.some((id) => rightIds.includes(id));
+}
+
+function areMessagesEquivalent(left, right) {
+    if (!left || !right) return false;
+    if (left.role !== right.role) return false;
+    // Different agents can send the same short acknowledgement. Only a
+    // durable identity or a redelivered queue envelope can merge those calls.
+    if (left.sender?.kind === "agent" || right.sender?.kind === "agent") {
+        return left.sender?.kind === right.sender?.kind
+            && left.sender?.sessionId === right.sender?.sessionId
+            && (left.id === right.id || sharesClientMessageId(left, right) === true);
+    }
+    // Identical text in separate model messages still represents separate
+    // preview slots (and one may later become the final answer).
+    if (left.role === "assistant" && left.messageId && right.messageId) {
+        return left.messageId === right.messageId;
+    }
+    // Canvas revision lines are platform-minted, exactly-once (one durable
+    // event per rev), and share identical text by design (the artifact://
+    // link) — the redelivery time-window below would eat rev N-1 on every
+    // reload, making the transcript disagree with what live append showed.
+    if (left.kind === "canvas-update" || right.kind === "canvas-update"
+        || left.kind === "chat-call" || right.kind === "chat-call"
+        || left.kind === "session-warning" || right.kind === "session-warning") {
+        return left.kind === right.kind && left.id === right.id;
+    }
+
+    const leftText = comparableMessageText(left);
+    const rightText = comparableMessageText(right);
+    if (!leftText || !rightText || leftText !== rightText) return false;
+
+    // clientMessageIds are authoritative when both sides carry them: a
+    // duroxide activity retry re-records the SAME queue message (same ids)
+    // regardless of how many seconds the retry took, while a user deliberately
+    // re-sending identical text mints fresh ids and must stay two bubbles.
+    const sharedId = sharesClientMessageId(left, right);
+    if (sharedId != null) return sharedId;
+
+    const leftTime = Number(left.createdAt || 0);
+    const rightTime = Number(right.createdAt || 0);
+    if (left.optimistic || right.optimistic) return true;
+    if (!leftTime || !rightTime) return false;
+    return Math.abs(leftTime - rightTime) <= 10_000;
+}
+
+export function dedupeChatMessages(chat = []) {
+    const deduped = [];
+
+    for (const message of chat) {
+        if (!message) continue;
+        const previous = deduped[deduped.length - 1];
+        if (!areMessagesEquivalent(previous, message)) {
+            deduped.push(message);
+            continue;
+        }
+
+        if (previous?.optimistic && !message?.optimistic) {
+            deduped[deduped.length - 1] = message;
+            continue;
+        }
+        if (!previous?.optimistic && message?.optimistic) {
+            continue;
+        }
+
+        const previousTime = Number(previous?.createdAt || 0);
+        const currentTime = Number(message?.createdAt || 0);
+        const winner = currentTime >= previousTime ? message : previous;
+        // Two durable copies of the same user message = the runtime
+        // re-delivered it to the model after a mid-turn worker retry.
+        // Collapse to one bubble stamped with the LATEST delivery time and
+        // mark it so the transcript can show a redelivery glyph.
+        if (winner.role === "user" && !previous?.optimistic && !message?.optimistic) {
+            const firstDeliveredAt = Math.min(
+                Number(previous?.firstDeliveredAt || previousTime || Infinity),
+                Number(message?.firstDeliveredAt || currentTime || Infinity),
+            );
+            deduped[deduped.length - 1] = {
+                ...winner,
+                redelivered: true,
+                ...(Number.isFinite(firstDeliveredAt) ? { firstDeliveredAt } : {}),
+            };
+            continue;
+        }
+        deduped[deduped.length - 1] = winner;
+    }
+
+    return deduped;
+}
+
+// In a multi-writer session the runtime prepends a `[FROM: name (relation)]`
+// attribution line to the prompt so the agent knows who is speaking. The chat
+// pane conveys the same thing through the message's speaker label + color, so
+// strip the raw marker from the DISPLAY text (the structured `sender` below
+// drives the label). Only a leading marker is removed.
+function stripLeadingSenderMarker(text) {
+    return typeof text === "string"
+        ? text.replace(/^\[FROM:[^\]\n]*\]\n?/, "")
+        : text;
+}
+
+function buildChatMessage(event, role) {
+    const rawText = messageTextFromEvent(event);
+    const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
+    if (sessionMessageCard) return sessionMessageCard;
+
+    // The attribution prefix and any embedded system notice come off BEFORE
+    // the canvas check. A collaborator pressing a button in the drawn page
+    // arrives as `[FROM: …]\n[canvas-action] {…}\n\n[SYSTEM: …]`: testing the
+    // raw text misses it on both ends, and the message then prints as an
+    // ordinary chat line with its raw JSON payload showing.
+    const visibleText = stripLeadingSenderMarker(extractVisibleChatText(rawText, role));
+
+    // A structured canvas response — the browser sent it on the viewer's
+    // behalf after validating it against the drawn contract. One item shape
+    // from ONE builder, so bulk load and live append cannot disagree. The
+    // portal collapses it to one row; the TUI shows a compact line.
+    if (role === "user" && isCanvasActionContent(visibleText)) {
+        const parsed = parseCanvasActionContent(visibleText);
+        if (parsed) {
+            return {
+                id: `${event.sessionId}:${event.seq}`,
+                kind: "canvas-action",
+                role: "user",
+                action: parsed.action,
+                data: parsed.data,
+                text: visibleText,
+                time: formatTimestamp(event.createdAt),
+                createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+                // Without the ids, the distinct-ids rule can never fire and two
+                // genuine same-payload submissions within 10s collapse to one
+                // falsely-"redelivered" bubble while the activity feed shows two.
+                ...(Array.isArray(event?.data?.clientMessageIds) && event.data.clientMessageIds.length > 0
+                    ? { clientMessageIds: event.data.clientMessageIds }
+                    : {}),
+            };
+        }
+    }
+
+    const text = visibleText;
+    if (!hasVisibleMessageText(text)) return null;
+    const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
+        ? event.data.clientMessageIds.filter((id) => typeof id === "string" && id)
+        : [];
+    // Structured sender identity (security model): who sent this message. The
+    // chat selector uses it to label the line with the sender's name and a
+    // distinct color when it is not the current viewer.
+    const sender = event?.data?.sender && typeof event.data.sender === "object"
+        ? event.data.sender
+        : null;
+    // Image attachment refs recorded by the runTurn activity — rendered as
+    // chips under the user message (bytes stay in the artifact store).
+    const attachments = Array.isArray(event?.data?.attachments)
+        ? event.data.attachments.filter((a) => a && typeof a.filename === "string" && a.filename)
+        : [];
+    const messageId = typeof event?.data?.messageId === "string" && event.data.messageId
+        ? event.data.messageId
+        : null;
+    const chatRole = deriveChatRole(event, role, text);
+    // Model commentary is a durable user-facing progress update. Once it has
+    // been recorded as assistant.message it belongs in the transcript like
+    // any other agent message; only transient live-turn output and an
+    // unclassified/final response use the preview shell. Treating commentary
+    // as a preview hid milestone updates behind a collapsed "Agent update"
+    // disclosure even though the model had explicitly sent them to the user.
+    const assistantPhase = chatRole === "assistant"
+        ? String(event?.data?.phase || "").trim().toLowerCase()
+        : "";
+    const isAssistantCommentary = assistantPhase === "commentary";
+    return {
+        id: `${event.sessionId}:${event.seq}`,
+        role: chatRole,
+        text,
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        ...(clientMessageIds.length > 0 ? { clientMessageIds } : {}),
+        ...(sender ? { sender } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(messageId ? { messageId } : {}),
+        ...(chatRole === "assistant" ? (isAssistantCommentary ? {
+            assistantCommentary: true,
+        } : {
+            assistantPreview: true,
+            responsePending: true,
+            responseFinal: false,
+            responseCanFinalize: !event?.data?.parentToolCallId && !event?.data?.toolRequests?.length,
+            ...(typeof event?.data?.reasoningText === "string" && event.data.reasoningText
+                ? { liveReasoningText: event.data.reasoningText } : {}),
+        }) : {}),
+    };
+}
+
+// A saved assistant.message is not necessarily the answer: a single runTurn
+// can contain many tool-loop utterances. Only its successful durable boundary
+// promotes the last eligible message. Use the same rule for replay and append.
+function settleAssistantResponses(chat, event) {
+    const resultType = event?.data?.resultType || event?.data?.result;
+    const successful = event?.eventType === "session.turn_completed"
+        && (!resultType || resultType === "completed");
+    let finalIndex = -1;
+    for (let index = chat.length - 1; index >= 0; index -= 1) {
+        if (chat[index]?.responsePending) {
+            if (successful && chat[index].responseCanFinalize) finalIndex = index;
+            break;
+        }
+    }
+    for (let index = 0; index < chat.length; index += 1) {
+        if (chat[index]?.responsePending) chat[index] = {
+            ...chat[index], responsePending: false, responseFinal: index === finalIndex,
+        };
+    }
+}
+
+/** Apply one transient `turn` topic snapshot without touching durable events/seq. */
+export function applyLiveTurnToHistory(history, payload, meta = {}) {
+    if (!payload) return history;
+    if (payload.phase === "idle") return clearLiveTurnFromHistory(history, null, payload.streamId || null);
+    if (payload.phase !== "live") return history;
+    const messageId = typeof payload.messageId === "string" && payload.messageId ? payload.messageId : null;
+    const reasoningId = typeof payload.reasoningId === "string" && payload.reasoningId ? payload.reasoningId : null;
+    const liveKey = messageId || (reasoningId ? `reasoning:${reasoningId}` : "active-turn");
+    const createdAt = Number(meta.createdAt) || Date.now();
+    const current = history || { chat: [], activity: [], events: [], lastSeq: 0 };
+    const oldChat = current.chat || [];
+    // Durable truth wins even when a delayed retained snapshot arrives later.
+    if ((messageId && oldChat.some((item) => !item.liveTurn && item.messageId === messageId))
+        || (current.closedLiveKeys || []).includes(liveKey)
+        || (payload.streamId && (current.closedLiveStreams || []).includes(payload.streamId))) return current;
+    const matches = (item) => item?.liveTurn === true && (
+        item?.liveKey === liveKey
+        || (messageId && item?.messageId === messageId)
+        || (reasoningId && item?.reasoningId === reasoningId && (!item.messageId || !messageId))
+    );
+    const firstMatch = oldChat.findIndex(matches);
+    const previous = firstMatch >= 0 ? oldChat[firstMatch] : null;
+    const chat = oldChat.filter((item) => !matches(item));
+    const reasoningText = typeof payload.reasoningText === "string" ? payload.reasoningText : "";
+    const text = typeof payload.text === "string" ? payload.text : "";
+    const liveStartedAt = Number(previous?.liveStartedAt || previous?.createdAt) || createdAt;
+    // Reasoning and answer text are one visual turn, not two independently
+    // mounted transcript rows. Keeping them in one keyed item lets the browser
+    // collapse reasoning above the answer and lets the durable final settle
+    // into the exact same React component instead of flashing between nodes.
+    const replacement = (reasoningText || text) ? [{
+        id: previous?.id || `live:${meta.sessionId || ""}:${liveKey}`,
+        role: "assistant",
+        ...(messageId ? { messageId } : {}),
+        ...(reasoningId ? { reasoningId } : {}),
+        liveKey: previous?.liveKey || liveKey,
+        liveTurn: true,
+        streamId: payload.streamId || previous?.streamId || null,
+        streaming: true,
+        truncated: payload.truncated === true,
+        text,
+        reasoningText,
+        liveStartedAt,
+        createdAt: liveStartedAt,
+        time: "",
+    }] : [];
+    chat.splice(firstMatch < 0 ? chat.length : Math.min(firstMatch, chat.length), 0, ...replacement);
+    return { ...current, chat };
+}
+
+export function clearLiveTurnFromHistory(history, messageId = null, streamId = null) {
+    if (!history?.chat) return history;
+    const chat = history.chat.filter((item) => !(
+        item?.liveTurn === true && (!messageId || item?.messageId === messageId) && (!streamId || item?.streamId === streamId)
+    ));
+    const retired = history.chat.filter((item) => item.liveTurn && (!messageId || item.messageId === messageId) && (!streamId || item.streamId === streamId));
+    const closedLiveKeys = [...new Set([...(history.closedLiveKeys || []),
+        ...retired.flatMap((item) => [item.liveKey, item.messageId, item.reasoningId && `reasoning:${item.reasoningId}`].filter(Boolean)),
+    ])].slice(-256);
+    const closedLiveStreams = [...new Set([...(history.closedLiveStreams || []),
+        ...(!messageId ? retired.map((item) => item.streamId).filter(Boolean) : []),
+        ...(streamId ? [streamId] : []),
+    ])].slice(-256);
+    return chat.length === history.chat.length && !streamId ? history : { ...history, chat, closedLiveKeys, closedLiveStreams };
+}
+
+// The Copilot SDK echoes the system prompt as a system.message on EVERY
+// turn, and the worker keeps only a 120-char snippet of it (session-proxy.ts,
+// "Full content omitted from CMS"). For one release (0.5.47) each echo also
+// got a collapsed row in the chat pane — one per turn, and opening it showed
+// the snippet, not the prompt. Activity feed only, as before.
+function shouldRenderSystemMessageAsActivity(event) {
+    // Most system.message events stay out of the chat pane. They include the
+    // per-turn system prompt sent to the LLM plus internal rehydration notices,
+    // and the full content remains in CMS for diagnostics. Cross-session
+    // request/reply protocol prompts are the exception because they are the
+    // durable user-visible communication channel between sessions.
+    if (event?.eventType !== "system.message") return false;
+    return !isSessionMessageText(messageTextFromEvent(event));
+}
+
+function buildEmbeddedSystemNoticeActivityItems(event, role) {
+    return extractEmbeddedSystemNoticeTexts(messageTextFromEvent(event), role)
+        .map((text, index) => formatActivity({
+            ...event,
+            seq: `${event?.seq ?? "?"}:system:${index + 1}`,
+            eventType: "system.message",
+            data: { content: text },
+        }))
+        .filter(Boolean);
+}
+
+function reconcileOptimisticMessage(chat, incomingMessage) {
+    if (!Array.isArray(chat) || incomingMessage?.role !== "user") {
+        return [...(chat || [])];
+    }
+
+    const normalizedIncoming = normalizeMessageText(incomingMessage.text);
+    const parsedExchange = parseAskedAndAnsweredExchange(incomingMessage.text);
+    const normalizedAnsweredText = parsedExchange ? normalizeMessageText(parsedExchange.answer) : "";
+    let removed = false;
+
+    return chat.filter((message) => {
+        if (removed) return true;
+        if (!message?.optimistic || message.role !== incomingMessage.role) return true;
+        const normalizedMessageText = normalizeMessageText(message.text);
+        if (normalizedMessageText !== normalizedIncoming && normalizedMessageText !== normalizedAnsweredText) return true;
+        removed = true;
+        return false;
+    });
+}
+
+function messageTextFromEvent(event) {
+    const data = event?.data;
+    if (typeof data === "string") return data;
+    if (data && typeof data === "object") {
+        if (typeof data.content === "string") return data.content;
+        if (typeof data.text === "string") return data.text;
+        if (typeof data.message === "string") return data.message;
+        if (typeof data.question === "string") return data.question;
+    }
+    return summarizeJson(data);
+}
+
+function flattenRunsText(runs) {
+    return (runs || []).map((run) => run?.text || "").join("");
+}
+
+function summarizeActivityPreview(text, maxLen = 120) {
+    const compact = String(text || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!compact) return "";
+    return compact.length > maxLen
+        ? `${compact.slice(0, maxLen - 3)}...`
+        : compact;
+}
+
+function joinUniqueActivityDetail(parts = []) {
+    const seen = new Set();
+    const normalized = [];
+    for (const part of parts) {
+        const text = String(part || "").trim();
+        if (!text) continue;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push(text);
+    }
+    return normalized.join(" | ");
+}
+
+function formatDehydrationActivityDetail(event, fallbackBody = "") {
+    return joinUniqueActivityDetail([
+        event?.data?.reason,
+        event?.data?.detail,
+        event?.data?.message,
+        event?.data?.error,
+        fallbackBody,
+    ]);
+}
+
+function formatLossyHandoffActivityDetail(event, fallbackBody = "") {
+    return joinUniqueActivityDetail([
+        event?.data?.message,
+        event?.data?.detail,
+        event?.data?.error,
+        fallbackBody,
+    ]);
+}
+
+function formatRehydrationActivityDetail(event, fallbackBody = "") {
+    const rawBody = messageTextFromEvent(event);
+    const stripped = stripLeadingRehydrationNoticeText(fallbackBody);
+    return joinUniqueActivityDetail([
+        stripLeadingRehydrationNoticeText(rawBody),
+        stripped,
+        event?.data?.detail,
+        event?.data?.message,
+    ]);
+}
+
+function formatToolArgValue(value) {
+    if (value == null) return "null";
+    if (typeof value === "string") {
+        return JSON.stringify(value.length > 32 ? `${value.slice(0, 29)}...` : value);
+    }
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (Array.isArray(value)) return `[${value.length}]`;
+    if (typeof value === "object") return "{...}";
+    return String(value);
+}
+
+function formatToolArgsSummary(toolName, args) {
+    if (!args || typeof args !== "object") return "";
+
+    if (toolName === "wait") {
+        const seconds = args.seconds != null ? `${args.seconds}s` : "?";
+        const preserve = args.preserveWorkerAffinity === true ? " preserve=true" : "";
+        const reason = typeof args.reason === "string" && args.reason
+            ? ` reason=${JSON.stringify(args.reason)}`
+            : "";
+        return ` ${seconds}${preserve}${reason}`;
+    }
+
+    if (toolName === "cron") {
+        if (args.action === "cancel") return " cancel";
+        const seconds = args.seconds != null ? `${args.seconds}s` : "?";
+        const reason = typeof args.reason === "string" && args.reason
+            ? ` reason=${JSON.stringify(args.reason)}`
+            : "";
+        return ` ${seconds}${reason}`;
+    }
+
+    const entries = Object.entries(args)
+        .slice(0, 4)
+        .map(([key, value]) => `${key}=${formatToolArgValue(value)}`);
+    if (entries.length === 0) return "";
+    const suffix = Object.keys(args).length > entries.length ? ", ..." : "";
+    return ` ${entries.join(", ")}${suffix}`;
+}
+
+function buildActivityPrefix(time) {
+    return time ? [{ text: `[${time}] `, color: "white" }] : [];
+}
+
+function buildLabeledActivityRuns(time, label, labelColor, detail = "", detailColor = "white") {
+    return [
+        ...buildActivityPrefix(time),
+        { text: label, color: labelColor },
+        ...(detail ? [{ text: ` ${detail}`, color: detailColor }] : []),
+    ];
+}
+
+function formatEventSnippet(event, maxLen = 96) {
+    const body = summarizeActivityPreview(stripTerminalMarkupTags(messageTextFromEvent(event)), maxLen);
+    return body || "";
+}
+
+
+function formatToolActivityRuns(time, event, phase = "start") {
+    const toolCallId = typeof event?.data?.toolCallId === "string" ? event.data.toolCallId : "";
+    const requestId = typeof event?.data?.requestId === "string" ? event.data.requestId : "";
+    const toolName = event?.data?.toolName
+        || event?.data?.name
+        || (toolCallId ? `tool call ${toolCallId.slice(0, 8)}` : requestId ? `tool request ${requestId.slice(0, 8)}` : "tool");
+    const args = event?.data?.arguments || event?.data?.args;
+    const durableSessionId = event?.data?.durableSessionId;
+    const summary = formatToolArgsSummary(toolName, args);
+    const phasePrefix = phase === "start"
+        ? "▶"
+        : phase === "partial"
+            ? "…"
+            : "✓";
+    const phaseColor = phase === "start"
+        ? "yellow"
+        : phase === "partial"
+            ? "cyan"
+            : "green";
+
+    return [
+        ...buildActivityPrefix(time),
+        {
+            text: `${phasePrefix} ${toolName}${summary}`,
+            color: phaseColor,
+        },
+        ...(durableSessionId
+            ? [{ text: ` [sess ${shortSessionId(durableSessionId)}]`, color: "gray" }]
+            : []),
+    ];
+}
+
+function formatActivity(event) {
+    const time = formatTimestamp(event.createdAt);
+    const body = formatEventSnippet(event);
+    let runs = null;
+
+    // Native child transcripts remain inspectable as events, but only their
+    // lifecycle belongs in the parent's activity feed.
+    if (event.eventType?.startsWith("native.") || event.eventType === "session.background_tasks_changed") return null;
+    switch (event.eventType) {
+        case "subagent.started":
+        case "subagent.completed":
+        case "subagent.failed": {
+            const phase = event.eventType.slice("subagent.".length);
+            const name = event.data?.agentDisplayName || event.data?.agentName || "agent";
+            const duration = Number.isFinite(event.data?.durationMs)
+                ? ` (${formatHumanDurationSeconds(event.data.durationMs / 1000)})` : "";
+            runs = buildLabeledActivityRuns(time, "[native agent]", "cyan", `${name} ${phase}${duration}`, phase === "failed" ? "red" : "white");
+            break;
+        }
+        case "subagent.configured":
+        case "assistant.usage":
+        case "session.info":
+        case "session.idle":
+        case "session.usage_info":
+        case "pending_messages.modified":
+        case "pending_messages.cancelled":
+        case "abort":
+        case "assistant.turn_end":
+        case "assistant.streaming_progress":
+            return null;
+
+        case "model.call_start": {
+            const model = String(event?.data?.model || event?.data?.modelId || "model").split(":").pop();
+            runs = buildLabeledActivityRuns(time, "[model]", "cyan", `calling ${model}`, "white");
+            break;
+        }
+
+        case "session.artifact_presented": {
+            const data = (event?.data ?? {}) || {};
+            const filename = String(data.filename || "artifact");
+            const note = typeof data.note === "string" && data.note.trim() ? ` — ${data.note.trim()}` : "";
+            runs = buildLabeledActivityRuns(time, "[show]", "cyan", `${filename}${note}`, "white");
+            break;
+        }
+
+        case "session.canvas_updated": {
+            const data = (event?.data ?? {}) || {};
+            const rev = Number(data.rev) || 0;
+            const note = typeof data.note === "string" && data.note.trim() ? ` — ${data.note.trim()}` : "";
+            // Server-side artifact draws record their source; surfacing it here
+            // distinguishes "rendered the stored app" from an inline redraw the
+            // same honest way ticks are distinguished from draws.
+            const sourceName = typeof data.source?.filename === "string" && data.source.filename.trim()
+                ? ` from ${data.source.filename.trim()}`
+                : "";
+            runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", `rev ${rev}${sourceName}${note}`, "white");
+            break;
+        }
+
+        case "session.canvas_data": {
+            // A data TICK, deliberately distinct from a full redraw: the page
+            // patched itself in place; no document was replaced.
+            const data = (event?.data ?? {}) || {};
+            const dataRev = Number(data.dataRev) || 0;
+            const kb = Number.isFinite(Number(data.sizeBytes)) ? ` (${(Number(data.sizeBytes) / 1024).toFixed(1)} KB)` : "";
+            const note = typeof data.note === "string" && data.note.trim() ? ` — ${data.note.trim()}` : "";
+            runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", `data tick ${dataRev}${kb}${note}`, "white");
+            break;
+        }
+
+        case "tool.execution_start":
+            runs = formatToolActivityRuns(time, event, "start");
+            break;
+
+        case "tool.execution_complete":
+            runs = formatToolActivityRuns(time, event, "complete");
+            break;
+
+        case "tool.execution_partial_result":
+            runs = formatToolActivityRuns(time, event, "partial");
+            break;
+
+        case "tool.execution_progress": {
+            const data = (event?.data ?? {}) || {};
+            const toolName = data.toolName || data.name || "tool";
+            const detail = typeof data.message === "string" && data.message
+                ? data.message
+                : typeof data.detail === "string" && data.detail
+                    ? data.detail
+                    : (data.percent != null ? `${Math.round(Number(data.percent))}%` : "running…");
+            runs = buildLabeledActivityRuns(time, "[tool]", "cyan", `${toolName} ${detail}`, "white");
+            break;
+        }
+
+        case "assistant.reasoning":
+            runs = buildLabeledActivityRuns(time, "[reasoning]", "gray", body || "…", "white");
+            break;
+
+        case "assistant.intent": {
+            const data = (event?.data ?? {}) || {};
+            const text = typeof data.summary === "string" && data.summary
+                ? data.summary
+                : typeof data.intent === "string" && data.intent
+                    ? data.intent
+                    : (body || "");
+            runs = buildLabeledActivityRuns(time, "[intent]", "gray", text || "…", "white");
+            break;
+        }
+
+        case "assistant.turn_start":
+            runs = buildLabeledActivityRuns(time, "[turn start]", "gray", body);
+            break;
+
+        case "session.turn_completed":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[turn completed]",
+                "gray",
+                event?.data?.iteration != null ? `iter ${event.data.iteration}` : body,
+            );
+            break;
+
+        case "session.lossy_handoff":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[lossy handoff]",
+                "yellow",
+                formatLossyHandoffActivityDetail(event, body) || "handoff to a new worker",
+            );
+            break;
+
+        case "session.dehydrated":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[dehydrated]",
+                "cyan",
+                formatDehydrationActivityDetail(event, body),
+            );
+            break;
+
+        case "session.hydrated":
+        case "session.rehydrated":
+            runs = buildLabeledActivityRuns(time, "[rehydrated]", "green", body);
+            break;
+
+        case "session.wait_started": {
+            const seconds = event?.data?.seconds != null ? `${event.data.seconds}s` : "?";
+            const reason = typeof event?.data?.reason === "string" && event.data.reason
+                ? ` reason=${JSON.stringify(event.data.reason)}`
+                : "";
+            const preserve = event?.data?.preserveAffinity ? " preserve=true" : "";
+            runs = buildLabeledActivityRuns(time, "[wait]", "yellow", `${seconds}${preserve}${reason}`.trim());
+            break;
+        }
+
+        case "session.input_required_started":
+            runs = buildLabeledActivityRuns(time, "[input]", "yellow", body);
+            break;
+
+        case "session.agent_spawned":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[spawn]",
+                "cyan",
+                event?.data?.agentId || shortSessionId(event?.data?.childSessionId),
+                "white",
+            );
+            break;
+
+        case "session.cron_started":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `started${event?.data?.seconds != null ? ` ${event.data.seconds}s` : ""}${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.cron_at_scheduled":
+        case "session.cron_at_started":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `scheduled${event?.data?.nextFireAt ? ` ${formatCronTimestamp(event.data.nextFireAt)}` : ""}${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.cron_fired":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `fired${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.cron_at_fired":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `fired${event?.data?.scheduledAt ? ` ${formatCronTimestamp(event.data.scheduledAt)}` : ""}${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.cron_cancelled":
+        case "session.cron_at_cancelled":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `cancelled${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.cron_at_completed":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `completed${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.command_received":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[command]",
+                "magenta",
+                `/${event?.data?.cmd || "?"}${body ? ` ${body}` : ""}`,
+            );
+            break;
+
+        case "session.command_completed":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[command]",
+                "magenta",
+                `/${event?.data?.cmd || "?"} ok${body ? ` ${body}` : ""}`,
+            );
+            break;
+
+        case "session.model_changed": {
+            // Structured data only — messageTextFromEvent finds nothing, so
+            // without this case the generic fallback printed a bare
+            // "[session.model_changed]" that named neither model.
+            const from = shortModelName(event?.data?.oldModel) || "default";
+            const to = shortModelName(event?.data?.newModel) || "default";
+            const effort = event?.data?.newReasoningEffort;
+            const effortChanged = effort && effort !== event?.data?.oldReasoningEffort;
+            const tier = event?.data?.newContextTier;
+            const tierChanged = tier && tier !== event?.data?.oldContextTier && tier !== "default";
+            const extras = [
+                ...(effortChanged ? [`effort ${effort}`] : []),
+                ...(tierChanged ? [`context ${tier}`] : []),
+            ];
+            runs = buildLabeledActivityRuns(
+                time,
+                "[model]",
+                "cyan",
+                `${from} → ${to}${extras.length ? ` (${extras.join(", ")})` : ""}`,
+            );
+            break;
+        }
+
+        case "session.compaction_start":
+        case "session.compaction_complete":
+            runs = formatCompactionActivityRuns(time, event.eventType, event.data || {});
+            break;
+
+        case "session.error":
+            runs = buildLabeledActivityRuns(time, "[error]", "red", body || "session error", "white");
+            break;
+
+        case "system.message":
+            if (isRehydrationNoticeText(messageTextFromEvent(event))) {
+                runs = buildLabeledActivityRuns(
+                    time,
+                    "[rehydrated]",
+                    "green",
+                    formatRehydrationActivityDetail(event, body) || "conversation preserved",
+                );
+            } else {
+                runs = buildLabeledActivityRuns(time, "[system]", "gray", body || "system message");
+            }
+            break;
+
+        default:
+            runs = [
+                ...buildActivityPrefix(time),
+                { text: `[${event.eventType}]`, color: "gray" },
+                ...(body ? [{ text: ` ${body}`, color: "white" }] : []),
+            ];
+            break;
+    }
+
+    return {
+        id: `${event.sessionId}:${event.seq}`,
+        eventType: event.eventType,
+        time,
+        seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : 0,
+        createdAt: event?.createdAt instanceof Date
+            ? event.createdAt.getTime()
+            : (event?.createdAt ? new Date(event.createdAt).getTime() : 0),
+        text: flattenRunsText(runs),
+        line: runs,
+    };
+}
+
+export function getNextHistoryEventLimit(currentLimit = DEFAULT_HISTORY_EVENT_LIMIT) {
+    const safeCurrent = Math.max(DEFAULT_HISTORY_EVENT_LIMIT, Number(currentLimit) || DEFAULT_HISTORY_EVENT_LIMIT);
+    const nextLimit = HISTORY_EVENT_LIMIT_STEPS.find((limit) => limit > safeCurrent);
+    return nextLimit || Math.min(100_000, safeCurrent * 2);
+}
+
+/**
+ * The canvas event's chat item, shared verbatim by the bulk loader and the
+ * live append path — a reload must not change the transcript. `text` carries
+ * the bare artifact URI because the TUI's press-a picker extracts
+ * `artifact://` links from message text; the rendered line builds its own
+ * runs and never shows this string.
+ */
+function buildCanvasChatItem(event) {
+    const sessionId = event.sessionId || null;
+    return {
+        id: `${event.sessionId || ""}:${event.seq}:canvas`,
+        kind: "canvas-update",
+        role: "canvas-update",
+        sessionId,
+        rev: Number(event?.data?.rev) || 0,
+        note: typeof event?.data?.note === "string" ? event.data.note : "",
+        text: sessionId ? `artifact://${sessionId}/canvas.html` : "",
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+/** The diagnostic feed line for a validated canvas response. */
+function buildCanvasActionActivity(event, item) {
+    const time = formatTimestamp(event.createdAt);
+    const detail = `action ${item.action}${Object.keys(item.data || {}).length ? " " + summarizeJson(item.data) : ""}`;
+    const runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", detail, "white");
+    return {
+        id: `${event.sessionId}:${event.seq}:canvas-action`,
+        eventType: event.eventType,
+        time,
+        seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : 0,
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        text: flattenRunsText(runs),
+        line: runs,
+    };
+}
+
+export function buildHistoryModel(events = [], options = {}) {
+    const requestedLimit = Math.max(
+        DEFAULT_HISTORY_EVENT_LIMIT,
+        Number(options.requestedLimit ?? options.eventLimit ?? DEFAULT_HISTORY_EVENT_LIMIT) || DEFAULT_HISTORY_EVENT_LIMIT,
+    );
+    const chat = [];
+    const activity = [];
+    const storedEvents = [];
+
+    for (const event of events) {
+        storedEvents.push(event);
+        appendNativeTaskEvent(chat, event);
+        appendParentChatCall(chat, event);
+        appendSessionWarning(chat, event);
+        if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
+            settleAssistantResponses(chat, event);
+        }
+        if (event.eventType === "user.message") {
+            activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
+            const message = buildChatMessage(event, "user");
+            if (message) chat.push(message);
+            if (message?.kind === "canvas-action") {
+                const actionActivity = buildCanvasActionActivity(event, message);
+                if (actionActivity) activity.push(actionActivity);
+            }
+            continue;
+        }
+        if (event.eventType === "session.canvas_updated") {
+            // A flagged chat item, not a plain message: the PORTAL chat skips
+            // it entirely (the canvas pane updating is the signal there),
+            // while the TUI — which cannot render the canvas — shows it as an
+            // ordinary artifact link. Shared data, host-chosen affordance,
+            // same precedent as the download hint. `text` carries the bare
+            // artifact URI for the TUI's press-a picker, which extracts
+            // `artifact://` links from message text.
+            chat.push(buildCanvasChatItem(event));
+            const activityItem = formatActivity(event);
+            if (activityItem) activity.push(activityItem);
+            continue;
+        }
+        if (event.eventType === "assistant.message") {
+            activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "assistant"));
+            const message = buildChatMessage(event, "assistant");
+            if (message) chat.push(message);
+            continue;
+        }
+        if (event.eventType === "system.message") {
+            if (shouldRenderSystemMessageAsActivity(event)) {
+                const activityItem = formatActivity(event);
+                if (activityItem) activity.push(activityItem);
+            } else {
+                const message = buildChatMessage(event, "system");
+                if (message) chat.push(message);
+            }
+            continue;
+        }
+        if (event.eventType === "session.epoch_committed") {
+            chat.push(buildEpochDividerItem(event));
+            continue;
+        }
+        if (event.eventType === "session.regenerate_refused") {
+            chat.push(buildRegenRefusedItem(event));
+            continue;
+        }
+        if (event.eventType === "session.regenerate_failed") {
+            chat.push(buildRegenFailedItem(event));
+            continue;
+        }
+        const activityItem = formatActivity(event);
+        if (activityItem) activity.push(activityItem);
+    }
+
+    return {
+        chat: dedupeChatMessages(chat),
+        activity,
+        events: storedEvents.slice(-requestedLimit),
+        loadedEventLimit: requestedLimit,
+        loadedEventCount: storedEvents.length,
+        hasOlderEvents: storedEvents.length >= requestedLimit,
+    };
+}
+
+export function appendEventToHistory(history, event) {
+    const existingEvents = Array.isArray(history?.events) ? history.events : [];
+    const loadedEventLimit = Math.max(
+        DEFAULT_HISTORY_EVENT_LIMIT,
+        Number(history?.loadedEventLimit ?? DEFAULT_HISTORY_EVENT_LIMIT) || DEFAULT_HISTORY_EVENT_LIMIT,
+    );
+    const nextEvents = existingEvents.length > 0 && existingEvents[existingEvents.length - 1]?.seq === event?.seq
+        ? existingEvents
+        : [...existingEvents, event].slice(-loadedEventLimit);
+    const next = {
+        nativeTaskSnapshot: history?.nativeTaskSnapshot,
+        closedLiveKeys: history?.closedLiveKeys || [],
+        closedLiveStreams: history?.closedLiveStreams || [],
+        chat: clampHistoryItems(history?.chat || [], loadedEventLimit),
+        activity: clampHistoryItems(history?.activity || [], loadedEventLimit),
+        events: nextEvents,
+        // The replay cursor. A seq-less event (plane-synthesized canvas
+        // ticks are transient and carry none) must never poison it —
+        // lastSeq=undefined reads as afterSeq 0 on the next sync and the
+        // whole transcript re-merges, duplicated.
+        lastSeq: Number.isFinite(Number(event.seq)) ? event.seq : (history?.lastSeq || 0),
+        loadedEventLimit,
+        loadedEventCount: Math.max(Number(history?.loadedEventCount || 0), nextEvents.length),
+        hasOlderEvents: Boolean(history?.hasOlderEvents),
+        // clientMessageIds whose turn was user-stopped mid-flight. Carried
+        // across appends so a prompt stays flagged even as the transcript
+        // clamps/reloads.
+        stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
+    };
+
+    appendNativeTaskEvent(next.chat, event);
+    appendParentChatCall(next.chat, event);
+    appendSessionWarning(next.chat, event);
+    next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+
+    if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
+        settleAssistantResponses(next.chat, event);
+    }
+
+    // A stopped turn leaves a durable session.turn_stopped carrying the
+    // interrupted prompt's clientMessageIds. Record them and retroactively
+    // flag any matching transcript message (the user.message usually lands
+    // first, at turn start; the stop lands at turn end).
+    if (event.eventType === "session.turn_stopped") {
+        const ids = Array.isArray(event?.data?.clientMessageIds)
+            ? event.data.clientMessageIds.filter((id) => typeof id === "string" && id)
+            : [];
+        if (ids.length > 0) {
+            const merged = new Set([...next.stoppedMessageIds, ...ids]);
+            next.stoppedMessageIds = Array.from(merged);
+            next.chat = next.chat.map((m) => (
+                Array.isArray(m.clientMessageIds) && m.clientMessageIds.some((id) => merged.has(id))
+                    ? { ...m, stopped: true }
+                    : m
+            ));
+        }
+        Object.assign(next, clearLiveTurnFromHistory(next));
+        return next;
+    }
+
+    if (event.eventType === "user.message") {
+        next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
+        const message = buildChatMessage(event, "user");
+        if (message?.kind === "canvas-action") {
+            const actionActivity = buildCanvasActionActivity(event, message);
+            if (actionActivity) next.activity.push(actionActivity);
+        }
+        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+        if (!message) return next;
+        // Prospective flag: covers a bulk load where the stop event arrived
+        // before this message in the reduce order.
+        if (Array.isArray(message.clientMessageIds)
+            && message.clientMessageIds.some((id) => next.stoppedMessageIds.includes(id))) {
+            message.stopped = true;
+        }
+        next.chat = reconcileOptimisticMessage(next.chat, message);
+        next.chat.push(message);
+        next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.canvas_updated") {
+        // Same flagged chat item the bulk loader builds — the live path and
+        // the history path must agree or a reload would change the transcript.
+        next.chat.push(buildCanvasChatItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        const canvasActivity = formatActivity(event);
+        if (canvasActivity) {
+            next.activity.push(canvasActivity);
+            next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+        }
+        return next;
+    }
+    if (event.eventType === "assistant.message") {
+        next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "assistant"));
+        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+        const message = buildChatMessage(event, "assistant");
+        if (!message) return next;
+        const liveIndex = message.messageId
+            ? next.chat.findIndex((item) => item?.liveTurn === true && item?.messageId === message.messageId)
+            : -1;
+        const liveItem = liveIndex >= 0 ? next.chat[liveIndex] : null;
+        Object.assign(next, clearLiveTurnFromHistory(next, message.messageId || null));
+        // Preserve the model-call slot when several assistant messages are
+        // interleaved: the durable final replaces its own live bubble in
+        // place instead of jumping behind a later streaming message.
+        if (liveIndex >= 0) {
+            const settledAt = Date.now();
+            const liveStartedAt = Number(liveItem?.liveStartedAt || liveItem?.createdAt) || settledAt;
+            if (!message.assistantCommentary) {
+                // Keep the disclosure identity even for short streams.
+                // Committing an answer must not reset expansion or its scroll
+                // box. Durable commentary deliberately leaves this shell and
+                // becomes an ordinary visible transcript message.
+                Object.assign(message, {
+                    streamSettling: true,
+                    liveKey: liveItem?.liveKey || message.messageId,
+                    liveStartedAt,
+                    liveReasoningText: message.liveReasoningText || liveItem?.reasoningText || "",
+                });
+            }
+            next.chat.splice(Math.min(liveIndex, next.chat.length), 0, message);
+        }
+        else next.chat.push(message);
+        next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.turn_completed" || event.eventType === "session.turn_stopped") {
+        Object.assign(next, clearLiveTurnFromHistory(next));
+    }
+    if (event.eventType === "system.message") {
+        if (shouldRenderSystemMessageAsActivity(event)) {
+            const activityItem = formatActivity(event);
+            if (activityItem) {
+                next.activity.push(activityItem);
+                next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+            }
+        } else {
+            const message = buildChatMessage(event, "system");
+            if (!message) return next;
+            next.chat.push(message);
+            next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+        }
+        return next;
+    }
+    if (event.eventType === "session.epoch_committed") {
+        next.chat.push(buildEpochDividerItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.regenerate_refused") {
+        next.chat.push(buildRegenRefusedItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.regenerate_failed") {
+        next.chat.push(buildRegenFailedItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        return next;
+    }
+    const activityItem = formatActivity(event);
+    if (activityItem) {
+        next.activity.push(activityItem);
+        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+    }
+    return next;
+}
+
+export function createSplashCard(branding, session = null, { loading = false } = {}) {
+    const sessionSplash = typeof session?.splash === "string" && session.splash.trim()
+        ? session.splash
+        : null;
+    const splash = sessionSplash || branding?.splash;
+    if (!splash) return [];
+    // The narrow-viewport variant must come from the same source as the
+    // splash it replaces (a session splash never falls back to the branding
+    // mobile art). The renderer swaps it in when the main art is wider than
+    // the pane.
+    const mobileSource = sessionSplash ? session?.splashMobile : branding?.splashMobile;
+    const mobileSplash = typeof mobileSource === "string" && mobileSource.trim() ? mobileSource : null;
+    const title = session?.isSystem
+        ? canonicalSystemTitle(session, branding?.title || "PilotSwarm")
+        : (session?.title || branding?.title || "PilotSwarm");
+    const hint = loading
+        ? "{gray-fg}Loading conversation…{/gray-fg}"
+        : "{gray-fg}Start interacting with this session to replace the splash screen.{/gray-fg}";
+    return [{
+        id: `splash:${title}`,
+        role: "system",
+        text: `${splash}\n\n${hint}`,
+        ...(mobileSplash ? { mobileText: `${mobileSplash}\n\n${hint}` } : {}),
+        time: "",
+        splash: true,
+    }];
+}
+
+export function buildSessionLabel(session) {
+    const title = session.title || shortSessionId(session.sessionId);
+    const shortId = shortSessionId(session.sessionId);
+    return title.includes(shortId) ? title : `${title} (${shortId})`;
+}

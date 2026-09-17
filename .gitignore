@@ -427,3 +427,78 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# PilotSwarm-specific exclusions retained from the original repository.
+node_modules/
+dist/
+.env
+.env.horizondb
+.env.remote
+.env.local.docker
+.env.pilotswarm*
+docs/aks-topology.md
+.model_providers.json
+*.tgz
+vendor/
+nohup.out
+dumps/
+perf/reports/
+TODO.md
+docs/inbox/
+.portal.pids
+scripts/tmp/
+.tmp/
+deploy/.portal-tls/
+# Corp-specific AKS deployer agent/skills (local only, contains infra details)
+.github/agents/pilotswarm-corp-aks-deployer.agent.md
+.github/skills/pilotswarm-corp-aks-deploy/
+.github/skills/pilotswarm-corp-aks-networking/
+# OSS Node deploy orchestrator: repo-local staging dir
+deploy/.tmp/
+
+# Local-only review/PR artifacts (do not commit)
+.paw/
+.pr-*.diff
+.pr-*.txt
+
+# Horizon Harvester sample: generated graph export (regenerate with export-horizon-harvester-graph.sh)
+examples/horizon-harvester/graph.md
+
+# Claude Code local tooling (scheduled-task lock, machine-local settings)
+.claude/
+
+# Local editor + MCP client config (machine-specific; not shared)
+.vscode/
+# Root-anchored: an agent package legitimately SHIPS a .mcp.json (its MCP server
+# catalog, declared by plugin.json), and an unanchored pattern matches at every
+# depth — which silently dropped one from a sample package. A missing declared
+# path is a hard error at publish, so the package would have failed in a clone.
+/.mcp.json
+.copilot/mcp-config.json
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+
+# Agent scratch output and generated artifacts.
+#
+# These are transient working files, and in practice they carry whatever live
+# operational data the session was working on — the first one checked in here
+# was 397 real IcM incidents (302 flagged restricted) with customer identifiers
+# and named assignees, duplicated four times across a dashboard, its data.json
+# and its inlined script. None of that belongs in git history, where it cannot
+# be taken back once pushed.
+#
+# Force-add deliberately (`git add -f`) if a specific artifact is genuinely
+# meant to ship as a committed example.
+.scratch/
+packages/app/.scratch/
+examples/artifacts/
+
+# Scratch from UX drive sessions: screenshots, throwaway Playwright scripts,
+# logs. 664 files that otherwise flood every editor changelist.
+.design-tokenpool/
+
+# Playwright run artifacts — never release material.
+packages/app/test-results/

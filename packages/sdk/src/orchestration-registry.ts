@@ -1,0 +1,76 @@
+import { durableSessionOrchestration_1_0_47 } from "./orchestration_1_0_47.js";
+import { durableSessionOrchestration_1_0_48 } from "./orchestration_1_0_48.js";
+import { durableSessionOrchestration_1_0_49 } from "./orchestration_1_0_49.js";
+import { durableSessionOrchestration_1_0_50 } from "./orchestration_1_0_50.js";
+import { durableSessionOrchestration_1_0_51 } from "./orchestration_1_0_51.js";
+import { durableSessionOrchestration_1_0_52 } from "./orchestration_1_0_52/index.js";
+import { durableSessionOrchestration_1_0_53 } from "./orchestration_1_0_53/index.js";
+import { durableSessionOrchestration_1_0_54 } from "./orchestration_1_0_54/index.js";
+import { durableSessionOrchestration_1_0_55 } from "./orchestration_1_0_55/index.js";
+import { durableSessionOrchestration_1_0_56 } from "./orchestration_1_0_56/index.js";
+import { durableSessionOrchestration_1_0_57 } from "./orchestration_1_0_57/index.js";
+import { durableSessionOrchestration_1_0_58 } from "./orchestration_1_0_58/index.js";
+import { durableSessionOrchestration_1_0_59 } from "./orchestration_1_0_59/index.js";
+import { durableSessionOrchestration_1_0_60 } from "./orchestration_1_0_60/index.js";
+import { durableSessionOrchestration_1_0_61 } from "./orchestration_1_0_61/index.js";
+import { durableSessionOrchestration_1_0_62 } from "./orchestration_1_0_62/index.js";
+import { durableSessionOrchestration_1_0_63 } from "./orchestration_1_0_63/index.js";
+import { durableSessionOrchestration_1_0_64 } from "./orchestration_1_0_64/index.js";
+import { durableSessionOrchestration_1_0_65 } from "./orchestration_1_0_65/index.js";
+import { durableSessionOrchestration_1_0_66 } from "./orchestration_1_0_66/index.js";
+import { durableSessionOrchestration_1_0_67 } from "./orchestration_1_0_67/index.js";
+import { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
+import { durableSessionOrchestration_1_0_68 } from "./orchestration_1_0_68/index.js";
+import { durableSessionOrchestration_1_0_69 } from "./orchestration_1_0_69/index.js";
+import { durableSessionOrchestration_1_0_70 } from "./orchestration_1_0_70/index.js";
+import { durableSessionOrchestration_1_0_71 } from "./orchestration_1_0_71/index.js";
+import { durableSessionOrchestration_1_0_72 } from "./orchestration_1_0_72/index.js";
+import { durableSessionOrchestration_1_0_73 } from "./orchestration_1_0_73/index.js";
+import { durableSessionOrchestration_1_0_74 } from "./orchestration_1_0_74/index.js";
+import { durableSessionOrchestration_1_0_75 } from "./orchestration_1_0_75/index.js";
+import { durableSessionOrchestration_1_0_76 } from "./orchestration_1_0_76/index.js";
+import { durableSessionOrchestration_1_0_77 } from "./orchestration_1_0_77/index.js";
+import { durableSessionOrchestration_1_0_78 } from "./orchestration_1_0_78/index.js";
+import { durableSessionOrchestration_1_0_79 } from "./orchestration/index.js";
+
+export const DURABLE_SESSION_ORCHESTRATION_NAME = "durable-session-v2";
+export { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
+
+export const DURABLE_SESSION_ORCHESTRATION_REGISTRY: ReadonlyArray<{
+    version: string;
+    handler: any;
+}> = [
+    { version: "1.0.47", handler: durableSessionOrchestration_1_0_47 },
+    { version: "1.0.48", handler: durableSessionOrchestration_1_0_48 },
+    { version: "1.0.49", handler: durableSessionOrchestration_1_0_49 },
+    { version: "1.0.50", handler: durableSessionOrchestration_1_0_50 },
+    { version: "1.0.51", handler: durableSessionOrchestration_1_0_51 },
+    { version: "1.0.52", handler: durableSessionOrchestration_1_0_52 },
+    { version: "1.0.53", handler: durableSessionOrchestration_1_0_53 },
+    { version: "1.0.54", handler: durableSessionOrchestration_1_0_54 },
+    { version: "1.0.55", handler: durableSessionOrchestration_1_0_55 },
+    { version: "1.0.56", handler: durableSessionOrchestration_1_0_56 },
+    { version: "1.0.57", handler: durableSessionOrchestration_1_0_57 },
+    { version: "1.0.58", handler: durableSessionOrchestration_1_0_58 },
+    { version: "1.0.59", handler: durableSessionOrchestration_1_0_59 },
+    { version: "1.0.60", handler: durableSessionOrchestration_1_0_60 },
+    { version: "1.0.61", handler: durableSessionOrchestration_1_0_61 },
+    { version: "1.0.62", handler: durableSessionOrchestration_1_0_62 },
+    { version: "1.0.63", handler: durableSessionOrchestration_1_0_63 },
+    { version: "1.0.64", handler: durableSessionOrchestration_1_0_64 },
+    { version: "1.0.65", handler: durableSessionOrchestration_1_0_65 },
+    { version: "1.0.66", handler: durableSessionOrchestration_1_0_66 },
+    { version: "1.0.67", handler: durableSessionOrchestration_1_0_67 },
+    { version: "1.0.68", handler: durableSessionOrchestration_1_0_68 },
+    { version: "1.0.69", handler: durableSessionOrchestration_1_0_69 },
+    { version: "1.0.70", handler: durableSessionOrchestration_1_0_70 },
+    { version: "1.0.71", handler: durableSessionOrchestration_1_0_71 },
+    { version: "1.0.72", handler: durableSessionOrchestration_1_0_72 },
+    { version: "1.0.73", handler: durableSessionOrchestration_1_0_73 },
+    { version: "1.0.74", handler: durableSessionOrchestration_1_0_74 },
+    { version: "1.0.75", handler: durableSessionOrchestration_1_0_75 },
+    { version: "1.0.76", handler: durableSessionOrchestration_1_0_76 },
+    { version: "1.0.77", handler: durableSessionOrchestration_1_0_77 },
+    { version: "1.0.78", handler: durableSessionOrchestration_1_0_78 },
+    { version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_79 },
+];

@@ -1,0 +1,5 @@
+{bold}{green-fg}█▀█ █ █   █▀█ ▀█▀ █▀ █ █ █ ▄▀█ █▀█ █▀▄▀█{/green-fg}{/bold}
+{bold}{green-fg}█▀▀ █ █▄▄ █▄█  █  ▄█ ▀▄▀▄▀ █▀█ █▀▄ █ ▀ █{/green-fg}{/bold}
+{green-fg}░▒▓██████████████████████████████████▓▒░{/green-fg}
+ {bold}{white-fg}Cluster Orchestrator{/white-fg}{/bold}
+ {green-fg}Agents{/green-fg} · {yellow-fg}Infra{/yellow-fg} · {cyan-fg}Maintenance{/cyan-fg}

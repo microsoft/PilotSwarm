@@ -1,0 +1,82 @@
+import path from "node:path";
+import os from "node:os";
+import { createRequire } from "node:module";
+import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
+import { getPluginDirsFromEnv } from "./plugin-config.js";
+
+export async function startEmbeddedWorkers({ count, store }) {
+    const workers = [];
+    if (!count || count <= 0) return workers;
+
+    const pluginDirs = getPluginDirsFromEnv();
+
+    let workerModuleConfig = {};
+    if (process.env._TUI_WORKER_MODULE) {
+        const imported = await import(process.env._TUI_WORKER_MODULE);
+        workerModuleConfig = imported.default || imported;
+    }
+
+    const sessionStateDir = process.env.SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state");
+    const originalConsole = {
+        log: console.log,
+        warn: console.warn,
+        error: console.error,
+    };
+
+    for (let index = 0; index < count; index++) {
+        console.log = () => {};
+        console.warn = () => {};
+        console.error = () => {};
+        try {
+            const worker = new PilotSwarmWorker({
+                store,
+                githubToken: process.env.GITHUB_TOKEN,
+                logLevel: process.env.LOG_LEVEL || "error",
+                sessionStateDir,
+                workerNodeId: `local-${index}`,
+                systemMessage: workerModuleConfig.systemMessage || process.env._TUI_SYSTEM_MESSAGE || undefined,
+                pluginDirs,
+                // Bicep-deploy MI flow (set in worker-env ConfigMap by the
+                // overlay .env). Unset for legacy `scripts/deploy-aks.sh`,
+                // local Docker, and CI — those keep using the password
+                // URL via `store` (and AZURE_STORAGE_CONNECTION_STRING for
+                // blobs). See packages/sdk/src/pg-pool-factory.ts.
+                useManagedIdentity: ["1", "true", "yes", "on"].includes(
+                    (process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").trim().toLowerCase(),
+                ),
+                blobUseManagedIdentity: process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?.trim()
+                    ? ["1", "true", "yes", "on"].includes(process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY.trim().toLowerCase())
+                    : undefined,
+                cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
+                aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
+                blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
+                blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || undefined,
+                blobContainer: process.env.AZURE_STORAGE_CONTAINER || undefined,
+                // Optional EnhancedFactStore + knowledge graph (HorizonDB). Empty
+                // unless HORIZON_DATABASE_URL is set, so default deployments are
+                // unaffected (plain PgFactStore).
+                ...horizonConfigFromEnv(),
+            });
+
+            const workerTools = typeof workerModuleConfig.createTools === "function"
+                ? await workerModuleConfig.createTools({ workerNodeId: `local-${index}`, workerIndex: index })
+                : workerModuleConfig.tools;
+            if (workerTools?.length) {
+                worker.registerTools(workerTools);
+            }
+
+            await worker.start();
+            workers.push(worker);
+        } finally {
+            console.log = originalConsole.log;
+            console.warn = originalConsole.warn;
+            console.error = originalConsole.error;
+        }
+    }
+
+    return workers;
+}
+
+export async function stopEmbeddedWorkers(workers) {
+    await Promise.allSettled((workers || []).map((worker) => worker.stop()));
+}

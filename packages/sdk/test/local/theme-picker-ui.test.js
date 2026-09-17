@@ -1,0 +1,139 @@
+import { describe, it } from "vitest";
+import { UI_COMMANDS } from "../../../app/ui/core/src/commands.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
+import { selectStatusBar, selectThemePickerModal } from "../../../app/ui/core/src/selectors.js";
+import { computeLegacyLayout } from "../../../app/ui/core/src/layout.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
+import { DEFAULT_THEME_ID, listThemes, THEME_GROUP_ORDER } from "../../../app/ui/core/src/themes/index.js";
+import { assert, assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
+
+function createController() {
+    const transport = {
+        start: async () => {},
+        stop: async () => {},
+        listSessions: async () => [],
+        getSessionEvents: async () => [],
+        subscribeSession: () => () => {},
+    };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    return {
+        store,
+        controller: new PilotSwarmUiController({ store, transport }),
+    };
+}
+
+describe("theme picker UI behavior", () => {
+    it("defaults new workspaces to Workspace Dark", () => {
+        assertEqual(DEFAULT_THEME_ID, "workspace-dark", "shared default theme should be Workspace Dark");
+        const state = createInitialState({ mode: "local" });
+        assertEqual(state.ui.themeId, "workspace-dark", "new state should inherit the shared default theme");
+    });
+
+    it("honors a persisted theme id during initial state creation", () => {
+        const state = createInitialState({ mode: "local", themeId: "noctis" });
+        assertEqual(state.ui.themeId, "noctis", "initial state should honor a persisted theme id");
+
+        // A persisted id for a theme that no longer ships falls back to the default.
+        const stale = createInitialState({ mode: "local", themeId: "noctis-viola" });
+        assertEqual(stale.ui.themeId, "workspace-dark", "removed theme ids fall back to the default theme");
+    });
+
+    it("honors persisted pane split adjustments during initial state creation", () => {
+        const state = createInitialState({
+            mode: "local",
+            layoutAdjustments: {
+                paneAdjust: 7,
+                sessionPaneAdjust: -3,
+                activityPaneAdjust: 5,
+            },
+        });
+        assertEqual(state.ui.layout.paneAdjust, 7, "initial state should honor a persisted left/right pane split");
+        assertEqual(state.ui.layout.sessionPaneAdjust, -3, "initial state should honor a persisted session/chat pane split");
+        assertEqual(state.ui.layout.activityPaneAdjust, 5, "initial state should honor a persisted inspector/activity pane split");
+    });
+
+    it("collapses the chat pane when the session/chat divider is dragged past the chat minimum", () => {
+        const layout = computeLegacyLayout({ width: 120, height: 40 }, 0, 1, 999);
+        assertEqual(layout.chatHidden, true, "chat pane should be hidden when the divider is pushed all the way down");
+        assertEqual(layout.chatPaneHeight, 0, "chat pane height should be zero when collapsed");
+        assertEqual(layout.sessionPaneHeight, layout.bodyHeight, "session pane should occupy the entire workspace when chat is collapsed");
+    });
+
+    it("collapses the session pane when the session/chat divider is dragged past the session minimum", () => {
+        const layout = computeLegacyLayout({ width: 120, height: 40 }, 0, 1, -999);
+        assertEqual(layout.sessionHidden, true, "session pane should be hidden when the divider is pushed all the way up");
+        assertEqual(layout.sessionPaneHeight, 0, "session pane height should be zero when collapsed");
+        assertEqual(layout.chatPaneHeight, layout.bodyHeight, "chat pane should occupy the entire workspace when sessions is collapsed");
+    });
+
+    it("opens the shared theme picker with the current theme preselected", async () => {
+        const { controller, store } = createController();
+
+        await controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER);
+
+        const state = store.getState();
+        const modal = state.ui.modal;
+        assertNotNull(modal, "theme picker modal should be opened");
+        assertEqual(modal.type, "themePicker", "modal type should be themePicker");
+        assertEqual(modal.items.length, listThemes().length, "theme picker should list all shared themes");
+        assertEqual(modal.items[modal.selectedIndex]?.id, DEFAULT_THEME_ID, "current theme should be preselected");
+        assertNotNull(modal.items.find((theme) => theme.id === "noctis-obscuro"), "theme picker should include Noctis Obscuro");
+
+        // Grouped, then alphabetical INSIDE each group — the portal draws a
+        // heading wherever the group changes, so a flat alphabetical sort
+        // (what this asserted before groups existed) would interleave the
+        // sections and repeat their headings.
+        const groups = modal.items.map((theme) => theme.group);
+        const groupOrder = groups.filter((group, index) => group !== groups[index - 1]);
+        assertEqual(
+            JSON.stringify(groupOrder),
+            JSON.stringify([...new Set(groups)]),
+            "each theme group should appear as one contiguous run",
+        );
+        assertEqual(
+            JSON.stringify(groupOrder),
+            JSON.stringify(THEME_GROUP_ORDER.filter((group) => groups.includes(group))),
+            "groups should follow the declared display order",
+        );
+        for (const group of groupOrder) {
+            const labels = modal.items.filter((theme) => theme.group === group).map((theme) => theme.label);
+            const sorted = [...labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+            assert(
+                JSON.stringify(labels) === JSON.stringify(sorted),
+                `theme picker should list ${group} themes alphabetically`,
+            );
+        }
+
+        const selector = selectThemePickerModal(state);
+        assertNotNull(selector, "theme picker selector should render");
+        assertIncludes(selector.detailsLines[0][0].text, "theme", "details should describe the selected theme");
+
+        const status = selectStatusBar(state);
+        assertIncludes(status.right, "enter apply", "status bar should show theme picker keybindings");
+    });
+
+    it("applies the selected theme when the modal is confirmed", async () => {
+        const { controller, store } = createController();
+        const themes = listThemes();
+        const nextTheme = themes.find((theme) => theme.id !== DEFAULT_THEME_ID);
+        assertNotNull(nextTheme, "a second theme should be available");
+
+        await controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER);
+        const nextIndex = themes.findIndex((theme) => theme.id === nextTheme.id);
+        store.dispatch({ type: "ui/modalSelection", index: nextIndex });
+
+        await controller.confirmModal();
+
+        const state = store.getState();
+        assertEqual(state.ui.themeId, nextTheme.id, "confirming the modal should update the active theme");
+        assertEqual(state.ui.modal, null, "theme picker should close after apply");
+        assertIncludes(state.ui.statusText, nextTheme.label, "status should mention the applied theme");
+    });
+
+    it("advertises the theme shortcut in the default status hints", () => {
+        const status = selectStatusBar(createInitialState({ mode: "local" }));
+        assertIncludes(status.right, "T themes", "default hints should advertise the theme picker shortcut");
+    });
+});

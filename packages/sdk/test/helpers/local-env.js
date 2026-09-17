@@ -1,0 +1,282 @@
+/**
+ * Local test environment configuration.
+ *
+ * Provides schema isolation, temp directories, and database connectivity
+ * for the local integration test suite.
+ *
+ * Requires PostgreSQL running locally (see docs/developer/contributing/local-integration-test-plan.md).
+ */
+
+import { mkdirSync, rmSync, existsSync } from "node:fs";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { createTempSessionLayout } from "./temp-session-layout.js";
+import { resolveStorageConfig, getRuntimeStorageProvider, createFactStoreForUrl, isEnhancedFactStore } from "../../src/index.ts";
+
+// ─── Constants ───────────────────────────────────────────────────
+
+const DEFAULT_LOCAL_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/pilotswarm";
+
+function looksLocalDatabaseUrl(value) {
+    return /@(localhost|127\.0\.0\.1)(:\d+)?\//i.test(String(value || ""));
+}
+
+function resolveDatabaseUrl() {
+    if (process.env.PS_TEST_DATABASE_URL) return process.env.PS_TEST_DATABASE_URL;
+    if (process.env.TEST_DATABASE_URL) return process.env.TEST_DATABASE_URL;
+
+    const configured = process.env.DATABASE_URL;
+    if (configured && looksLocalDatabaseUrl(configured)) return configured;
+
+    return DEFAULT_LOCAL_DATABASE_URL;
+}
+
+const DATABASE_URL = resolveDatabaseUrl();
+const TIMEOUT = 180_000;
+const TEST_SCHEMA_PREFIX = "ps_test";
+
+// ─── Schema Isolation ────────────────────────────────────────────
+
+/**
+ * Generate a unique schema name for test isolation.
+ *
+ * Format: `<prefix>_it_<timestamp>_<random>`
+ * This prevents cross-test pollution.
+ */
+function sanitizeSuiteLabel(label) {
+    return String(label || "test")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 20) || "test";
+}
+
+function uniqueSchemaName(kind, suiteName, runId) {
+    const suite = sanitizeSuiteLabel(suiteName);
+    return `${TEST_SCHEMA_PREFIX}_${kind}_${suite}_${runId}`;
+}
+
+function moduleSuiteLabel(moduleUrl) {
+    const filePath = fileURLToPath(moduleUrl);
+    return basename(filePath)
+        .replace(/\.test\.js$/, "")
+        .replace(/\.js$/, "");
+}
+
+async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
+    const pg = await import("pg");
+    const client = new pg.default.Client({ connectionString: DATABASE_URL });
+    try {
+        await client.connect();
+        await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
+        await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
+        await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
+    } finally {
+        try { await client.end(); } catch {}
+    }
+
+    // If the resolved runtime provider keeps enhanced facts on a SEPARATE store
+    // (HorizonDB hybrid), drop the per-test facts schema there too so HorizonDB
+    // schemas don't leak. Decided from the storage registry the SDK uses — not
+    // from a re-derived env heuristic.
+    const enhancedUrl = enhancedFactStoreUrl();
+    if (enhancedUrl) {
+        // Cancel this per-test schema's durable embed loops BEFORE dropping the
+        // schema. The loops live in pg_durable's `df` schema and survive a
+        // facts-schema drop, so a bare DROP SCHEMA orphans them — they keep firing
+        // against a missing table and pile up in the cluster's scheduler.
+        // stopEmbedder() cancels the batch + retry + legacy loops; constructing
+        // via createFactStoreForUrl does NOT initialize(), so it won't re-start
+        // the loop we are trying to stop.
+        try {
+            const enhancedStore = await createFactStoreForUrl(enhancedUrl, factsSchema, { provider: "horizon" });
+            try {
+                if (isEnhancedFactStore(enhancedStore)) await enhancedStore.stopEmbedder("test cleanup");
+            } finally {
+                await enhancedStore.close?.();
+            }
+        } catch {
+            // pg_durable / df schema absent, or provider unavailable — nothing to cancel.
+        }
+
+        const horizonClient = new pg.default.Client({ connectionString: normalizeHorizonDbUrl(enhancedUrl) });
+        try {
+            await horizonClient.connect();
+            await horizonClient.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
+        } finally {
+            try { await horizonClient.end(); } catch {}
+        }
+    }
+}
+
+// Raw pg clients (unlike the HorizonDB provider) need uselibpqcompat so that
+// `sslmode=require` does not get treated as verify-full against the preview
+// cluster's self-signed chain.
+function normalizeHorizonDbUrl(raw) {
+    if (!raw) return raw;
+    if (!/[?&]sslmode=/i.test(raw)) return raw;
+    if (/[?&]uselibpqcompat=/i.test(raw)) return raw;
+    return raw + (raw.includes("?") ? "&" : "?") + "uselibpqcompat=true";
+}
+
+// The fact-store URL when the resolved runtime provider keeps enhanced facts on
+// a store SEPARATE from the stock-PG runtime (HorizonDB hybrid); undefined when
+// facts live on the same database (baseline PgFactStore). Derived from the
+// storage registry, mirroring how the worker/client pick the fact store.
+function enhancedFactStoreUrl() {
+    const runtime = resolveStorageConfig({ options: { store: DATABASE_URL } }).runtime;
+    const provider = getRuntimeStorageProvider(runtime.provider);
+    if (!provider.capabilities?.enhancedFactStore) return undefined;
+    const url = runtime.factStoreUrl;
+    return url && url !== runtime.url ? url : undefined;
+}
+
+// ─── Test Environment ────────────────────────────────────────────
+
+/**
+ * Create an isolated test environment.
+ *
+ * Returns a context with unique schemas, a temp session-state directory,
+ * and the DATABASE_URL for use with PilotSwarmClient/Worker.
+ *
+ * Call `env.cleanup()` when done to remove temp files and drop schemas.
+ */
+export function createTestEnv(suiteName = "test") {
+    const runId = randomBytes(4).toString("hex");
+    const duroxideSchema = uniqueSchemaName("duroxide", suiteName, runId);
+    const cmsSchema = uniqueSchemaName("cms", suiteName, runId);
+    const factsSchema = uniqueSchemaName("facts", suiteName, runId);
+    const tempLayout = createTempSessionLayout(`pilotswarm-test-${runId}-`);
+    const { baseDir, sessionStateDir } = tempLayout;
+
+    // Create temp directory
+    mkdirSync(sessionStateDir, { recursive: true });
+
+    // A just-killed worker can still be flushing files into the tree while
+    // the recursive delete walks it, so rmSync races fresh entries and dies
+    // with ENOTEMPTY (observed in the fault-injection kill suites). rmSync's
+    // built-in linear-backoff retries cover one racing write; the outer loop
+    // (with a pause for the dying process to exit) covers a writer that
+    // outlives a single retry budget.
+    async function removeDirWithRetries(dir) {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+                return;
+            } catch (err) {
+                if (attempt >= 4) throw err;
+                await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+            }
+        }
+    }
+
+    async function reset() {
+        if (existsSync(baseDir)) {
+            await removeDirWithRetries(baseDir);
+        }
+        mkdirSync(sessionStateDir, { recursive: true });
+
+        try {
+            await dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema });
+        } catch (err) {
+            console.warn(`  ⚠️  Schema cleanup warning: ${err.message}`);
+        }
+    }
+
+    return {
+        store: DATABASE_URL,
+        duroxideSchema,
+        cmsSchema,
+        factsSchema,
+        baseDir,
+        sessionStateDir,
+        timeout: TIMEOUT,
+        runId,
+        reset,
+
+        /** Drop schemas and remove temp files. */
+        async cleanup() {
+            await reset();
+            tempLayout.cleanup();
+        },
+    };
+}
+
+/**
+ * Suite-scoped environment helper.
+ *
+ * Creates one randomized schema set per test file, resets it after each test,
+ * and drops it when the suite finishes.
+ */
+export function useSuiteEnv(moduleUrl, suiteName) {
+    const label = suiteName ?? moduleSuiteLabel(moduleUrl);
+    let env = null;
+
+    beforeAll(async () => {
+        env = createTestEnv(label);
+    });
+
+    afterEach(async () => {
+        if (env) await env.reset();
+    });
+
+    afterAll(async () => {
+        if (env) {
+            await env.cleanup();
+            env = null;
+        }
+    });
+
+    return () => {
+        if (!env) {
+            throw new Error(`Suite env not initialized for ${label}`);
+        }
+        return env;
+    };
+}
+
+/**
+ * Preflight check: ensure PostgreSQL is reachable and at least one LLM provider is configured.
+ */
+export async function preflightChecks() {
+    const { loadModelProviders } = await import("pilotswarm-sdk");
+    const registry = loadModelProviders();
+    if (!process.env.GITHUB_TOKEN && (!registry || registry.allModels.length === 0)) {
+        throw new Error(
+            "No LLM provider available. Set GITHUB_TOKEN or configure .model_providers.json with valid API keys.",
+        );
+    }
+
+    // GitHub providers stay in the registry even without a credential (per-user
+    // keys can arrive later from CMS), so the check above passes while every
+    // live turn would fail with "GitHub Copilot key not configured" and burn
+    // the full sendAndWait timeout. Fail fast with the real cause instead.
+    const resolvedDefault = registry?.resolve?.();
+    if (resolvedDefault?.type === "github" && !resolvedDefault.githubToken && !process.env.GITHUB_TOKEN) {
+        throw new Error(
+            `Default test model "${registry.defaultModel}" is GitHub Copilot-backed but GITHUB_TOKEN is not set. ` +
+            `Export it first, e.g.: export GITHUB_TOKEN=$(gh auth token)`,
+        );
+    }
+
+    const pg = await import("pg");
+    const client = new pg.default.Client({
+        connectionString: DATABASE_URL,
+        connectionTimeoutMillis: 4000,
+    });
+    try {
+        await client.connect();
+        await client.query("SELECT 1");
+    } catch (err) {
+        throw new Error(
+            `PostgreSQL is not reachable at ${DATABASE_URL} (${err.message}). ` +
+            `Start Postgres first: docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=pilotswarm -p 5432:5432 postgres:16`,
+        );
+    } finally {
+        try { await client.end(); } catch {}
+    }
+}
+
+export { DATABASE_URL, TEST_SCHEMA_PREFIX, TIMEOUT };

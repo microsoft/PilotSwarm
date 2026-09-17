@@ -1,0 +1,1560 @@
+import {
+    RESPONSE_LATEST_KEY,
+    sanitizePromptAttachmentRefs,
+} from "./types.js";
+import {
+    DURABLE_SESSION_LATEST_VERSION,
+    DURABLE_SESSION_ORCHESTRATION_NAME,
+} from "./orchestration-registry.js";
+import type {
+    PilotSwarmClientOptions,
+    ManagedSessionConfig,
+    SerializableSessionConfig,
+    PilotSwarmSessionStatus,
+    PilotSwarmSessionInfo,
+    OrchestrationInput,
+    UserInputHandler,
+    CommandMessage,
+    CommandResponse,
+    SessionResponsePayload,
+    SessionOwnerInfo,
+    PromptAttachmentRef,
+} from "./types.js";
+import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
+import type { MessageSender } from "./message-sender.js";
+import { normalizeMessageSender } from "./message-sender.js";
+import type { FactStore } from "./facts-store.js";
+import { resolveStorageConfig } from "./storage-config.js";
+import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
+import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
+import { WebPilotSwarmClient } from "./web/web-client.js";
+import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
+import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
+
+// duroxide is CommonJS — use createRequire for ESM compatibility
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { SqliteProvider, Client } = require("duroxide");
+
+const WAIT_POLL_SLICE_MS = 10_000;
+const MAX_SESSION_LINEAGE_HOPS = 128;
+
+function createAbortError(message: string, reason?: unknown): Error {
+    if (reason instanceof Error) return reason;
+    const error = new Error(typeof reason === "string" && reason ? reason : message);
+    error.name = "AbortError";
+    return error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
+    if (signal?.aborted) {
+        throw createAbortError(message, signal.reason);
+    }
+}
+
+/**
+ * PilotSwarmClient — pure client-side session handle.
+ *
+ * Talks to duroxide only through the Client API (startOrchestration,
+ * enqueueEvent, waitForStatusChange, getStatus). Does NOT own
+ * SessionManager, Runtime, or CopilotSession.
+ *
+ * Creates its own duroxide Client and CMS catalog from the store URL.
+ * Completely independent of PilotSwarmWorker.
+ */
+/**
+ * Project a full (in-memory) session config down to the serializable shape
+ * the durable orchestration input carries.
+ *
+ * ONE function on purpose: this exact projection is (a) persisted to the
+ * catalog row at create (migration 0072 `creation_config`) and (b) built at
+ * orchestration start. Before 0072 the start-side copy was the only one, fed
+ * from an in-memory map — and when the first message landed on a different
+ * API-server process than the create, the map missed and the orchestration
+ * started from an empty config: no agent binding, no system message, no tool
+ * names. Persisting the SAME projection at create is what makes the start
+ * reproducible from durable state on any process.
+ *
+ * reasoningEffort was historically omitted from the start-side copy, which
+ * silently dropped the user's creation-time effort on the worker side —
+ * this seam has eaten fields before, which is why it is now one function.
+ *
+ * @internal exported for tests
+ */
+export function projectSerializableSessionConfig(
+    fullConfig: ManagedSessionConfig | undefined,
+    fallbackWaitThreshold: number | undefined,
+): SerializableSessionConfig {
+    // toolNames: merge explicit names with names extracted from Tool objects
+    // (functions cannot ride durable state; their names can).
+    const explicitNames: string[] = fullConfig?.toolNames ?? [];
+    const objectNames: string[] = (fullConfig?.tools ?? [])
+        .map((t: any) => typeof t === "string" ? t : t?.name)
+        .filter((n: string) => n && n !== "wait" && n !== "ask_user");
+    const allNames = [...new Set([...explicitNames, ...objectNames])];
+    return {
+        model: fullConfig?.model,
+        reasoningEffort: fullConfig?.reasoningEffort,
+        contextTier: fullConfig?.contextTier,
+        systemMessage: fullConfig?.systemMessage,
+        workingDirectory: fullConfig?.workingDirectory,
+        waitThreshold: fullConfig?.waitThreshold ?? fallbackWaitThreshold,
+        boundAgentName: fullConfig?.boundAgentName,
+        boundAgentPackageId: fullConfig?.boundAgentPackageId,
+        boundAgentSource: fullConfig?.boundAgentSource,
+        ...(fullConfig?.namedAgentToolAdditions !== undefined
+            ? { namedAgentToolAdditions: fullConfig.namedAgentToolAdditions } : {}),
+        detachedPackageToolPolicy: fullConfig?.detachedPackageToolPolicy,
+        promptLayering: fullConfig?.promptLayering,
+        childContract: fullConfig?.childContract,
+        toolNames: allNames.length ? allNames : undefined,
+    };
+}
+
+export class PilotSwarmClient {
+    private config!: PilotSwarmClientOptions & { waitThreshold: number };
+    private _catalog!: SessionCatalog;
+    private _factStore: FactStore | null = null;
+    private _modelProviderTypes: ModelProviderRegistry | null = null;
+    private duroxideClient: any = null;
+    private sessionConfigs = new Map<string, ManagedSessionConfig>();
+    /** parentSessionId for sub-agent sessions. */
+    private parentSessionIds = new Map<string, string>();
+    /** nestingLevel for sub-agent sessions. */
+    private nestingLevels = new Map<string, number>();
+    /** System session flag. */
+    systemSessions = new Set<string>();
+    private activeOrchestrations = new Map<string, string>();
+    private lastSeenStatusVersion = new Map<string, number>();
+    private lastSeenIteration = new Map<string, number>();
+    private lastSeenResponseVersion = new Map<string, number>();
+    private activeWaitControllers = new Set<AbortController>();
+    private activeWaitPromises = new Set<Promise<unknown>>();
+    private started = false;
+    /** Tracks agentId bound to each session (for policy and title prefixing). */
+    private sessionAgentIds = new Map<string, string>();
+    /** Effective session policy (set via config from worker). */
+    private get _sessionPolicy(): import("./types.js").SessionPolicy | null {
+        return this.config.sessionPolicy ?? null;
+    }
+    /** Allowed agent names (set via config from worker). */
+    private get _allowedAgentNames(): string[] {
+        return this.config.allowedAgentNames ?? [];
+    }
+
+    constructor(options: PilotSwarmClientOptions | PilotSwarmWebOptions) {
+        assertUnambiguousProvider(options, "PilotSwarmClient");
+        if (isWebOptions(options)) {
+            // Web mode — the supported public mode: talk to a deployment's
+            // Web API instead of the datastore. The returned object carries
+            // the same session-handle programming model (WebPilotSwarmClient).
+            return new WebPilotSwarmClient(options) as unknown as PilotSwarmClient;
+        }
+        this.config = {
+            ...options,
+            waitThreshold: options.waitThreshold ?? 30,
+        };
+    }
+
+    // ─── Session Management ──────────────────────────────────
+
+    async createSession(config?: ManagedSessionConfig & {
+        sessionId?: string;
+        onUserInputRequest?: UserInputHandler;
+        /** Names of tools registered on the worker via worker.registerTools(). */
+        toolNames?: string[];
+        /** If this session is a sub-agent, the parent session ID. */
+        parentSessionId?: string;
+        /** Nesting level for sub-agent depth tracking. */
+        nestingLevel?: number;
+        /** Agent ID to bind this session to (for policy validation and title prefixing). */
+        agentId?: string;
+        /** Authenticated owner to associate with the new session. */
+        owner?: SessionOwnerInfo | null;
+        /** Optional visual session group assignment. */
+        groupId?: string | null;
+        /** Sharing level for a new ROOT session (children resolve through their root). */
+        visibility?: SessionVisibility | null;
+    }): Promise<PilotSwarmSession> {
+        // ── Policy enforcement (client-side) ─────────────────
+        const policy = this._sessionPolicy;
+        const isSubAgent = !!config?.parentSessionId;
+
+        // The "default" agent is a prompt overlay, not a session-level agent.
+        // Reject it unconditionally regardless of policy mode.
+        const agentId = config?.agentId;
+        if (agentId === "default" && !isSubAgent) {
+            throw new Error(
+                'Session creation rejected: "default" is a prompt overlay, not a selectable agent.',
+            );
+        }
+
+        if (policy && policy.creation?.mode === "allowlist" && !isSubAgent) {
+            if (!agentId && !policy.creation.allowGeneric) {
+                throw new Error(
+                    "Session creation policy violation: generic sessions are not allowed. " +
+                    "Use createSessionForAgent() to specify an agent.",
+                );
+            }
+            if (agentId && !this._allowedAgentNames.includes(agentId)) {
+                throw new Error(
+                    `Session creation policy violation: agent "${agentId}" is not in the allowed agent list.`,
+                );
+            }
+        }
+
+        const sessionId = config?.sessionId ?? crypto.randomUUID();
+        const resolved = await this._resolveCreationModel(config ?? {}, false);
+        const resolvedConfig = {
+            ...(config ?? {}),
+            ...(resolved ? {
+                model: resolved.model,
+                reasoningEffort: resolved.reasoning as ManagedSessionConfig["reasoningEffort"],
+                contextTier: resolved.context as ManagedSessionConfig["contextTier"],
+            } : {}),
+        };
+        if (config || resolved) {
+            const fullConfig: ManagedSessionConfig = {
+                model: resolvedConfig.model,
+                reasoningEffort: resolvedConfig.reasoningEffort,
+                contextTier: resolvedConfig.contextTier,
+                systemMessage: resolvedConfig.systemMessage,
+                boundAgentName: resolvedConfig.boundAgentName,
+                boundAgentPackageId: resolvedConfig.boundAgentPackageId,
+                boundAgentSource: resolvedConfig.boundAgentSource,
+                ...(!isSubAgent && (resolvedConfig.boundAgentName || agentId) ? {
+                    namedAgentToolAdditions: resolvedConfig.namedAgentToolAdditions
+                        ?? projectSerializableSessionConfig(resolvedConfig, undefined).toolNames ?? [],
+                } : {}),
+                detachedPackageToolPolicy: resolvedConfig.detachedPackageToolPolicy,
+                promptLayering: resolvedConfig.promptLayering,
+                childContract: resolvedConfig.childContract,
+                tools: resolvedConfig.tools,
+                workingDirectory: resolvedConfig.workingDirectory,
+                hooks: resolvedConfig.hooks,
+                waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
+                toolNames: resolvedConfig.toolNames,
+            };
+            this.sessionConfigs.set(sessionId, fullConfig);
+        }
+
+        // CMS: write session record (state=pending, no orchestration yet).
+        // The creation config is persisted alongside it (migration 0072) so
+        // the orchestration start can rebuild it on ANY process — the
+        // in-memory map above only covers the process that ran this create.
+        // JSON round-trip strips undefined fields for clean JSONB.
+        const configForRow = this.sessionConfigs.get(sessionId);
+        await this._catalog.createSession(sessionId, {
+            model: resolvedConfig.model,
+            reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
+            contextTier: resolvedConfig.contextTier ?? undefined,
+            modelResolutionSource: resolved?.source,
+            parentSessionId: config?.parentSessionId,
+            ...(agentId ? { agentId } : {}),
+            owner: config?.owner ?? null,
+            groupId: config?.groupId ?? null,
+            visibility: config?.visibility ?? null,
+            creationConfig: configForRow
+                ? {
+                    ...JSON.parse(JSON.stringify(projectSerializableSessionConfig(configForRow, this.config.waitThreshold))),
+                    ...(config?.nestingLevel !== undefined ? { bootstrapNestingLevel: config.nestingLevel } : {}),
+                }
+                : null,
+        });
+        if (resolved) {
+            await this._catalog.recordEvents(sessionId, [{
+                eventType: "session.model_resolved",
+                data: { model: resolved.model, source: resolved.source },
+            }]).catch(() => {});
+        }
+
+        // Track parentSessionId for sub-agent orchestration input
+        if (config?.parentSessionId) {
+            this.parentSessionIds.set(sessionId, config.parentSessionId);
+        }
+        // Track nestingLevel for sub-agent depth enforcement
+        if (config?.nestingLevel != null) {
+            this.nestingLevels.set(sessionId, config.nestingLevel);
+        }
+        // Track agentId for orchestration input
+        if (config?.agentId) {
+            this.sessionAgentIds.set(sessionId, config.agentId);
+        }
+
+        return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
+    }
+
+    /**
+     * Create a session bound to a named agent.
+     *
+     * Validates that the agent exists in the loaded (non-system) agent list.
+     * Sets the agentId on the session and applies a prefixed title:
+     * `"Agent Title: <shortId>"`.
+     *
+     * @throws If the agent is not found, is a system agent, or policy rejects it.
+     */
+    async createSessionForAgent(agentName: string, opts?: {
+        model?: string;
+        reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
+        contextTier?: ManagedSessionConfig["contextTier"];
+        onUserInputRequest?: UserInputHandler;
+        toolNames?: string[];
+        title?: string;
+        splash?: string;
+        splashMobile?: string;
+        initialPrompt?: string;
+        owner?: SessionOwnerInfo | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+    }): Promise<PilotSwarmSession> {
+        // Validate the agent exists and is non-system
+        const allowed = this._allowedAgentNames;
+        if (!allowed.includes(agentName)) {
+            throw new Error(
+                `Cannot create session for agent "${agentName}": not found in loaded agents or is a system agent.`,
+            );
+        }
+
+        const session = await this.createSession({
+            model: opts?.model,
+            reasoningEffort: opts?.reasoningEffort,
+            contextTier: opts?.contextTier,
+            toolNames: opts?.toolNames,
+            onUserInputRequest: opts?.onUserInputRequest,
+            agentId: agentName,
+            boundAgentName: agentName,
+            promptLayering: { kind: "app-agent" },
+            owner: opts?.owner ?? null,
+            groupId: opts?.groupId ?? null,
+            visibility: opts?.visibility ?? null,
+        });
+
+        // Set agent metadata in CMS (agentId + prefixed title)
+        const shortId = session.sessionId.slice(0, 8);
+        const agentTitle = opts?.title || (agentName.charAt(0).toUpperCase() + agentName.slice(1));
+        await this._catalog.updateSession(session.sessionId, {
+            agentId: agentName,
+            title: `${agentTitle}: ${shortId}`,
+            ...(opts?.splash ? { splash: opts.splash } : {}),
+            ...(opts?.splashMobile ? { splashMobile: opts.splashMobile } : {}),
+        });
+
+        if (opts?.initialPrompt) {
+            // Stamp the kickoff as a SYSTEM sender. It is the agent
+            // definition's own opening instruction, not something a person
+            // typed — but it goes onto the queue as a user-role prompt, and
+            // an unstamped user-role message renders from the viewer's
+            // perspective. That is why every packaged agent's instructions
+            // appeared in the transcript under "You:".
+            await session.send(opts.initialPrompt, {
+                bootstrap: true,
+                sender: { kind: "system", display: `${agentName} kickoff`, origin: "api" },
+            });
+        }
+
+        return session;
+    }
+
+    /**
+     * Create a system session (e.g. Sweeper Agent).
+     *
+     * System sessions are protected from deletion and appear with distinct
+     * styling in the TUI. They use the same orchestration as regular sessions.
+     * Idempotent: if a system session already exists, it is resumed.
+     */
+    async createSystemSession(config: {
+        model?: string;
+        reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
+        systemMessage?: string;
+        toolNames?: string[];
+        title?: string;
+        onUserInputRequest?: UserInputHandler;
+    }): Promise<PilotSwarmSession> {
+        // Check if a system session already exists — resume it
+        const existingSessions = await this._catalog.listSessions();
+        const existing = existingSessions.find(s => s.isSystem);
+        if (existing) {
+            this.systemSessions.add(existing.sessionId);
+            return this.resumeSession(existing.sessionId, {
+                model: config.model,
+                systemMessage: config.systemMessage,
+                toolNames: config.toolNames,
+                onUserInputRequest: config.onUserInputRequest,
+            });
+        }
+
+        const sessionId = crypto.randomUUID();
+        const resolved = await this._resolveCreationModel(config, true);
+        if (!resolved) throw new Error("No system-eligible model provider is available.");
+        this.systemSessions.add(sessionId);
+        const fullConfig: ManagedSessionConfig = {
+            model: resolved.model,
+            reasoningEffort: (resolved.reasoning ?? undefined) as ManagedSessionConfig["reasoningEffort"],
+            contextTier: (resolved.context ?? undefined) as ManagedSessionConfig["contextTier"],
+            systemMessage: config.systemMessage,
+            toolNames: config.toolNames,
+        };
+        this.sessionConfigs.set(sessionId, fullConfig);
+
+        // CMS: create with is_system = true
+        await this._catalog.createSession(sessionId, {
+            model: resolved.model,
+            reasoningEffort: resolved.reasoning ?? undefined,
+            contextTier: resolved.context ?? undefined,
+            modelResolutionSource: resolved.source,
+            isSystem: true,
+        });
+        await this._catalog.recordEvents(sessionId, [{
+            eventType: "session.model_resolved",
+            data: { model: resolved.model, source: resolved.source },
+        }]).catch(() => {});
+
+        // Set a fixed title immediately
+        if (config.title) {
+            await this._catalog.updateSession(sessionId, { title: config.title });
+        }
+
+        return new PilotSwarmSession(sessionId, this, config.onUserInputRequest);
+    }
+
+    async resumeSession(sessionId: string, config?: ManagedSessionConfig & {
+        onUserInputRequest?: UserInputHandler;
+    }): Promise<PilotSwarmSession> {
+        if (config) {
+            this.sessionConfigs.set(sessionId, config);
+        }
+        const orchestrationId = `session-${sessionId}`;
+        const cmsRow = await this._catalog.getSession(sessionId).catch(() => null);
+        let shouldTreatAsActive = cmsRow?.orchestrationId === orchestrationId && cmsRow?.state !== "pending";
+
+        // Sync tracking state from the live orchestration so the client
+        // doesn't mistake pre-existing KV data (from prior turns) as new.
+        // Without this, sendAndWait returns stale responses after worker restarts.
+        try {
+            const [instanceInfo, orchStatus] = await Promise.all([
+                this.duroxideClient!.getInstanceInfo(orchestrationId),
+                this.duroxideClient!.getStatus(orchestrationId),
+            ]);
+            shouldTreatAsActive = instanceInfo?.status && instanceInfo.status !== "Unknown";
+            if (orchStatus.customStatusVersion) {
+                this.lastSeenStatusVersion.set(orchestrationId, orchStatus.customStatusVersion);
+            }
+            if (orchStatus.customStatus) {
+                const cs = typeof orchStatus.customStatus === "string"
+                    ? JSON.parse(orchStatus.customStatus) : orchStatus.customStatus;
+                if (cs.iteration != null) {
+                    this.lastSeenIteration.set(orchestrationId, cs.iteration);
+                }
+                if (cs.responseVersion != null) {
+                    this.lastSeenResponseVersion.set(orchestrationId, cs.responseVersion);
+                }
+            }
+        } catch {
+            // Best-effort — if getStatus fails, we'll still work (may see a stale response on first poll)
+        }
+
+        if (shouldTreatAsActive) {
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+        } else {
+            this.activeOrchestrations.delete(sessionId);
+        }
+
+        return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
+    }
+
+    private async _syncTurnCursors(orchestrationId: string): Promise<void> {
+        if (!this.duroxideClient) return;
+        try {
+            const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
+            this.lastSeenStatusVersion.set(orchestrationId, Number(orchStatus.customStatusVersion) || 0);
+            const customStatus = orchStatus.customStatus
+                ? (typeof orchStatus.customStatus === "string" ? JSON.parse(orchStatus.customStatus) : orchStatus.customStatus)
+                : null;
+            this.lastSeenIteration.set(
+                orchestrationId,
+                typeof customStatus?.iteration === "number" ? customStatus.iteration : -1,
+            );
+            this.lastSeenResponseVersion.set(
+                orchestrationId,
+                Number(customStatus?.responseVersion) || 0,
+            );
+        } catch {
+            // A new session has no orchestration status yet. The send path will
+            // create it, and zero cursors are correct for its first response.
+        }
+    }
+
+    async listSessions(): Promise<PilotSwarmSessionInfo[]> {
+        const rows = await this._catalog.listSessions();
+        return rows.map(row => ({
+            sessionId: row.sessionId,
+            status: (row.state as PilotSwarmSessionStatus) ?? "pending",
+            title: row.title ?? undefined,
+            owner: row.owner ?? undefined,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            iterations: row.currentIteration,
+            error: row.lastError ?? undefined,
+            parentSessionId: row.parentSessionId ?? undefined,
+            isSystem: row.isSystem || undefined,
+            agentId: row.agentId ?? undefined,
+            splash: row.splash ?? undefined,
+            splashMobile: row.splashMobile ?? undefined,
+            viewerGroupId: row.groupId ?? undefined,
+            shortSummary: row.shortSummary ?? undefined,
+            summaryState: row.summaryState ?? undefined,
+            summaryUpdatedAt: row.summaryUpdatedAt ?? undefined,
+        }));
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        // Guard: refuse to delete system sessions (CMS will also throw)
+        const session = await this._catalog.getSession(sessionId);
+        if (session?.isSystem) {
+            throw new Error("Cannot delete system session");
+        }
+
+        // Cascade to descendants. Enumerate BEFORE deleting the target: the
+        // descendant walk skips soft-deleted rows, so once the target row is
+        // gone its subtree is unreachable from any ancestor (orphaned).
+        let descendants: string[] = [];
+        try {
+            descendants = await this._catalog.getDescendantSessionIds(sessionId);
+        } catch (err) {
+            console.error(`[PilotSwarmClient] descendant enumeration failed for ${sessionId}:`, err);
+        }
+        for (const descendantId of descendants) {
+            try {
+                await this._deleteOneSession(descendantId);
+            } catch (err) {
+                // Non-fatal (e.g. a system/service descendant): keep going so
+                // one refusal doesn't strand its siblings.
+                console.error(`[PilotSwarmClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+            }
+        }
+
+        await this._deleteOneSession(sessionId);
+    }
+
+    /**
+     * Delete a single session row: CMS soft-delete, session-fact cleanup,
+     * best-effort duroxide cancel. No descendant handling — deleteSession()
+     * cascades before calling this.
+     */
+    private async _deleteOneSession(sessionId: string): Promise<void> {
+        this.sessionConfigs.delete(sessionId);
+        this.parentSessionIds.delete(sessionId);
+        this.nestingLevels.delete(sessionId);
+
+        // CMS: soft-delete (source of truth)
+        await this._catalog.softDeleteSession(sessionId);
+
+        if (this._factStore) {
+            try {
+                await this._factStore.deleteSessionFactsForSession(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmClient] session fact cleanup failed for ${sessionId}:`, err);
+            }
+        }
+
+        // Duroxide: cancel orchestration (best effort)
+        const orchestrationId = `session-${sessionId}`;
+        if (this.duroxideClient) {
+            try {
+                await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
+            } catch {}
+        }
+        this.activeOrchestrations.delete(sessionId);
+    }
+
+    /**
+     * Cancel one or more queued (durable) pending messages for a session by
+     * their UI-generated client message ids. Convenience wrapper around
+     * `PilotSwarmSession.cancelPendingMessage`.
+     */
+    async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
+        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
+        if (ids.length === 0) return;
+        if (!this.duroxideClient) return;
+        const orchestrationId = `session-${sessionId}`;
+        await this.duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({ cancelPending: ids }),
+        );
+    }
+
+    // ─── Lifecycle ───────────────────────────────────────────
+
+    async start(): Promise<void> {
+        if (this.started) return;
+        const store = this.config.store;
+        const storage = resolveStorageConfig({ options: this.config });
+        const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
+        const _trace = this.config.traceWriter ?? (() => {});
+        const startedAt = Date.now();
+        const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
+
+        // CMS + facts may use a separate URL when running with AAD/MI
+        // (passwordless URL whose `user@` segment is the federated UAMI's
+        // display name). Defaults to `store` for the legacy
+        // connection-string path. The duroxide orchestration store
+        // honours the same MI switch via duroxide-node's native Entra
+        // path; CMS/facts go through the pg-pool factory using
+        // `DefaultAzureCredential`.
+        // Create duroxide client
+        let provider: any;
+        if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
+        else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
+        else if (storage.duroxide.url.startsWith("postgres://") || storage.duroxide.url.startsWith("postgresql://")) {
+            trace("[client] duroxide provider connect start...");
+            provider = await getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
+            trace("[client] duroxide provider connect done");
+        } else {
+            throw new Error(`Unsupported duroxide store URL: ${storage.duroxide.url}`);
+        }
+        this.duroxideClient = new Client(provider);
+
+        // Create CMS catalog
+        trace("[client] CMS create start...");
+        this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+        trace("[client] CMS initialize start...");
+        await this._catalog.initialize();
+        trace("[client] CMS initialize done");
+        this._modelProviderTypes = loadModelProviderTypes(this.config.modelProvidersPath);
+
+        trace("[client] facts create start...");
+        this._factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
+        await this._factStore.initialize();
+        trace("[client] facts initialize done");
+
+        this.started = true;
+        trace("[client] start complete");
+    }
+
+    private async _resolveCreationModel(
+        config: Pick<ManagedSessionConfig, "model" | "reasoningEffort" | "contextTier"> & { owner?: SessionOwnerInfo | null },
+        system: boolean,
+    ): Promise<RuntimeModelSelection | null> {
+        const store = this._catalog?.providers;
+        if (!store) return null;
+        if (!this._modelProviderTypes) {
+            throw new Error("No provider type catalog is available; refusing to create an unstamped session.");
+        }
+        const actor = system ? null : await store.lookupUserId(config.owner ?? null);
+        const [defaults, credentials] = await Promise.all([
+            store.getDefaults(actor),
+            store.allCredentials(),
+        ]);
+        const override = system ? [] : [
+            { tuple: defaults.mine, source: "user_default" as const },
+            { tuple: defaults.cluster, source: "cluster_default" as const },
+        ];
+        const systemDefaults = system
+            ? [{ tuple: defaults.system, source: "system_default" as const }]
+            : override;
+        return resolveRuntimeModelSelection(this._modelProviderTypes, credentials, {
+            requestedModel: config.model,
+            requestedReasoning: config.reasoningEffort,
+            requestedContext: config.contextTier,
+            defaults: systemDefaults,
+            eligible: system
+                ? (provider) => provider.class === "shared" || provider.systemUseEnabled === true
+                : (provider) => provider.class === "shared" || (actor !== null && provider.ownerUserId === actor),
+        });
+    }
+
+    async stop(): Promise<void> {
+        for (const controller of [...this.activeWaitControllers]) {
+            controller.abort(createAbortError("PilotSwarmClient stopped"));
+        }
+        await Promise.allSettled([...this.activeWaitPromises]);
+
+        if (this._factStore) {
+            try { await this._factStore.close(); } catch {}
+            this._factStore = null;
+        }
+        if (this._catalog) {
+            try { await this._catalog.close(); } catch {}
+        }
+        this.duroxideClient = null;
+        this.started = false;
+    }
+
+    // ─── Internal ────────────────────────────────────────────
+
+    /**
+     * Creation and first send may land on different API processes. Restore the
+     * child boundary from durable lineage before starting an orchestration;
+     * otherwise the child silently becomes a root with a reset nesting budget.
+     */
+    private async _restoreLineageForStart(
+        sessionId: string,
+        row: SessionRow | null,
+        bootstrapNestingLevel?: unknown,
+    ): Promise<{ parentSessionId?: string; nestingLevel: number }> {
+        const invalid = (detail: string) => Object.assign(
+            new Error(`Cannot restore session lineage for "${sessionId}": ${detail}`),
+            { code: "SESSION_LINEAGE_INVALID" },
+        );
+        if (!row) throw invalid("the session is missing from the catalog.");
+        const parentSessionId = row.parentSessionId || undefined;
+        const visited = new Set([sessionId]);
+        let current = row;
+        let depth = 0;
+        while (current.parentSessionId) {
+            const parentId = current.parentSessionId;
+            if (visited.has(parentId)) throw invalid(`a parent cycle includes "${parentId}".`);
+            if (depth >= MAX_SESSION_LINEAGE_HOPS) throw invalid(`the parent chain exceeds ${MAX_SESSION_LINEAGE_HOPS} hops.`);
+            visited.add(parentId);
+            const parent = await this._catalog.getSession(parentId);
+            if (!parent) throw invalid(`parent session "${parentId}" is missing from the catalog.`);
+            current = parent;
+            depth++;
+        }
+        // Logical depth can differ from physical ancestry (managed system
+        // sessions start their own delegation budget). Preserve an explicit
+        // create depth across processes; older rows fall back to ancestry.
+        if (bootstrapNestingLevel !== undefined
+            && (typeof bootstrapNestingLevel !== "number" || !Number.isSafeInteger(bootstrapNestingLevel) || bootstrapNestingLevel < 0)) {
+            throw invalid("the stored bootstrap nesting level must be a non-negative integer.");
+        }
+        const nestingLevel = this.nestingLevels.get(sessionId) ?? bootstrapNestingLevel ?? depth;
+        if (!Number.isSafeInteger(nestingLevel) || nestingLevel < 0) {
+            throw invalid("the explicit nesting level must be a non-negative integer.");
+        }
+        if (parentSessionId) this.parentSessionIds.set(sessionId, parentSessionId);
+        else this.parentSessionIds.delete(sessionId);
+        this.nestingLevels.set(sessionId, nestingLevel);
+        return { parentSessionId, nestingLevel };
+    }
+
+    /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
+    private async _ensureOrchestrationAndSend(
+        sessionId: string,
+        prompt: string,
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+    ): Promise<string> {
+        if (!this.duroxideClient) throw new Error("Not started.");
+        const _trace = this.config.traceWriter ?? (() => {});
+        const startedAt = Date.now();
+        const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
+
+        const orchestrationId = `session-${sessionId}`;
+        const fullConfig = this.sessionConfigs.get(sessionId);
+
+        // The start config is a FIELD-LEVEL merge, durable under explicit:
+        //
+        //   base:      the creation config persisted on the catalog row at
+        //              create (migration 0072) — the durable truth, readable
+        //              on ANY process. Starting from an empty base is exactly
+        //              the bug that ran every API-created agent session
+        //              without its agent.
+        //   overrides: the in-memory map entry, when THIS process has one —
+        //              either the create it ran, or an explicit
+        //              resumeSession(config). Only fields the caller actually
+        //              SET override (the JSON round-trip strips undefined),
+        //              so a partial resume — say tools alone, to re-attach
+        //              handlers — inherits the binding, system message and
+        //              tool names from the row instead of clobbering them
+        //              with absence. Entry-level replace was the old rule,
+        //              and a partial resume before the first message silently
+        //              erased the creation config under it.
+        //
+        // No fallbackWaitThreshold in the override projection: an unset
+        // waitThreshold must inherit the row's creation-time value, not this
+        // process's default. The default applies only if neither side set it.
+        let serializableConfig: SerializableSessionConfig | undefined;
+        let bootstrapNestingLevel: unknown;
+
+        trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
+
+        const cmsRow = await this._catalog.getSession(sessionId);
+        {
+            const stored = this._catalog.getSessionCreationConfig
+                ? await this._catalog.getSessionCreationConfig(sessionId).catch(error => {
+                    // Missing legacy metadata is supported; an unreadable start
+                    // record cannot silently reset a persisted delegation budget.
+                    if (!this.activeOrchestrations.has(sessionId)) throw error;
+                    return null;
+                })
+                : null;
+            const { bootstrapNestingLevel: storedDepth, ...storedSessionConfig } = stored ?? {};
+            bootstrapNestingLevel = storedDepth;
+            if (stored && !fullConfig) {
+                trace(`[client] creation config restored from catalog row (in-memory config miss)`);
+            }
+            const overrides: Partial<SerializableSessionConfig> = fullConfig
+                ? JSON.parse(JSON.stringify(projectSerializableSessionConfig(fullConfig, undefined)))
+                : {};
+            const merged: SerializableSessionConfig = {
+                ...(storedSessionConfig as SerializableSessionConfig),
+                ...overrides,
+            };
+            // A partial resume may explicitly replace root tool additions before
+            // the first message, while retaining its durable named binding.
+            if ((merged.boundAgentName || merged.namedAgentToolAdditions !== undefined) && !cmsRow?.parentSessionId && fullConfig
+                && fullConfig.namedAgentToolAdditions === undefined
+                && (fullConfig.toolNames !== undefined || fullConfig.tools !== undefined)) {
+                merged.namedAgentToolAdditions = overrides.toolNames ?? [];
+            }
+            if (merged.waitThreshold == null) merged.waitThreshold = this.config.waitThreshold;
+            serializableConfig = merged;
+            // A pre-0072 row with no map entry still starts minimal; the
+            // worker-side bound-agent backfill remains the safety net there.
+        }
+        // The CMS row's is_system flag is authoritative and durable; the
+        // in-memory systemSessions set is not — a worker restart empties it,
+        // and a resumed managed system agent (a deterministic system child,
+        // reused not re-created) is never re-added. Without adopting the row
+        // here, a resumed system session's orchestration input loses isSystem,
+        // so the children it spawns come out non-system and cannot resolve the
+        // admin-stored System GitHub Copilot key (the parent still resolves it
+        // via its own row, which is why only the sub-agents fail).
+        if (cmsRow?.isSystem) this.systemSessions.add(sessionId);
+        if (
+            (cmsRow?.state === "completed" || cmsRow?.state === "cancelled")
+            && cmsRow.parentSessionId
+            && !cmsRow.isSystem
+        ) {
+            throw new Error(
+                `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
+            );
+        }
+        if (cmsRow && (cmsRow.state === "failed" || cmsRow.state === "error" || cmsRow.state === "cancelled")) {
+            const info = await this._getSessionInfo(sessionId).catch(() => null);
+            if (info?.status === "failed" || info?.status === "cancelled") {
+                throw new Error(
+                    `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
+                );
+            }
+        }
+
+        if (!this.activeOrchestrations.has(sessionId)) {
+            const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow, bootstrapNestingLevel);
+            // Explicit local identity keeps its precedence; another process
+            // reconstructs the named agent's startup contract from the row.
+            const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;
+            const input: OrchestrationInput = {
+                sessionId,
+                config: serializableConfig,
+                sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
+                iteration: 0,
+                // Client-created sessions are always durable. The worker's
+                // configured session store determines how that durability is
+                // backed (blob storage or local filesystem state).
+                blobEnabled: true,
+                dehydrateThreshold: this.config.dehydrateThreshold ?? 29,
+                // Lifecycle protocol: the idle timer is the affinity hold
+                // window (fire = GUID rotation, not dehydrate) — 30 min.
+                idleTimeout: parentSessionId ? -1 : (this.config.dehydrateOnIdle ?? 1_800),
+                inputGracePeriod: parentSessionId ? -1 : (this.config.dehydrateOnInputRequired ?? 30),
+                checkpointInterval: this.config.checkpointInterval ?? -1,
+                rehydrationMessage: this.config.rehydrationMessage,
+                ...(parentSessionId ? { parentSessionId } : {}),
+                ...(nestingLevel != null ? { nestingLevel } : {}),
+                ...(this.systemSessions.has(sessionId) ? { isSystem: true } : {}),
+                ...(agentId ? { agentId } : {}),
+                ...(this._sessionPolicy ? { sessionPolicy: this._sessionPolicy } : {}),
+                ...(this._allowedAgentNames.length > 0 ? { allowedAgentNames: this._allowedAgentNames } : {}),
+            };
+            const startAt = Date.now();
+            await this.duroxideClient.startOrchestrationVersioned(
+                orchestrationId,
+                DURABLE_SESSION_ORCHESTRATION_NAME,
+                input,
+                DURABLE_SESSION_LATEST_VERSION,
+            );
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+            trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
+        }
+
+        // CMS: update state + orchestration ID
+        const updateAt = Date.now();
+        await this._catalog.updateSession(sessionId, {
+            orchestrationId,
+            state: "running",
+            lastError: null,
+            waitReason: null,
+            lastActiveAt: new Date(),
+        });
+        trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
+
+        const enqueueAt = Date.now();
+        await this.duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({
+                prompt,
+                ...(opts?.bootstrap ? { bootstrap: true } : {}),
+                ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+                ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                    ? { clientMessageIds: opts.clientMessageIds }
+                    : {}),
+                ...(() => {
+                    const sender = normalizeMessageSender(opts?.sender);
+                    return sender ? { sender } : {};
+                })(),
+                ...(() => {
+                    const attachments = sanitizePromptAttachmentRefs(opts?.attachments);
+                    return attachments.length > 0 ? { attachments } : {};
+                })(),
+            }),
+        );
+        trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
+        trace("[client] ensureOrchestrationAndSend complete");
+
+        return orchestrationId;
+    }
+
+    /** @internal */
+    async _startAndWait(
+        sessionId: string,
+        prompt: string,
+        onUserInput: UserInputHandler | undefined,
+        timeout?: number,
+        onIntermediateContent?: (content: string) => void,
+        opts?: { bootstrap?: boolean; signal?: AbortSignal; requiredTool?: string },
+    ): Promise<string | undefined> {
+        // A cached handle may have sent fire-and-forget turns whose responses
+        // nobody observed. Snapshot the durable cursors immediately before this
+        // prompt so sendAndWait cannot return one of those earlier responses.
+        await this._syncTurnCursors(`session-${sessionId}`);
+        const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt, opts);
+
+        return this._waitForTurnResult(
+            orchestrationId,
+            sessionId,
+            onUserInput,
+            timeout ?? 300_000,
+            onIntermediateContent,
+            opts?.signal,
+        );
+    }
+
+    /** @internal */
+    async _startTurn(
+        sessionId: string,
+        prompt: string,
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+    ): Promise<string> {
+        // Match sendAndWait(): snapshot the durable response cursor before
+        // enqueue so a following wait() cannot consume the prior turn.
+        await this._syncTurnCursors(`session-${sessionId}`);
+        return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
+    }
+
+    /** @internal */
+    _getDuroxideClient() {
+        return this.duroxideClient;
+    }
+
+    /** @internal */
+    _getCatalog(): SessionCatalog {
+        return this._catalog;
+    }
+
+    /** @internal — exposed for PilotSwarmSession.wait() */
+    async _waitForTurnResult_external(
+        orchestrationId: string,
+        sessionId: string,
+        onUserInput: UserInputHandler | undefined,
+        timeout: number,
+        signal?: AbortSignal,
+    ): Promise<string | undefined> {
+        return this._waitForTurnResult(orchestrationId, sessionId, onUserInput, timeout, undefined, signal);
+    }
+
+    private _createWaitSignal(externalSignal?: AbortSignal): {
+        controller: AbortController;
+        signal: AbortSignal;
+        cleanup: () => void;
+    } {
+        const controller = new AbortController();
+        this.activeWaitControllers.add(controller);
+
+        const onAbort = () => {
+            controller.abort(createAbortError("PilotSwarmClient wait aborted", externalSignal?.reason));
+        };
+
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                onAbort();
+            } else {
+                externalSignal.addEventListener("abort", onAbort, { once: true });
+            }
+        }
+
+        return {
+            controller,
+            signal: controller.signal,
+            cleanup: () => {
+                if (externalSignal) externalSignal.removeEventListener("abort", onAbort);
+                this.activeWaitControllers.delete(controller);
+            },
+        };
+    }
+
+    /** @internal */
+    private async _getLatestResponse(orchestrationId: string): Promise<SessionResponsePayload | null> {
+        if (!this.duroxideClient) return null;
+        try {
+            const raw = await this.duroxideClient.getValue(orchestrationId, RESPONSE_LATEST_KEY);
+            if (!raw) return null;
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            return parsed ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /** @internal */
+    async _getSessionInfo(sessionId: string, options?: { includeResultSource?: boolean }): Promise<PilotSwarmSessionInfo> {
+        const cmsRow = await this._catalog.getSession(sessionId);
+
+        // Merge with live customStatus for real-time fields
+        const orchestrationId = `session-${sessionId}`;
+        let customStatus: any = {};
+        let orchStatus: any = {};
+
+        if (this.duroxideClient) {
+            try {
+                orchStatus = await this.duroxideClient.getStatus(orchestrationId);
+                if (orchStatus.customStatus) {
+                    try {
+                        customStatus = typeof orchStatus.customStatus === "string"
+                            ? JSON.parse(orchStatus.customStatus) : orchStatus.customStatus;
+                    } catch {}
+                }
+            } catch {}
+        }
+
+        const latestResponse = customStatus?.responseVersion
+            ? await this._getLatestResponse(orchestrationId)
+            : null;
+
+        const cronActive = customStatus.cronActive === true;
+        const cronInterval = typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined;
+        const cronKind = cronActive && (customStatus.cronKind === "wall-clock" || customStatus.cronKind === "interval")
+            ? customStatus.cronKind
+            : undefined;
+        const cronNextFireAt = cronActive && typeof customStatus.cronNextFireAt === "number"
+            ? customStatus.cronNextFireAt
+            : undefined;
+        const cronTimezone = cronActive && typeof customStatus.cronTimezone === "string"
+            ? customStatus.cronTimezone
+            : undefined;
+        const cronMaxFires = cronActive && typeof customStatus.cronMaxFires === "number"
+            ? customStatus.cronMaxFires
+            : undefined;
+        const cronFiresCompleted = cronActive && typeof customStatus.cronFiresCompleted === "number"
+            ? customStatus.cronFiresCompleted
+            : undefined;
+        const status = deriveStatusFromCmsAndRuntime({
+            row: cmsRow,
+            customStatus,
+            latestResponse,
+            orchestrationStatus: orchStatus.status,
+        });
+
+        const terminalStatusInput = cmsRow ? {
+            parentSessionId: cmsRow.parentSessionId,
+            isSystem: cmsRow.isSystem,
+            rowState: cmsRow.state,
+            status: customStatus?.status,
+            orchestrationStatus: orchStatus.status,
+            cronActive,
+            cronInterval,
+            turnResultType: customStatus?.turnResult?.type,
+            latestResponseType: latestResponse?.type,
+        } : null;
+
+        if (cmsRow && terminalStatusInput && shouldSyncCompletedStatus(terminalStatusInput)) {
+            await this._catalog.updateSession(sessionId, {
+                state: "completed",
+                lastError: null,
+                waitReason: null,
+            }).catch(() => {});
+        } else if (cmsRow && terminalStatusInput && shouldSyncFailedStatus(terminalStatusInput)) {
+            const failureMessage =
+                (typeof customStatus?.error === "string" && customStatus.error.trim())
+                    ? customStatus.error.trim()
+                    : (typeof cmsRow.lastError === "string" && cmsRow.lastError.trim())
+                        ? cmsRow.lastError.trim()
+                        : null;
+            await this._catalog.updateSession(sessionId, {
+                state: "failed",
+                waitReason: null,
+                ...(failureMessage ? { lastError: failureMessage } : {}),
+            }).catch(() => {});
+        } else if (
+            cmsRow
+            && orchStatus.status === "Running"
+            && (cmsRow.state === "error" || cmsRow.state === "failed")
+        ) {
+            const recoveredState =
+                typeof customStatus?.status === "string"
+                    && customStatus.status !== "error"
+                    && customStatus.status !== "failed"
+                    ? customStatus.status
+                    : "running";
+            await this._catalog.updateSession(sessionId, {
+                state: recoveredState,
+                lastError: null,
+                ...(recoveredState === "waiting" || recoveredState === "input_required"
+                    ? {}
+                    : { waitReason: null }),
+            }).catch(() => {});
+        }
+
+        const effectiveError = (status === "error" || status === "failed")
+            ? (orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined))
+            : undefined;
+        const completedResponse = customStatus.turnResult?.type === "completed"
+            ? customStatus.turnResult
+            : latestResponse?.type === "completed" ? latestResponse : undefined;
+        const resultSource = completedResponse ? "response"
+            : orchStatus.status === "Completed" ? "orchestration" : undefined;
+
+        return {
+            sessionId,
+            status,
+            model: cmsRow?.model ?? undefined,
+            title: cmsRow?.title ?? undefined,
+            agentId: cmsRow?.agentId ?? undefined,
+            owner: cmsRow?.owner ?? undefined,
+            viewerGroupId: cmsRow?.groupId ?? undefined,
+            shortSummary: cmsRow?.shortSummary ?? undefined,
+            summaryState: cmsRow?.summaryState ?? undefined,
+            summaryUpdatedAt: cmsRow?.summaryUpdatedAt ?? undefined,
+            createdAt: cmsRow?.createdAt ?? new Date(),
+            updatedAt: cmsRow?.updatedAt ?? new Date(),
+            iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,
+            pendingQuestion: resolvePendingQuestion(status, customStatus, latestResponse),
+            waitingUntil: customStatus.waitSeconds
+                ? new Date(Date.now() + customStatus.waitSeconds * 1000)
+                : undefined,
+            waitReason: customStatus.waitReason,
+            cronActive,
+            cronInterval,
+            cronKind,
+            cronNextFireAt,
+            cronTimezone,
+            cronMaxFires,
+            cronFiresCompleted,
+            cronReason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
+            contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
+                ? customStatus.contextUsage
+                : undefined,
+            result: completedResponse ? completedResponse.content
+                : (orchStatus.status === "Completed" ? orchStatus.output : undefined),
+            ...(options?.includeResultSource && resultSource ? { resultSource } : {}),
+            error: effectiveError,
+        };
+    }
+
+    /** @internal */
+    private async _waitForTurnResult(
+        orchestrationId: string,
+        sessionId: string,
+        onUserInput: UserInputHandler | undefined,
+        timeout: number,
+        onIntermediateContent?: (content: string) => void,
+        externalSignal?: AbortSignal,
+    ): Promise<string | undefined> {
+        const { signal, cleanup } = this._createWaitSignal(externalSignal);
+        const getDuroxideClient = () => {
+            const client = this.duroxideClient;
+            if (!client) {
+                throwIfAborted(signal, `PilotSwarmClient stopped while waiting for response (${orchestrationId})`);
+                throw new Error(`PilotSwarmClient stopped while waiting for response (${orchestrationId})`);
+            }
+            return client;
+        };
+        const waitPromise = (async () => {
+            const deadline = timeout > 0 ? Date.now() + timeout : Infinity;
+            let lastSeenVersion = this.lastSeenStatusVersion.get(orchestrationId) ?? 0;
+            let lastSeenIteration = this.lastSeenIteration.get(orchestrationId) ?? -1;
+            let lastSeenResponseVersion = this.lastSeenResponseVersion.get(orchestrationId) ?? 0;
+
+            while (Date.now() < deadline) {
+                throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                const remaining = deadline === Infinity
+                    ? WAIT_POLL_SLICE_MS
+                    : Math.min(deadline - Date.now(), WAIT_POLL_SLICE_MS);
+                if (remaining <= 0) break;
+
+                let statusResult: any;
+                try {
+                    statusResult = await getDuroxideClient().waitForStatusChange(
+                        orchestrationId, lastSeenVersion, 1_000, remaining,
+                    );
+                } catch {
+                    throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                    await new Promise(r => setTimeout(r, 1_000));
+                    throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                    const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
+                    if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
+                    if (orchStatus.status === "Completed") return orchStatus.output;
+                    const currentVersion = orchStatus.customStatusVersion || 0;
+                    if (currentVersion < lastSeenVersion) {
+                        lastSeenVersion = 0;
+                        lastSeenIteration = -1;
+                    }
+                    continue;
+                }
+
+                throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+
+                if (statusResult.customStatusVersion > lastSeenVersion) {
+                    lastSeenVersion = statusResult.customStatusVersion;
+                } else if (statusResult.customStatusVersion < lastSeenVersion) {
+                    lastSeenVersion = statusResult.customStatusVersion;
+                    lastSeenIteration = -1;
+                }
+
+                let customStatus: any = null;
+                if (statusResult.customStatus) {
+                    try {
+                        customStatus = typeof statusResult.customStatus === "string"
+                            ? JSON.parse(statusResult.customStatus) : statusResult.customStatus;
+                    } catch {}
+                }
+
+                if (customStatus) {
+                    if (customStatus.intermediateContent && onIntermediateContent) {
+                        onIntermediateContent(customStatus.intermediateContent);
+                    }
+
+                    if (customStatus.status === "error" && customStatus.authFailure) {
+                        // Terminal auth failure: the orchestration stopped
+                        // retrying this turn and will publish no response until
+                        // credentials are fixed. Surface the real error now
+                        // instead of burning the caller's full timeout. Record
+                        // the seen version so a retry after the credential is
+                        // fixed does not re-throw on this stale status.
+                        this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                        this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                        this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+                        throw new Error(String(customStatus.error ?? "Model provider authentication failed"));
+                    }
+
+                    if (customStatus.turnResult && customStatus.iteration > lastSeenIteration) {
+                        lastSeenIteration = customStatus.iteration;
+                        const result = customStatus.turnResult;
+
+                        if (result.type === "completed") {
+                            if (customStatus.status === "idle") {
+                                if (onIntermediateContent) onIntermediateContent(result.content);
+                                this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                                this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                                return result.content;
+                            }
+                            if (onIntermediateContent) onIntermediateContent(result.content);
+                        }
+
+                        if (result.type === "input_required" && onUserInput) {
+                            const response = await onUserInput(
+                                {
+                                    question: result.question,
+                                    choices: result.choices,
+                                    allowFreeform: result.allowFreeform,
+                                },
+                                { sessionId },
+                            );
+                            throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                            await getDuroxideClient().enqueueEvent(
+                                orchestrationId,
+                                "messages",
+                                JSON.stringify(response),
+                            );
+                            continue;
+                        }
+                    }
+
+                    if (customStatus.responseVersion && customStatus.responseVersion > lastSeenResponseVersion) {
+                        const response = await this._getLatestResponse(orchestrationId);
+                        lastSeenResponseVersion = Math.max(
+                            lastSeenResponseVersion,
+                            response?.version ?? customStatus.responseVersion,
+                        );
+
+                        if (response?.type === "completed" && response.content) {
+                            if (customStatus.status === "idle" || customStatus.status === "completed") {
+                                if (onIntermediateContent) onIntermediateContent(response.content);
+                                this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                                this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                                this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+                                return response.content;
+                            }
+                            if (onIntermediateContent) onIntermediateContent(response.content);
+                        }
+
+                        if (response?.type === "error" && response.content) {
+                            throw new Error(response.content);
+                        }
+
+                        if (response?.type === "wait" && response.content && onIntermediateContent) {
+                            onIntermediateContent(response.content);
+                        }
+
+                        if (response?.type === "input_required" && response.question && onUserInput) {
+                            const responseInput = await onUserInput(
+                                {
+                                    question: response.question,
+                                    choices: response.choices,
+                                    allowFreeform: response.allowFreeform,
+                                },
+                                { sessionId },
+                            );
+                            throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                            await getDuroxideClient().enqueueEvent(
+                                orchestrationId,
+                                "messages",
+                                JSON.stringify(responseInput),
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
+                if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
+                if (orchStatus.status === "Completed") return orchStatus.output;
+                const currentVersion = orchStatus.customStatusVersion || 0;
+                if (currentVersion < lastSeenVersion) {
+                    lastSeenVersion = 0;
+                    lastSeenIteration = -1;
+                    this.lastSeenStatusVersion.set(orchestrationId, 0);
+                }
+            }
+
+            throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+            this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+            throw new Error(`Timeout waiting for response (${timeout}ms)`);
+        })();
+
+        this.activeWaitPromises.add(waitPromise);
+        try {
+            return await waitPromise;
+        } finally {
+            this.activeWaitPromises.delete(waitPromise);
+            cleanup();
+        }
+    }
+}
+
+/**
+ * PilotSwarmSession — session handle.
+ * Mirrors CopilotSession API, routes through duroxide orchestration.
+ *
+ * Event delivery:
+ *   on(eventType, handler) — polls CMS session_events table for new events.
+ *   on(handler)            — catch-all, receives every event type.
+ *   Returns unsubscribe function. Polling starts on first subscription.
+ */
+export type SessionEventHandler = (event: SessionEvent) => void;
+
+export class PilotSwarmSession {
+    readonly sessionId: string;
+    private client: PilotSwarmClient;
+    private onUserInput?: UserInputHandler;
+    lastOrchestrationId?: string;
+
+    // Event subscription state
+    private handlers = new Map<string | null, Set<SessionEventHandler>>();
+    private lastSeenSeq = 0;
+    private pollTimer: ReturnType<typeof setInterval> | null = null;
+    private polling = false;
+    private static POLL_INTERVAL = 500; // ms
+
+    /** @internal */
+    constructor(sessionId: string, client: PilotSwarmClient, onUserInput?: UserInputHandler) {
+        this.sessionId = sessionId;
+        this.client = client;
+        this.onUserInput = onUserInput;
+    }
+
+    async sendAndWait(
+        prompt: string,
+        timeout?: number,
+        onIntermediateContent?: (content: string) => void,
+        opts?: { signal?: AbortSignal; requiredTool?: string },
+    ): Promise<string | undefined> {
+        return this.client._startAndWait(
+            this.sessionId,
+            prompt,
+            this.onUserInput,
+            timeout,
+            onIntermediateContent,
+            opts,
+        );
+    }
+
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] }): Promise<void> {
+        this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
+    }
+
+    async wait(timeout?: number, opts?: { signal?: AbortSignal }): Promise<string | undefined> {
+        if (!this.lastOrchestrationId) throw new Error("No pending turn. Call send() first.");
+        return this.client._waitForTurnResult_external(
+            this.lastOrchestrationId,
+            this.sessionId,
+            this.onUserInput,
+            timeout ?? 300_000,
+            opts?.signal,
+        );
+    }
+
+    /**
+     * Subscribe to session events.
+     *
+     * Overloads:
+     *   on(eventType, handler) — typed subscription (e.g. "assistant.message")
+     *   on(handler)            — catch-all subscription
+     *
+     * Returns an unsubscribe function. Polling starts automatically.
+     */
+    on(eventType: string, handler: SessionEventHandler): () => void;
+    on(handler: SessionEventHandler): () => void;
+    on(eventTypeOrHandler: string | SessionEventHandler, handler?: SessionEventHandler): () => void {
+        let key: string | null;
+        let fn: SessionEventHandler;
+
+        if (typeof eventTypeOrHandler === "function") {
+            key = null;
+            fn = eventTypeOrHandler;
+        } else {
+            key = eventTypeOrHandler;
+            fn = handler!;
+        }
+
+        if (!this.handlers.has(key)) {
+            this.handlers.set(key, new Set());
+        }
+        this.handlers.get(key)!.add(fn);
+
+        // Start polling if not already running
+        this._startPolling();
+
+        return () => {
+            const set = this.handlers.get(key);
+            if (set) {
+                set.delete(fn);
+                if (set.size === 0) this.handlers.delete(key);
+            }
+            // Stop polling if no handlers left
+            if (this.handlers.size === 0) {
+                this._stopPolling();
+            }
+        };
+    }
+
+    async sendEvent(eventName: string, data: unknown): Promise<void> {
+        const duroxideClient = this.client._getDuroxideClient();
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        if (duroxideClient) {
+            await duroxideClient.enqueueEvent(
+                orchestrationId,
+                "messages",
+                JSON.stringify(data),
+            );
+        }
+    }
+
+    /**
+     * Cancel one or more queued (durable) pending messages by their
+     * UI-generated client message ids.
+     *
+     * Enqueues a tombstone envelope on the same durable messages queue. The
+     * orchestration drain marks the matching ids as cancelled and drops any
+     * matching prompts before they reach the LLM. Already-processed messages
+     * are unaffected (no-op). Idempotent and safe to call repeatedly.
+     */
+    async cancelPendingMessage(clientMessageIds: string[]): Promise<void> {
+        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
+        if (ids.length === 0) return;
+        const duroxideClient = this.client._getDuroxideClient();
+        if (!duroxideClient) return;
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        await duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({ cancelPending: ids }),
+        );
+    }
+
+    async abort(): Promise<void> {
+        const duroxideClient = this.client._getDuroxideClient();
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        if (duroxideClient) {
+            await duroxideClient.cancelInstance(orchestrationId, "User abort");
+        }
+    }
+
+    async destroy(): Promise<void> {
+        this._stopPolling();
+        await this.client.deleteSession(this.sessionId);
+    }
+
+    /** Get a provider-capped latest page of persisted events from CMS. Use event paging to drain complete history. */
+    async getMessages(limit?: number): Promise<SessionEvent[]> {
+        const catalog = this.client._getCatalog();
+        return catalog.getSessionEvents(this.sessionId, undefined, limit);
+    }
+
+    async getInfo(): Promise<PilotSwarmSessionInfo> {
+        return this.client._getSessionInfo(this.sessionId);
+    }
+
+    // ─── Private: event polling ──────────────────────────────
+
+    private _startPolling(): void {
+        if (this.pollTimer) return;
+        this.pollTimer = setInterval(() => this._poll(), PilotSwarmSession.POLL_INTERVAL);
+        // Fire immediately too
+        this._poll();
+    }
+
+    private _stopPolling(): void {
+        if (this.pollTimer) {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
+        }
+    }
+
+    private async _poll(): Promise<void> {
+        if (this.polling) return; // prevent overlapping polls
+        this.polling = true;
+        try {
+            const catalog = this.client._getCatalog();
+            const events = await catalog.getSessionEvents(
+                this.sessionId,
+                this.lastSeenSeq,
+                200,
+            );
+            for (const event of events) {
+                this.lastSeenSeq = event.seq;
+                this._dispatch(event);
+            }
+        } catch {
+            // Swallow — will retry on next poll
+        } finally {
+            this.polling = false;
+        }
+    }
+
+    private _dispatch(event: SessionEvent): void {
+        // Typed handlers
+        const typed = this.handlers.get(event.eventType);
+        if (typed) {
+            for (const fn of typed) fn(event);
+        }
+        // Catch-all handlers
+        const catchAll = this.handlers.get(null);
+        if (catchAll) {
+            for (const fn of catchAll) fn(event);
+        }
+    }
+}   

@@ -1,0 +1,47 @@
+# trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-*-gnu >= 0.1.25
+FROM node:24-trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    g++ \
+    make \
+    openssh-server \
+    postgresql \
+    postgresql-client \
+    python3 \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install workspace dependencies first for better layer reuse.
+COPY package.json package-lock.json ./
+COPY scripts/postinstall.js ./scripts/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY packages/app/package.json ./packages/app/
+
+RUN npm ci --force
+
+# Copy the runtime sources and starter appliance assets.
+COPY packages/sdk ./packages/sdk
+COPY packages/app ./packages/app
+COPY deploy ./deploy
+
+RUN npm run build --workspace=packages/sdk \
+    && npm run build:web --workspace=packages/app \
+    && useradd --create-home --shell /bin/bash pilotswarm \
+    && passwd -d pilotswarm \
+    && mkdir -p /data /run/pilotswarm /run/sshd /app/config \
+    && cp /app/deploy/config/model_providers.local-docker.json /app/config/model_providers.local-docker.json \
+    && chmod +x /app/deploy/bin/*.sh \
+    && chown -R pilotswarm:pilotswarm /home/pilotswarm /data /run/pilotswarm /app/packages/app/tui
+
+EXPOSE 3001 2222
+VOLUME ["/data"]
+
+ENTRYPOINT ["/app/deploy/bin/start-starter.sh"]

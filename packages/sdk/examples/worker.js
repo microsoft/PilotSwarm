@@ -1,0 +1,172 @@
+#!/usr/bin/env node
+
+/**
+ * Headless pilotswarm worker.
+ * Runs as a K8s pod — polls PostgreSQL for orchestrations and executes them.
+ *
+ * Env vars:
+ *   DATABASE_URL                    — PostgreSQL connection string
+ *   GITHUB_TOKEN                    — Copilot API token (not needed with custom LLM)
+ *   LLM_ENDPOINT                    — Custom LLM endpoint URL (Azure OpenAI, etc.)
+ *   LLM_API_KEY                     — API key for the custom endpoint
+ *   LLM_PROVIDER_TYPE               — Provider type: "openai" | "azure" | "anthropic"
+ *   LLM_API_VERSION                 — Azure API version (default: "2024-10-21")
+ *   COPILOT_MODEL                   — Model name/deployment (default: auto)
+ *   LOG_LEVEL                       — Tracing level (default: "info")
+ *   AZURE_STORAGE_CONNECTION_STRING — Blob storage for session dehydration
+ *   AZURE_STORAGE_CONTAINER         — Blob container name (default: "copilot-sessions")
+ *   SESSION_STATE_DIR               — Shared session scratch directory
+ *   DUROXIDE_PG_POOL_MAX            — Max duroxide-pg provider connections (default: 10)
+ *   PILOTSWARM_CMS_PG_POOL_MAX      — Max CMS pg pool connections (default: 3)
+ *   PILOTSWARM_FACTS_PG_POOL_MAX    — Max facts pg pool connections (default: 3)
+ *   PILOTSWARM_ORCHESTRATION_CONCURRENCY — Duroxide orchestration slots (default: 2)
+ *   PILOTSWARM_WORKER_CONCURRENCY   — Duroxide worker/activity slots (default: 2)
+ *   HORIZON_DATABASE_URL            — Optional EnhancedFactStore (HorizonDB); enables multi-signal search
+ *   HORIZON_GRAPH_DATABASE_URL      — Optional knowledge graph (Apache AGE) target (opt-in)
+ *   HORIZON_EMBED_URL/MODEL/DIM     — Optional durable in-DB embedder endpoint
+ *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
+ *   POD_NAME                        — K8s pod name (default: hostname)
+ *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
+ *
+ * Usage:
+ *   node --env-file=.env.remote examples/worker.js
+ *   # Or in Docker: ENTRYPOINT ["node", "examples/worker.js"]
+ */
+
+import os from "node:os";
+import fs from "node:fs";
+import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
+
+// Sentinel value written to KV by the bicep-deploy `seed-secrets` step
+// for optional secrets that the user didn't provide. CSI Secret Store
+// requires non-empty values, so the deploy writes this placeholder
+// instead. Strip it from process.env so downstream code (e.g. model
+// provider loaders that read `env:ANTHROPIC_API_KEY`) treats the
+// secret as truly unset. Keep in sync with
+// deploy/scripts/lib/seed-secrets.mjs::SEED_SECRETS_UNSET_SENTINEL.
+const SEED_SECRETS_UNSET_SENTINEL = "__PS_UNSET__";
+for (const k of Object.keys(process.env)) {
+    if (process.env[k] === SEED_SECRETS_UNSET_SENTINEL) {
+        delete process.env[k];
+    }
+}
+
+const logLevel = process.env.LOG_LEVEL || "info";
+const podName = process.env.POD_NAME || os.hostname();
+
+// Plugin directories: env override or auto-detect bundled/default Docker plugin dirs.
+const pluginDirs = process.env.PLUGIN_DIRS
+    ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
+    : [];
+if (pluginDirs.length === 0 && fs.existsSync("/app/packages/cli/plugins/plugin.json")) {
+    pluginDirs.push("/app/packages/cli/plugins");
+}
+if (pluginDirs.length === 0 && fs.existsSync("/app/plugin/plugin.json")) {
+    pluginDirs.push("/app/plugin");
+}
+
+console.log(`[worker] Pod: ${podName}`);
+console.log(`[worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
+if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(", ")}`);
+if (process.env.SESSION_STATE_DIR) console.log(`[worker] Session state dir: ${process.env.SESSION_STATE_DIR}`);
+if (process.env.DUROXIDE_PG_POOL_MAX) console.log(`[worker] Duroxide PG pool max: ${process.env.DUROXIDE_PG_POOL_MAX}`);
+if (process.env.PILOTSWARM_CMS_PG_POOL_MAX) console.log(`[worker] CMS PG pool max: ${process.env.PILOTSWARM_CMS_PG_POOL_MAX}`);
+if (process.env.PILOTSWARM_FACTS_PG_POOL_MAX) console.log(`[worker] Facts PG pool max: ${process.env.PILOTSWARM_FACTS_PG_POOL_MAX}`);
+if (process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY) console.log(`[worker] Orchestration concurrency: ${process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY}`);
+if (process.env.PILOTSWARM_WORKER_CONCURRENCY) console.log(`[worker] Worker concurrency: ${process.env.PILOTSWARM_WORKER_CONCURRENCY}`);
+if (process.env.HORIZON_DATABASE_URL) {
+    const graph = process.env.HORIZON_GRAPH_DATABASE_URL ? "on" : "off";
+    const embedder = process.env.HORIZON_EMBED_URL ? "on" : "off";
+    console.log(`[worker] Enhanced facts: HorizonDB (graph=${graph}, embedder=${embedder})`);
+}
+if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
+    console.log(`[worker] Model providers: ${process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH}`);
+}
+
+// Model providers: auto-discovered from model_providers.json or env vars.
+// The worker loads them automatically — just log what it finds after start.
+
+// System message: falls back to default.agent.md from plugin if not set here.
+// Set explicitly to override the plugin default, or leave undefined to use it.
+const SYSTEM_MESSAGE = undefined;
+
+const worker = new PilotSwarmWorker({
+    store: process.env.DATABASE_URL,
+    githubToken: process.env.GITHUB_TOKEN,
+    logLevel,
+    traceWriter: (message) => console.log(message),
+    blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+    blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+    sessionStateDir: process.env.SESSION_STATE_DIR || undefined,
+    modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH || undefined,
+    workerNodeId: podName,
+    systemMessage: SYSTEM_MESSAGE,
+    pluginDirs,
+    // Bicep-deploy MI flow (set in worker-env ConfigMap by the overlay
+    // .env). Unset on the legacy `scripts/deploy-aks.sh` path, local
+    // Docker, and CI — those keep using the password URL via `store`
+    // and AZURE_STORAGE_CONNECTION_STRING for blobs.
+    useManagedIdentity: ["1", "true", "yes", "on"].includes(
+        (process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").trim().toLowerCase(),
+    ),
+    blobUseManagedIdentity: process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?.trim()
+        ? ["1", "true", "yes", "on"].includes(process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY.trim().toLowerCase())
+        : undefined,
+    cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
+    aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
+    blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
+    // Optional EnhancedFactStore + knowledge graph (HorizonDB). Empty unless
+    // HORIZON_DATABASE_URL is set, so default deployments keep plain PgFactStore.
+    ...horizonConfigFromEnv(),
+    // Registry agent packages (docs/proposals/agent-packages.md): on by
+    // default for the headless worker; PILOTSWARM_AGENT_PACKAGES=0 opts out.
+    ...(["0", "false", "off", "no"].includes((process.env.PILOTSWARM_AGENT_PACKAGES || "").trim().toLowerCase())
+        ? {}
+        : {
+            agentPackages: {
+                cacheDir: process.env.PILOTSWARM_AGENT_PACKAGES_DIR || undefined,
+                // Number.isFinite (not ||) so REFRESH_MS=0 genuinely disables the poll.
+                refreshIntervalMs: (() => {
+                    const n = Number.parseInt(process.env.PILOTSWARM_AGENT_PACKAGES_REFRESH_MS || "", 10);
+                    return Number.isFinite(n) ? n : undefined;
+                })(),
+            },
+        }),
+});
+
+await worker.start();
+console.log(`[worker] Started ✓ Polling for orchestrations...`);
+if (worker.modelProviders) {
+    const groups = worker.modelProviders.getModelsByProvider();
+    for (const g of groups) {
+        const names = g.models.map(m => m.qualifiedName).join(", ");
+        console.log(`[worker] ${g.providerId} (${g.type}): ${names}`);
+    }
+    console.log(`[worker] Default model: ${worker.modelProviders.defaultModel}`);
+}
+if (worker.loadedAgents.length > 0) {
+    console.log(`[worker] Agents: ${worker.loadedAgents.map(a => a.name).join(", ")}`);
+}
+if (worker.loadedSkillDirs.length > 0) {
+    console.log(`[worker] Skill dirs: ${worker.loadedSkillDirs.join(", ")}`);
+}
+const mcpNames = Object.keys(worker.loadedMcpServers);
+if (mcpNames.length > 0) {
+    console.log(`[worker] MCP servers: ${mcpNames.join(", ")}`);
+}
+
+// Graceful drain (lifecycle protocol §3.8): stop fetching, let in-flight
+// turns finish and commit within the drain budget, release warm sessions,
+// then exit. PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS sets the budget (60s
+// default); the pod's terminationGracePeriodSeconds must exceed it.
+async function shutdown(signal) {
+    console.log(`[worker] ${signal} received, draining...`);
+    await worker.gracefulShutdown();
+    process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Block forever — worker polls in background
+await new Promise(() => {});
