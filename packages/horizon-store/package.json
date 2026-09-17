@@ -59,11 +59,11 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/affandar/PilotSwarm",
+        "url": "https://github.com/microsoft/PilotSwarm",
         "directory": "packages/horizon-store"
     },
-    "homepage": "https://github.com/affandar/PilotSwarm/tree/main/packages/horizon-store",
+    "homepage": "https://github.com/microsoft/PilotSwarm/tree/main/packages/horizon-store",
     "bugs": {
-        "url": "https://github.com/affandar/PilotSwarm/issues"
+        "url": "https://github.com/microsoft/PilotSwarm/issues"
     }
 }

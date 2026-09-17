@@ -26,7 +26,7 @@ pilotswarm-tour-guide/
 
 The skill is deliberately short: a preloaded skill is inlined into the prompt
 on every turn, so it carries the map and nothing more. Everything past it comes
-from DeepWiki against `affandar/PilotSwarm` at question time.
+from DeepWiki against `microsoft/PilotSwarm` at question time.
 
 ## Splash art alignment
 

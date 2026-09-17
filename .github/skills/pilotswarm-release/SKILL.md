@@ -1,6 +1,6 @@
 ---
 name: pilotswarm-release
-description: Prepare and cut a PilotSwarm release. Use when validating release readiness, updating release-facing docs and templates, checking npm packaging, and handling commit/push/tag/publish flow.
+description: Prepare and cut a PilotSwarm release with npm-format tarballs attached to a GitHub Release.
 ---
 
 # PilotSwarm Release
@@ -29,7 +29,7 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Check the latest existing git tag with `git tag --sort=-version:refname | head`.
    - Check current package names and versions in `packages/sdk/package.json`, `packages/horizon-store/package.json`, and `packages/app/package.json`.
    - Report the current latest tag and the proposed next tag to the user before any tag is created.
-   - Check whether each published workspace package has its own `README.md`.
+   - Check whether each packaged workspace has its own `README.md`.
    - Record the pre-release `origin/main` commit. Determine whether the current work is already on `main` or must be squashed from a source branch.
 
 2. Verify feature-completeness around the change.
@@ -38,7 +38,7 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Confirm relevant builder templates in `templates/builder-agents/` were updated when builder-facing behavior changed.
    - Confirm `.github/copilot-instructions.md` was updated if contributor workflow or maintenance expectations changed.
    - **Update `CHANGELOG.md`** with a new top entry for the proposed version, dated, summarizing what shipped (SDK / Portal / TUI / Tests / Maintainer Workflow / npm sections as appropriate). The CHANGELOG entry is a release blocker, not optional.
-   - **Update the repo-root `README.md` banner line** that calls out the latest version (e.g. `**v0.1.X** — ...`) so the repo landing page matches the version about to ship.
+   - Update the repo-root `README.md` if the release changes setup or package instructions.
 
 3. Run build and full test suite.
    - Start with `npm run build`.
@@ -60,29 +60,23 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
      ```
        from `packages/sdk`, `packages/horizon-store`, and `packages/app`.
 
-4. Validate npm-release wiring.
-   - Check `.github/workflows/publish-npm.yml`.
-   - Check `.github/workflows/publish-starter-docker.yml` if the starter appliance or Docker release path changed.
-   - Read the actual starter workflow trigger before discussing opt-in. The
-     current workflow has `release: types: [published]` with no opt-out, so
-     publishing a GitHub Release necessarily starts the starter-image job. Do
-     not offer a yes/no choice that the workflow cannot honor. If the user does
-     not want a starter image, stop before publishing the Release and change
-     the workflow contract first; ask for a choice only when the wiring really
-     supports one.
-   - Confirm publish targets, access level, provenance flags, and required secrets still match the intended release.
-   - Confirm each published package has correct `repository`, `homepage`, and `bugs` metadata for npm provenance verification.
+4. Validate release-tarball wiring.
+   - Check `.github/workflows/release-tarballs.yml`. Publishing a GitHub Release
+     must build and attach only the three npm-format tarballs.
+   - Confirm no release-triggered workflow publishes to a registry or pushes a
+     container image.
+   - Confirm the workflow has permission to upload GitHub Release assets.
    - Confirm built-in PilotSwarm plugins that must ship with the SDK are included by package `files` config.
    - Confirm package-local `README.md` files are actually present in `npm pack --dry-run` output for each workspace package.
-   - If package names, publish workflow wiring, Docker publish wiring, or npm metadata changed, run the relevant CI workflow in dry-run or manual mode from `main` before tagging a real release when practical.
+   - If package names or tarball workflow wiring changed, validate the packages
+     locally with `npm pack --dry-run` before tagging a release.
 
 5. Prepare release notes for the user.
    - Summarize what changed.
    - List what was verified.
    - State the current latest git tag and the proposed next tag.
-   - State whether publishing the GitHub Release will trigger the starter
-     Docker workflow. With the current wiring it always does; surface that fact
-     before publication rather than presenting it as optional.
+   - State that the GitHub Release will attach package tarballs and will not
+     publish npm registry packages or a starter container image.
    - Call out blockers or skipped checks explicitly.
 
 6. Squash the release onto `main` and push only with explicit user approval.
@@ -104,37 +98,22 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Confirm the current commit is the pushed `origin/main` tip.
    - Create the annotated release tag from that exact main commit, then push the tag.
    - Verify local `main`, remote `origin/main`, and `git rev-parse <tag>^{}` are the same SHA.
-   - Create a **GitHub Release** from the tag using `gh release create`. The npm publish workflow (`publish-npm.yml`) triggers on `release: [published]`, **not** on tag push alone. Without a GitHub Release, the publish will not run.
-   - With the current wiring, the same GitHub Release unconditionally triggers
-     `.github/workflows/publish-starter-docker.yml`. If that is not desired,
-     the workflow must be changed before this step; there is no release-time
-     opt-out input.
+   - Create a **GitHub Release** from the tag using `gh release create`. The
+     tarball workflow (`release-tarballs.yml`) triggers on `release: [published]`,
+     not on tag push alone.
    - Include a concise release notes summary in the GitHub Release body.
-   - If a manual workflow dispatch is used instead, report the exact inputs used.
 
 8. Verify publication.
-   - Check that the GitHub Actions publish workflow started and completed using `gh run list --workflow=publish-npm.yml`.
-   - Report the published package names and versions.
-   - Verify the exact coordinate, not only the mutable `latest` tag:
-     `npm view <package>@<version> version`. On the managed corporate network,
-     local npm metadata may be stale or hang even with an explicit public
-     registry. If that happens, run the same exact-coordinate checks in an
-     Azure-hosted container (for example `az acr run` with `node:24-alpine`)
-     and report the local-network discrepancy; do not misclassify cached
-     `latest` output as a failed publish.
-   - Wait for the `Attach package tarballs to the Release` job and verify the
+   - Check that the GitHub Actions tarball workflow started and completed using
+     `gh run list --workflow=release-tarballs.yml`.
+   - Verify the
      GitHub Release contains `pilotswarm-sdk-<version>.tgz`,
      `pilotswarm-horizon-store-<version>.tgz`, and
      `pilotswarm-<version>.tgz`. When an accompanying AKS rollout must consume
      released packages rather than workspace source, hand these assets to the
      `pilotswarm-aks-deploy` skill's release-tarball path; do not build the
      deployment candidate before the assets exist.
-   - If the release included the starter Docker image, also verify the published image tags directly with:
-     ```bash
-     docker buildx imagetools inspect docker.io/<user>/pilotswarm-starter:<tag>
-     ```
-     Confirm at least the release tag, bare version tag, and `latest` resolve successfully.
-   - If publish failed, surface the workflow error rather than guessing.
+   - If upload failed, surface the workflow error rather than guessing.
 
 ## Release Checklist
 
@@ -144,24 +123,20 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 - relevant docs and guides are updated
 - relevant builder templates are updated
 - **`CHANGELOG.md` has a new top entry for the proposed version**
-- **repo-root `README.md` banner line names the proposed version**
 - package metadata is correct
 - `npm pack --dry-run` looks right
-- package-local `README.md` files are present for published workspaces
-- provenance metadata (`repository`, `homepage`, `bugs`) is correct
+- package-local `README.md` files are present for packaged workspaces
 - latest tag and proposed next tag were reported
 - release delta is exactly one squash commit on `main`
 - pushed `origin/main` is the squash commit
 - dereferenced release tag equals the pushed `origin/main` commit
-- actual starter workflow trigger behavior was reported before publication
 - all three package tarballs are attached to the GitHub Release
-- release Docker tags were verified directly when applicable
 - squash commit on main, main push, and tag push are complete
-- publish workflow ran successfully
+- tarball workflow ran successfully
 
 ## Current Package Surface
 
-PilotSwarm publishes exactly three packages (in dependency/publish order):
+PilotSwarm packs exactly three packages for each GitHub Release:
 
 1. `pilotswarm-sdk` — SDK runtime. Self-contained: the isomorphic Web API
    wire client ships inside it as the browser-safe subpath export
@@ -176,17 +151,12 @@ PilotSwarm publishes exactly three packages (in dependency/publish order):
    `pilotswarm/web`); there are no bundledDependencies and no prepack sync
    hacks.
 
-Retired npm names (do NOT publish new versions): `pilotswarm-cli`,
-`pilotswarm-web`, `pilotswarm-api-client`, `pilotswarm-mcp-server`. The first
-two have old versions on the registry — deprecation notices pointing at
-`pilotswarm` are the correct follow-up, not new releases.
-
 If package names change later, update this skill in the same change.
 
 ## Notes
 
 - Prefer fixing brittle tests over loosening product behavior just to get green.
 - If a test failure is caused by stale hardcoded assumptions such as old model names, update the test to follow the current repo contract.
-- npm package pages for workspace publishes come from the workspace-local `README.md`, not the repo-root README.
-- When provenance is enabled for npm publish, mismatched or missing repository metadata is a release blocker, not a cosmetic issue.
+- Package README content comes from each workspace-local `README.md`, not the
+  repo-root README.
 - Treat the release agent as a maintainer workflow for this repository, not as an app-builder template.

@@ -8,12 +8,9 @@ between the TUI and the portal at any time; they don't conflict.
 
 ## Prerequisites
 
-Either:
-
-- **Docker quickstart** (easiest): `docker run -d -p 127.0.0.1:3001:3001 -p 127.0.0.1:2222:2222 -e GITHUB_TOKEN -v pilotswarm-data:/data --name pilotswarm-starter affandar/pilotswarm-starter:latest`. Then open `http://localhost:3001`.
-- **From source**: `npm install && npm run build`, set up `.env` (see [getting-started.md](../quickstart/local.md)), then `npm run portal:start` (or `./scripts/portal-start.sh`). Open `http://localhost:3001`.
-
-For a pinned Docker quickstart, replace `latest` with `0.4.0`.
+Follow the [local setup guide](../quickstart/local.md), then run
+`npm run portal:start` (or `./scripts/portal-start.sh`). Open
+`http://localhost:3001`.
 
 For deployments with Entra ID auth enabled, you'll see a sign-in flow first.
 With identity-aware proxy auth, the proxy completes sign-in before the portal
@@ -142,7 +139,7 @@ eyes, not believe the marketing.
    and the `dehydrate` activity. The session is now archived to blob
    storage.
 4. **Optional durability proof:** in another tab/terminal, kill the
-   worker process (or `docker stop pilotswarm-starter`). The portal
+   worker process. The portal
    will show the workers as offline; the session row remains in
    `waiting`.
 5. Restart workers. Wait until the timer fires. The session resumes

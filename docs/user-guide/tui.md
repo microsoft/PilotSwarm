@@ -12,14 +12,10 @@ This guide introduces keys as you need them.
 
 ## Prerequisites
 
-Either:
+Follow the [local setup guide](../quickstart/local.md), then run
+`./run.sh local --db`.
 
-- **Docker quickstart** (easiest): `docker run -d -p 127.0.0.1:3001:3001 -p 127.0.0.1:2222:2222 -e GITHUB_TOKEN -v pilotswarm-data:/data --name pilotswarm-starter affandar/pilotswarm-starter:latest`, then `ssh -p 2222 pilotswarm@localhost` (password: `pilotswarm`).
-- **From source**: clone the repo, run `npm install && npm run build`, set up `.env` (see [getting-started.md](../quickstart/local.md)), then `./run.sh local --db`.
-
-For a pinned Docker quickstart, replace `latest` with `0.4.0`.
-
-In either case you'll land on the **Sessions** pane focused on the left.
+You'll land on the **Sessions** pane focused on the left.
 That's the entry point for everything below.
 
 ---
@@ -88,8 +84,7 @@ not believe the marketing.
    archived to blob storage.
 6. **Optional durability proof:** press `q` to quit the TUI entirely. The
    worker process exits. Wait until your phone clock has advanced ~70
-   seconds. Restart with `./run.sh local --db` (or `ssh` back into the
-   Docker quickstart). Find the session — it picks up exactly where it
+   seconds. Restart with `./run.sh local --db`. Find the session — it picks up exactly where it
    left off and finishes its turn.
 7. The agent emits its final response. The session goes back to `idle`.
 
@@ -475,8 +470,7 @@ or `./run.sh`.
 
 1. Start a session in the TUI as in Scenario 1. Send a couple of
    messages.
-2. In your browser, open `http://localhost:3001`. (If you're running the
-   Docker quickstart, this Just Works.)
+2. In your browser, open `http://localhost:3001`.
 3. The same sessions list you see in the TUI is on the left in the
    portal.
 4. Click the session you started in the TUI. The chat history is there.

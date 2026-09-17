@@ -2,7 +2,7 @@
 
 **Status**: proposed — experiments complete, integration not started
 **Date**: 2026-08-01
-**Experiments**: branch [`task-tool-evals`](https://github.com/affandar/PilotSwarm/tree/task-tool-evals/experiments/task-tool) — full writeup in [`experiments/task-tool/FINDINGS.md`](https://github.com/affandar/PilotSwarm/blob/task-tool-evals/experiments/task-tool/FINDINGS.md), raw event streams in `experiments/task-tool/results/`, harness (`harness.mjs`) mirrors the worker's session config so findings transfer.
+**Experiments**: archived branch [`task-tool-evals`](https://github.com/microsoft/PilotSwarm/tree/16492b3074569088c0ae00a09b29522c9f9fb8e6/experiments/task-tool) — full writeup in [`experiments/task-tool/FINDINGS.md`](https://github.com/microsoft/PilotSwarm/blob/16492b3074569088c0ae00a09b29522c9f9fb8e6/experiments/task-tool/FINDINGS.md), raw event streams in `experiments/task-tool/results/`, harness (`harness.mjs`) mirrors the worker's session config so findings transfer.
 
 ## Summary
 

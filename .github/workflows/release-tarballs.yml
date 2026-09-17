@@ -1,0 +1,59 @@
+name: Attach npm package tarballs to GitHub Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  attach-tarballs:
+    name: Build and attach package tarballs
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Verify release tag matches package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(node -p 'require("./packages/sdk/package.json").version')"
+          horizon="$(node -p 'require("./packages/horizon-store/package.json").version')"
+          app="$(node -p 'require("./packages/app/package.json").version')"
+          [[ "$sdk" == "$horizon" && "$sdk" == "$app" ]]
+          [[ "$RELEASE_TAG" == "v$sdk" ]]
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspaces
+        run: npm run build
+
+      - name: Pack packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-tarballs
+          npm pack ./packages/sdk --pack-destination dist-tarballs
+          npm pack ./packages/horizon-store --pack-destination dist-tarballs
+          npm pack ./packages/app --pack-destination dist-tarballs
+          ls -l dist-tarballs
+
+      - name: Attach tarballs to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" dist-tarballs/*.tgz --clobber

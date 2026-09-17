@@ -21,10 +21,10 @@ environment.
 
 ## Canonical References
 
-- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md#enhanced-facts--knowledge-graph-optional`
-- Horizon Harvester sample: `https://github.com/affandar/pilotswarm/tree/main/examples/horizon-harvester`
-- Harvester deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/harvester.md`
-- Horizon provider package: `https://github.com/affandar/pilotswarm/tree/main/packages/horizon-store`
+- Configuration guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/reference/configuration.md#enhanced-facts--knowledge-graph-optional`
+- Horizon Harvester sample: `https://github.com/microsoft/PilotSwarm/tree/main/examples/horizon-harvester`
+- Harvester deployment guide: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/harvester.md`
+- Horizon provider package: `https://github.com/microsoft/PilotSwarm/tree/main/packages/horizon-store`
 - Environment examples: `.env.example` and `.env.horizondb.example`
 
 ## Provider Slots

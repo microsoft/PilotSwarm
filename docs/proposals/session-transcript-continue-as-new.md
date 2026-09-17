@@ -66,7 +66,7 @@ Evidence from a production incident (2026-07-07; details generalized):
   **≥13 in-place compactions**: two hard failures (`400 No tool output found
   for function call` — dangling tool call in the submitted transcript), three
   compactions that started and never completed, one stuck `state:"running"`
-  for 3+ hours ([#54](https://github.com/affandar/PilotSwarm/issues/54)).
+  for 3+ hours (historical source issue #54; issues were not migrated).
 - One compaction squashed **277 messages / 106.6k tokens** minutes before the
   session needed exactly that evidence. It then confidently reconstructed its
   own recent history *wrong* — filing a detailed platform bug report that the

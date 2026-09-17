@@ -310,9 +310,9 @@ PilotSwarm deployment gets the same three entries — three because GitHub
 serves one repository from three hosts:
 
 ```
-https://github.com/affandar/pilotswarm/
-https://raw.githubusercontent.com/affandar/pilotswarm/
-https://codeload.github.com/affandar/pilotswarm/
+https://github.com/microsoft/PilotSwarm/
+https://raw.githubusercontent.com/microsoft/PilotSwarm/
+https://codeload.github.com/microsoft/PilotSwarm/
 ```
 
 Keeping those in code rather than in the shipped config means changing them
@@ -327,11 +327,11 @@ disables URL import entirely, which is a legitimate posture.
 
 | Rule | Rejects |
 | --- | --- |
-| `https` only | `http://github.com/affandar/pilotswarm` |
+| `https` only | `http://github.com/microsoft/PilotSwarm` |
 | No userinfo in the authority | `https://github.com@evil.com/...` |
 | Host matched **exactly**, case-folded, trailing dot stripped — never by suffix | `evilgithub.com`, `github.com.evil.com`, `github.com.` |
-| Path prefix matched on **segment boundaries** | `/affandar/pilotswarm-evil` against `/affandar/pilotswarm/` |
-| Path normalized before matching (percent-decoding, `..` resolution) | `/affandar/pilotswarm/../../elsewhere` |
+| Path prefix matched on **segment boundaries** | `/microsoft/PilotSwarm-evil` against `/microsoft/PilotSwarm/` |
+| Path normalized before matching (percent-decoding, `..` resolution) | `/microsoft/PilotSwarm/../../elsewhere` |
 | Default port only, unless the entry names one | `https://github.com:8443/...` |
 | **Every redirect hop re-checked** against the full list | allowed → not-allowed redirect |
 | The §15 A1 **IP denylist still applies** to each hop's resolved address | an allowlisted host whose DNS answers `169.254.169.254` |
@@ -528,7 +528,7 @@ written against a deliberately-broken build first.
 | Semver policy | source > active → adopt; source == active + content differs → patch-bump with note; source < active → refuse with the comparison shown |
 | Diff normalization | raw source tree vs its own packed artifact diffs **empty** (the canonicalizer's reshuffling must not surface); one changed line surfaces as one hunk; binary entries flagged not inlined; over-cap entries truncated with a marker |
 | Patch sets | ordering preserved; empty diffs dropped; stale-base publish refused |
-| **Import allowlist** (§8) — the bypass classes | scheme (`http://`); userinfo (`https://github.com@evil.com/`); host suffix (`evilgithub.com`) and prefix (`github.com.evil.com`) confusion; trailing dot (`github.com.`); case (`GitHub.COM`); path segment boundary (`/affandar/pilotswarm-evil` must NOT match `/affandar/pilotswarm/`); percent-encoded and `..` traversal; non-default port; **redirect from an allowed origin to a disallowed one**; an allowlisted host whose DNS resolves to `127.0.0.1` / `169.254.169.254` (allowlist AND IP check); IPv6 and decimal-IP literal forms; `append` vs `replace` mode; `replace` is the only way to drop a base entry; missing file → base only; malformed JSON → refuse to start rather than silently allow nothing (or everything) |
+| **Import allowlist** (§8) — the bypass classes | scheme (`http://`); userinfo (`https://github.com@evil.com/`); host suffix (`evilgithub.com`) and prefix (`github.com.evil.com`) confusion; trailing dot (`github.com.`); case (`GitHub.COM`); path segment boundary (`/microsoft/PilotSwarm-evil` must NOT match `/microsoft/PilotSwarm/`); percent-encoded and `..` traversal; non-default port; **redirect from an allowed origin to a disallowed one**; an allowlisted host whose DNS resolves to `127.0.0.1` / `169.254.169.254` (allowlist AND IP check); IPv6 and decimal-IP literal forms; `append` vs `replace` mode; `replace` is the only way to drop a base entry; missing file → base only; malformed JSON → refuse to start rather than silently allow nothing (or everything) |
 | URL policy (§15 A1) | `https` only; loopback / link-local / RFC1918 / `169.254.169.254` and cloud-metadata refused **before** any socket opens; each redirect hop re-checked; response bodies never present in error strings |
 
 ### 14.2 Integration — real Postgres, real catalog

@@ -2,7 +2,7 @@
 
 > **Status:** Proposal
 > **Date:** 2026-05-17
-> **Issue:** https://github.com/affandar/PilotSwarm/issues/22
+> **Issue:** Historical source issue #22 (issues were not migrated)
 > **Goal:** Add a durable wall-clock scheduling primitive so agents can run at named calendar times without wake-and-check polling loops.
 
 ---

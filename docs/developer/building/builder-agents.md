@@ -54,21 +54,21 @@ cp -R templates/builder-agents/skills/* .github/skills/
 ## Canonical Public References
 
 - CLI guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
 - Portal guide:
-  `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/packages/app/web/README.md`
 - CLI agent guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
 - SDK guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
 - SDK agent guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-agents.md`
 - Plugin architecture:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
 - AKS deployment:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
 - DevOps sample:
-  `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+  `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
 ## Design Intent
 
