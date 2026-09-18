@@ -42,6 +42,7 @@ concurrency:
 
 jobs:
     tests:
+        name: ${{ inputs.providers == 'all' && 'All providers (requires HorizonDB)' || 'Baseline tests' }}
         runs-on: ubuntu-latest
         environment: copilot
         timeout-minutes: ${{ inputs.providers == 'all' && 180 || 59 }}
@@ -117,6 +118,10 @@ jobs:
                   TEST_PROVIDERS: ${{ inputs.providers }}
                   HORIZONDB_TEST_ENV: ${{ secrets.HORIZONDB_TEST_ENV }}
               run: |
+                  if [[ "$TEST_SUITE" == -* ]]; then
+                      echo "Suite must be a test-name filter. Select provider coverage with the providers input." >&2
+                      exit 1
+                  fi
                   if [ "$TEST_PROVIDERS" = "all" ]; then
                       node .github/scripts/run-all-providers.mjs
                       exit "$?"
