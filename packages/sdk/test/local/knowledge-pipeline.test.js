@@ -13,17 +13,28 @@ import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-en
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import {
-    PgFactStore,
+    resolveStorageConfig,
+    getRuntimeStorageProvider,
     createFactTools,
 } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
+// Use the same provider and isolated schema as the worker. Constructing a
+// PgFactStore here mixes PostgreSQL functions with HorizonDB migrations when
+// the suite runs in full-HDB mode (or in additive HDB coverage).
+async function createKnowledgeFactStore(env) {
+    const { runtime } = resolveStorageConfig({
+        options: { store: env.store, factsSchema: env.factsSchema },
+    });
+    return getRuntimeStorageProvider(runtime.provider).createFactStore(runtime);
+}
+
 // ─── Level 1: Namespace Access Control ──────────────────────────
 
 async function testTaskAgentCanWriteIntake(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact] = createFactTools({ factStore });
@@ -39,7 +50,7 @@ async function testTaskAgentCanWriteIntake(env) {
 }
 
 async function testTaskAgentCannotWriteSkills(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact] = createFactTools({ factStore });
@@ -56,7 +67,7 @@ async function testTaskAgentCannotWriteSkills(env) {
 }
 
 async function testTaskAgentCannotWriteAsks(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact] = createFactTools({ factStore });
@@ -72,7 +83,7 @@ async function testTaskAgentCannotWriteAsks(env) {
 }
 
 async function testTaskAgentCannotWriteConfig(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact] = createFactTools({ factStore });
@@ -88,7 +99,7 @@ async function testTaskAgentCannotWriteConfig(env) {
 }
 
 async function testTaskAgentCanReadSkills(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         // First, write a skill as facts-manager
@@ -113,7 +124,7 @@ async function testTaskAgentCanReadSkills(env) {
 }
 
 async function testTaskAgentCanReadAsks(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeAsFM] = createFactTools({ factStore, agentIdentity: "facts-manager" });
@@ -136,7 +147,7 @@ async function testTaskAgentCanReadAsks(env) {
 }
 
 async function testTaskAgentCannotReadIntake(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [, readFacts] = createFactTools({ factStore });
@@ -153,7 +164,7 @@ async function testTaskAgentCannotReadIntake(env) {
 }
 
 async function testTaskAgentCannotDeleteSkills(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [,, deleteFact] = createFactTools({ factStore });
@@ -174,7 +185,7 @@ async function testTaskAgentCannotDeleteSkills(env) {
 }
 
 async function testFactsManagerCanWriteAll(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact] = createFactTools({ factStore, agentIdentity: "facts-manager" });
@@ -210,7 +221,7 @@ async function testFactsManagerCanWriteAll(env) {
 }
 
 async function testFactsManagerCanReadAll(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         // Write intake as FM first
@@ -234,7 +245,7 @@ async function testFactsManagerCanReadAll(env) {
 }
 
 async function testFactsManagerCanDeleteAll(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact, , deleteFact] = createFactTools({ factStore, agentIdentity: "facts-manager" });
@@ -293,7 +304,7 @@ async function testFactsManagerCanDeleteAll(env) {
 async function testFMPromotionVisibleToAgent(env) {
     await withClient(env, async (client, worker) => {
         // Step 1: Write a curated skill as the Facts Manager (simulating FM promotion)
-        const factStore = await PgFactStore.create(env.store, env.factsSchema);
+        const factStore = await createKnowledgeFactStore(env);
         await factStore.initialize();
         try {
             const [storeFact] = createFactTools({ factStore, agentIdentity: "facts-manager" });
@@ -357,7 +368,7 @@ async function testFMPromotionVisibleToAgent(env) {
  */
 async function testIntakeMergeVisibleToAgent(env) {
     await withClient(env, async (client, worker) => {
-        const factStore = await PgFactStore.create(env.store, env.factsSchema);
+        const factStore = await createKnowledgeFactStore(env);
         await factStore.initialize();
         try {
             const [storeAsTask] = createFactTools({ factStore });
@@ -517,7 +528,7 @@ async function testIntakeMergeVisibleToAgent(env) {
  * Verifies that loadKnowledgeIndex returns skills with full body and proper shape.
  */
 async function testLoadKnowledgeIndexFullBody(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    const factStore = await createKnowledgeFactStore(env);
     await factStore.initialize();
     try {
         const [storeFact] = createFactTools({ factStore, agentIdentity: "facts-manager" });
