@@ -18,6 +18,8 @@ Read in this order — each doc assumes the ones above it:
 
 Focused designs:
 
+- [Cloud and deployment provider boundaries](./provider-boundary-audit.md) —
+  required separation, current violations and provider extraction plan
 - [Session canvas](./canvas.md) — the standing visual surface: draw/tick/read
   tools, interactive contracts, reusable canvas apps, gating and caps
 - [Facts store](./facts.md) — the memory subsystem's design spec
