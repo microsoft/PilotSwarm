@@ -148,7 +148,7 @@ test("bicep application-gateway.bicep autoSeed rules match JS helper names + pri
   const { fileURLToPath } = await import("node:url");
   const { dirname } = await import("node:path");
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-  const bicepPath = join(REPO_ROOT, "deploy", "services", "base-infra", "bicep", "application-gateway.bicep");
+  const bicepPath = join(REPO_ROOT, "deploy", "providers", "azure", "services", "base-infra", "bicep", "application-gateway.bicep");
   const raw = readFileSync(bicepPath, "utf8");
   // Extract the autoSeedRules block (between `var autoSeedRules = vpnGatewayEnabled ? [` and `] : []`).
   const m = raw.match(/var autoSeedRules = vpnGatewayEnabled \? \[([\s\S]*?)\] : \[\]/);

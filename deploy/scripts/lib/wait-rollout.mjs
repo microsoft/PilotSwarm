@@ -26,6 +26,7 @@ import { mkdirSync } from "node:fs";
 import { run, log } from "./common.mjs";
 import { loadDeployManifest } from "./services-manifest.mjs";
 import { applyPrivateModePostDeploy } from "./private-mode-postdeploy.mjs";
+import { configurePublicModeIngress } from "./public-mode-ingress.mjs";
 
 const FLUX_NAMESPACE = "flux-system";
 const ROLLOUT_TIMEOUT = "10m";
@@ -51,6 +52,7 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
   }
 
   const kubeEnv = ensureKubeContext(env, stagingDir);
+  if (service === "portal") configurePublicModeIngress({ env, kubeEnv });
 
   // Azure FluxConfig wraps each kustomization key as `<configName>-<key>`.
   // Our `flux-config.bicep` passes `configName` as both the FluxConfig name

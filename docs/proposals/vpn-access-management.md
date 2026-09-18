@@ -80,7 +80,7 @@ Responsibilities (identical shape to the portal-assignments script):
 
 ### Modified bicep / orchestrator
 
-**`deploy/services/base-infra/bicep/vpn-gateway.bicep`** — already accepts `vpnAadAudience` as a parameter. No bicep change needed beyond what is already shipped.
+**`deploy/providers/azure/services/base-infra/bicep/vpn-gateway.bicep`** — already accepts `vpnAadAudience` as a parameter. No bicep change needed beyond what is already shipped.
 
 **`deploy/scripts/deploy.mjs` / `new-env.mjs` / env templates:**
 - New env var `VPN_AAD_CLIENT_ID` (the custom app's `appId`) feeds `VPN_AAD_AUDIENCE` when set.

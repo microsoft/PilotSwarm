@@ -31,13 +31,13 @@ function cleanup() {
 }
 
 test("validateLocalEnvName accepts valid names", () => {
-  for (const ok of ["a", "foo", "sandbox", "abc123", "x12345678901"]) {
+  for (const ok of ["a", "foo", "sandbox", "abc123", "x12345678901", "example-test"]) {
     assert.doesNotThrow(() => validateLocalEnvName(ok));
   }
 });
 
 test("validateLocalEnvName rejects invalid names", () => {
-  for (const bad of ["", "1abc", "ABC", "foo-bar", "foo_bar", "x123456789012", "Foo"]) {
+  for (const bad of ["", "1abc", "ABC", "foo_bar", "foo-", "foo--bar", "x123456789012345", "Foo"]) {
     assert.throws(() => validateLocalEnvName(bad), /Invalid env name/);
   }
 });
@@ -58,8 +58,8 @@ test("envFilePath rejects reserved names", () => {
   }
 });
 
-test("templateEnvPath points at deploy/envs/template.env", () => {
-  assert.equal(templateEnvPath(), join(ENV_DIR, "template.env"));
+test("templateEnvPath points at deploy/providers/azure/envs/template.env", () => {
+  assert.equal(templateEnvPath(), join(REPO_ROOT, "deploy", "providers", "azure", "envs", "template.env"));
 });
 
 test("loadEnv reads the local env file standalone (no template cascade)", () => {
@@ -85,6 +85,7 @@ test("loadEnv reads the local env file standalone (no template cascade)", () => 
     assert.equal(env.SUBSCRIPTION_ID, "00000000-0000-0000-0000-000000000000");
     assert.equal(env.NAMESPACE, "pilotswarm");
     assert.equal(env.LOCATION, "westus3");
+    assert.equal(env.DEPLOY_PROVIDER, "azure");
     // Sources reflect the standalone read.
     assert.equal(sources.base, null);
     assert.equal(sources.local, TEST_FILE);
@@ -148,7 +149,7 @@ test("loadEnv() throws helpful message when local env is missing", () => {
 
 test("loadEnv('foo') with invalid name throws name-validation error", () => {
   assert.throws(() => loadEnv("Foo"), /Invalid env name/);
-  assert.throws(() => loadEnv("foo-bar"), /Invalid env name/);
+  assert.throws(() => loadEnv("foo--bar"), /Invalid env name/);
 });
 
 test("loadEnv() rejects reserved env names", () => {

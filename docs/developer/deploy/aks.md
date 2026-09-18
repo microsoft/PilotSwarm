@@ -30,7 +30,7 @@ containers. Public entry points:
   parameter files. Picks defaults for the topology axes below.
 - `deploy/scripts/deploy.mjs` — orchestrates the per-service bicep +
   manifest stage in `infraOrder` then `services` order from
-  `deploy/services/deploy-manifest.json`.
+  `deploy/providers/azure/services/deploy-manifest.json`.
 - `deploy/scripts/test/*.test.mjs` — `npm run test:deploy-scripts`.
 
 ### Topology Matrix
@@ -86,7 +86,7 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
 
 ### Variant Overlays
 
-`deploy/gitops/portal/overlays/` ships three flavors, one per supported
+`deploy/providers/azure/gitops/portal/overlays/` ships three flavors, one per supported
 combo (`akv` and `akv-selfsigned` share an overlay because the only
 difference is the AKV issuer name, set by Portal bicep, not by
 kustomize):
@@ -119,7 +119,7 @@ these gates.
 
 ### cert-manager Pinning
 
-`deploy/gitops/cert-manager/base/helm-release.yaml` pins
+`deploy/providers/azure/gitops/cert-manager/base/helm-release.yaml` pins
 `version: 1.20.2` exact (no semver range). To upgrade, edit that field
 in a PR — Flux will not auto-roll. The OCI HelmRepository points at
 `oci://quay.io/jetstack/charts` (official Jetstack registry) for OSS;
@@ -292,7 +292,7 @@ at connect time.
 #### WAF guard rules (auto-seeded at priorities 90 / 91 / 92)
 
 When `VPN_GATEWAY_ENABLED=true`, base-infra bicep
-(`deploy/services/base-infra/bicep/application-gateway.bicep`) prepends
+(`deploy/providers/azure/services/base-infra/bicep/application-gateway.bicep`) prepends
 three custom rules to the AppGw WAF policy's `customRules.rules` array:
 
 | Priority | Name | Action | Match |
@@ -388,7 +388,7 @@ inputs fail loudly at preflight with a single named diagnostic.
 
 The IaC path mounts the worker's model catalog as a kustomize-generated
 ConfigMap (`copilot-worker-model-providers`) sourced from
-[`deploy/gitops/worker/base/model_providers.json`](../../../deploy/gitops/worker/base/model_providers.json),
+[`deploy/providers/azure/gitops/worker/base/model_providers.json`](../../../deploy/providers/azure/gitops/worker/base/model_providers.json),
 exposed to the runtime via `PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.json`.
 This is **separate from** the legacy `scripts/deploy-aks.sh` flow,
 which bakes `deploy/config/model_providers.ghcp.json` into the image.
@@ -436,7 +436,7 @@ the same KV secret so the SPC mount still succeeds.
 
 Drop a kustomize overlay patch on the
 `copilot-worker-model-providers` ConfigMap in
-`deploy/gitops/worker/overlays/<overlay>/` to diverge from the base
+`deploy/providers/azure/gitops/worker/overlays/<overlay>/` to diverge from the base
 catalog for one stamp. Keep `__FOUNDRY_ENDPOINT__` in the patched JSON
 to keep endpoint substitution; hard-code the URL to opt out.
 

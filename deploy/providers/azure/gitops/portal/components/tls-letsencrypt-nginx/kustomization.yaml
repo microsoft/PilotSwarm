@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# cert-manager owns the public NGINX ingress certificate. The portal pod
+# reads the same Secret and serves HTTPS to the ingress controller.
+patches:
+  - target:
+      kind: Deployment
+      name: pilotswarm-portal
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: pilotswarm-portal
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: portal-tls-secret
+                secret:
+                  secretName: pilotswarm-portal-tls-le
+  - target:
+      kind: Ingress
+      name: pilotswarm-portal-ingress
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: pilotswarm-portal-ingress
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+      spec:
+        tls:
+          - secretName: pilotswarm-portal-tls-le
+            hosts:
+              - __PORTAL_HOSTNAME__

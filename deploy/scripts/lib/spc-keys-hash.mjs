@@ -26,7 +26,7 @@
 // proposal in that bugreport — out of scope here.
 //
 // Source-of-truth note: the lists below MUST mirror
-// `deploy/gitops/<service>/base/secret-provider-class.yaml`'s
+// `deploy/providers/azure/gitops/<service>/base/secret-provider-class.yaml`'s
 // `secretObjects[].data[].key` entries. Adding/removing a key in either
 // place without the other defeats the guarantee. Both files cross-
 // reference each other in comments. This invariant covers the base SPC only.
@@ -36,16 +36,17 @@
 import { createHash } from "node:crypto";
 
 // Worker SPC: keys projected from `copilot-worker-secrets`.
-// Mirror of deploy/gitops/worker/base/secret-provider-class.yaml
+// Mirror of deploy/providers/azure/gitops/worker/base/secret-provider-class.yaml
 // `secretObjects[0].data[].key`.
 const WORKER_SPC_KEYS = [
   "ANTHROPIC_API_KEY",
   "AZURE_OAI_KEY",
   "GITHUB_TOKEN",
+  "HORIZON_EMBED_API_KEY",
 ];
 
 // Portal SPC: keys projected from `pilotswarm-portal-secrets`.
-// Mirror of deploy/gitops/portal/base/secret-provider-class.yaml
+// Mirror of deploy/providers/azure/gitops/portal/base/secret-provider-class.yaml
 // `secretObjects[0].data[].key`.
 //
 // Why portal carries the same LLM creds as the worker (GITHUB_TOKEN,
@@ -60,6 +61,7 @@ const PORTAL_SPC_KEYS = [
   "ANTHROPIC_API_KEY",
   "AZURE_OAI_KEY",
   "GITHUB_TOKEN",
+  "HORIZON_EMBED_API_KEY",
 ];
 
 const SPC_KEYS_BY_SERVICE = {

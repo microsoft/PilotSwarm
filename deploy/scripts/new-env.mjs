@@ -7,7 +7,7 @@
 //
 // (Equivalent direct invocation: `node deploy/scripts/new-env.mjs ...`)
 //
-// Creates `deploy/envs/local/<name>/.env` by copying `deploy/envs/template.env`
+// Creates `deploy/envs/local/<name>/.env` by copying `deploy/providers/azure/envs/template.env`
 // and substituting deployment-target keys using the same naming patterns
 // The enterprise path uses (the enterprise deployment manifests):
 //
@@ -59,7 +59,7 @@ import {
 } from "./lib/overlay-contracts.mjs";
 
 // Common Azure regions → short name. Sourced from
-// deploy/services/deploy-manifest.json `regionShort`. Unknown regions prompt
+// deploy/providers/azure/services/deploy-manifest.json `regionShort`. Unknown regions prompt
 // the user for a short name.
 function regionShortFor(location) {
   const m = loadDeployManifest();
@@ -75,7 +75,7 @@ const DEFAULT_EDGE_MODE = CONTRACT_DEFAULT_EDGE_MODE;
 
 // CA cert source.
 //   letsencrypt    — cert-manager + LE prod ACME (HTTP-01). Only valid with
-//                    edgeMode=afd. OSS public default.
+//                    edgeMode=afd or public. OSS public default.
 //   akv            — AKV-registered issuer (e.g. OneCertV2-PublicCA for afd,
 //                    OneCertV2-PrivateCA for private) + bicep cert deployment
 //                    script. enterprise / closed-network path.
@@ -87,7 +87,7 @@ const TLS_SOURCES = CONTRACT_TLS_SOURCES;
 const DEFAULT_TLS_SOURCE = CONTRACT_DEFAULT_TLS_SOURCE;
 
 // Combos blocked at validation time. Mirrors the Portal bicep `@allowed`
-// invariants: letsencrypt requires a public IP for HTTP-01 (afd only);
+// invariants: letsencrypt requires a public IP for HTTP-01 (afd or public);
 // akv-selfsigned has no use case under afd (AFD won't trust a self-signed
 // chain). Both unsupported combos are reported with a clear remediation.
 const UNSUPPORTED_COMBOS = [
@@ -104,6 +104,16 @@ const UNSUPPORTED_COMBOS = [
     reason:
       "Azure Front Door rejects self-signed origin chains. " +
       "Use --tls-source letsencrypt (OSS) or akv (enterprise) with afd.",
+  },
+  {
+    edgeMode: "public",
+    tlsSource: "akv",
+    reason: "Public NGINX currently supports Let's Encrypt TLS only. Use --tls-source letsencrypt.",
+  },
+  {
+    edgeMode: "public",
+    tlsSource: "akv-selfsigned",
+    reason: "Public NGINX currently supports Let's Encrypt TLS only. Use --tls-source letsencrypt.",
   },
 ];
 
@@ -305,8 +315,8 @@ export const INPUTS = [
     argKey: "name",
     positional: true,
     metavar: "<name>",
-    help: "Env name (1–12 chars, lowercase, must start with letter; not 'dev' or 'prod').",
-    prompt: "Env name (1–12 chars, lowercase, must start with letter)",
+    help: "Env name (1–15 chars, lowercase letters/digits/internal hyphens; not 'dev' or 'prod').",
+    prompt: "Env name (1–15 chars, lowercase letters/digits/internal hyphens)",
     validate: (v) => {
       try {
         validateLocalEnvName(v);
@@ -323,6 +333,15 @@ export const INPUTS = [
     help: "Azure subscription id.",
     prompt: "Subscription id (UUID, leave blank to fill in later)",
     default: "",
+  },
+  {
+    argKey: "tenantId",
+    flag: "--tenant-id",
+    metavar: "<id>",
+    help: "Microsoft Entra tenant id for the target subscription.",
+    prompt: "Entra tenant id (UUID, leave blank to fill in later)",
+    default: "",
+    validate: (v) => !v || /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(v) ? true : "must be a UUID",
   },
   {
     argKey: "location",
@@ -352,7 +371,7 @@ export const INPUTS = [
     argKey: "edgeMode",
     flag: "--edge-mode",
     metavar: "<m>",
-    help: "afd | private (default: afd).",
+    help: "afd | private | public (default: afd).",
     cliChoices: EDGE_MODES,
     type: "menu",
     prompt: "Edge mode",
@@ -361,6 +380,7 @@ export const INPUTS = [
     choiceDescriptions: {
       afd: "Azure Front Door + AppGw + AGIC (public Internet endpoint, default)",
       private: "Internal LoadBalancer + web-app-routing (NGINX), private DNS zone, no AppGw",
+      public: "Public LoadBalancer + web-app-routing (NGINX), AKS-managed network, no custom VNet",
     },
   },
   {
@@ -369,7 +389,7 @@ export const INPUTS = [
     metavar: "<s>",
     help: [
       "letsencrypt | akv | akv-selfsigned (default: letsencrypt).",
-      "letsencrypt requires --edge-mode afd. akv-selfsigned requires --edge-mode private.",
+      "letsencrypt requires --edge-mode afd or public. akv-selfsigned requires --edge-mode private.",
     ],
     cliChoices: TLS_SOURCES,
     nonInteractiveDefault: () => DEFAULT_TLS_SOURCE,
@@ -494,6 +514,9 @@ export const INPUTS = [
         console.log(`  → portal FQDN: ${fqdn}`);
         return fqdn;
       }
+      if (ctx.edgeMode === "public") {
+        return `ps${ctx.name}-${ctx.regionShort}-portal.${ctx.location}.cloudapp.azure.com`;
+      }
       return "";
     },
   },
@@ -588,7 +611,7 @@ function usage() {
     "Usage: npm run deploy:new-env -- [<name>] [options]",
     "",
     "Creates a personal local env at deploy/envs/local/<name>/.env.",
-    "<name> must match /^[a-z][a-z0-9]{0,11}$/ and not be a reserved name (dev, prod).",
+    "<name> must start with a letter and use 1–15 lowercase letters, digits, or internal hyphens; dev and prod are reserved.",
     "Any flag not provided is prompted for interactively.",
     "",
     "Options:",
@@ -613,7 +636,7 @@ function usage() {
 
 // Derive deployment-target values from a small set of inputs, matching the enterprise path
 // serviceModel.json naming patterns. Pure function — no I/O.
-export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
+export function deriveTargets({ name, subscription, tenantId, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
   const prefix = `ps${name}`;
   const globalPrefix = `${prefix}global`;
   const resolvedEdgeMode = edgeMode ?? DEFAULT_EDGE_MODE;
@@ -626,6 +649,9 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
   let derivedPortalHostname = portalHostname ?? "";
   if (!derivedPortalHostname && resolvedEdgeMode === "private" && host && privateDnsZone) {
     derivedPortalHostname = `${host}.${privateDnsZone}`;
+  }
+  if (!derivedPortalHostname && resolvedEdgeMode === "public") {
+    derivedPortalHostname = `${prefix}-${regionShort}-portal.${location}.cloudapp.azure.com`;
   }
   // Normalise yes/no inputs the same way main() does (normaliseYesNo).
   // The CLI accepts y|n|yes|no|true|false (and JS boolean true from
@@ -641,7 +667,9 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
   // emit it explicitly to keep the rendered .env deterministic.
   const vpnOn = normaliseYesNo(vpnEnabled) === "y";
   return {
+    DEPLOY_PROVIDER: "azure",
     SUBSCRIPTION_ID: subscription ?? "",
+    AZURE_TENANT_ID: tenantId ?? "",
     LOCATION: location,
     RESOURCE_PREFIX: prefix,
     RESOURCE_GROUP: `${prefix}-${regionShort}-rg`,
@@ -649,6 +677,8 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     GLOBAL_RESOURCE_GROUP: globalPrefix,
     PORTAL_RESOURCE_NAME: `${prefix}-${regionShort}-portal`,
     EDGE_MODE: resolvedEdgeMode,
+    INGRESS_CLASS: resolvedEdgeMode === "afd" ? "azure-application-gateway" : "webapprouting.kubernetes.azure.com",
+    ...(resolvedEdgeMode === "public" ? { AUTHZ_ENFORCE_OWNERSHIP: "true" } : {}),
     // DNS label (host prefix) used to compose the portal FQDN in private
     // mode. Empty in afd mode.
     HOST: host ?? "",
@@ -665,7 +695,7 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     // ACME registration email for Let's Encrypt — used by the cert-manager
     // ClusterIssuer. Required when TLS_SOURCE=letsencrypt; ignored for akv*.
     ACME_EMAIL: acmeEmail ?? "",
-    // Azure AI Foundry — see deploy/services/base-infra/bicep/foundry.bicep.
+    // Azure AI Foundry — see deploy/providers/azure/services/base-infra/bicep/foundry.bicep.
     // FOUNDRY_DEPLOYMENTS_FILE points at a per-stamp JSON file the
     // scaffolder writes into deploy/envs/local/<name>/foundry-deployments.json
     // when foundryEnabled is selected. When disabled, both keys flow
@@ -738,10 +768,10 @@ export function renderLocalEnv({ name, targets, secrets, portalConfig, templateT
 
   const header = [
     `# Personal local env '${name}' — gitignored.`,
-    `# Generated by deploy/scripts/new-env.mjs from deploy/envs/template.env.`,
+    `# Generated by deploy/scripts/new-env.mjs from deploy/providers/azure/envs/template.env.`,
     `#`,
     `# This file is STANDALONE: deploy.mjs reads it directly with no cascade`,
-    `# onto the template. Future edits to deploy/envs/template.env will not`,
+    `# onto the template. Future edits to deploy/providers/azure/envs/template.env will not`,
     `# retroactively change this env. Re-run \`npm run deploy:new-env --`,
     `# ${name} --force\` to regenerate from the latest template.`,
     `#`,
@@ -803,8 +833,13 @@ export function renderLocalEnv({ name, targets, secrets, portalConfig, templateT
     `# strips sentinel values at startup so the key appears truly unset.`,
     ``,
   ];
+  const publicPortalDefaults = targets.EDGE_MODE === "public" ? {
+    PORTAL_AUTH_PROVIDER: "entra",
+    PORTAL_AUTH_ENTRA_TENANT_ID: targets.AZURE_TENANT_ID,
+    PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "false",
+  } : {};
   for (const { env: key } of PORTAL_CONFIG_KEYS) {
-    const value = portalConfig?.[key] ?? "";
+    const value = portalConfig?.[key] ?? publicPortalDefaults[key] ?? "";
     portalConfigBlock.push(`${key}=${value || SEED_SECRETS_UNSET_SENTINEL}`);
   }
 
@@ -992,9 +1027,9 @@ export function scaffoldFoundryDeploymentsJson({ availableModels = null } = {}) 
 // returns null. The scaffolder must not hard-fail just because the operator
 // hasn't `az login`-ed yet; an empty Foundry array still produces a valid
 // deploy config.
-function tryFetchFoundryCatalog(region) {
+function tryFetchFoundryCatalog(region, subscriptionId) {
   try {
-    const models = listAvailableFoundryModels(region);
+    const models = listAvailableFoundryModels(region, subscriptionId);
     return Array.isArray(models) ? models : null;
   } catch (err) {
     log("warn", `Could not query Foundry model catalog for ${region}: ${err.message}`);
@@ -1113,7 +1148,7 @@ async function main() {
       log("info", `Foundry deployments file already exists; leaving it alone: ${foundryFile}`);
     } else {
       log("info", `Querying Foundry model catalog for ${targets.LOCATION}...`);
-      const availableModels = tryFetchFoundryCatalog(targets.LOCATION);
+      const availableModels = tryFetchFoundryCatalog(targets.LOCATION, targets.SUBSCRIPTION_ID);
       const body = scaffoldFoundryDeploymentsJson({ availableModels });
       writeFileSync(foundryFile, body, "utf8");
       const parsed = JSON.parse(body);

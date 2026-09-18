@@ -1,0 +1,75 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "region": {
+      "value": "${LOCATION}"
+    },
+    "resourceNamePrefix": {
+      "value": "${RESOURCE_PREFIX}"
+    },
+    "frontDoorProfileName": {
+      "value": "${FRONT_DOOR_PROFILE_NAME}"
+    },
+    "frontDoorProfileResourceGroup": {
+      "value": "${FRONT_DOOR_PROFILE_RESOURCE_GROUP}"
+    },
+    "sslCertificateDomainSuffix": {
+      "value": "${SSL_CERT_DOMAIN_SUFFIX}"
+    },
+    "wafMode": {
+      "value": "${WAF_MODE}"
+    },
+    "acrSku": {
+      "value": "${ACR_SKU}"
+    },
+    "appGatewayPrivateIpAddress": {
+      "value": "${APP_GATEWAY_PRIVATE_IP}"
+    },
+    "availabilityZones": {
+      "value": []
+    },
+    "serviceAccountNamespace": {
+      "value": "${NAMESPACE}"
+    },
+    "edgeMode": {
+      "value": "${EDGE_MODE}"
+    },
+    "logAnalyticsRetentionDays": {
+      "value": ${LOG_ANALYTICS_RETENTION_DAYS}
+    },
+    "deployPostgres": {
+      "value": ${DEPLOY_POSTGRES}
+    },
+    "horizonDbEnabled": {
+      "value": ${HORIZONDB_ENABLED}
+    },
+    "foundryEnabled": {
+      "value": ${FOUNDRY_ENABLED}
+    },
+    "foundrySku": {
+      "value": "${FOUNDRY_SKU}"
+    },
+    "vpnGatewayEnabled": {
+      "value": ${VPN_GATEWAY_ENABLED}
+    },
+    "vpnGatewaySku": {
+      "value": "${VPN_GATEWAY_SKU}"
+    },
+    "vpnClientAddressPool": {
+      "value": "${VPN_CLIENT_ADDRESS_POOL}"
+    },
+    "vpnAadAudience": {
+      "value": "${VPN_AAD_AUDIENCE}"
+    },
+    "portalResourceName": {
+      "value": "${PORTAL_RESOURCE_NAME}"
+    },
+    "frontDoorId": {
+      "value": "${FRONT_DOOR_ID}"
+    },
+    "tenantId": {
+      "value": "${AZURE_TENANT_ID}"
+    }
+  }
+}

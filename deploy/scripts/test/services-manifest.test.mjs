@@ -32,6 +32,7 @@ test("real manifest loads and matches the canonical service shape", () => {
   assert.deepEqual(m.allSequence, [
     "global-infra",
     "base-infra",
+    "horizondb",
     "pls-anchor",
     "cert-manager",
     "cert-manager-issuers",
@@ -40,6 +41,7 @@ test("real manifest loads and matches the canonical service shape", () => {
   ]);
   assert.equal(m.services.worker.kind, "app");
   assert.equal(m.services["base-infra"].kind, "infra");
+  assert.equal(m.services.horizondb.kind, "infra");
   assert.equal(m.services["pls-anchor"].kind, "infra");
   assert.equal(m.services["cert-manager"].kind, "infra");
   assert.equal(m.services["cert-manager-issuers"].kind, "infra");
@@ -51,6 +53,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.deepEqual(ALL_SEQUENCE, [
     "global-infra",
     "base-infra",
+    "horizondb",
     "pls-anchor",
     "cert-manager",
     "cert-manager-issuers",
@@ -67,6 +70,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.deepEqual(SERVICE_TO_MODULES.worker, ["base-infra", "worker"]);
   assert.deepEqual(SERVICE_TO_MODULES.portal, ["base-infra", "portal"]);
   assert.deepEqual(SERVICE_TO_MODULES["base-infra"], ["base-infra"]);
+  assert.deepEqual(SERVICE_TO_MODULES.horizondb, ["horizondb"]);
   assert.deepEqual(SERVICE_TO_MODULES["global-infra"], ["global-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES["pls-anchor"], ["base-infra", "pls-anchor"]);
   assert.deepEqual(SERVICE_TO_MODULES["cert-manager"], ["base-infra", "cert-manager"]);
@@ -75,6 +79,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   // MODULE_SCOPE: covers every named module exactly once.
   assert.equal(MODULE_SCOPE["global-infra"], "sub");
   assert.equal(MODULE_SCOPE["base-infra"], "group");
+  assert.equal(MODULE_SCOPE.horizondb, "group");
   assert.equal(MODULE_SCOPE.worker, "group");
   assert.equal(MODULE_SCOPE.portal, "group");
   assert.equal(MODULE_SCOPE["pls-anchor"], "group");

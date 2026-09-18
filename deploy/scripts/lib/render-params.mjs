@@ -1,6 +1,6 @@
 // Bicep params template rendering (Phase 3, FR-020).
 //
-// Reads a Bicep parameters template (deploy/services/<Module>/bicep/<Module>.params.template.json),
+// Reads a Bicep parameters template (deploy/providers/azure/services/<Module>/bicep/<Module>.params.template.json),
 // substitutes ${VAR} placeholders left-to-right with values from the env map,
 // and writes the rendered file to <staging>/<module>.params.json.
 //

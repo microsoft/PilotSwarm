@@ -21,10 +21,10 @@ Always treat these as source of truth — `deploy/scripts/README.md` is
 updated in lockstep with the code, this skill is a procedural overlay:
 
 - `deploy/scripts/README.md` — full orchestrator reference (services, steps, EDGE_MODE × TLS_SOURCE, troubleshooting).
-- `deploy/envs/template.env` — every operator-settable env key with inline documentation.
+- `deploy/providers/azure/envs/template.env` — every operator-settable env key with inline documentation.
 - `deploy/scripts/new-env.mjs` — scaffolder; declarative `INPUTS` array is the canonical CLI flag/prompt source.
 - `deploy/scripts/deploy.mjs` — orchestrator; canonical step matrix, `--force` / `--force-module`, `UNSUPPORTED_COMBOS`.
-- `deploy/services/*/deploy.json` + `deploy/services/deploy-manifest.json` — service catalog + module wiring.
+- `deploy/providers/azure/services/*/deploy.json` + `deploy/providers/azure/services/deploy-manifest.json` — service catalog + module wiring.
 
 ## Topology Produced
 
@@ -34,6 +34,7 @@ updated in lockstep with the code, this skill is a procedural overlay:
 | T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault, UAMIs, Flux | Always |
 | T2 edge (afd) | AppGw v2 + WAF + Private Link Service + AGIC | `EDGE_MODE=afd` |
 | T2 edge (private) | AKS web-app-routing (NGINX) on ILB + Private DNS Zone | `EDGE_MODE=private` |
+| T2 edge (public) | AKS-managed Azure CNI Overlay network + public NGINX LoadBalancer + Azure DNS label; no dedicated VNet/AppGw/AFD | `EDGE_MODE=public`, `TLS_SOURCE=letsencrypt` |
 | T2 ingress (vpn) | Azure VPN Gateway P2S (OpenVPN + Entra ID) + `GatewaySubnet` + managed Private DNS zone + auto-seeded AppGw WAF guard rules | `VPN_GATEWAY_ENABLED=true` (additive; requires `EDGE_MODE=afd` + `TLS_SOURCE=akv`) |
 | T3 | Ephemeral worker AKS + workload-SA UAMI + Flux + `worker-t3-manifests` blob container | Always |
 | Cross-cluster | T2 csi UAMI gets `AKS Cluster User Role` on T3 | For T2 worker → T3 kubeconfig minting |
@@ -85,8 +86,9 @@ Ask, in order:
      app creation expensive, or they want a single SSO consent prompt
      across all dev stamps). In that case take the client id directly
      from them, or invoke the skill in append mode
-     (`-ExistingAppId <appId> -EnvName <stamp>`). Do not infer this
-     intent from the presence of a sibling stamp.
+     (`-ExistingAppId <appId> -EnvName <stamp>`). This append mode does
+     not need a Service Tree ID. Do not infer reuse solely from the
+     presence of a sibling stamp.
 3. **"Should sign-in be locked down to assigned users only, or open to
    any tenant member?"** (only when `entra` and provisioning new)
    - **Production stamp (recommended)** → `-CreateAppRoles` + assign
@@ -131,7 +133,7 @@ Before opening the dialogue, run a quick discovery so the user sees
 
 ```bash
 az account show --query "{sub:id, subName:name, user:user.name, tenant:tenantId}" -o json
-gh auth status      # confirms a token is available for GITHUB_TOKEN
+gh auth status      # only if the stamp will use GitHub Copilot models
 ```
 
 Cache the result for the rest of the conversation. Surface:
@@ -145,8 +147,8 @@ Cache the result for the rest of the conversation. Surface:
   the `admin` app role). Do **not** auto-suggest the UPN for
   `PORTAL_AUTHZ_ADMIN_GROUPS` — that env var is only relevant in the
   **Legacy email allowlist** posture, not the Roles posture.
-- `gh` status → if logged in, offer to run `gh auth token` to populate
-  `GITHUB_TOKEN`; if not, default it to empty (sentinel)
+- `gh` status → only for stamps using GitHub Copilot models. Foundry-only
+  stamps leave `GITHUB_TOKEN` empty (sentinel).
 
 ## Step 2 — Present the full input surface upfront
 
@@ -161,14 +163,15 @@ secrets**, **Portal auth**. Mark each value `(default)`,
 
 ```
 Core
-  name                          <required>          # /^[a-z][a-z0-9]{0,11}$/, not dev|prod
+  name                          <required>          # 1–15 lowercase letters/digits/internal hyphens; not dev|prod
   subscription                  <discovered: ${sub} — ${subName}>
+  tenant-id                     <discovered: ${tenant}>
   location                      westus3 (default)
   region-short                  <derived from deploy-manifest.json>
   foundry-enabled               n (default)         # n | y; when 'y', also scaffolds foundry-deployments.json
 
 Edge / TLS
-  edge-mode                     afd (default)         # afd | private
+  edge-mode                     afd (default)         # afd | private | public
   tls-source                    letsencrypt (default) # letsencrypt | akv | akv-selfsigned
   acme-email                    <suggested: ${user}; CONFIRM OR OVERRIDE> # only when tls-source=letsencrypt
   host                          portal (default)      # only when edge-mode=private
@@ -181,7 +184,7 @@ VPN (optional — only when user asks for VPN access / off-network ingress)
   vpn-aad-audience              c632b3df-fb67-4d84-bdcf-b95ad541b5c8 (default)  # current Azure VPN Client app; override only for legacy-audience tenants
 
 Per-stamp secrets (Key Vault)
-  GITHUB_TOKEN                  <offer `gh auth token`>  # optional; sentinel if empty
+  GITHUB_TOKEN                  <leave empty for Foundry-only stamps>  # optional; sentinel if empty
   AZURE_MODEL_ROUTER_KEY        <skip / sentinel>       # optional
   AZURE_FW_GLM5_KEY             <skip / sentinel>       # optional
   AZURE_KIMI_K25_KEY            <skip / sentinel>       # optional
@@ -512,8 +515,8 @@ curl -s https://<portal-fqdn>/api/health
 ```
 
 (Adjust namespace names if your deploy manifests use different defaults
-— check `deploy/services/portal/deploy.json` and
-`deploy/services/worker/deploy.json` for the rendered namespace.)
+— check `deploy/providers/azure/services/portal/deploy.json` and
+`deploy/providers/azure/services/worker/deploy.json` for the rendered namespace.)
 
 If Flux returns 403 on the first `rollout`, the cross-cluster RBAC grant
 on T3 (or Flux's Storage Blob Data Reader on T2) hasn't propagated. Retry

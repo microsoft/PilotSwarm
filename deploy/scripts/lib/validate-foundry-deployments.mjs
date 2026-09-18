@@ -78,13 +78,14 @@ export function validateFoundryDeployments({ deployments, availableModels, regio
 
 // Live `az cognitiveservices model list` shell-out. Separated from the pure
 // validator so tests can mock `availableModels` without spawning az.
-export function listAvailableFoundryModels(region) {
+export function listAvailableFoundryModels(region, subscriptionId) {
   return runJson("az", [
     "cognitiveservices",
     "model",
     "list",
     "--location",
     region,
+    ...(subscriptionId ? ["--subscription", subscriptionId] : []),
     "-o",
     "json",
   ]);
@@ -93,8 +94,8 @@ export function listAvailableFoundryModels(region) {
 // One-shot helper used by the bicep stage. Throws with a single consolidated
 // message on the first invalid deployment so the operator sees every problem
 // in one go.
-export function assertFoundryDeploymentsValid({ deployments, region, listFn = listAvailableFoundryModels }) {
-  const availableModels = listFn(region);
+export function assertFoundryDeploymentsValid({ deployments, region, subscriptionId, listFn = listAvailableFoundryModels }) {
+  const availableModels = listFn(region, subscriptionId);
   const errors = validateFoundryDeployments({ deployments, availableModels, region });
   if (errors.length === 0) return;
   throw new Error(

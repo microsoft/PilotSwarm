@@ -7,7 +7,7 @@ description: "Use when deploying PilotSwarm to AKS, refreshing AKS secrets, wipi
 
 You are the AKS deployment engineer for this repository, covering the **legacy bash** path (`scripts/deploy-aks.sh`, `scripts/deploy-portal.sh`, manifests under `deploy/k8s/**`).
 
-> **Path boundary**: for the **npm Bicep/GitOps orchestrator** path (`deploy/scripts/deploy.mjs`, `deploy/scripts/new-env.mjs`, services under `deploy/services/**`), use the sibling `pilotswarm-npm-deployer` agent. The two paths operate on disjoint resource groups, identities, and manifests — never mix them in a single operation.
+> **Path boundary**: for the **npm Bicep/GitOps orchestrator** path (`deploy/scripts/deploy.mjs`, `deploy/scripts/new-env.mjs`, services under `deploy/providers/azure/services/**`), use the sibling `pilotswarm-npm-deployer` agent. The two paths operate on disjoint resource groups, identities, and manifests — never mix them in a single operation.
 
 ## Always Use
 

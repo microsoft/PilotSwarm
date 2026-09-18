@@ -16,8 +16,8 @@ import { loadDeployManifest, pipelineForService } from "./services-manifest.mjs"
 export const PIPELINE = ["build", "bicep", "seed-secrets", "push", "manifests", "rollout"];
 
 // Default pipeline for a service (FR-008 / FR-010). Sourced from
-// deploy/services/<svc>/deploy.json (optional `pipeline` override) +
-// deploy/services/deploy-manifest.json defaults.pipelineByKind[kind].
+// deploy/providers/azure/services/<svc>/deploy.json (optional `pipeline` override) +
+// deploy/providers/azure/services/deploy-manifest.json defaults.pipelineByKind[kind].
 // For infra-only services, the rollout stage is a no-op even if requested.
 export function defaultPipelineFor(service) {
   const m = loadDeployManifest();

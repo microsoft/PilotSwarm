@@ -89,7 +89,7 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
         "Flags: --steps, --region, --image-tag, --clean, --force, --help",
     );
@@ -109,7 +109,7 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
       "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
@@ -138,7 +138,7 @@ function printHelp() {
       "  • VPN_GATEWAY_ENABLED=true adds 45+ min to the first `bicep` step",
       "    and ~$450/mo (VpnGw2AZ + Private DNS Resolver) to the running stamp.",
       "    Coexists with the AFD edge mode — does NOT replace it. See",
-      "    deploy/envs/template.env for the full env-var roster and the",
+      "    deploy/providers/azure/envs/template.env for the full env-var roster and the",
       "    AKV-only constraint.",
       "",
     ].join("\n"),
@@ -201,6 +201,7 @@ async function runStage(name, ctx) {
       return;
     case "seed-secrets":
       await seedSecrets({
+        service: ctx.service,
         envName: ctx.envName,
         env: ctx.env,
       });
@@ -319,7 +320,7 @@ async function main() {
   // issuer + the bicep cert deployment script. cert-manager / LE always
   // produces a publicly-trusted cert, which is what AFD+PL requires.
   const edgeMode = (env.EDGE_MODE || "afd").toLowerCase();
-  const VALID_EDGE_MODES = ["afd", "private"];
+  const VALID_EDGE_MODES = ["afd", "private", "public"];
   if (!VALID_EDGE_MODES.includes(edgeMode)) {
     log("err", `EDGE_MODE='${env.EDGE_MODE}' is not one of ${VALID_EDGE_MODES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
     process.exit(1);
@@ -349,6 +350,16 @@ async function main() {
       tlsSource: "akv-selfsigned",
       reason: "Azure Front Door rejects self-signed origin certs. Use TLS_SOURCE=letsencrypt or TLS_SOURCE=akv with a public CA.",
     },
+    {
+      edgeMode: "public",
+      tlsSource: "akv",
+      reason: "The public NGINX mode currently supports cert-manager with TLS_SOURCE=letsencrypt.",
+    },
+    {
+      edgeMode: "public",
+      tlsSource: "akv-selfsigned",
+      reason: "The public NGINX mode currently supports cert-manager with TLS_SOURCE=letsencrypt.",
+    },
   ];
   const blocked = UNSUPPORTED_COMBOS.find(
     (c) => c.edgeMode === edgeMode && c.tlsSource === tlsSource,
@@ -373,6 +384,11 @@ async function main() {
       "ok",
       `EDGE_MODE='${edgeMode}' — GlobalInfra (Front Door) is not provisioned in this mode. Nothing to do.`,
     );
+    return;
+  }
+
+  if (service === "horizondb" && String(env.HORIZONDB_ENABLED).toLowerCase() !== "true") {
+    log("ok", "HORIZONDB_ENABLED=false — HorizonDB is not provisioned for this stamp.");
     return;
   }
 
@@ -564,6 +580,8 @@ async function runAll({ envName, env, steps, imageTag, clean, force, forceModule
     (svc) => !(svc === "global-infra" && edgeMode !== "afd"),
   ).filter(
     (svc) => !(svc === "pls-anchor" && edgeMode !== "afd"),
+  ).filter(
+    (svc) => !(svc === "horizondb" && String(env.HORIZONDB_ENABLED).toLowerCase() !== "true"),
   ).filter(
     (svc) =>
       !((svc === "cert-manager" || svc === "cert-manager-issuers") && tlsSource !== "letsencrypt"),

@@ -3,7 +3,7 @@
 // In-process zlib.createGunzip() decompresses <staging>/<repo>.tar.gz to
 // <staging>/<repo>.tar (no host `gunzip` CLI required), then passes the .tar
 // directly to `oras cp --from-oci-layout <tar>:<tag> <acr>/<repo>:<tag>`
-// (matches deploy/services/common/scripts/UploadContainer.sh:31 reference shape).
+// (matches deploy/providers/azure/services/common/scripts/UploadContainer.sh:31 reference shape).
 //
 // Authenticates first via `az acr login --name <acrName>`. EC-7: aborts with
 // a copy-pasteable hint if the prerequisite tarball is missing.

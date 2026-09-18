@@ -92,7 +92,7 @@ test("undefined / missing key is reported as unresolved", () => {
 
 test("real base-infra template renders a boolean for new, legacy, and pre-key envs", () => {
   withTmp((dir) => {
-    const templatePath = join(REPO_ROOT, "deploy/services/base-infra/bicep/base-infra.params.template.json");
+    const templatePath = join(REPO_ROOT, "deploy/providers/azure/services/base-infra/bicep/base-infra.params.template.json");
     for (const [flag, expected] of [
       ["true", true], ["false", false], ["1", true], ["0", false],
       [" FALSE ", false], [false, false], [true, true], [undefined, true],

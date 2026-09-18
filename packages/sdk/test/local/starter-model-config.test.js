@@ -93,7 +93,7 @@ describe("GPT-6 Astra provider type catalog", () => {
         ".model_providers.example.json",
         "deploy/config/model_providers.ghcp.json",
         "deploy/config/model_providers.local-docker.json",
-        "deploy/gitops/worker/base/model_providers.json",
+        "deploy/providers/azure/gitops/worker/base/model_providers.json",
     ];
     const metadata = {
         supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],

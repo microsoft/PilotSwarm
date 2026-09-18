@@ -8,6 +8,7 @@ export const DATABASE_URL_KEYS = Object.freeze([
 
 export const DATABASE_ENV_DEFAULTS = Object.freeze({
   DEPLOY_POSTGRES: "true",
+  HORIZONDB_ENABLED: "false",
   PILOTSWARM_BLOB_USE_MANAGED_IDENTITY: "1",
 });
 

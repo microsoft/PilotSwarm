@@ -128,6 +128,17 @@ export function stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayN
     if (!env[key]) throw new Error(`BYO database projection requires ${key}.`);
   }
   const refs = config.secrets.map(({ key, name, version }) => ({ key, name, version }));
+  if (String(env.HORIZONDB_ENABLED).toLowerCase() === "true") {
+    const expected = env.HORIZONDB_URL_SECRET_NAME || "horizondb-url";
+    if (refs.some(({ name }) => name.toLowerCase() !== expected.toLowerCase()) ||
+        refs[0].version !== refs[1].version) {
+      throw new Error("HorizonDB requires DATABASE_URL and CMS URLs to reference the same version of HORIZONDB_URL_SECRET_NAME.");
+    }
+    refs.push(
+      { key: "HORIZON_DATABASE_URL", name: expected, version: refs[0].version },
+      { key: "HORIZON_GRAPH_DATABASE_URL", name: expected, version: refs[0].version },
+    );
+  }
   const hash = createHash("sha256")
     .update(JSON.stringify([env.KV_NAME, env.WORKLOAD_IDENTITY_CLIENT_ID, env.AZURE_TENANT_ID, refs]))
     .digest("hex").slice(0, 12);

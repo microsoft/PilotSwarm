@@ -63,7 +63,7 @@ export function parseEnvFile(path) {
 //
 // Every deploy targets a personal/local env at
 // `deploy/envs/local/<name>/.env`. Local env files are STANDALONE: they
-// are seeded from `deploy/envs/template.env` at scaffold time
+// are seeded from `deploy/providers/azure/envs/template.env` at scaffold time
 // (deploy/scripts/new-env.mjs) and from that point on are a complete,
 // frozen record of the deployment target. There is NO runtime cascade
 // onto the template, so future template edits affect only newly-
@@ -73,32 +73,30 @@ export function parseEnvFile(path) {
 // ServiceGroup naming via `$config(environment)`); they are NOT valid
 // OSS env names.
 //
-// The 12-char cap on local env names keeps the derived RESOURCE_PREFIX
-// (`ps<name>`) short enough to fit the strictest Azure name (storage
-// account: 24 alphanum, pattern `${alphaPrefix}sa${unique6}` ⇒ 22 chars
-// at envname=12).
+// The 15-char cap keeps the derived RESOURCE_PREFIX (`ps<name>`) inside
+// Azure's 24-character storage-account limit after Bicep removes hyphens and
+// adds its `sa` suffix. A name like `example-test` is valid.
 export const RESERVED_ENV_NAMES = ["dev", "prod"];
-export const LOCAL_ENV_NAME_RE = /^[a-z][a-z0-9]{0,11}$/;
+export const LOCAL_ENV_NAME_RE = /^(?=.{1,15}$)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 export function validateLocalEnvName(name) {
   if (RESERVED_ENV_NAMES.includes(name)) {
     throw new Error(
-      `'${name}' is a reserved env name. Pick a different name (1–12 chars, ` +
+      `'${name}' is a reserved env name. Pick a different name (1–15 chars, ` +
         `lowercase, must start with a letter).`,
     );
   }
   if (!LOCAL_ENV_NAME_RE.test(name)) {
     throw new Error(
       `Invalid env name: '${name}'.\n` +
-        `Must match /^[a-z][a-z0-9]{0,11}$/ — start with a letter, 1–12 lowercase ` +
-        `alphanumeric characters, no separators.`,
+        `Start with a letter; use 1–15 lowercase letters, digits, or internal hyphens.`,
     );
   }
 }
 
 // Resolve the env file path for an env name. Always
 // `deploy/envs/local/<name>/.env` — there are no canonical OSS env files
-// to deploy from anymore. The template at `deploy/envs/template.env` is
+// to deploy from anymore. The template at `deploy/providers/azure/envs/template.env` is
 // only consumed by the scaffolder (new-env.mjs).
 export function envFilePath(envName) {
   validateLocalEnvName(envName);
@@ -107,7 +105,7 @@ export function envFilePath(envName) {
 
 // Path to the scaffolder template. Read by new-env.mjs at scaffold time.
 export function templateEnvPath() {
-  return join(REPO_ROOT, "deploy", "envs", "template.env");
+  return join(REPO_ROOT, "deploy", "providers", "azure", "envs", "template.env");
 }
 
 // Load env map for a given local env name. Reads
@@ -130,7 +128,7 @@ export function loadEnv(envName) {
 
   // Compatibility defaults for newly introduced switches, not a cascade
   // onto the mutable scaffolding template.
-  const merged = { ...DATABASE_ENV_DEFAULTS, ...parseEnvFile(envFile) };
+  const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...parseEnvFile(envFile) };
 
   // Resolve provisioning intent before allowing any ambient database URL.
   for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {
@@ -138,6 +136,9 @@ export function loadEnv(envName) {
     if (process.env[k] !== undefined && process.env[k] !== "") {
       merged[k] = process.env[k];
     }
+  }
+  if (merged.DEPLOY_PROVIDER !== "azure") {
+    throw new Error(`Unsupported deployment provider '${merged.DEPLOY_PROVIDER}'. Available provider: azure.`);
   }
   const deployPostgres = deploysPostgres(merged);
   merged.DEPLOY_POSTGRES = String(deployPostgres);
@@ -406,7 +407,7 @@ export const ALL_SERVICE = "all";
 let _services;
 function loadServices() {
   if (_services) return _services;
-  const manifestPath = join(REPO_ROOT, "deploy", "services", "deploy-manifest.json");
+  const manifestPath = join(REPO_ROOT, "deploy", "providers", "azure", "services", "deploy-manifest.json");
   const root = JSON.parse(readFileSync(manifestPath, "utf8"));
   _services = [...(root.infraOrder ?? []), ...(root.services ?? [])];
   return _services;

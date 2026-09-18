@@ -1,4 +1,4 @@
-// Regression tests for deploy/services/common/bicep/approve-private-endpoint.bicep.
+// Regression tests for deploy/providers/azure/services/common/bicep/approve-private-endpoint.bicep.
 //
 // Two related hardenings are covered:
 //   * SF-1 (silent-failure removal): the prior auto-approval script swallowed
@@ -36,7 +36,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."
 const APPROVE_PE = join(
   REPO_ROOT,
   "deploy",
-  "services",
+  "providers", "azure", "services",
   "common",
   "bicep",
   "approve-private-endpoint.bicep",
@@ -44,7 +44,7 @@ const APPROVE_PE = join(
 const PORTAL_MAIN = join(
   REPO_ROOT,
   "deploy",
-  "services",
+  "providers", "azure", "services",
   "portal",
   "bicep",
   "main.bicep",

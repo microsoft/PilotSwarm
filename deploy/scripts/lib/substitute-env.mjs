@@ -1,6 +1,6 @@
 // Overlay .env substitution (Phase 4, FR-009).
 //
-// Reads `deploy/gitops/<service>/overlays/<env>/.env` line-by-line, replaces
+// Reads `deploy/providers/azure/gitops/<service>/overlays/<env>/.env` line-by-line, replaces
 // the value for each KEY whose KEY appears in the env map, and writes the
 // result to `<staging>/gitops/<service>/overlays/<env>/.env`.
 //

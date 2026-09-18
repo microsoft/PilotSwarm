@@ -1,0 +1,89 @@
+name: Deploy Azure stamp
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: azure-deploy
+    env:
+      AZURE_CORE_OUTPUT: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Prepare ignored stamp configuration
+        env:
+          AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
+          AZURE_FOUNDRY_DEPLOYMENTS_JSON: ${{ secrets.AZURE_FOUNDRY_DEPLOYMENTS_JSON }}
+          AZURE_MODEL_PROVIDERS_JSON: ${{ secrets.AZURE_MODEL_PROVIDERS_JSON }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
+        run: node deploy/scripts/prepare-github-env.mjs
+
+      - name: Azure login with OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "1.34.0"
+
+      - name: Setup ORAS
+        uses: oras-project/setup-oras@v1
+        with:
+          version: 1.3.0
+
+      - name: Setup Flux CLI
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/fluxcd/flux2/releases/download/v2.9.5/flux_2.9.5_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/flux.tar.gz"
+          echo 'b853df82adfd7736f580692f9f734473d571606307139f8fd20c2a80dd1ff473  '"$RUNNER_TEMP/flux.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/flux.tar.gz" -C "$RUNNER_TEMP" flux
+          sudo install -m 0755 "$RUNNER_TEMP/flux" /usr/local/bin/flux
+
+      - name: Deploy
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/azure-deploy.log"
+          if npm run deploy -- all ci --image-tag "${GITHUB_SHA:0:12}" > "$log" 2>&1; then
+            echo "Azure deployment completed."
+          else
+            stage="$(sed -n 's/.*Failed: \([a-z-]*\) \([a-z-]*\).*/\1 \2/p' "$log" | tail -1)"
+            echo "Azure deployment failed at ${stage:-an unknown stage}. Inspect Azure deployment operations for details." >&2
+            exit 1
+          fi
+
+      - name: Remove runner configuration
+        if: always()
+        run: |
+          rm -rf deploy/envs/local/ci
+          rm -f "$RUNNER_TEMP/azure-deploy.log"

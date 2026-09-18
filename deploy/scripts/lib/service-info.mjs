@@ -2,12 +2,12 @@
 //
 // Historically these were hardcoded constants. As of the OSS deploy-manifest
 // refactor, they are DERIVED at module-load time from
-// `deploy/services/deploy-manifest.json` + `deploy/services/<svc>/deploy.json`
+// `deploy/providers/azure/services/deploy-manifest.json` + `deploy/providers/azure/services/<svc>/deploy.json`
 // via `services-manifest.mjs`. Existing exports are preserved so consumers
 // (`deploy.mjs`, `deploy-bicep.mjs`, `push-image.mjs`, tests) need no change.
 //
 // To inspect or modify the source of truth, edit the JSON files. To add a new
-// service, drop a `deploy/services/<svc>/deploy.json` and list it under
+// service, drop a `deploy/providers/azure/services/<svc>/deploy.json` and list it under
 // `infraOrder` or `services` in the root manifest.
 
 import { loadDeployManifest } from "./services-manifest.mjs";

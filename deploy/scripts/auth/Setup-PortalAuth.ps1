@@ -7,7 +7,7 @@
     PilotSwarm portal expects when PORTAL_AUTH_PROVIDER=entra:
 
     - signInAudience: AzureADMyOrg (single-tenant)
-    - serviceManagementReference: supplied via -ServiceTreeId (REQUIRED — no default)
+    - serviceManagementReference: supplied via -ServiceTreeId when creating an app
     - SPA platform (no Web reply URLs); redirect URI is the portal's https:// root
     - implicitGrantSettings: idToken + accessToken issuance enabled
     - No MS Graph / API permissions declared. The portal does NOT call any
@@ -44,10 +44,10 @@
       the typical pattern when one app reg serves multiple stamps.
 
 .PARAMETER ServiceTreeId
-    REQUIRED. Service Tree ID for your service, written as the
-    serviceManagementReference on the app registration. Microsoft tenant
-    policy requires every app registration to carry a valid Service Tree
-    reference. There is intentionally no default — supply your own.
+    Required when creating a new app. Written as its
+    serviceManagementReference; Microsoft tenant policy requires a valid
+    Service Tree reference. Not needed when adding a redirect URI to an
+    existing app because that app already has its own reference.
 
 .PARAMETER DisplayName
     Display name for the app registration. Default: "PilotSwarm Portal - <EnvName>"
@@ -157,11 +157,11 @@
     `-AssignmentRequired` as well.
 
 .EXAMPLE
-    .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `
+    .\Setup-PortalAuth.ps1 `
         -ExistingAppId e4a81386-accc-48d5-b7d8-9f3324aec1e6 `
         -EnvName newstamp
 
-    Adds the newstamp's AFD endpoint as a new SPA redirect URI on the
+    Adds the newstamp's portal endpoint as a new SPA redirect URI on the
     existing shared app.
 
 .NOTES
@@ -183,7 +183,7 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][string]$ServiceTreeId,
+    [Parameter(Mandatory=$false)][string]$ServiceTreeId,
     [Parameter(Mandatory=$false)][string]$DisplayName,
     [Parameter(Mandatory=$false)][string]$EnvName,
     [Parameter(Mandatory=$false)][string[]]$RedirectUri,
@@ -376,7 +376,11 @@ $tenantId = az account show --query "tenantId" -o tsv
 if ([string]::IsNullOrWhiteSpace($tenantId)) { throw "Could not read tenantId from 'az account show'." }
 Write-Host "Tenant ID: $tenantId"
 
-if ([string]::IsNullOrWhiteSpace($Owner)) {
+if ([string]::IsNullOrWhiteSpace($ExistingAppId) -and [string]::IsNullOrWhiteSpace($ServiceTreeId)) {
+    throw "-ServiceTreeId is required when creating a new app registration."
+}
+
+if ([string]::IsNullOrWhiteSpace($ExistingAppId) -and [string]::IsNullOrWhiteSpace($Owner)) {
     $Owner = az ad signed-in-user show --query "id" -o tsv
     if ([string]::IsNullOrWhiteSpace($Owner)) {
         Write-Warning "Could not detect signed-in user; owner will not be set."
@@ -430,6 +434,8 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
 
     $existing = az ad app show --id $ExistingAppId 2>$null | ConvertFrom-Json
     if (-not $existing) { throw "Could not find app $ExistingAppId" }
+    $DisplayName = $existing.displayName
+    $ServiceTreeId = $existing.serviceManagementReference
     $objectId = $existing.id
     $currentUris = @()
     if ($existing.spa -and $existing.spa.redirectUris) { $currentUris = @($existing.spa.redirectUris) }

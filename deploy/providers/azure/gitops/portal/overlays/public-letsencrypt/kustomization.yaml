@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Public AKS application-routing NGINX with a regional Azure DNS label.
+# The deploy rollout patches the addon's LoadBalancer annotation to publish
+# PORTAL_HOSTNAME before cert-manager completes the HTTP-01 challenge.
+namespace: pilotswarm
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/edge-nginx
+  - ../../components/tls-letsencrypt-nginx
+  - ../../components/portal-replacements
+
+configMapGenerator:
+  - name: portal-env
+    envs:
+      - .env

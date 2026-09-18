@@ -1,5 +1,5 @@
 // Mirror of the AppGw WAF custom-rules merge logic in
-// `deploy/services/base-infra/bicep/application-gateway.bicep:82-142`.
+// `deploy/providers/azure/services/base-infra/bicep/application-gateway.bicep:82-142`.
 //
 // The bicep file remains the source of truth for the runtime WAF policy;
 // this JS helper exists so the merge shape can be unit-tested without
