@@ -10,7 +10,7 @@ export function validateRelease(version, manifests, lock, changelog) {
   for (let i = 0; i < manifests.length; i++) {
     const p = manifests[i];
     if (p.version !== version || lock.packages[`packages/${packages[i]}`]?.version !== version) throw new Error('Package and lockfile versions must match the prepared release.');
-    for (const dependencies of [p.dependencies, p.peerDependencies, p.optionalDependencies]) {
+    for (const dependencies of [p.dependencies, p.devDependencies, p.peerDependencies, p.optionalDependencies]) {
       for (const [name, range] of Object.entries(dependencies || {})) {
         if (names.has(name) && range !== version) throw new Error('Internal package dependencies must match the release version.');
       }

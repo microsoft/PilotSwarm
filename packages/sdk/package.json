@@ -99,7 +99,7 @@
     "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/pg": "^8.16.0",
-        "pilotswarm-horizon-store": "0.5.79",
+        "pilotswarm-horizon-store": "0.6.0",
         "typescript": "^5.0.0",
         "vitest": "^4.1.0"
     },
