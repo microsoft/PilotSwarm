@@ -9,13 +9,13 @@ import { ensureHorizonDbParameterGroup } from '../../deploy/scripts/lib/horizond
 
 const api = '2026-01-20-preview';
 export function validateConfig(c) {
-  for (const key of ['subscription', 'resourceGroup', 'location', 'cluster', 'appCluster', 'parameterGroup', 'vault', 'passwordSecret', 'urlSecret', 'embeddingUrl', 'embeddingKeySecret']) {
+  for (const key of ['subscription', 'resourceGroup', 'location', 'cluster', 'appCluster', 'parameterGroup', 'vault', 'passwordSecret', 'urlSecret', 'embeddingUrl', 'embeddingKeySecret', 'foundryAccount']) {
     if (typeof c[key] !== 'string' || !c[key]) throw new Error(`CI database configuration requires ${key}.`);
   }
   if (c.cluster.toLowerCase() === c.appCluster.toLowerCase()) throw new Error('CI must use a dedicated cluster, separate from the portal.');
   if (!c.passwordSecret.startsWith('ci-') || !c.urlSecret.startsWith('ci-')) throw new Error('CI credentials must have dedicated ci- secret names.');
   if (new URL(c.embeddingUrl).protocol !== 'https:') throw new Error('Embeddings require HTTPS.');
-  for (const key of ['resourceGroup', 'cluster', 'appCluster', 'parameterGroup', 'vault', 'passwordSecret', 'urlSecret', 'embeddingKeySecret']) {
+  for (const key of ['resourceGroup', 'cluster', 'appCluster', 'parameterGroup', 'vault', 'passwordSecret', 'urlSecret', 'embeddingKeySecret', 'foundryAccount']) {
     if (!/^[a-zA-Z0-9._-]+$/.test(c[key])) throw new Error(`Invalid CI ${key}.`);
   }
   return c;
@@ -77,7 +77,10 @@ async function provision(c) {
   const url = new URL(`postgresql://${fqdn}/postgres?sslmode=require&uselibpqcompat=true`);
   url.username = 'pilotswarmci'; url.password = password;
   putSecret(c, c.urlSecret, url.href);
-  console.log('Dedicated CI HorizonDB is ready; its connection is stored in Key Vault.');
+  az(['deployment', 'group', 'create', '--subscription', c.subscription, '--resource-group', c.resourceGroup,
+    '--name', `ci-embeddings-${process.env.GITHUB_RUN_ID}`, '--template-file', 'deploy/providers/azure/ci/embeddings.bicep',
+    '--parameters', `accountName=${c.foundryAccount}`, '-o', 'none']);
+  console.log('Dedicated CI HorizonDB and both live embedding deployments are ready.');
 }
 async function open(c) {
   const r = await fetch('https://api.ipify.org', { signal: AbortSignal.timeout(30_000) });
@@ -92,6 +95,8 @@ async function open(c) {
   const expected = resource(c, 'clusters', c.cluster).properties.fullyQualifiedDomainName;
   if (new URL(url).hostname !== expected) throw new Error('CI connection does not match the dedicated cluster.');
   const config = { ...baseline, DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
+    PS_TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
+    TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
     HORIZON_DATABASE_URL: url, HORIZON_GRAPH_DATABASE_URL: url,
     HORIZON_EMBED_URL: c.embeddingUrl, HORIZON_EMBED_API_KEY: getSecret(c, c.embeddingKeySecret),
     HORIZON_EMBED_MODEL: 'text-embedding-3-small', HORIZON_EMBED_DIM: '1536', HORIZON_EMBED_API_KEY_HEADER: 'api-key',

@@ -481,7 +481,10 @@ async function extractSessionArchive(
 ): Promise<void> {
     fs.mkdirSync(sessionStateDir, { recursive: true });
     const input = fs.createReadStream(tarPath);
-    const tar = spawn("tar", ["-xf", "-", "-C", sessionStateDir]);
+    // Read through zero padding to EOF. Otherwise tar can exit successfully
+    // at the archive terminator while decompression is still writing, causing
+    // EPIPE/ERR_STREAM_PREMATURE_CLOSE and hiding compression trailer errors.
+    const tar = spawn("tar", ["--ignore-zeros", "-xf", "-", "-C", sessionStateDir]);
     const [pipeResult, procResult] = await Promise.allSettled([
         pipeline(input, makeDecompressor(codec), tar.stdin!),
         awaitProcess(tar, "tar extract"),
