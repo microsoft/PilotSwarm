@@ -472,7 +472,20 @@ Tests use a `withClient()` helper that spins up a co-located worker + client pai
 
 ### Pre-Deploy Gate
 
-**The deploy script (`./scripts/deploy-aks.sh`) runs the full test suite automatically before deploying.** If any suite fails, the deploy aborts. To skip (not recommended): `--skip-tests`.
+For the Microsoft repository, every PR runs the required **Basic checks**. Ordinary
+merges do not deploy. Use **Deploy Azure stamp** for an optional update from main
+or an existing published `release_tag`. All Azure mutations for deployments and
+CI infrastructure run through GitHub Actions; local commands are for read-only
+inspection and local development only.
+
+**Create release** validates the prepared package version, requires the complete
+baseline and real HorizonDB pass, publishes three GitHub Release package tarballs
+plus checksums, then deploys the same tested source commit to the Azure test
+environment. One environment approval precedes testing; no second gate separates
+publication from the automatic deployment. A missing/skipped HorizonDB preflight
+fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
+`.github/CI.md` and the release skill. Never publish npm packages or starter
+images; the Azure environment uses its configured ACR for deployment images.
 
 ### Updating the Test Suite
 
