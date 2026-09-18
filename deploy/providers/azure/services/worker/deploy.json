@@ -16,7 +16,7 @@
   "image": {
     "repo":       "pilotswarm-worker",
     "dockerfile": "deploy/Dockerfile.worker",
-    "buildWorkspaces": ["packages/horizon-store", "packages/sdk"]
+    "buildWorkspaces": ["packages/sdk", "packages/horizon-store"]
   },
   "rollout": {
     "deployment": "copilot-runtime-worker",
