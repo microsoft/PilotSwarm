@@ -1,142 +1,74 @@
 name: Tests
-
-# Trusted main-branch integration runs; PRs use the secret-free basic checks.
 on:
-    workflow_dispatch:
-        inputs:
-            suite:
-                description: "Suite filter (e.g. smoke, sub-agents). Leave blank to run everything."
-                required: false
-                default: ""
-            mode:
-                description: "Execution mode"
-                type: choice
-                required: false
-                default: "parallel"
-                options:
-                    - parallel
-                    - sequential
-            providers:
-                description: "Provider coverage (all requires the dedicated live CI HorizonDB)"
-                type: choice
-                default: "baseline"
-                options:
-                    - baseline
-                    - all
-
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Suite filter (e.g. smoke, sub-agents). Leave blank to run everything.
+        required: false
+        default: ""
+      mode:
+        description: Execution mode
+        type: choice
+        required: false
+        default: parallel
+        options:
+          - parallel
+          - sequential
+      providers:
+        description: Provider coverage (all requires the dedicated live CI HorizonDB)
+        type: choice
+        default: baseline
+        options:
+          - baseline
+          - all
 concurrency:
-    group: ci-provider-database
-    cancel-in-progress: false
-
+  group: ci-provider-database
+  cancel-in-progress: false
 jobs:
-    tests:
-        name: ${{ inputs.providers == 'all' && 'All providers (requires HorizonDB)' || 'Baseline tests' }}
-        runs-on: ubuntu-latest
-        if: github.ref == 'refs/heads/main'
-        environment: azure-deploy
-        timeout-minutes: ${{ inputs.providers == 'all' && 180 || 59 }}
-        permissions:
-            contents: read
-            id-token: write
-
-        services:
-            postgres:
-                image: postgres:16
-                env:
-                    POSTGRES_USER: postgres
-                    POSTGRES_PASSWORD: postgres
-                    POSTGRES_DB: durable_copilot
-                ports:
-                    - "5432:5432"
-                options: >-
-                    --health-cmd="pg_isready -U postgres"
-                    --health-interval=10s
-                    --health-timeout=5s
-                    --health-retries=5
-
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v5
-
-            - name: Set up Node.js
-              uses: actions/setup-node@v4
-              with:
-                  node-version: "24"
-                  cache: "npm"
-
-            - name: Prepare private test configuration
-              env:
-                  CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
-                  MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
-              run: node .github/scripts/prepare-ci-tests.mjs
-
-            - name: Configure PostgreSQL connection capacity
-              env:
-                  PGPASSWORD: postgres
-              run: |
-                  psql -h localhost -U postgres -d durable_copilot -c 'ALTER SYSTEM SET max_connections = 1500'
-                  docker restart "${{ job.services.postgres.id }}"
-                  for attempt in {1..30}; do
-                    if pg_isready -h localhost -U postgres; then exit 0; fi
-                    sleep 2
-                  done
-                  exit 1
-
-            - name: Azure login with OIDC
-              if: inputs.providers == 'all'
-              uses: azure/login@v3
-              with:
-                  client-id: ${{ secrets.AZURE_CLIENT_ID }}
-                  tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-                  subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-            - name: Open temporary access to dedicated CI HorizonDB
-              if: inputs.providers == 'all'
-              env:
-                  AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
-                  CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
-              run: node .github/scripts/azure-ci-database.mjs open
-
-            - name: Install dependencies
-              run: npm ci
-
-            - name: Build
-              # Use the root build script (sdk -> horizon-store -> app), NOT
-              # `--workspaces` which builds in alphabetical order (app first) and
-              # fails: app/mcp + horizon-store tsc need pilotswarm-sdk's emitted
-              # .d.ts, which don't exist until the sdk builds. release-tarballs.yml
-              # already builds in this order.
-              run: npm run build
-
-            - name: Run tests
-              env:
-                  TEST_MODE: ${{ inputs.mode }}
-                  TEST_SUITE: ${{ inputs.suite }}
-                  TEST_PROVIDERS: ${{ inputs.providers }}
-              run: |
-                  if [[ "$TEST_SUITE" == -* ]]; then
-                      echo "Suite must be a test-name filter. Select provider coverage with the providers input." >&2
-                      exit 1
-                  fi
-                  if [ "$TEST_PROVIDERS" = "all" ]; then
-                      node .github/scripts/run-all-providers.mjs
-                      exit "$?"
-                  fi
-                  ARGS=()
-                  if [ "$TEST_MODE" = "sequential" ]; then
-                      ARGS+=(--sequential)
-                  fi
-                  if [ -n "$TEST_SUITE" ]; then
-                      ARGS+=("$TEST_SUITE")
-                  fi
-                  ./scripts/run-tests.sh "${ARGS[@]}"
-
-            - name: Remove temporary CI database access
-              if: always() && inputs.providers == 'all'
-              env:
-                  AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
-              run: node .github/scripts/azure-ci-database.mjs close
-
-            - name: Remove runner credentials
-              if: always()
-              run: rm -f .env .model_providers.json
+  tests:
+    name: ${{ inputs.providers == 'all' && 'All providers (requires HorizonDB)' ||
+      'Baseline tests' }}
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: azure-deploy
+    timeout-minutes: ${{ inputs.providers == 'all' && 180 || 59 }}
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: durable_copilot
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U postgres" --health-interval=10s
+          --health-timeout=5s --health-retries=5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Azure login with OIDC
+        if: inputs.providers == 'all'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Run provider integration tests
+        uses: ./.github/actions/provider-tests
+        with:
+          providers: ${{ inputs.providers }}
+          mode: ${{ inputs.mode }}
+          suite: ${{ inputs.suite }}
+          postgres-container: ${{ job.services.postgres.id }}
+        env:
+          CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
+          MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
+          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}

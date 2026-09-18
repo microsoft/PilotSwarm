@@ -1,193 +1,85 @@
 ---
 name: pilotswarm-release
-description: Prepare and cut a PilotSwarm release with npm-format tarballs attached to a GitHub Release.
+description: Prepare and cut Microsoft PilotSwarm releases through GitHub Actions, with all-provider testing, package tarballs and automatic test deployment.
 ---
 
 # PilotSwarm Release
 
-Use this skill when a user wants to prepare or cut a release of PilotSwarm.
+Use for release preparation or publication in `microsoft/PilotSwarm`. Verify the
+checkout's origin and run GitHub commands with `--repo microsoft/PilotSwarm`.
+Prepare changes on a `feature/` branch and squash-merge the PR into `main`.
+Keep private configuration in protected GitHub environment secrets and ignored
+local files. Never put environment names, endpoints or credentials in a PR.
 
-Keep the workflow tight and deterministic. The goal is to verify what will ship, fix release blockers, and only then commit, push, tag, and publish.
+## Release contract
 
-## Microsoft Repository Release Contract
+- The first post-migration release is planned as **v0.6.0**. Check remote tags and
+  releases before selecting a version; never replace a published tag.
+- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
+  Merging a PR or pushing a tag does not publish a release.
+- One protected-environment approval precedes all cloud work. The Action captures
+  the triggering main commit, validates package versions, runs the complete
+  baseline and HorizonDB suites, then builds the three npm-format tarballs.
+- Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
+  configuration, skipped preflight or a failed test blocks publication. Do not
+  substitute a filtered/sequential rerun for the complete successful gate.
+- The Action creates an annotated tag, a draft release, uploads the three `.tgz`
+  files plus `SHA256SUMS`, verifies assets, and publishes the release.
+- It then automatically deploys the **same tested source commit** to the test
+  stamp using the shared Azure Action. This builds worker/portal deployment
+  images in Azure Container Registry; it does not install the release tarballs.
+- Distribution is GitHub Release assets. Never run `npm publish` or publish a
+  starter image. Azure deployment images are a separate deployment concern.
+- All provisioning and deployments run through GitHub Actions. No local `az`,
+  `kubectl` or legacy shell mutations to deploy this repository's environment.
+- Setting up this workflow is not publishing a release. Dispatch **Create
+  release** only when the user requests publication.
 
-- Run from the root of this checkout. Verify `git remote get-url origin` targets
-  `microsoft/PilotSwarm`, and pass `--repo microsoft/PilotSwarm` to release commands.
-- The first release after migration is planned as **v0.6.0**. Check remote tags
-  and releases first. If v0.6.0 already exists, select the next version with the
-  user; never overwrite it or infer the next version from imported tags alone.
-- A release creates both an annotated Git tag and a published GitHub Release.
-  The release's Assets contain three npm-format `.tgz` packages. They are not
-  standalone executable binaries.
-- `.github/workflows/release-tarballs.yml` builds and uploads those assets after
-  `release: published`. A tag push, merged PR, or Azure deployment does not
-  create a GitHub Release or trigger tarball publication.
-- Release publication does not run `npm publish` or push Docker images.
-  Azure deployments use the separate `deploy-azure.yml` GitHub Action, which
-  builds deployment images in Azure Container Registry. Run all deployments
-  through that Action; do not deploy from a local shell. Keep environment
-  configuration in GitHub environment secrets and ignored local files.
-- Preparing release instructions or merging release wiring is not cutting a
-  release. Report preparation, tag creation, release publication, and asset
-  upload as separate states. Publish only when the user requests it.
+## Preparation
 
-## Mandatory Main-Branch Release Invariant
+1. Check working tree, remote tags/releases and the changes since the last
+   release. Report the proposed version before publication.
+2. Align the versions of `packages/sdk`, `packages/horizon-store`, `packages/app`,
+   their internal dependency/peer references, and `package-lock.json`.
+3. Add a dated `CHANGELOG.md` entry. Update canonical documentation, relevant
+   templates and examples when the shipped behavior changes.
+4. Build locally and inspect `npm pack --dry-run` for each package. Confirm each
+   package includes its own README and expected runtime files/plugins.
+5. Merge the preparation PR with successful **Basic checks**. The release
+   candidate is the captured main SHA; later unrelated main commits must not
+   change the running release's source.
 
-Every **full release** must land as exactly one new squash commit on `main` relative to the pre-release `origin/main` tip. The annotated release tag and GitHub Release must target that pushed main commit.
+## Publication
 
-- A commit or tag on a feature/release-prep branch is not a completed release.
-- Pushing the source branch does not satisfy the main-branch requirement.
-- Never publish the GitHub Release before `origin/main` points at the squash commit.
-- Do not rewrite an already-published tag to repair this after the fact. Prevent the mismatch before publication.
-- Preparation-only requests may stop before the squash commit, but a user request to cut/publish a full release includes the squash-to-main step when commit/push/tag permission is explicit.
+```bash
+gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=0.6.0
+```
 
-Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downstream consumers, sample app forks outside this repo, or vendored PilotSwarm copies in other repositories unless the user explicitly asks for that separate follow-up.
+Use the prepared version, not a guessed next imported tag. Monitor the Action,
+resolve its environment gate with the authorized reviewer, and investigate any
+failure. Never weaken the full-provider gate to publish. CI database setup and
+required protected secrets are documented in `.github/CI.md`.
 
-## Release Workflow
+Verify separately:
 
-1. Inspect the release surface.
-   - Run `git status --short`.
-   - Check changed runtime, docs, templates, examples, and workflow files.
-   - Fetch `origin` and its tags. Check remote tags and published releases with
-     `git ls-remote --tags origin` and `gh release list --repo microsoft/PilotSwarm`.
-   - Check current package names and versions in `packages/sdk/package.json`, `packages/horizon-store/package.json`, and `packages/app/package.json`.
-   - Set all three package versions to the chosen release version. Update their
-     internal dependency, devDependency, and peerDependency version references,
-     plus `package-lock.json`. The workflow rejects a tag unless all three
-     package versions equal the tag without its `v` prefix.
-   - Report the current latest tag and the proposed next tag to the user before any tag is created.
-   - Check whether each packaged workspace has its own `README.md`.
-   - Record the pre-release `origin/main` commit. Determine whether the current work is already on `main` or must be squashed from a source branch.
+- full provider test pass, including real HorizonDB preflight;
+- annotated tag resolves to the workflow's tested commit;
+- GitHub Release is published and has `pilotswarm-sdk-<version>.tgz`,
+  `pilotswarm-horizon-store-<version>.tgz`, `pilotswarm-<version>.tgz` and checksums;
+- subsequent Azure worker and portal deployment succeeds and portal health is
+  verified against the intended private configuration.
 
-2. Verify feature-completeness around the change.
-   - If behavior changed, confirm the canonical docs in `docs/` were updated.
-   - Confirm the DevOps sample in `examples/devops-command-center/` still reflects the shipped behavior.
-   - Confirm relevant builder templates in `templates/builder-agents/` were updated when builder-facing behavior changed.
-   - Confirm `.github/copilot-instructions.md` was updated if contributor workflow or maintenance expectations changed.
-   - **Update `CHANGELOG.md`** with a new top entry for the proposed version, dated, summarizing what shipped (SDK / Portal / TUI / Tests / Maintainer Workflow / npm sections as appropriate). The CHANGELOG entry is a release blocker, not optional.
-   - Update the repo-root `README.md` if the release changes setup or package instructions.
+If deployment fails after publication, retain the valid release and retry only
+**Deploy Azure stamp** with `release_tag=v<version>`. Never retag or republish.
+If publication stops after creating a tag/draft, inspect that unpublished state;
+resolve it deliberately before rerunning. Never delete a published release to
+work around a failed run. Report release and deployment status separately.
 
-3. Run build and full test suite.
-   - Start with `npm run build`.
-   - Run the **full** local integration test suite before any release:
-     ```bash
-     ./scripts/run-tests.sh
-     ```
-     All suites must pass. Do not skip suites or accept partial runs for an official release.
-    - If the full suite fails, identify the specific failing test files and rerun those failing tests sequentially a few times, for example:
-       ```bash
-       ./scripts/run-tests.sh --sequential <suite-name>
-       ```
-       or run the specific file directly with `npx vitest run <path-to-test>`.
-    - If the previously failing tests pass repeatedly in sequential mode, treat the failure as a parallel-run flake in the test harness and continue with the release. Call this out explicitly in the release notes.
-   - If a test fails, investigate and fix the root cause. Do not silence failures or weaken assertions to proceed.
-    - If package contents matter, run:
-     ```bash
-     npm pack --dry-run
-     ```
-       from `packages/sdk`, `packages/horizon-store`, and `packages/app`.
+## Package surface
 
-4. Validate release-tarball wiring.
-   - Check `.github/workflows/release-tarballs.yml`. Publishing a GitHub Release
-     must build and attach only the three npm-format tarballs.
-   - Confirm no release-triggered workflow publishes to a registry or pushes a
-     container image.
-   - Confirm the workflow has permission to upload GitHub Release assets.
-   - Confirm built-in PilotSwarm plugins that must ship with the SDK are included by package `files` config.
-   - Confirm package-local `README.md` files are actually present in `npm pack --dry-run` output for each workspace package.
-   - If package names or tarball workflow wiring changed, validate the packages
-     locally with `npm pack --dry-run` before tagging a release.
+- `pilotswarm-sdk`: runtime, plugins, browser-safe `pilotswarm-sdk/api`.
+- `pilotswarm-horizon-store`: optional enhanced facts and graph providers.
+- `pilotswarm`: TUI, portal/Web API and MCP server application.
 
-5. Prepare release notes for the user.
-   - Summarize what changed.
-   - List what was verified.
-   - State the current latest git tag and the proposed next tag.
-   - State that the GitHub Release will attach package tarballs and will not
-     publish npm registry packages or a starter container image.
-   - Call out blockers or skipped checks explicitly.
-
-6. Land release preparation on `main` under the user's existing authorization.
-   - Use non-interactive git commands.
-   - Do not amend unless the user explicitly asks.
-   - Preserve unrelated working-tree edits before switching branches and restore them afterward.
-   - Prepare changes on a `feature/` branch and open a PR against `main`.
-     Squash-merge the reviewed release preparation after required checks pass.
-     Fetch and fast-forward local `main` to that merged commit. Preserve existing
-     project history; the one-commit requirement applies to the release preparation.
-   - Prefer a commit message that describes the release-ready outcome, not just one file.
-   - Verify `git rev-parse main` equals the SHA from `git ls-remote origin refs/heads/main`.
-
-7. Tag and publish only with explicit user approval.
-   - Confirm the current commit is the pushed `origin/main` tip.
-   - Create the annotated release tag from that exact main commit, then push the tag.
-   - Verify local `main`, remote `origin/main`, and `git rev-parse <tag>^{}` are the same SHA.
-   - Create a **GitHub Release** with
-     `gh release create <tag> --repo microsoft/PilotSwarm --verify-tag --title <tag> --notes-file <notes-file>`.
-     Use a token or CLI login that can trigger the release workflow. The
-     tarball workflow (`release-tarballs.yml`) triggers on `release: [published]`,
-     not on tag push alone.
-   - Include a concise release notes summary in the GitHub Release body.
-
-8. Verify publication.
-   - Check that the GitHub Actions tarball workflow started and completed using
-     `gh run list --repo microsoft/PilotSwarm --workflow=release-tarballs.yml`.
-     Match the run to the release tag; a successful Azure deploy is not release
-     publication evidence.
-   - Verify the
-     GitHub Release contains `pilotswarm-sdk-<version>.tgz`,
-     `pilotswarm-horizon-store-<version>.tgz`, and
-     `pilotswarm-<version>.tgz`, using
-     `gh release view <tag> --repo microsoft/PilotSwarm --json tagName,isDraft,assets,url`.
-     Verify the release is published and all three assets exist before reporting
-     completion. GitHub's generated source archives do not count as package assets.
-   - For an accompanying Azure rollout, dispatch `deploy-azure.yml` on `main`
-     and monitor its environment approval and result. The current Action builds
-     from workspace source; it does not consume release tarballs. Do not claim
-     a tarball-based rollout unless the Action has been updated to implement it.
-   - If upload failed, surface the workflow error rather than guessing.
-
-## Release Checklist
-
-- build passes
-- full test suite passes (`./scripts/run-tests.sh`) or any failing suites pass repeatedly when rerun sequentially
-- sample app still reflects shipped behavior
-- relevant docs and guides are updated
-- relevant builder templates are updated
-- **`CHANGELOG.md` has a new top entry for the proposed version**
-- package metadata is correct
-- `npm pack --dry-run` looks right
-- package-local `README.md` files are present for packaged workspaces
-- latest tag and proposed next tag were reported
-- release delta is exactly one squash commit on `main`
-- pushed `origin/main` is the squash commit
-- dereferenced release tag equals the pushed `origin/main` commit
-- all three package tarballs are attached to the GitHub Release
-- squash commit on main, main push, and tag push are complete
-- tarball workflow ran successfully
-
-## Current Package Surface
-
-PilotSwarm packs exactly three packages for each GitHub Release:
-
-1. `pilotswarm-sdk` — SDK runtime. Self-contained: the isomorphic Web API
-   wire client ships inside it as the browser-safe subpath export
-   `pilotswarm-sdk/api` (no separate api-client package exists).
-2. `pilotswarm-horizon-store` — optional HorizonDB enhanced facts + graph
-   providers (peer-depends on sdk).
-3. `pilotswarm` — the application package (`packages/app`): terminal UI,
-   portal server + Web API, and MCP server in one install. Bins:
-   `pilotswarm`, `pilotswarm-cli` (alias), `pilotswarm-web`, `pilotswarm-mcp`.
-   The former ui-core/ui-react/host layers ship inside it as subpath exports
-   (`pilotswarm/ui-core`, `pilotswarm/ui-react`, `pilotswarm/host`,
-   `pilotswarm/web`); there are no bundledDependencies and no prepack sync
-   hacks.
-
-If package names change later, update this skill in the same change.
-
-## Notes
-
-- Prefer fixing brittle tests over loosening product behavior just to get green.
-- If a test failure is caused by stale hardcoded assumptions such as old model names, update the test to follow the current repo contract.
-- Package README content comes from each workspace-local `README.md`, not the
-  repo-root README.
-- Treat the release agent as a maintainer workflow for this repository, not as an app-builder template.
+There are exactly three package tarballs. GitHub's generated source archives
+are additional source downloads, not the package artifacts.
