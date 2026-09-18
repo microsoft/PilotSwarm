@@ -465,6 +465,9 @@ async function main() {
   // unguarded) bicep param would surface drift loudly. Tracked as a
   // follow-up; behaviour today is correct.
   applyStubKeys({ edgeMode, tlsSource, env });
+  // BaseInfra's parameter template always references FRONT_DOOR_ID, even
+  // when the selected edge mode does not provision Front Door.
+  if (edgeMode !== "afd") env.FRONT_DOOR_ID = "";
   // PORTAL_HOSTNAME is required in `private` (validated via the contract
   // through HOST + PRIVATE_DNS_ZONE, which compose to the FQDN) and unused
   // in `afd` (bicep derives it from the AFD endpoint). Stub when blank so
