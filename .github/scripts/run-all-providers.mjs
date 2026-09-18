@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
+import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export function requireHorizonConfig(text, inherited = {}) {
@@ -64,7 +65,12 @@ export function runAllProviders({ cwd = process.cwd(), env = process.env, run = 
     maskConfig(config, log);
     const configPath = join(env.RUNNER_TEMP, "pilotswarm-horizondb.env");
     const reportPath = join(env.RUNNER_TEMP, "pilotswarm-horizondb-preflight.json");
-    const childEnv = { ...env, HORIZONDB_ENV_FILE: configPath };
+    // Each test file can start several runtimes and native dispatcher threads.
+    // The public runner's workstation default (8 files) oversubscribes smaller
+    // hosted runners. Preserve explicit overrides and cap the CI default.
+    const workers = env.PS_TEST_MAX_WORKERS || String(Math.min(4, availableParallelism()));
+    const childEnv = { ...env, PS_TEST_MAX_WORKERS: workers, HORIZONDB_ENV_FILE: configPath };
+    log(`All-providers CI uses ${workers} parallel test files.`);
     delete childEnv.HORIZONDB_TEST_ENV;
     const execute = (command, args, options) => {
         const result = run(command, args, { stdio: "inherit", ...options });

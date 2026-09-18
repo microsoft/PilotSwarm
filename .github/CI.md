@@ -36,7 +36,8 @@ reusing the infrastructure. Never add a broad allow rule.
 
 Run **Tests** with `providers=all` and no suite filter. CI first verifies a real
 HorizonDB initialize/store/read operation, rejecting skipped or absent coverage,
-then runs all provider phases. PostgreSQL runtime storage is supplied by an
+then runs all provider phases. CI defaults to at most four concurrent SDK test
+files, bounded by the runner CPU allocation; each file may start several workers. PostgreSQL runtime storage is supplied by an
 isolated runner service; HorizonDB supplies enhanced facts and graphs. Embeddings
 use the protected Foundry configuration. Full test runs share a concurrency
 lock with database provisioning. Raw test artifacts are not uploaded because

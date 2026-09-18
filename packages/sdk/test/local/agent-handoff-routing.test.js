@@ -17,6 +17,24 @@ async function until(predicate, timeoutMs = 10_000) {
     throw new Error("Timed out waiting for durable routing progress");
 }
 
+// An activity callback runs before its completion is acknowledged. Replacing a
+// worker at that point races shutdown against the commit and tests cancellation
+// rather than replay of completed work. Wait for the persisted wait boundary.
+async function untilParked(client, instanceId) {
+    await until(async () => {
+        let info;
+        try { info = await client.getInstanceInfo(instanceId); }
+        catch (error) {
+            // startOrchestration enqueues work; the first dispatcher turn
+            // creates the durable instance record asynchronously.
+            if (error.message.includes("Instance not found")) return false;
+            throw error;
+        }
+        const history = await client.readExecutionHistory(instanceId, info.currentExecutionId);
+        return history.some(event => event.kind === "ExternalSubscribed");
+    });
+}
+
 async function withStore(body) {
     const env = createTestEnv("handoff_routing");
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
@@ -122,7 +140,8 @@ describe("agent handoff capability routing", () => {
             const old = worker("old", false, "migrate", migrate);
             await old.start();
             await client.startOrchestration("migration", "migrate", {});
-            await until(() => events.length === 1);
+            await untilParked(client, "migration");
+            expect(events).toHaveLength(1);
             await old.shutdown(3_000);
             await worker("upgraded", true, "migrate", migrate).start();
             await client.raiseEvent("migration", "continue", {});
@@ -164,9 +183,8 @@ describe("agent handoff capability routing", () => {
             install(first, "first");
             await first.start();
             await client.startOrchestration("frozen", "frozen-handoff", {});
-            await until(() => recorded.length === 2);
-            // Ensure the post-spawn event is committed and the generator is parked.
-            await sleep(150);
+            await untilParked(client, "frozen");
+            expect(recorded).toHaveLength(2);
             await first.shutdown(3_000);
             const upgraded = worker("upgraded", true, "frozen-handoff", frozenHandoff, ["resolveAgentConfig", "spawnChildSession"]);
             install(upgraded, "upgraded");
