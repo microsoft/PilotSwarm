@@ -107,6 +107,15 @@ The **default parameter group** (`default_pg17`) ships with `azure.extensions`
 
 ### Enabling extensions
 
+**Parameter groups are immutable.** Updating an existing group is rejected with
+`ParameterGroupUpdateNotSupported`, including changes to `max_connections`.
+Create a new group under a distinct name with the complete desired parameters,
+then attach it to the existing cluster with `applyImmediately: true` and wait
+for `InSync`. Retrying provisioning should reuse the revisioned group rather
+than PUT an update. CI uses a deterministic settings-revision suffix. In the
+Microsoft repository, perform these mutations through GitHub Actions.
+
+
 You **cannot** set `azure.extensions` per-session. You must create a custom
 **parameter group**, set the allow-list (and `shared_preload_libraries` for
 preload-required extensions), and attach it to the cluster. Attaching triggers a

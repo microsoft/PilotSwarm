@@ -1,13 +1,20 @@
 // Private configuration stays in the protected GitHub environment and Key Vault.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureHorizonDbParameterGroup } from '../../deploy/scripts/lib/horizondb.mjs';
 
 const api = '2026-01-20-preview';
+export const CI_MAX_CONNECTIONS = 1500;
+// HorizonDB parameter groups are immutable. A new settings revision gets a
+// distinct stable name; subsequent runs reuse it instead of issuing an update.
+export function ciParameterGroupName(c) {
+  const hash = createHash('sha256').update(JSON.stringify({ base: c.parameterGroup, maxConnections: CI_MAX_CONNECTIONS, revision: 1 })).digest('hex').slice(0, 10);
+  return `${c.parameterGroup.slice(0, 45)}-${hash}`;
+}
 export function validateConfig(c) {
   for (const key of ['subscription', 'resourceGroup', 'location', 'cluster', 'appCluster', 'parameterGroup', 'vault', 'passwordSecret', 'urlSecret', 'embeddingUrl', 'embeddingKeySecret', 'foundryAccount']) {
     if (typeof c[key] !== 'string' || !c[key]) throw new Error(`CI database configuration requires ${key}.`);
@@ -53,15 +60,20 @@ function resource(c, type, name, optional = false) {
 }
 async function provision(c) {
   const cluster = resource(c, 'clusters', c.cluster, true);
+  const parameterGroup = ciParameterGroupName(c);
+  mask(parameterGroup);
+  const existingGroup = resource(c, 'parameterGroups', parameterGroup, true);
+  if (existingGroup && existingGroup.properties?.parameters?.find(p => p.name === 'max_connections')?.value !== String(CI_MAX_CONNECTIONS)) {
+    throw new Error('The immutable CI parameter group has unexpected capacity; create a new settings revision.');
+  }
   let password = getSecret(c, c.passwordSecret, true);
   if (!password && cluster) throw new Error('Existing CI cluster has no saved administrator password; refusing to replace credentials.');
   if (!password) { password = randomBytes(36).toString('base64url'); mask(password); putSecret(c, c.passwordSecret, password); }
   const values = {
-    location: c.location, clusterName: c.cluster, parameterGroupName: c.parameterGroup,
+    location: c.location, clusterName: c.cluster, parameterGroupName: parameterGroup,
     administratorLogin: 'pilotswarmci', administratorLoginPassword: password,
     vCores: 4, replicaCount: 1, clusterCreate: !cluster,
-    // Reconcile this dedicated CI group on every run, including capacity changes.
-    parameterGroupCreate: true, maxConnections: 1500,
+    parameterGroupCreate: !existingGroup, maxConnections: CI_MAX_CONNECTIONS,
   };
   const file = join(process.env.RUNNER_TEMP, 'ci-hdb-parameters.json');
   try {
@@ -69,7 +81,7 @@ async function provision(c) {
     az(['deployment', 'group', 'create', '--subscription', c.subscription, '--resource-group', c.resourceGroup,
       '--name', `ci-horizondb-${process.env.GITHUB_RUN_ID}`, '--template-file', 'deploy/providers/azure/services/horizondb/bicep/main.bicep', '--parameters', `@${file}`, '-o', 'none']);
   } finally { rmSync(file, { force: true }); }
-  await ensureHorizonDbParameterGroup({ HORIZONDB_ENABLED: 'true', SUBSCRIPTION_ID: c.subscription, RESOURCE_GROUP: c.resourceGroup, HORIZONDB_CLUSTER_NAME: c.cluster, HORIZONDB_PARAMETER_GROUP_NAME: c.parameterGroup }, {
+  await ensureHorizonDbParameterGroup({ HORIZONDB_ENABLED: 'true', SUBSCRIPTION_ID: c.subscription, RESOURCE_GROUP: c.resourceGroup, HORIZONDB_CLUSTER_NAME: c.cluster, HORIZONDB_PARAMETER_GROUP_NAME: parameterGroup }, {
     runFn: (_command, args) => ({ stdout: az(args), status: 0 }),
   });
   const fqdn = resource(c, 'clusters', c.cluster).properties.fullyQualifiedDomainName;
