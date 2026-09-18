@@ -11,6 +11,9 @@ export function classifyFailure(log) {
   const nearby = lines.slice(Math.max(0, stageIndex), failureIndex + 6).join("\n");
   if (/Unresolved overlay \.env keys/.test(nearby)) return "Diagnostic: unresolved overlay configuration.";
   if (/DEPLOYMENT_STORAGE_ACCOUNT_NAME must be set/.test(nearby)) return "Diagnostic: storage account output is missing.";
+  if (/ACR token acquisition failed/.test(nearby)) return "Diagnostic: ACR token acquisition failed.";
+  if (/ORAS registry login failed/.test(nearby)) return "Diagnostic: ORAS registry login failed.";
+  if (/oras cp .*exited [1-9]/.test(nearby)) return "Diagnostic: ORAS image upload failed.";
   if (/Failed to spawn az/.test(nearby)) return "Diagnostic: Azure CLI could not start.";
   if (/AuthorizationPermissionMismatch|AuthorizationFailure|AuthorizationFailed|Forbidden|\b403\b/i.test(nearby)) {
     return "Diagnostic: Azure authorization failure.";
