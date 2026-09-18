@@ -60,6 +60,7 @@ test("successful live coverage runs the full public runner with the validated co
     const calls = [];
     runAllProviders({ ...input, run(command, args, options) {
         calls.push({ command, args, options });
+        assert.equal(options.env.PS_TEST_MAX_WORKERS, "8");
         if (calls.length === 1) {
             assert.ok(args.includes("preconditions P5"));
             assert.equal(options.env.HORIZON_DATABASE_URL, "postgresql://test@horizon.invalid/db");
@@ -92,4 +93,19 @@ test("filtered runs cannot be reported as full all-providers coverage", t => {
     const input = fixture(t);
     input.env.TEST_SUITE = "smoke";
     assert.throws(() => runAllProviders(input), /full suite/);
+});
+
+// Full-HDB mode uses the same mandatory live preflight, but runs every SDK suite.
+test("full HDB mode dispatches the complete HDB runner and preserves concurrency override", t => {
+    const input = fixture(t);
+    input.env.TEST_PROVIDERS = "horizondb";
+    input.env.PS_TEST_MAX_WORKERS = "3";
+    let calls = 0;
+    runAllProviders({ ...input, run(command, args, options) {
+        assert.equal(options.env.PS_TEST_MAX_WORKERS, "3");
+        if (++calls === 1) writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
+        else assert.deepEqual(args, ["./scripts/run-tests.sh", "--with-horizondb", "--sequential"]);
+        return { status: 0 };
+    } });
+    assert.equal(calls, 2);
 });

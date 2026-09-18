@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
-import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export function requireHorizonConfig(text, inherited = {}) {
@@ -65,10 +64,8 @@ export function runAllProviders({ cwd = process.cwd(), env = process.env, run = 
     maskConfig(config, log);
     const configPath = join(env.RUNNER_TEMP, "pilotswarm-horizondb.env");
     const reportPath = join(env.RUNNER_TEMP, "pilotswarm-horizondb-preflight.json");
-    // Each test file can start several runtimes and native dispatcher threads.
-    // The public runner's workstation default (8 files) oversubscribes smaller
-    // hosted runners. Preserve explicit overrides and cap the CI default.
-    const workers = env.PS_TEST_MAX_WORKERS || String(Math.min(4, availableParallelism()));
+    // Eight concurrent files by default; callers may explicitly tune capacity.
+    const workers = env.PS_TEST_MAX_WORKERS || "8";
     const childEnv = { ...env, PS_TEST_MAX_WORKERS: workers, HORIZONDB_ENV_FILE: configPath };
     log(`All-providers CI uses ${workers} parallel test files.`);
     delete childEnv.HORIZONDB_TEST_ENV;
@@ -87,7 +84,7 @@ export function runAllProviders({ cwd = process.cwd(), env = process.env, run = 
         ], { cwd: join(cwd, "packages/horizon-store"), env: { ...childEnv, ...config }, timeout: 360_000 });
         requireLiveHorizonResult(JSON.parse(readFileSync(reportPath, "utf8")));
         log("Live HorizonDB initialize/store/read check passed. Running all provider phases.");
-        execute("bash", ["./scripts/run-tests.sh", "--all-providers", ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])], { cwd, env: childEnv });
+        execute("bash", ["./scripts/run-tests.sh", (env.TEST_PROVIDERS === "horizondb" ? "--with-horizondb" : "--all-providers"), ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])], { cwd, env: childEnv });
     } finally {
         rmSync(configPath, { force: true });
         rmSync(reportPath, { force: true });

@@ -11,6 +11,7 @@ export default defineConfig({
     test: {
         include: ["test/**/*.test.mjs"],
         fileParallelism: true,
+        maxWorkers: Number(process.env.PS_TEST_MAX_WORKERS || 8),
         // Outcome-polled embedder tests legitimately take minutes
         // (charter: poll on observable outcomes with their own deadlines).
         testTimeout: 600_000,

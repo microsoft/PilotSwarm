@@ -95,6 +95,7 @@ async function open(c) {
   const expected = resource(c, 'clusters', c.cluster).properties.fullyQualifiedDomainName;
   if (new URL(url).hostname !== expected) throw new Error('CI connection does not match the dedicated cluster.');
   const config = { ...baseline, DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
+    PLAIN_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
     PS_TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
     TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
     HORIZON_DATABASE_URL: url, HORIZON_GRAPH_DATABASE_URL: url,

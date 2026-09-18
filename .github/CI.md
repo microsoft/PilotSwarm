@@ -34,14 +34,53 @@ are unique per run and retry. If a runner is forcibly lost before cleanup, remov
 its stale `ci-<run>-<attempt>` rule via an authorized maintenance Action before
 reusing the infrastructure. Never add a broad allow rule.
 
-Run **Tests** with `providers=all` and no suite filter. CI first verifies a real
-HorizonDB initialize/store/read operation, rejecting skipped or absent coverage,
-then runs all provider phases. CI defaults to at most four concurrent SDK test
-files, bounded by the runner CPU allocation; each file may start several workers. PostgreSQL runtime storage is supplied by an
-isolated runner service; HorizonDB supplies enhanced facts and graphs. Embeddings
-use the protected Foundry configuration. Full test runs share a concurrency
-lock with database provisioning. Raw test artifacts are not uploaded because
-they can contain private endpoints. GitHub logs mask private configuration.
+## Test modes
+
+| Command / Tests Action input | Coverage |
+| --- | --- |
+| `scripts/run-tests.sh` / `providers=baseline` | Complete stock PostgreSQL suite |
+| `scripts/run-tests.sh --all-providers` / `providers=all` | Complete stock PostgreSQL suite once, then all HorizonDB provider tests and reviewed SDK storage integration coverage |
+| `scripts/run-tests.sh --with-horizondb` / `providers=horizondb` | Complete suite with CMS, orchestration, facts and graphs on HorizonDB |
+
+`--with horizondb` is an alias. Full HDB mode remaps `DATABASE_URL`,
+`PS_TEST_DATABASE_URL` and `TEST_DATABASE_URL` to `HORIZON_DATABASE_URL`, clears
+stale runtime routing overrides and uses the same HDB target for graphs.
+`PLAIN_DATABASE_URL` is retained only for negative controls that deliberately
+require a database without HDB extensions. Mocks and pure tests remain mocks.
+
+The additive HDB pass runs all provider integration tests and 60 currently
+reviewed SDK files: CMS SQL/migrations, facts, ACLs, graph composition, storage
+lifecycle, API/worker integration and representative durable recovery. It omits
+repeated builds, unit tests and provider-independent permutations. The exclusions
+are tracked in `scripts/provider-test-coverage.json`; **new SDK files run on HDB
+by default** until explicitly reviewed. Deleted or duplicate exclusions fail.
+`--horizondb-additive` reruns the selection after a build. Full HDB mode never
+uses those exclusions.
+
+Both live CI modes first require a real HorizonDB initialize/store/read result;
+missing or skipped coverage fails. CI rejects suite filters and skip flags.
+Default file parallelism is **8**, including on smaller runners; callers can
+set `PS_TEST_MAX_WORKERS`. The stock PostgreSQL service supports 1500 connections.
+HDB's capacity preflight requires 40 connections per configured test file by
+default (`MIN_HORIZON_MAX_CONNECTIONS` overrides it). No managed server settings
+are changed by the test runner. Provider phases remain sequential.
+
+Embeddings use protected Foundry configuration. Live runs serialize against CI
+database provisioning. Raw test artifacts are not uploaded because they may
+contain private endpoints; GitHub logs mask private configuration.
+
+### Model coverage
+
+Storage-provider coverage is separate from model-provider coverage. SDK Vitest
+uses `packages/sdk/test/fixtures/model-providers.test.json` unless
+`PS_MODEL_PROVIDERS_PATH` overrides it. The default is GitHub Copilot GPT-5.4;
+model-switch scenarios also exercise GPT-5.5 and Claude Sonnet 5. The fixture
+additionally lists GPT-5.1, GPT-4.1, GPT-4o and Claude Opus 5; being listed does
+not prove a live turn occurred. Foundry embeddings use text-embedding-3-small
+and a second deployment alias for rotation. Synthetic HTTP compatibility tests
+exercise additional model/provider configurations without making live calls.
+The portal deployment catalog and separate live-model compatibility command
+are not an automatic model matrix in this storage test gate.
 
 The public `scripts/run-tests.sh` remains general-purpose: local users may
 configure their own providers without adopting Microsoft's CI infrastructure.
@@ -55,7 +94,7 @@ in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
 from `main` with the prepared version. The first planned release is `0.6.0`.
 The environment gate occurs once, before testing. The same job then:
 
-1. runs the full baseline and HorizonDB tests, including the real database gate;
+1. runs the complete baseline plus additive HorizonDB coverage, including the real database gate;
 2. builds three package tarballs and checksums;
 3. creates an annotated tag at the tested SHA, uploads and verifies draft assets,
    and publishes the GitHub Release;

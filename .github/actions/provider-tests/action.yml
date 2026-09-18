@@ -4,7 +4,7 @@ description: Run the public test harness with protected CI infrastructure and a
 inputs:
   providers:
     default: baseline
-    description: baseline or all
+    description: baseline, all, or horizondb
   mode:
     default: parallel
     description: parallel or sequential
@@ -37,7 +37,7 @@ runs:
         exit 1
       shell: bash
     - name: Open temporary access to dedicated CI HorizonDB
-      if: inputs.providers == 'all'
+      if: inputs.providers != 'baseline'
       run: node .github/scripts/azure-ci-database.mjs open
       shell: bash
     - name: Install dependencies
@@ -57,7 +57,7 @@ runs:
             exit 1
         fi
 
-        if [ "$TEST_PROVIDERS" = "all" ]; then
+        if [ "$TEST_PROVIDERS" != "baseline" ]; then
             node .github/scripts/run-all-providers.mjs
             exit "$?"
         fi
@@ -75,7 +75,7 @@ runs:
         ./scripts/run-tests.sh "${ARGS[@]}"
       shell: bash
     - name: Remove temporary CI database access
-      if: always() && inputs.providers == 'all'
+      if: always() && inputs.providers != 'baseline'
       run: node .github/scripts/azure-ci-database.mjs close
       shell: bash
     - name: Remove runner credentials

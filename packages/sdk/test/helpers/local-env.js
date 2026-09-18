@@ -66,21 +66,6 @@ function moduleSuiteLabel(moduleUrl) {
 }
 
 async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
-    const pg = await import("pg");
-    const client = new pg.default.Client({ connectionString: DATABASE_URL });
-    try {
-        await client.connect();
-        await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
-        await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
-        await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
-    } finally {
-        try { await client.end(); } catch {}
-    }
-
-    // If the resolved runtime provider keeps enhanced facts on a SEPARATE store
-    // (HorizonDB hybrid), drop the per-test facts schema there too so HorizonDB
-    // schemas don't leak. Decided from the storage registry the SDK uses — not
-    // from a re-derived env heuristic.
     const enhancedUrl = enhancedFactStoreUrl();
     if (enhancedUrl) {
         // Cancel this per-test schema's durable embed loops BEFORE dropping the
@@ -101,6 +86,19 @@ async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
             // pg_durable / df schema absent, or provider unavailable — nothing to cancel.
         }
 
+    }
+    const pg = await import("pg");
+    const client = new pg.default.Client({ connectionString: DATABASE_URL });
+    try {
+        await client.connect();
+        await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
+        await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
+        await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
+    } finally {
+        try { await client.end(); } catch {}
+    }
+
+    if (enhancedUrl && enhancedUrl !== DATABASE_URL) {
         const horizonClient = new pg.default.Client({ connectionString: normalizeHorizonDbUrl(enhancedUrl) });
         try {
             await horizonClient.connect();
@@ -121,16 +119,14 @@ function normalizeHorizonDbUrl(raw) {
     return raw + (raw.includes("?") ? "&" : "?") + "uselibpqcompat=true";
 }
 
-// The fact-store URL when the resolved runtime provider keeps enhanced facts on
-// a store SEPARATE from the stock-PG runtime (HorizonDB hybrid); undefined when
-// facts live on the same database (baseline PgFactStore). Derived from the
-// storage registry, mirroring how the worker/client pick the fact store.
+// Enhanced facts may share the runtime database in full-HDB mode. Always
+// stop durable embedding loops before dropping their schema, on either layout.
 function enhancedFactStoreUrl() {
     const runtime = resolveStorageConfig({ options: { store: DATABASE_URL } }).runtime;
     const provider = getRuntimeStorageProvider(runtime.provider);
     if (!provider.capabilities?.enhancedFactStore) return undefined;
     const url = runtime.factStoreUrl;
-    return url && url !== runtime.url ? url : undefined;
+    return url ?? runtime.url;
 }
 
 // ─── Test Environment ────────────────────────────────────────────

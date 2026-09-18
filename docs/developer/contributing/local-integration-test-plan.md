@@ -6,15 +6,20 @@ This plan is for a comprehensive local test matrix that exercises the PilotSwarm
 
 ## GitHub Actions provider coverage
 
-The **Tests** workflow offers `providers: baseline` and `providers: all`.
-Baseline supports a suite filter. All-provider CI requires the full suite.
+The **Tests** workflow offers `providers: baseline`, `providers: all`, and `providers: horizondb`.
+Baseline supports a suite filter. Live CI modes require the complete selected coverage plan.
+`all` runs stock PostgreSQL once and additive HDB coverage; `horizondb` runs the
+entire suite with CMS, orchestration, facts and graphs on HDB. Eight test files
+run concurrently by default. The reviewed additive selection is documented in
+[.github/CI.md](../../../.github/CI.md).
 
 For `all`, configure the protected `azure-deploy` environment and run
 **Provision CI HorizonDB** as described in [.github/CI.md](../../../.github/CI.md).
 The Action reads the dedicated CI connection from Key Vault, allows its runner
 IPv4 temporarily, and supplies a complete standalone `HORIZONDB_TEST_ENV` to the
-CI gate. The baseline `DATABASE_URL` uses the disposable PostgreSQL service;
-enhanced facts and graphs use the separate CI HorizonDB. Model credentials and
+CI gate. The baseline uses the disposable PostgreSQL service. The HDB phase routes
+all runtime storage to the dedicated CI HorizonDB; plain PostgreSQL is retained
+only for missing-extension negative controls. Model credentials and
 the private catalog come from environment secrets. Cleanup removes runner access.
 The **Create release** workflow uses the same full-provider gate before publishing.
 
