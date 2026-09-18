@@ -149,6 +149,19 @@ or require was found in tracked source. It is not a published SDK dependency,
 but should be removed if unused or owned by the optional integration that needs
 it. No GCP SDK dependency or concrete GCP runtime adapter was found in this scan.
 
+## Tracking issues
+
+| Finding | Priority | Issue |
+| --- | --- | --- |
+| 1. Extract Azure Blob storage from the core SDK into an optional provider | High | [#58](https://github.com/microsoft/PilotSwarm/issues/58) |
+| 2. Move Entra PostgreSQL authentication behind a credential/provider contract | High | [#59](https://github.com/microsoft/PilotSwarm/issues/59) |
+| 3. Abstract Resource Manager infrastructure and storage operations | High | [#60](https://github.com/microsoft/PilotSwarm/issues/60) |
+| 4. Remove cloud and topology inference from worker metadata and diagnostics | Medium | [#61](https://github.com/microsoft/PilotSwarm/issues/61) |
+| 5. Extract app log streaming and client authentication into providers | Medium | [#62](https://github.com/microsoft/PilotSwarm/issues/62) |
+| 6. Remove model and HorizonDB adapter details from core runtime consumers | Medium | [#63](https://github.com/microsoft/PilotSwarm/issues/63) |
+| 7. Move Azure deployment orchestration behind provider dispatch | Medium | [#64](https://github.com/microsoft/PilotSwarm/issues/64) |
+| 8. Remove or isolate the unused root AWS S3 SDK dependency | Low | [#65](https://github.com/microsoft/PilotSwarm/issues/65) |
+
 ## Existing boundaries to preserve
 
 - `SessionStateStore`, `VersionedSnapshotStore` and `ArtifactStore` already have
