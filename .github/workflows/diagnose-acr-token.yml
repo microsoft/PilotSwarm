@@ -16,6 +16,8 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     environment: azure-deploy
+    env:
+      AZURE_CORE_OUTPUT: none
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
@@ -35,6 +37,7 @@ jobs:
           node --input-type=module <<'NODE'
           import { spawnSync } from 'node:child_process';
           import { createCipheriv, createPublicKey, publicEncrypt, randomBytes, constants } from 'node:crypto';
+          import { run } from './deploy/scripts/lib/common.mjs';
 
           function report(message) {
             const publicKey = createPublicKey(Buffer.from(process.env.DIAG_PUBLIC_KEY_B64, 'base64'));
@@ -64,11 +67,9 @@ jobs:
               if (!registry?.name || !registry?.loginServer) {
                 report('ACR list returned no registry in the target resource group');
               } else {
-                const login = spawnSync('az', ['acr', 'login', '--name', registry.name,
-                  '--subscription', subscription, '--expose-token', '-o', 'json'], { encoding: 'utf8' });
-                if (login.error || login.status !== 0) {
-                  report(`acr login exited ${login.status}: ${login.stderr || login.error?.message}`);
-                } else {
+                try {
+                  const login = run('az', ['acr', 'login', '--name', registry.name,
+                    '--expose-token', '--output', 'json'], { capture: true });
                   let token;
                   try { token = JSON.parse(login.stdout); } catch { token = null; }
                   if (!token?.accessToken || token.loginServer?.toLowerCase() !== registry.loginServer.toLowerCase()) {
@@ -76,6 +77,8 @@ jobs:
                   } else {
                     console.log('ACR token acquisition and response validation succeeded.');
                   }
+                } catch (error) {
+                  report(`ACR token acquisition failed: ${error.message}`);
                 }
               }
             }
