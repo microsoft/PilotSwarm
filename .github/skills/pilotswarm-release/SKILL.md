@@ -9,6 +9,28 @@ Use this skill when a user wants to prepare or cut a release of PilotSwarm.
 
 Keep the workflow tight and deterministic. The goal is to verify what will ship, fix release blockers, and only then commit, push, tag, and publish.
 
+## Microsoft Repository Release Contract
+
+- Run from the root of this checkout. Verify `git remote get-url origin` targets
+  `microsoft/PilotSwarm`, and pass `--repo microsoft/PilotSwarm` to release commands.
+- The first release after migration is planned as **v0.6.0**. Check remote tags
+  and releases first. If v0.6.0 already exists, select the next version with the
+  user; never overwrite it or infer the next version from imported tags alone.
+- A release creates both an annotated Git tag and a published GitHub Release.
+  The release's Assets contain three npm-format `.tgz` packages. They are not
+  standalone executable binaries.
+- `.github/workflows/release-tarballs.yml` builds and uploads those assets after
+  `release: published`. A tag push, merged PR, or Azure deployment does not
+  create a GitHub Release or trigger tarball publication.
+- Release publication does not run `npm publish` or push Docker images.
+  Azure deployments use the separate `deploy-azure.yml` GitHub Action, which
+  builds deployment images in Azure Container Registry. Run all deployments
+  through that Action; do not deploy from a local shell. Keep environment
+  configuration in GitHub environment secrets and ignored local files.
+- Preparing release instructions or merging release wiring is not cutting a
+  release. Report preparation, tag creation, release publication, and asset
+  upload as separate states. Publish only when the user requests it.
+
 ## Mandatory Main-Branch Release Invariant
 
 Every **full release** must land as exactly one new squash commit on `main` relative to the pre-release `origin/main` tip. The annotated release tag and GitHub Release must target that pushed main commit.
@@ -26,8 +48,13 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 1. Inspect the release surface.
    - Run `git status --short`.
    - Check changed runtime, docs, templates, examples, and workflow files.
-   - Check the latest existing git tag with `git tag --sort=-version:refname | head`.
+   - Fetch `origin` and its tags. Check remote tags and published releases with
+     `git ls-remote --tags origin` and `gh release list --repo microsoft/PilotSwarm`.
    - Check current package names and versions in `packages/sdk/package.json`, `packages/horizon-store/package.json`, and `packages/app/package.json`.
+   - Set all three package versions to the chosen release version. Update their
+     internal dependency, devDependency, and peerDependency version references,
+     plus `package-lock.json`. The workflow rejects a tag unless all three
+     package versions equal the tag without its `v` prefix.
    - Report the current latest tag and the proposed next tag to the user before any tag is created.
    - Check whether each packaged workspace has its own `README.md`.
    - Record the pre-release `origin/main` commit. Determine whether the current work is already on `main` or must be squashed from a source branch.
@@ -79,40 +106,44 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
      publish npm registry packages or a starter container image.
    - Call out blockers or skipped checks explicitly.
 
-6. Squash the release onto `main` and push only with explicit user approval.
+6. Land release preparation on `main` under the user's existing authorization.
    - Use non-interactive git commands.
    - Do not amend unless the user explicitly asks.
    - Preserve unrelated working-tree edits before switching branches and restore them afterward.
-   - If the release was prepared on a feature/release branch:
-     1. make the release-ready source tree coherent, including all intended tracked and untracked files;
-     2. fetch `origin/main` and verify there is no unexpected remote-main drift;
-     3. switch to local `main` at `origin/main`;
-     4. run `git merge --squash <source-branch>`;
-     5. verify the staged tree is byte-identical to the reviewed release-ready source tree;
-     6. create one release commit on `main`.
-   - If release preparation happened directly on `main`, ensure all release changes become one commit relative to the recorded pre-release `origin/main` tip. Do not leave multiple release-prep commits on main.
+   - Prepare changes on a `feature/` branch and open a PR against `main`.
+     Squash-merge the reviewed release preparation after required checks pass.
+     Fetch and fast-forward local `main` to that merged commit. Preserve existing
+     project history; the one-commit requirement applies to the release preparation.
    - Prefer a commit message that describes the release-ready outcome, not just one file.
-   - Push `main`, then verify `git rev-parse main` equals `git ls-remote origin refs/heads/main`.
+   - Verify `git rev-parse main` equals the SHA from `git ls-remote origin refs/heads/main`.
 
 7. Tag and publish only with explicit user approval.
    - Confirm the current commit is the pushed `origin/main` tip.
    - Create the annotated release tag from that exact main commit, then push the tag.
    - Verify local `main`, remote `origin/main`, and `git rev-parse <tag>^{}` are the same SHA.
-   - Create a **GitHub Release** from the tag using `gh release create`. The
+   - Create a **GitHub Release** with
+     `gh release create <tag> --repo microsoft/PilotSwarm --verify-tag --title <tag> --notes-file <notes-file>`.
+     Use a token or CLI login that can trigger the release workflow. The
      tarball workflow (`release-tarballs.yml`) triggers on `release: [published]`,
      not on tag push alone.
    - Include a concise release notes summary in the GitHub Release body.
 
 8. Verify publication.
    - Check that the GitHub Actions tarball workflow started and completed using
-     `gh run list --workflow=release-tarballs.yml`.
+     `gh run list --repo microsoft/PilotSwarm --workflow=release-tarballs.yml`.
+     Match the run to the release tag; a successful Azure deploy is not release
+     publication evidence.
    - Verify the
      GitHub Release contains `pilotswarm-sdk-<version>.tgz`,
      `pilotswarm-horizon-store-<version>.tgz`, and
-     `pilotswarm-<version>.tgz`. When an accompanying AKS rollout must consume
-     released packages rather than workspace source, hand these assets to the
-     `pilotswarm-aks-deploy` skill's release-tarball path; do not build the
-     deployment candidate before the assets exist.
+     `pilotswarm-<version>.tgz`, using
+     `gh release view <tag> --repo microsoft/PilotSwarm --json tagName,isDraft,assets,url`.
+     Verify the release is published and all three assets exist before reporting
+     completion. GitHub's generated source archives do not count as package assets.
+   - For an accompanying Azure rollout, dispatch `deploy-azure.yml` on `main`
+     and monitor its environment approval and result. The current Action builds
+     from workspace source; it does not consume release tarballs. Do not claim
+     a tarball-based rollout unless the Action has been updated to implement it.
    - If upload failed, surface the workflow error rather than guessing.
 
 ## Release Checklist
