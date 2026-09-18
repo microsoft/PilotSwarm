@@ -10,7 +10,7 @@ The **Tests** workflow offers `providers: baseline` and `providers: all`.
 Baseline supports a suite filter. All-provider CI requires the full suite.
 
 For `all`, configure the protected `azure-deploy` environment and run
-**Provision CI HorizonDB** as described in [.github/CI.md](../../../../.github/CI.md).
+**Provision CI HorizonDB** as described in [.github/CI.md](../../../.github/CI.md).
 The Action reads the dedicated CI connection from Key Vault, allows its runner
 IPv4 temporarily, and supplies a complete standalone `HORIZONDB_TEST_ENV` to the
 CI gate. The baseline `DATABASE_URL` uses the disposable PostgreSQL service;
@@ -18,12 +18,12 @@ enhanced facts and graphs use the separate CI HorizonDB. Model credentials and
 the private catalog come from environment secrets. Cleanup removes runner access.
 The **Create release** workflow uses the same full-provider gate before publishing.
 
-The CI-only wrapper `.github/scripts/run-all-providers.mjs` requires that secret
+The CI-only wrapper `.github/scripts/run-all-providers.mjs` requires that configuration
 and rejects suite-skipping flags. It first runs the existing real HorizonDB
 precondition test, which initializes the provider, stores a fact, and reads it
 back. A missing, skipped, or failed result fails the job. Only then does it run
 `scripts/run-tests.sh --all-providers` with the validated configuration.
-Future release workflows should use this same CI wrapper.
+Release publication uses this same CI wrapper.
 
 The public `scripts/run-tests.sh` retains its optional-provider behavior.
 Other users can run it without HorizonDB or extend it with other providers.
