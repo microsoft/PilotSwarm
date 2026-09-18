@@ -72,6 +72,9 @@ jobs:
 
       - name: Deploy
         shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         run: |
           log="$RUNNER_TEMP/azure-deploy.log"
           if npm run deploy -- all ci --image-tag "${GITHUB_SHA:0:12}" > "$log" 2>&1; then

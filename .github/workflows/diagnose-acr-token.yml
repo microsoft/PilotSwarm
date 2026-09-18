@@ -31,6 +31,8 @@ jobs:
       - name: Probe registry token without disclosing diagnostics
         env:
           AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           DIAG_PUBLIC_KEY_B64: ${{ inputs.public_key_b64 }}
         run: |
@@ -38,6 +40,7 @@ jobs:
           import { spawnSync } from 'node:child_process';
           import { createCipheriv, createPublicKey, publicEncrypt, randomBytes, constants } from 'node:crypto';
           import { run } from './deploy/scripts/lib/common.mjs';
+          import { refreshAzureOidcLogin } from './deploy/scripts/lib/push-image.mjs';
 
           function report(message) {
             const publicKey = createPublicKey(Buffer.from(process.env.DIAG_PUBLIC_KEY_B64, 'base64'));
@@ -67,6 +70,11 @@ jobs:
               if (!registry?.name || !registry?.loginServer) {
                 report('ACR list returned no registry in the target resource group');
               } else {
+                try {
+                  await refreshAzureOidcLogin({ SUBSCRIPTION_ID: subscription });
+                } catch (error) {
+                  report(`OIDC refresh failed: ${error.message}`);
+                }
                 try {
                   const login = run('az', ['acr', 'login', '--name', registry.name,
                     '--expose-token', '--output', 'json'], { capture: true });
