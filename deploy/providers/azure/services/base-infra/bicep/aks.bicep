@@ -168,24 +168,20 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
           rotationPollInterval: '30m'
         }
       }
-      // AKS managed NGINX ingress controller. The addon stands up a default
-      // NginxIngressController CR that creates a LoadBalancer Service in
-      // the addon's namespace (app-routing-system). To make the LB
-      // private, deploy.mjs runs a post-deploy `kubectl patch` that adds
-      // `service.beta.kubernetes.io/azure-load-balancer-internal: "true"`
-      // to the addon's Service via the CR's `loadBalancerAnnotations`
-      // field. We don't bake that into bicep because the CR isn't
-      // declared as a bicep resource — it's reconciled by the addon
-      // operator after the cluster is up.
-      webAppRouting: {
-        enabled: true
-      }
       omsAgent: {
         enabled: true
         config: {
           useAADAuth: 'true'
           logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceResourceId
         }
+      }
+    }
+    // AKS application routing belongs to ingressProfile, not addonProfiles.
+    // In private mode deploy.mjs patches the managed NGINX controller's
+    // LoadBalancer annotations after the cluster is ready.
+    ingressProfile: {
+      webAppRouting: {
+        enabled: edgeMode != 'afd'
       }
     }
     networkProfile: union({
