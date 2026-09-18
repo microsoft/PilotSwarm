@@ -1,0 +1,33 @@
+name: PR checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  basic:
+    name: Basic checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Deployment and CI policy tests
+        run: |
+          npm run test:deploy-scripts
+          node --test .github/scripts/test/*.test.mjs
+      - name: SDK API and unit tests
+        run: |
+          npm run test:api --workspace=pilotswarm-sdk
+          npm run test:unit --workspace=pilotswarm-sdk
+      - name: Application unit tests
+        run: npm test --workspace=pilotswarm

@@ -14,8 +14,8 @@ param replicaCount int = 1
 param parameterGroupName string
 param parameterGroupCreate bool = true
 param clusterCreate bool = true
-@description('The stamp AKS egress public IP; the only source allowed by this cluster firewall.')
-param aksOutboundIp string
+@description('Optional stamp AKS egress IPv4. CI clusters omit this and use temporary runner firewall rules.')
+param aksOutboundIp string = ''
 
 resource parameterGroupNew 'Microsoft.HorizonDb/parameterGroups@2026-01-20-preview' = if (parameterGroupCreate) {
   name: parameterGroupName
@@ -57,7 +57,7 @@ resource clusterExisting 'Microsoft.HorizonDB/clusters@2026-01-20-preview' exist
   name: clusterName
 }
 
-resource aksFirewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-01-20-preview' = {
+resource aksFirewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-01-20-preview' = if (!empty(aksOutboundIp)) {
   name: '${clusterName}/DefaultPool/AllowAksEgress'
   properties: {
     description: 'PilotSwarm AKS stamp egress only'

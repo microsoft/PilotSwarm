@@ -1,18 +1,6 @@
-name: "Tests"
+name: Tests
 
-# Full PilotSwarm test suite. Manual-trigger only.
-#
-# Locked to a single identity via the `copilot` GitHub environment:
-#   - Anyone with workflow_dispatch access can click "Run workflow", but the
-#     job pauses on the `copilot` environment gate and waits for an approval
-#     from `affandar`. No approval → no secrets, no run.
-#
-# Reuses the same secrets uploaded for the Copilot cloud agent:
-#   GH_PAT, AZURE_OAI_KEY, AZURE_MODEL_ROUTER_KEY, AZURE_FW_GLM5_KEY,
-#   AZURE_KIMI_K25_KEY, MODEL_PROVIDERS_JSON (and optional ANTHROPIC_API_KEY).
-# All-provider CI also requires HORIZONDB_TEST_ENV: a complete standalone
-# .env.horizondb configuration for the dedicated CI database.
-
+# Trusted main-branch integration runs; PRs use the secret-free basic checks.
 on:
     workflow_dispatch:
         inputs:
@@ -29,7 +17,7 @@ on:
                     - parallel
                     - sequential
             providers:
-                description: "Provider coverage (all requires the CI HorizonDB secret and a live database)"
+                description: "Provider coverage (all requires the dedicated live CI HorizonDB)"
                 type: choice
                 default: "baseline"
                 options:
@@ -37,17 +25,19 @@ on:
                     - all
 
 concurrency:
-    group: tests-${{ github.ref }}
+    group: ci-provider-database
     cancel-in-progress: false
 
 jobs:
     tests:
         name: ${{ inputs.providers == 'all' && 'All providers (requires HorizonDB)' || 'Baseline tests' }}
         runs-on: ubuntu-latest
-        environment: copilot
+        if: github.ref == 'refs/heads/main'
+        environment: azure-deploy
         timeout-minutes: ${{ inputs.providers == 'all' && 180 || 59 }}
         permissions:
             contents: read
+            id-token: write
 
         services:
             postgres:
@@ -74,31 +64,38 @@ jobs:
                   node-version: "24"
                   cache: "npm"
 
-            - name: Materialize .env
-              run: |
-                  umask 077
-                  cat > .env <<EOF
-                  GITHUB_TOKEN=${{ secrets.GH_PAT }}
-                  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
-                  AZURE_MODEL_ROUTER_KEY=${{ secrets.AZURE_MODEL_ROUTER_KEY }}
-                  AZURE_FW_GLM5_KEY=${{ secrets.AZURE_FW_GLM5_KEY }}
-                  AZURE_KIMI_K25_KEY=${{ secrets.AZURE_KIMI_K25_KEY }}
-                  AZURE_OAI_KEY=${{ secrets.AZURE_OAI_KEY }}
-                  ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-                  EOF
-
-            - name: Materialize .model_providers.json
+            - name: Prepare private test configuration
               env:
+                  CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
                   MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
+              run: node .github/scripts/prepare-ci-tests.mjs
+
+            - name: Configure PostgreSQL connection capacity
+              env:
+                  PGPASSWORD: postgres
               run: |
-                  umask 077
-                  if [ -z "$MODEL_PROVIDERS_JSON" ]; then
-                      echo "ERROR: MODEL_PROVIDERS_JSON secret is empty" >&2
-                      exit 1
-                  fi
-                  printf '%s' "$MODEL_PROVIDERS_JSON" > .model_providers.json
-                  node -e "JSON.parse(require('fs').readFileSync('.model_providers.json','utf8'))" \
-                      || { echo "ERROR: MODEL_PROVIDERS_JSON is not valid JSON" >&2; exit 1; }
+                  psql -h localhost -U postgres -d durable_copilot -c 'ALTER SYSTEM SET max_connections = 1500'
+                  docker restart "${{ job.services.postgres.id }}"
+                  for attempt in {1..30}; do
+                    if pg_isready -h localhost -U postgres; then exit 0; fi
+                    sleep 2
+                  done
+                  exit 1
+
+            - name: Azure login with OIDC
+              if: inputs.providers == 'all'
+              uses: azure/login@v3
+              with:
+                  client-id: ${{ secrets.AZURE_CLIENT_ID }}
+                  tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+                  subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+            - name: Open temporary access to dedicated CI HorizonDB
+              if: inputs.providers == 'all'
+              env:
+                  AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+                  CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
+              run: node .github/scripts/azure-ci-database.mjs open
 
             - name: Install dependencies
               run: npm ci
@@ -116,7 +113,6 @@ jobs:
                   TEST_MODE: ${{ inputs.mode }}
                   TEST_SUITE: ${{ inputs.suite }}
                   TEST_PROVIDERS: ${{ inputs.providers }}
-                  HORIZONDB_TEST_ENV: ${{ secrets.HORIZONDB_TEST_ENV }}
               run: |
                   if [[ "$TEST_SUITE" == -* ]]; then
                       echo "Suite must be a test-name filter. Select provider coverage with the providers input." >&2
@@ -135,14 +131,12 @@ jobs:
                   fi
                   ./scripts/run-tests.sh "${ARGS[@]}"
 
-            - name: Upload test artifacts
+            - name: Remove temporary CI database access
+              if: always() && inputs.providers == 'all'
+              env:
+                  AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+              run: node .github/scripts/azure-ci-database.mjs close
+
+            - name: Remove runner credentials
               if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: test-logs-${{ github.run_id }}
-                  path: |
-                      packages/sdk/test/local/**/*.log
-                      packages/sdk/.vitest-reports/**
-                      packages/sdk/coverage/**
-                  if-no-files-found: ignore
-                  retention-days: 14
+              run: rm -f .env .model_providers.json
