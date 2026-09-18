@@ -87,3 +87,20 @@ test("existing HorizonDB cluster is attached to its extension group before deplo
   assert.equal(body.properties.parameterGroup.applyImmediately, true);
   assert.match(body.properties.parameterGroup.id, /parameterGroups\/stamp-extensions$/);
 });
+
+test("updates to an already attached parameter group are applied before proceeding", async () => {
+  const id = "/subscriptions/test/resourceGroups/ci-rg/providers/Microsoft.HorizonDb/parameterGroups/ci-settings";
+  const states = ["PendingRestart", "InSync"];
+  const patches = [];
+  await ensureHorizonDbParameterGroup({
+    HORIZONDB_ENABLED: "true", SUBSCRIPTION_ID: "test", RESOURCE_GROUP: "ci-rg",
+    HORIZONDB_CLUSTER_NAME: "ci-hdb", HORIZONDB_PARAMETER_GROUP_NAME: "ci-settings",
+  }, {
+    runFn: (_name, args) => {
+      if (args.includes("patch")) { patches.push(JSON.parse(args[args.indexOf("--body") + 1])); return { stdout: "" }; }
+      return { stdout: JSON.stringify({ properties: { provisioningState: "Succeeded", parameterGroup: { id, syncStatus: states.shift() } } }) };
+    },
+    sleepFn: async () => {},
+  });
+  assert.deepEqual(patches, [{ properties: { parameterGroup: { id, applyImmediately: true } } }]);
+});

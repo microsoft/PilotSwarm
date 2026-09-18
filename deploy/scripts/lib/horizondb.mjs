@@ -157,12 +157,12 @@ export async function ensureHorizonDbParameterGroup(env, { runFn = run, sleepFn 
       return;
     }
     if (!requested && current.properties?.provisioningState === "Succeeded" &&
-        attached?.id?.toLowerCase() !== desiredId.toLowerCase()) {
+        (attached?.id?.toLowerCase() !== desiredId.toLowerCase() || attached?.syncStatus !== "InSync")) {
       const body = JSON.stringify({ properties: { parameterGroup: { id: desiredId, applyImmediately: true } } });
       runFn("az", ["rest", "--method", "patch", "--url", url,
         "--headers", "Content-Type=application/json", "--body", body], { capture: true });
       requested = true;
-      log("info", "Attaching the declared HorizonDB extension parameter group.");
+      log("info", "Applying the declared HorizonDB parameter group (including pending setting changes).");
     }
     await sleepFn(10000);
   }

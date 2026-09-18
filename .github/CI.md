@@ -61,7 +61,9 @@ Both live CI modes first require a real HorizonDB initialize/store/read result;
 missing or skipped coverage fails. CI rejects suite filters and skip flags.
 Default file parallelism is **8**, including on smaller runners; callers can
 set `PS_TEST_MAX_WORKERS`. The stock PostgreSQL service supports 1500 connections.
-HDB's capacity preflight requires 40 connections per configured test file by
+CI provisioning sets the dedicated HDB parameter group to 1500 connections and
+applies pending settings through the Action. The portal group is unchanged. HDB's
+capacity preflight requires 40 connections per configured test file by
 default (`MIN_HORIZON_MAX_CONNECTIONS` overrides it). No managed server settings
 are changed by the test runner. Provider phases remain sequential.
 
