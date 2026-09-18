@@ -60,7 +60,8 @@ async function provision(c) {
     location: c.location, clusterName: c.cluster, parameterGroupName: c.parameterGroup,
     administratorLogin: 'pilotswarmci', administratorLoginPassword: password,
     vCores: 4, replicaCount: 1, clusterCreate: !cluster,
-    parameterGroupCreate: !resource(c, 'parameterGroups', c.parameterGroup, true),
+    // Reconcile this dedicated CI group on every run, including capacity changes.
+    parameterGroupCreate: true, maxConnections: 1500,
   };
   const file = join(process.env.RUNNER_TEMP, 'ci-hdb-parameters.json');
   try {

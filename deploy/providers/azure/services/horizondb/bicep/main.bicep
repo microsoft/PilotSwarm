@@ -14,6 +14,10 @@ param replicaCount int = 1
 param parameterGroupName string
 param parameterGroupCreate bool = true
 param clusterCreate bool = true
+@description('Optional connection capacity override. Zero leaves the service default; CI supplies its tested parallel-run capacity.')
+@minValue(0)
+@maxValue(5000)
+param maxConnections int = 0
 @description('Optional stamp AKS egress IPv4. CI clusters omit this and use temporary runner firewall rules.')
 param aksOutboundIp string = ''
 
@@ -23,10 +27,10 @@ resource parameterGroupNew 'Microsoft.HorizonDb/parameterGroups@2026-01-20-previ
   properties: {
     pgVersion: 17
     description: 'PilotSwarm facts, embeddings and AGE graph extensions'
-    parameters: [
+    parameters: concat([
       { name: 'azure.extensions', value: 'age,azure_ai,pg_diskann,pg_durable,pg_textsearch,vector' }
       { name: 'shared_preload_libraries', value: 'age,pg_durable,pg_textsearch' }
-    ]
+    ], maxConnections > 0 ? [{ name: 'max_connections', value: string(maxConnections) }] : [])
   }
 }
 
