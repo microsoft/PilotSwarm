@@ -4,6 +4,29 @@ See also [local-test-spec.md](./local-test-spec.md) for the current file-by-file
 
 This plan is for a comprehensive local test matrix that exercises the PilotSwarm runtime without the TUI.
 
+## GitHub Actions provider coverage
+
+The **Tests** workflow offers `providers: baseline` and `providers: all`.
+Baseline supports a suite filter. All-provider CI requires the full suite.
+
+For `all`, configure the `HORIZONDB_TEST_ENV` secret in the `copilot` GitHub
+environment. Its value is a complete standalone `.env.horizondb` file, following
+the root `.env.horizondb.example`. Use a dedicated CI HorizonDB. The baseline
+`DATABASE_URL` points at the workflow's PostgreSQL service; the HorizonDB URL
+points at the separate CI database. Supply the required model credentials and
+any graph/embedding configuration for the provider tests. Do not commit these
+values or use the portal's database for integration-test cleanup.
+
+The CI-only wrapper `.github/scripts/run-all-providers.mjs` requires that secret
+and rejects suite-skipping flags. It first runs the existing real HorizonDB
+precondition test, which initializes the provider, stores a fact, and reads it
+back. A missing, skipped, or failed result fails the job. Only then does it run
+`scripts/run-tests.sh --all-providers` with the validated configuration.
+Future release workflows should use this same CI wrapper.
+
+The public `scripts/run-tests.sh` retains its optional-provider behavior.
+Other users can run it without HorizonDB or extend it with other providers.
+
 The target topology is:
 
 - PostgreSQL running locally in a container

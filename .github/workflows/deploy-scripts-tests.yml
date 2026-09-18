@@ -21,6 +21,8 @@ on:
       - "package-lock.json"
       - ".github/workflows/deploy-scripts-tests.yml"
       - ".github/workflows/deploy-azure.yml"
+      - ".github/workflows/tests.yml"
+      - ".github/scripts/**"
   push:
     branches:
       - main
@@ -35,6 +37,8 @@ on:
       - "package-lock.json"
       - ".github/workflows/deploy-scripts-tests.yml"
       - ".github/workflows/deploy-azure.yml"
+      - ".github/workflows/tests.yml"
+      - ".github/scripts/**"
 
 concurrency:
   group: deploy-scripts-tests-${{ github.ref }}
@@ -61,3 +65,6 @@ jobs:
 
       - name: Run deploy-scripts tests
         run: npm run test:deploy-scripts
+
+      - name: Check CI provider coverage gate
+        run: node --test .github/scripts/test/*.test.mjs
