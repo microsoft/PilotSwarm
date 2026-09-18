@@ -429,6 +429,7 @@ export function resolveProviderCredential(
         sdkProvider: {
             type: sdkType,
             baseUrl: sdkType === "azure" ? `${baseUrl.replace(/\/$/, "")}/deployments/${modelName}` : baseUrl,
+            ...(type.wireApi ? { wireApi: type.wireApi } : {}),
             ...(workloadIdentity ? {} : { apiKey }),
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
         },

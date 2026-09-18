@@ -33,7 +33,9 @@ The manual `Deploy Azure stamp` GitHub Action uses the protected
 `azure-deploy` GitHub Environment. Put the complete, standalone stamp `.env`
 file in the environment secret `AZURE_DEPLOY_ENV`; put its Foundry deployments
 array and model-provider catalog in `AZURE_FOUNDRY_DEPLOYMENTS_JSON` and
-`AZURE_MODEL_PROVIDERS_JSON`. Nothing about the stamp's subscription, tenant,
+`AZURE_MODEL_PROVIDERS_JSON`. Set `"type": "openai"` and `"wireApi": "responses"`
+on its Foundry provider so Terra can use tools with reasoning enabled.
+Nothing about the stamp's subscription, tenant,
 resource names, endpoint, app registration, access lists, or contact address
 is checked in. The Action writes these files only into the runner's ignored
 `deploy/envs/local/ci/` directory, validates the public Entra, allowlist and HorizonDB

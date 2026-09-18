@@ -51,7 +51,7 @@ const foundryText = JSON.stringify([
   { name: "embedding", model: { name: "text-embedding-3-small", version: "fixture" } },
 ]);
 const modelText = JSON.stringify({
-  providers: [{ id: "azure-foundry", baseUrl: "__FOUNDRY_ENDPOINT__/openai/v1", apiKey: "env:AZURE_OAI_KEY", models: [{ name: "gpt-5.6-terra" }] }],
+  providers: [{ id: "azure-foundry", type: "openai", wireApi: "responses", baseUrl: "__FOUNDRY_ENDPOINT__/openai/v1", apiKey: "env:AZURE_OAI_KEY", models: [{ name: "gpt-5.6-terra" }] }],
   defaultModel: "azure-foundry:gpt-5.6-terra",
 });
 
@@ -68,6 +68,15 @@ test("GitHub configuration stays in private files and overrides stale local path
   assert.match(content, /DEPLOY_PRINCIPAL_ID=33333333-3333-3333-3333-333333333333$/m);
   assert.equal(JSON.parse(readFileSync(join(writeDir, "foundry-deployments.json"), "utf8")).length, 2);
   assert.equal(statSync(join(writeDir, ".env")).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(readFileSync(join(writeDir, "model_providers.json"), "utf8")).providers[0].wireApi, "responses");
+});
+
+test("Terra deployment rejects Chat Completions and an omitted API format", () => {
+  for (const wireApi of [undefined, "completions"]) {
+    const models = JSON.parse(modelText);
+    models.providers[0].wireApi = wireApi;
+    assert.throws(() => prepareGithubEnv(input({ modelText: JSON.stringify(models) })), /wireApi responses/);
+  }
 });
 
 test("GitHub configuration rejects a different subscription or weaker portal auth", () => {

@@ -513,6 +513,12 @@ and holds in CMS. Do not put live keys in the checked-in catalog.
 
 ### Credentials
 
+OpenAI-compatible providers can set `"wireApi": "responses"` in the provider
+entry to use the Responses API. Omit it, or use `"completions"`, for Chat
+Completions. The setting follows shared and personal provider instances.
+For Foundry's `/openai/v1` endpoint, use `"type": "openai"`. Terra requires
+Responses when combining function tools with reasoning.
+
 Credentials are write-only runtime provider data. Create shared/personal
 instances through Admin Console or `PilotSwarmManagementClient`; never check
 credentials into the model catalog. `env:VAR_NAME` references in legacy local
