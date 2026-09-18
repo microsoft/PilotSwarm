@@ -55,14 +55,40 @@ export async function pushImage({ service, envName, imageTag, env, stagingDir: s
   const dest = `${acrLoginServer}/${dockerImageRepo}:${imageTag}`;
   log("info", "Requesting ACR refresh token for ORAS.");
   let auth;
-  try {
-    const result = run("az", ["acr", "login", "--name", acrName, "--expose-token", "--output", "json"], { capture: true });
-    auth = JSON.parse(result.stdout);
-    if (!auth.accessToken || auth.loginServer?.toLowerCase() !== acrLoginServer.toLowerCase()) {
-      throw new Error("Missing or mismatched ACR token response fields");
+  let lastLoginError;
+  const tokenArgs = ["acr", "login", "--name", acrName, "--expose-token", "--output", "json"];
+  if (env.SUBSCRIPTION_ID) tokenArgs.push("--subscription", env.SUBSCRIPTION_ID);
+  for (const [attempt, delayMs] of [0, 5000, 15000, 30000].entries()) {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    let response;
+    try {
+      response = run("az", tokenArgs, { capture: true });
+    } catch (error) {
+      lastLoginError = error;
+      log("warn", `ACR token command failed on attempt ${attempt + 1}/4.`);
+      continue;
     }
-  } catch {
-    throw new Error("ACR token acquisition failed.");
+    try {
+      auth = JSON.parse(response.stdout);
+    } catch {
+      throw new Error("ACR token response was not valid JSON.");
+    }
+    if (!auth.accessToken) throw new Error("ACR token response did not contain a token.");
+    if (auth.loginServer?.toLowerCase() !== acrLoginServer.toLowerCase()) {
+      throw new Error("ACR token response registry did not match the deployment output.");
+    }
+    break;
+  }
+  if (!auth) {
+    const message = lastLoginError?.message ?? "";
+    const reason = /\b403\b|Forbidden|AuthorizationPermissionMismatch/i.test(message)
+      ? "authorization"
+      : /\b401\b|Unauthorized|AuthenticationFailed|AADSTS\d+/i.test(message)
+        ? "authentication"
+        : /timed? out|connect|network|DNS/i.test(message)
+          ? "connectivity"
+          : "unknown";
+    throw new Error(`ACR token command failed after 4 attempts (${reason}).`);
   }
 
   // Keep the ORAS credential outside Docker's global config, and remove it
