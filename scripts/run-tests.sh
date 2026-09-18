@@ -265,6 +265,11 @@ if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
     done
 fi
 
+if [ "$HORIZONDB_ADDITIVE" = "1" ] && { [ "${#SUITE_FILTERS[@]}" -gt 0 ] || [ "${#EXTERNAL_TEST_DIRS[@]}" -gt 0 ]; }; then
+    echo "ERROR: --horizondb-additive runs its complete reviewed selection; use --with-horizondb for filters or external suites."
+    exit 1
+fi
+
 if [ "${#EXTERNAL_TEST_DIRS[@]}" -gt 0 ] && [ "${#SUITE_FILTERS[@]}" -gt 0 ]; then
     echo "ERROR: --external-test-dir cannot be combined with suite filters."
     exit 1
