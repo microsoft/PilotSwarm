@@ -1,0 +1,83 @@
+name: Diagnose Azure registry token
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_key_b64:
+        description: Base64 PEM public key for encrypting the diagnostic
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: azure-deploy
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Probe registry token without disclosing diagnostics
+        env:
+          AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          DIAG_PUBLIC_KEY_B64: ${{ inputs.public_key_b64 }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { createCipheriv, createPublicKey, publicEncrypt, randomBytes, constants } from 'node:crypto';
+
+          function report(message) {
+            const publicKey = createPublicKey(Buffer.from(process.env.DIAG_PUBLIC_KEY_B64, 'base64'));
+            const key = randomBytes(32);
+            const iv = randomBytes(12);
+            const cipher = createCipheriv('aes-256-gcm', key, iv);
+            const data = Buffer.concat([cipher.update(message, 'utf8'), cipher.final()]);
+            const wrappedKey = publicEncrypt({ key: publicKey, oaepHash: 'sha256', padding: constants.RSA_PKCS1_OAEP_PADDING }, key);
+            const b64 = (value) => value.toString('base64');
+            console.log('ENCRYPTED_ACR_DIAGNOSTIC=' + JSON.stringify({ key: b64(wrappedKey), iv: b64(iv), tag: b64(cipher.getAuthTag()), data: b64(data) }));
+            process.exitCode = 1;
+          }
+
+          const match = process.env.AZURE_DEPLOY_ENV?.match(/^RESOURCE_GROUP=(.*)$/m);
+          if (!match) {
+            report('RESOURCE_GROUP missing from deployment configuration');
+          } else {
+            const group = match[1].trim().replace(/^['"]|['"]$/g, '');
+            const subscription = process.env.AZURE_SUBSCRIPTION_ID;
+            const list = spawnSync('az', ['acr', 'list', '-g', group, '--subscription', subscription,
+              '--query', '[0].{name:name,loginServer:loginServer}', '-o', 'json'], { encoding: 'utf8' });
+            if (list.error || list.status !== 0) {
+              report(`acr list exited ${list.status}: ${list.stderr || list.error?.message}`);
+            } else {
+              let registry;
+              try { registry = JSON.parse(list.stdout); } catch { registry = null; }
+              if (!registry?.name || !registry?.loginServer) {
+                report('ACR list returned no registry in the target resource group');
+              } else {
+                const login = spawnSync('az', ['acr', 'login', '--name', registry.name,
+                  '--subscription', subscription, '--expose-token', '-o', 'json'], { encoding: 'utf8' });
+                if (login.error || login.status !== 0) {
+                  report(`acr login exited ${login.status}: ${login.stderr || login.error?.message}`);
+                } else {
+                  let token;
+                  try { token = JSON.parse(login.stdout); } catch { token = null; }
+                  if (!token?.accessToken || token.loginServer?.toLowerCase() !== registry.loginServer.toLowerCase()) {
+                    report('ACR token response missing token or matching registry server');
+                  } else {
+                    console.log('ACR token acquisition and response validation succeeded.');
+                  }
+                }
+              }
+            }
+          }
+          NODE
