@@ -155,6 +155,8 @@ export interface ModelProviderConfig {
     apiKey?: string;
     /** Azure API version (type=azure only). Defaults to "2024-10-21". */
     apiVersion?: string;
+    /** OpenAI-compatible request format. Defaults to the SDK's Chat Completions API. */
+    wireApi?: "completions" | "responses";
     /** Available models. Can be plain strings (legacy) or ModelEntry objects with descriptions. */
     models: (string | ModelEntry)[];
 }
@@ -224,6 +226,7 @@ export interface ResolvedProvider {
     sdkProvider?: {
         type: "openai" | "azure" | "anthropic";
         baseUrl: string;
+        wireApi?: "completions" | "responses";
         apiKey?: string;
         azure?: { apiVersion?: string };
     };
@@ -410,6 +413,7 @@ export class ModelProviderRegistry {
             sdkProvider: {
                 type: sdkProviderType,
                 baseUrl: resolvedUrl,
+                ...(provider.wireApi ? { wireApi: provider.wireApi } : {}),
                 // Omitted rather than undefined for a workload-identity
                 // provider: an `apiKey` key present with no value reads as a
                 // broken credential to everything downstream that tests it.

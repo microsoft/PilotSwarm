@@ -114,6 +114,9 @@ export function prepareGithubEnv({ envText, foundryText, modelText, subscription
     throw new Error("AZURE_MODEL_PROVIDERS_JSON must contain only the Azure Foundry provider");
   }
   const provider = models.providers[0];
+  if (provider.type !== "openai" || provider.wireApi !== "responses") {
+    throw new Error("AZURE_MODEL_PROVIDERS_JSON requires type openai and wireApi responses for Terra tools with reasoning");
+  }
   if (provider.baseUrl !== "__FOUNDRY_ENDPOINT__/openai/v1" || provider.apiKey !== "env:AZURE_OAI_KEY") {
     throw new Error("AZURE_MODEL_PROVIDERS_JSON must use the generated Foundry endpoint and Key Vault key");
   }
