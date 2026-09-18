@@ -3,6 +3,17 @@ name: pilotswarm-portal-auth-assignments
 description: "Use when adding or removing users / groups from the 'admin' or 'user' app roles on a PilotSwarm portal Entra app. Wraps deploy/scripts/auth/Set-PortalAuthAssignments.ps1 — idempotent, re-runnable, resolves UPNs / object ids / group display names. Required after `Setup-PortalAuth.ps1 -CreateAppRoles` when admission is role-driven. Other skills/agents that need to grant or revoke portal access should delegate here instead of generating the Graph calls themselves."
 ---
 
+## Select the execution path
+
+Read `.github/DEPLOYMENT.md` first. The commands below are operator-managed
+environment recipes. For this repository’s managed environment, local Azure or
+Kubernetes mutations are not permitted. Identity setup is a one-time admin
+prerequisite; ongoing changes/reset/teardown need an authorized maintenance
+Action, which is not currently supplied. Do not run these recipes locally as
+a fallback. Preserve the selected auth posture; VPN steps apply only to a
+VPN-enabled target.
+
+
 # pilotswarm-portal-auth-assignments
 
 Drives app-role assignment management for a PilotSwarm portal Entra app

@@ -18,114 +18,11 @@ rather than a stable platform.
 
 ## Development Setup
 
-1. **Prerequisites**
-
-   - Node.js 20+
-   - Docker (for local PostgreSQL) — or an existing Postgres instance reachable
-     via a connection string
-   - At least one LLM provider: a GitHub Copilot token (`GITHUB_TOKEN`) is the
-     easiest, or any of the Azure / Anthropic providers configured in
-     `.model_providers.json`
-
-2. **Install and configure**
-
-   ```bash
-   npm install
-   cp .env.example .env
-   cp .model_providers.example.json .model_providers.json
-   # edit .env: set DATABASE_URL and at least one provider key
-   $EDITOR .model_providers.json
-   ```
-
-3. **Start Postgres** (skip if you already have one)
-
-   ```bash
-   docker run --rm -d \
-     -e POSTGRES_PASSWORD=postgres \
-     -e POSTGRES_DB=pilotswarm \
-     -p 5432:5432 postgres:16
-   ```
-
-4. **Build and run the test suite**
-
-   ```bash
-   npm run build
-   npm test
-   npm run test:local           # full local integration suite (slow; needs LLM)
-   ```
-
-   For faster feedback while iterating on a specific area:
-
-   ```bash
-   npm run test:local:smoke
-   npm run test:local:durability
-   npm run test:local:sub-agents
-   ```
-
-   Plugin and consumer repositories can add an explicit Vitest directory to
-   the complete PilotSwarm gate without changing its built-in suite:
-
-   ```bash
-   ./scripts/run-tests.sh --external-test-dir=../plugin-repo/tests/pilotswarm
-   ```
-
-   During plugin-only iteration, skip PilotSwarm's built-in phases and provider
-   setup explicitly:
-
-   ```bash
-   ./scripts/run-tests.sh --external-only \
-     --external-test-dir=../plugin-repo/tests/pilotswarm \
-     --external-test-filter=audience-map
-   ```
-
-   External directories are optional and are never discovered automatically.
-   Their tests should use public PilotSwarm package surfaces while keeping
-   repository-specific fixtures, endpoints, and credentials in the repository
-   that owns them.
-
-   Each supplied directory is an independent Vitest root and must follow this
-   contract:
-
-   - Name test files `*.test.js`, `*.test.mjs`, `*.test.ts`, or `*.test.mts`.
-   - Write tests for the Node environment. Vitest globals such as `describe`,
-     `it`, and `expect` are enabled; tests do not need to import `vitest`.
-   - Resolve fixtures relative to the test module, for example with
-     `import.meta.url`. The supplied directory is Vitest's discovery root, but
-     `process.cwd()` remains the PilotSwarm checkout that invokes the runner.
-   - Install consumer dependencies and prepare generated artifacts before
-     invoking the runner. `--external-only` does not build either repository.
-     The consumer must install the public `pilotswarm-sdk` version it intends
-     to validate; the runner does not substitute the platform checkout's
-     private source tree for that package.
-   - Provide required environment variables and credentials explicitly.
-     PilotSwarm's `.env` and provider setup are not loaded by `--external-only`.
-   - Import supported public package exports rather than private source files.
-   - Keep shared setup inside the test directory or import it from the consumer
-     package. The runner uses `scripts/external-vitest.config.mjs` and does not
-     discover a consumer `vitest.config.*` automatically.
-   - Treat `--external-test-filter` values as test-file path substrings, not
-     individual test-name filters.
-
-   A minimal external test can be created as
-   `tests/pilotswarm/platform-contract.test.mjs`:
-
-   ```js
-   import { normalizeVisibility } from "pilotswarm-sdk/api";
-
-   describe("platform integration", () => {
-     it("uses a public platform contract", () => {
-       expect(normalizeVisibility("SHARED_READ")).toBe("shared_read");
-     });
-   });
-   ```
-
-   Run it from the PilotSwarm checkout:
-
-   ```bash
-   ./scripts/run-tests.sh --external-only \
-     --external-test-dir=../plugin-repo/tests/pilotswarm \
-     --external-test-filter=platform-contract
-   ```
+Follow [Local tests and CI setup](docs/developer/contributing/local-ci-and-tests.md)
+for Node.js 24+, credential-free PR checks, a disposable PostgreSQL container,
+optional full/additive HorizonDB tests, and installing the GitHub workflows in
+your own repository. It documents the actual full test wrapper and eight-file
+parallelism. Never use an application database for test cleanup.
 
 ## Project Layout
 

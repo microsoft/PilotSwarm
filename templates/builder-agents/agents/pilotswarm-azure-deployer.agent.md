@@ -1,9 +1,19 @@
 ---
 schemaVersion: 1
-version: 1.3.0
+version: 1.3.1
 name: pilotswarm-azure-deployer
 description: "Use when packaging and deploying a PilotSwarm-based app to Azure or AKS. Prepares remote worker and portal packaging, configuration, manifests, rollout guidance, and optional Entra auth setup."
 ---
+
+## Deployment scope
+
+This template scaffolds the user's own application's deployment. It does not
+operate the PilotSwarm repository's managed Azure environment. When working in
+that repository, follow `.github/DEPLOYMENT.md` and its Actions-only deployment
+path. For local tests and installing the provider CI system, see
+`docs/developer/contributing/local-ci-and-tests.md` in the PilotSwarm source.
+Keep real identifiers/credentials private; document architecture and secret names.
+
 
 # PilotSwarm Azure Deployer
 

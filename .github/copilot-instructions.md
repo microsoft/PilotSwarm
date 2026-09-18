@@ -17,12 +17,29 @@ Render raw arguments/results as text. Empty-response diagnostics remain only
 in Activity; do not turn them back into chat warnings. The TUI keeps calls in
 its Activity view.
 
-## **⚠️ NEVER commit, push, or deploy without explicit user permission. ALWAYS ask first.**
+## Authorization for commits and deployments
 
-> **MANDATORY:** Do NOT run `git commit`, `git push`, `git tag`, deploy scripts, or any
-> operation that modifies the repository history or remote state without the user
-> explicitly saying "commit", "push", or "deploy". Stage files and describe what
-> you'd commit, then ask.
+Use the user's authorization and task scope from the current conversation.
+Explicit authorization to drive a change through a PR, merge or deployment
+persists across follow-ups; do not repeatedly request the same permission.
+Prepare and validate the concrete change before asking for missing approval.
+Release publication, destructive resets and unrelated downstream deployments
+need their own authorization. Follow the deployment execution path below.
+
+## Deployment and CI routing
+
+Read `.github/DEPLOYMENT.md` for every deployment, provisioning or release task.
+This repository's managed environment changes through GitHub Actions. Local
+read-only inspection, scaffolding and tests are allowed. Legacy local recipes
+apply only to an explicitly selected operator-owned environment. Preserve
+existing authorization; a deploy request never authorizes a data reset.
+
+For a fresh machine or a fork's complete CI setup, use
+`docs/developer/contributing/local-ci-and-tests.md`. Stage and run
+`npm run check:privacy` before committing. Keep real environment identifiers and
+credentials private; architecture, generic secret names and configuration
+schemas are useful public documentation. The guard checks current indexed
+files, not historical commits. See `.github/REPOSITORY-PRIVACY.md`.
 
 ## Repo Scope Boundary
 

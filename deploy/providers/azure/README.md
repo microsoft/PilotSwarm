@@ -18,7 +18,10 @@ Scaffold an environment with `npm run deploy:new-env -- <name> --subscription <i
 its generated configuration before running `npm run deploy -- all <name>`.
 The deploy command provisions Azure resources, pushes worker and portal images
 to that stamp's Azure Container Registry, and applies the GitOps manifests.
-Publishing a GitHub Release does not run this deployment.
+The **Create release** workflow deploys its tested source after publishing the
+GitHub tarballs. An ordinary merge or an independently created tag does not
+deploy. See [deployment operations](../../../.github/DEPLOYMENT.md) and
+[local CI setup](../../../docs/developer/contributing/local-ci-and-tests.md).
 
 `EDGE_MODE=public` uses AKS managed Azure CNI Overlay networking and the
 application-routing NGINX public LoadBalancer. The rollout assigns an Azure

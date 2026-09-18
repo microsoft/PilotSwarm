@@ -3,6 +3,14 @@ name: debug-test
 description: Diagnose and fix a failing integration test in PilotSwarm. Covers the full call chain from PilotSwarmSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
 ---
 
+For machine setup and provider coverage, read
+`docs/developer/contributing/local-ci-and-tests.md` and `.github/CI.md`.
+No flag means full PostgreSQL; `--all-providers` adds HDB-specific coverage;
+`--with horizondb` runs the complete suite on HDB. Default file concurrency is
+8. New SDK test files join additive HDB coverage unless explicitly reviewed in
+`scripts/provider-test-coverage.json`. CI requires real HDB and rejects skips.
+
+
 # Debug a Failed Test
 
 ## Diagnosis steps

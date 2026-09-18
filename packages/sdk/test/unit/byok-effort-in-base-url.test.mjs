@@ -146,7 +146,7 @@ test("base urls full of delimiter-ish characters round-trip intact", () => {
     const urls = [
         "http://127.0.0.1:8787",
         "https://api.fireworks.ai/inference/v1",
-        "https://grimfanda-foundry.cognitiveservices.azure.com/openai/v1",
+        "https://example-foundry.cognitiveservices.azure.com/openai/v1",
         "https://example.invalid/v1/x-reasoning",          // prefix-ish, but not the prefix
         "https://example.invalid/x-reasoning-effort",      // no level
         "https://example.invalid/x-reasoning-effort/",     // empty level

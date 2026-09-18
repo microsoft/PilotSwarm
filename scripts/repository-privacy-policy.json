@@ -1,0 +1,25 @@
+{
+  "publicAzureHosts": ["privatelink.file.core.windows.net"],
+  "exampleAzureHosts": [
+    "acr_name.azurecr.io", "placeholder.azurecr.io", "placeholder.blob.core.windows.net",
+    "your-foundry-resource.services.ai.azure.com", "myvault.vault.azure.net",
+    "myacr.azurecr.io", "old-stamp-pg.postgres.database.azure.com",
+    "ps.example.postgres.database.azure.com", "acct.blob.core.windows.net",
+    "prefilled.blob.core.windows.net", "test-vault.vault.azure.net",
+    "test.azurecr.io", "test.blob.core.windows.net", "example.blob.core.windows.net",
+    "acrtest.azurecr.io", "pssandbox-wus3-portal.westus3.cloudapp.azure.com",
+    "portal.westus3.cloudapp.azure.com", "stub.azurecr.io", "stub.blob.core.windows.net",
+    "stamp-pg.postgres.database.azure.com", "stamp.cognitiveservices.azure.com",
+    "pstest-aif.cognitiveservices.azure.com", "example-foundry.cognitiveservices.azure.com",
+    "your-resource.openai.azure.com", "my-resource.openai.azure.com",
+    "myserver.postgres.database.azure.com", "acmecr.azurecr.io",
+    "my-copilot-pg.postgres.database.azure.com", "my-pg.postgres.database.azure.com",
+    "resource.openai.azure.com", "unittest.blob.core.windows.net"
+  ],
+  "publicAzureIds": {
+    "c632b3df-fb67-4d84-bdcf-b95ad541b5c8": "Microsoft Azure VPN client application",
+    "41b23e61-6c1e-4545-b367-cd054e0ed4b4": "Legacy Microsoft Azure VPN client application",
+    "04b07795-8ddb-461a-bbee-02f9e1bf7b46": "Microsoft Azure CLI application",
+    "00000003-0000-0000-c000-000000000000": "Microsoft Graph application"
+  }
+}

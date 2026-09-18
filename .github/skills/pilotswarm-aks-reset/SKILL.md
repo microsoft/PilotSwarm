@@ -3,6 +3,17 @@ name: pilotswarm-aks-reset
 description: Reset remote PilotSwarm state for AKS safely. Use when wiping the PilotSwarm database/blob state, clearing stale orchestration history, or recovering from namespace drift and replay/nondeterminism issues.
 ---
 
+## Select the execution path
+
+Read `.github/DEPLOYMENT.md` first. The commands below are operator-managed
+environment recipes. For this repository’s managed environment, local Azure or
+Kubernetes mutations are not permitted. Identity setup is a one-time admin
+prerequisite; ongoing changes/reset/teardown need an authorized maintenance
+Action, which is not currently supplied. Do not run these recipes locally as
+a fallback. Preserve the selected auth posture; VPN steps apply only to a
+VPN-enabled target.
+
+
 # PilotSwarm AKS Reset
 
 Use this skill when the user explicitly asks to wipe remote PilotSwarm state, reset AKS-backed databases, purge blob-backed session state, or recover from tainted orchestration history.

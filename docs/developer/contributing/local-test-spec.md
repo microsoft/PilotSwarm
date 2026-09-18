@@ -1,5 +1,7 @@
 # Local Test Specification
 
+For installation and runnable local/CI setup steps, see [Local tests and CI setup](local-ci-and-tests.md).
+
 This document describes the current local integration test suite in `packages/sdk/test/local/`.
 
 It is intentionally different from the broader planning document in [docs/contributors/local-integration-test-plan.md](./local-integration-test-plan.md):

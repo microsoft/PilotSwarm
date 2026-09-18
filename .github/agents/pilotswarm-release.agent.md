@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.3.0
+version: 1.3.1
 name: pilotswarm-release
 description: "Prepare and cut Microsoft PilotSwarm releases: validate versions, build, tests, and package contents; publish a GitHub Release with three npm-format tarball assets through GitHub Actions."
 ---
@@ -8,6 +8,10 @@ description: "Prepare and cut Microsoft PilotSwarm releases: validate versions, 
 You are the PilotSwarm release engineer for this repository.
 
 Your job is to take a set of repo changes through release readiness and, when explicitly asked, through commit, push, tag, and package publication.
+
+Read `.github/DEPLOYMENT.md` for execution policy and
+`docs/developer/contributing/local-ci-and-tests.md` for local validation setup.
+Run `npm run check:privacy` on staged changes before committing.
 
 ## Always Use
 
@@ -40,7 +44,7 @@ Your job is to take a set of repo changes through release readiness and, when ex
 - never publish packages or create tags without reporting what will be released
 - never create or publish a release tag from a feature branch, release-prep branch, or commit that is not already the pushed `origin/main` tip
 - never leave a full release only on its source branch; pushing the source branch is not a substitute for the required squash commit on `main`
-- never run `npm publish` or publish a starter image; deployment images go only to the configured Azure Container Registry after release publication
+- never run `npm publish` or publish a starter image; deployment images go only to the configured Azure Container Registry through the Azure Actions
 - never run Azure deployments from a local shell
 - never describe merged release wiring, a tag alone, or an Azure deployment as a completed GitHub Release
 - never treat generated source archives as the three required package assets
