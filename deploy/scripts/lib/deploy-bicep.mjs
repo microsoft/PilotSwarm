@@ -22,7 +22,7 @@ import {
 } from "./deploy-marker.mjs";
 import { assertFoundryDeploymentsValid } from "./validate-foundry-deployments.mjs";
 import { resolveAppgwWafCustomRulesFile } from "./appgw-waf-rules.mjs";
-import { prepareHorizonDbEnvForRender } from "./horizondb.mjs";
+import { prepareHorizonDbEnvForRender, ensureHorizonDbParameterGroup } from "./horizondb.mjs";
 
 // Bicep main.bicep paths and params templates are derived by convention from
 // the module name: deploy/providers/azure/services/<Module>/bicep/{main.bicep,<Module>.params.template.json}.
@@ -94,6 +94,7 @@ export async function deployBicep({ service, envName, env, region, stagingDir, m
   const forceSet = new Set(Array.isArray(forceModules) ? forceModules : []);
   for (const moduleName of modules) {
     await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet });
+    if (moduleName === "horizondb") await ensureHorizonDbParameterGroup(env);
   }
   return env;
 }

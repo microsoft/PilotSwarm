@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateHorizonDbConfig } from "../lib/horizondb.mjs";
+import { validateHorizonDbConfig, ensureHorizonDbParameterGroup } from "../lib/horizondb.mjs";
 import { composeDerivedEnv } from "../lib/compose-env.mjs";
 import { stageDatabaseSecrets } from "../lib/database-secrets.mjs";
 
@@ -59,4 +59,30 @@ test("HorizonDB stamp fails closed on a mismatched database or unbounded public 
   ]) {
     assert.throws(() => validateHorizonDbConfig(horizonEnv(change)));
   }
+});
+
+test("existing HorizonDB cluster is attached to its extension group before deployment continues", async () => {
+  const env = horizonEnv({
+    SUBSCRIPTION_ID: "00000000-0000-0000-0000-000000000003",
+    RESOURCE_GROUP: "stamp-rg", HORIZONDB_CLUSTER_NAME: "stamp-hdb",
+    HORIZONDB_PARAMETER_GROUP_NAME: "stamp-extensions",
+  });
+  const states = [
+    { provisioningState: "Succeeded", parameterGroup: { id: "default_pg17", syncStatus: "InSync" } },
+    { provisioningState: "Updating", parameterGroup: { id: "default_pg17", syncStatus: "PendingReplace" } },
+    { provisioningState: "Succeeded", parameterGroup: { id: "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/stamp-rg/providers/Microsoft.HorizonDb/parameterGroups/stamp-extensions", syncStatus: "InSync" } },
+  ];
+  const calls = [];
+  await ensureHorizonDbParameterGroup(env, {
+    runFn: (_name, args) => {
+      calls.push(args);
+      return args.includes("patch") ? { stdout: "" } : { stdout: JSON.stringify({ properties: states.shift() }) };
+    },
+    sleepFn: async () => {},
+  });
+  const patches = calls.filter((args) => args.includes("patch"));
+  assert.equal(patches.length, 1);
+  const body = JSON.parse(patches[0][patches[0].indexOf("--body") + 1]);
+  assert.equal(body.properties.parameterGroup.applyImmediately, true);
+  assert.match(body.properties.parameterGroup.id, /parameterGroups\/stamp-extensions$/);
 });

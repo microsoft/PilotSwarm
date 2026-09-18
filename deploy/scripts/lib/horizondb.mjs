@@ -132,3 +132,39 @@ export function seedHorizonDbConnectionUrl(env) {
     log("info", `[horizondb] ${name} is current.`);
   }
 }
+
+// HorizonDB can create a cluster with its system default parameter group even
+// when the create request names a custom group. Verify the live connection
+// after Bicep, then attach the declared group before the worker starts its
+// extension migrations. This also repairs existing stamps on later deploys.
+export async function ensureHorizonDbParameterGroup(env, { runFn = run, sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  if (!horizonDbEnabled(env)) return;
+  const { SUBSCRIPTION_ID: subscription, RESOURCE_GROUP: group, HORIZONDB_CLUSTER_NAME: cluster,
+    HORIZONDB_PARAMETER_GROUP_NAME: parameterGroup } = env;
+  if (!subscription || !group || !cluster || !parameterGroup) {
+    throw new Error("HorizonDB parameter-group verification requires subscription, resource group, cluster and group names.");
+  }
+  const base = `/subscriptions/${subscription}/resourceGroups/${group}/providers/Microsoft.HorizonDb`;
+  const desiredId = `${base}/parameterGroups/${parameterGroup}`;
+  const url = `https://management.azure.com${base}/clusters/${cluster}?api-version=2026-01-20-preview`;
+  let requested = false;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const current = JSON.parse(runFn("az", ["rest", "--method", "get", "--url", url], { capture: true }).stdout);
+    const attached = current.properties?.parameterGroup;
+    if (attached?.id?.toLowerCase() === desiredId.toLowerCase() &&
+        attached.syncStatus === "InSync" && current.properties?.provisioningState === "Succeeded") {
+      log("ok", "HorizonDB cluster is using its declared extension parameter group.");
+      return;
+    }
+    if (!requested && current.properties?.provisioningState === "Succeeded" &&
+        attached?.id?.toLowerCase() !== desiredId.toLowerCase()) {
+      const body = JSON.stringify({ properties: { parameterGroup: { id: desiredId, applyImmediately: true } } });
+      runFn("az", ["rest", "--method", "patch", "--url", url,
+        "--headers", "Content-Type=application/json", "--body", body], { capture: true });
+      requested = true;
+      log("info", "Attaching the declared HorizonDB extension parameter group.");
+    }
+    await sleepFn(10000);
+  }
+  throw new Error("HorizonDB extension parameter group did not become active within ten minutes.");
+}
