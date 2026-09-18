@@ -3,6 +3,17 @@ name: pilotswarm-vpn-client-profile
 description: "Use after deploying a PilotSwarm stamp with VPN_GATEWAY_ENABLED=true when an operator needs the Azure VPN client profile (azurevpnconfig.xml). Wraps deploy/scripts/auth/Get-VpnClientProfile.ps1 — downloads the gateway-issued profile zip via 'az network vnet-gateway vpn-client generate' and extracts it under the gitignored deploy/envs/local/<env>/vpn-client/ folder. The XML is the same for every user (no per-user credentials), and end users still authenticate with their own Entra ID at connect time."
 ---
 
+## Select the execution path
+
+Read `.github/DEPLOYMENT.md` first. The commands below are operator-managed
+environment recipes. For this repository’s managed environment, local Azure or
+Kubernetes mutations are not permitted. Identity setup is a one-time admin
+prerequisite; ongoing changes/reset/teardown need an authorized maintenance
+Action, which is not currently supplied. Do not run these recipes locally as
+a fallback. Preserve the selected auth posture; VPN steps apply only to a
+VPN-enabled target.
+
+
 # pilotswarm-vpn-client-profile
 
 Downloads and stages the Azure VPN client profile for a PilotSwarm

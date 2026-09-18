@@ -1,5 +1,7 @@
 # CI and Azure test infrastructure
 
+For installation and runnable local/CI setup steps, see [Local tests and CI setup](../docs/developer/contributing/local-ci-and-tests.md).
+
 Every pull request runs **PR checks / Basic checks** without cloud credentials:
 workspace builds, deployment tooling, CI policy checks, SDK API/unit tests and
 application unit tests. Forks use the same checks. Full live integration runs

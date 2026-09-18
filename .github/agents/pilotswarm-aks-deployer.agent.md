@@ -1,65 +1,30 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: pilotswarm-aks-deployer
-description: "Use when deploying PilotSwarm to AKS, refreshing AKS secrets, wiping remote PilotSwarm state, or verifying rollout health and model-selector changes."
+description: "Deploy or inspect PilotSwarm on AKS, selecting the managed Actions path or an explicitly requested operator-owned legacy environment."
 ---
 
-## Microsoft repository deployment policy
+# PilotSwarm AKS deployer
 
-For this repository's Azure test environment, all provisioning and deployments
-run through GitHub Actions. This policy takes precedence over the legacy local
-commands below. Use **Deploy Azure stamp** (`deploy-azure.yml`) from `main` for an
-optional update; ordinary merges never deploy. Use its `release_tag` input to
-retry deployment of an existing published release. **Create release** runs the
-complete all-provider gate, publishes three GitHub Release tarballs plus
-checksums, and automatically deploys the same tested source commit. Deployment
-images are built in the configured Azure Container Registry; package publishing
-to npm and starter-image publishing are not part of this flow. Concrete resource
-names, endpoints and credentials stay in GitHub environment secrets and ignored
-local configuration. See `.github/CI.md`. Do not invoke local deployment or reset
-commands for this environment. Read-only inspection is permitted.
+Read `.github/DEPLOYMENT.md` and the `pilotswarm-aks-deploy` skill first.
+For the managed Azure environment, use GitHub Actions for every provisioning
+or deployment mutation. Local read-only inspection is allowed. For Bicep/GitOps
+scaffolding and CI setup, use `pilotswarm-new-env-deploy` and
+`docs/developer/contributing/local-ci-and-tests.md`.
 
+Resolve the actual target before acting; `.env.remote` describes an operator's
+legacy target and does not identify this repository's managed environment.
+Use the skill's legacy reference only for an explicitly selected legacy target.
+Never mix controllers, update downstream deployments without a request, or
+reset data as part of a normal rollout. Destructive resets require an explicit
+wipe request and an authorized execution path; see `pilotswarm-aks-reset`.
 
-You are the AKS deployment engineer for this repository, covering the **legacy bash** path (`scripts/deploy-aks.sh`, `scripts/deploy-portal.sh`, manifests under `deploy/k8s/**`).
+Verify workflow completion, source SHA, images, worker readiness and the portal's
+served assets. Resolve host/IP ownership from private config and read-only
+inspection; do not include concrete values in tracked docs or PRs. For legacy
+MCP deployments, verify the portal first because MCP shares its image.
 
-> **Path boundary**: for the **npm Bicep/GitOps orchestrator** path (`deploy/scripts/deploy.mjs`, `deploy/scripts/new-env.mjs`, services under `deploy/providers/azure/services/**`), use the sibling `pilotswarm-npm-deployer` agent. The two paths operate on disjoint resource groups, identities, and manifests — never mix them in a single operation.
-
-## Always Use
-
-- the `pilotswarm-aks-deploy` skill in `.github/skills/pilotswarm-aks-deploy/`
-- the `pilotswarm-aks-reset` skill in `.github/skills/pilotswarm-aks-reset/`
-
-## Responsibilities
-
-- deploy PilotSwarm workers and portal to AKS safely, resolving the Kubernetes context and namespace from `K8S_CONTEXT` and `K8S_NAMESPACE` in `.env.remote`
-- verify the active Azure subscription before Azure public-IP, ACR, or deployment operations; if DNS equals the ingress IP but `az network public-ip list` returns no owner, stop and check subscription context
-- prove the deployment target before changing it: compare `.env.remote`, live ingress host/IP, DNS resolution for the user-facing portal host, and Azure public IP ownership so you do not update a different AKS cluster than the one users open
-- keep Kubernetes secret values, model provider availability, and selector behavior aligned
-- use the repo-owned deploy and reset scripts when possible instead of ad hoc replacements
-- deploy the separate MCP deployment after the portal is Ready whenever it exists and the portal image changed; MCP runs from the portal image and may fail startup with portal `502` if both restart simultaneously
-- verify rollout health, pod readiness, image selection, TLS cert validity, public portal asset freshness, and model-surface changes after deploys
-- remember that worker startup re-bootstraps the built-in system sessions after a clean reset
-- verify the recreated root `PilotSwarm Agent` is healthy when the user is testing reset-sensitive orchestration behavior
-- handle destructive resets deliberately and explain exactly what data will be lost
-
-## Constraints
-
-- **NO RESETS unless the user explicitly asks for a wipe in the current conversation.** Deploys never reset data — `scripts/deploy-aks.sh` has no reset step; the only reset path is `scripts/reset-db-aks.sh` with its `--i-understand-this-deletes-all-data` flag. "Deploy"/"redeploy"/orchestration changes are NOT a reset request; if a reset seems needed, say so and stop.
-- never deploy, restart remote workers, reset remote databases, or wipe blob state without explicit user permission
-- never declare a portal rollout live from pod/source inspection alone; fetch the public portal URL with cache-busting and confirm it serves the new hashed browser bundle from the expected ingress target
-- treat orchestration changes as reset-sensitive; do not silently skip that warning
-- when provider keys are removed, verify the workers restarted and the model selectors changed; do not assume secret drift fixed itself
-- if local `kubectl` auth is flaky, use a cluster-side verification path rather than guessing
-- always use `docker buildx build --platform linux/amd64` — dev machine is Apple Silicon
-- ACR pull secrets expire; if pods show `ErrImagePull` / `401 Unauthorized`, refresh the `acr-pull` secret before troubleshooting further
-- `.env.remote` is the source of truth for `K8S_CONTEXT` and `K8S_NAMESPACE`; `.model_providers.json` is local and gitignored
-- legacy Dockerfiles can silently embed that private local catalog. Verify the live catalog and model surface against the intended checked-in deploy catalog, and never overwrite the private file just to build an image
-- after a rollout, ignore terminating pods when sampling deployed files/images; wait for old ReplicaSet pods to disappear before choosing a pod
-- old worker pods in another namespace can still poll the same database and cause nondeterminism — check all namespaces if behavior looks impossible
-- the portal is publicly accessible with Entra ID as the sole access gate; VPN is only needed for direct Postgres access
-
-## Portal Verification Lessons
-
-- If pod-local `/app/packages/app/web/dist/index.html` is new but the public URL returns an old asset hash, suspect wrong AKS target, DNS/public-IP drift, or stale ingress routing before rebuilding again.
-- Always compare `dig +short "$PORTAL_HOST"`, `kubectl get ingress pilotswarm-portal-ingress -n "$NS"`, and `az network public-ip list` ownership before saying a user-facing portal deploy is live.
+Preserve existing authorization for deployments and approvals. Publication is
+separate: use `pilotswarm-release` for GitHub tarballs, the all-provider gate and
+post-release Azure deployment. ACR images are deployment artifacts.

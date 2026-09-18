@@ -42,6 +42,12 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
+# Remote resets must identify their target before any database mutation.
+if [[ "$MODE" == "remote" ]]; then
+    : "${K8S_CONTEXT:?Set K8S_CONTEXT in .env.remote for your own environment}"
+    : "${ACR_REGISTRY:?Set ACR_REGISTRY in .env.remote for your own environment}"
+fi
+
 # Local runs may use either the Copilot SDK defaults under ~/.copilot or the
 # legacy repo-local .tmp layout from older PilotSwarm builds.
 LOCAL_TMP="${REPO_ROOT}/.tmp"
@@ -259,7 +265,7 @@ echo "   Done. Everything is clean — schemas will be recreated on next start."
 
 # ── 7. Rebuild and redeploy AKS workers (remote mode only) ──
 if [[ "$MODE" == "remote" ]]; then
-    K8S_CTX="${K8S_CONTEXT:-toygres-aks}"
+    K8S_CTX="${K8S_CONTEXT}"
     K8S_NS="${K8S_NAMESPACE:-copilot-runtime}"
     echo ""
     echo "   Rebuilding and redeploying AKS workers..."
@@ -271,7 +277,7 @@ if [[ "$MODE" == "remote" ]]; then
     npm run build -w packages/sdk 2>/dev/null || { echo "   ⚠️  TypeScript build failed"; }
 
     # Build and push Docker image
-    REGISTRY="${ACR_REGISTRY:-toygresaksacr.azurecr.io}"
+    REGISTRY="${ACR_REGISTRY}"
     IMAGE="${REGISTRY}/copilot-runtime-worker:latest"
     echo "   Building and pushing Docker image..."
     az acr login --name "${REGISTRY%%.*}" 2>/dev/null

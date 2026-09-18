@@ -676,7 +676,7 @@ output logAnalyticsWorkspaceId string = LogAnalytics.outputs.workspaceId
 output logAnalyticsWorkspaceName string = LogAnalytics.outputs.workspaceName
 
 // Foundry account endpoint. Empty when foundryEnabled=false, otherwise the
-// account's data-plane URL (e.g. `https://psdev-aif.cognitiveservices.azure.com/`).
+// account's data-plane URL (e.g. `https://example-foundry.cognitiveservices.azure.com/`).
 // Aliased into FOUNDRY_ENDPOINT by deploy/scripts/lib/deploy-bicep.mjs and
 // substituted into deploy/providers/azure/gitops/worker/base/model_providers.json at
 // manifest-staging time (placeholder `__FOUNDRY_ENDPOINT__`).

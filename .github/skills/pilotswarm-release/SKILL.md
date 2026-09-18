@@ -11,6 +11,10 @@ Prepare changes on a `feature/` branch and squash-merge the PR into `main`.
 Keep private configuration in protected GitHub environment secrets and ignored
 local files. Never put environment names, endpoints or credentials in a PR.
 
+See `.github/DEPLOYMENT.md` for deployment routing and
+`docs/developer/contributing/local-ci-and-tests.md` for local validation setup.
+Run `npm run check:privacy` after staging release changes.
+
 ## Release contract
 
 - The first post-migration release is planned as **v0.6.0**. Check remote tags and

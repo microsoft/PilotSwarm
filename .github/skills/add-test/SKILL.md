@@ -3,6 +3,14 @@ name: add-test
 description: Add a new integration test to PilotSwarm test suite. Tests verify end-to-end flows through PilotSwarmClient, duroxide orchestration, and the Copilot SDK.
 ---
 
+For machine setup and provider coverage, read
+`docs/developer/contributing/local-ci-and-tests.md` and `.github/CI.md`.
+No flag means full PostgreSQL; `--all-providers` adds HDB-specific coverage;
+`--with horizondb` runs the complete suite on HDB. Default file concurrency is
+8. New SDK test files join additive HDB coverage unless explicitly reviewed in
+`scripts/provider-test-coverage.json`. CI requires real HDB and rejects skips.
+
+
 # Add a New Test
 
 Integration tests live in `packages/sdk/test/local/` as individual `.test.js` files (or in subdirectories like `sub-agents/`). They require a running PostgreSQL database and a GitHub token (in `.env`). Tests use **vitest** with `describe`/`it`.

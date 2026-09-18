@@ -3,6 +3,16 @@ name: pilotswarm-azure-deployer
 description: "Use when packaging and deploying a PilotSwarm-based app to Azure or AKS. Covers remote worker parity, environment/config wiring, manifests, and rollout constraints."
 ---
 
+## Deployment scope
+
+This template scaffolds the user's own application's deployment. It does not
+operate the PilotSwarm repository's managed Azure environment. When working in
+that repository, follow `.github/DEPLOYMENT.md` and its Actions-only deployment
+path. For local tests and installing the provider CI system, see
+`docs/developer/contributing/local-ci-and-tests.md` in the PilotSwarm source.
+Keep real identifiers/credentials private; document architecture and secret names.
+
+
 # PilotSwarm Azure Deployer
 
 Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker and browser-portal deployments.

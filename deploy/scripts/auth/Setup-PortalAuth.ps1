@@ -158,7 +158,7 @@
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 `
-        -ExistingAppId e4a81386-accc-48d5-b7d8-9f3324aec1e6 `
+        -ExistingAppId <existing-app-client-id> `
         -EnvName newstamp
 
     Adds the newstamp's portal endpoint as a new SPA redirect URI on the

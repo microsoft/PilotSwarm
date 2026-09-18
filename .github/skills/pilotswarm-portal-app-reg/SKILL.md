@@ -3,6 +3,17 @@ name: pilotswarm-portal-app-reg
 description: "Use when bringing up a PilotSwarm portal stamp with `PORTAL_AUTH_PROVIDER=entra` and no existing `PORTAL_AUTH_ENTRA_CLIENT_ID`. Drives the Entra app-registration step (create app, configure redirect URIs, optionally define app roles + require assignment, capture tenant/client IDs). Skip entirely for `PORTAL_AUTH_PROVIDER=none` or when a client ID is already supplied."
 ---
 
+## Select the execution path
+
+Read `.github/DEPLOYMENT.md` first. The commands below are operator-managed
+environment recipes. For this repository’s managed environment, local Azure or
+Kubernetes mutations are not permitted. Identity setup is a one-time admin
+prerequisite; ongoing changes/reset/teardown need an authorized maintenance
+Action, which is not currently supplied. Do not run these recipes locally as
+a fallback. Preserve the selected auth posture; VPN steps apply only to a
+VPN-enabled target.
+
+
 # pilotswarm-portal-app-reg
 
 Drives the Entra app-registration step for a PilotSwarm portal stamp.

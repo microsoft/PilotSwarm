@@ -1,5 +1,7 @@
 # Working On PilotSwarm
 
+For installation and runnable local/CI setup steps, see [Local tests and CI setup](local-ci-and-tests.md).
+
 This guide is for contributors changing PilotSwarm itself: the SDK runtime, worker/session plumbing, TUI, plugins, prompts, or deployment story.
 
 ## Repo Map

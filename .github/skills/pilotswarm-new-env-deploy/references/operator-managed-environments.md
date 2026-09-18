@@ -1,0 +1,570 @@
+# Bicep/GitOps operations for operator-managed environments
+
+These recipes apply to an operator’s own environment. For this repository’s
+managed environment, use `.github/DEPLOYMENT.md` and GitHub Actions. Read only
+the section relevant to the chosen target and operation.
+
+# PilotSwarm New-Environment Deploy
+
+Use this skill when the user wants a **brand-new, isolated** PilotSwarm
+environment (e.g. `mysandbox`, `myenv2`) into a fresh resource group
+— not when they are operating an already-deployed PilotSwarm cluster.
+
+For the **legacy** path (`scripts/deploy-aks.sh`,
+`scripts/deploy-portal.sh`, `deploy/k8s/**`), use the existing
+`pilotswarm-aks-deploy` skill instead. Do not mix paths. The two
+orchestrators operate on disjoint resource groups, identities, and
+manifests.
+
+## Canonical References
+
+Always treat these as source of truth — `deploy/scripts/README.md` is
+updated in lockstep with the code, this skill is a procedural overlay:
+
+- `deploy/scripts/README.md` — full orchestrator reference (services, steps, EDGE_MODE × TLS_SOURCE, troubleshooting).
+- `deploy/providers/azure/envs/template.env` — every operator-settable env key with inline documentation.
+- `deploy/scripts/new-env.mjs` — scaffolder; declarative `INPUTS` array is the canonical CLI flag/prompt source.
+- `deploy/scripts/deploy.mjs` — orchestrator; canonical step matrix, `--force` / `--force-module`, `UNSUPPORTED_COMBOS`.
+- `deploy/providers/azure/services/*/deploy.json` + `deploy/providers/azure/services/deploy-manifest.json` — service catalog + module wiring.
+
+## Topology Produced
+
+| Tier | Resource | Notes |
+|---|---|---|
+| Global | AFD Premium profile, AFD WAF policy, Global RG | Only when `EDGE_MODE=afd` |
+| Base | AKS, ACR, Storage, Key Vault, identities, Flux | Always |
+| Database | Optional PostgreSQL Flex or HorizonDB | Selected by stamp configuration |
+| T2 edge (afd) | AppGw v2 + WAF + Private Link Service + AGIC | `EDGE_MODE=afd` |
+| T2 edge (private) | AKS web-app-routing (NGINX) on ILB + Private DNS Zone | `EDGE_MODE=private` |
+| T2 edge (public) | AKS-managed Azure CNI Overlay network + public NGINX LoadBalancer + Azure DNS label; no dedicated VNet/AppGw/AFD | `EDGE_MODE=public`, `TLS_SOURCE=letsencrypt` |
+| T2 ingress (vpn) | Azure VPN Gateway P2S (OpenVPN + Entra ID) + `GatewaySubnet` + managed Private DNS zone + auto-seeded AppGw WAF guard rules | `VPN_GATEWAY_ENABLED=true` (additive; requires `EDGE_MODE=afd` + `TLS_SOURCE=akv`) |
+Additional downstream worker clusters are not part of the current service manifest.
+
+## Pre-flight Checklist
+
+Run through every item before running `new-env`:
+
+- **Tooling**: Node ≥ 24, `az`, `docker`, `oras`, `kubectl`, `flux`. The orchestrator validates lazily per `--steps`, but `all` needs all of them.
+- **Azure sign-in**: `az login --tenant <tenant-id>` then `az account set --subscription <sub-id>`. Mismatch is rejected by the tenant/subscription pin guard before any mutation.
+- **Protected-name collision**: the chosen env name `X` derives `psX` as the resource-name prefix. The reserved names `dev` and `prod` (enterprise ServiceGroup labels) are NOT valid OSS env names. The scaffolder fails-closed if a derived name would collide with a protected literal; pick a different `X`.
+
+## Step 0 — Decide auth posture FIRST
+
+Before opening the defaults table, settle the portal-auth question. The
+answer determines whether `PORTAL_AUTH_ENTRA_CLIENT_ID` is "user
+provides it" or "we produce it via a pre-step" — and the user must
+know that before they see the table.
+
+Ask, in order:
+
+1. **"Do you want browser sign-in (Entra) on this stamp, or an open
+   sandbox?"**
+   - `none` → `PORTAL_AUTH_PROVIDER=none`, no app-registration step.
+     Skip the rest of Step 0.
+   - `entra` → continue.
+2. **"Do you already have a `PORTAL_AUTH_ENTRA_CLIENT_ID` (an existing
+   Entra app registration), or shall I provision one for this stamp?"**
+   - **Each stamp gets its own dedicated Entra app — always provision
+     a new one.** One app per stamp keeps redirect URI lists clean,
+     lets each environment be retired (and its app deleted)
+     independently, and avoids the "shared app blast radius" where
+     revoking one stamp's access touches every other stamp on the
+     same client id.
+   - **Never auto-suggest copying `PORTAL_AUTH_ENTRA_CLIENT_ID` from a
+     sibling stamp's `.env` file.** Even when a previous local stamp
+     (e.g. `<stamp>/.env`) shows a working client id, that app is
+     bound to that stamp's lifecycle and redirect URIs. Pulling
+     non-auth values (subscription, tenant, region) from a reference
+     stamp is fine; pulling the client id is not.
+   - The only valid path is: invoke the `pilotswarm-portal-app-reg`
+     skill **before** Step 1 to provision a fresh app. That skill
+     produces the `clientId` and writes it to
+     `deploy/envs/local/<stamp>/entra-app.json`. The skill requires
+     `-ServiceTreeId` — ask the user for theirs before invoking; do
+     not invent a placeholder.
+   - The only exception is if the user **explicitly and unprompted**
+     asks to reuse a specific existing app (e.g. tenant policy makes
+     app creation expensive, or they want a single SSO consent prompt
+     across all dev stamps). In that case take the client id directly
+     from them, or invoke the skill in append mode
+     (`-ExistingAppId <appId> -EnvName <stamp>`). This append mode does
+     not need a Service Tree ID. Do not infer reuse solely from the
+     presence of a sibling stamp.
+3. **"Should sign-in be locked down to assigned users only, or open to
+   any tenant member?"** (only when `entra` and provisioning new)
+   - **Production stamp (recommended)** → `-CreateAppRoles` + assign
+     users/groups to the `admin` / `user` roles in Entra (via
+     `Set-PortalAuthAssignments.ps1` or "Enterprise applications > Users
+     and groups"). The role assignment list **is** the allowlist — no
+     env-var allowlist needed. The portal engine is deny-by-default
+     (since v0.1.33): assigned principals get `admin` / `user` from
+     the JWT `roles` claim; unassigned signed-in users are denied at
+     the portal layer. Leave `appRoleAssignmentRequired=false` unless
+     a tenant admin can pre-grant OIDC scopes — flipping it on trips
+     AADSTS90094 admin-consent in restricted tenants.
+   - **Sandbox / dev stamp** → omit `-CreateAppRoles` AND set
+     `PORTAL_AUTHZ_DEFAULT_ROLE=user` in the stamp's `.env` to
+     explicitly opt into the legacy open posture (any tenant user signs
+     in as `user`). The default `PORTAL_AUTHZ_DEFAULT_ROLE=none` will
+     deny everyone for a no-allowlist, no-roles stamp.
+   - **Legacy email allowlist (no roles)** → omit `-CreateAppRoles`
+     and populate `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`
+     in the stamp's `.env`. The engine consults these allowlists only
+     when the JWT carries no `roles[]` claim, so this posture is for
+     stamps that don't want to do per-stamp Entra role assignments.
+
+Order matters operationally:
+
+- **Best path (preferred):** run app-reg BEFORE `new-env`. The script
+  can create the app shell with an empty redirect URI list, you scaffold
+  the stamp with the resulting client id already in place, then after
+  the bicep step you re-run the wrapper with `-ExistingAppId` to add
+  the now-known AFD endpoint.
+- **Acceptable path:** scaffold with `PORTAL_AUTH_PROVIDER=none`, deploy
+  to get the AFD endpoint, then run the wrapper with `-EnvName` for
+  auto-discovery, then flip provider to `entra` in
+  `deploy/envs/local/<stamp>/.env` and re-run `deploy.mjs portal <stamp> --steps manifests,rollout`.
+
+Pick one explicitly with the user; do not silently improvise.
+
+## Step 1 — Discover environment defaults
+
+Before opening the dialogue, run a quick discovery so the user sees
+**real values**, not placeholders:
+
+```bash
+az account show --query "{sub:id, subName:name, user:user.name, tenant:tenantId}" -o json
+gh auth status      # only if the stamp will use GitHub Copilot models
+```
+
+Cache the result for the rest of the conversation. Surface:
+- `sub` + `subName` → default `--subscription`
+- `tenant` → default `PORTAL_AUTH_ENTRA_TENANT_ID` (whatever `az account show` returns)
+- `user` (UPN) → **suggested** `ACME_EMAIL`, but **always** ask the
+  user to confirm or override before using it. The UPN may not be the
+  right address for cert-renewal notices (shared mailbox preferred for
+  prod). For Roles posture, also suggest the UPN as the initial
+  `ADMIN_ASSIGNMENTS` entry (the principal that will be assigned to
+  the `admin` app role). Do **not** auto-suggest the UPN for
+  `PORTAL_AUTHZ_ADMIN_GROUPS` — that env var is only relevant in the
+  **Legacy email allowlist** posture, not the Roles posture.
+- `gh` status → only for stamps using GitHub Copilot models. Foundry-only
+  stamps leave `GITHUB_TOKEN` empty (sentinel).
+
+## Step 2 — Present the full input surface upfront
+
+Always show the **entire** input surface in a single table — not just
+name/location/edge-mode. The user must be able to confirm or override
+every value before the script runs, so a non-interactive run is just as
+safe as an interactive walk.
+
+Group the table into four blocks: **Core**, **Edge/TLS**, **Per-stamp
+secrets**, **Portal auth**. Mark each value `(default)`,
+`(discovered)`, or `(required)`:
+
+```
+Core
+  name                          <required>          # 1–15 lowercase letters/digits/internal hyphens; not dev|prod
+  subscription                  <discovered: ${sub} — ${subName}>
+  tenant-id                     <discovered: ${tenant}>
+  location                      westus3 (default)
+  region-short                  <derived from deploy-manifest.json>
+  foundry-enabled               n (default)         # n | y; when 'y', also scaffolds foundry-deployments.json
+
+Edge / TLS
+  edge-mode                     afd (default)         # afd | private | public
+  tls-source                    letsencrypt (default) # letsencrypt | akv | akv-selfsigned
+  acme-email                    <suggested: ${user}; CONFIRM OR OVERRIDE> # only when tls-source=letsencrypt
+  host                          portal (default)      # only when edge-mode=private
+  private-dns-zone              <required>            # only when edge-mode=private
+
+VPN (optional — only when user asks for VPN access / off-network ingress)
+  vpn-enabled                   n (default)           # n | y; when 'y', auto-implies edge-mode=afd + tls-source=akv
+  ssl-cert-domain-suffix        <required when tls-source=akv>  # DNS suffix whose AKV cert this stamp will serve (e.g. dev.contoso.example)
+  vpn-client-address-pool       172.16.200.0/24 (default)       # must not overlap VNet 10.20.0.0/16
+  vpn-aad-audience              c632b3df-fb67-4d84-bdcf-b95ad541b5c8 (default)  # current Azure VPN Client app; override only for legacy-audience tenants
+
+Per-stamp secrets (Key Vault)
+  GITHUB_TOKEN                  <leave empty for Foundry-only stamps>  # optional; sentinel if empty
+  AZURE_MODEL_ROUTER_KEY        <skip / sentinel>       # optional
+  AZURE_FW_GLM5_KEY             <skip / sentinel>       # optional
+  AZURE_KIMI_K25_KEY            <skip / sentinel>       # optional
+  AZURE_OAI_KEY                 <skip / sentinel>       # optional
+  AZURE_OSS_DB_KEY              <skip / sentinel>       # optional
+
+Portal auth (ConfigMap) — fields depend on auth posture
+  PORTAL_AUTH_PROVIDER          entra (default)
+  PORTAL_AUTH_ENTRA_TENANT_ID   <discovered: ${tenant}>
+  PORTAL_AUTH_ENTRA_CLIENT_ID   <required if provider=entra>   # app-reg client id
+                                                               # see pilotswarm-portal-app-reg skill if you don't have one
+  PORTAL_AUTH_ALLOW_UNAUTHENTICATED  false (default)
+  PORTAL_AUTHZ_DEFAULT_ROLE          none (default — deny-by-default since v0.1.33)
+
+  # If posture = Roles (recommended for prod; -CreateAppRoles set):
+  PORTAL_AUTHZ_DEFAULT_ROLE          none (leave at default — deny-by-default)
+  PORTAL_AUTHZ_ADMIN_GROUPS          <leave empty>                                # role claim is authoritative; env allowlist is bypassed
+  PORTAL_AUTHZ_USER_GROUPS           <leave empty>
+  PORTAL_AUTH_ENTRA_ADMIN_GROUPS     <empty> (default)                            # optional: Entra group object ids that map to admin
+  PORTAL_AUTH_ENTRA_USER_GROUPS      <empty> (default)
+
+  # If posture = Sandbox / open (no app roles, accept any tenant user):
+  PORTAL_AUTHZ_DEFAULT_ROLE          user                                         # explicit opt-in to the legacy open posture
+  PORTAL_AUTHZ_ADMIN_GROUPS          <empty>
+  PORTAL_AUTHZ_USER_GROUPS           <empty>
+
+  # If posture = Legacy email allowlist (no app roles, restrict by email):
+  PORTAL_AUTHZ_DEFAULT_ROLE          none (leave at default)
+  PORTAL_AUTHZ_ADMIN_GROUPS          <suggested: ${user}; CONFIRM OR OVERRIDE>   # comma-separated UPNs / emails
+  PORTAL_AUTHZ_USER_GROUPS           <empty> (default)
+
+  # App-role assignments (Roles posture only — not stored in .env, applied via Set-PortalAuthAssignments.ps1)
+  ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
+  USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
+```
+
+**When the user asks for VPN access (e.g. "spin up a VPN-enabled env",
+"I need off-network access", "trusted-bypass lane"):** populate the VPN
+block above and **auto-fill `edge-mode=afd` + `tls-source=akv` as the
+defaults** for the Edge/TLS block — these are the only values that pass
+the VPN combo gate, so the user shouldn't have to discover that
+separately. Then ask for `ssl-cert-domain-suffix` (the one new value the
+agent cannot infer), confirm `vpn-client-address-pool` (default is fine
+unless their corp VPN already uses 172.16.200.0/24), and leave
+`vpn-aad-audience` at the default unless they explicitly mention legacy
+VPN client builds. Surface the 45-min provisioning lead time and the
+tenant-admin Conditional Access requirement (see §"Optional: VPN
+Gateway P2S" for both) *before* invoking the scaffolder, not after.
+
+**Pick one mechanism per stamp; don't mix roles + email allowlist.**
+The portal authz engine treats the JWT `roles` claim as authoritative
+when present (see `packages/app/web/auth/authz/engine.js`): the
+role-authoritative branch ignores `PORTAL_AUTHZ_ADMIN_GROUPS` /
+`PORTAL_AUTHZ_USER_GROUPS` entirely when `roles[]` is non-empty. So
+for Roles posture, the env allowlists serve no purpose — the role
+assignment in Entra **is** the allowlist. The deny-by-default behavior
+(`PORTAL_AUTHZ_DEFAULT_ROLE=none`, the new default) catches any
+signed-in principal who has no role claim and no email match. For
+sandbox stamps, set `PORTAL_AUTHZ_DEFAULT_ROLE=user` to opt back into
+the open posture explicitly.
+
+**About `ADMIN_ASSIGNMENTS` / `USER_ASSIGNMENTS`:** these are *not*
+stored in `.env`. They are the principal list to feed into
+`Set-PortalAuthAssignments.ps1` after the app reg exists. The deployer
+agent collects them at table-confirmation time and invokes the
+[`pilotswarm-portal-auth-assignments`](../pilotswarm-portal-auth-assignments/SKILL.md)
+skill right after the app-reg pre-step. Default the admin list to the
+deploying user (UPN from `az account show`); the user can edit either
+list — add a colleague, swap to a security group, etc. Without at
+least one admin assignment, an `-AssignmentRequired` app is unreachable.
+
+State the mode explicitly to the user once the table is on screen.
+Two safe modes exist; pick deliberately:
+
+- **Agent-driven default: non-interactive + post-scaffold edit.** When
+  *you* (the agent) are driving, prefer this even for hands-on
+  sessions. The user has already confirmed every value in the table
+  above, so the prompts add nothing — and the readline-echo trap (see
+  Step 3a) makes pacing errors invisible until you grep the rendered
+  `.env`. Scaffold with the flag-backed values, then use `edit` to
+  populate the remaining keys.
+- **User-driven interactive walk.** Only when the user explicitly
+  asks to type values themselves (e.g. they want to paste secrets
+  directly without sharing them with the agent). The agent's role
+  there is to launch the process and stay out of stdin.
+
+## Step 3 — Invoke
+
+Always invoke via `node` directly when passing any flag — npm strips
+`--location` (its own config flag) and `--prefix`:
+
+```bash
+node deploy/scripts/new-env.mjs <name>            # interactive
+node deploy/scripts/new-env.mjs <name> \          # non-interactive
+  --subscription <id> --location <loc> \
+  --edge-mode <mode> --tls-source <src> [--acme-email <addr>]
+```
+
+The bare `npm run deploy:new-env` (no flags) form is fine for an
+interactive walk. As soon as you need to pass any flag, drop to `node`
+directly.
+
+For `tls-source=letsencrypt`, `--acme-email` is mandatory in
+non-interactive mode — without it the rendered `.env` has an empty
+`ACME_EMAIL` and `deploy.mjs` will refuse the env at the overlay-contract
+gate. Pre-fill from the discovered UPN unless the user overrides.
+
+Validate the EDGE_MODE × TLS_SOURCE combination against the supported matrix before running anything (see Step 4 below). The combos `afd+akv-selfsigned` and `private+letsencrypt` are rejected by `deploy.mjs` itself — call them out before the user hits a `UNSUPPORTED_COMBOS` error.
+
+Only proceed after explicit confirmation. The resource prefix written by the scaffolder is `ps<name>` (e.g. `psmysandbox-wus3-rg`, `psmysandboxglobal`).
+
+If your first invocation form fails (e.g. you tried the `npm run deploy:new-env -- … --location …` form and npm stripped the flag), **re-confirm the mode with the user** before retrying with a different form. Do not silently switch from interactive to non-interactive — the prompt surface differs materially.
+
+### Step 3a — Driving the prompts safely (agent-execution rules)
+
+The interactive walk uses Node's `readline`, which **echoes typed input
+on the same line as the current prompt**. When you drive it via
+`write_powershell`, the transcript looks like
+`PROMPT> <your-text-here>` even though `<your-text-here>` is the answer
+to the *next* prompt that printed below. This makes input-pacing errors
+catastrophically easy to misread — you cannot reliably tell from the
+transcript alone which input was consumed by which prompt.
+
+Two rules to avoid the trap:
+
+1. **Prefer the hybrid path over a live interactive walk.** When the
+   defaults table is fully confirmed up front, scaffold
+   non-interactively (`name + --subscription + --location` + the
+   edge/tls/acme flags) and then use `edit` to set the remaining
+   `.env` keys (`GITHUB_TOKEN`, `AZURE_*_KEY`, `PORTAL_AUTH_*`,
+   `PORTAL_AUTHZ_*`) directly. This skips the entire prompt sequence,
+   removes the readline-echo ambiguity, and is materially safer than
+   an LLM driving a stdin stream.
+
+   **Sentinel-vs-empty trap (read this before editing).** The
+   scaffolder writes `__PS_UNSET__` into `.env` for every
+   `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` key the operator did not provide.
+   That sentinel is **the correct way to express "unset at runtime"** —
+   the portal runtime strips it from `process.env` at startup so the
+   engine sees the key as absent (and applies its own default — e.g.
+   `PORTAL_AUTHZ_DEFAULT_ROLE` falls through to `none` =
+   deny-by-default). The deploy-time `substitute-env.mjs` gate treats
+   **empty strings as "unresolved" and refuses to render manifests** —
+   only the sentinel passes. When editing `.env`:
+   - Replace `__PS_UNSET__` with a real value ONLY when you have one.
+   - To leave a key "unset", leave the sentinel in place. **Do not
+     replace `__PS_UNSET__` with an empty string** — that turns the
+     deploy gate into a failure at the portal-manifests step.
+
+2. **If you must drive interactively**, send **one answer per
+   `write_powershell` call**, then `read_powershell` and confirm the
+   *next* prompt has actually printed before sending the next answer.
+   Never batch multiple `{enter}`-separated values in one call —
+   readline coalesces them, but you lose the ability to verify which
+   answer was consumed by which prompt. When in doubt, stop and grep
+   the rendered `.env` before continuing.
+
+### Step 3b — Verify the rendered .env before deploy
+
+Regardless of mode, after `new-env` completes always grep the rendered
+file and read the values back to the user:
+
+```bash
+grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
+```
+
+If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in
+`{user, admin}` when you wanted an explicit value, `ACME_EMAIL` empty
+when `TLS_SOURCE=letsencrypt`, `__PS_UNSET__` sentinels you didn't
+intend to leave, or — symmetrically — `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*`
+keys that are empty strings where they should be `__PS_UNSET__`), fix
+it with `edit` before invoking `deploy.mjs`.This check is mandatory after any
+interactive run because of the readline-echo trap; it's cheap insurance
+after non-interactive runs too.
+
+## Step 4 — Edge mode × TLS source selection
+
+| `EDGE_MODE` | `TLS_SOURCE` | `VPN_GATEWAY_ENABLED` | Supported? | When |
+|---|---|---|---|---|
+| `afd` | `letsencrypt` | `false` | ✅ default | OSS-friendly public endpoint, ACME HTTP-01. |
+| `afd` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PublicCA cert via AKV. |
+| `afd` | `akv` | `true` | ✅ | Hybrid AFD + VPN P2S (trusted-bypass for authenticated users not matched by the AFD WAF allow-list). AKV-only — see "Optional: VPN Gateway P2S" below. |
+| `afd` | `akv-selfsigned` | any | ❌ | AppGw can't consume an AKV `Self` chain end-to-end. |
+| `afd` | `letsencrypt` | `true` | ❌ | VPN path requires an AKV cert; ACME HTTP-01 cannot reach a VPN-only client. Preflight error: `vpn-requires-akv`. |
+| `private` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PrivateCA via AKV. |
+| `private` | `akv-selfsigned` | `false` | ✅ | OSS-friendly private demo; AKV `Self`-issued cert. |
+| `private` | `letsencrypt` | any | ❌ | ACME HTTP-01 cannot reach a private/ILB endpoint. |
+| `private` | any | `true` | ❌ | VPN path is additive to AFD only (its WAF guard rules assume AFD as the public ingress). Preflight error: `vpn-requires-afd`. |
+
+The orchestrator validates the combo against `UNSUPPORTED_COMBOS` in
+`deploy.mjs` and `validateVpnGatewayCombo()` in
+`deploy/scripts/lib/overlay-contracts.mjs` before any Bicep runs.
+
+### Optional: VPN Gateway P2S (hybrid AFD + VPN)
+
+Tenant users with a valid Entra ID token can still be blocked at the
+public edge by AFD WAF allow-lists that the operator configures
+(typically service-tag, IP-range, or header-based rules that gate the
+public ingress to a known managed-network population). Enabling
+`VPN_GATEWAY_ENABLED=true` adds an Azure VPN Gateway (Point-to-Site,
+OpenVPN, Microsoft Entra ID auth) that terminates at the same AppGw
+private listener as the AFD path, with the same AKV cert — a
+"trusted-bypass" lane to the same stamp for authenticated tenant users
+who don't match the public allow-list (e.g. remote / off-network /
+unmanaged-device users).
+
+- **Constraints**: `EDGE_MODE=afd` is required (code: `vpn-requires-afd`).
+  `validateVpnGatewayCombo()` accepts any AKV-family `TLS_SOURCE` (`akv`
+  or `akv-selfsigned`; code: `vpn-requires-akv`); however,
+  `akv-selfsigned` is also rejected on AFD stamps end-to-end by
+  `deploy.mjs` `UNSUPPORTED_COMBOS`, so the only effective combo for the
+  trusted-bypass is `TLS_SOURCE=akv`. `letsencrypt` is rejected because
+  ACME HTTP-01 cannot reach a VPN-only client.
+  `SSL_CERT_DOMAIN_SUFFIX` must be set (the managed Private DNS zone
+  uses it). The scaffolder prompts for it interactively when
+  `TLS_SOURCE=akv`, or pass `--ssl-cert-domain-suffix <suffix>` for
+  non-interactive runs (e.g. `--ssl-cert-domain-suffix
+  dev.contoso.example`). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
+  `10.20.0.0/16`). VPN uses the existing stamp `AZURE_TENANT_ID` — same
+  Entra tenant as the rest of the deploy.
+- **Cost / time**: ~$450/month total for `VpnGw2AZ` + Azure Private DNS Resolver inbound endpoint (~$280 gateway + PIP + ~$170 resolver). The Resolver is co-provisioned with the gateway so P2S clients can resolve Private DNS Zone records (e.g. portal hostname) through the tunnel without hosts-file edits.
+  First-deploy time is **45+ minutes** (gateway provisioning is the long
+  pole). Subsequent param changes are still measured in minutes.
+- **AAD audience**: defaults to `c632b3df-fb67-4d84-bdcf-b95ad541b5c8`
+  (current Microsoft-registered Azure VPN Client app). Set
+  `VPN_AAD_AUDIENCE=41b23e61-6c1e-4545-b367-cd054e0ed4b4` in `.env` only on
+  tenants that must interop with older Azure VPN client builds registered
+  against the legacy audience.
+- **Auto-seeded AppGw WAF guards**: when `VPN_GATEWAY_ENABLED=true` the
+  base-infra bicep prepends three custom rules at priorities 90/91/92 to
+  the AppGw WAF policy — `AllowAfd` (matches `X-Azure-FDID =
+  <frontDoorId>`), `AllowVpn` (matches `RemoteAddr ∈
+  VPN_CLIENT_ADDRESS_POOL`), and `BlockOther` (catch-all `Block`).
+  Operator rules loaded from `APPGW_WAF_CUSTOM_RULES_FILE` (mirrors the
+  AFD-side `WAF_CUSTOM_RULES_FILE`) MUST start at priority ≥ 100 — the
+  90–92 band is reserved.
+
+#### Setting up Conditional Access
+
+Required out-of-band step before first VPN connect (tenant admin only).
+Create one CA policy targeting the Azure VPN Client app
+`c632b3df-fb67-4d84-bdcf-b95ad541b5c8` (or the legacy
+`41b23e61-6c1e-4545-b367-cd054e0ed4b4` if you set the override above),
+assigned to a NAMED users group (do not target "all users"), with the
+grant control set to **require MFA**. Explicitly do **NOT** require device
+compliance — the VPN client cannot satisfy that grant and the connect
+attempt will fail with an opaque AAD error. The post-scaffold reminder
+block in `new-env.mjs` re-prints these requirements when `VPN_GATEWAY_ENABLED=true`.
+
+#### Distributing the VPN client profile
+
+After the first deploy completes, hand operators the OpenVPN client
+profile. Preferred path is the repo helper:
+`pwsh -File deploy/scripts/auth/Get-VpnClientProfile.ps1 -EnvName <stamp>`
+(see the `pilotswarm-vpn-client-profile` skill). It wraps
+`az network vnet-gateway vpn-client generate --authentication-method EAPTLS`,
+downloads the signed zip, and extracts it under the gitignored
+`deploy/envs/local/<stamp>/vpn-client/` folder. As fallbacks: the Azure
+portal — `Resource group → <gateway-name> → Point-to-site configuration →
+Download VPN client` — or the raw CLI `az network vnet-gateway vpn-client
+generate --resource-group <rg> --name <gateway-name>
+--authentication-method EAPTLS`. All three emit the same `.zip` that
+imports directly into the Azure VPN Client app (Windows / macOS / iOS /
+Android).
+
+## Step 5 — Deploy
+
+End-to-end bring-up:
+
+```bash
+npm run deploy -- all <name>
+```
+
+The `all` aggregate runs the canonical sequence filtered by EDGE_MODE ×
+TLS_SOURCE:
+
+```
+global-infra → base-infra → horizondb → pls-anchor → cert-manager → cert-manager-issuers → worker → portal
+```
+
+- `global-infra` and `pls-anchor` skip when `EDGE_MODE != afd`.
+- `cert-manager` and `cert-manager-issuers` skip when `TLS_SOURCE != letsencrypt`.
+
+Bicep outputs (ACR login server, storage account name, KV name, etc.)
+cascade forward across services via the alias map; you don't hand-thread
+anything between services.
+
+### Per-service redeploys
+
+| Use case | Command |
+|---|---|
+| Push portal code change | `npm run deploy -- portal <name> --steps build,push,manifests,rollout` |
+| Worker env-only change | `npm run deploy -- worker <name> --steps manifests,rollout` |
+| Re-apply BaseInfra Bicep only | `npm run deploy -- base-infra <name> --steps bicep` |
+| Force AppGw cert refresh after AKV cert rotation | `npm run deploy -- portal <name> --force-module portal --steps bicep` |
+
+`--steps` accepts any subset in any order; it re-sorts to canonical
+pipeline order (`build → bicep → seed-secrets → push → manifests →
+rollout`). Outside `all` mode, single-service runs also redeploy that
+service's Bicep dependencies — the deploy-marker (template+params hash)
+short-circuits unchanged modules so this is cheap.
+
+### Force semantics
+
+- `--force`: bypass deploy-markers for **every** Bicep module in scope. Use sparingly.
+- `--force-module <name>`: bypass the deploy-marker for one module only (repeatable). The preferred lever — minimum-blast-radius. Empty values are rejected at parse time.
+
+## Step 6 — Verify
+
+After a successful `all`:
+
+```bash
+# Bicep outputs cached per env — sanity-check the names.
+jq -r 'to_entries | .[] | "\(.key)=\(.value.value)"' \
+  deploy/.tmp/<name>/bicep-outputs.cache.json | sort
+
+# T2 control cluster — workers and portal should be Running.
+kubectl --context ps<name>-aks get pods -n pilotswarm
+
+# T3 worker cluster — repo-cache StatefulSet should be Ready.
+kubectl --context ps<name>-aks-t3 get statefulset,pvc,pod,svc -n pilotswarm-jobs
+
+# Portal health (substitute the AFD endpoint or private FQDN).
+curl -s https://<portal-fqdn>/api/health
+# → {"ok":true,...}
+```
+
+(Adjust namespace names if your deploy manifests use different defaults
+— check `deploy/providers/azure/services/portal/deploy.json` and
+`deploy/providers/azure/services/worker/deploy.json` for the rendered namespace.)
+
+If Flux returns 403 on the first `rollout`, the cross-cluster RBAC grant
+on T3 (or Flux's Storage Blob Data Reader on T2) hasn't propagated. Retry
+`--steps rollout` after ~30s. If persistent, see the Flux troubleshooting
+section in `deploy/scripts/README.md`.
+
+## Step 7 — Teardown
+
+`deploy.mjs` is deploy-only. Tear down via Azure CLI:
+
+```bash
+az group delete --name ps<name>-<region>-rg --yes --no-wait
+az group delete --name ps<name>global --yes --no-wait   # afd mode only
+```
+
+The protected-resource guardrail does **not** block operator-driven
+deletion of envs you created; it only blocks `deploy.mjs` from
+*targeting* live resources.
+
+If the Entra app reg was created by `pilotswarm-portal-app-reg`,
+delete it too:
+
+```bash
+az ad app delete --id $(jq -r .clientId deploy/envs/local/<name>/entra-app.json)
+```
+
+## Guardrails
+
+- **Never run `deploy.mjs` against a live cluster.** It is a separate path. If the user wants to push to live, use `scripts/deploy-aks.sh --skip-reset` / `scripts/deploy-portal.sh` and the `pilotswarm-aks-deploy` skill.
+- **Protected-names check is non-negotiable.** If the scaffolder rejects a name, do not work around it. The check fires on both raw inputs and derived names.
+- **Tenant/subscription pin is non-negotiable.** `az account show` must match the env file's `AZURE_TENANT_ID` and `SUBSCRIPTION_ID` before any mutation.
+- **Bicep deploy-markers are cached at `deploy/.tmp/<name>/`** — wiping `.tmp/<name>/` forces full redeploys on the next run (occasionally useful for re-running a broken intermediate step, but slow).
+- **Don't propagate changes into downstream consumers.** PilotSwarm changes operate on PilotSwarm only — don't roll them into downstream app repos that vendor or consume the SDK unless the user explicitly asks.
+
+## Common Pitfalls
+
+- **`--force-module=`** with empty value: rejected at parse time (good — it would otherwise silently push an empty string and force nothing).
+- **AppGw SSL-cert not refreshing after AKV rotation**: deploy-marker skipped the portal module. Use `npm run deploy -- portal <env> --force-module portal --steps bicep`.
+- **AFD Private Endpoint approval times out**: `approve-private-endpoint.bicep` polls for up to 10 minutes. If it still times out, check `az network private-endpoint-connection list` on the PLS for stuck Pending entries.
+- **DNS prop delays on AFD**: AFD endpoint propagation can take 5–15 minutes after `global-infra`. Don't assume the curl works immediately after `all` returns; retry over ~15 minutes. During that window, `curl https://<afd-host>/api/health` will return HTTP 404 with an `x-azure-ref` header — this is normal, not a failure.
+- **Portal sign-in loop after deploy**: redirect URI on the Entra app reg doesn't match the deployed AFD endpoint. Run `az ad app show --id <clientId> --query "spa.redirectUris"` and compare. If the app was created before the AFD endpoint was known, re-run `pilotswarm-portal-app-reg` in `-ExistingAppId` append mode.
+
+## Boundary with sibling skills
+
+| Question | Skill |
+|---|---|
+| "Set up a new sandbox env" | **this skill** (`deploy.mjs`) |
+| "Roll out a fix to the existing legacy cluster" | `pilotswarm-aks-deploy` (`deploy-aks.sh`) |
+| "Reset / wipe DB on the existing cluster" | `pilotswarm-aks-reset` |
+| "Force AppGw cert refresh in my sandbox" | **this skill** (`--force-module portal`) |
+| "Provision Entra app reg for a portal stamp" | `pilotswarm-portal-app-reg` |
+| "Add a new module to the deploy" | both — the orchestrator (`deploy.mjs` services-manifest) is shaped by this skill; legacy k8s manifests live in `pilotswarm-aks-deploy` territory |

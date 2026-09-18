@@ -19,6 +19,8 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Check repository privacy
+        run: node scripts/check-repository-privacy.mjs
       - run: npm ci
       - run: npm run build
       - name: Deployment and CI policy tests
