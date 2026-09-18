@@ -8,9 +8,9 @@ import { pathToFileURL } from 'node:url';
 const policy = JSON.parse(readFileSync(new URL('./repository-privacy-policy.json', import.meta.url)));
 const azureHost = /\b(?:[a-z0-9_-]+\.)+(?:azurecr\.io|cloudapp\.azure\.com|postgres\.database\.azure\.com|cognitiveservices\.azure\.com|openai\.azure\.com|services\.ai\.azure\.com|vault\.azure\.net|(?:blob|file|queue|table)\.core\.windows\.net|azurewebsites\.net)\b/gi;
 const uuid = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi;
-const identityContext = /subscription[_ -]?id|tenant[_ -]?id|client[_ -]?id|app(?:lication)?[_ -]?id|principal[_ -]?id|ExistingAppId|serviceManagementReference/i;
+const identityContext = /(?:^|[^a-z0-9])(?:subscription(?:[_ -]?id)?|tenant(?:[_ -]?id)?|client[_ -]?id|app(?:lication)?[_ -]?id|principal[_ -]?id|ExistingAppId|serviceManagementReference)\b/i;
 const tokens = /\b(?:gh[pousr]_[a-zA-Z0-9]{30,}|github_pat_[a-zA-Z0-9_]{40,}|sk-(?:proj-|ant-api\d+-)?[a-zA-Z0-9_-]{32,})\b/g;
-const placeholderToken = value => /x{20}|0{20}|(?:fake|stub|dummy)/i.test(value);
+const placeholderToken = value => /^(?:gh[pousr]_|github_pat_|sk-(?:proj-|ant-api\d+-)?)[xX0]+$/.test(value);
 const placeholderId = value => new Set(value.replaceAll('-', '')).size <= 2 || value.split('-').every(part => new Set(part).size === 1);
 
 export function scanText(path, text) {
@@ -23,8 +23,9 @@ export function scanText(path, text) {
       const host = match[0].toLowerCase();
       if (!policy.exampleAzureHosts.includes(host) && !policy.publicAzureHosts.includes(host) && !/^__[a-z0-9_]+__\./.test(host)) add(number, 'concrete-azure-host');
     }
-    if (identityContext.test(line)) {
+    {
       for (const match of line.matchAll(uuid)) {
+        if (!identityContext.test(line.slice(Math.max(0, match.index - 100), match.index))) continue;
         const id = match[0].toLowerCase();
         if (!placeholderId(id) && !Object.hasOwn(policy.publicAzureIds, id)) add(number, 'concrete-azure-identity');
       }

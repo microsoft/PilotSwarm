@@ -13,6 +13,7 @@ test('privacy check rejects concrete endpoints and Azure identities without retu
   assert.deepEqual(findings.map(x => x.rule), ['concrete-azure-host', 'concrete-azure-identity']);
   assert.ok(!JSON.stringify(findings).includes(host));
   assert.ok(!JSON.stringify(findings).includes(id));
+  assert.equal(scanText('topology.md', `| Subscription | ${id} |`)[0].rule, 'concrete-azure-identity');
 });
 
 test('examples, secret names, public Azure IDs and structure remain shareable', () => {
