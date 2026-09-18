@@ -3,6 +3,22 @@ name: pilotswarm-new-env-deploy
 description: "Use when bringing up a fresh, isolated PilotSwarm environment (`mysandbox`, `myenv2`, etc.) via the npm Bicep/GitOps orchestrator at `deploy/scripts/deploy.mjs`. Covers `new-env` scaffolding, EDGE_MODE × TLS_SOURCE selection, the `all` aggregate, per-service redeploys with `--steps`, force-redeploy semantics, verification, and teardown. Strictly separate from the legacy bash path operated by `scripts/deploy-aks.sh`."
 ---
 
+## Microsoft repository deployment policy
+
+For this repository's Azure test environment, all provisioning and deployments
+run through GitHub Actions. This policy takes precedence over the legacy local
+commands below. Use **Deploy Azure stamp** (`deploy-azure.yml`) from `main` for an
+optional update; ordinary merges never deploy. Use its `release_tag` input to
+retry deployment of an existing published release. **Create release** runs the
+complete all-provider gate, publishes three GitHub Release tarballs plus
+checksums, and automatically deploys the same tested source commit. Deployment
+images are built in the configured Azure Container Registry; package publishing
+to npm and starter-image publishing are not part of this flow. Concrete resource
+names, endpoints and credentials stay in GitHub environment secrets and ignored
+local configuration. See `.github/CI.md`. Do not invoke local deployment or reset
+commands for this environment. Read-only inspection is permitted.
+
+
 # PilotSwarm New-Environment Deploy
 
 Use this skill when the user wants a **brand-new, isolated** PilotSwarm

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — 2026-09-18
+
+- Move Microsoft repository releases to a gated GitHub Action with complete baseline and live HorizonDB testing.
+- Publish the three npm-format packages and checksums as GitHub Release assets, followed by automatic deployment of the tested source commit to the Azure test environment.
+- Add automatic PR builds and unit checks, dedicated CI HorizonDB provisioning, and temporary test-runner network access.
+- Preserve Responses API selection for Foundry models and update release/deployment maintenance guidance.
+
 ## 0.5.79 — 2026-09-17
 
 - Master of Agents: drag pane headers to swap contents or split the target in half at any edge. Hold Shift at a matching T-junction to extend a pane across its neighbour. Preview the resulting layout before dropping, cancel with Escape, and undo recent moves. Preserve session connections, drafts, queued prompts, scroll position, and canvas state while rearranging.

@@ -45,3 +45,28 @@ The public `scripts/run-tests.sh` remains general-purpose: local users may
 configure their own providers without adopting Microsoft's CI infrastructure.
 Ordinary merges do not deploy the test environment. Deployment remains an
 explicit **Deploy Azure stamp** Action.
+
+## Release and post-release deployment
+
+Prepare matching package versions, internal dependencies, lockfile and changelog
+in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
+from `main` with the prepared version. The first planned release is `0.6.0`.
+The environment gate occurs once, before testing. The same job then:
+
+1. runs the full baseline and HorizonDB tests, including the real database gate;
+2. builds three package tarballs and checksums;
+3. creates an annotated tag at the tested SHA, uploads and verifies draft assets,
+   and publishes the GitHub Release;
+4. builds worker and portal images from that exact source SHA and deploys the
+   test environment through the shared Azure deployment Action.
+
+A failed test prevents publication. A later deployment failure leaves the valid
+release intact. Retry **Deploy Azure stamp** with `release_tag=v<version>`; it
+verifies the release is published and the tag is in main's history. Leave that
+input blank for an optional update from main. No merge event deploys anything.
+Release and deployment runs serialize against other Azure deployments; live
+provider runs serialize against CI database provisioning.
+
+The Azure rollout uses the released source commit rather than installing the
+`.tgz` assets. Release distribution remains GitHub assets only; the ACR images
+exist to run the test environment. No npm registry or starter image is published.

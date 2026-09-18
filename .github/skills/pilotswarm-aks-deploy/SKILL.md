@@ -3,6 +3,22 @@ name: pilotswarm-aks-deploy
 description: Deploy PilotSwarm to AKS using the repo's canonical scripts and checks. Use when refreshing secrets, building/pushing the worker image, rolling out to AKS, or verifying provider/model changes in the live cluster.
 ---
 
+## Microsoft repository deployment policy
+
+For this repository's Azure test environment, all provisioning and deployments
+run through GitHub Actions. This policy takes precedence over the legacy local
+commands below. Use **Deploy Azure stamp** (`deploy-azure.yml`) from `main` for an
+optional update; ordinary merges never deploy. Use its `release_tag` input to
+retry deployment of an existing published release. **Create release** runs the
+complete all-provider gate, publishes three GitHub Release tarballs plus
+checksums, and automatically deploys the same tested source commit. Deployment
+images are built in the configured Azure Container Registry; package publishing
+to npm and starter-image publishing are not part of this flow. Concrete resource
+names, endpoints and credentials stay in GitHub environment secrets and ignored
+local configuration. See `.github/CI.md`. Do not invoke local deployment or reset
+commands for this environment. Read-only inspection is permitted.
+
+
 # PilotSwarm AKS Deploy
 
 Use this skill when the user wants to deploy PilotSwarm to AKS, refresh AKS env/secret state, or verify the live cluster after a rollout.

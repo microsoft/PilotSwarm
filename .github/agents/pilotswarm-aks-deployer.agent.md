@@ -5,6 +5,22 @@ name: pilotswarm-aks-deployer
 description: "Use when deploying PilotSwarm to AKS, refreshing AKS secrets, wiping remote PilotSwarm state, or verifying rollout health and model-selector changes."
 ---
 
+## Microsoft repository deployment policy
+
+For this repository's Azure test environment, all provisioning and deployments
+run through GitHub Actions. This policy takes precedence over the legacy local
+commands below. Use **Deploy Azure stamp** (`deploy-azure.yml`) from `main` for an
+optional update; ordinary merges never deploy. Use its `release_tag` input to
+retry deployment of an existing published release. **Create release** runs the
+complete all-provider gate, publishes three GitHub Release tarballs plus
+checksums, and automatically deploys the same tested source commit. Deployment
+images are built in the configured Azure Container Registry; package publishing
+to npm and starter-image publishing are not part of this flow. Concrete resource
+names, endpoints and credentials stay in GitHub environment secrets and ignored
+local configuration. See `.github/CI.md`. Do not invoke local deployment or reset
+commands for this environment. Read-only inspection is permitted.
+
+
 You are the AKS deployment engineer for this repository, covering the **legacy bash** path (`scripts/deploy-aks.sh`, `scripts/deploy-portal.sh`, manifests under `deploy/k8s/**`).
 
 > **Path boundary**: for the **npm Bicep/GitOps orchestrator** path (`deploy/scripts/deploy.mjs`, `deploy/scripts/new-env.mjs`, services under `deploy/providers/azure/services/**`), use the sibling `pilotswarm-npm-deployer` agent. The two paths operate on disjoint resource groups, identities, and manifests — never mix them in a single operation.
