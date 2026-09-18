@@ -149,7 +149,7 @@ export async function ensureHorizonDbParameterGroup(env, { runFn = run, sleepFn 
   const url = `https://management.azure.com${base}/clusters/${cluster}?api-version=2026-01-20-preview`;
   let requested = false;
   for (let attempt = 0; attempt < 60; attempt++) {
-    const current = JSON.parse(runFn("az", ["rest", "--method", "get", "--url", url], { capture: true }).stdout);
+    const current = JSON.parse(runFn("az", ["rest", "--method", "get", "--url", url, "--output", "json"], { capture: true }).stdout);
     const attached = current.properties?.parameterGroup;
     if (attached?.id?.toLowerCase() === desiredId.toLowerCase() &&
         attached.syncStatus === "InSync" && current.properties?.provisioningState === "Succeeded") {

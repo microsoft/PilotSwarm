@@ -82,6 +82,7 @@ test("existing HorizonDB cluster is attached to its extension group before deplo
   });
   const patches = calls.filter((args) => args.includes("patch"));
   assert.equal(patches.length, 1);
+  assert.ok(calls.filter((args) => args.includes("get")).every((args) => args.slice(-2).join(" ") === "--output json"));
   const body = JSON.parse(patches[0][patches[0].indexOf("--body") + 1]);
   assert.equal(body.properties.parameterGroup.applyImmediately, true);
   assert.match(body.properties.parameterGroup.id, /parameterGroups\/stamp-extensions$/);
