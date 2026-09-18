@@ -5,13 +5,18 @@
 // directly to `oras cp --from-oci-layout <tar>:<tag> <acr>/<repo>:<tag>`
 // (matches deploy/providers/azure/services/common/scripts/UploadContainer.sh:31 reference shape).
 //
-// Authenticates first via `az acr login --name <acrName>`. EC-7: aborts with
-// a copy-pasteable hint if the prerequisite tarball is missing.
+// Uses a short-lived ACR refresh token from Azure CLI to authenticate ORAS
+// directly. This avoids `az acr login` calling Docker's credential helper,
+// which can fail or hang on unattended runners. EC-7: aborts with a
+// copy-pasteable hint if the prerequisite tarball is missing.
 
+import { spawnSync } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGunzip } from "node:zlib";
-import { run, log } from "./common.mjs";
+import { run, resolveCli, log } from "./common.mjs";
 import { SERVICE_IMAGE_INFO } from "./service-info.mjs";
 
 export async function pushImage({ service, envName, imageTag, env, stagingDir: stage }) {
@@ -47,12 +52,34 @@ export async function pushImage({ service, envName, imageTag, env, stagingDir: s
   log("info", `zlib gunzip → ${tarPath}`);
   await gunzipFile(gzPath, tarPath);
 
-  log("info", `az acr login --name ${acrName}`);
-  run("az", ["acr", "login", "--name", acrName]);
-
   const dest = `${acrLoginServer}/${dockerImageRepo}:${imageTag}`;
-  log("info", `oras cp --from-oci-layout ${tarPath}:${imageTag} → ${dest}`);
-  run("oras", ["cp", "--from-oci-layout", `${tarPath}:${imageTag}`, dest]);
+  log("info", "Requesting ACR refresh token for ORAS.");
+  let auth;
+  try {
+    const result = run("az", ["acr", "login", "--name", acrName, "--expose-token", "--output", "json"], { capture: true });
+    auth = JSON.parse(result.stdout);
+    if (!auth.accessToken || auth.loginServer?.toLowerCase() !== acrLoginServer.toLowerCase()) {
+      throw new Error("Missing or mismatched ACR token response fields");
+    }
+  } catch {
+    throw new Error("ACR token acquisition failed.");
+  }
+
+  // Keep the ORAS credential outside Docker's global config, and remove it
+  // even when upload fails. The directory is private to this process.
+  const authDir = mkdtempSync(join(tmpdir(), "pilotswarm-oras-"));
+  const authFile = join(authDir, "config.json");
+  try {
+    const login = spawnSync(resolveCli("oras"), [
+      "login", "--username", "00000000-0000-0000-0000-000000000000",
+      "--password-stdin", "--registry-config", authFile, acrLoginServer,
+    ], { input: auth.accessToken, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+    if (login.error || login.status !== 0) throw new Error("ORAS registry login failed.");
+    log("info", `oras cp --from-oci-layout ${tarPath}:${imageTag} → ${dest}`);
+    run("oras", ["cp", "--from-oci-layout", `${tarPath}:${imageTag}`, "--to-registry-config", authFile, dest]);
+  } finally {
+    rmSync(authDir, { recursive: true, force: true });
+  }
   log("ok", `Pushed ${dest}`);
 }
 
