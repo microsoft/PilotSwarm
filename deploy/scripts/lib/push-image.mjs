@@ -52,6 +52,12 @@ export async function pushImage({ service, envName, imageTag, env, stagingDir: s
   log("info", `zlib gunzip → ${tarPath}`);
   await gunzipFile(gzPath, tarPath);
 
+  // The OIDC assertion used by the workflow's initial azure/login step can
+  // expire while AKS, HorizonDB and GitOps resources are provisioning. ACR
+  // asks Azure CLI for a different audience token at push time, so obtain a
+  // fresh GitHub assertion and log in immediately before that request.
+  await refreshAzureOidcLogin(env);
+
   const dest = `${acrLoginServer}/${dockerImageRepo}:${imageTag}`;
   log("info", "Requesting ACR refresh token for ORAS.");
   let auth;
@@ -107,6 +113,43 @@ export async function pushImage({ service, envName, imageTag, env, stagingDir: s
     rmSync(authDir, { recursive: true, force: true });
   }
   log("ok", `Pushed ${dest}`);
+}
+
+export async function refreshAzureOidcLogin(env) {
+  const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  if (!requestUrl) return; // Interactive/local deploy keeps its existing az login.
+  const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const tenantId = process.env.AZURE_TENANT_ID;
+  const subscriptionId = env.SUBSCRIPTION_ID;
+  if (!requestToken || !clientId || !tenantId || !subscriptionId) {
+    throw new Error("Azure OIDC refresh configuration is incomplete.");
+  }
+
+  let assertion;
+  try {
+    const url = new URL(requestUrl);
+    url.searchParams.set("audience", "api://AzureADTokenExchange");
+    const response = await fetch(url, {
+      headers: { Authorization: `bearer ${requestToken}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error("GitHub OIDC request failed");
+    assertion = (await response.json()).value;
+    if (!assertion) throw new Error("GitHub OIDC response was empty");
+  } catch {
+    throw new Error("Could not obtain a fresh GitHub OIDC assertion.");
+  }
+
+  const login = spawnSync(resolveCli("az"), [
+    "login", "--service-principal", "--username", clientId,
+    "--tenant", tenantId, "--federated-token", assertion,
+    "--subscription", subscriptionId, "--output", "none",
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (login.error || login.status !== 0) {
+    throw new Error("Fresh Azure OIDC login failed.");
+  }
+  log("info", "Refreshed Azure OIDC login before registry push.");
 }
 
 // In-process gunzip: avoids any host `gunzip` CLI (matches CodeResearch §7).

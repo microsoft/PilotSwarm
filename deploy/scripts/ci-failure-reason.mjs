@@ -11,6 +11,10 @@ export function classifyFailure(log) {
   const nearby = lines.slice(Math.max(0, stageIndex), failureIndex + 6).join("\n");
   if (/Unresolved overlay \.env keys/.test(nearby)) return "Diagnostic: unresolved overlay configuration.";
   if (/DEPLOYMENT_STORAGE_ACCOUNT_NAME must be set/.test(nearby)) return "Diagnostic: storage account output is missing.";
+  if (/Could not obtain a fresh GitHub OIDC assertion|Azure OIDC refresh configuration is incomplete/.test(nearby)) {
+    return "Diagnostic: GitHub OIDC refresh failed.";
+  }
+  if (/Fresh Azure OIDC login failed/.test(nearby)) return "Diagnostic: refreshed Azure login failed.";
   if (/ACR token (command failed|response)/.test(nearby)) {
     const reason = nearby.match(/ACR token command failed after 4 attempts \((authorization|authentication|connectivity|unknown)\)/)?.[1];
     return `Diagnostic: ACR token failure${reason ? ` (${reason})` : ""}.`;
