@@ -172,7 +172,9 @@ describe("agent handoff capability routing", () => {
             install(upgraded, "upgraded");
             await upgraded.start();
             await client.raiseEvent("frozen", "continue", {});
-            const result = await client.waitForOrchestration("frozen", 10_000);
+            // Replacement waits for the same ~30-second ownership lease as the
+            // migration case above; a 10-second deadline races valid takeover.
+            const result = await client.waitForOrchestration("frozen", 45_000);
             expect(result.status).toBe("Completed");
             expect(result.output[0].sessionId).toBe("child-from-history");
             expect(recorded).toEqual([["first", "resolve", "analyst"], ["first", "spawn", "pkg-shared"]]);

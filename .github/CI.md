@@ -19,9 +19,10 @@ Configure these protected environment secrets:
 - `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`: OIDC login.
 - `AZURE_CI_DATABASE_JSON`: private object with `subscription`, `resourceGroup`,
   `location`, `cluster`, `appCluster`, `parameterGroup`, `vault`, `passwordSecret`,
-  `urlSecret`, `embeddingUrl`, `embeddingKeySecret`. CI password and URL secret
+  `urlSecret`, `embeddingUrl`, `embeddingKeySecret`, `foundryAccount`. CI password and URL secret
   names must start with `ci-`. The embedding endpoint must support the
-  `text-embedding-3-small` deployment with 1536 dimensions.
+  `text-embedding-3-small` deployment with 1536 dimensions. Provisioning also
+  creates its `-v2` deployment alias for live embedding rotation tests.
 - `CI_TEST_ENV_JSON`: environment key/value object including a Copilot-enabled
   `GITHUB_TOKEN` and the credentials required by the test model catalog.
 - `MODEL_PROVIDERS_JSON`: the private test model catalog.

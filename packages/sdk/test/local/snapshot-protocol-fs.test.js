@@ -6,9 +6,10 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { FilesystemSessionStore } from "../../src/session-store.ts";
+import { FilesystemSessionStore, extractSessionArchive } from "../../src/session-store.ts";
 
 import { registerSnapshotConformanceSuite, makeSessionLayout } from "../helpers/snapshot-conformance.js";
 
@@ -97,5 +98,28 @@ describe("mixed-codec chain (gzip legacy → brotli commit)", () => {
         const probe = await store.probeSnapshot(sessionId);
         expect(probe.rawSizeBytes).toBe(committed.rawSizeBytes);
         expect(probe.version).toBe(1);
+    });
+});
+
+
+describe("archive stream completion", () => {
+    it("drains trailing tar padding and still rejects a damaged compression trailer", async () => {
+        const { sessionStateDir, storeDir } = makeFsStore();
+        const id = `padding-${randomUUID()}`;
+        const dir = makeSessionLayout(sessionStateDir, id, "padded-content");
+        const raw = path.join(storeDir, "raw.tar");
+        execSync(`tar -cf "${raw}" -C "${sessionStateDir}" "${id}"`);
+        // More padding than a pipe can buffer forces the reader to consume
+        // EOF rather than exit as soon as it sees the first zero block.
+        const compressed = gzipSync(Buffer.concat([fs.readFileSync(raw), Buffer.alloc(8 * 1024 * 1024)]));
+        const archive = path.join(storeDir, "padded.tar.gz");
+        fs.writeFileSync(archive, compressed);
+        fs.writeFileSync(path.join(dir, "events.jsonl"), "stale");
+        await extractSessionArchive(sessionStateDir, archive, "gzip");
+        expect(fs.readFileSync(path.join(dir, "events.jsonl"), "utf8")).toContain("padded-content");
+        const corrupt = Buffer.from(compressed);
+        corrupt[corrupt.length - 8] ^= 0xff; // CRC32 trailer, after valid tar content.
+        fs.writeFileSync(archive, corrupt);
+        await expect(extractSessionArchive(sessionStateDir, archive, "gzip")).rejects.toThrow();
     });
 });

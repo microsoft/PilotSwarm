@@ -2,6 +2,8 @@ import { writeFileSync } from 'node:fs';
 const env = JSON.parse(process.env.CI_TEST_ENV_JSON || '{}');
 if (!env.GITHUB_TOKEN) throw new Error('CI_TEST_ENV_JSON requires a Copilot-enabled GITHUB_TOKEN.');
 env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/durable_copilot';
+env.PS_TEST_DATABASE_URL = env.DATABASE_URL;
+env.TEST_DATABASE_URL = env.DATABASE_URL;
 env.PS_TEST_SKIP_STALE_CLEANUP = '1';
 const lines = Object.entries(env).map(([key, value]) => {
   if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || typeof value !== 'string' || /[\r\n"']/.test(value)) throw new Error('Invalid CI environment value.');
