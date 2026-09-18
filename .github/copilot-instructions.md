@@ -59,7 +59,7 @@ Provider/budget schema changes follow the normal stored-procedure migration
 rules and must keep management client, Web API, MCP, TUI/portal, docs, and tests
 in parity.
 
-`.env` and `.env.horizondb` are two **standalone** local configs, never layered. `.env` is stock-PostgreSQL only: it backs the default `./scripts/run-tests.sh` run (all suites with the PG fact store) and must leave the HorizonDB enhanced-facts/graph settings empty. `.env.horizondb` is a complete standalone config (stock PG runtime storage + HorizonDB enhanced facts/graph) used by `./scripts/run-tests.sh --with-horizondb` and the Horizon Harvester scripts. Those paths load **only** `.env.horizondb` — there is **no fallback to `.env`, ever** — so every value the run needs (`DATABASE_URL`, `GITHUB_TOKEN`, model keys, `HORIZON_*`) must be duplicated in it. Keep `.env.horizondb.example` in sync with its shape, like `.env.example`.
+`.env` and `.env.horizondb` are standalone configs. No test provider flag means the complete stock PostgreSQL suite. `--with-horizondb` (also `--with horizondb`) loads `.env.horizondb` and routes CMS, orchestration, facts and graphs to HDB. `--all-providers` runs the complete stock PostgreSQL baseline once, then additive HDB provider and SDK storage coverage; new SDK files default into HDB until explicitly excluded after review. Eight test files run concurrently by default. The config's plain `DATABASE_URL` remains available only for missing-extension negative controls; application/harvester routing is unchanged. See `.github/CI.md`. Keep `.env.horizondb.example` in sync.
 
 ## Project Overview
 

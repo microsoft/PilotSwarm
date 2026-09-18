@@ -19,7 +19,7 @@ local files. Never put environment names, endpoints or credentials in a PR.
   Merging a PR or pushing a tag does not publish a release.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
-  baseline and HorizonDB suites, then builds the three npm-format tarballs.
+  PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
   configuration, skipped preflight or a failed test blocks publication. Do not
   substitute a filtered/sequential rerun for the complete successful gate.
@@ -62,7 +62,7 @@ required protected secrets are documented in `.github/CI.md`.
 
 Verify separately:
 
-- full provider test pass, including real HorizonDB preflight;
+- complete baseline plus additive HDB pass, including real HorizonDB preflight;
 - annotated tag resolves to the workflow's tested commit;
 - GitHub Release is published and has `pilotswarm-sdk-<version>.tgz`,
   `pilotswarm-horizon-store-<version>.tgz`, `pilotswarm-<version>.tgz` and checksums;
@@ -83,3 +83,12 @@ work around a failed run. Report release and deployment status separately.
 
 There are exactly three package tarballs. GitHub's generated source archives
 are additional source downloads, not the package artifacts.
+
+## Storage test modes
+
+`--all-providers` is the release coverage plan: complete stock PostgreSQL once,
+then HDB provider tests and reviewed SDK storage integration tests. It does not
+repeat unrelated SDK permutations. `--with-horizondb` runs the entire suite
+with CMS/orchestration/facts/graphs on HDB. No flag means stock PostgreSQL only.
+Parallelism defaults to eight test files. See `.github/CI.md` and the reviewed
+`scripts/provider-test-coverage.json` exclusions; new suites default into HDB.

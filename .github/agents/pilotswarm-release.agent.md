@@ -24,7 +24,7 @@ Your job is to take a set of repo changes through release readiness and, when ex
 - verify workspace packages ship package-local `README.md` files and provenance-safe repository metadata
 - report the current latest git tag and the proposed next release tag before creating a tag
 - explain that a tag marks the source commit and a GitHub Release holds notes and three `.tgz` package assets
-- dispatch the manual Create release Action on main; it requires full all-provider coverage before creating the tag and publishing tarballs
+- dispatch the manual Create release Action on main; it requires the complete PostgreSQL baseline plus additive HDB coverage before creating the tag and publishing tarballs
 - verify the Action succeeds and all three package assets exist before reporting the release complete
 - monitor the automatic post-publication Azure deployment in the same Action; retry an existing release with `deploy-azure.yml` and its release_tag input
 - explain that the current Azure Action builds workspace source and pushes deployment images to Azure Container Registry

@@ -29,14 +29,14 @@
 # Run the baseline and each configured provider overlay
 #   ./scripts/run-tests.sh --all-providers
 #
-# Run one pass with the HorizonDB provider overlay
+# Run the complete suite on HorizonDB, including CMS and orchestration
 #   ./scripts/run-tests.sh --with-horizondb
 #
 # Prerequisites:
 #   - For baseline / --all-providers: PostgreSQL and GITHUB_TOKEN in .env.
 #   - For --with-horizondb: .env.horizondb (or HORIZONDB_ENV_FILE) as a
 #     standalone config. It should duplicate any needed .env settings,
-#     including the stock PostgreSQL DATABASE_URL for runtime storage.
+#     HORIZON_DATABASE_URL supplies every runtime storage connection.
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,6 +48,8 @@ HORIZONDB_ENV_FILE="${HORIZONDB_ENV_FILE:-.env.horizondb}"
 
 WITH_HORIZONDB=0
 ALL_PROVIDERS=0
+HORIZONDB_ADDITIVE=0
+EXPECT_PROVIDER=0
 EXTERNAL_ONLY=0
 SCRIPT_ARGS=()
 EXTERNAL_TEST_DIRS=()
@@ -55,6 +57,12 @@ EXTERNAL_TEST_FILTERS=()
 EXPECT_EXTERNAL_TEST_DIR=0
 EXPECT_EXTERNAL_TEST_FILTER=0
 for arg in "$@"; do
+    if [ "$EXPECT_PROVIDER" = "1" ]; then
+        [ "$arg" = "horizondb" ] || { echo "ERROR: --with expects horizondb"; exit 1; }
+        WITH_HORIZONDB=1
+        EXPECT_PROVIDER=0
+        continue
+    fi
     if [ "$EXPECT_EXTERNAL_TEST_DIR" = "1" ]; then
         EXTERNAL_TEST_DIRS+=("$arg")
         EXPECT_EXTERNAL_TEST_DIR=0
@@ -84,6 +92,13 @@ for arg in "$@"; do
         --external-test-filter=*)
             EXTERNAL_TEST_FILTERS+=("${arg#--external-test-filter=}")
             ;;
+        --with)
+            EXPECT_PROVIDER=1
+            ;;
+        --horizondb-additive)
+            WITH_HORIZONDB=1
+            HORIZONDB_ADDITIVE=1
+            ;;
         --with-horizondb)
             WITH_HORIZONDB=1
             ;;
@@ -112,8 +127,8 @@ Usage:
                                                Run only explicit external directories
     ./scripts/run-tests.sh --external-test-filter=<substring>
                                                Filter files in external directories
-    ./scripts/run-tests.sh --all-providers    Run baseline, then each configured provider overlay
-    ./scripts/run-tests.sh --with-horizondb   Run one pass with HorizonDB provider overlay
+    ./scripts/run-tests.sh --all-providers    Run baseline once, then additive provider coverage
+    ./scripts/run-tests.sh --with-horizondb   Run the complete suite on HorizonDB (including CMS)
     ./scripts/run-tests.sh --suite=<name>     Run matching suite(s)
     ./scripts/run-tests.sh <name>             Same as --suite=<name>
     ./scripts/run-tests.sh <name1> <name2>    Run multiple matching suites
@@ -159,22 +174,20 @@ Notes:
 - Set PS_TEST_SKIP_STALE_CLEANUP=1 when using a shared test provider to skip
     only the global before/after stale-schema sweep. This is inherited by both
     --all-providers phases; individual tests still clean their own data.
-- Default runs load .env as the baseline/default provider config and then
-    clear HORIZON_* provider vars, so a stale local .env cannot accidentally
-    turn the default PgFactStore run into a HorizonDB run.
-- --with-horizondb loads only a standalone HorizonDB config file. The default
-    is .env.horizondb; override with HORIZONDB_ENV_FILE=/path/to/file. Duplicate
-    any needed .env settings there, including the stock PostgreSQL DATABASE_URL
-    for runtime CMS/duroxide storage. This mode fails fast if the file is
-    missing or HORIZON_DATABASE_URL is unset.
-- --all-providers runs provider passes one by one. Today that means a baseline
-    PgFactStore pass first, then a HorizonDB provider pass if configured. This
-    intentionally duplicates the suite so provider interactions cannot mask
-    baseline behavior. Unless PS_TEST_MAX_WORKERS is already set, each provider
-    pass uses PS_TEST_MAX_WORKERS=8 unless the caller overrides it.
-    The wrapper prints explicit phase banners while leaving Vitest's default
-    terminal reporter untouched. It also asks Vitest for per-phase JSON result
-    files and prints a combined summary with mode-specific rerun commands.
+- No provider flag: the complete stock PostgreSQL suite. HDB routes are cleared.
+- --with-horizondb (or --with horizondb): the complete suite with CMS,
+    orchestration, facts and graphs all on HORIZON_DATABASE_URL. The standalone
+    .env.horizondb config supplies credentials. PLAIN_DATABASE_URL is used only
+    for negative controls that intentionally require missing HDB extensions.
+- --all-providers: run the complete stock PostgreSQL suite once, then all HDB
+    provider tests and the reviewed SDK storage contracts on HorizonDB. Builds,
+    unit tests and unrelated SDK permutations are not repeated. New SDK files
+    join HDB coverage by default until explicitly reviewed in
+    scripts/provider-test-coverage.json. A missing optional HDB config means
+    baseline only locally; Microsoft's CI wrapper requires live HDB.
+- --horizondb-additive: rerun just that HDB coverage selection after building.
+- Default parallelism is eight SDK test files. Override PS_TEST_MAX_WORKERS or
+    use --sequential. Provider phases themselves run one after the other.
 - A full run (no suite filter) also runs the deploy-scripts tests
     (node --test against deploy/scripts/test/*.test.mjs) and the
     mcp-server unit tests (node) before the SDK suites. Set
@@ -202,6 +215,14 @@ if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
     done
 fi
 
+if [ "$EXPECT_PROVIDER" = "1" ]; then
+    echo "ERROR: --with expects horizondb"
+    exit 1
+fi
+if [ "$WITH_HORIZONDB" = "1" ] && [ "$ALL_PROVIDERS" = "1" ]; then
+    echo "ERROR: choose --all-providers or --with-horizondb."
+    exit 1
+fi
 if [ "$EXPECT_EXTERNAL_TEST_DIR" = "1" ]; then
     echo "ERROR: --external-test-dir requires a directory path."
     exit 1
@@ -242,6 +263,11 @@ if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
                 ;;
         esac
     done
+fi
+
+if [ "$HORIZONDB_ADDITIVE" = "1" ] && { [ "${#SUITE_FILTERS[@]}" -gt 0 ] || [ "${#EXTERNAL_TEST_DIRS[@]}" -gt 0 ]; }; then
+    echo "ERROR: --horizondb-additive runs its complete reviewed selection; use --with-horizondb for filters or external suites."
+    exit 1
 fi
 
 if [ "${#EXTERNAL_TEST_DIRS[@]}" -gt 0 ] && [ "${#SUITE_FILTERS[@]}" -gt 0 ]; then
@@ -496,6 +522,10 @@ print_all_providers_summary() {
 }
 
 if [ "$ALL_PROVIDERS" = "1" ]; then
+    if [ "${#SUITE_FILTERS[@]}" -gt 0 ]; then
+        echo "ERROR: --all-providers is a complete coverage plan; use a single provider mode for suite filters."
+        exit 1
+    fi
     if [ -z "${PS_TEST_MAX_WORKERS:-}" ]; then
         export PS_TEST_MAX_WORKERS=8
         echo "🧪 --all-providers: defaulting PS_TEST_MAX_WORKERS=8 for each provider pass."
@@ -514,7 +544,7 @@ if [ "$ALL_PROVIDERS" = "1" ]; then
     run_all_provider_phase 1 "$PHASE_TOTAL" "base" "baseline default provider (PgFactStore)"
 
     if [ "$HORIZONDB_PHASE_CONFIGURED" = "1" ]; then
-        run_all_provider_phase 2 "$PHASE_TOTAL" "horizondb" "HorizonDB provider overlay" --with-horizondb
+        run_all_provider_phase 2 "$PHASE_TOTAL" "horizondb" "HorizonDB storage contracts and SDK integration" --horizondb-additive
     else
         echo "⏭  No HorizonDB provider config found; --all-providers completed baseline only."
     fi
@@ -535,6 +565,8 @@ record_run_phase() {
     RUN_PHASE_RESULTS+=("$2")
 }
 
+# Build once in --all-providers; the additive child uses those same artifacts.
+if [ "$HORIZONDB_ADDITIVE" != "1" ]; then
 # Build
 echo "🔨 Building TypeScript..."
 (cd "$SDK_DIR" && npm run build) || { echo "❌ Build failed"; exit 1; }
@@ -545,6 +577,7 @@ record_run_phase "TypeScript build" "PASS"
 (cd "$REPO_ROOT/packages/app" && npm run build:mcp) \
     || { echo "❌ mcp-server build failed"; exit 1; }
 record_run_phase "mcp-server build" "PASS"
+fi
 
 # Run the deploy-scripts test suite (Node `node --test`, not vitest) when
 # no SDK suite filter is in effect. The deploy orchestrator's helpers
@@ -600,9 +633,12 @@ run_sdk_unit_tests() {
         return 0
     fi
     echo "🧪 Running SDK unit tests (node --test)..."
-    (cd "$REPO_ROOT" && node --env-file=.env --test packages/sdk/test/unit/*.test.mjs) \
+    (cd "$REPO_ROOT" && node --env-file-if-exists=.env --test packages/sdk/test/unit/*.test.mjs packages/sdk/api/test/*.test.mjs) \
         || { echo "❌ SDK unit tests failed"; exit 1; }
     record_run_phase "SDK unit tests" "PASS"
+    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build && npm test) \
+        || { echo "❌ horizon-store unit tests failed"; exit 1; }
+    record_run_phase "horizon-store unit tests" "PASS"
 }
 
 run_app_tests() {
@@ -669,7 +705,7 @@ run_horizon_store_tests() {
         targets=(test/integration)
     fi
     echo "🧪 Running @pilotswarm/horizon-store integration tests (live HorizonDB): $display"
-    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build && node ../../node_modules/vitest/vitest.mjs run "${targets[@]}") \
+    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build && node ../../node_modules/vitest/vitest.mjs "${VITEST_ARGS[@]}" "${targets[@]}") \
         || { echo "❌ horizon-store integration tests failed"; exit 1; }
     record_run_phase "horizon-store integration" "PASS"
 }
@@ -890,27 +926,19 @@ configure_provider_env() {
             echo "       This file must enable the HorizonDB enhanced fact store."
             exit 1
         fi
-        if [ -z "${DATABASE_URL:-}" ]; then
-            echo "ERROR: --with-horizondb requires DATABASE_URL in $HORIZONDB_ENV_FILE for stock PostgreSQL runtime storage."
-            exit 1
-        fi
         if [ -z "${GITHUB_TOKEN:-}" ]; then
-            echo "ERROR: --with-horizondb requires GITHUB_TOKEN in $HORIZONDB_ENV_FILE (Copilot SDK)."
+            echo "ERROR: HorizonDB tests require GITHUB_TOKEN in their standalone config."
             exit 1
         fi
-        if [ "${DATABASE_URL}" = "${HORIZON_DATABASE_URL}" ]; then
-            echo "ERROR: DATABASE_URL must be stock PostgreSQL, distinct from HORIZON_DATABASE_URL."
-            echo "       Runtime CMS/duroxide storage stays on PostgreSQL; only enhanced facts + graph use HorizonDB."
-            exit 1
-        fi
-        # No remapping needed: the SDK derives the hybrid from these vars.
-        # HORIZON_DATABASE_URL selects the horizondb runtime provider, whose
-        # CMS/duroxide stay on DATABASE_URL (stock PostgreSQL) while enhanced
-        # facts + graph use the HorizonDB URLs and schemas.
-        echo "🌅 Hybrid mode: runtime storage on stock PostgreSQL (DATABASE_URL); enhanced facts + graph on HorizonDB."
+        local routing
+        routing="$(node "$REPO_ROOT/scripts/test-provider-plan.mjs" env horizondb)" || exit 1
+        eval "$routing"
+        echo "🌅 Full HorizonDB storage: CMS, orchestration, facts and graphs use HorizonDB."
     else
-        clear_horizondb_env
-        echo "🧪 Provider mode: baseline default fact store (HorizonDB provider vars cleared)."
+        local routing
+        routing="$(node "$REPO_ROOT/scripts/test-provider-plan.mjs" env baseline)" || exit 1
+        eval "$routing"
+        echo "🧪 Provider mode: stock PostgreSQL only."
     fi
 }
 
@@ -923,6 +951,12 @@ if [ "$WITH_HORIZONDB" != "1" ]; then
     load_env_file "$ENV_FILE"
 fi
 configure_provider_env
+export PS_TEST_MAX_WORKERS="${PS_TEST_MAX_WORKERS:-8}"
+case "$PS_TEST_MAX_WORKERS" in
+    ''|*[!0-9]*|0) echo "ERROR: PS_TEST_MAX_WORKERS must be a positive integer"; exit 1 ;;
+esac
+echo "🧪 Parallel SDK test files: $PS_TEST_MAX_WORKERS"
+(cd "$REPO_ROOT" && node scripts/test-model-summary.mjs)
 
 # ── Postgres connection headroom ─────────────────────────────────────────
 #
@@ -936,7 +970,11 @@ configure_provider_env
 # scattered across unrelated suites, which reads as product flakiness: the
 # failures land in whichever tests happened to be running, isolated re-runs
 # pass, and the real cause is invisible. Fail loudly here instead.
-MIN_PG_MAX_CONNECTIONS="${MIN_PG_MAX_CONNECTIONS:-1500}"
+if [ "$WITH_HORIZONDB" = "1" ]; then
+    MIN_PG_MAX_CONNECTIONS="${MIN_HORIZON_MAX_CONNECTIONS:-$((PS_TEST_MAX_WORKERS * 40))}"
+else
+    MIN_PG_MAX_CONNECTIONS="${MIN_PG_MAX_CONNECTIONS:-1500}"
+fi
 
 check_pg_max_connections() {
     local url="${DATABASE_URL:-}"
@@ -989,6 +1027,16 @@ trap cleanup_test_state EXIT
 
 # Run
 cd "$SDK_DIR"
+if [ "$HORIZONDB_ADDITIVE" = "1" ]; then
+    # All provider integration tests plus reviewed SDK storage coverage. New
+    # SDK files are included by default; exclusions are tracked and checked.
+    selected="$(node "$REPO_ROOT/scripts/test-provider-plan.mjs" list)" || exit 1
+    TARGET_FILES=()
+    while IFS= read -r file; do TARGET_FILES+=("$file"); done <<< "$selected"
+    echo "🧪 HorizonDB additive SDK coverage: ${#TARGET_FILES[@]} files"
+    run_horizon_store_tests
+    run_sdk_vitest_and_summarize "${TARGET_FILES[@]}"
+fi
 TARGET_FILES=()
 HORIZON_TARGET_FILES=()
 if [ ${#SUITE_FILTERS[@]} -gt 0 ]; then

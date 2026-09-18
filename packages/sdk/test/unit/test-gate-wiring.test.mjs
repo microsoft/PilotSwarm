@@ -106,7 +106,7 @@ test("the SDK unit phase loads the environment its suites need", () => {
     // runner is missing a flag".
     const start = live.indexOf("run_sdk_unit_tests() {");
     const body = live.slice(start, live.indexOf("\n}", start));
-    assert.match(body, /--env-file=\.env/, "run_sdk_unit_tests must pass --env-file=.env");
+    assert.match(body, /--env-file-if-exists=\.env/, "run_sdk_unit_tests must load optional baseline credentials without replacing the routed environment");
     assert.match(body, /packages\/sdk\/test\/unit/, "run_sdk_unit_tests must target test/unit");
 });
 
