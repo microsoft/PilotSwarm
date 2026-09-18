@@ -26,7 +26,7 @@ import {
 } from "../lib/overlay-contracts.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const OVERLAYS_DIR = join(REPO_ROOT, "deploy", "gitops", "portal", "overlays");
+const OVERLAYS_DIR = join(REPO_ROOT, "deploy", "providers", "azure", "gitops", "portal", "overlays");
 
 function readOverlayEnvKeys(overlay) {
   const path = join(OVERLAYS_DIR, overlay, ".env");
@@ -70,12 +70,12 @@ test("resolveOverlayKey honors JS defaults when inputs are blank", () => {
 });
 
 test("EDGE_MODES + TLS_SOURCES match the canonical contract universe", () => {
-  assert.deepEqual([...EDGE_MODES].sort(), ["afd", "private"]);
+  assert.deepEqual([...EDGE_MODES].sort(), ["afd", "private", "public"]);
   assert.deepEqual([...TLS_SOURCES].sort(), ["akv", "akv-selfsigned", "letsencrypt"]);
 });
 
 test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", () => {
-  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv"]) {
+  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
     assert.ok(
       OVERLAY_CONTRACTS[overlay],
       `OVERLAY_CONTRACTS missing entry for overlay '${overlay}'`,
@@ -86,7 +86,7 @@ test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", ()
 // Scanner: every literal key in every overlay's .env file must appear in
 // exactly one role bucket. Adding a new key to an overlay .env without
 // adding it to the contract fails this test.
-for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv"]) {
+for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
   test(`overlay-contracts: every '${overlay}' .env key has a contract role`, () => {
     const envKeys = readOverlayEnvKeys(overlay);
     const c = OVERLAY_CONTRACTS[overlay];
@@ -112,13 +112,32 @@ test("afd-akv requires SSL_CERT_DOMAIN_SUFFIX", () => {
   );
 });
 
-test("PORTAL_HOSTNAME is tracked as a bicep-output on all three overlays", () => {
-  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv"]) {
+test("PORTAL_HOSTNAME is tracked as a bicep-output on all overlays", () => {
+  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
     assert.ok(
       OVERLAY_CONTRACTS[overlay].bicepOutputKeys.includes("PORTAL_HOSTNAME"),
       `${overlay} must list PORTAL_HOSTNAME in bicepOutputKeys`,
     );
   }
+});
+
+test("public ingress requires Entra auth and a valid app registration", () => {
+  const env = {
+    ACME_EMAIL: "operator@example.com",
+    PORTAL_HOSTNAME: "portal.westus3.cloudapp.azure.com",
+    PORTAL_AUTH_PROVIDER: "entra",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "22222222-2222-2222-2222-222222222222",
+    AZURE_TENANT_ID: "22222222-2222-2222-2222-222222222222",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "11111111-1111-1111-1111-111111111111",
+    PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "false",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+  };
+  assert.deepEqual(validateRequiredEnv({ edgeMode: "public", tlsSource: "letsencrypt", env }).missing, []);
+  env.PORTAL_AUTH_ENTRA_CLIENT_ID = "__PS_UNSET__";
+  assert.ok(validateRequiredEnv({ edgeMode: "public", tlsSource: "letsencrypt", env }).missing.includes("PORTAL_AUTH_ENTRA_CLIENT_ID"));
+  env.PORTAL_AUTH_ENTRA_CLIENT_ID = "11111111-1111-1111-1111-111111111111";
+  env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED = "true";
+  assert.ok(validateRequiredEnv({ edgeMode: "public", tlsSource: "letsencrypt", env }).missing.includes("PORTAL_AUTH_ALLOW_UNAUTHENTICATED"));
 });
 
 // === validateRequiredEnv ====================================================
@@ -210,7 +229,7 @@ test("bicep portal main.bicep tlsSource default matches DEFAULT_TLS_SOURCE", () 
   const bicepPath = join(
     REPO_ROOT,
     "deploy",
-    "services",
+    "providers", "azure", "services",
     "portal",
     "bicep",
     "main.bicep",

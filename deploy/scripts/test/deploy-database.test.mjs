@@ -22,6 +22,7 @@ function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvVa
   const env = {
     ...parseEnvFile(templateEnvPath()),
     SUBSCRIPTION_ID: "fixture-subscription",
+    AZURE_TENANT_ID: "22222222-2222-2222-2222-222222222222",
     RESOURCE_PREFIX: "psfixture", RESOURCE_GROUP: "psfixture-rg",
     GLOBAL_RESOURCE_PREFIX: "psfixtureglobal", GLOBAL_RESOURCE_GROUP: "psfixtureglobal-rg",
     PORTAL_RESOURCE_NAME: "psfixture-portal", ACME_EMAIL: "test@example.invalid",
@@ -33,7 +34,7 @@ function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvVa
     ...overrides,
   };
   for (const service of ALL_SEQUENCE) {
-    const path = join(REPO_ROOT, `deploy/services/${service}/bicep/${service}.params.template.json`);
+    const path = join(REPO_ROOT, `deploy/providers/azure/services/${service}/bicep/${service}.params.template.json`);
     for (const match of readFileSync(path, "utf8").matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)) {
       if (!(match[1] in env)) env[match[1]] = "fixture-output";
     }

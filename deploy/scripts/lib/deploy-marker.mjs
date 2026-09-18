@@ -14,7 +14,7 @@
 //
 // Inputs hashed:
 //   * templateHash — SHA256 of every `.bicep` file under
-//       deploy/services/<Module>/bicep/  AND  deploy/services/common/bicep/
+//       deploy/providers/azure/services/<Module>/bicep/  AND  deploy/providers/azure/services/common/bicep/
 //     (Common is hashed because modules import from there.)
 //   * paramsHash   — SHA256 of the rendered params JSON file (post-env
 //     substitution). Captures every env-driven knob the deploy depends on.
@@ -96,14 +96,14 @@ function listBicepFiles(dir) {
   return out;
 }
 
-// Hash all .bicep files under deploy/services/<Module>/bicep/ AND
-// deploy/services/common/bicep/. Each file contributes
+// Hash all .bicep files under deploy/providers/azure/services/<Module>/bicep/ AND
+// deploy/providers/azure/services/common/bicep/. Each file contributes
 // `<repo-relative-path>\n<sha256-of-contents>\n` to the rolling hash so
 // renames bust the hash too.
 export function computeTemplateHash(moduleName) {
   const dirs = [
-    join(REPO_ROOT, "deploy", "services", moduleName, "bicep"),
-    join(REPO_ROOT, "deploy", "services", "Common", "bicep"),
+    join(REPO_ROOT, "deploy", "providers", "azure", "services", moduleName, "bicep"),
+    join(REPO_ROOT, "deploy", "providers", "azure", "services", "Common", "bicep"),
   ];
   const files = dirs.flatMap(listBicepFiles);
   const h = createHash("sha256");

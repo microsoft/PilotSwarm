@@ -1,6 +1,6 @@
 // GitOps manifest staging (Phase 4).
 //
-// Mirrors deploy/gitops/<service>/ into <staging>/gitops/<service>/ verbatim
+// Mirrors deploy/providers/azure/gitops/<service>/ into <staging>/gitops/<service>/ verbatim
 // (base + overlays/<variant> directory tree), then overlays the substituted .env
 // produced by substitute-env.mjs.
 //
@@ -16,7 +16,7 @@
 //       collapses to `akv` because it shares the `private-akv` overlay)
 
 import { cpSync, existsSync, rmSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { REPO_ROOT, log } from "./common.mjs";
 import { substituteOverlayEnv } from "./substitute-env.mjs";
 import { computeSpcKeysHash } from "./spc-keys-hash.mjs";
@@ -127,7 +127,7 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
   }
 }
 
-// Resolve which overlay directory under deploy/gitops/<service>/overlays/
+// Resolve which overlay directory under deploy/providers/azure/gitops/<service>/overlays/
 // the deploy script should substitute + stage. Mirrors the bicep
 // `kustomizationPath` for each service. Exported for testability.
 export function resolveOverlayName({ service, envName, env }) {
@@ -172,7 +172,7 @@ export function resolveOverlayName({ service, envName, env }) {
 export function stageManifests({ service, envName, env, stagingDir }) {
   const runtimeService = service === "worker" || service === "portal";
   if (runtimeService) validateDatabaseConfig(env, { requireVersions: true });
-  const srcRoot = join(REPO_ROOT, "deploy", "gitops", service);
+  const srcRoot = join(REPO_ROOT, "deploy", "providers", "azure", "gitops", service);
   if (!existsSync(srcRoot)) {
     throw new Error(`GitOps tree missing for service '${service}': ${srcRoot}`);
   }
@@ -187,16 +187,48 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   cpSync(srcRoot, stagedServiceRoot, { recursive: true });
   log("info", `Staged ${srcRoot} → ${stagedServiceRoot}`);
 
+  // A stamp may supply its own metadata-only provider catalog. This lets a
+  // Foundry-only stamp select its deployed models without changing the
+  // shared catalog used by other Azure environments.
+  const catalogOverride = String(env.MODEL_PROVIDERS_FILE || "").trim();
+  if (runtimeService && catalogOverride) {
+    const catalogPath = resolve(REPO_ROOT, catalogOverride);
+    if (!existsSync(catalogPath)) {
+      throw new Error(`MODEL_PROVIDERS_FILE does not exist: ${catalogPath}`);
+    }
+    let catalog;
+    try {
+      catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+    } catch (error) {
+      throw new Error(`MODEL_PROVIDERS_FILE is not valid JSON: ${error.message}`);
+    }
+    if (!Array.isArray(catalog.providers) || !catalog.defaultModel) {
+      throw new Error("MODEL_PROVIDERS_FILE must define providers[] and defaultModel.");
+    }
+    const [defaultProviderId, defaultModelName] = String(catalog.defaultModel).split(":");
+    const defaultProvider = catalog.providers.find((provider) => provider.id === defaultProviderId);
+    if (!defaultProvider || !defaultProvider.models?.some((model) => model.name === defaultModelName)) {
+      throw new Error("MODEL_PROVIDERS_FILE defaultModel must name a model in providers[].");
+    }
+    if (defaultProvider.baseUrl?.includes("__FOUNDRY_ENDPOINT__") && !env.FOUNDRY_ENDPOINT) {
+      throw new Error("MODEL_PROVIDERS_FILE default model requires FOUNDRY_ENDPOINT from a prior BaseInfra Bicep step.");
+    }
+    cpSync(catalogPath, join(stagedServiceRoot, "base", "model_providers.json"));
+    log("info", `Staged stamp model provider catalog for ${service}.`);
+  }
+
   // Portal needs the same model catalog as the worker so its
   // PilotSwarmManagementClient.listModels() returns the same set. Single
-  // source of truth lives at deploy/gitops/worker/base/model_providers.json;
+  // source of truth lives at deploy/providers/azure/gitops/worker/base/model_providers.json;
   // we copy it into the portal staging tree before kustomize runs. The
   // portal/base/kustomization.yaml configMapGenerator references this
   // file. Local `kustomize build` on the source tree will fail (file
   // intentionally absent) — all real builds go through deploy.mjs →
   // stage-manifests first.
   if (service === "portal") {
-    const workerCatalog = join(REPO_ROOT, "deploy", "gitops", "worker", "base", "model_providers.json");
+    const workerCatalog = catalogOverride
+      ? resolve(REPO_ROOT, catalogOverride)
+      : join(REPO_ROOT, "deploy", "providers", "azure", "gitops", "worker", "base", "model_providers.json");
     const portalCatalog = join(stagedServiceRoot, "base", "model_providers.json");
     if (!existsSync(workerCatalog)) {
       throw new Error(
@@ -247,7 +279,14 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   const { substituted } = substituteOverlayEnv({
     srcPath: overlaySrc,
     dstPath: overlayDst,
-    envMap: { ...DATABASE_ENV_DEFAULTS, ...env },
+    envMap: {
+      ...DATABASE_ENV_DEFAULTS,
+      HORIZON_EMBED_URL: "__PS_UNSET__",
+      HORIZON_EMBED_MODEL: "text-embedding-3-small",
+      HORIZON_EMBED_DIM: "1536",
+      HORIZON_EMBED_API_KEY_HEADER: "api-key",
+      ...env,
+    },
     omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
   });
   log("ok", `Substituted ${substituted.length} overlay .env keys → ${overlayDst}`);

@@ -1,0 +1,11 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "name": "horizondb",
+  "kind": "infra",
+  "pipeline": ["bicep", "seed-secrets"],
+  "bicep": {
+    "modules": [{ "name": "horizondb", "scope": "group" }],
+    "allModeModules": [{ "name": "horizondb", "scope": "group" }]
+  }
+}

@@ -30,6 +30,8 @@ const FULL_ARGS = (name = TEST_NAME) => [
   name,
   "--subscription",
   "00000000-0000-0000-0000-000000000000",
+  "--tenant-id",
+  "22222222-2222-2222-2222-222222222222",
   "--location",
   "westus3",
 ];
@@ -38,6 +40,7 @@ test("deriveTargets follows enterprise naming patterns", () => {
   const t = deriveTargets({
     name: "foo",
     subscription: "sub-id",
+    tenantId: "22222222-2222-2222-2222-222222222222",
     location: "westus3",
     regionShort: "wus3",
   });
@@ -50,10 +53,26 @@ test("deriveTargets follows enterprise naming patterns", () => {
   assert.equal(t.LOCATION, "westus3");
 });
 
+test("deriveTargets places public ingress on Azure DNS without a private zone", () => {
+  const t = deriveTargets({
+    name: "sandbox",
+    subscription: "sub-id",
+    location: "westus3",
+    regionShort: "wus3",
+    edgeMode: "public",
+    tlsSource: "letsencrypt",
+  });
+  assert.equal(t.PORTAL_HOSTNAME, "pssandbox-wus3-portal.westus3.cloudapp.azure.com");
+  assert.equal(t.PRIVATE_DNS_ZONE, "");
+  assert.equal(t.VPN_GATEWAY_ENABLED, "false");
+  assert.equal(t.INGRESS_CLASS, "webapprouting.kubernetes.azure.com");
+});
+
 test("renderLocalEnv produces expected substitutions", () => {
   const targets = deriveTargets({
     name: "foo",
     subscription: "",
+    tenantId: "22222222-2222-2222-2222-222222222222",
     location: "westus3",
     regionShort: "wus3",
   });
@@ -68,7 +87,7 @@ test("renderLocalEnv produces expected substitutions", () => {
   // Template static defaults flow through verbatim — local envs are
   // standalone (no runtime cascade).
   assert.match(out, /^NAMESPACE=pilotswarm$/m);
-  assert.match(out, /^AZURE_TENANT_ID=72f988bf-86f1-41af-91ab-2d7cd011db47$/m);
+  assert.match(out, /^AZURE_TENANT_ID=22222222-2222-2222-2222-222222222222$/m);
   assert.match(out, /^EDGE_MODE=afd$/m);
   assert.match(out, /^TLS_SOURCE=letsencrypt$/m);
   assert.match(out, /^DEPLOY_POSTGRES=true$/m);
@@ -130,7 +149,7 @@ test("scaffolder rejects reserved names", () => {
 });
 
 test("scaffolder rejects invalid names", () => {
-  for (const bad of ["1abc", "Foo", "foo-bar", "foo_bar", "x123456789012"]) {
+  for (const bad of ["1abc", "Foo", "foo-", "foo--bar", "foo_bar", "x123456789012345"]) {
     const proc = runScript(FULL_ARGS(bad));
     assert.notEqual(proc.status, 0);
     assert.match(proc.stderr, /Invalid env name/);

@@ -174,7 +174,7 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
   // Source-of-truth invariant: byte-equality (FOUNDRY_ENDPOINT="" so no
   // placeholder substitution actually happens in either tree).
   const workerCatalog = readFileSync(
-    join(process.cwd(), "deploy", "gitops", "worker", "base", "model_providers.json"),
+    join(process.cwd(), "deploy", "providers", "azure", "gitops", "worker", "base", "model_providers.json"),
     "utf8",
   );
   assert.equal(portalContent, workerCatalog, "portal staged catalog must byte-match worker base catalog");
@@ -211,6 +211,37 @@ function makePortalEnv(extra = {}) {
     ...extra,
   };
 }
+
+test("per-stamp Foundry catalog becomes the worker and portal default", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-foundry-catalog-"));
+  const catalogPath = join(stagingDir, "model_providers.json");
+  writeFileSync(catalogPath, JSON.stringify({
+    providers: [{ id: "azure-foundry", type: "openai", baseUrl: "__FOUNDRY_ENDPOINT__/openai/v1", apiKey: "env:AZURE_OAI_KEY", models: [{ name: "gpt-5.6-terra" }] }],
+    defaultModel: "azure-foundry:gpt-5.6-terra",
+  }));
+  const env = makePortalEnv({
+    MODEL_PROVIDERS_FILE: catalogPath,
+    FOUNDRY_ENDPOINT: "https://stamp.cognitiveservices.azure.com/",
+    AZURE_STORAGE_CONTAINER: "copilot-sessions",
+    PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+    PILOTSWARM_LIVE_TURN: "0",
+  });
+  try {
+    for (const service of ["worker", "portal"]) {
+      const root = stageManifests({ service, envName: "test", env, stagingDir });
+      const catalog = JSON.parse(readFileSync(join(root, "base", "model_providers.json"), "utf8"));
+      assert.equal(catalog.defaultModel, "azure-foundry:gpt-5.6-terra");
+      assert.equal(catalog.providers.length, 1);
+      assert.equal(catalog.providers[0].baseUrl, "https://stamp.cognitiveservices.azure.com/openai/v1");
+    }
+    assert.throws(
+      () => stageManifests({ service: "worker", envName: "test", env: { ...env, FOUNDRY_ENDPOINT: "" }, stagingDir }),
+      /requires FOUNDRY_ENDPOINT/,
+    );
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
+});
 
 test("stageManifests(portal): PORTAL_TLS_CERT_NAME override propagates to tls-akv + edge-appgw (FR-013)", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-tls-override-"));

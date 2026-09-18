@@ -18,7 +18,7 @@ import { REPO_ROOT } from "../lib/common.mjs";
 // model_providers.json with a known shape, drop a minimal overlay so
 // stageManifests doesn't fail on the .env step.
 function buildFixtureWorkerTree(stagingDir, modelProvidersBody) {
-  // We use the real `deploy/gitops/worker` tree (it already has overlays/default/.env)
+  // We use the real `deploy/providers/azure/gitops/worker` tree (it already has overlays/default/.env)
   // but replace its base/model_providers.json with a controlled fixture body for
   // assertion stability. stageManifests cp's from REPO_ROOT, so we instead point
   // the test at staging post-cp and inspect the result.

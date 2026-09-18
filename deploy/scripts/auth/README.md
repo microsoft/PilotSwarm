@@ -39,12 +39,13 @@ The scripts use only cross-platform pwsh APIs (`Join-Path`, `Resolve-Path`,
 `[System.IO.Path]::GetTempFileName()`, `az`) and forward-slash path
 separators throughout, so the same invocation works in all three OSes.
 
-## Service Tree ID is required
+## Service Tree ID for new app registrations
 
 Microsoft tenant policy requires every app registration to carry a valid
 `serviceManagementReference` (Service Tree ID). `Setup-PortalAuth.ps1`
-requires `-ServiceTreeId` as a mandatory parameter — **there is no
+requires `-ServiceTreeId` when creating a new app — **there is no
 default**. Supply the Service Tree ID registered for your service.
+Adding a redirect URI to an existing app does not require this parameter.
 
 If your organization does not yet have a Service Tree entry for the
 PilotSwarm deployment, register one before running these scripts. The
@@ -177,14 +178,12 @@ redirect URI to it:
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass \
   -File deploy/scripts/auth/Setup-PortalAuth.ps1 \
-  -ServiceTreeId <your-service-tree-id> \
   -ExistingAppId <existing-app-id> \
   -EnvName mystamp
 ```
 
-This appends the stamp's AFD endpoint to the existing app's SPA redirect
-URI list (deduped) — no other modifications. `-ServiceTreeId` is still
-required for parameter parsing but is not re-applied to the existing app.
+This appends the stamp's portal endpoint to the existing app's SPA redirect
+URI list (deduped) — no other modifications or Service Tree ID is needed.
 
 ### Pre-deploy creation (no redirect URI yet)
 

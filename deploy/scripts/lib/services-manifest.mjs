@@ -1,13 +1,13 @@
 // OSS deploy manifest loader.
 //
-// Reads deploy/services/deploy-manifest.json + deploy/services/<svc>/deploy.json
+// Reads deploy/providers/azure/services/deploy-manifest.json + deploy/providers/azure/services/<svc>/deploy.json
 // and exposes a single structured object the orchestrator consumes. Stdlib-only
 // structural validator (zero deps) — checks shape, enums, references, and the
 // invariant that every name in {infraOrder ∪ services} has a matching
 // deploy.json file.
 //
 // Distinct from the enterprise services.json / service.json files that live alongside
-// these in deploy/services/. Those will be migrated to a parent repo via
+// these in deploy/providers/azure/services/. Those will be migrated to a parent repo via
 // submodule; this loader never touches them.
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import { REPO_ROOT } from "./common.mjs";
 
-const SERVICES_DIR = join(REPO_ROOT, "deploy", "services");
+const SERVICES_DIR = join(REPO_ROOT, "deploy", "providers", "azure", "services");
 const ROOT_MANIFEST = join(SERVICES_DIR, "deploy-manifest.json");
 
 // ───────────────────────── Pure validator ─────────────────────────
@@ -198,7 +198,7 @@ export function loadDeployManifest(opts = {}) {
   for (const name of allSequence) {
     const folder = allFolders.find((f) => canon(f) === canon(name));
     if (!folder) {
-      errs.push(`deploy-manifest.json: '${name}' has no matching service folder under deploy/services/`);
+      errs.push(`deploy-manifest.json: '${name}' has no matching service folder under deploy/providers/azure/services/`);
       continue;
     }
     const svcPath = join(dir, folder, "deploy.json");

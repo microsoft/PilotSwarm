@@ -29,7 +29,7 @@ export { databaseOverlayOmittedKeys } from "./database-env.mjs";
 
 // Edge mode and TLS source value spaces. Mirrors `new-env.mjs` EDGE_MODES /
 // TLS_SOURCES — kept in sync via overlay-contracts.test.mjs.
-export const EDGE_MODES = ["afd", "private"];
+export const EDGE_MODES = ["afd", "private", "public"];
 export const TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
 
 // JS-side authoritative defaults. Single source of truth — referenced by
@@ -46,7 +46,7 @@ function collapseTlsSource(tlsSource) {
 }
 
 // (edgeMode, tlsSource) → overlay directory key under
-// deploy/gitops/portal/overlays/. Single source of truth.
+// deploy/providers/azure/gitops/portal/overlays/. Single source of truth.
 export function resolveOverlayKey({ edgeMode, tlsSource }) {
   const em = (edgeMode || DEFAULT_EDGE_MODE).toLowerCase();
   const ts = collapseTlsSource((tlsSource || DEFAULT_TLS_SOURCE).toLowerCase());
@@ -88,6 +88,10 @@ const SHARED_COMPOSED_ENV_KEYS = Object.freeze([
   "PILOTSWARM_CMS_FACTS_DATABASE_URL",
   "PILOTSWARM_DB_AAD_USER",
   "DATABASE_URL",
+  "HORIZON_EMBED_URL",
+  "HORIZON_EMBED_MODEL",
+  "HORIZON_EMBED_DIM",
+  "HORIZON_EMBED_API_KEY_HEADER",
 ]);
 
 // Per-overlay contracts.
@@ -131,6 +135,30 @@ export const OVERLAY_CONTRACTS = Object.freeze({
       "PRIVATE_LINK_CONFIGURATION_NAME",
       "SSL_CERT_DOMAIN_SUFFIX",
       "ACME_EMAIL",
+    ]),
+    bicepOutputKeys: SHARED_BICEP_OUTPUT_KEYS,
+  }),
+  "public-letsencrypt": Object.freeze({
+    userRequiredEnvKeys: Object.freeze([
+      "ACME_EMAIL",
+      "PORTAL_HOSTNAME",
+      "PORTAL_AUTH_PROVIDER",
+      "PORTAL_AUTH_ENTRA_TENANT_ID",
+      "AZURE_TENANT_ID",
+      "PORTAL_AUTH_ENTRA_CLIENT_ID",
+      "PORTAL_AUTH_ALLOW_UNAUTHENTICATED",
+      "PILOTSWARM_USE_MANAGED_IDENTITY",
+    ]),
+    composedEnvKeys: SHARED_COMPOSED_ENV_KEYS,
+    stubKeys: Object.freeze([
+      "PRIVATE_DNS_ZONE",
+      "AKS_VNET_ID",
+      "SSL_CERT_DOMAIN_SUFFIX",
+      "FRONT_DOOR_PROFILE_NAME",
+      "FRONT_DOOR_PROFILE_RESOURCE_GROUP",
+      "FRONT_DOOR_ENDPOINT_NAME",
+      "APPLICATION_GATEWAY_NAME",
+      "PRIVATE_LINK_CONFIGURATION_NAME",
     ]),
     bicepOutputKeys: SHARED_BICEP_OUTPUT_KEYS,
   }),
@@ -233,8 +261,21 @@ export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
   const missing = [];
   for (const k of contract.userRequiredEnvKeys) {
     const v = env[k];
-    if (v === undefined || v === null || String(v).trim() === "") {
+    if (v === undefined || v === null || String(v).trim() === "" || String(v).trim() === "__PS_UNSET__") {
       missing.push(k);
+    }
+  }
+  if (edgeMode === "public") {
+    const requiredValues = {
+      PORTAL_AUTH_PROVIDER: "entra",
+      PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "false",
+      PILOTSWARM_USE_MANAGED_IDENTITY: String(env.HORIZONDB_ENABLED).toLowerCase() === "true" ? "0" : "1",
+    };
+    for (const [key, expected] of Object.entries(requiredValues)) {
+      if (String(env[key] ?? "").toLowerCase() !== expected && !missing.includes(key)) missing.push(key);
+    }
+    for (const key of ["AZURE_TENANT_ID", "PORTAL_AUTH_ENTRA_TENANT_ID", "PORTAL_AUTH_ENTRA_CLIENT_ID"]) {
+      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(env[key] ?? "")) && !missing.includes(key)) missing.push(key);
     }
   }
   // ACME_EMAIL gets a stricter shape check on letsencrypt — preserves

@@ -9,6 +9,13 @@ A multi-platform Node.js deploy driver for PilotSwarm on AKS that
 | _enterprise deployment orchestrator_ (internal-only) | Enterprise-driven GitOps deploy (Bicep + Kustomize + Flux Storage Bucket). | Production rollouts via the enterprise deployment path. |
 | **`deploy/scripts/deploy.mjs`** *(this README)* | OSS-friendly equivalent of the enterprise path, runnable from any contributor's box without the enterprise path. | Reproducing the GitOps deploy locally; future GitHub Actions wrapper. |
 
+The reusable Azure templates live under [`deploy/providers/azure/`](../providers/azure/README.md).
+Each local stamp is scaffolded from that provider's env template and records
+`DEPLOY_PROVIDER=azure` in its ignored configuration.
+Set `MODEL_PROVIDERS_FILE` to an ignored, per-stamp JSON catalog when the
+worker and portal should use a model set different from the shared catalog.
+Both workloads receive the same staged file, including the default model.
+
 Same outcome as the enterprise path: Bicep deployed → image pushed to ACR →
 Kustomize manifests staged with `.env` substitution → tree uploaded to
 the Flux Storage Bucket → rollout verified against the running cluster.
@@ -31,7 +38,7 @@ There are two ways to point this script at a target subscription / cluster:
 
 Every deploy targets a personal local env at
 `deploy/envs/local/<name>/.env`, scaffolded by `npm run deploy:new-env`
-from `deploy/envs/template.env`. The local file is standalone — no
+from `deploy/providers/azure/envs/template.env`. The local file is standalone — no
 runtime cascade — so editing the template never retroactively changes
 existing envs.
 
@@ -42,10 +49,10 @@ az account set --subscription "<subscription-id>"
 
 # 2. Scaffold a personal env. Run interactively (prompts for env name,
 #    subscription, location) or pass everything via flags. <name> must
-#    match /^[a-z][a-z0-9]{0,11}$/.
+#    use up to 15 lowercase letters, digits, or internal hyphens.
 npm run deploy:new-env
 #    or non-interactive:
-npm run deploy:new-env -- foo --subscription <id> --location westus3
+npm run deploy:new-env -- foo --subscription <id> --tenant-id <tenant-id> --location westus3
 #    The scaffolder generates RESOURCE_GROUP, GLOBAL_RESOURCE_PREFIX,
 #    GLOBAL_RESOURCE_GROUP, PORTAL_RESOURCE_NAME using the same patterns
 #    that the enterprise deployment manifests use:
@@ -69,7 +76,7 @@ are used by the enterprise path for ServiceGroup naming.
 
 For an end-to-end deploy on a fresh subscription / cluster, use the `all`
 aggregate. It runs the canonical enterprise-equivalent sequence
-(`globalinfra → baseinfra → worker → portal`) in a single invocation,
+(`globalinfra → baseinfra → horizondb, when enabled → worker → portal`) in a single invocation,
 sharing the same env map across services so Bicep outputs (ACR login
 server, deployment storage account, etc.) cascade forward automatically:
 
@@ -113,7 +120,7 @@ npm run deploy -- worker foo --steps manifests
 ```
 npm run deploy -- <service> <env> [flags]
 
-Services:  worker | portal | baseinfra | globalinfra | all
+Services:  worker | portal | baseinfra | globalinfra | horizondb | all
 Envs:      a local env name created with `npm run deploy:new-env`
 
 Flags:
@@ -138,14 +145,14 @@ Flags:
 | `noop` | Load env, run preflight (Azure login + subscription match), exit. | all |
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
-| `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
+| `bicep` | Render `deploy/providers/azure/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
 | `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
-| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
+| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv`, `overlays/public-letsencrypt` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
 | `rollout` | `flux reconcile kustomization <svc>-<svc> -n flux-system --with-source` (forces the Bucket source to re-pull the just-uploaded blobs and the Kustomization to apply that revision), then `kubectl rollout status deployment/<svc>` in `NAMESPACE`, then verifies live `image` ends with the expected tag. | worker, portal |
 
-The default pipeline (no `--steps`) is the full chain. For `baseinfra`
-and `globalinfra` the chain ends at `bicep` (no app artifacts to roll
-out).
+The default pipeline (no `--steps`) is the full chain. `baseinfra` and
+`horizondb` run Bicep followed by secret seeding; `globalinfra` runs Bicep.
+These infrastructure services have no app artifacts to roll out.
 
 ## Env-file schema
 
@@ -154,7 +161,7 @@ Every deploy targets a personal local env at `deploy/envs/local/<name>/.env`
 **standalone** — `deploy.mjs` reads them directly with no runtime cascade
 onto a shared base file.
 
-`deploy/envs/template.env` is a checked-in template consumed only by the
+`deploy/providers/azure/envs/template.env` is a checked-in template consumed only by the
 scaffolder (`npm run deploy:new-env`): it copies the template, substitutes
 deployment-target keys, prompts for per-stamp secrets, and writes the
 complete file under `local/<name>/.env`. Subsequent edits to `template.env`
@@ -197,7 +204,7 @@ placeholder" error directing you to run a prior `--steps bicep`.
 
 | | Enterprise path | OSS path |
 |---|---|---|
-| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env` (standalone, scaffolded from `deploy/envs/template.env`) |
+| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env` (standalone, scaffolded from `deploy/providers/azure/envs/template.env`) |
 | Scope binding | the enterprise orchestrator injects subscription / region / IDs into the parameters JSON | `deploy/scripts/lib/common.mjs` resolves env file → JS Map |
 | `.env` substitution | the enterprise param-substitution helper rewrites overlay `.env` from JSON params | `deploy/scripts/lib/substitute-env.mjs` rewrites overlay `.env` from the env map |
 | Per-service identity | Per-service scope binding | Shared `csiIdentity` UAMI clientId cascades from BaseInfra Bicep output → both worker and portal overlays |
@@ -212,7 +219,7 @@ keys before any file is written.
 
 ## Bicep param flow
 
-`deploy/services/<Module>/bicep/<Module>.params.template.json` files use
+`deploy/providers/azure/services/<Module>/bicep/<Module>.params.template.json` files use
 literal `${VAR}` placeholders. The `bicep` step:
 
 2. Reads the template, substitutes `${VAR}` from the env map (via `render-params.mjs`).
@@ -243,8 +250,8 @@ npm run test:deploy-scripts
 Test files live at `deploy/scripts/test/*.test.mjs` and run with the
 built-in Node test runner (no new dependencies). The suite is gated on PRs
 and pushes to `main` by `.github/workflows/deploy-scripts-tests.yml`
-whenever `deploy/scripts/**`, `deploy/services/**/deploy.json`,
-`deploy/services/**/bicep/**`, the worker/portal Dockerfiles, the root
+whenever `deploy/scripts/**`, `deploy/providers/azure/services/**/deploy.json`,
+`deploy/providers/azure/services/**/bicep/**`, the worker/portal Dockerfiles, the root
 package manifest/lockfile, or that workflow itself changes.
 
 ### Per-module redeploy controls
@@ -257,7 +264,7 @@ bypasses markers for every module.
 ### Manual verification protocol — private-endpoint approval
 
 After landing the FR-015 hardening of
-`deploy/services/common/bicep/approve-private-endpoint.bicep`, two
+`deploy/providers/azure/services/common/bicep/approve-private-endpoint.bicep`, two
 operator-driven checks should be run against a real AFD-fronted stamp:
 
 1. **Idempotency**: re-run the deploy against an environment whose AFD
@@ -495,7 +502,7 @@ The worker reads `model_providers.json` at startup as the provider TYPE/model
 catalog. Runtime instances carry credentials and defaults in CMS. In the
 bicep-deploy path the
 canonical catalog lives at
-[`deploy/gitops/worker/base/model_providers.json`](../gitops/worker/base/model_providers.json)
+[`deploy/providers/azure/gitops/worker/base/model_providers.json`](../providers/azure/gitops/worker/base/model_providers.json)
 and is mounted into the pod via a kustomize-generated ConfigMap
 (`copilot-worker-model-providers`) at `/app/config/model_providers.json`.
 `PS_MODEL_PROVIDERS_PATH` is set on the deployment so the runtime picks
@@ -548,11 +555,12 @@ Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
 
 ### Per-stamp catalog overrides
 
-To diverge from the base catalog for a single stamp, drop a kustomize
-overlay patch on the `copilot-worker-model-providers` ConfigMap in
-`deploy/gitops/worker/overlays/<overlay>/`. Keep the placeholder in the
-patched JSON if you still want endpoint substitution; drop it if you
-hard-code the URL.
+Set `MODEL_PROVIDERS_FILE=deploy/envs/local/<stamp>/model_providers.json` in
+the ignored stamp env. Worker and portal stage the same JSON file. For a
+Foundry-only stamp, list only the `azure-foundry` provider, point its key at
+`env:AZURE_OAI_KEY`, keep `__FOUNDRY_ENDPOINT__/openai/v1` as its base URL,
+and set `defaultModel` to a deployment name in that stamp's
+`foundry-deployments.json`. Leave `GITHUB_TOKEN` empty.
 
 > Phase 2 (SDK Entra-mode) and Phase 3 (Foundry-hosted Claude) are
 > tracked in [`docs/proposals/foundry-entra-mode-auth.md`](../../docs/proposals/foundry-entra-mode-auth.md)

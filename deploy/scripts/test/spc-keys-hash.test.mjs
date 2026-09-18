@@ -86,17 +86,17 @@ function extractSpcKeys(yamlPath) {
   return keys.sort();
 }
 
-test("WORKER_SPC_KEYS mirrors deploy/gitops/worker/base/secret-provider-class.yaml", () => {
+test("WORKER_SPC_KEYS mirrors deploy/providers/azure/gitops/worker/base/secret-provider-class.yaml", () => {
   const yamlKeys = extractSpcKeys(
-    join(REPO_ROOT, "deploy", "gitops", "worker", "base", "secret-provider-class.yaml"),
+    join(REPO_ROOT, "deploy", "providers", "azure", "gitops", "worker", "base", "secret-provider-class.yaml"),
   );
   const constKeys = [..._SPC_KEYS_BY_SERVICE.worker].sort();
   assert.deepEqual(constKeys, yamlKeys);
 });
 
-test("PORTAL_SPC_KEYS mirrors deploy/gitops/portal/base/secret-provider-class.yaml", () => {
+test("PORTAL_SPC_KEYS mirrors deploy/providers/azure/gitops/portal/base/secret-provider-class.yaml", () => {
   const yamlKeys = extractSpcKeys(
-    join(REPO_ROOT, "deploy", "gitops", "portal", "base", "secret-provider-class.yaml"),
+    join(REPO_ROOT, "deploy", "providers", "azure", "gitops", "portal", "base", "secret-provider-class.yaml"),
   );
   const constKeys = [..._SPC_KEYS_BY_SERVICE.portal].sort();
   assert.deepEqual(constKeys, yamlKeys);

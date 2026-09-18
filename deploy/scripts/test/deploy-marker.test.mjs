@@ -30,7 +30,7 @@ const MOD_NAME = "DeployMarkerTestMod";
 const ENV_NAME = "deploymarkertest";
 
 function modBicepDir() {
-  return join(REPO_ROOT, "deploy", "services", MOD_NAME, "bicep");
+  return join(REPO_ROOT, "deploy", "providers", "azure", "services", MOD_NAME, "bicep");
 }
 
 function envTmpDir() {
@@ -44,7 +44,7 @@ function setupModule(content) {
 }
 
 function tearDown() {
-  rmSync(join(REPO_ROOT, "deploy", "services", MOD_NAME), {
+  rmSync(join(REPO_ROOT, "deploy", "providers", "azure", "services", MOD_NAME), {
     recursive: true,
     force: true,
   });

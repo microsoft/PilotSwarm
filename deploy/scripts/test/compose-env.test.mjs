@@ -17,6 +17,16 @@ test("composes DATABASE_URL from POSTGRES_FQDN with bootstrap defaults", () => {
   );
 });
 
+test("public mode composes an Entra-only database URL", () => {
+  const env = {
+    EDGE_MODE: "public",
+    POSTGRES_FQDN: "ps.example.postgres.database.azure.com",
+    POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "ps-csi-mid",
+  };
+  composeDerivedEnv(env);
+  assert.equal(env.DATABASE_URL, "postgresql://ps-csi-mid@ps.example.postgres.database.azure.com:5432/pilotswarm?sslmode=require");
+});
+
 test("DATABASE_URL composition honors POSTGRES_ADMIN_LOGIN/PASSWORD/DATABASE overrides", () => {
   const env = {
     POSTGRES_FQDN: "ps.example.postgres.database.azure.com",

@@ -58,7 +58,7 @@ If after those cues it's still ambiguous, ask the user one clarifying question b
 - `.github/copilot-instructions.md` — source of truth for DO NOT WIPE, repo-scope boundary, sensitive-files rule
 - `deploy/scripts/README.md` — canonical orchestrator reference (services, steps, EDGE_MODE × TLS_SOURCE, troubleshooting)
 - `deploy/scripts/auth/README.md` — portal app-registration scripts
-- `deploy/envs/template.env` — every operator-settable env key with inline documentation
+- `deploy/providers/azure/envs/template.env` — every operator-settable env key with inline documentation
 
 ## New-Env Rollout to Existing Stamp
 
@@ -444,6 +444,6 @@ rendered service manifests:
 
 - Never propagate PilotSwarm changes into downstream consumer repos (e.g. apps that vendor or consume PilotSwarm as an SDK) unless the user explicitly asks.
 - Never edit `.env`, `.env.remote`, `.model_providers.json`, or any per-stamp `.env` without explicit user direction. See the repo's "Sensitive Local Files" rule.
-- Never push secrets into source. `.env.example`, `.model_providers.example.json`, and `deploy/envs/template.env` are the only checked-in templates.
+- Never push secrets into source. `.env.example`, `.model_providers.example.json`, and `deploy/providers/azure/envs/template.env` are the only checked-in templates.
 - When `deploy.mjs` returns `UNSUPPORTED_COMBINATION`, explain the matrix and ask the user to choose a valid pair — do not silently fall back.
 - Never invoke the legacy bash path (`scripts/deploy-aks.sh`, `scripts/deploy-portal.sh`) from inside this agent. If the user wants that, hand off to `pilotswarm-aks-deployer`.

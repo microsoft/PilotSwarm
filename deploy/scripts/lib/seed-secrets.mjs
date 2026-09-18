@@ -14,11 +14,11 @@
 //   ENV_VAR_NAME (uppercase, underscores) → kv-secret-name (lowercase, hyphens)
 //   e.g. GITHUB_TOKEN → github-token, ANTHROPIC_API_KEY → anthropic-api-key.
 // This matches the AKV object names declared in
-// deploy/gitops/worker/base/secret-provider-class.yaml.
+// deploy/providers/azure/gitops/worker/base/secret-provider-class.yaml.
 //
 // What this step does NOT seed:
 //   • azure-storage-connection-string → auto-populated by Bicep
-//     (deploy/services/base-infra/bicep/auto-secrets.bicep)
+//     (deploy/providers/azure/services/base-infra/bicep/auto-secrets.bicep)
 //   • Provisioned DATABASE_URL → a legacy config
 //     value composed at deploy time from the postgres FQDN + bootstrap
 //     password (interim) and projected via the worker-env ConfigMap. Chunk
@@ -38,13 +38,14 @@
 import { log, run } from "./common.mjs";
 import { validateDatabaseConfig } from "./database-env.mjs";
 import { seedDatabaseSecrets } from "./database-secrets.mjs";
+import { seedHorizonDbAdminPassword, seedHorizonDbConnectionUrl } from "./horizondb.mjs";
 
 // The two human-only KV secrets that the bicep deploy flow needs. Both are
 // genuinely external (not derivable from infra outputs), so they get
 // prompted by new-env and stored in the gitignored local env file.
 //
 // Format: ENV_NAME → KV secret name. Both shapes are sourced from the same
-// objectName/key fields in deploy/gitops/worker/base/secret-provider-class.yaml.
+// objectName/key fields in deploy/providers/azure/gitops/worker/base/secret-provider-class.yaml.
 // Sentinel value written to KV when an optional seedable secret was left
 // blank by the user. The runtime (packages/sdk/examples/worker.js) strips
 // this from process.env at startup so the missing provider is treated as
@@ -80,7 +81,7 @@ export const SEEDABLE_SECRET_KEYS = [
  *
  * @param {{ envName: string, env: Record<string,string> }} ctx
  */
-export async function seedSecrets({ envName, env }) {
+export async function seedSecrets({ envName, env, service }) {
   // Validate before writing any secret, not at deploy startup.
   validateDatabaseConfig(env);
   const kvName = env.KV_NAME;
@@ -92,6 +93,8 @@ export async function seedSecrets({ envName, env }) {
   }
 
   let setCount = seedDatabaseSecrets(env);
+  if (service === "base-infra") seedHorizonDbAdminPassword(env);
+  if (service === "horizondb") seedHorizonDbConnectionUrl(env);
   const missingRequired = [];
 
   for (const { env: envKey, kv: kvKey, required, seedEmpty } of SEEDABLE_SECRET_KEYS) {

@@ -12,27 +12,29 @@ on:
   pull_request:
     paths:
       - "deploy/scripts/**"
-      - "deploy/services/**"
-      - "deploy/gitops/**"
-      - "deploy/envs/template.env"
+      - "deploy/providers/azure/services/**"
+      - "deploy/providers/azure/gitops/**"
+      - "deploy/providers/azure/envs/template.env"
       - "deploy/Dockerfile.portal"
       - "deploy/Dockerfile.worker"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/deploy-scripts-tests.yml"
+      - ".github/workflows/deploy-azure.yml"
   push:
     branches:
       - main
     paths:
       - "deploy/scripts/**"
-      - "deploy/services/**"
-      - "deploy/gitops/**"
-      - "deploy/envs/template.env"
+      - "deploy/providers/azure/services/**"
+      - "deploy/providers/azure/gitops/**"
+      - "deploy/providers/azure/envs/template.env"
       - "deploy/Dockerfile.portal"
       - "deploy/Dockerfile.worker"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/deploy-scripts-tests.yml"
+      - ".github/workflows/deploy-azure.yml"
 
 concurrency:
   group: deploy-scripts-tests-${{ github.ref }}

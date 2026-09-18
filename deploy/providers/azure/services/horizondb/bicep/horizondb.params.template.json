@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "${LOCATION}" },
+    "clusterName": { "value": "${HORIZONDB_CLUSTER_NAME}" },
+    "administratorLogin": { "value": "${HORIZONDB_ADMIN_LOGIN}" },
+    "administratorLoginPassword": {
+      "reference": {
+        "keyVault": { "id": "${KV_RESOURCE_ID}" },
+        "secretName": "${HORIZONDB_ADMIN_PASSWORD_SECRET_NAME}"
+      }
+    },
+    "vCores": { "value": ${HORIZONDB_VCORES} },
+    "replicaCount": { "value": ${HORIZONDB_REPLICA_COUNT} },
+    "parameterGroupName": { "value": "${HORIZONDB_PARAMETER_GROUP_NAME}" },
+    "parameterGroupCreate": { "value": ${HORIZONDB_PARAMETER_GROUP_CREATE} },
+    "clusterCreate": { "value": ${HORIZONDB_CLUSTER_CREATE} },
+    "aksOutboundIp": { "value": "${AKS_OUTBOUND_IP}" }
+  }
+}

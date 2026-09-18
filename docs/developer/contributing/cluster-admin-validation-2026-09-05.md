@@ -245,16 +245,14 @@ as rerun production probes for this admin change. No CHK changes are made here.
 
 ## Deployment record
 
-Completed after the complete regression gate passed. Target:
-`pilotswarm-aks`, namespace `copilot-runtime`.
-Portal: <https://pilotswarm-portal.westus3.cloudapp.azure.com>.
+Completed after the complete regression gate passed. Target: the existing AKS
+deployment and its application namespace.
 
 Both candidates were built on Linux/amd64 in ACR using public npm with lockfile
 integrity checks. The build context contains no private `.env` or model catalog;
-it uses the checked-in deployment catalog. Immutable digests:
-
-- Worker: `pilotswarmacr.azurecr.io/copilot-runtime-worker@sha256:f8a222c951884047af9319eb6325bf7068011a354dc17b648ade87069c9904c0`
-- Portal/MCP: `pilotswarmacr.azurecr.io/pilotswarm-portal@sha256:b05fd83c68d012d0cebd799c103a9c74388b059f514dab0332ed893f51ede99f`
+it uses the checked-in deployment catalog. Worker and portal/MCP images were
+deployed by immutable digest; the registry address and digests are omitted
+from this public record.
 
 The rollout preserved live credentials, provider configuration, replica counts
 and MCP keys. It first introduced compatible worker/portal binaries in

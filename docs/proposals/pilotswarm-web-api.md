@@ -97,7 +97,7 @@ The RPC dispatcher (`packages/portal/runtime.js`) routes ~55 method names to `No
 
 **TUI** (`packages/cli`): `pilotswarm local|remote`, flags `-s/--store`, `-e/--env`, `-p/--plugin`, `-w/--worker`, `-n/--workers`, `-c/--context`, `--namespace`, `--label`, `-m/--model`, `--system`. Remote mode sets `WORKERS=0` and tails logs via kubectl/K8s configuration. User identity is the synthetic `LOCAL_DEFAULT_USER_PRINCIPAL` (`{ provider: "local", subject: "default" }`). UI preferences persist to `~/.config/pilotswarm/config.json` (XDG).
 
-**Deployment:** the portal runs on AKS (port 3001, optional in-process TLS), via legacy `deploy/k8s/portal-deployment.yaml` or the GitOps path `deploy/gitops/portal/`, which composes edge (AFD/AppGw or private NGINX) and TLS (Let's Encrypt or AKV) components into three shipped overlays: `afd-letsencrypt`, `afd-akv`, and `private-akv`. The GitOps deployment probes `/api/health`. The browser portal's WebSocket traffic already rides these ingress paths (`/portal-ws`), so `/api/v1/ws` inherits the same story.
+**Deployment:** the portal runs on AKS (port 3001, optional in-process TLS), via legacy `deploy/k8s/portal-deployment.yaml` or the GitOps path `deploy/providers/azure/gitops/portal/`, which composes edge (AFD/AppGw or private NGINX) and TLS (Let's Encrypt or AKV) components into three shipped overlays: `afd-letsencrypt`, `afd-akv`, and `private-akv`. The GitOps deployment probes `/api/health`. The browser portal's WebSocket traffic already rides these ingress paths (`/portal-ws`), so `/api/v1/ws` inherits the same story.
 
 ---
 

@@ -22,16 +22,17 @@ import {
 } from "./deploy-marker.mjs";
 import { assertFoundryDeploymentsValid } from "./validate-foundry-deployments.mjs";
 import { resolveAppgwWafCustomRulesFile } from "./appgw-waf-rules.mjs";
+import { prepareHorizonDbEnvForRender } from "./horizondb.mjs";
 
 // Bicep main.bicep paths and params templates are derived by convention from
-// the module name: deploy/services/<Module>/bicep/{main.bicep,<Module>.params.template.json}.
+// the module name: deploy/providers/azure/services/<Module>/bicep/{main.bicep,<Module>.params.template.json}.
 // This pairs naturally with the manifest-driven service layout — adding a new
 // module is a single folder drop with no script changes here.
 function moduleBicepPath(moduleName) {
-  return `deploy/services/${moduleName}/bicep/main.bicep`;
+  return `deploy/providers/azure/services/${moduleName}/bicep/main.bicep`;
 }
 function moduleParamsTemplate(moduleName) {
-  return `deploy/services/${moduleName}/bicep/${moduleName}.params.template.json`;
+  return `deploy/providers/azure/services/${moduleName}/bicep/${moduleName}.params.template.json`;
 }
 
 // FR-022 alias map: Bicep camelCase output → UPPER_SNAKE env key.
@@ -68,9 +69,11 @@ const OUTPUT_ALIAS = {
   // Foundry endpoint emitted by base-infra when foundryEnabled. Empty
   // when the stamp does not opt into Foundry. Substituted into the worker
   // base `model_providers.json` (`__FOUNDRY_ENDPOINT__` placeholder) at
-  // manifest-staging time. See deploy/services/base-infra/bicep/foundry.bicep.
+  // manifest-staging time. See deploy/providers/azure/services/base-infra/bicep/foundry.bicep.
   foundryEndpoint: "FOUNDRY_ENDPOINT",
   foundryAccountName: "FOUNDRY_ACCOUNT_NAME",
+  horizonDbFqdn: "HORIZONDB_FQDN",
+  aksOutboundIp: "AKS_OUTBOUND_IP",
   // FR-013: Portal TLS cert name plumbed from the `portalTlsCertName` bicep
   // parameter to stage-manifests.mjs, which substitutes the
   // `__PORTAL_TLS_CERT_NAME__` token in components/tls-akv/* and
@@ -104,6 +107,8 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   const bicepAbs = join(REPO_ROOT, bicepRel);
   if (!existsSync(templateAbs)) throw new Error(`Params template missing: ${templateAbs}`);
   if (!existsSync(bicepAbs)) throw new Error(`Bicep main missing: ${bicepAbs}`);
+
+  if (moduleName === "horizondb") prepareHorizonDbEnvForRender(env);
 
   // 1) Render params.
   log("info", `[${moduleName}] render params (${paramsRel})`);
@@ -157,14 +162,13 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
     `@${renderedPath}`,
   ];
 
-  // BaseInfra optionally accepts a `localDeploymentPrincipalId` so the storage
-  // module can grant Storage Blob Data Contributor to the running user at
-  // create time (avoids the post-hoc role-assignment + RBAC propagation race
-  // that every fresh stamp would otherwise hit on the manifests upload).
-  // The enterprise path doesn't pass this — its principal already has the role via the
-  // enterprise deploy UAMI assignment, and the Bicep param defaults to empty.
+  // BaseInfra optionally accepts a deployment principal object ID so Bicep
+  // can grant Blob Data Contributor, Key Vault Secrets Officer and AcrPush
+  // before this process uploads manifests and images. A GitHub OIDC login
+  // supplies DEPLOY_PRINCIPAL_ID; an interactive login resolves its user ID.
+  // The enterprise path can leave the Bicep parameter empty.
   if (moduleName === "base-infra") {
-    const localPrincipal = resolveLocalDeploymentPrincipal();
+    const localPrincipal = resolveLocalDeploymentPrincipal(env);
     if (localPrincipal) {
       baseArgs.push(
         "--parameters",
@@ -196,7 +200,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         throw new Error(
           `FOUNDRY_DEPLOYMENTS_FILE points to a missing file: ${abs}. ` +
             `Either disable Foundry (FOUNDRY_ENABLED=false) or create the JSON ` +
-            `array file. See deploy/services/base-infra/bicep/foundry.bicep ` +
+            `array file. See deploy/providers/azure/services/base-infra/bicep/foundry.bicep ` +
             `for the expected entry shape.`,
         );
       }
@@ -217,6 +221,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         assertFoundryDeploymentsValid({
           deployments: parsedDeployments,
           region: env.LOCATION,
+          subscriptionId: env.SUBSCRIPTION_ID,
         });
       }
       baseArgs.push("--parameters", `foundryDeployments=@${abs}`);
@@ -327,7 +332,16 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
 // `{ id, type, label }` describing it, or `null` if we're not running as an
 // AAD user (e.g. service-principal logins like the enterprise deploy MID, which
 // already has the role via Bicep — no extra grant needed).
-function resolveLocalDeploymentPrincipal() {
+export function resolveLocalDeploymentPrincipal(env) {
+  // GitHub Actions signs in through OIDC as a service principal. Its object
+  // ID must be supplied explicitly; `az ad signed-in-user show` only works
+  // for human logins and cannot resolve this principal.
+  if (env.DEPLOY_PRINCIPAL_ID) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(env.DEPLOY_PRINCIPAL_ID)) {
+      throw new Error("DEPLOY_PRINCIPAL_ID must be an Entra object ID (UUID)");
+    }
+    return { id: env.DEPLOY_PRINCIPAL_ID, type: "ServicePrincipal", label: "deployment service principal" };
+  }
   // `az ad signed-in-user show` only succeeds for User-type logins; SPs
   // intentionally fail this with `Insufficient privileges` so it's a clean
   // signal that we shouldn't override the param.

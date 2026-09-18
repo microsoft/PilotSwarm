@@ -15,13 +15,14 @@ import { defaultPipelineFor, resolveSteps } from "../lib/stages.mjs";
 import { validateService, ALL_SERVICE, SERVICES } from "../lib/common.mjs";
 
 test("ALL_SEQUENCE matches the enterprise services.json infraOrder + service order", () => {
-  // The enterprise path deploy/services/services.json: infraOrder = ["GlobalInfra","BaseInfra"], then
+  // The enterprise path deploy/providers/azure/services/services.json: infraOrder = ["GlobalInfra","BaseInfra"], then
   // services Worker, Portal. The OSS aggregate mirrors that ordering and
   // appends cert-manager + cert-manager-issuers (OSS-only Let's Encrypt
   // path; the enterprise path stays on the akv path and skips them via deploy.mjs).
   assert.deepEqual(ALL_SEQUENCE, [
     "global-infra",
     "base-infra",
+    "horizondb",
     "pls-anchor",
     "cert-manager",
     "cert-manager-issuers",
@@ -62,7 +63,7 @@ test("validateService accepts 'all' as a virtual aggregate", () => {
   // current set so accidental removals are caught.
   assert.deepEqual(
     [...SERVICES].sort(),
-    ["base-infra", "cert-manager", "cert-manager-issuers", "global-infra", "pls-anchor", "portal", "worker"],
+    ["base-infra", "cert-manager", "cert-manager-issuers", "global-infra", "horizondb", "pls-anchor", "portal", "worker"],
   );
 });
 
@@ -103,6 +104,7 @@ test("default (no --steps) full all-mode runs full pipeline for app services, bi
   const expected = {
     "global-infra": ["bicep"],
     "base-infra": ["bicep", "seed-secrets"],
+    horizondb: ["bicep", "seed-secrets"],
     "pls-anchor": ["bicep", "manifests"],
     "cert-manager": ["bicep", "manifests"],
     "cert-manager-issuers": ["bicep", "manifests"],

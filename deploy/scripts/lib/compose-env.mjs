@@ -18,8 +18,19 @@
 
 import { log } from "./common.mjs";
 import { deploysPostgres } from "./database-env.mjs";
+import { validateHorizonDbConfig } from "./horizondb.mjs";
 
 export function composeDerivedEnv(env) {
+  validateHorizonDbConfig(env);
+  if (String(env.HORIZONDB_ENABLED).toLowerCase() === "true") {
+    if (env.FOUNDRY_ENDPOINT) {
+      env.HORIZON_EMBED_URL = `${env.FOUNDRY_ENDPOINT.replace(/\/+$/, "")}/openai/v1/embeddings`;
+    }
+  }
+  env.HORIZON_EMBED_URL ||= "__PS_UNSET__";
+  env.HORIZON_EMBED_MODEL ||= "text-embedding-3-small";
+  env.HORIZON_EMBED_DIM ||= "1536";
+  env.HORIZON_EMBED_API_KEY_HEADER ||= "api-key";
   // Bring-your-own database: base-infra provisions no
   // server, so any POSTGRES_* value here is empty or a stale leftover that the
   // per-env Bicep outputs cache merged in from an earlier provisioned run
@@ -38,11 +49,19 @@ export function composeDerivedEnv(env) {
   }
 
   // DATABASE_URL — overlay ConfigMap value, NOT a KV secret in the
-  // bicep-deploy path (see deploy/gitops/worker/base/secret-provider-class.yaml).
+  // bicep-deploy path (see deploy/providers/azure/gitops/worker/base/secret-provider-class.yaml).
   // Embeds the deterministic bootstrap admin password from postgres.bicep.
   // The password is identical on every stamp and never reaches a real
   // production cluster (prod uses the enterprise path, where Postgres comes with
   // AAD-only auth).
+  if (!env.DATABASE_URL && env.POSTGRES_FQDN && env.EDGE_MODE === "public") {
+    if (!env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) {
+      throw new Error("Public mode requires the PostgreSQL Entra administrator output before composing DATABASE_URL.");
+    }
+    const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";
+    env.DATABASE_URL = `postgresql://${encodeURIComponent(env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME)}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
+    log("info", "Composed passwordless DATABASE_URL for public mode.");
+  }
   if (!env.DATABASE_URL && env.POSTGRES_FQDN) {
     const pgUser = env.POSTGRES_ADMIN_LOGIN || "pilotswarm";
     const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";

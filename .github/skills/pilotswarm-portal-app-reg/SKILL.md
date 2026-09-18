@@ -34,13 +34,14 @@ The deployer agent **must decide the auth posture before opening the
 new-env defaults table**, because the value of
 `PORTAL_AUTH_ENTRA_CLIENT_ID` depends on the outcome.
 
-## Service Tree ID is required (no default)
+## Service Tree ID for new app registrations (no default)
 
-`Setup-PortalAuth.ps1` requires `-ServiceTreeId` as a mandatory
-parameter. Microsoft tenant policy rejects app registrations without a
-valid `serviceManagementReference`, so the script does too.
+`Setup-PortalAuth.ps1` requires `-ServiceTreeId` when creating a new
+app. Microsoft tenant policy rejects app registrations without a valid
+`serviceManagementReference`. Adding a redirect URI to an existing app
+does not create an app and does not require this parameter.
 
-Before invoking, ask the user for their Service Tree ID. If they don't
+Before creating a new app, ask the user for their Service Tree ID. If they don't
 have one registered for their PilotSwarm deployment, stop and direct
 them to register one — the tenant will reject `az ad app create`
 otherwise. Do **not** invent a placeholder GUID.
@@ -124,7 +125,7 @@ Mode
   mode                     create-new (default)        # create-new | add-redirect-to-existing
 
 Identity
-  ServiceTreeId            <required: no default>
+  ServiceTreeId            <required for create-new; omit for existing app>
   DisplayName              <suggested: "PilotSwarm Portal - ${EnvName}">
   Owner                    <discovered: ${userObjectId} (${user})>
   SkipGroupsClaim          false (default)             # keep groups claim ON for PORTAL_AUTH_ENTRA_*_GROUPS
@@ -289,13 +290,9 @@ need to do the one-time consent dance described in the caveat above.
 
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-PortalAuth.ps1 \
-  -ServiceTreeId <your-service-tree-id> \
   -ExistingAppId <appId> \
   -EnvName <stamp-name>
 ```
-
-(`-ServiceTreeId` is still required for parameter parsing in this mode
-but is not re-applied to the existing app.)
 
 ## After the script runs
 
@@ -379,12 +376,12 @@ sign-in so someone can actually reach the portal.
 - Will not provision app registrations of non-portal shapes — for
   worker daemons or APIs, use `Create3PApplication.ps1` directly or
   write a new wrapper
-- Will not invent a Service Tree ID — operator must supply
+- Will not invent a Service Tree ID when creating an app — operator must supply
 
 ## Constraints
 
-- `-ServiceTreeId` is **mandatory by tenant policy** — refuse to
-  invent a placeholder
+- `-ServiceTreeId` is **mandatory for app creation by tenant policy** — refuse
+  to invent a placeholder. It is not required when appending a redirect URI.
 - Never run the wrapper against a non-target tenant — the script will
   succeed but the app will be useless to your portal
 - Never propose granting `Application.ReadWrite.All`,
