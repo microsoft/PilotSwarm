@@ -19,8 +19,10 @@ test('release and additive coverage use hosted runners; regional routing is full
   const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
+  assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
   assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.match(/^    runs-on: (.+)$/m)?.[1],
-    "${{ inputs.providers == 'horizondb' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
+    "${{ inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
+  assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });

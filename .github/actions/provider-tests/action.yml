@@ -10,7 +10,10 @@ inputs:
     description: parallel or sequential
   suite:
     default: ""
-    description: Optional baseline suite filter
+    description: Optional baseline suite filter or exact SDK file paths for HDB diagnostics
+  hdb-diagnostic:
+    default: "false"
+    description: Run only the specified HDB SDK files; never qualifies as a release gate
   postgres-container:
     required: true
     description: Disposable PostgreSQL service container ID
@@ -51,6 +54,7 @@ runs:
         TEST_MODE: ${{ inputs.mode }}
         TEST_SUITE: ${{ inputs.suite }}
         TEST_PROVIDERS: ${{ inputs.providers }}
+        TEST_HDB_DIAGNOSTIC: ${{ inputs.hdb-diagnostic }}
       run: >
         if [[ "$TEST_SUITE" == -* ]]; then
             echo "Suite must be a test-name filter. Select provider coverage with the providers input." >&2
@@ -61,7 +65,11 @@ runs:
             node .github/scripts/ci-health.mjs &
             health_pid=$!
             trap 'kill -TERM "$health_pid"; wait "$health_pid"' EXIT
-            node .github/scripts/run-all-providers.mjs
+            if [ "$TEST_HDB_DIAGNOSTIC" = "true" ]; then
+                node .github/scripts/run-all-providers.mjs diagnose-hdb
+            else
+                node .github/scripts/run-all-providers.mjs
+            fi
             exit "$?"
         fi
 

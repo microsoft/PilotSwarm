@@ -59,8 +59,18 @@ by default** until explicitly reviewed. Deleted or duplicate exclusions fail.
 `--horizondb-additive` reruns the selection after a build. Full HDB mode never
 uses those exclusions.
 
-Both live CI modes first require a real HorizonDB initialize/store/read result;
-missing or skipped coverage fails. CI rejects suite filters and skip flags.
+Both full live CI modes first require a real HorizonDB initialize/store/read
+result; missing or skipped coverage fails. Full gates reject suite filters and
+skip flags.
+
+For diagnosis, dispatch **Tests** with `providers=horizondb` and `suite` set to
+space- or comma-separated exact SDK paths, for example
+`test/local/cms-seq-nodemap.test.js test/local/contracts.test.js test/local/management.test.js`.
+This runs only those files plus the real HDB preflight on a GitHub-hosted runner,
+with the same protected configuration, eight-file concurrency and firewall cleanup.
+The job is labelled **Targeted HDB diagnostics (not a release gate)**.
+It never repeats the PostgreSQL baseline and cannot publish a release.
+After diagnosis/fixes, publication still requires its own complete release gate.
 
 ### Runner placement
 
@@ -69,7 +79,7 @@ The release gate runs the complete baseline on its local Docker PostgreSQL
 service, then the additive tests against remote HorizonDB. It does not require
 an Azure runner or a complete second suite on HDB.
 
-Full-suite `providers=horizondb` is optional and explicitly dispatched. Only this
+Full-suite `providers=horizondb` with an empty `suite` is optional and explicitly dispatched. Only this
 mode uses the repository or organization Actions variable `PROVIDER_TEST_RUNNER`
 to select a Linux/Docker runner near the dedicated database. Leave it unset to
 use a standard GitHub-hosted runner.
