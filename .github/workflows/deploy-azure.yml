@@ -6,6 +6,10 @@ on:
         description: Optional published release tag to deploy (blank deploys current main)
         required: false
         default: ""
+      reconcile_release_config:
+        description: Apply current infrastructure/configuration to existing release images without rebuilding or pushing
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -26,22 +30,36 @@ jobs:
         with:
           fetch-depth: 0
       - name: Select immutable release source when requested
-        if: inputs.release_tag != ''
+        id: source
+        if: inputs.release_tag != '' || inputs.reconcile_release_config
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RECONCILE_RELEASE_CONFIG: ${{ inputs.reconcile_release_config }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-
-          [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" =
-          false ]]
-
-          git merge-base --is-ancestor "$RELEASE_TAG" origin/main
-
-          git checkout --detach "$RELEASE_TAG"
-
-          echo "Deploying published release $RELEASE_TAG at $(git rev-parse
-          HEAD)"
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "A published vX.Y.Z release tag is required." >&2
+            exit 1
+          fi
+          if [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" != false ]]; then
+            echo "The selected release must be published." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$RELEASE_TAG" origin/main; then
+            echo "The selected release must belong to main history." >&2
+            exit 1
+          fi
+          if ! image_tag="$(git rev-parse --short=12 "${RELEASE_TAG}^{commit}")"; then
+            echo "Cannot resolve the release image tag." >&2
+            exit 1
+          fi
+          echo "image-tag=$image_tag" >> "$GITHUB_OUTPUT"
+          if [ "$RECONCILE_RELEASE_CONFIG" = "true" ]; then
+            echo "Reconciling current deployment configuration with existing $RELEASE_TAG images."
+          else
+            git checkout --detach "$RELEASE_TAG"
+            echo "Deploying published release $RELEASE_TAG at $(git rev-parse HEAD)"
+          fi
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -55,6 +73,9 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy checked-out source
         uses: ./.github/actions/deploy-azure
+        with:
+          reconcile-release-config: ${{ inputs.reconcile_release_config }}
+          image-tag: ${{ steps.source.outputs.image-tag }}
         env:
           AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
           AZURE_FOUNDRY_DEPLOYMENTS_JSON: ${{ secrets.AZURE_FOUNDRY_DEPLOYMENTS_JSON }}

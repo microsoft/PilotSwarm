@@ -1,6 +1,13 @@
 name: Deploy Azure stamp
 description: Build and reconcile worker and portal from the checked-out,
   immutable source commit.
+inputs:
+  reconcile-release-config:
+    default: "false"
+    description: Reconcile current templates and configuration without building or pushing release images
+  image-tag:
+    default: ""
+    description: Verified release commit image tag; required for configuration-only reconciliation
 runs:
   using: composite
   steps:
@@ -29,11 +36,24 @@ runs:
         sudo install -m 0755 "$RUNNER_TEMP/flux" /usr/local/bin/flux
     - name: Deploy
       shell: bash
-      run: >
+      env:
+        RECONCILE_RELEASE_CONFIG: ${{ inputs.reconcile-release-config }}
+        DEPLOY_IMAGE_TAG: ${{ inputs.image-tag }}
+      run: |
         log="$RUNNER_TEMP/azure-deploy.log"
-
-        if npm run deploy -- all ci --image-tag "$(git rev-parse --short=12
-        HEAD)" > "$log" 2>&1; then
+        if [[ "$RECONCILE_RELEASE_CONFIG" != "true" && "$RECONCILE_RELEASE_CONFIG" != "false" ]]; then
+          echo "Invalid release configuration reconciliation mode." >&2
+          exit 1
+        fi
+        if [[ "$RECONCILE_RELEASE_CONFIG" = "true" && ! "$DEPLOY_IMAGE_TAG" =~ ^[0-9a-f]{12,40}$ ]]; then
+          echo "Configuration reconciliation requires a verified release image tag." >&2
+          exit 1
+        fi
+        args=(all ci --image-tag "${DEPLOY_IMAGE_TAG:-$(git rev-parse --short=12 HEAD)}")
+        if [ "$RECONCILE_RELEASE_CONFIG" = "true" ]; then
+          args+=(--steps bicep,seed-secrets,manifests,rollout)
+        fi
+        if npm run deploy -- "${args[@]}" > "$log" 2>&1; then
           echo "Azure deployment completed."
         else
           stage="$(sed -n 's/.*Failed: \([a-z-]*\) \([a-z-]*\).*/\1 \2/p' "$log" | tail -1)"

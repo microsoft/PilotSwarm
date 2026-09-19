@@ -26,6 +26,7 @@
 // table.
 
 export { databaseOverlayOmittedKeys } from "./database-env.mjs";
+import { PORTAL_CONFIG_KEYS } from "./portal-config.mjs";
 
 // Edge mode and TLS source value spaces. Mirrors `new-env.mjs` EDGE_MODES /
 // TLS_SOURCES — kept in sync via overlay-contracts.test.mjs.
@@ -68,15 +69,7 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
   "PILOTSWARM_USE_MANAGED_IDENTITY",
   "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY",
   "SPC_KEYS_HASH",
-  "PORTAL_AUTH_PROVIDER",
-  "PORTAL_AUTH_ENTRA_TENANT_ID",
-  "PORTAL_AUTH_ENTRA_CLIENT_ID",
-  "PORTAL_AUTH_ALLOW_UNAUTHENTICATED",
-  "PORTAL_AUTH_ENTRA_ADMIN_GROUPS",
-  "PORTAL_AUTH_ENTRA_USER_GROUPS",
-  "PORTAL_AUTHZ_DEFAULT_ROLE",
-  "PORTAL_AUTHZ_ADMIN_GROUPS",
-  "PORTAL_AUTHZ_USER_GROUPS",
+  ...PORTAL_CONFIG_KEYS.map(({ env }) => env),
 ]);
 
 // Shared composed-key roster (populated by compose-env.mjs from prior

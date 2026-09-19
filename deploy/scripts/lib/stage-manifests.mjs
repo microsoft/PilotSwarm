@@ -285,6 +285,11 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       HORIZON_EMBED_MODEL: "text-embedding-3-small",
       HORIZON_EMBED_DIM: "1536",
       HORIZON_EMBED_API_KEY_HEADER: "api-key",
+      // Preserve runtime defaults for older stamps that omit optional policy.
+      AUTHZ_ENFORCE_OWNERSHIP: "__PS_UNSET__",
+      AUTHZ_ADMIN_SCOPE: "__PS_UNSET__",
+      SESSIONS_DEFAULT_VISIBILITY: "__PS_UNSET__",
+      SESSIONS_SYSTEM_VISIBILITY: "__PS_UNSET__",
       ...env,
     },
     omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
