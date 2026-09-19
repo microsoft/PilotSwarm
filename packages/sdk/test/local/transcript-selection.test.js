@@ -53,7 +53,14 @@ function buildWatchTranscript({ cycles = 120, exchangesEvery = 20 } = {}) {
     }
 
     push("user", "Status?");
-    push("assistant", "PGBouncer decline CONFIRMED as a 2-cycle trend, 77.68% -> 71.84%. Operator notified.");
+    // State the resume checkpoint explicitly. The judge forbids inference, so
+    // neither a full transcript nor its selection should need to infer whether
+    // repeated tracking requests replaced the watch or whether it is still armed.
+    push("assistant", "PGBouncer decline CONFIRMED as a 2-cycle trend, 77.68% -> 71.84%. Operator notified. "
+        + `Current checkpoint after cycle ${cycles}: the incident watch remains armed for all 14 customers `
+        + "at the unchanged 52-minute cadence with email escalation. PGBouncer tracking is enabled once, "
+        + "with the 75-85% band; repeated add requests did not create duplicate trackers. "
+        + `The next monitoring cycle is ${cycles + 1}; continue watching for new incidents and utilization changes.`);
     return messages;
 }
 
@@ -87,6 +94,7 @@ async function judgeResumability(client, fullMessages, subset) {
         "Judge STRICTLY on what is explicitly stated in the SELECTED SUBSET. Do not infer,",
         "guess, or credit the subset for anything you only know from the full transcript.",
         "If a fact is absent from the subset, the answer for that dimension is false.",
+        "Evaluate preservation of facts stated in the full transcript; do not require facts absent from it too.",
         "",
         "Reply exactly:",
         '{"mission":true|false,"instructions":true|false,"currentState":true|false,"why":"one sentence"}',
@@ -515,6 +523,8 @@ describe("transcript selection", () => {
  *                      the mission scrolls out. The pre-existing behavior.
  *   M3 salience flip — a sign inversion in the comparator keeps precisely
  *                      the routine filler the strategy exists to discard.
+ *   M4 checkpoint   — remove only the final result and resume checkpoint;
+ *                      the mission and latest user instructions still survive.
  */
 describe("transcript selection — mutation controls (LLM judge must reject)", () => {
     /** M1: keep the oldest `budget` messages. Loses everything recent. */
@@ -570,6 +580,26 @@ describe("transcript selection — mutation controls (LLM judge must reject)", (
             assert(
                 verdict.mission === false,
                 `judge FAILED to notice the missing mission — it answered mission:true (${verdict.why})`,
+            );
+        });
+    });
+
+    it("rejects a selection missing only the final checkpoint", { timeout: JUDGE_TIMEOUT }, async () => {
+        const messages = buildWatchTranscript();
+        const selected = selectTranscript(messages, { budget: BUDGET }).selected;
+        const finalSeq = messages[messages.length - 1].seq;
+        const subset = selected.filter((m) => m.seq !== finalSeq);
+
+        assertEqual(subset.length, selected.length - 1, "remove exactly the final checkpoint");
+        assert(subset.some((m) => /eternal sev2/.test(m.text)), "mission remains available");
+        assert(subset.some((m) => /Cycle 120: also start tracking/.test(m.text)), "latest instructions remain available");
+        assert(!subset.some((m) => /CONFIRMED|Current checkpoint/.test(m.text)), "latest result and checkpoint are absent");
+
+        await withClient(getEnv(), async (client) => {
+            const verdict = await judgeResumability(client, messages, subset);
+            assert(
+                verdict.currentState === false,
+                `judge FAILED to notice the missing final checkpoint — it answered currentState:true (${verdict.why})`,
             );
         });
     });
