@@ -88,6 +88,26 @@ private. Historical references are outside the current-file privacy check; an
 old entry does not prove the resource or identity is retired. See
 [repository privacy](REPOSITORY-PRIVACY.md).
 
+## Test portal access using existing authorization settings
+
+To give authenticated test users admin access without per-user allowlists, set
+`PORTAL_AUTHZ_DEFAULT_ROLE=admin` and leave both `PORTAL_AUTHZ_ADMIN_GROUPS` and
+`PORTAL_AUTHZ_USER_GROUPS` empty/unset in the protected `AZURE_DEPLOY_ENV` secret.
+Also clear the legacy `PORTAL_AUTH_ENTRA_ADMIN_GROUPS` and
+`PORTAL_AUTH_ENTRA_USER_GROUPS` aliases. Use `__PS_UNSET__` in rendered deployment
+configuration; the portal removes that sentinel at startup.
+
+This uses the existing authorization engine. Explicit Entra app-role claims
+still take precedence: `user` remains user, `admin` remains admin, and unknown
+roles are denied. This setup assumes the test app does not assign admin/user
+roles. Do not create role assignments or change role precedence to bypass that
+behavior. The Action still requires tenant-specific Entra authentication,
+`PORTAL_AUTH_ALLOW_UNAUTHENTICATED=false` and ownership enforcement. Guests
+admitted by that tenant are included; this is not an employee-only filter.
+
+To restore individual access, set the default role to `none` and restore the
+allowlists. Apply either configuration through the normal deployment Action.
+
 ## Users managing their own environments
 
 The public Bicep/GitOps orchestrator can also be run by operators against their
