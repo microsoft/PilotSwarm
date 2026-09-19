@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requireHorizonConfig, requireLiveHorizonResult, runAllProviders } from "../run-all-providers.mjs";
+import { requireHorizonConfig, requireLiveHorizonResult, runAllProviders, runHorizonDiagnostics } from "../run-all-providers.mjs";
 
 const config = "HORIZON_DATABASE_URL=postgresql://test@horizon.invalid/db\nDATABASE_URL=postgresql://test@localhost/base\nGITHUB_TOKEN=fixture-token\n";
 const report = (status = "passed") => ({
@@ -93,6 +93,64 @@ test("filtered runs cannot be reported as full all-providers coverage", t => {
     const input = fixture(t);
     input.env.TEST_SUITE = "smoke";
     assert.throws(() => runAllProviders(input), /full suite/);
+});
+
+test("targeted diagnostics run exact files on HDB without repeating the baseline", t => {
+    const input = fixture(t);
+    input.env.TEST_PROVIDERS = "horizondb";
+    input.env.TEST_MODE = "parallel";
+    input.env.TEST_SUITE = "test/local/cms-seq-nodemap.test.js test/local/contracts.test.js,test/local/management.test.js";
+    input.env.PILOTSWARM_DUROXIDE_URL = "postgresql://stale.invalid/db";
+    const calls = [];
+    const logs = [];
+    runHorizonDiagnostics({ ...input, log: message => logs.push(message), run(command, args, options) {
+        calls.push({ command, args, options });
+        if (calls.length === 1) writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
+        else {
+            assert.equal(command, process.execPath);
+            assert.deepEqual(args, ["../../node_modules/vitest/vitest.mjs", "run",
+                "test/local/cms-seq-nodemap.test.js", "test/local/contracts.test.js", "test/local/management.test.js"]);
+            assert.equal(options.env.DATABASE_URL, "postgresql://test@horizon.invalid/db");
+            assert.equal(options.env.PS_TEST_DATABASE_URL, options.env.DATABASE_URL);
+            assert.equal(options.env.TEST_DATABASE_URL, options.env.DATABASE_URL);
+            assert.equal(options.env.HORIZON_GRAPH_DATABASE_URL, options.env.DATABASE_URL);
+            assert.equal(options.env.PILOTSWARM_RUNTIME_PROVIDER, "horizondb");
+            assert.equal(options.env.PILOTSWARM_DUROXIDE_URL, undefined);
+            assert.equal(options.env.PLAIN_DATABASE_URL, "postgresql://test@localhost/base");
+            assert.equal(options.env.PS_TEST_MAX_WORKERS, "8");
+        }
+        return { status: 0 };
+    } });
+    assert.equal(calls.length, 2);
+    assert(logs.some(message => message.includes("NOT A RELEASE GATE")));
+    assert.equal(existsSync(join(input.cwd, "pilotswarm-horizondb.env")), false);
+});
+
+test("diagnostics reject empty, option-like, outside-tree and wrong-provider selectors", t => {
+    const input = fixture(t);
+    input.env.TEST_PROVIDERS = "horizondb";
+    for (const suite of ["", "--passWithNoTests", "../outside.test.js", "test/local/../outside.test.js", "contracts"]) {
+        assert.throws(() => runHorizonDiagnostics({ ...input, env: { ...input.env, TEST_SUITE: suite } }), /exact test\/local/);
+    }
+    assert.throws(() => runHorizonDiagnostics({ ...input, env: {
+        ...input.env, TEST_PROVIDERS: "all", TEST_SUITE: "test/local/contracts.test.js",
+    } }), /providers=horizondb/);
+});
+
+test("targeted diagnostic failures remain failures and clean private configuration", t => {
+    const input = fixture(t);
+    input.env.TEST_PROVIDERS = "horizondb";
+    input.env.TEST_SUITE = "test/local/contracts.test.js";
+    let calls = 0;
+    assert.throws(() => runHorizonDiagnostics({ ...input, run() {
+        if (++calls === 1) {
+            writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
+            return { status: 0 };
+        }
+        return { status: 1 };
+    } }), /Targeted HDB diagnostics failed/);
+    assert.equal(calls, 2);
+    assert.equal(existsSync(join(input.cwd, "pilotswarm-horizondb.env")), false);
 });
 
 // Full-HDB mode uses the same mandatory live preflight, but runs every SDK suite.

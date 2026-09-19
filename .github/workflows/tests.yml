@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: Suite filter (e.g. smoke, sub-agents). Leave blank to run everything.
+        description: Baseline filter, or space-separated test/local/*.test.js paths for targeted HDB diagnostics. Blank runs everything.
         required: false
         default: ""
       mode:
@@ -27,9 +27,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   tests:
-    name: ${{ inputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
+    name: ${{ inputs.providers == 'horizondb' && inputs.suite != '' && 'Targeted HDB diagnostics (not a release gate)' || inputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
       'Baseline tests' }}
-    runs-on: ${{ inputs.providers == 'horizondb' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
     if: github.ref == 'refs/heads/main'
     environment: azure-deploy
     timeout-minutes: ${{ inputs.providers != 'baseline' && 180 || 59 }}
@@ -68,6 +68,7 @@ jobs:
           providers: ${{ inputs.providers }}
           mode: ${{ inputs.mode }}
           suite: ${{ inputs.suite }}
+          hdb-diagnostic: ${{ inputs.providers == 'horizondb' && inputs.suite != '' }}
           postgres-container: ${{ job.services.postgres.id }}
         env:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}

@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { fileURLToPath } from "node:url";
+import { testStorageEnvironment } from "../../scripts/test-provider-plan.mjs";
 
 export function requireHorizonConfig(text, inherited = {}) {
     if (!text?.trim()) throw new Error("Set the HORIZONDB_TEST_ENV environment secret for all-providers CI.");
@@ -55,9 +56,17 @@ function maskConfig(config, log) {
     }
 }
 
-export function runAllProviders({ cwd = process.cwd(), env = process.env, run = spawnSync, log = console.log } = {}) {
+function runProviderTests({ cwd = process.cwd(), env = process.env, run = spawnSync, log = console.log } = {}, diagnostic = false) {
     if (env.GITHUB_ACTIONS !== "true" || !env.RUNNER_TEMP) throw new Error("This gate runs in GitHub Actions. Use scripts/run-tests.sh locally.");
-    if (env.TEST_SUITE?.trim()) throw new Error("All-providers CI requires the full suite; clear the suite filter.");
+    let files = [];
+    if (diagnostic) {
+        files = [...new Set((env.TEST_SUITE || "").trim().split(/[\s,]+/).filter(Boolean))];
+        if (env.TEST_PROVIDERS !== "horizondb" || files.length === 0 ||
+            files.some(file => !/^test\/local\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.test\.js$/.test(file))) {
+            throw new Error("HDB diagnostics require providers=horizondb and exact test/local/*.test.js paths.");
+        }
+        log(`TARGETED HDB DIAGNOSTICS ONLY, NOT A RELEASE GATE: ${files.join(", ")}`);
+    } else if (env.TEST_SUITE?.trim()) throw new Error("All-providers CI requires the full suite; clear the suite filter.");
     const baseline = parseEnv(readFileSync(join(cwd, ".env"), "utf8"));
     const config = requireHorizonConfig(env.HORIZONDB_TEST_ENV, baseline);
     requireHorizonConfig(env.HORIZONDB_TEST_ENV, env);
@@ -67,12 +76,12 @@ export function runAllProviders({ cwd = process.cwd(), env = process.env, run = 
     // Eight concurrent files by default; callers may explicitly tune capacity.
     const workers = env.PS_TEST_MAX_WORKERS || "8";
     const childEnv = { ...env, PS_TEST_MAX_WORKERS: workers, HORIZONDB_ENV_FILE: configPath };
-    log(`All-providers CI uses ${workers} parallel test files.`);
+    log(`${diagnostic ? "Targeted HDB diagnostics" : "All-providers CI"} uses ${workers} parallel test files.`);
     delete childEnv.HORIZONDB_TEST_ENV;
     const execute = (command, args, options) => {
         const result = run(command, args, { stdio: "inherit", ...options });
         if (result.error || result.signal || result.status !== 0) {
-            throw new Error("All-providers CI failed: a required live test phase did not complete successfully.");
+            throw new Error(`${diagnostic ? "Targeted HDB diagnostics" : "All-providers CI"} failed: a required live test phase did not complete successfully.`);
         }
     };
     try {
@@ -83,15 +92,36 @@ export function runAllProviders({ cwd = process.cwd(), env = process.env, run = 
             "--testNamePattern", "preconditions P5", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`,
         ], { cwd: join(cwd, "packages/horizon-store"), env: { ...childEnv, ...config }, timeout: 360_000 });
         requireLiveHorizonResult(JSON.parse(readFileSync(reportPath, "utf8")));
-        log("Live HorizonDB initialize/store/read check passed. Running all provider phases.");
-        execute("bash", ["./scripts/run-tests.sh", (env.TEST_PROVIDERS === "horizondb" ? "--with-horizondb" : "--all-providers"), ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])], { cwd, env: childEnv });
+        if (diagnostic) {
+            log("Live HorizonDB preflight passed. Running only the requested SDK files.");
+            execute(process.execPath, ["../../node_modules/vitest/vitest.mjs", "run", ...files,
+                ...(env.TEST_MODE === "sequential" ? ["--no-file-parallelism"] : [])], {
+                cwd: join(cwd, "packages/sdk"),
+                env: testStorageEnvironment("horizondb", { ...childEnv, ...config }),
+            });
+        } else {
+            log("Live HorizonDB initialize/store/read check passed. Running all provider phases.");
+            execute("bash", ["./scripts/run-tests.sh", (env.TEST_PROVIDERS === "horizondb" ? "--with-horizondb" : "--all-providers"), ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])], { cwd, env: childEnv });
+        }
     } finally {
         rmSync(configPath, { force: true });
         rmSync(reportPath, { force: true });
     }
 }
 
+export function runAllProviders(options) {
+    return runProviderTests(options);
+}
+
+export function runHorizonDiagnostics(options) {
+    return runProviderTests(options, true);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-    try { runAllProviders(); }
+    try {
+        if (process.argv[2] === "diagnose-hdb") runHorizonDiagnostics();
+        else if (process.argv[2] === undefined) runAllProviders();
+        else throw new Error("Expected no command (full gate) or diagnose-hdb.");
+    }
     catch (error) { console.error(error.message); process.exitCode = 1; }
 }
