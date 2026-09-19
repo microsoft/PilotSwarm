@@ -78,9 +78,14 @@ connection capacity. Do not select a region by repeatedly rerunning failed jobs
 or hide failures by reducing coverage, parallelism or assertions. Inspect runner
 placement, database metrics and test timings before changing deadlines.
 
-Runner provisioning and repository access are separate prerequisites. An
-organization administrator must make an appropriate runner available to this
-repository. For GitHub-hosted runners, [Azure private networking](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)
+Runner provisioning and repository access are separate prerequisites. Repository
+administrators can use [the Azure CI runner Action](../deploy/providers/azure/ci/runner/README.md)
+to provision a dedicated VM and register it for one job. Supply a fresh short-lived
+registration token and run this Action **before** queueing provider tests or a
+release; they share a concurrency group. Register again between jobs and
+deallocate after use. No administrator personal token is stored on the runner.
+For organization-managed runners, an organization administrator grants repository
+access. For GitHub-hosted runners, [Azure private networking](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)
 places supported larger runners in the subnet's region. A dedicated ephemeral
 self-hosted runner is another option. Keep its infrastructure under the selected
 deployment provider; never run untrusted PR jobs on a privileged deployment

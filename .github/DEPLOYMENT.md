@@ -28,6 +28,7 @@ against the managed environment.
 | Update test environment from current main | **Deploy Azure stamp** (`deploy-azure.yml`) |
 | Redeploy an existing published release | Same workflow, `release_tag=v<version>` |
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
+| Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
 | Full PostgreSQL baseline plus additive HDB coverage | **Tests** (`tests.yml`), `providers=all` |
 | Complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a new release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
@@ -74,6 +75,8 @@ ignored directory and cleans it up.
 | `AZURE_MODEL_PROVIDERS_JSON` | Portal model catalog |
 | `AZURE_FOUNDRY_DEPLOYMENTS_JSON` | Model deployment definitions |
 | `AZURE_CI_DATABASE_JSON` | Dedicated CI database and Key Vault references |
+| `AZURE_CI_RUNNER_JSON` | Dedicated runner name, label and VM size; region follows the CI database |
+| `CI_RUNNER_REGISTRATION_TOKEN` | Short-lived repository registration token for one-job runner setup |
 | `CI_TEST_ENV_JSON` | Live test credentials, including a Copilot-enabled token |
 | `MODEL_PROVIDERS_JSON` | CI catalog, separate from the portal catalog |
 
