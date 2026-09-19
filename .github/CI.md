@@ -161,7 +161,8 @@ The environment gate occurs once, before testing. The same job then:
 2. builds three package tarballs and checksums;
 3. creates an annotated tag at the tested SHA, uploads and verifies draft assets,
    and publishes the GitHub Release;
-4. builds worker and portal images from that exact source SHA and deploys the
+4. refreshes Azure OIDC login after testing, then builds worker and portal images
+   from that exact source SHA and deploys the
    test environment through the shared Azure deployment Action.
 
 A failed test prevents publication. A later deployment failure leaves the valid

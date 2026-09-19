@@ -32,6 +32,8 @@ Run `npm run check:privacy` after staging release changes.
 - It then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
+  Refresh Azure OIDC login after the long test gate and immediately before
+  deployment, before manifest uploads need a storage-audience token.
 - Distribution is GitHub Release assets. Never run `npm publish` or publish a
   starter image. Azure deployment images are a separate deployment concern.
 - All provisioning and deployments run through GitHub Actions. No local `az`,
@@ -68,6 +70,37 @@ Use the prepared version, not a guessed next imported tag. Monitor the Action,
 resolve its environment gate with the authorized reviewer, and investigate any
 failure. Never weaken the full-provider gate to publish. CI database setup and
 required protected secrets are documented in `.github/CI.md`.
+
+### Diagnose a small failure set first
+
+Do not immediately repeat the entire release gate when a few tests fail.
+Use the combined provider summary's **Failed tests** section to extract the
+failed provider phase, exact SDK file paths and case names. Keep the original
+run URL, source SHA, errors and any `ciHealth` samples as evidence.
+
+For HDB SDK failures, run the affected files through the protected **Tests**
+workflow. A requested sequential diagnostic run uses:
+
+```bash
+gh workflow run tests.yml --repo microsoft/PilotSwarm --ref main \
+  -f providers=horizondb -f mode=sequential \
+  -f 'suite=test/local/cms-seq-nodemap.test.js test/local/contracts.test.js test/local/management.test.js'
+```
+
+Replace the example paths with the actual failed files. This runs only those
+files plus the real HDB preflight on a hosted runner; it does not repeat the
+PostgreSQL baseline. The job is explicitly labelled as diagnostics, cannot
+publish, and leaves normal release parallelism unchanged. For baseline failures,
+use the baseline suite filter or the documented local targeted test command.
+
+Report whether code changed before the diagnostic run. If unchanged tests pass
+sequentially, record **passes in isolation**, not **fixed** or **clean parallel
+gate**. Preserve the original failure and investigate load, connection or
+concurrency evidence. A diagnostic pass does not replace the release's own
+complete successful baseline/additive-HDB gate. Do not add automatic retries,
+drop failing coverage or repeatedly rerun the full suite to select a green result.
+
+### Verify publication and deployment separately
 
 Verify separately:
 
