@@ -4,6 +4,18 @@ Use this document to choose the deployment path before following an agent,
 skill or legacy shell recipe. For a fresh machine or a fork's CI setup, start
 with [local CI and tests](../docs/developer/contributing/local-ci-and-tests.md).
 
+## Provider boundary
+
+Azure is this repository's current managed deployment provider. It is not a
+core PilotSwarm requirement. Cloud services and topology choices (including AKS
+versus VMs) belong behind provider interfaces; PostgreSQL is the explicit core
+dependency exception. Keep provider templates under `deploy/providers/<provider>/`
+and instance settings separate. The shared deployment entrypoints still contain
+Azure-specific implementation that needs extraction; see the
+[provider-boundary audit](../docs/architecture/provider-boundary-audit.md).
+Follow the [Copilot architectural rule](./copilot-instructions.md#cloud-and-deployment-provider-boundary)
+when adding or changing deployment code.
+
 ## This repository's managed Azure environment
 
 All infrastructure changes and application deployments run through GitHub

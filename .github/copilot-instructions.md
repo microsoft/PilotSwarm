@@ -1,5 +1,45 @@
 # Copilot Instructions for PilotSwarm
 
+## Cloud and deployment provider boundary
+
+**Core PilotSwarm must never depend on a specific cloud service or deployment
+topology.** Azure, GCP, AWS and other cloud integrations must be implemented
+behind provider interfaces. AKS, other Kubernetes distributions, VMs and local
+processes are deployment choices, not runtime assumptions.
+
+- Core owns service-neutral contracts and consumes configured providers. Cloud
+  SDKs, credential chains, endpoint formats, resource discovery, infrastructure
+  commands and topology-specific defaults belong in provider implementations.
+  Use capabilities to select behavior; do not branch on cloud names, hostnames,
+  Kubernetes environment variables or concrete provider classes in core.
+- Provider implementations depend on core contracts; core must not import,
+  re-export or require cloud SDKs or concrete cloud adapters. Package optional
+  cloud integrations separately and select them at the application/deployment
+  composition boundary. Disabling a feature is insufficient if importing or
+  installing core still requires its cloud dependency.
+- **PostgreSQL is the deliberate exception:** core may depend on PostgreSQL
+  and its normal SQL/driver semantics. This does not exempt Azure PostgreSQL
+  authentication, HorizonDB-only extensions or any managed database service.
+  Those remain provider concerns.
+- Keep cloud provisioning/templates under `deploy/providers/<provider>/`, with
+  topology-specific implementations below that boundary. Shared deployment
+  entrypoints dispatch to providers; they must not implement Azure or AKS logic.
+  Keep environment instances/configuration separate from reusable templates,
+  using GitHub environment secrets and ignored local files as documented in
+  `.github/DEPLOYMENT.md`.
+- Apply the same boundary to storage, model credentials, authentication,
+  infrastructure management, diagnostics, log streaming and bundled agents.
+  Optional capabilities must be unavailable or explicitly unsupported when no
+  provider supplies them; never silently assume AKS, Entra or Azure Blob.
+- Review imports, package dependencies and call sites as well as directory
+  names. Verify the PostgreSQL/local path without cloud credentials or CLIs,
+  and run provider contract/integration tests for each changed adapter.
+
+This is the required architecture, not a claim that all existing code complies.
+See [the provider-boundary audit](../docs/architecture/provider-boundary-audit.md)
+for existing violations and the extraction plan. Do not copy those violations
+into new code or treat them as additional exceptions.
+
 ## Agent Smith naming
 
 The published `agent-manager` package and agent display as **Agent Smith**.
