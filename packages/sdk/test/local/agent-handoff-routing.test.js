@@ -46,7 +46,9 @@ async function withStore(body) {
             orchestrationConcurrency: 1,
             workerConcurrency: capable ? 2 : 8,
             dispatcherPollIntervalMs: capable ? 20 : 1,
-            workerLockTimeoutMs: 1_000,
+            // Match production: a one-second fault-injection lease can expire
+            // during remote DB acknowledgments and turn routing into retries.
+            workerLockTimeoutMs: 10_000,
             // Match the production idle retention; takeover depends on the
             // separate ~30-second ownership lease, not this one-hour value.
             sessionIdleTimeoutMs: 3_600_000,
@@ -68,7 +70,7 @@ async function withStore(body) {
         return runtime;
     }
     try {
-        await body({ provider, client, worker, events });
+        await body({ provider, client, worker, events, timeoutMs: env.timeout });
     } finally {
         for (const runtime of runtimes.reverse()) {
             try { await runtime.shutdown(3_000); } catch {}
@@ -119,11 +121,13 @@ describe("agent handoff capability routing", () => {
     });
 
     it("routes concurrent protected handoffs only to upgraded workers in a mixed pool", async () => {
-        await withStore(async ({ client, worker, events }) => {
+        await withStore(async ({ client, worker, events, timeoutMs }) => {
             await worker("old", false, "handoff", routedHandoff).start();
             await worker("upgraded", true, "handoff", routedHandoff).start();
             await Promise.all(Array.from({ length: 8 }, (_, i) => client.startOrchestration(`mixed-${i}`, "handoff", {})));
-            const results = await Promise.all(Array.from({ length: 8 }, (_, i) => client.waitForOrchestration(`mixed-${i}`, 20_000)));
+            // Fifty-six durable activities share two capable slots. Verify
+            // routing within the suite budget, not a local-DB latency bound.
+            const results = await Promise.all(Array.from({ length: 8 }, (_, i) => client.waitForOrchestration(`mixed-${i}`, timeoutMs)));
             expect(results.every(r => r.status === "Completed")).toBe(true);
             expect(events).toHaveLength(56);
             expect(events.every(e => e.worker === "upgraded" && e.tag === AGENT_HANDOFF_CAPABILITY)).toBe(true);

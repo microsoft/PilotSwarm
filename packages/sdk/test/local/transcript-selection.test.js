@@ -54,13 +54,13 @@ function buildWatchTranscript({ cycles = 120, exchangesEvery = 20 } = {}) {
 
     push("user", "Status?");
     // State the resume checkpoint explicitly. The judge forbids inference, so
-    // neither a full transcript nor its selection should need to infer whether
-    // repeated tracking requests replaced the watch or whether it is still armed.
+    // Keep state explicit without repeating the mission: the tail-only mutation
+    // must actually lose the opening scope and cadence.
     push("assistant", "PGBouncer decline CONFIRMED as a 2-cycle trend, 77.68% -> 71.84%. Operator notified. "
-        + `Current checkpoint after cycle ${cycles}: the incident watch remains armed for all 14 customers `
-        + "at the unchanged 52-minute cadence with email escalation. PGBouncer tracking is enabled once, "
+        + `Current checkpoint after cycle ${cycles}: the original assignment remains armed, `
+        + "with its scope, cadence and escalation policy unchanged. PGBouncer tracking is enabled once, "
         + "with the 75-85% band; repeated add requests did not create duplicate trackers. "
-        + `The next monitoring cycle is ${cycles + 1}; continue watching for new incidents and utilization changes.`);
+        + `The next monitoring cycle is ${cycles + 1}; continue the original assignment and utilization tracking.`);
     return messages;
 }
 
@@ -330,6 +330,9 @@ describe("transcript selection", () => {
         const missionSeq = eligible[0].seq;
         assert(!naiveTail.some((m) => m.seq === missionSeq), "baseline: the naive tail loses the mission");
         assert(selected.some((m) => m.seq === missionSeq), "the strategy keeps it");
+        assert(!naiveTail.some((m) => /14 (?:tracked )?customers|52-minute|sev2/.test(m.text)),
+            "the final checkpoint must not restore the mission facts removed by the tail cap");
+        assert(naiveTail.some((m) => /Current checkpoint/.test(m.text)), "tail cap still preserves current state");
 
         const userTotal = eligible.filter((m) => m.role === "user").length;
         assert(
@@ -573,7 +576,8 @@ describe("transcript selection — mutation controls (LLM judge must reject)", (
         const subset = mutantTailOnly(eligible, BUDGET);
 
         assert(subset[0].seq > eligible[0].seq, "mutant must drop the opening mission");
-        assert(!subset.some((m) => /eternal sev2/.test(m.text)), "the mission statement is genuinely absent");
+        assert(!subset.some((m) => /14 (?:tracked )?customers|52-minute|sev2/.test(m.text)),
+            "mission facts must be absent even from the final checkpoint");
 
         await withClient(getEnv(), async (client) => {
             const verdict = await judgeResumability(client, messages, subset);
