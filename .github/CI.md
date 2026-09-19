@@ -61,6 +61,35 @@ uses those exclusions.
 
 Both live CI modes first require a real HorizonDB initialize/store/read result;
 missing or skipped coverage fails. CI rejects suite filters and skip flags.
+### Runner placement
+
+Set the repository or organization Actions variable `PROVIDER_TEST_RUNNER` to
+the label of a Linux runner with Docker, located near the dedicated provider
+database. Both complete HDB tests and the release's all-provider gate use this
+label. Baseline-only tests and PR checks continue using `ubuntu-latest`.
+Leave the variable unset to use standard GitHub-hosted runners in a fork.
+Use a repository/organization variable: environment variables are supplied
+after runner selection and cannot reliably choose the runner.
+
+Standard hosted runners can be allocated in different regions. Database-heavy
+tests perform many sequential round trips, so a distant runner can cause worker
+startup and orchestration deadlines to expire even with spare database CPU and
+connection capacity. Do not select a region by repeatedly rerunning failed jobs
+or hide failures by reducing coverage, parallelism or assertions. Inspect runner
+placement, database metrics and test timings before changing deadlines.
+
+Runner provisioning and repository access are separate prerequisites. An
+organization administrator must make an appropriate runner available to this
+repository. For GitHub-hosted runners, [Azure private networking](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)
+places supported larger runners in the subnet's region. A dedicated ephemeral
+self-hosted runner is another option. Keep its infrastructure under the selected
+deployment provider; never run untrusted PR jobs on a privileged deployment
+runner. These protected provider/release workflows run only from `main`.
+Store actual labels and infrastructure identifiers in configuration, not these
+templates. Setting a label does not provision or grant access to a runner.
+
+### Concurrency
+
 Default file parallelism is **8**, including on smaller runners; callers can
 set `PS_TEST_MAX_WORKERS`. The stock PostgreSQL service supports 1500 connections.
 HorizonDB parameter groups are immutable. CI provisioning creates a stable

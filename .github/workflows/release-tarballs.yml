@@ -17,7 +17,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     name: Test, publish tarballs and deploy
     environment: azure-deploy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 360
     concurrency:
       group: ci-provider-database
