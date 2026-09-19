@@ -61,13 +61,18 @@ uses those exclusions.
 
 Both live CI modes first require a real HorizonDB initialize/store/read result;
 missing or skipped coverage fails. CI rejects suite filters and skip flags.
+
 ### Runner placement
 
-Set the repository or organization Actions variable `PROVIDER_TEST_RUNNER` to
-the label of a Linux runner with Docker, located near the dedicated provider
-database. Both complete HDB tests and the release's all-provider gate use this
-label. Baseline-only tests and PR checks continue using `ubuntu-latest`.
-Leave the variable unset to use standard GitHub-hosted runners in a fork.
+Releases, `providers=all`, baseline tests and PR checks use `ubuntu-latest`.
+The release gate runs the complete baseline on its local Docker PostgreSQL
+service, then the additive tests against remote HorizonDB. It does not require
+an Azure runner or a complete second suite on HDB.
+
+Full-suite `providers=horizondb` is optional and explicitly dispatched. Only this
+mode uses the repository or organization Actions variable `PROVIDER_TEST_RUNNER`
+to select a Linux/Docker runner near the dedicated database. Leave it unset to
+use a standard GitHub-hosted runner.
 Use a repository/organization variable: environment variables are supplied
 after runner selection and cannot reliably choose the runner.
 
@@ -81,8 +86,8 @@ placement, database metrics and test timings before changing deadlines.
 Runner provisioning and repository access are separate prerequisites. Repository
 administrators can use [the Azure CI runner Action](../deploy/providers/azure/ci/runner/README.md)
 to provision a dedicated VM and register it for one job. Supply a fresh short-lived
-registration token and run this Action **before** queueing provider tests or a
-release; they share a concurrency group. Register again between jobs and
+registration token and run this Action **before** queueing an optional full-HDB
+run; they share a concurrency group. Register again between jobs and
 deallocate after use. No administrator personal token is stored on the runner.
 For organization-managed runners, an organization administrator grants repository
 access. For GitHub-hosted runners, [Azure private networking](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)

@@ -55,14 +55,10 @@ Run `npm run check:privacy` after staging release changes.
 
 ## Publication
 
-If `PROVIDER_TEST_RUNNER` selects the dedicated one-job Azure runner, obtain a
-fresh repository registration token, store it in protected environment secret
-`CI_RUNNER_REGISTRATION_TOKEN`, and run `provision-ci-runner.yml` with
-`operation=register` **before** dispatching the release. Verify the runner is
-online. A prior test consumes its registration. See the
-[runner procedure](../../../deploy/providers/azure/ci/runner/README.md).
-Use `operation=deallocate` after the release job finishes and verification is
-complete. Never store an administrator PAT as the registration secret.
+Releases use `ubuntu-latest`: the complete baseline runs on local Docker
+PostgreSQL, followed by additive remote HorizonDB coverage. No Azure runner
+registration is needed. Full-suite-on-HDB runs are optional and separate from
+the release gate; only those runs use `PROVIDER_TEST_RUNNER`.
 
 ```bash
 gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=0.6.0

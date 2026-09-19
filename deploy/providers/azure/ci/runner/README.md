@@ -6,6 +6,10 @@ access, no managed identity, and a checksummed GitHub runner package. Jobs use
 their normal protected-environment OIDC access. Application resources are not
 modified. Azure network infrastructure remains inside this provider directory.
 
+This runner is optional and used only for explicit full-suite
+`providers=horizondb` runs. Releases and `providers=all` use GitHub-hosted runners
+with local Docker PostgreSQL plus additive remote HDB coverage.
+
 ## Configuration
 
 Set protected environment secret `AZURE_CI_RUNNER_JSON`:
@@ -29,8 +33,8 @@ after one hour, so generate one immediately before dispatch/approval.
    the protected environment. This creates or starts the dedicated VM.
    Each workflow run and attempt creates a distinct Azure Run Command; an
    unchanged command can otherwise return an old success without executing.
-2. Verify the repository runner is online, then dispatch the provider test or
-   release workflow. This registration handles **exactly one job**.
+2. Verify the repository runner is online, then dispatch **Tests** with
+   `providers=horizondb`. This registration handles **exactly one job**.
 3. The runner unregisters after the job and removes its checkout and CLI state.
    Register again with a fresh token before another job; the Action refuses to
    replace an active listener. Registration clears old runner and Docker state.
