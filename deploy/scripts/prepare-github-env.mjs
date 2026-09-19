@@ -77,13 +77,16 @@ export function prepareGithubEnv({ envText, foundryText, modelText, subscription
   requireSetting(values, "PORTAL_AUTH_PROVIDER", "entra");
   requireSetting(values, "PORTAL_AUTH_ALLOW_UNAUTHENTICATED", "false");
   requireSetting(values, "AUTHZ_ENFORCE_OWNERSHIP", "true");
-  if (!["none", "", "__PS_UNSET__", undefined].includes(values.get("PORTAL_AUTHZ_DEFAULT_ROLE"))) {
-    throw new Error("AZURE_DEPLOY_ENV must deny unmatched portal users");
+  const defaultRole = values.get("PORTAL_AUTHZ_DEFAULT_ROLE");
+  if (!["none", "admin", "", "__PS_UNSET__", undefined].includes(defaultRole)) {
+    throw new Error("AZURE_DEPLOY_ENV requires the default portal role to be none or admin");
   }
   for (const kind of ["ADMIN", "USER"]) {
     const groups = [values.get(`PORTAL_AUTHZ_${kind}_GROUPS`), values.get(`PORTAL_AUTH_ENTRA_${kind}_GROUPS`)]
       .find((entry) => entry && entry !== "__PS_UNSET__" && entry.split(",").some((item) => item.trim()));
-    if (!groups) {
+    if (defaultRole === "admin") {
+      if (groups) throw new Error("Default-admin test access requires empty portal allowlists");
+    } else if (!groups) {
       throw new Error(`AZURE_DEPLOY_ENV requires the ${kind.toLowerCase()} allowlist`);
     }
   }

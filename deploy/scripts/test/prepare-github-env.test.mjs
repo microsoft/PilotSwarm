@@ -92,3 +92,28 @@ test("OIDC deployment principal resolves without a signed-in human", () => {
   });
   assert.throws(() => resolveLocalDeploymentPrincipal({ DEPLOY_PRINCIPAL_ID: "not-an-id" }), /object ID/);
 });
+
+test("existing default-admin policy works with no allowlists and preserves authentication gates", (t) => {
+  const writeDir = mkdtempSync(join(tmpdir(), "ps-gh-default-admin-"));
+  t.after(() => rmSync(writeDir, { recursive: true, force: true }));
+  const adminEnv = envText
+    .replace("PORTAL_AUTHZ_DEFAULT_ROLE=none", "PORTAL_AUTHZ_DEFAULT_ROLE=admin")
+    .replace("PORTAL_AUTHZ_ADMIN_GROUPS=admin@example.invalid", "PORTAL_AUTHZ_ADMIN_GROUPS=__PS_UNSET__")
+    .replace("PORTAL_AUTHZ_USER_GROUPS=user@example.invalid", "PORTAL_AUTHZ_USER_GROUPS=__PS_UNSET__");
+  prepareGithubEnv(input({ envText: adminEnv, writeDir }));
+  assert.match(readFileSync(join(writeDir, ".env"), "utf8"), /PORTAL_AUTHZ_DEFAULT_ROLE=admin/);
+  for (const [from, to, expected] of [
+    ["PORTAL_AUTH_ALLOW_UNAUTHENTICATED=false", "PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true", /PORTAL_AUTH_ALLOW_UNAUTHENTICATED/],
+    ["PORTAL_AUTH_PROVIDER=entra", "PORTAL_AUTH_PROVIDER=none", /PORTAL_AUTH_PROVIDER/],
+    [`PORTAL_AUTH_ENTRA_TENANT_ID=${tenantId}`, `PORTAL_AUTH_ENTRA_TENANT_ID=${subscriptionId}`, /PORTAL_AUTH_ENTRA_TENANT_ID/],
+    ["AUTHZ_ENFORCE_OWNERSHIP=true", "AUTHZ_ENFORCE_OWNERSHIP=false", /AUTHZ_ENFORCE_OWNERSHIP/],
+    ["PORTAL_AUTHZ_DEFAULT_ROLE=admin", "PORTAL_AUTHZ_DEFAULT_ROLE=typo", /default portal role/],
+    ["PORTAL_AUTHZ_ADMIN_GROUPS=__PS_UNSET__", "PORTAL_AUTHZ_ADMIN_GROUPS=admin@example.invalid", /empty portal allowlists/],
+    ["PORTAL_AUTHZ_USER_GROUPS=__PS_UNSET__", "PORTAL_AUTHZ_USER_GROUPS=user@example.invalid", /empty portal allowlists/],
+  ]) {
+    assert.throws(() => prepareGithubEnv(input({ envText: adminEnv.replace(from, to), writeDir })), expected);
+  }
+  for (const kind of ["ADMIN", "USER"]) {
+    assert.throws(() => prepareGithubEnv(input({ envText: adminEnv + `PORTAL_AUTH_ENTRA_${kind}_GROUPS=someone@example.invalid\n`, writeDir })), /empty portal allowlists/);
+  }
+});
