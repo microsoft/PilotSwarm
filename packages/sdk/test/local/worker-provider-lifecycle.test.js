@@ -98,13 +98,14 @@ describe("provider/system polling lifecycle", () => {
         expect(f.worker._started).toBe(true);
     });
 
-    it("settles native startup before shutdown and keeps its catalog open until drained", async () => {
+    it.each(["stop", "gracefulShutdown"])("%s settles native startup and keeps its catalog open until drained", async (method) => {
         const f = fixture();
+        vi.spyOn(f.worker.sessionManager, "sweepIdleSessions").mockResolvedValue(0);
         const gate = deferred();
         Runtime.prototype.start.mockImplementationOnce(() => gate.promise);
         const starting = f.worker.start();
         await vi.waitFor(() => expect(Runtime.prototype.start).toHaveBeenCalledOnce());
-        const stopping = f.worker.stop();
+        const stopping = f.worker[method]();
         await vi.advanceTimersByTimeAsync(1000);
         expect(Runtime.prototype.shutdown).not.toHaveBeenCalled();
         expect(f.catalog.close).not.toHaveBeenCalled();

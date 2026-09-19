@@ -1030,6 +1030,7 @@ export class PilotSwarmWorker {
      *      lock timeout.
      */
     async gracefulShutdown(): Promise<void> {
+        this._stopRequested = true;
         this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
@@ -1047,9 +1048,11 @@ export class PilotSwarmWorker {
         }
 
         if (this.runtime) {
+            try { await this._runtimeStartup; } catch {}
             console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
             await this.runtime.shutdown(drainBudgetMs);
             this.runtime = null;
+            this._runtimeStartup = null;
         }
 
         // Release everything this worker served, via the same lock-aware
