@@ -27,6 +27,7 @@ against the managed environment.
 | --- | --- |
 | Update test environment from current main | **Deploy Azure stamp** (`deploy-azure.yml`) |
 | Redeploy an existing published release | Same workflow, `release_tag=v<version>` |
+| Reconcile current configuration while retaining existing release images | Same workflow, `release_tag=v<version>` and `reconcile_release_config=true` |
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
 | Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
 | Full PostgreSQL baseline plus additive HDB coverage | **Tests** (`tests.yml`), `providers=all` |
@@ -61,6 +62,15 @@ appropriately scoped, reviewed Action and obtain any missing authorization.
 Do not fall back to a local mutation. Existing Entra app/redirect configuration
 and deployment OIDC/RBAC setup are one-time administrative prerequisites; the
 normal deploy workflow does not create the GitHub identity or app registration.
+
+For a deployment-template or configuration fix after publication, use
+`reconcile_release_config=true` with the existing published `release_tag`.
+This explicitly uses current main's deployment templates and protected stamp
+configuration, but retains the release commit's existing image tags. It runs
+`bicep,seed-secrets,manifests,rollout`, never image build/push or release
+publication. The release images must already exist. Record the configuration
+workflow SHA separately from the release/image SHA and verify both live images
+and effective configuration after reconciliation.
 
 ## Configuration and boundaries
 

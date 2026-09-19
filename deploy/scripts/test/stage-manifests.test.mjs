@@ -212,6 +212,30 @@ function makePortalEnv(extra = {}) {
   };
 }
 
+for (const [edge, tls, overlay] of [
+  ["afd", "akv", "afd-akv"],
+  ["afd", "letsencrypt", "afd-letsencrypt"],
+  ["private", "akv", "private-akv"],
+  ["public", "letsencrypt", "public-letsencrypt"],
+]) {
+  test(`portal/${overlay} preserves explicit ownership and visibility policy`, t => {
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-portal-policy-"));
+    t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+    const policy = {
+      AUTHZ_ENFORCE_OWNERSHIP: "true", AUTHZ_ADMIN_SCOPE: "cluster",
+      SESSIONS_DEFAULT_VISIBILITY: "private", SESSIONS_SYSTEM_VISIBILITY: "admin",
+    };
+    const root = stageManifests({ service: "portal", envName: "testenv", stagingDir,
+      env: makePortalEnv({ EDGE_MODE: edge, TLS_SOURCE: tls, ...policy }) });
+    const text = readFileSync(join(root, "overlays", overlay, ".env"), "utf8");
+    for (const [key, value] of Object.entries(policy)) assert.match(text, new RegExp(`^${key}=${value}$`, "m"));
+    const legacy = stageManifests({ service: "portal", envName: "testenv", stagingDir,
+      env: makePortalEnv({ EDGE_MODE: edge, TLS_SOURCE: tls }) });
+    const legacyText = readFileSync(join(legacy, "overlays", overlay, ".env"), "utf8");
+    for (const key of Object.keys(policy)) assert.match(legacyText, new RegExp(`^${key}=__PS_UNSET__$`, "m"));
+  });
+}
+
 test("per-stamp Foundry catalog becomes the worker and portal default", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-foundry-catalog-"));
   const catalogPath = join(stagingDir, "model_providers.json");

@@ -113,6 +113,11 @@ Verify separately:
 
 If deployment fails after publication, retain the valid release and retry only
 **Deploy Azure stamp** with `release_tag=v<version>`. Never retag or republish.
+If a deployment-template/configuration fix is required, merge its validated PR
+and use `reconcile_release_config=true` with that published tag. This uses current
+main's deployment configuration without rebuilding/pushing the existing release
+images. Record both configuration and release/image SHAs; verify the effective
+portal policy, not only the protected input or pod readiness.
 If publication stops after creating a tag/draft, inspect that unpublished state;
 resolve it deliberately before rerunning. Never delete a published release to
 work around a failed run. Report release and deployment status separately.

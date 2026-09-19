@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readFileSync as _read } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PORTAL_CONFIG_KEYS } from "../lib/portal-config.mjs";
 
 import {
   OVERLAY_CONTRACTS,
@@ -87,6 +88,10 @@ test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", ()
 // exactly one role bucket. Adding a new key to an overlay .env without
 // adding it to the contract fails this test.
 for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
+  test(`overlay-contracts: '${overlay}' projects every declared portal policy key`, () => {
+    const envKeys = new Set(readOverlayEnvKeys(overlay));
+    assert.deepEqual(PORTAL_CONFIG_KEYS.map(({ env }) => env).filter(key => !envKeys.has(key)), []);
+  });
   test(`overlay-contracts: every '${overlay}' .env key has a contract role`, () => {
     const envKeys = readOverlayEnvKeys(overlay);
     const c = OVERLAY_CONTRACTS[overlay];
