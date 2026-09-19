@@ -1,0 +1,45 @@
+name: Manage Azure CI runner
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Provision/start and register for one job, or deallocate the idle VM
+        type: choice
+        default: register
+        options: [register, deallocate]
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ci-provider-database
+  cancel-in-progress: false
+jobs:
+  runner:
+    if: github.ref == 'refs/heads/main'
+    environment: azure-deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Manage provider runner
+        env:
+          RUNNER_OPERATION: ${{ inputs.operation }}
+          AZURE_CI_RUNNER_JSON: ${{ secrets.AZURE_CI_RUNNER_JSON }}
+          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+          CI_RUNNER_REGISTRATION_TOKEN: ${{ secrets.CI_RUNNER_REGISTRATION_TOKEN }}
+        run: node deploy/providers/azure/ci/runner/manage.mjs
+      - name: Deallocate runner after failed provisioning
+        if: failure() && inputs.operation == 'register'
+        env:
+          RUNNER_OPERATION: deallocate
+          AZURE_CI_RUNNER_JSON: ${{ secrets.AZURE_CI_RUNNER_JSON }}
+          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+        run: node deploy/providers/azure/ci/runner/manage.mjs
