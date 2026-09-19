@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.3.1
+version: 1.4.0
 name: pilotswarm-release
 description: "Prepare and cut Microsoft PilotSwarm releases: validate versions, build, tests, and package contents; publish a GitHub Release with three npm-format tarball assets through GitHub Actions."
 ---
@@ -29,8 +29,12 @@ Run `npm run check:privacy` on staged changes before committing.
 - report the current latest git tag and the proposed next release tag before creating a tag
 - explain that a tag marks the source commit and a GitHub Release holds notes and three `.tgz` package assets
 - dispatch the manual Create release Action on main; it requires the complete PostgreSQL baseline plus additive HDB coverage before creating the tag and publishing tarballs
+- when a small set of tests fails, extract the failed phase, exact SDK file paths and case names from the combined provider summary; diagnose those files before repeating the whole release gate
+- use the protected Tests workflow with providers=horizondb, the exact failed SDK paths in suite, and mode=sequential for a requested sequential HDB diagnostic run; preserve default release concurrency and never substitute a diagnostic pass for its full gate
+- report the original failure and diagnostic result separately; an unchanged sequential pass establishes a pass in isolation, not a proven fix
 - verify the Action succeeds and all three package assets exist before reporting the release complete
 - monitor the automatic post-publication Azure deployment in the same Action; retry an existing release with `deploy-azure.yml` and its release_tag input
+- refresh Azure OIDC login immediately before post-test deployment; a long test gate must not leave blob publication using an old federated assertion
 - explain that the current Azure Action builds workspace source and pushes deployment images to Azure Container Registry
 - keep environment configuration in GitHub environment secrets and ignored local files
 - use non-interactive git commands only

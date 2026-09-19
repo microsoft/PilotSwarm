@@ -6,6 +6,20 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-09-20 — Release failure diagnosis before another full gate
+
+- **Agent:** repository `pilotswarm-release`, version `1.3.1` to `1.4.0`.
+- **Model tested:** none; this is release-workflow guidance, not a model evaluation.
+- **Observed behavior:** a small HDB failure set prompted another complete gate
+  before the affected files were isolated. The targeted run later passed all 24
+  tests without changes to those tests, which did not establish the failure's cause.
+- **Expected behavior:** extract failed phases/files/cases, run explicit targeted
+  diagnostics (sequentially when requested), and preserve both original and
+  diagnostic outcomes. Publication still requires a complete successful gate.
+- **Validation:** targeted HDB routing and failure-propagation tests cover the CLI
+  workflow used by the guidance. No claim about agent-model compliance or a
+  changed model compatibility matrix is made.
+
 ## 2026-09-08 — Durable versus native filesystem boundary
 
 - **Agent:** framework base prompt and native delegation overlay.

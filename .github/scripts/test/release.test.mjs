@@ -26,3 +26,15 @@ test('release and additive coverage use hosted runners; regional routing is full
     "${{ inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
+test('release refreshes Azure authentication after testing and publication, before deployment', () => {
+  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const gate = release.indexOf('- name: Require complete all-provider pass');
+  const publish = release.indexOf('- name: Publish verified package tarballs');
+  const refresh = release.indexOf('- name: Refresh Azure login for deployment');
+  const deploy = release.indexOf('- name: Deploy released source to test environment');
+  assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
+  assert.match(release.slice(refresh, deploy), /uses: azure\/login@v3/);
+  for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
+    assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));
+  }
+});
