@@ -30,7 +30,7 @@ against the managed environment.
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
 | Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
 | Full PostgreSQL baseline plus additive HDB coverage | **Tests** (`tests.yml`), `providers=all` |
-| Complete suite physically on HDB | **Tests**, `providers=horizondb` |
+| Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a new release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
 
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
@@ -40,7 +40,9 @@ destructive resets require their own explicit authorization. A deployment
 request never implies permission to erase data.
 
 Ordinary merges run PR checks but do not deploy. Release publication requires
-the complete baseline plus additive HDB gate at eight workers. The public test
+the complete baseline plus additive HDB gate at eight workers on a GitHub-hosted
+runner with local Docker PostgreSQL. The optional full-HDB suite and dedicated
+Azure runner are not release prerequisites. The public test
 runner remains usable without HDB; the hosted CI gate separately requires it.
 Release assets are three npm-format tarballs and checksums. There is no npm
 publication or starter-image publication. The Azure workflows build and push

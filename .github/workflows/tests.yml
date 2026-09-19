@@ -29,7 +29,7 @@ jobs:
   tests:
     name: ${{ inputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
       'Baseline tests' }}
-    runs-on: ${{ inputs.providers != 'baseline' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.providers == 'horizondb' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
     if: github.ref == 'refs/heads/main'
     environment: azure-deploy
     timeout-minutes: ${{ inputs.providers != 'baseline' && 180 || 59 }}
