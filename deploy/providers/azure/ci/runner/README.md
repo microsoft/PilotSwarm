@@ -27,6 +27,8 @@ after one hour, so generate one immediately before dispatch/approval.
 
 1. Run `provision-ci-runner.yml` with `operation=register` from `main` and approve
    the protected environment. This creates or starts the dedicated VM.
+   Each workflow run and attempt creates a distinct Azure Run Command; an
+   unchanged command can otherwise return an old success without executing.
 2. Verify the repository runner is online, then dispatch the provider test or
    release workflow. This registration handles **exactly one job**.
 3. The runner unregisters after the job and removes its checkout and CLI state.

@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const api = '2025-04-01';
+export function registrationCommandName(runId, attempt) {
+  if (!/^\d+$/.test(runId || '') || !/^\d+$/.test(attempt || '')) throw new Error('A workflow run ID and attempt are required for registration.');
+  return `register-ci-runner-${runId}-${attempt}`;
+}
 export function validateRunnerConfig(c, database, repository) {
   for (const key of ['name', 'label', 'vmSize']) {
     if (typeof c[key] !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(c[key])) throw new Error(`Invalid runner ${key}.`);
@@ -32,6 +36,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 export async function main(operation) {
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REF !== 'refs/heads/main' || !process.env.RUNNER_TEMP) throw new Error('Runner management runs only in the protected main-branch Action.');
   if (!['register', 'deallocate'].includes(operation)) throw new Error('Expected register or deallocate.');
+  const registrationName = operation === 'register'
+    ? registrationCommandName(process.env.GITHUB_RUN_ID, process.env.GITHUB_RUN_ATTEMPT) : undefined;
   const db = JSON.parse(process.env.AZURE_CI_DATABASE_JSON || '{}');
   const c = validateRunnerConfig(JSON.parse(process.env.AZURE_CI_RUNNER_JSON || '{}'), db, process.env.GITHUB_REPOSITORY);
   for (const value of Object.values(c)) mask(value);
@@ -82,7 +88,10 @@ export async function main(operation) {
     } };
     const file = join(temp, 'run-command.json');
     writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
-    const url = `${vmUrl}/runCommands/register-ci-runner?api-version=${api}`;
+    // An unchanged PUT can return the previous command's successful instance
+    // view without executing again. Each workflow attempt needs its own command
+    // so registration and its completion evidence belong to this invocation.
+    const url = `${vmUrl}/runCommands/${registrationName}?api-version=${api}`;
     az(['rest', '--method', 'put', '--url', url, '--body', `@${file}`, '-o', 'none']);
     const deadline = Date.now() + 32 * 60_000;
     while (Date.now() < deadline) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateRunnerConfig, main } from '../../../deploy/providers/azure/ci/runner/manage.mjs';
+import { validateRunnerConfig, registrationCommandName, main } from '../../../deploy/providers/azure/ci/runner/manage.mjs';
 const runner = { name: 'example-ci-runner', label: 'ci-example', vmSize: 'Standard_D8s_v5' };
 const database = { subscription: '00000000-0000-0000-0000-000000000000', resourceGroup: 'example-rg', location: 'example-region', cluster: 'example-ci-db', appCluster: 'example-app-db' };
 test('runner placement and Azure target derive from dedicated CI configuration', () => {
@@ -17,4 +17,15 @@ test('runner configuration rejects shell fragments and application targets', () 
 });
 test('local invocation cannot mutate Azure', async () => {
   await assert.rejects(main('register'), /protected main-branch Action/);
+});
+test('registration cannot reuse completion evidence from another workflow run or attempt', () => {
+  const commands = new Set([
+    registrationCommandName('100', '1'),
+    registrationCommandName('101', '1'),
+    registrationCommandName('100', '2'),
+  ]);
+  assert.equal(commands.size, 3);
+  for (const args of [[undefined, '1'], ['100', undefined], ['100/old', '1'], ['100', '1?old']]) {
+    assert.throws(() => registrationCommandName(...args), /run ID and attempt/);
+  }
 });
