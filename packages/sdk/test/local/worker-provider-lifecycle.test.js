@@ -82,6 +82,70 @@ afterEach(async () => {
 });
 
 describe("provider/system polling lifecycle", () => {
+    it("does not report ready before native runtime startup settles", async () => {
+        const f = fixture();
+        const gate = deferred();
+        Runtime.prototype.start.mockImplementationOnce(() => gate.promise);
+        let ready = false;
+        const starting = f.worker.start().then(() => { ready = true; });
+        await vi.waitFor(() => expect(Runtime.prototype.start).toHaveBeenCalledOnce());
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(ready).toBe(false);
+        expect(f.worker._started).toBe(false);
+        gate.resolve();
+        await vi.advanceTimersByTimeAsync(200);
+        await starting;
+        expect(f.worker._started).toBe(true);
+    });
+
+    it.each(["stop", "gracefulShutdown"])("%s settles native startup and keeps its catalog open until drained", async (method) => {
+        const f = fixture();
+        vi.spyOn(f.worker.sessionManager, "sweepIdleSessions").mockResolvedValue(0);
+        const gate = deferred();
+        Runtime.prototype.start.mockImplementationOnce(() => gate.promise);
+        const starting = f.worker.start();
+        await vi.waitFor(() => expect(Runtime.prototype.start).toHaveBeenCalledOnce());
+        const stopping = f.worker[method]();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(Runtime.prototype.shutdown).not.toHaveBeenCalled();
+        expect(f.catalog.close).not.toHaveBeenCalled();
+        gate.resolve();
+        await vi.advanceTimersByTimeAsync(200);
+        await Promise.all([starting, stopping]);
+        expect(Runtime.prototype.shutdown).toHaveBeenCalledOnce();
+        expect(f.catalog.close).toHaveBeenCalledOnce();
+        expect(f.worker._started).toBe(false);
+        expect(f.worker._startSystemAgents).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("propagates native startup failure, closes stores and allows a clean restart", async () => {
+        const f = fixture();
+        Runtime.prototype.start.mockRejectedValueOnce(new Error("native startup failed"));
+        await expect(f.worker.start()).rejects.toThrow("native startup failed");
+        expect(f.worker._started).toBe(false);
+        expect(f.catalog.close).toHaveBeenCalledOnce();
+        expect(f.worker._startSystemAgents).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+        await f.start();
+        expect(f.worker._started).toBe(true);
+    });
+
+    it("does not start a second teardown when pending startup fails during stop", async () => {
+        const f = fixture();
+        const gate = deferred();
+        Runtime.prototype.start.mockImplementationOnce(() => gate.promise);
+        const starting = f.worker.start();
+        const rejected = expect(starting).rejects.toThrow("native startup failed");
+        await vi.waitFor(() => expect(Runtime.prototype.start).toHaveBeenCalledOnce());
+        const stopping = f.worker.stop();
+        gate.reject(new Error("native startup failed"));
+        await Promise.all([rejected, stopping]);
+        expect(Runtime.prototype.shutdown).toHaveBeenCalledOnce();
+        expect(f.catalog.close).toHaveBeenCalledOnce();
+        expect(f.worker._started).toBe(false);
+    });
+
     it("does no background work before start or after stop", async () => {
         const f = fixture();
         await vi.advanceTimersByTimeAsync(60_000);

@@ -156,6 +156,8 @@ export class PilotSwarmWorker {
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
     private _started = false;
+    private _runtimeStartup: Promise<void> | null = null;
+    private _stopRequested = false;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
     /** Loaded skill directories from plugins + direct config. */
@@ -587,6 +589,7 @@ export class PilotSwarmWorker {
 
     async start(): Promise<void> {
         if (this._started) return;
+        this._stopRequested = false;
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;
@@ -905,9 +908,17 @@ export class PilotSwarmWorker {
         });
         this.registerTools([listAgentsTool]);
 
-        this.runtime.start().catch((err: any) => {
-            console.error("[PilotSwarmWorker] Runtime error:", err);
-        });
+        // Runtime.start resolves after native initialization; dispatch continues
+        // in the background. Await it so stop cannot close the catalog while a
+        // delayed native start is still creating dispatchers against that store.
+        this._runtimeStartup = this.runtime.start();
+        try {
+            await this._runtimeStartup;
+        } catch (err) {
+            if (!this._stopRequested) await this.stop();
+            throw err;
+        }
+        if (this._stopRequested) return;
         this._started = true;
         this._startProviderPolling();
 
@@ -946,6 +957,7 @@ export class PilotSwarmWorker {
     }
 
     async stop(): Promise<void> {
+        this._stopRequested = true;
         this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
@@ -961,6 +973,10 @@ export class PilotSwarmWorker {
             this._eventLoopHist = null;
         }
         if (this.runtime) {
+            // Native shutdown before startup settles can observe no runtime
+            // and return, leaving a dispatcher that starts after its stores close.
+            // Startup errors propagate through start(); teardown still runs.
+            try { await this._runtimeStartup; } catch {}
             const rawShutdownTimeoutMs = Number.parseInt(
                 process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "",
                 10,
@@ -970,6 +986,7 @@ export class PilotSwarmWorker {
                 : 5000;
             await this.runtime.shutdown(shutdownTimeoutMs);
             this.runtime = null;
+            this._runtimeStartup = null;
         }
         // Stop fetching first, then let any already-admitted bootstrap finish
         // while the catalog/provider it uses are still open.
@@ -1013,6 +1030,7 @@ export class PilotSwarmWorker {
      *      lock timeout.
      */
     async gracefulShutdown(): Promise<void> {
+        this._stopRequested = true;
         this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
@@ -1030,9 +1048,11 @@ export class PilotSwarmWorker {
         }
 
         if (this.runtime) {
+            try { await this._runtimeStartup; } catch {}
             console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
             await this.runtime.shutdown(drainBudgetMs);
             this.runtime = null;
+            this._runtimeStartup = null;
         }
 
         // Release everything this worker served, via the same lock-aware
