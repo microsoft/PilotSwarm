@@ -114,6 +114,14 @@ Embeddings use protected Foundry configuration. Live runs serialize against CI
 database provisioning. Raw test artifacts are not uploaded because they may
 contain private endpoints; GitHub logs mask private configuration.
 
+During live provider gates, `ciHealth` log records sample runner CPU/load,
+available memory and fresh local/HDB connection and query timings every 30
+seconds. Database samples include aggregate connection counts, not endpoints,
+credentials or query text. Failures report a bounded error code and the failing
+stage. These are independent read-only probes, not test retries: a failed test
+still fails the release gate. Use them to distinguish runner pressure from
+remote connection stalls before changing capacity or deadlines.
+
 ### Model coverage
 
 Storage-provider coverage is separate from model-provider coverage. SDK Vitest

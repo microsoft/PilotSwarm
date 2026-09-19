@@ -58,6 +58,9 @@ runs:
         fi
 
         if [ "$TEST_PROVIDERS" != "baseline" ]; then
+            node .github/scripts/ci-health.mjs &
+            health_pid=$!
+            trap 'kill -TERM "$health_pid"; wait "$health_pid"' EXIT
             node .github/scripts/run-all-providers.mjs
             exit "$?"
         fi
