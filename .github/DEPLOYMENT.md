@@ -88,6 +88,22 @@ private. Historical references are outside the current-file privacy check; an
 old entry does not prove the resource or identity is retired. See
 [repository privacy](REPOSITORY-PRIVACY.md).
 
+## Authenticated-admin test posture
+
+An environment may explicitly set `PORTAL_AUTHZ_MODE=authenticated-admin` in
+its protected `AZURE_DEPLOY_ENV` configuration. Every principal validated by
+its authentication provider receives admin, including principals with a `user`
+role claim; email allowlists and app-role authorization are bypassed. The default
+`policy` mode preserves existing role/allowlist behavior.
+
+The Azure Actions validator still requires Entra authentication, the configured
+OIDC tenant, `PORTAL_AUTH_ALLOW_UNAUTHENTICATED=false` and ownership enforcement.
+Tenant guests admitted by Entra are included; this is a tenant restriction, not
+an employee-only check. Entra app assignment and Conditional Access can still
+prevent sign-in. No tenant IDs or real user lists belong in tracked templates.
+Unset the mode or set `policy` and restore the allowlists to revert this posture.
+Apply configuration changes through the normal GitHub deployment Action.
+
 ## Users managing their own environments
 
 The public Bicep/GitOps orchestrator can also be run by operators against their

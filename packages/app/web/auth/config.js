@@ -109,7 +109,16 @@ export function loadAuthorizationPolicy({
         providerId === "none",
     );
 
+    const mode = String(env.PORTAL_AUTHZ_MODE || "policy").trim().toLowerCase();
+    if (!["policy", "authenticated-admin"].includes(mode)) {
+        throw new Error("PORTAL_AUTHZ_MODE must be policy or authenticated-admin");
+    }
+    if (mode === "authenticated-admin" && (providerId === "none" || providerId === "dev" || allowUnauthenticated)) {
+        throw new Error("authenticated-admin requires an authentication provider and disallows unauthenticated access");
+    }
+
     return {
+        mode,
         defaultRole,
         adminGroups,
         userGroups,

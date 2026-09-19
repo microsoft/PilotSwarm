@@ -92,3 +92,23 @@ test("OIDC deployment principal resolves without a signed-in human", () => {
   });
   assert.throws(() => resolveLocalDeploymentPrincipal({ DEPLOY_PRINCIPAL_ID: "not-an-id" }), /object ID/);
 });
+
+test("explicit authenticated-admin posture retains tenant/auth gates without email allowlists", (t) => {
+  const writeDir = mkdtempSync(join(tmpdir(), "ps-gh-admin-env-"));
+  t.after(() => rmSync(writeDir, { recursive: true, force: true }));
+  const adminEnv = envText
+    .replace("PORTAL_AUTHZ_ADMIN_GROUPS=admin@example.invalid", "PORTAL_AUTHZ_ADMIN_GROUPS=__PS_UNSET__")
+    .replace("PORTAL_AUTHZ_USER_GROUPS=user@example.invalid", "PORTAL_AUTHZ_USER_GROUPS=__PS_UNSET__")
+    + "PORTAL_AUTHZ_MODE=authenticated-admin\n";
+  prepareGithubEnv(input({ envText: adminEnv, writeDir }));
+  assert.match(readFileSync(join(writeDir, ".env"), "utf8"), /PORTAL_AUTHZ_MODE=authenticated-admin/);
+  for (const [from, to, expected] of [
+    ["PORTAL_AUTH_ALLOW_UNAUTHENTICATED=false", "PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true", /PORTAL_AUTH_ALLOW_UNAUTHENTICATED/],
+    ["PORTAL_AUTH_PROVIDER=entra", "PORTAL_AUTH_PROVIDER=none", /PORTAL_AUTH_PROVIDER/],
+    [`PORTAL_AUTH_ENTRA_TENANT_ID=${tenantId}`, `PORTAL_AUTH_ENTRA_TENANT_ID=${subscriptionId}`, /PORTAL_AUTH_ENTRA_TENANT_ID/],
+    ["AUTHZ_ENFORCE_OWNERSHIP=true", "AUTHZ_ENFORCE_OWNERSHIP=false", /AUTHZ_ENFORCE_OWNERSHIP/],
+    ["PORTAL_AUTHZ_MODE=authenticated-admin", "PORTAL_AUTHZ_MODE=authenticated-admn", /PORTAL_AUTHZ_MODE/],
+  ]) {
+    assert.throws(() => prepareGithubEnv(input({ envText: adminEnv.replace(from, to), writeDir })), expected);
+  }
+});

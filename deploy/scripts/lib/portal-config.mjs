@@ -35,6 +35,8 @@ export const PORTAL_CONFIG_KEYS = [
   { env: "PORTAL_AUTH_ENTRA_ADMIN_GROUPS" },
   // Entra group object ids whose members are users (legacy provider key).
   { env: "PORTAL_AUTH_ENTRA_USER_GROUPS" },
+  // Explicit test posture: policy (default) | authenticated-admin.
+  { env: "PORTAL_AUTHZ_MODE" },
   // Default role assigned to authenticated principals not matched by
   // either admin or user group lists. Typical values: `viewer`, `none`.
   { env: "PORTAL_AUTHZ_DEFAULT_ROLE" },

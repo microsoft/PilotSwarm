@@ -80,7 +80,13 @@ export function prepareGithubEnv({ envText, foundryText, modelText, subscription
   if (!["none", "", "__PS_UNSET__", undefined].includes(values.get("PORTAL_AUTHZ_DEFAULT_ROLE"))) {
     throw new Error("AZURE_DEPLOY_ENV must deny unmatched portal users");
   }
-  for (const kind of ["ADMIN", "USER"]) {
+  const authzMode = values.get("PORTAL_AUTHZ_MODE");
+  if (!["policy", "authenticated-admin", "", "__PS_UNSET__", undefined].includes(authzMode)) {
+    throw new Error("AZURE_DEPLOY_ENV has an unsupported PORTAL_AUTHZ_MODE");
+  }
+  // Tenant-bound authentication remains mandatory in either mode. Only an
+  // explicit environment opt-in replaces the per-user authorization allowlists.
+  for (const kind of authzMode === "authenticated-admin" ? [] : ["ADMIN", "USER"]) {
     const groups = [values.get(`PORTAL_AUTHZ_${kind}_GROUPS`), values.get(`PORTAL_AUTH_ENTRA_${kind}_GROUPS`)]
       .find((entry) => entry && entry !== "__PS_UNSET__" && entry.split(",").some((item) => item.trim()));
     if (!groups) {

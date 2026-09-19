@@ -67,6 +67,16 @@ export function authorizePrincipal(principal, policy = {}) {
     const userGroups = Array.isArray(policy.userGroups) ? policy.userGroups : [];
     const allowUnauthenticated = policy.allowUnauthenticated === true;
 
+    // Explicit opt-in for trusted test deployments. Authentication has already
+    // validated the principal; cloud/tenant checks belong to its auth provider.
+    // This mode intentionally overrides role claims and email allowlists.
+    if (policy.mode === "authenticated-admin") {
+        if (!principal?.subject || ["none", "dev"].includes(principal.provider)) {
+            return { allowed: false, role: null, reason: "Authentication required", matchedGroups: [] };
+        }
+        return { allowed: true, role: "admin", reason: "Authenticated-admin policy", matchedGroups: [] };
+    }
+
     if (!principal) {
         if (allowUnauthenticated) {
             return {
