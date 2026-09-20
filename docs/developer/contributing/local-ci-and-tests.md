@@ -26,7 +26,7 @@ npm ci
 [ -e .model_providers.json ] || cp .model_providers.example.json .model_providers.json
 npm run build
 npm run test:deploy-scripts
-node --test .github/scripts/test/*.test.mjs
+node --test .github/scripts/test/*.test.mjs .github/scripts/integration/*.test.mjs
 npm run test:api --workspace=pilotswarm-sdk
 npm run test:unit --workspace=pilotswarm-sdk
 npm test --workspace=pilotswarm
@@ -122,7 +122,12 @@ Keep repository defaults unchanged when diagnosing failures.
 Local `--all-providers` permits an unconfigured HDB provider and reports the
 omission. That is not evidence of HDB coverage. The release/CI wrapper separately
 requires successful real HDB initialize/store/read coverage and rejects skips
-and filters. Other providers can use the external-suite options in
+and filters. After complete initial coverage, protected CI may qualify 1-5 failed
+Vitest cases total through one sequential verification of exactly those cases.
+Six or more failures, missing coverage or another failure blocks the run.
+Original and verification results remain separate; local runs are strict by
+default. See [release qualification](../../../.github/CI.md#release-qualification).
+Other providers can use the external-suite options in
 `scripts/run-tests.sh --help`; local users need not adopt HDB to use the runner.
 
 ## 5. Install the GitHub CI system in your own repository

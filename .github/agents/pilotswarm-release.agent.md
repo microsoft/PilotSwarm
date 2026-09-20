@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.4.0
+version: 2.0.0
 name: pilotswarm-release
 description: "Prepare and cut Microsoft PilotSwarm releases: validate versions, build, tests, and package contents; publish a GitHub Release with three npm-format tarball assets through GitHub Actions."
 ---
@@ -29,9 +29,11 @@ Run `npm run check:privacy` on staged changes before committing.
 - report the current latest git tag and the proposed next release tag before creating a tag
 - explain that a tag marks the source commit and a GitHub Release holds notes and three `.tgz` package assets
 - dispatch the manual Create release Action on main; it requires the complete PostgreSQL baseline plus additive HDB coverage before creating the tag and publishing tarballs
-- when a small set of tests fails, extract the failed phase, exact SDK file paths and case names from the combined provider summary; diagnose those files before repeating the whole release gate
-- use the protected Tests workflow with providers=horizondb, the exact failed SDK paths in suite, and mode=sequential for a requested sequential HDB diagnostic run; preserve default release concurrency and never substitute a diagnostic pass for its full gate
-- report the original failure and diagnostic result separately; an unchanged sequential pass establishes a pass in isolation, not a proven fix
+- apply the release qualification policy: complete initial coverage with zero failures passes; 1-5 failed test-case executions total across provider phases permit one sequential verification of exactly those cases on the same source/model/provider; all passing meets the release bar
+- fail a run with 6 or more failed cases without sequential verification; never apply the cap per file or per provider, and never use repeat-until-green loops
+- use the gate's machine-readable reports and bounded selectors; missing coverage, suite-level setup/hook failures, unhandled errors, ambiguous identities, missing/skipped cases or another verification failure still block publication
+- preserve and report both the initial failures and sequential result; describe accepted recovery as qualified after sequential verification, not a clean initial pass or a proven concurrency fix
+- use standalone targeted Tests runs for diagnosis when needed; they cannot qualify a release without its complete initial-run evidence
 - verify the Action succeeds and all three package assets exist before reporting the release complete
 - monitor the automatic post-publication Azure deployment in the same Action; retry an existing release with `deploy-azure.yml` and its release_tag input
 - refresh Azure OIDC login immediately before post-test deployment; a long test gate must not leave blob publication using an old federated assertion

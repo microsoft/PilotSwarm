@@ -23,7 +23,7 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel/);
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.match(/^    runs-on: (.+)$/m)?.[1],
     "${{ inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
@@ -31,7 +31,7 @@ test('release and additive coverage use hosted runners; regional routing is full
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
   const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
-  const gate = release.indexOf('- name: Require complete all-provider pass');
+  const gate = release.indexOf('- name: Qualify complete all-provider coverage');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');

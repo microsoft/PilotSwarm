@@ -69,6 +69,7 @@ jobs:
           mode: ${{ inputs.mode }}
           suite: ${{ inputs.suite }}
           hdb-diagnostic: ${{ inputs.providers == 'horizondb' && inputs.suite != '' }}
+          qualify-failures: ${{ inputs.providers != 'baseline' && inputs.suite == '' }}
           postgres-container: ${{ job.services.postgres.id }}
         env:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}

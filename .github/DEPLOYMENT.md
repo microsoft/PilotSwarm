@@ -45,6 +45,10 @@ the complete baseline plus additive HDB gate at eight workers on a GitHub-hosted
 runner with local Docker PostgreSQL. The optional full-HDB suite and dedicated
 Azure runner are not release prerequisites. The public test
 runner remains usable without HDB; the hosted CI gate separately requires it.
+After complete initial coverage, 1-5 failed test cases total may qualify through
+one successful sequential verification of exactly those cases on the same source
+and provider. Six or more failures fail without sequential verification. Both
+results remain visible; incomplete/setup/unhandled failures still block release.
 Release assets are three npm-format tarballs and checksums. There is no npm
 publication or starter-image publication. The Azure workflows build and push
 worker/portal images to the configured ACR for deployment, including optional
