@@ -2,11 +2,16 @@
 
 Durable runtime primitives for building apps on top of PilotSwarm.
 
-Install:
+Download the SDK asset from a published Microsoft release, then install it:
 
 ```bash
-npm install pilotswarm-sdk
+gh release download vX.Y.Z --repo microsoft/PilotSwarm --pattern 'pilotswarm-sdk-*.tgz' --dir dist-tarballs
+npm install ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz
 ```
+
+Repository read access is required. Microsoft distributes npm-format release
+assets, not npm registry publications. Install the matching Horizon-store
+tarball as well when using its optional providers.
 
 Minimal usage:
 
@@ -23,7 +28,7 @@ const session = await client.createSession();
 const reply = await session.sendAndWait("hello");
 ```
 
-Pass `getAccessToken` for authenticated deployments; use `PilotSwarmManagementClient({ apiUrl, getAccessToken? })` for management operations. Constructing a client directly with `{ store }` is internal (worker/portal-host embedding and testing) — see the [Web API reference](https://github.com/affandar/PilotSwarm/blob/main/docs/api/reference.md).
+Pass `getAccessToken` for authenticated deployments; use `PilotSwarmManagementClient({ apiUrl, getAccessToken? })` for management operations. Constructing a client directly with `{ store }` is internal (worker/portal-host embedding and testing) — see the [Web API reference](https://github.com/microsoft/PilotSwarm/blob/main/docs/api/reference.md).
 
 Workers are trusted backend components and always attach directly to the store:
 
@@ -48,10 +53,10 @@ Artifact note:
 
 Common docs:
 
-- SDK apps: `https://github.com/affandar/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
-- SDK agents: `https://github.com/affandar/PilotSwarm/blob/main/docs/developer/building/sdk-agents.md`
-- Configuration: `https://github.com/affandar/PilotSwarm/blob/main/docs/developer/reference/configuration.md`
-- Architecture: `https://github.com/affandar/PilotSwarm/blob/main/docs/architecture/system.md`
+- SDK apps: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
+- SDK agents: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-agents.md`
+- Configuration: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/reference/configuration.md`
+- Architecture: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/system.md`
 
 If you want the shipped terminal UI, portal, and MCP server, install
 `pilotswarm` (`pilotswarm-cli` is only a bin alias inside that package).

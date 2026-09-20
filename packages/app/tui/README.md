@@ -2,17 +2,17 @@
 
 Terminal UI for PilotSwarm.
 
-Install:
+Download a published release using a GitHub account with repository access,
+then install the matching packages:
 
 ```bash
-npm install pilotswarm
+gh release download vX.Y.Z --repo microsoft/PilotSwarm --pattern '*.tgz' --dir dist-tarballs
+npm install ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-horizon-store-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
-For app-specific worker modules or direct SDK imports, also add:
-
-```bash
-npm install pilotswarm-sdk
-```
+Microsoft releases npm-format assets on GitHub, not to the npm registry.
 
 Run locally against a plugin directory:
 
@@ -32,7 +32,7 @@ are exported from `pilotswarm/ui-core` and `pilotswarm/ui-react`.
 
 Common docs:
 
-- CLI apps: `https://github.com/affandar/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
-- CLI agents: `https://github.com/affandar/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
-- Keybindings: `https://github.com/affandar/PilotSwarm/blob/main/docs/user-guide/keybindings.md`
-- DevOps sample: `https://github.com/affandar/PilotSwarm/tree/main/examples/devops-command-center`
+- CLI apps: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
+- CLI agents: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
+- Keybindings: `https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/keybindings.md`
+- DevOps sample: `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`

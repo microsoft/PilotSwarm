@@ -364,7 +364,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         // links to whatever that deployment configured, not a fixed URL.
         docs: {
             agentPackageGuideUrl: docs?.agentPackageGuideUrl
-                || "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md",
+                || "https://github.com/microsoft/PilotSwarm/blob/main/docs/building-agent-packages.md",
         },
         auth: {
             principal: null,

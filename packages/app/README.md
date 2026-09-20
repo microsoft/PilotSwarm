@@ -1,7 +1,7 @@
 # pilotswarm
 
 The PilotSwarm application package — one install gives you every user-facing
-surface of a [PilotSwarm](https://github.com/affandar/pilotswarm) deployment:
+surface of a [PilotSwarm](https://github.com/microsoft/PilotSwarm) deployment:
 
 | Bin | What it is |
 |---|---|
@@ -25,10 +25,16 @@ prepackaged workflows and independent durable entry points.
 ### 1. Install
 
 ```bash
-npm install -g pilotswarm
+gh release download vX.Y.Z --repo microsoft/PilotSwarm --pattern '*.tgz' --dir dist-tarballs
+npm install -g ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-horizon-store-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
-(Or skip the install and prefix every command with `npx -p pilotswarm`.)
+Use a published version and a GitHub account with repository access. Microsoft
+distributes these packages as GitHub Release assets, not npm registry releases.
+The MCP examples below use the installed `pilotswarm-mcp` executable; ensure it
+is on the MCP host's PATH, or use its absolute path.
 
 ### 2. Sign in to a deployment
 
@@ -101,12 +107,12 @@ On shared deployments, sessions are owner-scoped. Owners can open a whole
 session tree as read/write or grant a named teammate targeted read/write access;
 management, deletion, and sharing remain owner/admin operations. The portal,
 TUI, Web API, WebSocket stream, and MCP server enforce the same rules. See the
-[security and sharing guide](https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/security-and-sharing.md).
+[security and sharing guide](https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/security-and-sharing.md).
 
 ### Claude Code
 
 ```bash
-claude mcp add pilotswarm -- npx -y -p pilotswarm pilotswarm-mcp \
+claude mcp add pilotswarm -- pilotswarm-mcp \
   --api-url https://portal.example.com
 ```
 
@@ -117,9 +123,8 @@ Or check a `.mcp.json` into the project root so your whole team gets it:
   "mcpServers": {
     "pilotswarm": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "-p", "pilotswarm", "pilotswarm-mcp",
-               "--api-url", "https://portal.example.com"]
+      "command": "pilotswarm-mcp",
+      "args": ["--api-url", "https://portal.example.com"]
     }
   }
 }
@@ -135,9 +140,8 @@ app:
 {
   "mcpServers": {
     "pilotswarm": {
-      "command": "npx",
-      "args": ["-y", "-p", "pilotswarm", "pilotswarm-mcp",
-               "--api-url", "https://portal.example.com"]
+      "command": "pilotswarm-mcp",
+      "args": ["--api-url", "https://portal.example.com"]
     }
   }
 }
@@ -153,9 +157,8 @@ to have it everywhere):
   "mcpServers": {
     "pilotswarm": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "-p", "pilotswarm", "pilotswarm-mcp",
-               "--api-url", "https://portal.example.com"]
+      "command": "pilotswarm-mcp",
+      "args": ["--api-url", "https://portal.example.com"]
     }
   }
 }
@@ -171,9 +174,8 @@ Add `.vscode/mcp.json` to the workspace — note the key is `servers`, not
   "servers": {
     "pilotswarm": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "-p", "pilotswarm", "pilotswarm-mcp",
-               "--api-url", "https://portal.example.com"]
+      "command": "pilotswarm-mcp",
+      "args": ["--api-url", "https://portal.example.com"]
     }
   }
 }
@@ -194,7 +196,7 @@ If it fails to start, run the same command by hand — the error is much easier
 to read outside the MCP host:
 
 ```bash
-npx -y -p pilotswarm pilotswarm-mcp --api-url https://portal.example.com --log-level info
+pilotswarm-mcp --api-url https://portal.example.com --log-level info
 ```
 
 The usual cause is a missing or expired token: re-run
@@ -206,7 +208,7 @@ There is no browser to sign in with, so hand the server a bearer token
 directly:
 
 ```bash
-PILOTSWARM_API_TOKEN=<token> npx -y -p pilotswarm pilotswarm-mcp \
+PILOTSWARM_API_TOKEN=<token> pilotswarm-mcp \
   --api-url https://portal.example.com
 ```
 
@@ -216,18 +218,18 @@ For a shared endpoint rather than a per-user child process, run the server with
 the HTTP transport and a bearer key clients must present:
 
 ```bash
-PILOTSWARM_MCP_KEY=your-secret-key npx -y -p pilotswarm pilotswarm-mcp \
+PILOTSWARM_MCP_KEY=your-secret-key pilotswarm-mcp \
   --transport http --port 3100 --api-url https://portal.example.com
 ```
 
 Clients then point at `http://your-host:3100/mcp` with an
 `Authorization: Bearer ${PILOTSWARM_MCP_KEY}` header. Read the
-[security model](https://github.com/affandar/pilotswarm/blob/main/packages/app/mcp/README.md#security-model)
+[security model](https://github.com/microsoft/PilotSwarm/blob/main/packages/app/mcp/README.md#security-model)
 before exposing this beyond localhost: the key is shared, and every client
 behind it has the full scope of the deployment.
 
 Full tool catalog, resources, and every flag:
-[MCP server README](https://github.com/affandar/pilotswarm/blob/main/packages/app/mcp/README.md).
+[MCP server README](https://github.com/microsoft/PilotSwarm/blob/main/packages/app/mcp/README.md).
 
 ---
 
@@ -261,15 +263,15 @@ its zero-dependency wire client at `pilotswarm-sdk/api`.
 
 ---
 
-Docs: [Quick Start](https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md) ·
-[User Guide](https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/README.md) ·
-[MCP Setup](https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/mcp-local-setup.md) ·
-[Web API Reference](https://github.com/affandar/pilotswarm/blob/main/docs/api/reference.md) ·
-[Architecture / Layering](https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md)
+Docs: [Quick Start](https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md) ·
+[User Guide](https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/README.md) ·
+[MCP Setup](https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/mcp-local-setup.md) ·
+[Web API Reference](https://github.com/microsoft/PilotSwarm/blob/main/docs/api/reference.md) ·
+[Architecture / Layering](https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md)
 
 ## Master of Agents
 
 The portal includes a personal multi-session workspace with resizable desktop
 chat/canvas panels, one focused composer, and zen mode. Phones show one panel
 at a time with a layout minimap and swipe navigation. Layouts save automatically.
-See the [MoA guide](https://github.com/affandar/PilotSwarm/blob/main/docs/user-guide/master-of-agents.md).
+See the [MoA guide](https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/master-of-agents.md).

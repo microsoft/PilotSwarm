@@ -2,7 +2,7 @@
 //
 // A layered app (waldemort) ships its own copy of the guide: the base
 // instructions PLUS the skills, tools and MCP servers that exist only on that
-// fleet. Pointing every deployment at the public PilotSwarm doc would hand
+// fleet. Pointing every deployment at the upstream PilotSwarm doc would hand
 // authors a guide that omits everything their fleet can actually do — so a
 // plugin overrides it the same way it overrides branding.
 import test from "node:test";
@@ -11,8 +11,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolvePortalConfigBundleFromPluginDirs } from "../src/plugin-config.js";
+import { createInitialState } from "../../ui/core/src/state.js";
 
-const PUBLIC_GUIDE = "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md";
+const UPSTREAM_GUIDE = "https://github.com/microsoft/PilotSwarm/blob/main/docs/building-agent-packages.md";
 
 function pluginDirWith(pluginJson) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-plugin-"));
@@ -20,16 +21,17 @@ function pluginDirWith(pluginJson) {
     return dir;
 }
 
-test("with no plugin, the guide is the public PilotSwarm doc", () => {
+test("shared state and portal defaults use the Microsoft PilotSwarm guide", () => {
     const { portalConfig } = resolvePortalConfigBundleFromPluginDirs([]);
-    assert.equal(portalConfig.docs.agentPackageGuideUrl, PUBLIC_GUIDE);
+    assert.equal(portalConfig.docs.agentPackageGuideUrl, UPSTREAM_GUIDE);
+    assert.equal(createInitialState().docs.agentPackageGuideUrl, UPSTREAM_GUIDE);
 });
 
-test("a plugin that says nothing about docs still gets the public guide", () => {
+test("a plugin that says nothing about docs still gets the upstream guide", () => {
     const dir = pluginDirWith({ name: "layered", portal: { branding: { title: "Layered" } } });
     const { portalConfig } = resolvePortalConfigBundleFromPluginDirs([dir]);
     assert.equal(portalConfig.branding.title, "Layered");
-    assert.equal(portalConfig.docs.agentPackageGuideUrl, PUBLIC_GUIDE);
+    assert.equal(portalConfig.docs.agentPackageGuideUrl, UPSTREAM_GUIDE);
 });
 
 test("a layered app points the guide at its OWN copy", () => {

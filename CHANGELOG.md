@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Point active SDK/app documentation, shared UI defaults and MCP references at
+  `microsoft/PilotSwarm`; use authenticated GitHub Release tarball installation.
+- Move the built-in agent-package import trust prefixes to the Microsoft
+  repository on GitHub's three serving hosts. Legacy personal-repository imports
+  require an explicit deployment allowlist entry.
+- Preserve historical migration/release references and retired starter-image
+  documentation. Existing v0.6.0 release assets are not rewritten.
+
 ## 0.6.0 — 2026-09-18
 
 - Move Microsoft repository releases to a gated GitHub Action with complete baseline and live HorizonDB testing.

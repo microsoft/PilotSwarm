@@ -72,7 +72,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
                 "Destructive tools (delete_session, delete_fact, facts_admin, delete_graph_namespace,",
                 "manage_session_group cancel) act immediately — verify targets before calling.",
                 "",
-                "Reference: https://github.com/affandar/PilotSwarm — docs/user-guide/ (usage guide),",
+                "Reference: https://github.com/microsoft/PilotSwarm — docs/user-guide/ (usage guide),",
                 "docs/api/reference.md (the Web API this server fronts), packages/app/mcp/README.md (this",
                 "server's tool catalog, security model, and client setup).",
             ].join("\n"),

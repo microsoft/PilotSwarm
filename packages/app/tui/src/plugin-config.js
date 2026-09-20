@@ -179,11 +179,10 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
         // Where "how do I build an agent package?" points. A layered
         // deployment ships its OWN guide - the base instructions plus the
         // skills, tools and MCP servers that exist only on that fleet - so
-        // this is config, not a constant. Public repo by default because the
-        // link is meant to be handed to a coding assistant, which cannot
-        // reach an intranet-only portal.
+        // this is config, not a constant. The default is the canonical
+        // Microsoft repository; readers need repository access.
         docs: {
-            agentPackageGuideUrl: "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md",
+            agentPackageGuideUrl: "https://github.com/microsoft/PilotSwarm/blob/main/docs/building-agent-packages.md",
         },
         auth: {
             provider: null,
