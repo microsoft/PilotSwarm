@@ -1,10 +1,11 @@
 // Microsoft CI policy. The public test runner keeps its optional providers.
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { fileURLToPath } from "node:url";
 import { testStorageEnvironment } from "../../scripts/test-provider-plan.mjs";
+import { qualifySequentially, SEQUENTIAL_VITEST_ARGS } from "./sequential-qualification.mjs";
 
 export function requireHorizonConfig(text, inherited = {}) {
     if (!text?.trim()) throw new Error("Set the HORIZONDB_TEST_ENV environment secret for all-providers CI.");
@@ -58,6 +59,14 @@ function maskConfig(config, log) {
 
 function runProviderTests({ cwd = process.cwd(), env = process.env, run = spawnSync, log = console.log } = {}, diagnostic = false) {
     if (env.GITHUB_ACTIONS !== "true" || !env.RUNNER_TEMP) throw new Error("This gate runs in GitHub Actions. Use scripts/run-tests.sh locally.");
+    if (env.TEST_QUALIFY_FAILURES && !["true", "false"].includes(env.TEST_QUALIFY_FAILURES)) {
+        throw new Error("TEST_QUALIFY_FAILURES must be true or false.");
+    }
+    const qualification = env.TEST_QUALIFY_FAILURES === "true";
+    if (diagnostic && qualification) throw new Error("Standalone diagnostics cannot qualify a release without a complete initial run.");
+    if (qualification && !/^[a-f0-9]{40}$/i.test(env.GITHUB_SHA || "")) {
+        throw new Error("Release qualification requires the captured source SHA.");
+    }
     let files = [];
     if (diagnostic) {
         files = [...new Set((env.TEST_SUITE || "").trim().split(/[\s,]+/).filter(Boolean))];
@@ -95,13 +104,42 @@ function runProviderTests({ cwd = process.cwd(), env = process.env, run = spawnS
         if (diagnostic) {
             log("Live HorizonDB preflight passed. Running only the requested SDK files.");
             execute(process.execPath, ["../../node_modules/vitest/vitest.mjs", "run", ...files,
-                ...(env.TEST_MODE === "sequential" ? ["--no-file-parallelism"] : [])], {
+                ...(env.TEST_MODE === "sequential" ? SEQUENTIAL_VITEST_ARGS : [])], {
                 cwd: join(cwd, "packages/sdk"),
                 env: testStorageEnvironment("horizondb", { ...childEnv, ...config }),
             });
         } else {
             log("Live HorizonDB initialize/store/read check passed. Running all provider phases.");
-            execute("bash", ["./scripts/run-tests.sh", (env.TEST_PROVIDERS === "horizondb" ? "--with-horizondb" : "--all-providers"), ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])], { cwd, env: childEnv });
+            const fullHdb = env.TEST_PROVIDERS === "horizondb";
+            const args = ["./scripts/run-tests.sh", fullHdb ? "--with-horizondb" : "--all-providers",
+                ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])];
+            if (!qualification) {
+                execute("bash", args, { cwd, env: childEnv });
+            } else {
+                const resultsDir = mkdtempSync(join(env.RUNNER_TEMP, "pilotswarm-release-results-"));
+                childEnv.PILOTSWARM_TEST_RESULTS_DIR = resultsDir;
+                log("Release qualification enabled: at most five failed cases total may be verified sequentially once.");
+                const initialResult = run("bash", args, { cwd, env: childEnv, stdio: "inherit" });
+                const first = fullHdb ? "horizondb" : "base";
+                const plan = [
+                    [first, "horizon-unit", "horizon-store"],
+                    ...(!fullHdb ? [["base", "sdk", "sdk"]] : []),
+                    ["horizondb", "horizon-integration", "horizon-store"],
+                    ["horizondb", "sdk", "sdk"],
+                ];
+                const sources = plan.map(([phase, kind, project]) => ({
+                    id: `${phase}/${kind}`, phase,
+                    cwd: join(cwd, "packages", project),
+                    reportFile: join(resultsDir, `${phase}.${kind}.json`),
+                    env: testStorageEnvironment(phase === "base" ? "baseline" : "horizondb", {
+                        ...childEnv, ...(phase === "base" ? baseline : config), PS_TEST_MAX_WORKERS: workers,
+                    }),
+                }));
+                qualifySequentially({
+                    sources, initialResult, resultsDir, repoRoot: cwd, sourceSha: env.GITHUB_SHA || null,
+                    run, log, summaryFile: env.GITHUB_STEP_SUMMARY,
+                });
+            }
         }
     } finally {
         rmSync(configPath, { force: true });

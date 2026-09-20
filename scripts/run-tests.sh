@@ -531,7 +531,8 @@ if [ "$ALL_PROVIDERS" = "1" ]; then
         echo "🧪 --all-providers: defaulting PS_TEST_MAX_WORKERS=8 for each provider pass."
     fi
 
-    ALL_PROVIDERS_RESULT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pilotswarm-run-tests-all-providers.XXXXXX")"
+    ALL_PROVIDERS_RESULT_DIR="${PILOTSWARM_TEST_RESULTS_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/pilotswarm-run-tests-all-providers.XXXXXX")}"
+    mkdir -p "$ALL_PROVIDERS_RESULT_DIR"
     HORIZONDB_PHASE_CONFIGURED=0
     if horizondb_provider_configured; then
         HORIZONDB_PHASE_CONFIGURED=1
@@ -560,9 +561,35 @@ fi
 # roll-up. Record each phase here and print a consolidated summary at the end.
 RUN_PHASE_LABELS=()
 RUN_PHASE_RESULTS=()
+VITEST_PHASE_FAILED=0
+TEST_REPORT_PHASE="${PILOTSWARM_TEST_PHASE:-base}"
+if [ "$WITH_HORIZONDB" = "1" ]; then TEST_REPORT_PHASE="${PILOTSWARM_TEST_PHASE:-horizondb}"; fi
 record_run_phase() {
     RUN_PHASE_LABELS+=("$1")
     RUN_PHASE_RESULTS+=("$2")
+}
+
+# CI collects the complete initial execution before deciding whether its total
+# failure count permits one sequential verification. Ordinary local runs remain
+# strict/fail-fast, and never enter this reporting path implicitly.
+run_recorded_vitest() {
+    local report="$1"
+    local directory="$2"
+    shift 2
+    mkdir -p "$(dirname "$report")" || return 1
+    rm -f "$report" "$report.health.json" "$report.exit.json" || return 1
+    local code=0
+    if (cd "$directory" && umask 077 && \
+        PILOTSWARM_TEST_HEALTH_FILE="$report.health.json" "$@" \
+        --reporter=default --reporter=json "--outputFile=$report" \
+        "--reporter=$REPO_ROOT/scripts/vitest-run-health-reporter.mjs"); then
+        code=0
+    else
+        code=$?
+        VITEST_PHASE_FAILED=1
+    fi
+    (umask 077; printf '{"exitCode":%s}\n' "$code" > "$report.exit.json") || return 1
+    return "$code"
 }
 
 # Build once in --all-providers; the additive child uses those same artifacts.
@@ -636,9 +663,20 @@ run_sdk_unit_tests() {
     (cd "$REPO_ROOT" && node --env-file-if-exists=.env --test packages/sdk/test/unit/*.test.mjs packages/sdk/api/test/*.test.mjs) \
         || { echo "❌ SDK unit tests failed"; exit 1; }
     record_run_phase "SDK unit tests" "PASS"
-    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build && npm test) \
-        || { echo "❌ horizon-store unit tests failed"; exit 1; }
-    record_run_phase "horizon-store unit tests" "PASS"
+    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build) \
+        || { echo "❌ horizon-store build failed"; exit 1; }
+    if [ -n "${PILOTSWARM_TEST_RESULTS_DIR:-}" ]; then
+        if run_recorded_vitest "$PILOTSWARM_TEST_RESULTS_DIR/$TEST_REPORT_PHASE.horizon-unit.json" \
+            "$REPO_ROOT/packages/horizon-store" npm test --; then
+            record_run_phase "horizon-store unit tests" "PASS"
+        else
+            record_run_phase "horizon-store unit tests" "FAIL"
+        fi
+    else
+        (cd "$REPO_ROOT/packages/horizon-store" && npm test) \
+            || { echo "❌ horizon-store unit tests failed"; exit 1; }
+        record_run_phase "horizon-store unit tests" "PASS"
+    fi
 }
 
 run_app_tests() {
@@ -705,9 +743,20 @@ run_horizon_store_tests() {
         targets=(test/integration)
     fi
     echo "🧪 Running @pilotswarm/horizon-store integration tests (live HorizonDB): $display"
-    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build && node ../../node_modules/vitest/vitest.mjs "${VITEST_ARGS[@]}" "${targets[@]}") \
-        || { echo "❌ horizon-store integration tests failed"; exit 1; }
-    record_run_phase "horizon-store integration" "PASS"
+    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build) \
+        || { echo "❌ horizon-store build failed"; exit 1; }
+    if [ -n "${PILOTSWARM_TEST_RESULTS_DIR:-}" ]; then
+        if run_recorded_vitest "$PILOTSWARM_TEST_RESULTS_DIR/$TEST_REPORT_PHASE.horizon-integration.json" \
+            "$REPO_ROOT/packages/horizon-store" node "$REPO_ROOT/node_modules/vitest/vitest.mjs" "${VITEST_ARGS[@]}" "${targets[@]}"; then
+            record_run_phase "horizon-store integration" "PASS"
+        else
+            record_run_phase "horizon-store integration" "FAIL"
+        fi
+    else
+        (cd "$REPO_ROOT/packages/horizon-store" && node ../../node_modules/vitest/vitest.mjs "${VITEST_ARGS[@]}" "${targets[@]}") \
+            || { echo "❌ horizon-store integration tests failed"; exit 1; }
+        record_run_phase "horizon-store integration" "PASS"
+    fi
 }
 
 # Print a consolidated phase roll-up for a single (non --all-providers) run.
@@ -716,6 +765,7 @@ print_run_summary() {
     local sdk_json="$1"
     local sdk_code="$2"
     local sdk_label="${3-SDK vitest}"
+    local overall_code="${4-$sdk_code}"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Local test run summary"
@@ -783,7 +833,7 @@ NODE
         fi
     fi
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    if [ "$sdk_code" = "0" ]; then
+    if [ "$overall_code" = "0" ]; then
         echo "Overall: PASS"
     else
         echo "Overall: FAIL"
@@ -797,6 +847,24 @@ NODE
 # exec behavior there (the parent reads the JSON we write). For a normal single
 # run we capture Vitest's result instead of exec-ing, so we can print a roll-up.
 run_sdk_vitest_and_summarize() {
+    if [ -n "${PILOTSWARM_TEST_RESULTS_DIR:-}" ]; then
+        local report="$PILOTSWARM_TEST_RESULTS_DIR/$TEST_REPORT_PHASE.sdk.json"
+        local sdk_code=0
+        if run_recorded_vitest "$report" "$REPO_ROOT/$SDK_DIR" \
+            node "$REPO_ROOT/node_modules/vitest/vitest.mjs" "${VITEST_ARGS[@]}" "$@"; then
+            sdk_code=0
+        else
+            sdk_code=$?
+        fi
+        local overall_code=0
+        if [ "$sdk_code" != "0" ] || [ "$VITEST_PHASE_FAILED" != "0" ]; then overall_code=1; fi
+        print_run_summary "$report" "$sdk_code" "SDK vitest" "$overall_code"
+        trap - EXIT
+        cleanup_test_state || exit 1
+        (umask 077; printf '{"exitCode":%s}\n' "$overall_code" \
+            > "$PILOTSWARM_TEST_RESULTS_DIR/$TEST_REPORT_PHASE.complete.json") || exit 1
+        exit "$overall_code"
+    fi
     if [ -n "${VITEST_JSON_OUTPUT_FILE:-}" ]; then
         mkdir -p "$(dirname "$VITEST_JSON_OUTPUT_FILE")"
         VITEST_ARGS+=(--reporter=default --reporter=json "--outputFile=$VITEST_JSON_OUTPUT_FILE")

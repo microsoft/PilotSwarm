@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requireHorizonConfig, requireLiveHorizonResult, runAllProviders, runHorizonDiagnostics } from "../run-all-providers.mjs";
+import { testStorageEnvironment } from "../../../scripts/test-provider-plan.mjs";
+import { executionIdentity } from "../../../scripts/vitest-run-health-reporter.mjs";
 
 const config = "HORIZON_DATABASE_URL=postgresql://test@horizon.invalid/db\nDATABASE_URL=postgresql://test@localhost/base\nGITHUB_TOKEN=fixture-token\n";
 const report = (status = "passed") => ({
@@ -153,6 +155,19 @@ test("targeted diagnostic failures remain failures and clean private configurati
     assert.equal(existsSync(join(input.cwd, "pilotswarm-horizondb.env")), false);
 });
 
+test("explicit sequential diagnostics serialize both files and concurrent cases", t => {
+    const input = fixture(t);
+    input.env.TEST_PROVIDERS = "horizondb";
+    input.env.TEST_SUITE = "test/local/contracts.test.js";
+    let calls = 0;
+    runHorizonDiagnostics({ ...input, run(_command, args) {
+        if (++calls === 1) writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
+        else for (const flag of ["--no-file-parallelism", "--maxWorkers=1", "--maxConcurrency=1"]) assert(args.includes(flag));
+        return { status: 0 };
+    } });
+    assert.equal(calls, 2);
+});
+
 // Full-HDB mode uses the same mandatory live preflight, but runs every SDK suite.
 test("full HDB mode dispatches the complete HDB runner and preserves concurrency override", t => {
     const input = fixture(t);
@@ -166,4 +181,103 @@ test("full HDB mode dispatches the complete HDB runner and preserves concurrency
         return { status: 0 };
     } });
     assert.equal(calls, 2);
+});
+
+function qualificationFixture(t, failures, fullHdb = false) {
+    const input = fixture(t);
+    Object.assign(input.env, { GITHUB_SHA: "a".repeat(40), TEST_MODE: "parallel", TEST_PROVIDERS: fullHdb ? "horizondb" : "all", TEST_QUALIFY_FAILURES: "true" });
+    const specs = fullHdb
+        ? [["horizondb", "horizon-unit", "horizon-store"], ["horizondb", "horizon-integration", "horizon-store"], ["horizondb", "sdk", "sdk"]]
+        : [["base", "horizon-unit", "horizon-store"], ["base", "sdk", "sdk"],
+            ["horizondb", "horizon-integration", "horizon-store"], ["horizondb", "sdk", "sdk"]];
+    const state = { calls: 0, verifications: 0, rows: [], resultsDir: "" };
+    function writeResult(row, file, cases) {
+        const failed = cases.filter(c => c.status === "failed").length;
+        writeFileSync(file, JSON.stringify({ success: failed === 0, numTotalTests: cases.length,
+            numPassedTests: cases.filter(c => c.status === "passed").length, numFailedTests: failed,
+            testResults: [{ name: join(row.cwd, row.file), status: failed ? "failed" : "passed",
+                message: "", assertionResults: cases }] }));
+        writeFileSync(`${file}.health.json`, JSON.stringify({ ...executionIdentity(row.env),
+            reason: failed ? "failed" : "passed", unhandledErrors: 0 }));
+        writeFileSync(`${file}.exit.json`, JSON.stringify({ exitCode: failed ? 1 : 0 }));
+    }
+    const run = (command, args, options) => {
+        state.calls++;
+        if (state.calls === 1) {
+            writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
+            return { status: 0 };
+        }
+        if (state.calls === 2) {
+            assert.equal(command, "bash");
+            assert.deepEqual(args, ["./scripts/run-tests.sh", fullHdb ? "--with-horizondb" : "--all-providers"]);
+            assert.equal(options.env.PS_TEST_MAX_WORKERS, "8");
+            state.resultsDir = options.env.PILOTSWARM_TEST_RESULTS_DIR;
+            for (const [index, [phase, kind, project]] of specs.entries()) {
+                const values = phase === "base"
+                    ? { DATABASE_URL: "postgresql://test@localhost/base" }
+                    : { DATABASE_URL: "postgresql://test@localhost/base", HORIZON_DATABASE_URL: "postgresql://test@horizon.invalid/db", GITHUB_TOKEN: "fixture-token" };
+                const row = { phase, cwd: join(input.cwd, "packages", project), file: `test/${kind}.test.js`,
+                    env: testStorageEnvironment(phase === "base" ? "baseline" : "horizondb", { ...options.env, ...values }),
+                    cases: [{ fullName: "initial pass", status: "passed" }, ...Array.from({ length: failures[index] }, (_, i) => ({
+                        fullName: `failure ${i}`, status: "failed",
+                    }))] };
+                mkdirSync(join(row.cwd, "test"), { recursive: true });
+                writeFileSync(join(row.cwd, row.file), "");
+                writeResult(row, join(state.resultsDir, `${phase}.${kind}.json`), row.cases);
+                state.rows.push(row);
+            }
+            for (const phase of new Set(state.rows.map(r => r.phase))) {
+                writeFileSync(join(state.resultsDir, `${phase}.complete.json`), JSON.stringify({
+                    exitCode: state.rows.some(r => r.phase === phase && r.cases.some(c => c.status === "failed")) ? 1 : 0,
+                }));
+            }
+            return { status: failures.some(Boolean) ? 1 : 0 };
+        }
+        state.verifications++;
+        const row = state.rows.find(r => r.cwd === options.cwd && args.includes(r.file) && r.env.DATABASE_URL === options.env.DATABASE_URL);
+        assert(row);
+        assert.equal(options.env.PILOTSWARM_RUNTIME_PROVIDER, row.env.PILOTSWARM_RUNTIME_PROVIDER);
+        assert.equal(options.env.DATABASE_URL, row.env.DATABASE_URL);
+        const pattern = new RegExp(args[args.indexOf("--testNamePattern") + 1]);
+        assert(!pattern.test("initial pass"));
+        assert(args.includes("--maxWorkers=1") && args.includes("--maxConcurrency=1") && args.includes("--no-file-parallelism"));
+        const cases = row.cases.filter(c => pattern.test(c.fullName)).map(c => ({ ...c, status: "passed" }));
+        writeResult(row, args.find(a => a.startsWith("--outputFile=")).slice("--outputFile=".length), cases);
+        return { status: 0 };
+    };
+    return { input, run, state };
+}
+
+test("complete all-provider coverage qualifies five failures total, including HDB provider cases", t => {
+    const f = qualificationFixture(t, [1, 1, 1, 2]);
+    runAllProviders({ ...f.input, run: f.run });
+    const result = JSON.parse(readFileSync(join(f.state.resultsDir, "qualification.json"), "utf8"));
+    assert.equal(result.status, "qualified");
+    assert.equal(result.verified, 5);
+    assert.equal(f.state.verifications, 4);
+});
+
+test("six failures across provider phases never launch sequential verification", t => {
+    const f = qualificationFixture(t, [0, 3, 0, 3]);
+    assert.throws(() => runAllProviders({ ...f.input, run: f.run }), /exceed the limit of 5/);
+    assert.equal(f.state.calls, 2);
+    assert.equal(f.state.verifications, 0);
+});
+
+test("full-HDB qualification uses the HDB environment for every verification", t => {
+    const f = qualificationFixture(t, [1, 1, 1], true);
+    runAllProviders({ ...f.input, run: f.run });
+    assert.equal(f.state.verifications, 3);
+    assert(f.state.rows.every(r => r.env.DATABASE_URL === "postgresql://test@horizon.invalid/db"));
+});
+
+test("qualification never accepts incomplete coverage or standalone diagnostics", t => {
+    const f = qualificationFixture(t, [0, 1, 0, 0]);
+    assert.throws(() => runAllProviders({ ...f.input, run(command, args, options) {
+        const result = f.run(command, args, options);
+        if (f.state.calls === 2) rmSync(join(f.state.resultsDir, "horizondb.horizon-integration.json"));
+        return result;
+    } }), /Missing or invalid/);
+    assert.equal(f.state.verifications, 0);
+    assert.throws(() => runHorizonDiagnostics(f.input), /Standalone diagnostics/);
 });

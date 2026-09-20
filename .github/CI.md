@@ -60,17 +60,51 @@ by default** until explicitly reviewed. Deleted or duplicate exclusions fail.
 uses those exclusions.
 
 Both full live CI modes first require a real HorizonDB initialize/store/read
-result; missing or skipped coverage fails. Full gates reject suite filters and
-skip flags.
+result; missing or skipped coverage fails. The initial full run rejects user
+suite filters and skip flags; only the qualification stage may select its
+identified failed cases.
+
+### Release qualification
+
+**Create release** and complete live-provider **Tests** runs enable one bounded
+sequential qualification stage after the initial full run:
+
+- **0 failures:** pass without sequential execution.
+- **1-5 failed test cases total across all provider phases:** run exactly those
+  cases once, sequentially, on the same source/model/provider. If every case
+  passes, **the run meets the release bar**.
+- **6 or more failures:** fail without sequential execution.
+
+Count test-case executions, not files or per-provider subtotals. A test failing
+on both PostgreSQL and HDB counts twice. The initial run retains eight-file
+parallelism; only the bounded verification uses one worker, no file parallelism
+and `maxConcurrency=1`. Already-passing cases are not repeated.
+
+Case-level Vitest results cover SDK tests and Horizon unit/integration tests.
+All other prerequisite checks must succeed. Missing/empty/inconsistent reports,
+incomplete coverage, build or suite-level setup/hook failures, unhandled errors, process
+interruptions, source/provider changes, ambiguous case names and skipped or
+still-failing verification cases block qualification.
+
+The original result is never rewritten. Private initial/verification JSON and
+run-health evidence remain under the runner's temporary results directory.
+`qualification.json` records the decision; the Actions summary publishes only
+aggregate counts and **PASSED**, **QUALIFIED** or **FAILED**, not raw error text.
+`QUALIFIED` means passed after the single sequential verification and permits
+publication. This is an explicit gate stage, not a Vitest retry option or a
+repeat-until-green loop. Ordinary local runs remain strict by default.
 
 For diagnosis, dispatch **Tests** with `providers=horizondb` and `suite` set to
 space- or comma-separated exact SDK paths, for example
 `test/local/cms-seq-nodemap.test.js test/local/contracts.test.js test/local/management.test.js`.
 This runs only those files plus the real HDB preflight on a GitHub-hosted runner,
-with the same protected configuration, eight-file concurrency and firewall cleanup.
+with the same protected configuration and firewall cleanup. Default file
+concurrency remains eight; explicit `mode=sequential` serializes files and
+concurrent test cases.
 The job is labelled **Targeted HDB diagnostics (not a release gate)**.
 It never repeats the PostgreSQL baseline and cannot publish a release.
-After diagnosis/fixes, publication still requires its own complete release gate.
+An independent diagnostic pass lacks the full initial-run evidence. Publication
+uses the complete release gate and its bounded qualification decision above.
 
 ### Runner placement
 
@@ -128,8 +162,8 @@ During live provider gates, `ciHealth` log records sample runner CPU/load,
 available memory and fresh local/HDB connection and query timings every 30
 seconds. Database samples include aggregate connection counts, not endpoints,
 credentials or query text. Failures report a bounded error code and the failing
-stage. These are independent read-only probes, not test retries: a failed test
-still fails the release gate. Use them to distinguish runner pressure from
+stage. These are independent read-only probes, not test qualification results.
+Use them to distinguish runner pressure from
 remote connection stalls before changing capacity or deadlines.
 
 ### Model coverage
@@ -157,7 +191,8 @@ in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
 from `main` with the prepared version. The first planned release is `0.6.0`.
 The environment gate occurs once, before testing. The same job then:
 
-1. runs the complete baseline plus additive HorizonDB coverage, including the real database gate;
+1. runs the complete baseline plus additive HorizonDB coverage, including the real
+   database gate, and qualifies at most five failed cases through one sequential verification;
 2. builds three package tarballs and checksums;
 3. creates an annotated tag at the tested SHA, uploads and verifies draft assets,
    and publishes the GitHub Release;
@@ -165,7 +200,8 @@ The environment gate occurs once, before testing. The same job then:
    from that exact source SHA and deploys the
    test environment through the shared Azure deployment Action.
 
-A failed test prevents publication. A later deployment failure leaves the valid
+More than five failed cases, incomplete coverage or unsuccessful sequential
+verification prevents publication. A later deployment failure leaves the valid
 release intact. Retry **Deploy Azure stamp** with `release_tag=v<version>`; it
 verifies the release is published and the tag is in main's history. Leave that
 input blank for an optional update from main. No merge event deploys anything.

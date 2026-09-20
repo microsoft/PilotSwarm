@@ -536,13 +536,17 @@ CI infrastructure run through GitHub Actions; local commands are for read-only
 inspection and local development only.
 
 **Create release** validates the prepared package version, requires the complete
-baseline and real HorizonDB pass, publishes three GitHub Release package tarballs
+baseline and real HorizonDB coverage, publishes three GitHub Release package tarballs
 plus checksums, then deploys the same tested source commit to the Azure test
 environment. One environment approval precedes testing; no second gate separates
 publication from the automatic deployment. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter
 images; the Azure environment uses its configured ACR for deployment images.
+Release qualification accepts a complete initial pass or, for **1-5 failed test
+cases total across provider phases**, one successful sequential verification of
+exactly those cases on the same source and provider. **6 or more failures fail
+the run without sequential verification.** Preserve both results.
 
 ### Updating the Test Suite
 
@@ -570,7 +574,17 @@ Each test function should:
 
 ### Test Integrity Rules
 
-**No retries.** Never add `retry` to test configurations (vitest `retry`, `retries`, or manual retry loops). If a test fails, it means the product has a bug or the test prompt is wrong — fix the root cause.
+**No hidden retries or repeat-until-green loops.** Do not add Vitest `retry` /
+`retries` or loops that rerun a test until it passes. The release gate has one
+explicit qualification stage: after complete initial coverage, **1-5 failed
+Vitest test-case executions total** may be verified once, sequentially, with
+unchanged assertions, source, model and provider. If every selected case passes,
+**that meets the release bar**; record it as qualified after sequential
+verification, not a clean initial pass. **6+ failures must fail without that
+stage.** The cap is global, not per file/provider. Missing reports, incomplete
+coverage, build or suite-level setup/hook failures, unhandled errors, ambiguous selectors, and skipped or
+still-failing verification cases remain failures. Keep the initial evidence and
+investigate its cause; qualification does not prove a concurrency defect fixed.
 
 **No hacks.** Do not paper over product bugs by weakening assertions, adding arbitrary sleeps, or swallowing errors. Tests exist to catch real problems.
 

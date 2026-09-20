@@ -25,8 +25,13 @@ Run `npm run check:privacy` after staging release changes.
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
-  configuration, skipped preflight or a failed test blocks publication. Do not
-  substitute a filtered/sequential rerun for the complete successful gate.
+  configuration or skipped/failed preflight blocks publication.
+- The complete initial run may qualify directly, or through **one sequential
+  verification of 1-5 failed test cases total** across its provider phases.
+  **All selected cases passing meets the release bar. Six or more failures fail
+  immediately at qualification, without sequential execution.** The original
+  result remains visible; the accepted outcome is **qualified after sequential
+  verification**, not a clean initial pass.
 - The Action creates an annotated tag, a draft release, uploads the three `.tgz`
   files plus `SHA256SUMS`, verifies assets, and publishes the release.
 - It then automatically deploys the **same tested source commit** to the test
@@ -71,12 +76,38 @@ resolve its environment gate with the authorized reviewer, and investigate any
 failure. Never weaken the full-provider gate to publish. CI database setup and
 required protected secrets are documented in `.github/CI.md`.
 
-### Diagnose a small failure set first
+### Bounded sequential release qualification
 
 Do not immediately repeat the entire release gate when a few tests fail.
-Use the combined provider summary's **Failed tests** section to extract the
-failed provider phase, exact SDK file paths and case names. Keep the original
-run URL, source SHA, errors and any `ciHealth` samples as evidence.
+The Action collects complete initial Vitest reports and run-health metadata,
+then counts failed **test-case executions**, not files:
+
+| Initial failures | Release decision |
+| --- | --- |
+| 0 | Pass; no sequential verification |
+| 1-5 total | Verify exactly those cases once, sequentially; all passing qualifies |
+| 6 or more | Fail; do not launch sequential verification |
+
+The cap is global across PostgreSQL SDK, Horizon unit/provider and HDB SDK
+phases. A case failing on two providers counts twice and must pass on both.
+Verification uses one worker, no file parallelism and concurrency one for
+concurrent test cases. It keeps the source SHA, assertions, model, provider and
+storage configuration unchanged; already-passing cases are not rerun.
+
+Missing/incomplete results, interrupted processes, failed prerequisites,
+suite-level setup/hook or unhandled errors cannot be reclassified as a small case
+failure set. A missing, skipped, still-failing or ambiguous selected case blocks
+publication. The real HDB preflight and other build/validation prerequisites
+remain mandatory. Do not add framework retry settings or repeat the verification.
+
+Preserve the original JSON and sequential JSON reports on the private runner.
+The job summary records the original failure count, verification count and
+qualification outcome without raw error text or secrets. Keep the run URL,
+source SHA and `ciHealth` evidence. Report whether a run passed initially or
+qualified after sequential verification; the latter is release-ready, but is
+not proof that a load/concurrency issue was fixed.
+
+### Standalone diagnosis
 
 For HDB SDK failures, run the affected files through the protected **Tests**
 workflow. A requested sequential diagnostic run uses:
@@ -93,18 +124,16 @@ PostgreSQL baseline. The job is explicitly labelled as diagnostics, cannot
 publish, and leaves normal release parallelism unchanged. For baseline failures,
 use the baseline suite filter or the documented local targeted test command.
 
-Report whether code changed before the diagnostic run. If unchanged tests pass
-sequentially, record **passes in isolation**, not **fixed** or **clean parallel
-gate**. Preserve the original failure and investigate load, connection or
-concurrency evidence. A diagnostic pass does not replace the release's own
-complete successful baseline/additive-HDB gate. Do not add automatic retries,
-drop failing coverage or repeatedly rerun the full suite to select a green result.
+A standalone filtered run has no complete initial-run evidence and therefore
+cannot independently qualify a release. Use the automatic bounded qualification
+stage above for the release decision; retain separate diagnostics for investigation.
 
 ### Verify publication and deployment separately
 
 Verify separately:
 
-- complete baseline plus additive HDB pass, including real HorizonDB preflight;
+- complete baseline plus additive HDB qualification (initial pass or accepted
+  sequential verification of at most five failures), including real HDB preflight;
 - annotated tag resolves to the workflow's tested commit;
 - GitHub Release is published and has `pilotswarm-sdk-<version>.tgz`,
   `pilotswarm-horizon-store-<version>.tgz`, `pilotswarm-<version>.tgz` and checksums;

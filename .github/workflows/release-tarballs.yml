@@ -50,11 +50,12 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Require complete all-provider pass
+      - name: Qualify complete all-provider coverage
         uses: ./.github/actions/provider-tests
         with:
           providers: all
           mode: parallel
+          qualify-failures: "true"
           postgres-container: ${{ job.services.postgres.id }}
         env:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}

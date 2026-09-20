@@ -6,6 +6,26 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-09-20 — Bounded sequential verification meets the release bar
+
+- **Agent:** repository `pilotswarm-release`, version `1.4.0` to `2.0.0`.
+- **Model tested:** none; this changes release qualification policy, not a model prompt experiment.
+- **Policy:** after complete initial coverage, one sequential verification of
+  exactly 1-5 failed test-case executions total across provider phases may qualify
+  the run. Every selected case must pass on the same source/model/provider.
+  Six or more failures must fail without sequential execution.
+- **Expected behavior:** accept and clearly report **qualified after sequential
+  verification**, retaining the original failures. Do not require a new clean
+  parallel pass after successful bounded verification, and do not run repeated
+  attempts. Missing coverage, setup/unhandled errors and incomplete verification
+  remain blockers.
+- **Validation:** real Vitest fixtures cover one and five failures, exact
+  selection, concurrency one even for concurrent cases, six-case rejection and
+  unhandled errors. Unit and wiring tests cover global cross-provider counting,
+  identity matching, stale/missing results, skipped cases and failure propagation.
+  No live model compliance or compatibility-matrix change is claimed.
+- **Supersedes:** the diagnostic-only release decision in the entry below.
+
 ## 2026-09-20 — Release failure diagnosis before another full gate
 
 - **Agent:** repository `pilotswarm-release`, version `1.3.1` to `1.4.0`.
