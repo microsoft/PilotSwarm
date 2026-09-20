@@ -43,9 +43,15 @@ function withConfig(json, fn) {
 
 test("the base allowlist permits the PilotSwarm repo on all three GitHub hosts", () => {
     assert.equal(BASE_IMPORT_ALLOWLIST.length, 3, "one repo, three serving hosts");
-    assert.equal(allow("https://github.com/affandar/pilotswarm/agent-packages/x"), true);
-    assert.equal(allow("https://raw.githubusercontent.com/affandar/pilotswarm/main/a.md"), true);
-    assert.equal(allow("https://codeload.github.com/affandar/pilotswarm/tar.gz/main"), true);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm/agent-packages/x"), true);
+    assert.equal(allow("https://raw.githubusercontent.com/microsoft/PilotSwarm/main/a.md"), true);
+    assert.equal(allow("https://codeload.github.com/microsoft/PilotSwarm/tar.gz/main"), true);
+});
+
+test("the former personal upstream is not implicitly trusted", () => {
+    assert.equal(allow("https://github.com/affandar/pilotswarm/agent-packages/x"), false);
+    assert.equal(allow("https://raw.githubusercontent.com/affandar/pilotswarm/main/a.md"), false);
+    assert.equal(allow("https://codeload.github.com/affandar/pilotswarm/tar.gz/main"), false);
 });
 
 test("no file at all is a legitimate posture: base list only", () => {
@@ -58,26 +64,26 @@ test("no file at all is a legitimate posture: base list only", () => {
 
 test("only https", () => {
     for (const url of [
-        "http://github.com/affandar/pilotswarm/x",
-        "ftp://github.com/affandar/pilotswarm/x",
+        "http://github.com/microsoft/PilotSwarm/x",
+        "ftp://github.com/microsoft/PilotSwarm/x",
         "file:///etc/passwd",
-        "gopher://github.com/affandar/pilotswarm/",
+        "gopher://github.com/microsoft/PilotSwarm/",
     ]) {
         assert.equal(allow(url), false, url);
     }
-    assert.match(why("http://github.com/affandar/pilotswarm/x"), /https/);
+    assert.match(why("http://github.com/microsoft/PilotSwarm/x"), /https/);
 });
 
 // ── Bypass class: userinfo in the authority ───────────────────────
 
 test("credentials in the authority are refused", () => {
     // The authority here is evil.com; "github.com" is just a username.
-    assert.equal(allow("https://github.com@evil.com/affandar/pilotswarm/"), false);
-    assert.equal(allow("https://user:pass@github.com/affandar/pilotswarm/"), false);
+    assert.equal(allow("https://github.com@evil.com/microsoft/PilotSwarm/"), false);
+    assert.equal(allow("https://user:pass@github.com/microsoft/PilotSwarm/"), false);
 });
 
 test("a refusal never echoes credentials back", () => {
-    const reason = why("https://user:hunter2@github.com/affandar/pilotswarm/");
+    const reason = why("https://user:hunter2@github.com/microsoft/PilotSwarm/");
     assert.ok(!reason.includes("hunter2"), "the password must not appear in the error");
 });
 
@@ -85,10 +91,10 @@ test("a refusal never echoes credentials back", () => {
 
 test("host is matched exactly — never by suffix or prefix", () => {
     for (const url of [
-        "https://evilgithub.com/affandar/pilotswarm/",          // suffix confusion
-        "https://github.com.evil.com/affandar/pilotswarm/",     // prefix confusion
-        "https://notgithub.com/affandar/pilotswarm/",
-        "https://raw.githubusercontent.com.evil.com/affandar/pilotswarm/",
+        "https://evilgithub.com/microsoft/PilotSwarm/",          // suffix confusion
+        "https://github.com.evil.com/microsoft/PilotSwarm/",     // prefix confusion
+        "https://notgithub.com/microsoft/PilotSwarm/",
+        "https://raw.githubusercontent.com.evil.com/microsoft/PilotSwarm/",
     ]) {
         assert.equal(allow(url), false, url);
     }
@@ -97,31 +103,31 @@ test("host is matched exactly — never by suffix or prefix", () => {
 test("a trailing dot does not create a new host", () => {
     // `github.com.` is the same DNS name but a different string.
     assert.equal(normalizeHost("GitHub.COM."), "github.com");
-    assert.equal(allow("https://github.com./affandar/pilotswarm/x"), true);
+    assert.equal(allow("https://github.com./microsoft/PilotSwarm/x"), true);
 });
 
 test("case does not matter", () => {
-    assert.equal(allow("https://GitHub.COM/affandar/pilotswarm/x"), true);
+    assert.equal(allow("https://GitHub.COM/microsoft/PilotSwarm/x"), true);
 });
 
 // ── Bypass class: path segment boundaries ─────────────────────────
 
 test("path prefixes match on SEGMENT boundaries", () => {
     // The classic break: startsWith() accepts the sibling repo.
-    assert.equal(allow("https://github.com/affandar/pilotswarm-evil/x"), false);
-    assert.equal(allow("https://github.com/affandar/pilotswarmevil"), false);
-    assert.equal(allow("https://github.com/affandar/pilotswarm"), true, "the prefix itself matches");
-    assert.equal(allow("https://github.com/affandar/pilotswarm/deep/path"), true);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm-evil/x"), false);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarmevil"), false);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm"), true, "the prefix itself matches");
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm/deep/path"), true);
     assert.equal(pathPrefixMatches("/a/bc", "/a/b/"), false);
     assert.equal(pathPrefixMatches("/a/b/c", "/a/b/"), true);
 });
 
 test("traversal is resolved before matching, in every encoding", () => {
     for (const url of [
-        "https://github.com/affandar/pilotswarm/../../elsewhere",
-        "https://github.com/affandar/pilotswarm/%2e%2e/%2e%2e/elsewhere",
-        "https://github.com/affandar/pilotswarm/..%2f..%2felsewhere",
-        "https://github.com/affandar/pilotswarm/..\\..\\elsewhere",
+        "https://github.com/microsoft/PilotSwarm/../../elsewhere",
+        "https://github.com/microsoft/PilotSwarm/%2e%2e/%2e%2e/elsewhere",
+        "https://github.com/microsoft/PilotSwarm/..%2f..%2felsewhere",
+        "https://github.com/microsoft/PilotSwarm/..\\..\\elsewhere",
     ]) {
         assert.equal(allow(url), false, url);
     }
@@ -138,8 +144,8 @@ test("double encoding is unwound, not left as literal text", () => {
 // ── Bypass class: port ────────────────────────────────────────────
 
 test("default port only, unless the entry names one", () => {
-    assert.equal(allow("https://github.com:8443/affandar/pilotswarm/"), false);
-    assert.equal(allow("https://github.com:443/affandar/pilotswarm/"), true,
+    assert.equal(allow("https://github.com:8443/microsoft/PilotSwarm/"), false);
+    assert.equal(allow("https://github.com:443/microsoft/PilotSwarm/"), true,
         "443 is the default and URL normalizes it away");
 
     const policy = withConfig(
@@ -185,7 +191,7 @@ test("numeric host literals are refused before any lookup", () => {
         assert.equal(isSuspiciousHostLiteral(host), true, host);
     }
     assert.equal(isSuspiciousHostLiteral("github.com"), false);
-    assert.equal(allow("https://2130706433/affandar/pilotswarm/"), false);
+    assert.equal(allow("https://2130706433/microsoft/PilotSwarm/"), false);
 });
 
 // ── Config composition ────────────────────────────────────────────
@@ -196,7 +202,7 @@ test("append is the default and keeps the base entries", () => {
         (dir) => loadImportPolicy({ configDir: dir }),
     );
     assert.equal(policy.mode, "append");
-    assert.equal(allow("https://github.com/affandar/pilotswarm/x", policy), true);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm/x", policy), true);
     assert.equal(allow("https://agents.corp.internal/pkgs/x", policy), true);
 });
 
@@ -205,7 +211,7 @@ test("replace is the ONLY way to drop a base entry", () => {
         { import: { mode: "replace", allowlist: ["https://agents.corp.internal/pkgs/"] } },
         (dir) => loadImportPolicy({ configDir: dir }),
     );
-    assert.equal(allow("https://github.com/affandar/pilotswarm/x", policy), false);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm/x", policy), false);
     assert.equal(allow("https://agents.corp.internal/pkgs/x", policy), true);
 });
 
@@ -215,7 +221,7 @@ test("replace with an empty list disables URL import entirely — a legitimate p
         (dir) => loadImportPolicy({ configDir: dir }),
     );
     assert.equal(policy.entries.length, 0);
-    assert.equal(allow("https://github.com/affandar/pilotswarm/x", policy), false);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm/x", policy), false);
 });
 
 test("a malformed config REFUSES TO START rather than silently changing policy", () => {
@@ -239,7 +245,7 @@ test("an unusable allowlist entry never widens the list", () => {
 test("every redirect hop is re-checked with the same function", () => {
     // An allowed origin redirecting to a disallowed one is the obvious bypass;
     // the only defence is asking the same question about the new location.
-    assert.equal(allow("https://github.com/affandar/pilotswarm/x"), true);
+    assert.equal(allow("https://github.com/microsoft/PilotSwarm/x"), true);
     assert.equal(allow("https://evil.com/whatever"), false);
     assert.equal(allow("https://github.com/affandar/other-repo/x"), false);
 });

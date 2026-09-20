@@ -40,9 +40,9 @@ import * as path from "node:path";
  * file it mounts.
  */
 export const BASE_IMPORT_ALLOWLIST: readonly string[] = Object.freeze([
-    "https://github.com/affandar/pilotswarm/",
-    "https://raw.githubusercontent.com/affandar/pilotswarm/",
-    "https://codeload.github.com/affandar/pilotswarm/",
+    "https://github.com/microsoft/PilotSwarm/",
+    "https://raw.githubusercontent.com/microsoft/PilotSwarm/",
+    "https://codeload.github.com/microsoft/PilotSwarm/",
 ]);
 
 export const IMPORT_CONFIG_FILENAME = ".agent_packages.json";
@@ -333,8 +333,8 @@ export function checkImportUrl(rawUrl: string, policy: ImportPolicy): UrlDecisio
 /**
  * Prefix match on SEGMENT BOUNDARIES.
  *
- * `/affandar/pilotswarm-evil` must not match the prefix
- * `/affandar/pilotswarm/`. A naive `startsWith` accepts it, which is how
+ * `/microsoft/PilotSwarm-evil` must not match the prefix
+ * `/microsoft/PilotSwarm/`. A naive `startsWith` accepts it, which is how
  * allowlists usually get broken.
  */
 export function pathPrefixMatches(requestPath: string, prefix: string): boolean {

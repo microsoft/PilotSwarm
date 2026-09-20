@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "author": {
     "name": "affandar",
-    "url": "https://github.com/affandar/pilotswarm"
+    "url": "https://github.com/microsoft/PilotSwarm"
   },
   "license": "MIT",
   "keywords": ["pilotswarm", "durable", "copilot", "timers", "orchestration"],

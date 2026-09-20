@@ -1,5 +1,9 @@
 # Starter Docker Appliance
 
+> Historical pre-migration proposal. Microsoft does not publish the starter
+> images referenced below; use the current [local setup](../quickstart/local.md)
+> and [release tarball installation](../../README.md#package-tarballs).
+
 > **Status:** Proposal  
 > **Date:** 2026-04-10  
 > **Goal:** Provide an extremely simple first-run PilotSwarm experience via a single self-contained Docker container with browser access, SSH-accessible TUI, two separate headless worker processes, container-local log tailing, and optional embedded PostgreSQL.

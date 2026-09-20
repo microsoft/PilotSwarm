@@ -21,7 +21,7 @@ import { loadImportPolicy } from "../../dist/agent-package-import-policy.js";
 import { guardedImportFetch, assertHostResolvesPublicly } from "../../dist/agent-package-import-fetch.js";
 
 const POLICY = loadImportPolicy();
-const OK_URL = "https://github.com/affandar/pilotswarm/pkg.tar.gz";
+const OK_URL = "https://github.com/microsoft/PilotSwarm/pkg.tar.gz";
 
 const publicDns = { async lookup() { return [{ address: "140.82.121.4" }]; } };
 const privateDns = { async lookup() { return [{ address: "169.254.169.254" }]; } };
@@ -111,7 +111,7 @@ test("a redirect to another repo on the SAME allowed host is still refused", asy
 });
 
 test("a redirect WITHIN the allowlist is followed", async () => {
-    const target = "https://codeload.github.com/affandar/pilotswarm/tar.gz/main";
+    const target = "https://codeload.github.com/microsoft/PilotSwarm/tar.gz/main";
     const result = await guardedImportFetch(OK_URL, POLICY, {
         resolver: publicDns,
         fetchImpl: async (url) => (url === OK_URL ? redirectTo(target) : okBody("GOOD")),
@@ -168,7 +168,7 @@ test("an allowlisted host resolving into private space is refused", async () => 
 });
 
 test("DNS is re-checked on every hop, not just the first", async () => {
-    const target = "https://codeload.github.com/affandar/pilotswarm/tar.gz/main";
+    const target = "https://codeload.github.com/microsoft/PilotSwarm/tar.gz/main";
     const resolver = {
         async lookup(host) {
             return host === "codeload.github.com"
