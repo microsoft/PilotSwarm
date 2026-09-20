@@ -101,3 +101,8 @@ Helpful issue reports include:
 
 By contributing, you agree that your contributions will be licensed under the
 [MIT License](LICENSE).
+
+Retain the original-contributor and Microsoft copyright notices when packaging
+or redistributing the project. Each workspace package carries the complete
+root license text. See the [high-severity dependency remediation plan](docs/developer/contributing/high-dependency-remediation.md)
+for the current advisory inventory and reviewable upgrade batches.

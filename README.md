@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
+An open-source durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
@@ -43,20 +43,24 @@ for the available settings.
 
 ### Package tarballs
 
-For now, PilotSwarm distributes its three npm-format packages as `.tgz` assets
+PilotSwarm distributes its three npm-format packages as `.tgz` assets
 on [GitHub Releases](https://github.com/microsoft/PilotSwarm/releases):
 `pilotswarm-sdk`, `pilotswarm-horizon-store`, and `pilotswarm`. After a release
-is available, download the matching tarballs. For example:
+is selected, download and verify the matching tarballs using the
+[package installation guide](docs/quickstart/packages.md). Public downloads do
+not require repository membership. With GitHub CLI:
 
 ```bash
-gh release download vX.Y.Z --repo microsoft/PilotSwarm --pattern '*.tgz' --dir dist-tarballs
+gh release download vX.Y.Z --repo microsoft/PilotSwarm --pattern '*.tgz' --pattern SHA256SUMS --dir dist-tarballs
+(cd dist-tarballs && shasum -a 256 -c SHA256SUMS)
 npm install -g ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
   ./dist-tarballs/pilotswarm-horizon-store-X.Y.Z.tgz \
   ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
 The tarballs provide the three PilotSwarm packages; npm still resolves their
-other dependencies through your configured registry.
+other dependencies through your configured registry. Keep the release's
+`LICENSE` copyright and permission notice with redistributed copies.
 
 ### Use as a library in your own app
 
@@ -243,9 +247,9 @@ Common entry points:
 
 ## License
 
-PilotSwarm is licensed under the [MIT license](LICENSE). The original
-PilotSwarm MIT license and copyright notice are retained as a
-[historical notice](docs/migration/LICENSE-original-MIT.md).
+PilotSwarm is licensed under the [MIT license](LICENSE), retaining both
+Microsoft and original-contributor copyright notices. See the
+[source provenance record](docs/migration/README.md).
 
 ## Contributing
 

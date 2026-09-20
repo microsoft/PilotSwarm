@@ -81,6 +81,20 @@ credentials private; architecture, generic secret names and configuration
 schemas are useful public documentation. The guard checks current indexed
 files, not historical commits. See `.github/REPOSITORY-PRIVACY.md`.
 
+## Public package distribution
+
+PilotSwarm source and release downloads are public. Teach installs from the
+three matching GitHub Release tarballs, not name-only npm registry installs or
+registry-auto-fetching MCP commands. Keep `docs/quickstart/packages.md`,
+canonical builder docs and templates aligned. Runtime/model credentials and
+deployment sign-in are separate from public source access.
+
+Every package must include a package-local `LICENSE` identical to the root
+MIT text, retaining Microsoft and original-contributor notices. Release tooling
+checks the actual packed contents and publishes a standalone `LICENSE`.
+Existing releases receive missing notices only through `release-notices.yml`;
+never silently repack published bytes or deploy for a notice-only correction.
+
 ## Repo Scope Boundary
 
 When the user asks for changes, releases, or deploys in this repository, operate on `pilotswarm` only unless they explicitly ask to update a downstream consumer as well.

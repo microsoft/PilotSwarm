@@ -40,13 +40,13 @@ npm run build
 
 ### Installing the CLI on its own
 
-After a GitHub Release is available, sign in to the internal repository and
-install all three matching npm-format tarballs. The `pilotswarm` tarball
+Install all three matching npm-format tarballs from a public GitHub Release;
+no repository membership is required. See [package installation](packages.md)
+for anonymous downloads and checksum verification. The `pilotswarm` tarball
 provides four binaries: `pilotswarm` (TUI + subcommands), `pilotswarm-cli`
 (alias), `pilotswarm-web` (portal server), and `pilotswarm-mcp` (MCP server).
 
 ```bash
-gh auth login
 scripts/install-from-release.sh X.Y.Z
 pilotswarm --help
 pilotswarm auth login --api-url https://<your-portal>

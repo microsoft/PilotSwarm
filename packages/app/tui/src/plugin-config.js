@@ -180,7 +180,7 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
         // deployment ships its OWN guide - the base instructions plus the
         // skills, tools and MCP servers that exist only on that fleet - so
         // this is config, not a constant. The default is the canonical
-        // Microsoft repository; readers need repository access.
+        // public Microsoft repository.
         docs: {
             agentPackageGuideUrl: "https://github.com/microsoft/PilotSwarm/blob/main/docs/building-agent-packages.md",
         },

@@ -32,11 +32,16 @@ or add inline bypasses to pass a PR containing private configuration.
 
 ## History
 
-This check deliberately does not rewrite or gate imported history. References to
-retired environments can remain in history. Some imported records may identify
-shared subscriptions or applications still in use; assess those separately
-before publication and do not assume an identifier is obsolete because the
-document is old. Removing a value from today's files does not erase old commits.
+The index check does not scan Git history. Do not publish private deployment
+identifiers, session databases/logs or credentials through archived branches,
+tags or old commits. Keep source provenance in `docs/migration/README.md`
+without restoring imported history as public archive refs. Removing a value
+from today's files does not erase old commits. A history rewrite requires an
+explicitly authorized ref plan, a private recovery backup, release provenance
+handling, and GitHub Support review where PR refs/cached objects retain content.
+Actions logs also become public with repository visibility; review retained
+runs separately. Never assume a resource or identity is obsolete because the
+document is old.
 
 For deployment routing and local test setup, see [deployment operations](DEPLOYMENT.md)
 and [local CI and tests](../docs/developer/contributing/local-ci-and-tests.md).

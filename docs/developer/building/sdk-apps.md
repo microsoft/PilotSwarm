@@ -14,10 +14,11 @@ The SDK gives you the durable runtime primitives. Your app provides:
 - session lifecycle
 - whatever UI or API you want on top
 
-Install it from npm:
+Download and verify a published SDK tarball using the
+[package installation guide](../../quickstart/packages.md), then install it:
 
 ```bash
-npm install pilotswarm-sdk
+npm install --save-exact ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz
 ```
 
 ## The Basic Shape

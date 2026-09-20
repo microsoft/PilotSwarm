@@ -18,10 +18,13 @@ You'll need:
 - **PostgreSQL** (local or remote — the durable orchestration layer needs it)
 - A **GitHub Copilot token** (set as `GITHUB_TOKEN` in your env file)
 
-Install PilotSwarm and its CLI:
+Download and verify matching PilotSwarm assets using the
+[package installation guide](../../../quickstart/packages.md), then install:
 
 ```bash
-npm install pilotswarm-sdk pilotswarm
+npm install --save-exact ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-horizon-store-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
 Create an `.env` file in your project root with your connection details:

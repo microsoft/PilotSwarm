@@ -17,8 +17,9 @@ Run `npm run check:privacy` after staging release changes.
 
 ## Release contract
 
-- The first post-migration release is planned as **v0.6.0**. Check remote tags and
-  releases before selecting a version; never replace a published tag.
+- The first Microsoft release was **v0.6.0**. Check remote tags and releases
+  before selecting the next version; never replace a published tag as part of
+  an ordinary release.
 - **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
   Merging a PR or pushing a tag does not publish a release.
 - One protected-environment approval precedes all cloud work. The Action captures
@@ -32,8 +33,12 @@ Run `npm run check:privacy` after staging release changes.
   immediately at qualification, without sequential execution.** The original
   result remains visible; the accepted outcome is **qualified after sequential
   verification**, not a clean initial pass.
+- Each package carries a package-local `LICENSE` identical to the root license,
+  including Microsoft and original-contributor copyright notices and MIT
+  permission text. Validate the actual tarball contents, not just manifest
+  `"license": "MIT"` metadata.
 - The Action creates an annotated tag, a draft release, uploads the three `.tgz`
-  files plus `SHA256SUMS`, verifies assets, and publishes the release.
+  files plus `SHA256SUMS` and `LICENSE`, verifies assets, and publishes the release.
 - It then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
@@ -54,8 +59,10 @@ Run `npm run check:privacy` after staging release changes.
    their internal dependency/peer references, and `package-lock.json`.
 3. Add a dated `CHANGELOG.md` entry. Update canonical documentation, relevant
    templates and examples when the shipped behavior changes.
-4. Build locally and inspect `npm pack --dry-run` for each package. Confirm each
-   package includes its own README and expected runtime files/plugins.
+4. Build locally and pack each package. Confirm every tarball includes its own
+   README, the complete canonical `package/LICENSE`, and expected runtime
+   files/plugins. `validatePackageLicenses` rejects source notice drift;
+   `validatePackedLicense` rejects missing or altered notices in the artifact.
 5. Merge the preparation PR with successful **Basic checks**. The release
    candidate is the captured main SHA; later unrelated main commits must not
    change the running release's source.
@@ -68,7 +75,7 @@ registration is needed. Full-suite-on-HDB runs are optional and separate from
 the release gate; only those runs use `PROVIDER_TEST_RUNNER`.
 
 ```bash
-gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=0.6.0
+gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=X.Y.Z
 ```
 
 Use the prepared version, not a guessed next imported tag. Monitor the Action,
@@ -136,7 +143,8 @@ Verify separately:
   sequential verification of at most five failures), including real HDB preflight;
 - annotated tag resolves to the workflow's tested commit;
 - GitHub Release is published and has `pilotswarm-sdk-<version>.tgz`,
-  `pilotswarm-horizon-store-<version>.tgz`, `pilotswarm-<version>.tgz` and checksums;
+  `pilotswarm-horizon-store-<version>.tgz`, `pilotswarm-<version>.tgz`, checksums
+  and `LICENSE`;
 - subsequent Azure worker and portal deployment succeeds and portal health is
   verified against the intended private configuration.
 
@@ -150,6 +158,16 @@ portal policy, not only the protected input or pod readiness.
 If publication stops after creating a tag/draft, inspect that unpublished state;
 resolve it deliberately before rerunning. Never delete a published release to
 work around a failed run. Report release and deployment status separately.
+
+### Adding a missing notice to an existing release
+
+Use **Add release license notice** (`release-notices.yml`) from main, with the
+existing version. This separately approved, additive maintenance workflow only
+uploads `LICENSE`; it never rebuilds packages, replaces checksums, changes tags
+or deploys. It verifies all prior asset IDs, sizes and digests remain unchanged,
+rejects a conflicting existing notice, and is idempotent for an identical one.
+Use this for v0.6.0's omitted embedded notice; do not silently repack its assets.
+Future tarballs must embed the notice as well as publishing the sidecar.
 
 ## Package surface
 

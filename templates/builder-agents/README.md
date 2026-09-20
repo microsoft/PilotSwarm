@@ -30,11 +30,14 @@ These templates assume apps consume:
 - `pilotswarm-sdk`
 - `pilotswarm` (the app package: TUI + portal + MCP bins)
 
-from npm:
+from matching public GitHub Release tarballs, not name-only registry installs.
+Follow the [package installation guide](../../docs/quickstart/packages.md) to
+download and verify them:
 
 ```bash
-npm install pilotswarm-sdk
-npm install pilotswarm
+npm install --save-exact ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-horizon-store-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.

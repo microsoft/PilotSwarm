@@ -46,7 +46,11 @@ Allowlist mode — only `investigator`, `deployer`, `reporter`, and `builder` ca
 - PostgreSQL running locally (or `DATABASE_URL` pointing to one)
 - A runtime model provider with Copilot/BYOK access. For the first local boot,
   `GITHUB_TOKEN` can be used as a bootstrap credential.
-- PilotSwarm installed (`npm install` from repo root)
+- PilotSwarm built from this checkout (`npm ci && npm run build` from repo root)
+
+For a standalone app using the sample's pattern, install matching public
+[release tarballs](../../docs/quickstart/packages.md), not name-only registry
+packages. The commands below use this repository's workspace installation.
 
 Create a `.env` file in the repo root:
 

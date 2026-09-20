@@ -6,6 +6,20 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-09-20 — Public release distribution and copyright preservation
+
+- **Agents:** repository release agent `2.0.0` to `2.1.0`; SDK builder `1.7.0`
+  to `1.8.0`; CLI builder `1.4.0` to `1.5.0`.
+- **Model tested:** none; operational guidance only.
+- **Observed behavior:** registry-based builder examples conflicted with
+  release-tarball distribution, and package metadata did not include the full
+  copyright and permission notice in artifacts.
+- **Expected behavior:** scaffold verified public release file pins, restore
+  ignored downloads before install, require complete package-local licenses,
+  and repair existing releases additively without changing tested package bytes.
+- **Validation:** packaging/notice maintenance regression tests and direct
+  artifact inspection; no model-compliance or compatibility-matrix claim.
+
 ## 2026-09-20 — Bounded sequential verification meets the release bar
 
 - **Agent:** repository `pilotswarm-release`, version `1.4.0` to `2.0.0`.

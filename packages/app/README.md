@@ -31,8 +31,10 @@ npm install -g ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
   ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
-Use a published version and a GitHub account with repository access. Microsoft
-distributes these packages as GitHub Release assets, not npm registry releases.
+Use a published version. The assets are public; see the
+[package installation guide](https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/packages.md)
+for anonymous downloads and checksum verification. Microsoft distributes these
+packages as GitHub Release assets, not npm registry releases.
 The MCP examples below use the installed `pilotswarm-mcp` executable; ensure it
 is on the MCP host's PATH, or use its absolute path.
 
@@ -258,7 +260,7 @@ pilotswarm-web --plugin ./plugin
 - `pilotswarm/web` — the portal server entry (`startServer`)
 
 Building an app or service instead of a UI? You want
-[`pilotswarm-sdk`](https://www.npmjs.com/package/pilotswarm-sdk) — including
+[`pilotswarm-sdk`](https://github.com/microsoft/PilotSwarm/tree/main/packages/sdk) — including
 its zero-dependency wire client at `pilotswarm-sdk/api`.
 
 ---

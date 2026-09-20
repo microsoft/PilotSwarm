@@ -2,7 +2,8 @@
 
 Terminal UI for PilotSwarm.
 
-Download a published release using a GitHub account with repository access,
+Download and verify a public release using the
+[package installation guide](https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/packages.md),
 then install the matching packages:
 
 ```bash

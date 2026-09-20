@@ -181,5 +181,9 @@ Example:
 - Treat system-agent `initialPrompt` as bootstrap startup content, not a user-authored chat line.
 - Assume apps consume `pilotswarm` and `pilotswarm-sdk`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.
 - Assume PostgreSQL-backed apps can opt into the built-in facts tools with agent `tools` lists instead of re-implementing fact storage from scratch.
-- Prefer generated app instructions that install `pilotswarm` and `pilotswarm-sdk` from npm before suggesting local clone or link workflows.
+- Install the matching `pilotswarm`, `pilotswarm-sdk` and optional provider
+  tarballs from public GitHub Releases using
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/packages.md`.
+  Preserve lock integrity and restore ignored downloads before `npm ci`.
+  Use installed binaries instead of registry-auto-fetching `npx -p` commands.
 - If the scaffold teaches artifact workflows, do not describe them as markdown-only; explain the shared binary-download contract too.
