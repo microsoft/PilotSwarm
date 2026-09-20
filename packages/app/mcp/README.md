@@ -2,25 +2,32 @@
 
 Exposes PilotSwarm sessions, agents, facts, and models to any MCP-compatible client via the [Model Context Protocol](https://modelcontextprotocol.io/). Connect Claude Desktop, Copilot CLI, Cursor, VS Code, ChatGPT, or any MCP client to a running PilotSwarm instance.
 
-> **Web API mode is the default.** `--api-url https://portal.example.com` talks to a deployment through the portal's [Web API](../../docs/api/reference.md) — the only credential this process holds is the deployment URL (plus a bearer token on Entra deployments: run `pilotswarm auth login --api-url <url>` once and the server reads the cached token, or set `PILOTSWARM_API_TOKEN` for service principals / CI). **Direct mode** (`--store "$DATABASE_URL"`) connects straight to the database and is internal-only — for tests and trusted placement alongside workers; see [Direct mode](#direct-mode-internal). The debug `dump_session` tool is direct-mode only. See [Layering](../../docs/architecture/layering.md) for the full picture.
+> **Web API mode is the default.** `--api-url https://portal.example.com` talks to a deployment through the portal's [Web API](../../../docs/api/reference.md) — the only credential this process holds is the deployment URL (plus a bearer token on Entra deployments: run `pilotswarm auth login --api-url <url>` once and the server reads the cached token, or set `PILOTSWARM_API_TOKEN` for service principals / CI). **Direct mode** (`--store "$DATABASE_URL"`) connects straight to the database and is internal-only — for tests and trusted placement alongside workers; see [Direct mode](#direct-mode-internal). The debug `dump_session` tool is direct-mode only. See [Layering](../../../docs/architecture/layering.md) for the full picture.
 
 ## Quick Start
+
+First install the matching public release tarballs using the
+[package installation guide](../../../docs/quickstart/packages.md). The examples
+below assume a global install; for a project-local install use
+`./node_modules/.bin/pilotswarm-mcp` (an absolute path in MCP host configuration).
+No registry download is performed when an MCP process starts.
 
 ### Stdio Transport (recommended for local IDEs)
 
 ```bash
-npx -y -p pilotswarm pilotswarm-mcp --api-url https://portal.example.com
+pilotswarm-mcp --api-url https://portal.example.com
 ```
 
 ### HTTP Transport (recommended for remote/shared access)
 
 ```bash
-PILOTSWARM_MCP_KEY=your-secret-key npx -y -p pilotswarm pilotswarm-mcp \
+PILOTSWARM_MCP_KEY=your-secret-key pilotswarm-mcp \
   --transport http --port 3100 \
   --api-url https://portal.example.com
 ```
 
-> The package is published as `pilotswarm`; the executable bin is `pilotswarm-mcp`. Use `npx -p pilotswarm pilotswarm-mcp` (or install globally) so npm resolves the right package.
+> The release package is `pilotswarm`; its executable is `pilotswarm-mcp`.
+> Ensure that executable is on the MCP host's PATH or configure its absolute path.
 
 > **Prerequisite:** A running PilotSwarm deployment — all you need is its URL. On an Entra deployment, authenticate once with `pilotswarm auth login --api-url <url>` (or set `PILOTSWARM_API_TOKEN`).
 
@@ -32,7 +39,7 @@ Each client below shows both **Stdio** (local, recommended) and **HTTP** (remote
 
 > **HTTP prerequisite:** Start the HTTP server first:
 > ```bash
-> PILOTSWARM_MCP_KEY=your-secret-key npx -y -p pilotswarm pilotswarm-mcp \
+> PILOTSWARM_MCP_KEY=your-secret-key pilotswarm-mcp \
 >   --transport http --port 3100 \
 >   --api-url https://portal.example.com
 > ```
@@ -48,11 +55,8 @@ Add to `.copilot/mcp-config.json` (repo-scoped) or `~/.copilot/mcp-config.json` 
   "mcpServers": {
     "pilotswarm": {
       "type": "stdio",
-      "command": "npx",
+      "command": "pilotswarm-mcp",
       "args": [
-        "-y",
-        "-p", "pilotswarm",
-        "pilotswarm-mcp",
         "--api-url", "https://portal.example.com"
       ]
     }
@@ -86,11 +90,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "pilotswarm": {
-      "command": "npx",
+      "command": "pilotswarm-mcp",
       "args": [
-        "-y",
-        "-p", "pilotswarm",
-        "pilotswarm-mcp",
         "--api-url", "https://portal.example.com"
       ]
     }
@@ -124,11 +125,8 @@ Add a `.mcp.json` in your project root:
   "mcpServers": {
     "pilotswarm": {
       "type": "stdio",
-      "command": "npx",
+      "command": "pilotswarm-mcp",
       "args": [
-        "-y",
-        "-p", "pilotswarm",
-        "pilotswarm-mcp",
         "--api-url", "https://portal.example.com"
       ]
     }
@@ -162,11 +160,8 @@ Open **Settings → MCP** and add a server, or edit `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "pilotswarm": {
-      "command": "npx",
+      "command": "pilotswarm-mcp",
       "args": [
-        "-y",
-        "-p", "pilotswarm",
-        "pilotswarm-mcp",
         "--api-url", "https://portal.example.com"
       ]
     }
@@ -200,11 +195,8 @@ Add `.vscode/mcp.json` to your workspace:
   "servers": {
     "pilotswarm": {
       "type": "stdio",
-      "command": "npx",
+      "command": "pilotswarm-mcp",
       "args": [
-        "-y",
-        "-p", "pilotswarm",
-        "pilotswarm-mcp",
         "--api-url", "https://portal.example.com"
       ]
     }
@@ -310,7 +302,7 @@ workers and database), the server can bypass the Web API and connect straight
 to the datastore:
 
 ```bash
-npx -y -p pilotswarm pilotswarm-mcp --store "$DATABASE_URL" --model-providers .model_providers.json
+pilotswarm-mcp --store "$DATABASE_URL" --model-providers .model_providers.json
 ```
 
 This is not a supported integration surface — it holds database credentials,

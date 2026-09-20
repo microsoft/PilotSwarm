@@ -83,7 +83,10 @@ The CLI and SDK builder templates are intended to be guided builders, not guess-
 
 Builder templates should assume:
 
-- npm packages are consumed as `pilotswarm-sdk` and `pilotswarm` (the app package)
+- npm-format packages are consumed from public GitHub Release tarballs as
+  `pilotswarm-sdk`, optional `pilotswarm-horizon-store`, and `pilotswarm`
+  (the app package); follow [package installation](../../quickstart/packages.md),
+  preserve lock integrity and restore ignored downloads before `npm ci`
 - PilotSwarm's built-in framework and management plugins are embedded in those packages
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
 - if an app needs a custom model catalog, check in a credential-free

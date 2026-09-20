@@ -1,0 +1,28 @@
+name: Add release license notice
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing published version without v; adds LICENSE without replacing assets
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: release-license-notices
+  cancel-in-progress: false
+jobs:
+  notices:
+    if: github.ref == 'refs/heads/main'
+    environment: azure-deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Add and verify copyright and permission notice
+        run: node .github/scripts/release.mjs notices
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 2.0.0
+version: 2.1.0
 name: pilotswarm-release
 description: "Prepare and cut Microsoft PilotSwarm releases: validate versions, build, tests, and package contents; publish a GitHub Release with three npm-format tarball assets through GitHub Actions."
 ---
@@ -24,8 +24,9 @@ Run `npm run check:privacy` on staged changes before committing.
 - verify this checkout's origin is `microsoft/PilotSwarm` and use that repository explicitly in GitHub commands
 - verify package metadata, packaged contents, and `.github/workflows/release-tarballs.yml`
 - keep all three package versions, internal package references, and the lockfile aligned with the release tag
-- use v0.6.0 for the first post-migration release; check remote tags and releases before selecting it
+- treat v0.6.0 as the first published Microsoft release; check remote tags and releases before selecting the next version
 - verify workspace packages ship package-local `README.md` files and provenance-safe repository metadata
+- verify every actual tarball embeds `package/LICENSE` matching the root MIT text and both Microsoft/original-contributor copyright notices; manifest license metadata is insufficient
 - report the current latest git tag and the proposed next release tag before creating a tag
 - explain that a tag marks the source commit and a GitHub Release holds notes and three `.tgz` package assets
 - dispatch the manual Create release Action on main; it requires the complete PostgreSQL baseline plus additive HDB coverage before creating the tag and publishing tarballs
@@ -34,7 +35,8 @@ Run `npm run check:privacy` on staged changes before committing.
 - use the gate's machine-readable reports and bounded selectors; missing coverage, suite-level setup/hook failures, unhandled errors, ambiguous identities, missing/skipped cases or another verification failure still block publication
 - preserve and report both the initial failures and sequential result; describe accepted recovery as qualified after sequential verification, not a clean initial pass or a proven concurrency fix
 - use standalone targeted Tests runs for diagnosis when needed; they cannot qualify a release without its complete initial-run evidence
-- verify the Action succeeds and all three package assets exist before reporting the release complete
+- verify the Action succeeds and all three package assets, `SHA256SUMS` and `LICENSE` exist before reporting the release complete
+- add missing notices to an existing release only through the additive `release-notices.yml` Action; verify old asset IDs/digests stay unchanged, never repack or deploy as part of notice maintenance
 - monitor the automatic post-publication Azure deployment in the same Action; retry an existing release with `deploy-azure.yml` and its release_tag input
 - refresh Azure OIDC login immediately before post-test deployment; a long test gate must not leave blob publication using an old federated assertion
 - explain that the current Azure Action builds workspace source and pushes deployment images to Azure Container Registry

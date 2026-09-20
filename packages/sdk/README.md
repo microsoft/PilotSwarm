@@ -9,8 +9,10 @@ gh release download vX.Y.Z --repo microsoft/PilotSwarm --pattern 'pilotswarm-sdk
 npm install ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz
 ```
 
-Repository read access is required. Microsoft distributes npm-format release
-assets, not npm registry publications. Install the matching Horizon-store
+Release assets are public; repository membership is not required. See the
+[package installation guide](https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/packages.md)
+for anonymous downloads and checksum verification. Microsoft distributes
+npm-format release assets, not npm registry publications. Install the matching Horizon-store
 tarball as well when using its optional providers.
 
 Minimal usage:

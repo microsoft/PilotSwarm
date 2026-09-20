@@ -12,17 +12,17 @@ The current CLI story is simple:
 - you provide a plugin directory
 - optionally, you provide a worker module with custom tools
 
-Install it from npm:
+Download and verify the three matching public release assets using the
+[package installation guide](../../quickstart/packages.md), then install them:
 
 ```bash
-npm install pilotswarm
+npm install --save-exact ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-horizon-store-X.Y.Z.tgz \
+  ./dist-tarballs/pilotswarm-X.Y.Z.tgz
 ```
 
-If your app imports runtime symbols such as `defineTool`, also add:
-
-```bash
-npm install pilotswarm-sdk
-```
+The SDK supplies runtime imports such as `defineTool`. Microsoft distributes
+these packages as GitHub Release assets, not registry publications.
 
 This is different from the older `tui-apps.md` AppAdapter concept. Today, the supported path is plugin- and worker-module-driven.
 

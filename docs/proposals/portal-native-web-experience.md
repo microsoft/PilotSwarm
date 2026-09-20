@@ -1,5 +1,9 @@
 # Portal: PilotSwarm Native Web Experience
 
+> **Historical design:** package names and registry-install examples below are
+> not current installation guidance. The portal ships inside `pilotswarm`;
+> use [public release tarballs](../quickstart/packages.md).
+
 > **Status:** Proposal  
 > **Date:** 2026-03-22  
 > **Goal:** A native web UI with full TUI feature parity — no terminal emulation, pure web-native rendering.
@@ -61,7 +65,7 @@ Three-region responsive shell: **sidebar**, **main content**, **inspector panel*
 
 ## Mock 1: Startup Splash
 
-The **same ASCII art** from [tui-splash.txt](../../packages/cli/cli/tui-splash.txt) rendered in a monospace `<pre>` block with CSS-applied colors. Dark background, centered, with a "+ New Session" button below. One splash source for both TUI and web.
+The **same ASCII art** from [tui-splash.txt](../../packages/app/tui/tui-splash.txt) rendered in a monospace `<pre>` block with CSS-applied colors. Dark background, centered, with a "+ New Session" button below. One splash source for both TUI and web.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐

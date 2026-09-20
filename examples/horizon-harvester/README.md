@@ -31,6 +31,11 @@ builder skill.
 
 ## Requirements
 
+Build this source checkout with `npm ci && npm run build`. When adapting the
+sample into a separate application, install the matching SDK and Horizon-store
+[public release tarballs](../../docs/quickstart/packages.md); optional HorizonDB
+credentials authorize the database, not access to the source or packages.
+
 | Env var | Purpose |
 |---------|---------|
 | `DATABASE_URL` | PostgreSQL for the PilotSwarm CMS + orchestration |
@@ -184,6 +189,6 @@ drop_graph('horizon_graph', true);`.)
 
 ## Related docs
 
-- [Enhanced Facts & Knowledge Graph](../../docs/configuration.md#enhanced-facts--knowledge-graph-optional)
-- [Facts table + graph model](../../docs/facts-table.md)
+- [Enhanced Facts & Knowledge Graph](../../docs/developer/reference/configuration.md#enhanced-facts--knowledge-graph-optional)
+- [Facts table + graph model](../../docs/architecture/facts.md)
 - Builder skill: `templates/builder-agents/skills/pilotswarm-knowledge-harvester/SKILL.md`

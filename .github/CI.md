@@ -7,6 +7,13 @@ workspace builds, deployment tooling, CI policy checks, SDK API/unit tests and
 application unit tests. Forks use the same checks. Full live integration runs
 are restricted to trusted `main` and the protected `azure-deploy` environment.
 
+Release packaging validates the root and all package-local `LICENSE` files,
+then checks the complete notice inside each actual tarball before publication.
+The release has three tarballs, `SHA256SUMS` (covering those tarballs), and a
+standalone `LICENSE`. **Add release license notice** is a separate manual,
+main-only protected workflow for additive notice maintenance on an existing
+release. It preserves existing asset identities/digests and performs no deploy.
+
 ## Dedicated provider database
 
 Run **Provision CI HorizonDB** from `main` to provision or reconcile the CI

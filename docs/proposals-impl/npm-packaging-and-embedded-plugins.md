@@ -1,5 +1,9 @@
 # Proposal: npm Packaging and Embedded PilotSwarm Plugins
 
+> **Historical design record:** current package names and distribution are
+> documented in [package installation](../quickstart/packages.md). Microsoft
+> distributes public GitHub Release tarballs, not npm registry releases.
+
 ## Status
 
 Implemented

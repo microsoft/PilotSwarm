@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.7.0
+version: 1.8.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -30,6 +30,9 @@ Your job is to create or update the user's application code, plugin files, and w
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
 - assume the runtime package consumed by apps is `pilotswarm-sdk`
 - when generating `package.json`, add `pilotswarm-sdk` as the runtime dependency
+- install matching public GitHub Release tarballs using `docs/quickstart/packages.md`;
+  pin their local file paths and integrity, restore ignored downloads before
+  `npm ci`, and never substitute a name-only npm registry install
 
 ## Always Consult
 

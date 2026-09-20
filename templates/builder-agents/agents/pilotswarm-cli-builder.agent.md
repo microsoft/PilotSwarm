@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.4.0
+version: 1.5.0
 name: pilotswarm-cli-builder
 description: "Use when building a plugin-driven CLI/TUI app on top of PilotSwarm. Scaffolds plugin.json branding, agents, skills, worker modules, and CLI run instructions."
 ---
@@ -32,6 +32,9 @@ Your job is to create or update application code in the user's repository, not t
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
 - assume the app package consumed for the TUI is `pilotswarm` (bins: `pilotswarm`, `pilotswarm-web`, `pilotswarm-mcp`; `pilotswarm` is a bin alias)
 - when generating `package.json`, add `pilotswarm` and `pilotswarm-sdk` if the app imports runtime symbols
+- install matching public GitHub Release tarballs using `docs/quickstart/packages.md`;
+  preserve lock integrity and restore ignored downloads before `npm ci`;
+  use installed binaries rather than `npx -p pilotswarm` registry downloads
 
 ## Always Consult
 

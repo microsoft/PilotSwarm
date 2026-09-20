@@ -152,7 +152,11 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Use the DevOps sample as the reference for the layered split, not as a literal one-size-fits-all template.
 - Assume apps consume `pilotswarm-sdk`, whose built-in framework and management plugins are embedded rather than copied into the app repo.
 - Assume PostgreSQL-backed apps can opt into the built-in facts tools with agent `tools` lists instead of re-implementing fact storage from scratch.
-- Prefer generated app instructions that install `pilotswarm-sdk` from npm before falling back to local file or link workflows.
+- Install `pilotswarm-sdk` from a verified public GitHub Release tarball; add
+  matching optional providers when needed. Follow
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/packages.md`.
+  Pin file specs and lock integrity; restore ignored tarballs before `npm ci`.
+  Never substitute a name-only registry install.
 - If the scaffold documents artifact handoffs, explain both text and binary cases so app builders do not assume artifacts are UTF-8 only.
 
 ## Database Cleanup Guidance

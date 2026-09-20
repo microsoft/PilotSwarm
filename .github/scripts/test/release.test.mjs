@@ -1,13 +1,117 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateRelease } from '../release.mjs';
+import { validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
 const version = '0.6.0';
 const manifests = [{ name: 'pilotswarm-sdk', version, peerDependencies: { 'pilotswarm-horizon-store': version } }, { name: 'pilotswarm-horizon-store', version, peerDependencies: { 'pilotswarm-sdk': version } }, { name: 'pilotswarm', version, dependencies: { 'pilotswarm-sdk': version } }];
 const lock = { packages: Object.fromEntries(['sdk', 'horizon-store', 'app'].map(p => [`packages/${p}`, { version }])) };
+const license = readFileSync(new URL('../../../LICENSE', import.meta.url), 'utf8');
+
+function licenseFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'ps-release-license-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'LICENSE'), license);
+  for (const p of ['sdk', 'horizon-store', 'app']) {
+    mkdirSync(join(root, 'packages', p), { recursive: true });
+    writeFileSync(join(root, 'packages', p, 'LICENSE'), license);
+  }
+  return root;
+}
+
+test('all workspace packages retain the canonical MIT text and both copyright notices', () => {
+  assert.equal(validatePackageLicenses(), license);
+  assert.match(license, /Copyright \(c\) Microsoft Corporation/);
+  assert.match(license, /Copyright \(c\) 2026 Affan Dar and contributors/);
+  assert.match(license, /permission notice shall be included/);
+});
+
+test('current public installation guidance uses release assets and installed MCP executables', () => {
+  for (const file of ['docs/developer/building/sdk-apps.md', 'docs/developer/building/cli-apps.md',
+    'templates/builder-agents/README.md', 'packages/app/web/README.md']) {
+    const text = readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
+    assert.match(text, /(?:packages\.md|\.tgz)/);
+    assert.doesNotMatch(text, /^npm install (?:pilotswarm(?:-sdk|-web|-cli)?)(?:\s|$)/m);
+  }
+  const mcp = readFileSync(new URL('../../../packages/app/mcp/README.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(mcp, /npx -.*-p pilotswarm|"command": "npx"/);
+  assert.match(mcp, /"command": "pilotswarm-mcp"/);
+  const quickstart = readFileSync(new URL('../../../docs/quickstart/local.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(quickstart, /sign in to the internal repository/);
+});
+
+test('release refuses missing or divergent workspace licenses', t => {
+  const root = licenseFixture(t);
+  writeFileSync(join(root, 'packages/sdk/LICENSE'), 'MIT');
+  assert.throws(() => validatePackageLicenses(root), /must match/);
+  rmSync(join(root, 'packages/sdk/LICENSE'));
+  assert.throws(() => validatePackageLicenses(root), /ENOENT/);
+});
+
+test('actual tarballs must contain the complete canonical license', t => {
+  const root = licenseFixture(t);
+  const directory = join(root, 'package');
+  mkdirSync(directory);
+  const tarball = join(root, 'fixture.tgz');
+  writeFileSync(join(directory, 'package.json'), '{"name":"fixture","version":"1.0.0"}');
+  const pack = () => {
+    const result = spawnSync('tar', ['-czf', tarball, '-C', root, 'package'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  pack();
+  assert.throws(() => validatePackedLicense(tarball, license), /complete canonical/);
+  writeFileSync(join(directory, 'LICENSE'), 'MIT');
+  pack();
+  assert.throws(() => validatePackedLicense(tarball, license), /complete canonical/);
+  writeFileSync(join(directory, 'LICENSE'), license);
+  pack();
+  assert.doesNotThrow(() => validatePackedLicense(tarball, license));
+});
+
+test('existing-release notice maintenance is additive, verified and idempotent', t => {
+  const root = licenseFixture(t);
+  const release = { tag_name: 'v0.6.0', target_commitish: 'tested-source', draft: false,
+    assets: [{ id: 1, name: 'pilotswarm-sdk-0.6.0.tgz', size: 123, digest: 'sha256:original' }] };
+  const calls = [];
+  const runFn = (command, args) => {
+    assert.equal(command, 'gh');
+    calls.push(args);
+    if (args[0] === 'api') return JSON.stringify(release);
+    assert.deepEqual(args.slice(0, 5), ['release', 'upload', 'v0.6.0', '--repo', 'microsoft/PilotSwarm']);
+    assert.equal(readFileSync(args[5], 'utf8'), license);
+    release.assets.push({ id: 2, name: 'LICENSE', size: Buffer.byteLength(license),
+      digest: `sha256:${createHash('sha256').update(license).digest('hex')}` });
+    return '';
+  };
+  for (let i = 0; i < 2; i++) addReleaseLicense(version, { root, repository: 'microsoft/PilotSwarm', runFn });
+  assert.equal(calls.filter(args => args[0] === 'release').length, 1);
+  assert.equal(release.assets[0].digest, 'sha256:original');
+  assert(!calls.flat().includes('--clobber'));
+  release.assets[1].digest = 'sha256:different';
+  assert.throws(() => addReleaseLicense(version, { root, repository: 'microsoft/PilotSwarm', runFn }), /never overwrite/);
+  release.draft = true;
+  assert.throws(() => addReleaseLicense(version, { root, repository: 'microsoft/PilotSwarm', runFn }), /published release/);
+});
+
+test('notice maintenance detects changed old assets and is gated independently of deployment', t => {
+  const root = licenseFixture(t);
+  let reads = 0;
+  const runFn = (_command, args) => args[0] === 'api' ? JSON.stringify({
+    tag_name: 'v0.6.0', target_commitish: 'tested-source', draft: false,
+    assets: [{ id: 1, name: 'original.tgz', size: ++reads, digest: 'sha256:original' },
+      ...(reads > 1 ? [{ id: 2, name: 'LICENSE', digest: `sha256:${createHash('sha256').update(license).digest('hex')}` }] : [])],
+  }) : '';
+  assert.throws(() => addReleaseLicense(version, { root, repository: 'microsoft/PilotSwarm', runFn }), /verification failed/);
+  const workflow = readFileSync(new URL('../../workflows/release-notices.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /environment: azure-deploy/);
+  assert.match(workflow, /release\.mjs notices/);
+  assert.doesNotMatch(workflow, /azure\/login|actions\/deploy-azure|id-token:|npm publish/);
+});
 test('release requires matching versions, lockfile, internal dependencies and changelog', () => {
   assert.doesNotThrow(() => validateRelease(version, manifests, lock, '## 0.6.0 — date'));
   assert.throws(() => validateRelease(version, manifests.map((p, i) => i === 0 ? { ...p, devDependencies: { 'pilotswarm-horizon-store': '0.5.79' } } : p), lock, '## 0.6.0'));

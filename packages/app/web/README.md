@@ -6,18 +6,19 @@ Full feature parity with the TUI: session management, real-time chat, agent
 splash screens (ASCII art), sequence diagrams, node maps, worker logs,
 binary-safe artifact downloads, metadata-aware browser previews, and keyboard shortcuts.
 
-The portal server also hosts the versioned [PilotSwarm Web API](../../docs/api/reference.md)
+The portal server also hosts the versioned [PilotSwarm Web API](../../../docs/api/reference.md)
 (`/api/v1` HTTP + `/api/v1/ws` WebSocket) — see [Web API](#web-api) below.
 
 ## Quick Start
 
-```bash
-# Install
-npm install pilotswarm-web
+Install the matching `pilotswarm-sdk`, `pilotswarm-horizon-store` and
+`pilotswarm` tarballs using the [public package installation guide](../../../docs/quickstart/packages.md).
+`pilotswarm-web` is a binary in the `pilotswarm` package, not a separate package.
 
+```bash
 # Run (starts server + serves React app)
-npx pilotswarm-web --env .env.remote
-npx pilotswarm-web --env .env.remote --plugin ./plugin
+./node_modules/.bin/pilotswarm-web --env .env.remote
+./node_modules/.bin/pilotswarm-web --env .env.remote --plugin ./plugin
 
 # Development (Vite HMR)
 cd packages/app/web
@@ -128,7 +129,7 @@ a `roles[]` claim — use it only for stamps that do not use
 Enterprise Application adds an Entra-side gate as well; it is optional
 and carries a restricted-tenant caveat (AADSTS90094 admin-consent
 prompts). See
-[`../../docs/portal-entra-app-roles.md`](../../docs/developer/deploy/entra-app-roles.md)
+the [portal Entra app-role guide](../../../docs/developer/deploy/entra-app-roles.md)
 for the full operator runbook.
 
 The portal core no longer assumes Entra specifically. New providers can plug
@@ -149,7 +150,7 @@ same port (3001):
   and `PORTAL_AUTHZ_*` env vars apply, no separate configuration.
 - Errors use the `{ ok: false, error: { code, message } }` envelope.
 
-See [`docs/api/reference.md`](../../docs/api/reference.md) for the full API
+See [`docs/api/reference.md`](../../../docs/api/reference.md) for the full API
 reference.
 
 The legacy `/api/rpc` and `/portal-ws` endpoints remain mounted for a

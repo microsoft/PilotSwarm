@@ -7,7 +7,7 @@ Five sections, in reading order. Pick your door.
 Running in minutes.
 
 - [Local Setup](./quickstart/local.md) — from source: install, PostgreSQL, first run
-- [Release tarballs](../README.md#package-tarballs) — install the three PilotSwarm packages from a GitHub Release
+- [Release tarballs](./quickstart/packages.md) — public downloads, checksum verification and installation
 
 ## 2. [User Guide](./user-guide/README.md)
 
@@ -57,6 +57,7 @@ Building **on** PilotSwarm, deploying it, and contributing **to** it.
 **Contributing to PilotSwarm**
 - [Working on PilotSwarm](./developer/contributing/working-on-pilotswarm.md) — repo map, workflows, checklists
 - [TUI implementor guide](./developer/contributing/tui-implementor-guide.md)
+- [High-severity dependency plan](./developer/contributing/high-dependency-remediation.md) — advisory inventory and upgrade batches
 - [Local test spec](./developer/contributing/local-test-spec.md) · [integration test plan](./developer/contributing/local-integration-test-plan.md) · [facts table tests](./developer/contributing/facts-table-tests.md)
 
 ---

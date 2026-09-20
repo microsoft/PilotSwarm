@@ -33,6 +33,7 @@ against the managed environment.
 | Full PostgreSQL baseline plus additive HDB coverage | **Tests** (`tests.yml`), `providers=all` |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a new release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
+| Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
 
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
 Honor authorization already given in the conversation; do not repeatedly ask
@@ -49,7 +50,8 @@ After complete initial coverage, 1-5 failed test cases total may qualify through
 one successful sequential verification of exactly those cases on the same source
 and provider. Six or more failures fail without sequential verification. Both
 results remain visible; incomplete/setup/unhandled failures still block release.
-Release assets are three npm-format tarballs and checksums. There is no npm
+Release assets are three npm-format tarballs, checksums and `LICENSE`. Each new
+tarball embeds the same copyright and permission notice. There is no npm
 publication or starter-image publication. The Azure workflows build and push
 worker/portal images to the configured ACR for deployment, including optional
 updates from main before a release.

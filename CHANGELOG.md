@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Include the full MIT license and both copyright notices in every package;
+  enforce packed contents before release and support additive notice repair
+  for existing releases without replacing their assets or deploying.
+- Align public package, builder and sample guidance with GitHub Release
+  tarballs; retain a concise original-source provenance record.
+- Document all 30 current high-severity dependency alerts and their upgrade
+  batches. The plan does not claim those dependencies have been upgraded.
+
 - Point active SDK/app documentation, shared UI defaults and MCP references at
   `microsoft/PilotSwarm`; use authenticated GitHub Release tarball installation.
 - Move the built-in agent-package import trust prefixes to the Microsoft

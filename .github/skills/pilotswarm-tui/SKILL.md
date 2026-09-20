@@ -64,7 +64,8 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
-  app-specific guide overrides. The Microsoft repository requires read access.
+  app-specific guide overrides. Public source and package downloads do not
+  require repository membership; model and portal credentials are separate.
 - Question events received during reconnect must not reopen questions older
   than the current session snapshot. A durable answer from another writer
   retires its matching pending question. Legacy late-answer wrappers containing
