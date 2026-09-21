@@ -30,7 +30,7 @@ against the managed environment.
 | Reconcile current configuration while retaining existing release images | Same workflow, `release_tag=v<version>` and `reconcile_release_config=true` |
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
 | Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
-| Full PostgreSQL baseline plus additive HDB coverage | **Tests** (`tests.yml`), `providers=all` |
+| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number` |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a new release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
@@ -55,6 +55,14 @@ tarball embeds the same copyright and permission notice. There is no npm
 publication or starter-image publication. The Azure workflows build and push
 worker/portal images to the configured ACR for deployment, including optional
 updates from main before a release.
+
+For pre-merge integration coverage, dispatch **Tests** on main with `pr_number`,
+then review and approve the exact candidate SHA displayed by its selection job.
+This intentionally lets approved candidate code use the integration runner's
+credentials; it is not an automatic privileged fork-PR trigger. Workflow and
+control scripts stay on main, PR candidates use separate hosted checkouts, and
+statuses are attached to the selected SHA. See [PR test procedure](CI.md#maintainer-triggered-tests-before-merging-a-pr).
+This does not deploy an application or replace the release's own test gate.
 
 Inspect workflow status and pending environment approvals, approve only when
 authorized and eligible, and verify rollout health before reporting success.

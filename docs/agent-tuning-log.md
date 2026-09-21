@@ -6,6 +6,20 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-09-22 — Maintainer-approved PR integration tests
+
+- **Agent:** repository `pilotswarm-release`, `2.1.0` to `2.2.0`.
+- **Model tested:** none; maintainer workflow guidance, not a model experiment.
+- **Observed behavior:** full Tests could only target main, preventing
+  maintainers from qualifying reviewed PR code before merging.
+- **Expected behavior:** select a pinned PR head from the trusted main workflow,
+  approve the specific candidate with an explicit CI-credential trust warning,
+  run the unchanged provider coverage, and report on that commit. Keep public
+  fork checks unprivileged and require the release's own merged-source gate.
+- **Validation:** target/permission/stale-head/status tests, candidate execution
+  and source-identity fixtures, and existing provider/qualification regressions.
+  No live PR integration run or model-compliance claim is made.
+
 ## 2026-09-20 — Public release distribution and copyright preservation
 
 - **Agents:** repository release agent `2.0.0` to `2.1.0`; SDK builder `1.7.0`

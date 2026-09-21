@@ -2,6 +2,10 @@ name: Tests
 on:
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: Optional open PR number to test at its pinned head (approval trusts its code with CI credentials). Blank tests main.
+        required: false
+        default: ""
       suite:
         description: Baseline filter, or space-separated test/local/*.test.js paths for targeted HDB diagnostics. Blank runs everything.
         required: false
@@ -26,15 +30,47 @@ concurrency:
   group: ci-provider-database
   cancel-in-progress: false
 jobs:
+  resolve:
+    name: Select source for approval
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      pr_number: ${{ steps.target.outputs.pr_number }}
+      source_sha: ${{ steps.target.outputs.source_sha }}
+      source_repository: ${{ steps.target.outputs.source_repository }}
+      source_directory: ${{ steps.target.outputs.source_directory }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Resolve and announce the immutable source
+        id: target
+        run: node .github/scripts/pr-test-target.mjs resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          TEST_PROVIDERS: ${{ inputs.providers }}
+          TEST_SUITE: ${{ inputs.suite }}
   tests:
-    name: ${{ inputs.providers == 'horizondb' && inputs.suite != '' && 'Targeted HDB diagnostics (not a release gate)' || inputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
+    needs: resolve
+    name: ${{ needs.resolve.outputs.pr_number != '' && format('PR {0} at {1} / {2}', needs.resolve.outputs.pr_number, needs.resolve.outputs.source_sha, inputs.providers) || inputs.providers == 'horizondb' && inputs.suite != '' && 'Targeted HDB diagnostics (not a release gate)' || inputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
       'Baseline tests' }}
-    runs-on: ${{ inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ needs.resolve.outputs.pr_number == '' && inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
     if: github.ref == 'refs/heads/main'
     environment: azure-deploy
     timeout-minutes: ${{ inputs.providers != 'baseline' && 180 || 59 }}
     permissions:
       contents: read
+      pull-requests: read
       id-token: write
     services:
       postgres:
@@ -48,13 +84,32 @@ jobs:
         options: --health-cmd="pg_isready -U postgres" --health-interval=10s
           --health-timeout=5s --health-retries=5
     steps:
-      - name: Checkout
+      - name: Checkout trusted main controls
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout pinned PR candidate
+        if: needs.resolve.outputs.pr_number != ''
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          path: candidate
+          persist-credentials: false
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
+          cache-dependency-path: ${{ needs.resolve.outputs.source_directory }}/package-lock.json
+      - name: Verify the approved source before using private credentials
+        run: node .github/scripts/pr-test-target.mjs verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+          TEST_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TEST_SOURCE_DIRECTORY: ${{ needs.resolve.outputs.source_directory }}
       - name: Azure login with OIDC
         if: inputs.providers != 'baseline'
         uses: azure/login@v3
@@ -65,6 +120,8 @@ jobs:
       - name: Run provider integration tests
         uses: ./.github/actions/provider-tests
         with:
+          working-directory: ${{ needs.resolve.outputs.source_directory }}
+          source-sha: ${{ needs.resolve.outputs.source_sha }}
           providers: ${{ inputs.providers }}
           mode: ${{ inputs.mode }}
           suite: ${{ inputs.suite }}
@@ -75,3 +132,29 @@ jobs:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
           MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
           AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+  report:
+    name: Report result on the pinned PR commit
+    needs: [resolve, tests]
+    if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Record the result without executing candidate code
+        run: node .github/scripts/pr-test-target.mjs report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+          TEST_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TEST_PROVIDERS: ${{ inputs.providers }}
+          TEST_SUITE: ${{ inputs.suite }}
+          TEST_JOB_RESULT: ${{ needs.tests.result }}

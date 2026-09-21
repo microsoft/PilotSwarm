@@ -2,10 +2,15 @@ import { readFileSync } from 'node:fs';
 import { availableParallelism, loadavg } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { requireHorizonConfig } from './run-all-providers.mjs';
 
 function errorCode(error) {
   return /^[A-Z0-9_]{2,40}$/.test(error?.code || '') ? error.code : 'CONNECTION_FAILED';
+}
+
+export function loadPg(cwd = process.cwd()) {
+  return createRequire(resolve(cwd, 'package.json'))('pg');
 }
 
 export async function probeDatabase(connectionString, Client) {
@@ -48,7 +53,7 @@ export function runnerResources(meminfo = readFileSync('/proc/meminfo', 'utf8'))
 async function main() {
   if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('CI health sampling runs only in Actions.');
   const config = requireHorizonConfig(process.env.HORIZONDB_TEST_ENV);
-  const { default: pg } = await import('pg');
+  const pg = loadPg();
   let stopping = false, timer, wake;
   const stop = () => { stopping = true; clearTimeout(timer); wake?.(); };
   process.once('SIGTERM', stop);

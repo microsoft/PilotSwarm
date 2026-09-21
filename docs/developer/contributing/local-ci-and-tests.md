@@ -134,6 +134,15 @@ Other providers can use the external-suite options in
 
 PR checks work without secrets. For live tests and Azure deployment:
 
+Maintainers can run pre-merge integration tests through the main **Tests**
+workflow with `pr_number=<number>`, `providers=all`, `mode=parallel`, and a blank
+`suite`. The source-selection summary pins the PR head before environment
+approval; approving it trusts that candidate's scripts/tests with CI credentials.
+Forks are supported only through this explicit reviewed path, on hosted runners.
+See [the full PR test procedure](../../../.github/CI.md#maintainer-triggered-tests-before-merging-a-pr)
+for stale-head handling and commit-specific result contexts. Do not run that
+workflow merely to install or validate its configuration.
+
 1. Enable Actions and make **PR checks / Basic checks** required on `main`.
 2. Select your own subscription and region. Bootstrap a resource group and
    deployment identity with Contributor and role-assignment permissions at the

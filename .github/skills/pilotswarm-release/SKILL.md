@@ -116,6 +116,17 @@ not proof that a load/concurrency issue was fixed.
 
 ### Standalone diagnosis
 
+For pre-merge integration tests, dispatch **Tests** from `main` with
+`pr_number=<number>`, `providers=all`, `mode=parallel`, and no suite filter.
+The unprivileged selection job pins the reviewed head before environment
+approval. Verify its summary: approval intentionally trusts that candidate's
+install/build/test code with the existing CI credentials, including the Azure
+CI identity; a separate main control checkout is not a sandbox.
+PR candidates run on hosted runners and get SHA-specific `Tests / all` status.
+If the head changes before execution, dispatch and approve a new run; rerunning
+source selection inside an existing run is rejected. A PR result cannot
+substitute for qualification of the merged release candidate.
+
 For HDB SDK failures, run the affected files through the protected **Tests**
 workflow. A requested sequential diagnostic run uses:
 

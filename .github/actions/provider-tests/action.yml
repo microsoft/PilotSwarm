@@ -2,6 +2,12 @@ name: Provider integration tests
 description: Run the public test harness with protected CI infrastructure and a
   mandatory live HorizonDB gate.
 inputs:
+  working-directory:
+    default: "."
+    description: Source checkout to install and test; controls stay in the action checkout
+  source-sha:
+    default: ""
+    description: Tested source SHA (defaults to the workflow SHA for normal main/release runs)
   providers:
     default: baseline
     description: baseline, all, or horizondb
@@ -24,7 +30,8 @@ runs:
   using: composite
   steps:
     - name: Prepare private test configuration
-      run: node .github/scripts/prepare-ci-tests.mjs
+      working-directory: ${{ inputs.working-directory }}
+      run: node "${{ github.action_path }}/../../scripts/prepare-ci-tests.mjs"
       shell: bash
     - name: Configure PostgreSQL connection capacity
       env:
@@ -44,35 +51,47 @@ runs:
       shell: bash
     - name: Open temporary access to dedicated CI HorizonDB
       if: inputs.providers != 'baseline'
-      run: node .github/scripts/azure-ci-database.mjs open
+      run: node "${{ github.action_path }}/../../scripts/azure-ci-database.mjs" open
       shell: bash
     - name: Install dependencies
-      run: npm ci
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TEST_SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+      run: GITHUB_SHA="$TEST_SOURCE_SHA" npm ci
       shell: bash
     - name: Build
-      run: npm run build
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TEST_SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+      run: GITHUB_SHA="$TEST_SOURCE_SHA" npm run build
       shell: bash
     - name: Run tests
+      working-directory: ${{ inputs.working-directory }}
       env:
+        TEST_SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+        CI_CONTROL_SCRIPTS: ${{ github.action_path }}/../../scripts
         TEST_MODE: ${{ inputs.mode }}
         TEST_SUITE: ${{ inputs.suite }}
         TEST_PROVIDERS: ${{ inputs.providers }}
         TEST_HDB_DIAGNOSTIC: ${{ inputs.hdb-diagnostic }}
         TEST_QUALIFY_FAILURES: ${{ inputs.qualify-failures }}
-      run: >
+      run: |
+        # Reports describe the tested checkout, not the workflow's main commit.
+        export GITHUB_SHA="$TEST_SOURCE_SHA"
+
         if [[ "$TEST_SUITE" == -* ]]; then
             echo "Suite must be a test-name filter. Select provider coverage with the providers input." >&2
             exit 1
         fi
 
         if [ "$TEST_PROVIDERS" != "baseline" ]; then
-            node .github/scripts/ci-health.mjs &
+            node "$CI_CONTROL_SCRIPTS/ci-health.mjs" &
             health_pid=$!
             trap 'kill -TERM "$health_pid"; wait "$health_pid"' EXIT
             if [ "$TEST_HDB_DIAGNOSTIC" = "true" ]; then
-                node .github/scripts/run-all-providers.mjs diagnose-hdb
+                node "$CI_CONTROL_SCRIPTS/run-all-providers.mjs" diagnose-hdb
             else
-                node .github/scripts/run-all-providers.mjs
+                node "$CI_CONTROL_SCRIPTS/run-all-providers.mjs"
             fi
             exit "$?"
         fi
@@ -91,9 +110,10 @@ runs:
       shell: bash
     - name: Remove temporary CI database access
       if: always() && inputs.providers != 'baseline'
-      run: node .github/scripts/azure-ci-database.mjs close
+      run: node "${{ github.action_path }}/../../scripts/azure-ci-database.mjs" close
       shell: bash
     - name: Remove runner credentials
       if: always()
+      working-directory: ${{ inputs.working-directory }}
       run: rm -f .env .model_providers.json
       shell: bash
