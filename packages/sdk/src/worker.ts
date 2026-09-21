@@ -842,6 +842,10 @@ export class PilotSwarmWorker {
             this.factStore,
             this.config.workerNodeId,
             this.artifactStore,
+            {
+                beforeTurn: this.config.beforeTurn,
+                afterTurn: this.config.afterTurn,
+            },
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
