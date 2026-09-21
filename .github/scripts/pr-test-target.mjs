@@ -130,7 +130,14 @@ export function githubApi({ token, fetchFn = fetch } = {}) {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) throw new Error(`GitHub ${body === undefined ? 'read' : 'write'} failed (HTTP ${response.status}); response withheld.`);
+    if (!response.ok) {
+      const operation = body === undefined ? 'read'
+        : /\/issues\/\d+\/comments$/.test(path) ? 'PR acknowledgement comment'
+          : /\/statuses\/[a-f0-9]{40}$/.test(path) ? 'commit status update' : 'write';
+      const hint = operation === 'PR acknowledgement comment' && response.status === 403
+        ? ' The trusted resolver job requires pull-requests: write.' : '';
+      throw new Error(`GitHub ${operation} failed (HTTP ${response.status}).${hint} Response withheld.`);
+    }
     try { return await response.json(); }
     catch { throw new Error('GitHub returned unreadable JSON; response withheld.'); }
   };
@@ -175,16 +182,32 @@ export async function main(command, env = process.env, api) {
       state: 'pending', context, description: 'Pinned PR head selected; awaiting approval and integration tests.',
       target_url: `https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}`,
     });
-    if (request.commentId) await api(`repos/${repository}/issues/${target.pr}/comments`, {
-      body: [
-        `Full integration tests requested by @${env.GITHUB_ACTOR} for commit \`${target.sha}\`.`,
-        '',
-        `[Open the Tests run](https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}) and review the selected SHA before approving \`azure-deploy\`.`,
-        'Coverage: complete PostgreSQL baseline plus additive real HorizonDB, parallel, no suite filter.',
-        '',
-        'Approval trusts this candidate with the integration runner credentials; it is not a sandbox. A changed head requires a new request. No release or application deployment is started.',
-      ].join('\n'),
-    });
+    if (request.commentId) {
+      try {
+        await api(`repos/${repository}/issues/${target.pr}/comments`, {
+          body: [
+            `Full integration tests requested by @${env.GITHUB_ACTOR} for commit \`${target.sha}\`.`,
+            '',
+            `[Open the Tests run](https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}) and review the selected SHA before approving \`azure-deploy\`.`,
+            'Coverage: complete PostgreSQL baseline plus additive real HorizonDB, parallel, no suite filter.',
+            '',
+            'Approval trusts this candidate with the integration runner credentials; it is not a sandbox. A changed head requires a new request. No release or application deployment is started.',
+          ].join('\n'),
+        });
+      } catch (error) {
+        // Resolution failure skips the reporting job; do not leave a pending status.
+        try {
+          await api(`repos/${repository}/statuses/${target.sha}`, {
+            state: 'error', context, description: 'PR acknowledgement failed; integration tests were not started.',
+            target_url: `https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}`,
+          });
+        } catch (statusError) {
+          throw new AggregateError([error, statusError],
+            `${error.message} Failed to clear pending status: ${statusError.message}`);
+        }
+        throw error;
+      }
+    }
   } else if (command === 'verify') {
     if (request.commentId) {
       await verifyCommentRequest(request, repository, env.GITHUB_ACTOR, api);

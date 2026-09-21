@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commentTestRequest, verifyCommentRequest, writeOutputs, main } from '../pr-test-target.mjs';
+import { commentTestRequest, verifyCommentRequest, writeOutputs, githubApi, main } from '../pr-test-target.mjs';
 
 const repository = 'microsoft/PilotSwarm';
 const workflowSha = 'a'.repeat(40);
@@ -116,6 +116,44 @@ test('unrecognized comments produce no API calls or candidate outputs', async t 
   assert.equal(existsSync(f.env.GITHUB_STEP_SUMMARY), false);
 });
 
+test('the resolver can acknowledge PRs using its declared permissions, without ordinary issue writes', async t => {
+  const f = fixture(t);
+  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
+  const resolver = workflow.split('\n  resolve:\n')[1].split('\n  tests:\n')[0];
+  const permissions = resolver.split('    permissions:\n')[1].split('    outputs:\n')[0];
+  assert.doesNotMatch(permissions, /issues: write|contents: write/);
+  await main('resolve', f.env, async (path, body) => {
+    if (body !== undefined && path.endsWith('/issues/84/comments')) {
+      assert.match(permissions, /pull-requests: write/, 'PR comments require PR write permission, not issues write');
+    }
+    if (body !== undefined && path.includes('/statuses/')) assert.match(permissions, /statuses: write/);
+    return f.api(path, body);
+  });
+  assert.equal(f.writes.filter(call => call.path.endsWith('/issues/84/comments')).length, 1);
+});
+
+test('acknowledgement 403 closes the pending status and remains a failed resolution', async t => {
+  const f = fixture(t);
+  const denied = githubApi({ token: 'fixture-token', fetchFn: async () => ({
+    ok: false, status: 403, json() { throw new Error('private response must not be read'); },
+  }) });
+  await assert.rejects(main('resolve', f.env, (path, body) => path.endsWith('/issues/84/comments')
+    ? denied(path, body) : f.api(path, body)), /PR acknowledgement comment failed \(HTTP 403\).*pull-requests: write/);
+  assert.deepEqual(f.writes.map(call => call.body.state), ['pending', 'error']);
+  assert(f.writes.every(call => call.path === `repos/${repository}/statuses/${candidateSha}`));
+  assert.match(f.writes[1].body.description, /tests were not started/);
+});
+
+test('failure to clear a pending status reports both write failures explicitly', async t => {
+  const f = fixture(t);
+  await assert.rejects(main('resolve', f.env, (path, body) => {
+    if (path.endsWith('/issues/84/comments')) throw new Error('PR acknowledgement failed (HTTP 403)');
+    if (body?.state === 'error') throw new Error('commit status update failed (HTTP 503)');
+    return f.api(path, body);
+  }), error => error instanceof AggregateError && error.errors.length === 2 &&
+    /acknowledgement.*403.*clear pending status.*503/.test(error.message));
+});
+
 test('author association never substitutes for current repository write permission', async t => {
   for (const permission of ['none', 'read', 'triage']) {
     const f = fixture(t, { ...event, comment: { ...event.comment, author_association: 'OWNER' } });
@@ -202,15 +240,19 @@ test('only enabled test jobs acquire CI concurrency or environment credentials',
   assert.doesNotMatch(workflow, /^concurrency:/m);
   assert.doesNotMatch(workflow, /pull_request_target:|actions: write/);
   assert.match(resolver, /github\.event\.issue\.pull_request && contains\(github\.event\.comment\.body, '\/test all'\)/);
-  assert.match(resolver, /issues: write/);
+  assert.match(resolver, /pull-requests: write/);
+  assert.doesNotMatch(resolver, /issues: write/);
   assert.doesNotMatch(resolver, /ci-provider-database|secrets\.|environment:|id-token:|npm ci/);
   assert.match(tests, /if: github\.ref == 'refs\/heads\/main' && needs\.resolve\.outputs\.enabled == 'true'/);
   assert.match(tests, /concurrency:\s+group: ci-provider-database\s+cancel-in-progress: false/);
   assert.doesNotMatch(tests, /issues: write|statuses: write|contents: write|inputs\./);
+  assert.match(tests, /pull-requests: read/);
+  assert.doesNotMatch(tests, /pull-requests: write/);
   for (const field of ['providers', 'mode', 'suite']) {
     assert(tests.includes(`${field}: \${{ needs.resolve.outputs.${field} }}`));
   }
   assert.match(tests, /qualify-failures:.*needs\.resolve\.outputs\.providers != 'baseline' && needs\.resolve\.outputs\.suite == ''/);
   assert.match(report, /needs\.resolve\.outputs\.enabled == 'true'/);
   assert.doesNotMatch(report, /inputs\.|issues: write|id-token:|secrets\./);
+  assert.doesNotMatch(report, /pull-requests: write/);
 });

@@ -39,6 +39,13 @@ There is no separate GitHub App or personal-token setup: the same Tests
 workflow handles `issue_comment` from main without executing candidate code
 in the comment-handling job.
 
+The trusted selection job needs `pull-requests: write` to post its PR
+acknowledgement, even though GitHub exposes conversation comments through the
+`issues/.../comments` API. Do not substitute `issues: write` with PR read-only
+permission. Candidate execution retains PR read-only access; only trusted
+control jobs can write comments/statuses. If acknowledgement fails, source
+selection fails and clears its pending status to an error; tests do not start.
+
 Alternatively, dispatch **Tests** from `main`, set `pr_number` to the open PR number, leave
 `suite` blank, select `providers=all` and `mode=parallel`:
 

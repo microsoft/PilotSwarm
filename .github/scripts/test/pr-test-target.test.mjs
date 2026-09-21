@@ -142,6 +142,11 @@ test('GitHub API errors never echo response bodies or credentials', async () => 
   } });
   await assert.rejects(api(`repos/${repository}/pulls/84`), error =>
     /HTTP 403/.test(error.message) && !/fixture-token|sensitive/.test(error.message));
+  await assert.rejects(api(`repos/${repository}/statuses/${candidateSha}`, { state: 'pending' }), error =>
+    /GitHub commit status update failed \(HTTP 403\)/.test(error.message) && !/pull-requests: write/.test(error.message));
+  await assert.rejects(api(`repos/${repository}/issues/84/comments`, { body: 'private candidate summary' }), error =>
+    /GitHub PR acknowledgement comment failed \(HTTP 403\).*pull-requests: write/.test(error.message) &&
+    !/private candidate|fixture-token|sensitive/.test(error.message));
   const unreadable = githubApi({ token: 'fixture-token', fetchFn: async () => ({
     ok: true, json() { throw new Error('sensitive comment body'); },
   }) });
@@ -156,7 +161,7 @@ test('workflow uses main controls, a pinned separate candidate and an isolated s
   const report = workflow.split('\n  report:\n')[1];
   assert.match(workflow, /workflow_dispatch:[\s\S]*pr_number:/);
   assert.doesNotMatch(workflow, /pull_request_target:|workflow_run:/);
-  assert.match(resolver, /pull-requests: read/);
+  assert.match(resolver, /pull-requests: write/);
   assert.doesNotMatch(resolver, /secrets\.|environment:|id-token:|npm ci/);
   assert.match(tests, /environment: azure-deploy/);
   assert.match(tests, /needs\.resolve\.outputs\.pr_number == '' && needs\.resolve\.outputs\.providers == 'horizondb'/);
