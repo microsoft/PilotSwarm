@@ -38,6 +38,44 @@ Workers are trusted backend components and always attach directly to the store:
 const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
 ```
 
+Repository-bound workers can opt into generic turn hooks and compose them with
+the SDK's confined workspace and Git durability primitives:
+
+```ts
+import {
+  PilotSwarmWorker,
+  SessionWorkspaceManager,
+  dehydrateGitWorkspace,
+  hydrateGitWorkspace,
+} from "pilotswarm-sdk";
+
+const workspaces = new SessionWorkspaceManager("C:\\pilotswarm\\workspaces");
+
+const worker = new PilotSwarmWorker({
+  store: process.env.DATABASE_URL,
+  beforeTurn: ({ sessionId, trace }) => hydrateGitWorkspace({
+    enlistmentDir: workspaces.resolve(sessionId).path,
+    blobs: blobsFor(sessionId),
+    state: stateFor(sessionId),
+    targetRef: "origin/main",
+    trace,
+  }),
+  afterTurn: ({ sessionId, trace }) => dehydrateGitWorkspace({
+    enlistmentDir: workspaces.resolve(sessionId).path,
+    blobs: blobsFor(sessionId),
+    state: stateFor(sessionId),
+    trace,
+  }),
+});
+```
+
+`GitBlobIO` and `GitStateIO` are provider-neutral interfaces. Deployment,
+repository placement, credentials, and concrete persistence adapters remain the
+application's responsibility. The durable state row is the commit point:
+workspace artifacts are written first, and hydration ignores artifact epochs
+that were not committed by the state adapter. See
+`examples/repository-workspace-hooks.js` for the minimal composition boundary.
+
 `pilotswarm-sdk` ships PilotSwarm's embedded framework prompt, framework skills, and management plugins inside the package. App code should provide its own `plugin/` directory and worker-side tool handlers on top of that base.
 
 Packages may contain skills, worker tools, MCP servers, authored agent workflows,
