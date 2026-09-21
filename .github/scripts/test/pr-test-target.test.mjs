@@ -142,6 +142,11 @@ test('GitHub API errors never echo response bodies or credentials', async () => 
   } });
   await assert.rejects(api(`repos/${repository}/pulls/84`), error =>
     /HTTP 403/.test(error.message) && !/fixture-token|sensitive/.test(error.message));
+  const unreadable = githubApi({ token: 'fixture-token', fetchFn: async () => ({
+    ok: true, json() { throw new Error('sensitive comment body'); },
+  }) });
+  await assert.rejects(unreadable(`repos/${repository}/issues/comments/456`), error =>
+    /unreadable JSON/.test(error.message) && !/sensitive/.test(error.message));
 });
 
 test('workflow uses main controls, a pinned separate candidate and an isolated status reporter', () => {
@@ -154,7 +159,7 @@ test('workflow uses main controls, a pinned separate candidate and an isolated s
   assert.match(resolver, /pull-requests: read/);
   assert.doesNotMatch(resolver, /secrets\.|environment:|id-token:|npm ci/);
   assert.match(tests, /environment: azure-deploy/);
-  assert.match(tests, /needs\.resolve\.outputs\.pr_number == '' && inputs\.providers == 'horizondb'/);
+  assert.match(tests, /needs\.resolve\.outputs\.pr_number == '' && needs\.resolve\.outputs\.providers == 'horizondb'/);
   assert.match(tests, /name:.*source_sha/);
   assert.match(tests, /ref: \$\{\{ needs\.resolve\.outputs\.source_sha \}\}\s+path: candidate/);
   assert(tests.indexOf('pr-test-target.mjs verify') < tests.indexOf('uses: azure/login'));

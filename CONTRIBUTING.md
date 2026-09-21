@@ -67,8 +67,10 @@ Most contributions live under `packages/sdk/src/`.
 
 ## Continuous Integration
 
-The full test suite is configured as a manual-trigger GitHub Action gated to
-the maintainer. Forks won't auto-run it. Once review converges, a maintainer can
+The full test suite is explicitly maintainer-triggered. Forks won't auto-run it.
+Once review converges, a repository writer/maintainer can post a new standalone
+`/test all` comment on your PR. The bot replies with the pinned SHA and run link;
+environment approval is still required. Alternatively, the maintainer can
 dispatch **Tests** from `main` with your `pr_number`, `providers=all`, and a blank
 `suite`, then approve that exact head SHA. The result appears on the tested
 commit; new commits need a new run. See [maintainer PR testing](.github/CI.md#maintainer-triggered-tests-before-merging-a-pr).

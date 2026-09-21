@@ -545,7 +545,11 @@ Tests use a `withClient()` helper that spins up a co-located worker + client pai
 
 For the Microsoft repository, every PR runs the required **Basic checks**. Ordinary
 merges do not deploy. Maintainers may dispatch **Tests** from main with optional
-`pr_number` for reviewed pre-merge coverage. Resolve and show the exact head
+`pr_number`, or post a new standalone `/test all` PR comment, for reviewed
+pre-merge coverage. Comment handling stays on main, checks the actor's current
+write/maintain/admin permission, and never evaluates comment text as code.
+Only authorized test jobs reserve the CI database concurrency group; unrelated
+comments must not displace queued provider runs. Resolve and show the exact head
 before environment approval; keep control scripts on main and candidate source
 separate, run PRs only on hosted runners, and report the result on that SHA.
 Approval trusts candidate install/build/test code with CI credentials; it is

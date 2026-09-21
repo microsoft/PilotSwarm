@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 2.2.0
+version: 2.3.0
 name: pilotswarm-release
 description: "Prepare and cut Microsoft PilotSwarm releases: validate versions, build, tests, and package contents; publish a GitHub Release with three npm-format tarball assets through GitHub Actions."
 ---
@@ -36,6 +36,7 @@ Run `npm run check:privacy` on staged changes before committing.
 - preserve and report both the initial failures and sequential result; describe accepted recovery as qualified after sequential verification, not a clean initial pass or a proven concurrency fix
 - use standalone targeted Tests runs for diagnosis when needed; they cannot qualify a release without its complete initial-run evidence
 - run maintainer-approved pre-merge coverage with `Tests` on main and `pr_number`; review its pinned head before the environment approval, which trusts the candidate with CI credentials; report the SHA-specific status and never substitute it for testing the merged release source
+- offer a new standalone `/test all` PR comment as the equivalent maintainer entry point; follow the run acknowledgement and retain the explicit pinned-source approval, with no automatic package publication or application deployment
 - verify the Action succeeds and all three package assets, `SHA256SUMS` and `LICENSE` exist before reporting the release complete
 - add missing notices to an existing release only through the additive `release-notices.yml` Action; verify old asset IDs/digests stay unchanged, never repack or deploy as part of notice maintenance
 - monitor the automatic post-publication Azure deployment in the same Action; retry an existing release with `deploy-azure.yml` and its release_tag input

@@ -142,6 +142,10 @@ Forks are supported only through this explicit reviewed path, on hosted runners.
 See [the full PR test procedure](../../../.github/CI.md#maintainer-triggered-tests-before-merging-a-pr)
 for stale-head handling and commit-specific result contexts. Do not run that
 workflow merely to install or validate its configuration.
+For the same full-coverage path directly from a PR, post a new standalone
+`/test all` comment as a repository writer/maintainer, follow the acknowledgement
+link and approve the pinned candidate. This uses the built-in Actions token;
+no additional GitHub App or personal token is required.
 
 1. Enable Actions and make **PR checks / Basic checks** required on `main`.
 2. Select your own subscription and region. Bootstrap a resource group and
