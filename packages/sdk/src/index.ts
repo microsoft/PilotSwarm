@@ -79,6 +79,7 @@ export {
 export type { GitStoreOptions, RunnerOptions, RunGit } from "./git-store.js";
 export {
     dehydrateGitWorkspace,
+    gitWorkspaceBlobKey,
     hydrateGitWorkspace,
 } from "./git-workspace.js";
 export type {
@@ -86,9 +87,10 @@ export type {
     DehydrateResult,
     GitBlobIO,
     GitStateIO,
-    GitWorkspaceBlobKind,
+    GitWorkspaceArtifactKind,
     GitWorkspaceMeta,
     GitWorkspaceState,
+    GitWorkspaceVersion,
     HydrateOptions,
     HydrateResult,
 } from "./git-workspace.js";

@@ -1335,7 +1335,19 @@ export function registerActivities(
         let finalTurnResult: TurnResult | null = null;
 
         try {
-            finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
+            finalTurnResult = await sessionManager.withRunTurnLock(
+                input.sessionId,
+                "runTurn",
+                () => runWithTurnLifecycleHooks({
+                    beforeTurn: turnHooks?.beforeTurn,
+                    afterTurn: turnHooks?.afterTurn,
+                    context: {
+                        sessionId: input.sessionId,
+                        turnIndex: input.turnIndex,
+                        config: input.config,
+                        trace,
+                    },
+                    run: async () => {
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
         // Only active when the orchestration (1.0.57+) supplied snapshot
         // coordinates AND the store implements the versioned CAS contract.
@@ -3936,7 +3948,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             return { ...bodyResult, snapshotVersion: committed.version };
         }
         return bodyResult;
-            }, { trace });
+                    },
+                }),
+                { trace },
+            );
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
             }
@@ -4007,25 +4022,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
-    const runTurnHandler = async (
-        activityCtx: any,
-        input: Parameters<typeof runTurnBodyHandler>[1],
-    ): Promise<TurnResult> => runWithTurnLifecycleHooks({
-        beforeTurn: turnHooks?.beforeTurn,
-        afterTurn: turnHooks?.afterTurn,
-        context: {
-            sessionId: input.sessionId,
-            turnIndex: input.turnIndex,
-            config: input.config,
-            trace: (message) => activityCtx.traceInfo(message),
-        },
-        run: () => runTurnBodyHandler(activityCtx, input),
-    });
-
-    registerHandoffActivity(runtime, "runTurn", runTurnHandler);
+    registerHandoffActivity(runtime, "runTurn", runTurnBodyHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
-    registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
+    registerHandoffActivity(runtime, "runTurn2", runTurnBodyHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

@@ -38,43 +38,54 @@ Workers are trusted backend components and always attach directly to the store:
 const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
 ```
 
-Repository-bound workers can opt into generic turn hooks and compose them with
-the SDK's confined workspace and Git durability primitives:
+Repository-bound applications can use confined workspaces and the SDK's
+provider-neutral Git durability primitives:
 
 ```ts
 import {
-  PilotSwarmWorker,
   SessionWorkspaceManager,
   dehydrateGitWorkspace,
   hydrateGitWorkspace,
 } from "pilotswarm-sdk";
+import path from "node:path";
 
 const workspaces = new SessionWorkspaceManager("C:\\pilotswarm\\workspaces");
+const enlistmentDir = path.join(workspaces.resolve(sessionId).path, "repository");
 
-const worker = new PilotSwarmWorker({
-  store: process.env.DATABASE_URL,
-  beforeTurn: ({ sessionId, trace }) => hydrateGitWorkspace({
-    enlistmentDir: workspaces.resolve(sessionId).path,
-    blobs: blobsFor(sessionId),
-    state: stateFor(sessionId),
-    targetRef: "origin/main",
-    trace,
-  }),
-  afterTurn: ({ sessionId, trace }) => dehydrateGitWorkspace({
-    enlistmentDir: workspaces.resolve(sessionId).path,
-    blobs: blobsFor(sessionId),
-    state: stateFor(sessionId),
-    trace,
-  }),
+const hydrated = await hydrateGitWorkspace({
+  enlistmentDir,
+  blobs: blobsFor(sessionId),
+  state: stateFor(sessionId),
+  targetRef: "origin/main",
+});
+
+// Run repository-bound work under the application's durable coordinator.
+
+await dehydrateGitWorkspace({
+  enlistmentDir,
+  blobs: blobsFor(sessionId),
+  state: stateFor(sessionId),
+  expectedState: hydrated,
 });
 ```
 
-`GitBlobIO` and `GitStateIO` are provider-neutral interfaces. Deployment,
+`GitBlobIO` and `GitStateIO` are provider-neutral interfaces. Blob keys include
+the checkpoint epoch and a unique generation so concurrent attempts cannot
+overwrite each other's artifacts. The state adapter's atomic `compareAndSet`
+selects the committed generation. Deployment,
 repository placement, credentials, and concrete persistence adapters remain the
 application's responsibility. The durable state row is the commit point:
 workspace artifacts are written first, and hydration ignores artifact epochs
-that were not committed by the state adapter. See
-`examples/repository-workspace-hooks.js` for the minimal composition boundary.
+that were not committed by the state adapter.
+Checkpointing does not mutate the caller's Git index; restored uncommitted
+changes are intentionally materialized as unstaged working-tree changes.
+
+`beforeTurn` and `afterTurn` are process-local activity-attempt hooks for setup,
+cleanup, and observability. They are not transaction participants in the SDK's
+versioned snapshot commit. Applications that checkpoint repository state and
+another durable store must coordinate those commits and crash recovery; placing
+`dehydrateGitWorkspace` directly in `afterTurn` does not make the two stores
+atomic.
 
 `pilotswarm-sdk` ships PilotSwarm's embedded framework prompt, framework skills, and management plugins inside the package. App code should provide its own `plugin/` directory and worker-side tool handlers on top of that base.
 
