@@ -1,0 +1,13 @@
+// The public-surface type fixture is a test, so the main tsconfig excludes it —
+// which left its @ts-expect-error assertions inert: a line that STOPPED erroring
+// would never have been reported. This config type-checks it against the built
+// public declarations exactly as an external consumer would see them.
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "rootDir": "."
+    },
+    "include": ["test/types/**/*.ts"],
+    "exclude": ["node_modules", "dist"]
+}

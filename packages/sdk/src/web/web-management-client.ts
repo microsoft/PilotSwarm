@@ -889,6 +889,10 @@ export class WebPilotSwarmManagementClient {
     // web mode gets a WEB_MODE_UNSUPPORTED error naming the alternative,
     // never a silent no-op or a bare TypeError.
 
+    getHostServices(): never {
+        throw webModeUnsupported("getHostServices", "CMS borrowing and model invocation are trusted host-only capabilities");
+    }
+
     listSessionsVisible(): never {
         throw webModeUnsupported("listSessionsVisible", "listSessions is already viewer-scoped by the server in web mode");
     }

@@ -18,6 +18,10 @@ const maxWorkers = Number.isFinite(configuredWorkers) && configuredWorkers > 0
 export default defineConfig({
     root: path.resolve(root),
     test: {
+        // Vitest 4's default reporter stops listing passing files, which hides
+        // which caller-owned files an external qualification run actually
+        // executed. Consumers are running this to prove exactly that.
+        reporters: ["verbose"],
         include: ["**/*.test.{js,mjs,ts,mts}"],
         exclude: ["**/node_modules/**"],
         environment: "node",

@@ -31,14 +31,20 @@ async function harness(run) {
 }
 
 describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, synthetic HTTP)", () => {
-    it("reproduces the unmodified CLI's rejected snippy field", { timeout: 30_000 }, async () => {
+    // The BYOK shim exists because CLI 1.0.83 leaked CAPI's `snippy` field into
+    // chat completions, which Azure rejects. This pins the unmodified CLI's
+    // actual behaviour so the shim's removal criterion is checked, not assumed:
+    // on the pinned 1.0.85 the leak is gone, so an unshimmed client now
+    // succeeds against a server that rejects the field.
+    it("pins the unmodified CLI's snippy behaviour", { timeout: 30_000 }, async () => {
         await harness(async ({ server, clients, options }) => {
             const client = new CopilotClient({ ...options, connection: RuntimeConnection.forStdio() });
             clients.push(client);
             const session = await client.createSession({ model: MODEL, provider: { type: "openai", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key" }, onPermissionRequest: () => ({ kind: "approved" }) });
-            await expect(session.sendAndWait({ prompt: "Say hello" }, 20_000)).rejects.toThrow(/snippy/);
+            expect((await client.getStatus()).version).toBe("1.0.85");
+            await session.sendAndWait({ prompt: "Say hello" }, 20_000);
             expect(server.requests.length).toBeGreaterThan(0);
-            expect(server.requests[0].body.snippy).toEqual({ enabled: false });
+            expect(server.requests[0].body.snippy).toBeUndefined();
         });
     });
 
@@ -66,7 +72,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                         handler: async args => { toolCalls.push(args); return args.value; },
                     }] };
                     let session = await client.createSession(config);
-                    expect((await client.getStatus()).version).toBe("1.0.83");
+                    expect((await client.getStatus()).version).toBe("1.0.85");
                     const events = [];
                     session.on(event => events.push(event));
                     const first = await session.sendAndWait({ prompt: "call compat_echo with value violet-739" }, 20_000);

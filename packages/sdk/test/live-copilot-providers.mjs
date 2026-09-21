@@ -50,7 +50,7 @@ await Promise.all(models.map(async ref => {
         clients.push(client);
         let session = await client.createSession(config);
         row.runtime = await client.getStatus();
-        assert.equal(row.runtime.version, "1.0.83", "actual runtime must match the pinned CLI");
+        assert.equal(row.runtime.version, "1.0.85", "actual runtime must match the pinned CLI");
         async function turn(prompt, label) {
             const start = performance.now();
             const usage = [];

@@ -143,6 +143,8 @@ See the AKS guide below for rollout order and the accepted system-session except
   `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md`
 - Portal guide:
   `https://github.com/microsoft/PilotSwarm/blob/main/packages/app/web/README.md`
+- Ephemeral sessions:
+  `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/ephemeral-sessions.md`
 - CLI agent guide:
   `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-agents.md`
 - SDK guide:

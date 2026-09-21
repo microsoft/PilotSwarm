@@ -9,6 +9,8 @@ import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { buildByokModelCapabilities } from "./copilot-model-options.js";
+export { buildByokModelCapabilities } from "./copilot-model-options.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
@@ -377,78 +379,6 @@ function buildEffectivePromptLayers(
  *
  * @internal
  */
-/**
- * Capability declaration for a model the Copilot catalog does not know.
- *
- * Returns undefined when the catalog says nothing useful — an empty override
- * is worse than none, since it would assert "no vision, no reasoning" rather
- * than "unknown".
- *
- * @internal Exported for test/unit/byok-context-window.test.mjs only.
- */
-export function buildByokModelCapabilities(
-    descriptor: any,
-    contextTier?: string,
-): { supports?: Record<string, boolean>; limits?: Record<string, unknown> } | undefined {
-    if (!descriptor) return undefined;
-
-    const supports: Record<string, boolean> = {};
-    if (Array.isArray(descriptor.supportedReasoningEfforts) && descriptor.supportedReasoningEfforts.length > 0) {
-        supports.reasoningEffort = true;
-    }
-    if (descriptor.vision) supports.vision = true;
-
-    const limits: Record<string, unknown> = {};
-    const sizes = descriptor.contextWindowSizes;
-    if (sizes && typeof sizes === "object") {
-        // Prefer the session's tier, else the largest declared — the catalog
-        // is stating what the model can do, not what this turn will use.
-        const tierValue = contextTier ? sizes[contextTier] : undefined;
-        const window = Number.isFinite(tierValue)
-            ? Number(tierValue)
-            : Math.max(...Object.values(sizes).map((v) => Number(v)).filter((v) => Number.isFinite(v)), 0);
-        if (window > 0) {
-            limits.max_context_window_tokens = window;
-            // max_prompt_tokens is the one that actually does anything.
-            // Measured against @github/copilot-sdk 1.0.9 with kimi-k3, three
-            // arms, one message each, reading session.usage_info.tokenLimit:
-            //   max_context_window_tokens alone -> 128000 (the runtime default)
-            //   max_prompt_tokens alone         -> 1048576
-            //   both                            -> 1048576
-            // tokenLimit is what the child process divides by to decide when to
-            // compact, so without this line the declaration changes nothing and
-            // a 1M model still compacts at ~102K.
-            limits.max_prompt_tokens = window;
-        }
-    }
-    if (descriptor.vision && typeof descriptor.vision === "object") {
-        const v: Record<string, unknown> = {};
-        if (Number.isFinite(descriptor.vision.maxImages)) v.max_prompt_images = Number(descriptor.vision.maxImages);
-        if (Number.isFinite(descriptor.vision.maxImageBytes)) v.max_prompt_image_size = Number(descriptor.vision.maxImageBytes);
-        if (Array.isArray(descriptor.vision.supportedMediaTypes)) v.supported_media_types = descriptor.vision.supportedMediaTypes;
-        if (Object.keys(v).length > 0) limits.vision = v;
-    }
-
-    // `limits` is the only part that does real work, so a supports-only block
-    // is dropped entirely.
-    //
-    // Declaring supports.reasoningEffort does NOT make the runtime send
-    // reasoning_effort for a BYOK provider — measured five ways, see the note
-    // at the sessionConfig call site. So a block carrying only `supports`
-    // buys nothing, while still overriding runtime state for every BYOK model
-    // in every deployment that has no contextWindowSizes in its catalog.
-    // Measured against waldemort's catalog: 8 of its 14 models declare
-    // supportedReasoningEfforts and no contextWindowSizes, so without this
-    // line they would each start receiving {supports:{reasoningEffort:true}}
-    // for no gain. A model that really can see gets limits.vision, so vision
-    // declarations still survive.
-    if (Object.keys(limits).length === 0) return undefined;
-    return {
-        ...(Object.keys(supports).length > 0 ? { supports } : {}),
-        limits,
-    };
-}
-
 export class SessionManager {
     /**
      * Resolved inspect viewers, keyed by session id. Static so it is shared

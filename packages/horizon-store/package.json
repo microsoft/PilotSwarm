@@ -37,8 +37,8 @@
         "pilotswarm-sdk": "0.6.0"
     },
     "devDependencies": {
-        "@github/copilot": "1.0.83",
-        "@github/copilot-sdk": "1.0.13",
+        "@github/copilot": "1.0.85",
+        "@github/copilot-sdk": "1.0.14",
         "@types/node": "^24.0.0",
         "@types/pg": "^8.11.10",
         "pilotswarm-sdk": "0.6.0",

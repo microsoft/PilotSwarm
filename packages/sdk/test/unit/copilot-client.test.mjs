@@ -5,8 +5,8 @@ import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatib
 
 test("published dependencies pin the tested SDK and CLI, not just the workspace lock", () => {
     const { dependencies } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-    assert.equal(dependencies["@github/copilot-sdk"], "1.0.13");
-    assert.equal(dependencies["@github/copilot"], "1.0.83");
+    assert.equal(dependencies["@github/copilot-sdk"], "1.0.14");
+    assert.equal(dependencies["@github/copilot"], "1.0.85");
 });
 
 test("only OpenAI/Azure completions clients get the shim; native auth/transports are untouched", () => {
