@@ -89,6 +89,54 @@ test("initializes a detached persistent checkout at the configured ref", async (
     assert.equal(JSON.stringify(state).includes(fixture.origin), false);
 });
 
+test("preclaims a configured session before the first turn", async () => {
+    const fixture = createOrigin();
+    const workspace = new StickyRepositoryWorkspace({
+        repositoryUrl: fixture.origin,
+        directory: fixture.workspace,
+        expectedSessionId: "session-a",
+    });
+
+    const initialized = await workspace.initialize();
+    const acquired = await workspace.acquire("session-a");
+
+    assert.equal(initialized.sessionId, "session-a");
+    assert.equal(acquired.sessionId, "session-a");
+    assert.equal(persistedState(fixture.workspace).sessionId, "session-a");
+});
+
+test("rejects configured session mismatches across turns and restarts", async () => {
+    const fixture = createOrigin();
+    const first = new StickyRepositoryWorkspace({
+        repositoryUrl: fixture.origin,
+        directory: fixture.workspace,
+        expectedSessionId: "session-a",
+    });
+    await first.initialize();
+
+    await assert.rejects(
+        first.acquire("session-b"),
+        /already claimed by session session-a/,
+    );
+
+    const sameSession = new StickyRepositoryWorkspace({
+        repositoryUrl: fixture.origin,
+        directory: fixture.workspace,
+        expectedSessionId: "session-a",
+    });
+    assert.equal((await sameSession.acquire("session-a")).created, false);
+
+    await assert.rejects(
+        new StickyRepositoryWorkspace({
+            repositoryUrl: fixture.origin,
+            directory: fixture.workspace,
+            expectedSessionId: "session-b",
+        }).initialize(),
+        /claim does not match its configured expected session/,
+    );
+    assert.equal(persistedState(fixture.workspace).sessionId, "session-a");
+});
+
 test("fetches an explicit qualified ref that a normal clone does not advertise", async () => {
     const fixture = createOrigin();
     execFileSync(
@@ -267,6 +315,7 @@ test("entrypoint resolves trusted configuration before entering the checkout", (
         source,
         /resolveModelProvidersPath[\s\S]*path\.resolve\(discoveredModelProvidersPath\)/,
     );
+    assert.match(source, /REPOSITORY_SESSION_ID[\s\S]*expectedSessionId/);
     assert.match(source, /await shutdownComplete/);
     assert.doesNotMatch(source, /new Promise\(\(\) => \{\}\)/);
     assert.ok(

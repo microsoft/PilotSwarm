@@ -25,6 +25,7 @@ export interface StickyRepositoryWorkspaceOptions {
     repositoryUrl: string;
     directory: string;
     targetRef?: string | null;
+    expectedSessionId?: string | null;
     runGit?: RunGit;
     trace?: (message: string) => void;
 }
@@ -78,9 +79,11 @@ function validateSessionId(sessionId: string): void {
 }
 
 /**
- * Owns one persistent repository checkout that is permanently claimed by the
- * first session routed to it. The checkout survives process restarts and keeps
- * that session's local commits and working-tree changes on local storage.
+ * Owns one persistent repository checkout that is permanently claimed by one
+ * session. Callers may pre-bind that session during initialization; otherwise
+ * the first session routed to the worker claims it. The checkout survives
+ * process restarts and keeps that session's local commits and working-tree
+ * changes on local storage.
  *
  * This is intentionally a sticky, single-session execution mode. It does not
  * provide cross-worker failover or transactionally coordinate repository state
@@ -90,6 +93,7 @@ export class StickyRepositoryWorkspace {
     readonly repositoryUrl: string;
     readonly directory: string;
     readonly targetRef: string | null;
+    readonly expectedSessionId: string | null;
     readonly beforeTurn: BeforeTurnHook<SerializableSessionConfig>;
 
     private readonly fingerprint: string;
@@ -114,6 +118,12 @@ export class StickyRepositoryWorkspace {
         this.targetRef = String(options.targetRef ?? "").trim() || null;
         if (this.targetRef) {
             normalizeRef(this.targetRef);
+        }
+        this.expectedSessionId = options.expectedSessionId == null
+            ? null
+            : String(options.expectedSessionId);
+        if (this.expectedSessionId !== null) {
+            validateSessionId(this.expectedSessionId);
         }
         this.fingerprint = repositoryFingerprint(repositoryUrl);
         this.git = options.runGit ?? makeRunGit();
@@ -255,7 +265,7 @@ export class StickyRepositoryWorkspace {
                 version: 1,
                 repositoryFingerprint: this.fingerprint,
                 targetRef: this.targetRef,
-                sessionId: null,
+                sessionId: this.expectedSessionId,
             }, temporaryDirectory);
             fs.renameSync(temporaryDirectory, this.directory);
         } catch (error) {
@@ -345,6 +355,14 @@ export class StickyRepositoryWorkspace {
         ) {
             throw new Error(
                 "Repository workspace configuration does not match its persisted ownership state",
+            );
+        }
+        if (
+            this.expectedSessionId !== null
+            && state.sessionId !== this.expectedSessionId
+        ) {
+            throw new Error(
+                "Repository workspace claim does not match its configured expected session",
             );
         }
     }

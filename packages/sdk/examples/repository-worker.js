@@ -68,6 +68,8 @@ async function main() {
         process.env.REPOSITORY_WORKSPACE_DIR ?? "./repository-workspace",
     );
     const targetRef = String(process.env.REPOSITORY_REF ?? "").trim() || null;
+    const expectedSessionId =
+        String(process.env.REPOSITORY_SESSION_ID ?? "").trim() || null;
     const readyFileValue = String(process.env.REPOSITORY_READY_FILE ?? "").trim();
     const readyFile = readyFileValue ? path.resolve(readyFileValue) : null;
     const sessionStateDirValue = String(process.env.SESSION_STATE_DIR ?? "").trim();
@@ -91,6 +93,7 @@ async function main() {
         repositoryUrl,
         directory: repositoryDirectory,
         targetRef,
+        expectedSessionId,
         trace,
     });
 

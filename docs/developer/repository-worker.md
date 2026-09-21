@@ -14,10 +14,12 @@ directory and renamed into place only after checkout and ownership state have
 been written successfully. Explicit refs that are not part of the clone's
 normal branch advertisement are fetched before checkout.
 
-The first turn claims the checkout for its session. The claim is stored in
-`.git/pilotswarm-repository-worker.json`, so local commits and uncommitted files
-remain associated with the same session after a process restart. Turns from a
-different session, or turns configured with a different working directory, fail
+The checkout can be pre-bound to a session with `REPOSITORY_SESSION_ID`. When
+that setting is omitted, the first turn claims the checkout for its session.
+The claim is stored in `.git/pilotswarm-repository-worker.json`, so local
+commits and uncommitted files remain associated with the same session after a
+process restart. Turns from a different session, restarts configured for a
+different session, or turns configured with a different working directory fail
 before repository work begins.
 
 This mode requires:
@@ -42,6 +44,7 @@ npm --workspace packages/sdk run build
 DATABASE_URL=postgresql://... \
 REPOSITORY_URL=https://example.com/org/repository.git \
 REPOSITORY_REF=main \
+REPOSITORY_SESSION_ID=session-id \
 REPOSITORY_WORKSPACE_DIR=/var/lib/pilotswarm/repository \
 PILOTSWARM_WORKER_CONCURRENCY=2 \
 node packages/sdk/examples/repository-worker.js
@@ -57,6 +60,7 @@ Optional worker configuration:
 
 | Variable | Purpose |
 | --- | --- |
+| `REPOSITORY_SESSION_ID` | Optional session to claim before the worker accepts turns |
 | `REPOSITORY_READY_FILE` | Readiness sentinel written after the worker starts |
 | `PLUGIN_DIRS` | Comma-separated plugin directories |
 | `SESSION_STATE_DIR` | PilotSwarm session state directory |
@@ -81,7 +85,8 @@ credential helper and installed build tools remain available to the agent.
 It can also be added to a private deployment as a custom worker workload. The
 operator must provide persistent storage, Git credentials, and scheduling that
 routes the claimed session back to the same worker. Each worker process requires
-its own checkout.
+its own checkout. Automated provisioning should set `REPOSITORY_SESSION_ID` so
+the checkout is claimed deterministically before the first activity arrives.
 
 If the worker is unavailable, its claimed session must wait for that worker to
 return. Another worker cannot safely take over because this mode does not copy
