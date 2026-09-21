@@ -67,6 +67,31 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
+export { SessionWorkspaceManager } from "./session-workspace.js";
+export type { SessionWorkspace } from "./session-workspace.js";
+export {
+    GitStore,
+    Runner,
+    makeRunGit,
+    normalizeRef,
+    resolveTargetRef,
+} from "./git-store.js";
+export type { GitStoreOptions, RunnerOptions, RunGit } from "./git-store.js";
+export {
+    dehydrateGitWorkspace,
+    hydrateGitWorkspace,
+} from "./git-workspace.js";
+export type {
+    DehydrateOptions,
+    DehydrateResult,
+    GitBlobIO,
+    GitStateIO,
+    GitWorkspaceBlobKind,
+    GitWorkspaceMeta,
+    GitWorkspaceState,
+    HydrateOptions,
+    HydrateResult,
+} from "./git-workspace.js";
 export { runWithTurnLifecycleHooks } from "./turn-lifecycle-hooks.js";
 export type {
     AfterTurnContext,
