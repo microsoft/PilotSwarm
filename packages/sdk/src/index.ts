@@ -77,6 +77,11 @@ export {
     resolveTargetRef,
 } from "./git-store.js";
 export type { GitStoreOptions, RunnerOptions, RunGit } from "./git-store.js";
+export { StickyRepositoryWorkspace } from "./repository-worker.js";
+export type {
+    StickyRepositoryWorkspaceOptions,
+    StickyRepositoryWorkspaceStatus,
+} from "./repository-worker.js";
 export {
     dehydrateGitWorkspace,
     gitWorkspaceBlobKey,

@@ -38,6 +38,41 @@ Workers are trusted backend components and always attach directly to the store:
 const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
 ```
 
+### Run a sticky repository worker
+
+`examples/repository-worker.js` is a provider-neutral, source-tree runnable
+headless composition for agents that need a persistent Git checkout:
+
+```bash
+DATABASE_URL=postgresql://... \
+REPOSITORY_URL=https://example.com/org/repository.git \
+REPOSITORY_REF=main \
+REPOSITORY_WORKSPACE_DIR=/var/lib/pilotswarm/repository \
+PILOTSWARM_WORKER_CONCURRENCY=1 \
+node packages/sdk/examples/repository-worker.js
+```
+
+The worker clones and pins the repository before it becomes ready, changes the
+process working directory to that checkout, and binds the checkout to the first
+session it receives. The binding is stored under `.git`, so local commits and
+uncommitted files remain available to that session after a process restart. A
+different session is rejected instead of resetting or contaminating the
+checkout, and a session that explicitly requests another working directory is
+rejected before the turn starts.
+
+Each workspace must be owned by exactly one worker process and
+`PILOTSWARM_WORKER_CONCURRENCY` must be `1`. Set
+`REPOSITORY_READY_FILE` when an external supervisor needs a readiness sentinel.
+`PLUGIN_DIRS`, `GITHUB_TOKEN`, `LOG_LEVEL`, and `SESSION_STATE_DIR` are handled
+the same way as the generic worker example. Supply repository credentials
+through the Git execution environment or credential helper; credential-bearing
+HTTP URLs are rejected.
+
+This sticky mode deliberately does not provide cross-worker failover or make
+Git state atomic with the PilotSwarm session snapshot. Use the durable
+repository workspace primitives when the deployment requires portable
+checkpoints.
+
 Repository-bound applications can use confined workspaces and the SDK's
 provider-neutral Git durability primitives:
 
