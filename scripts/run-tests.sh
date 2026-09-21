@@ -665,7 +665,7 @@ run_sdk_unit_tests() {
     # The public-surface type fixture is a test too. The main tsconfig excludes
     # test/, so without this its @ts-expect-error assertions never compile and
     # a directive that stopped erroring would go unreported.
-    (cd "$SDK_DIR" && npm run --silent test:types) \
+    (cd "$REPO_ROOT/$SDK_DIR" && npm run --silent test:types) \
         || { echo "❌ SDK public type fixture failed"; exit 1; }
     record_run_phase "SDK unit tests" "PASS"
     (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build) \
