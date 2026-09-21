@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { probeDatabase, runnerResources } from '../ci-health.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { probeDatabase, runnerResources, loadPg } from '../ci-health.mjs';
+
+test('trusted health sampler resolves pg from the installed candidate checkout', t => {
+  const cwd = mkdtempSync(join(tmpdir(), 'ps-ci-health-candidate-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  mkdirSync(join(cwd, 'node_modules/pg'), { recursive: true });
+  writeFileSync(join(cwd, 'package.json'), '{"type":"module"}');
+  writeFileSync(join(cwd, 'node_modules/pg/index.js'), 'module.exports = { candidateDriver: true };');
+  assert.equal(loadPg(cwd).candidateDriver, true);
+});
 
 function clientFixture({ failureAt, code } = {}) {
   const state = { ended: false };

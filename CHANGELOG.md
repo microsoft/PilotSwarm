@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let maintainers dispatch full Tests for a reviewed, pinned PR head before
+  merging, with trusted main controls, protected approval, hosted candidate
+  runners and commit-specific results. Default main and release behavior remain
+  unchanged; PR runs do not publish or deploy.
+
 - Include the full MIT license and both copyright notices in every package;
   enforce packed contents before release and support additive notice repair
   for existing releases without replacing their assets or deploying.

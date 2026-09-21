@@ -544,7 +544,14 @@ Tests use a `withClient()` helper that spins up a co-located worker + client pai
 ### Pre-Deploy Gate
 
 For the Microsoft repository, every PR runs the required **Basic checks**. Ordinary
-merges do not deploy. Use **Deploy Azure stamp** for an optional update from main
+merges do not deploy. Maintainers may dispatch **Tests** from main with optional
+`pr_number` for reviewed pre-merge coverage. Resolve and show the exact head
+before environment approval; keep control scripts on main and candidate source
+separate, run PRs only on hosted runners, and report the result on that SHA.
+Approval trusts candidate install/build/test code with CI credentials; it is
+not a sandbox. Do not expose this path through `pull_request_target`, silently
+retarget an approved run, or reuse PR results as merged-release qualification.
+See `.github/CI.md`. Use **Deploy Azure stamp** for an optional update from main
 or an existing published `release_tag`. All Azure mutations for deployments and
 CI infrastructure run through GitHub Actions; local commands are for read-only
 inspection and local development only.

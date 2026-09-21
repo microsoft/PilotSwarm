@@ -257,6 +257,24 @@ test("complete all-provider coverage qualifies five failures total, including HD
     assert.equal(f.state.verifications, 4);
 });
 
+test("qualification attributes every phase to the PR source rather than trusted workflow source", t => {
+    const f = qualificationFixture(t, [1, 0, 0, 0]);
+    f.input.env.GITHUB_WORKFLOW_SHA = "a".repeat(40);
+    f.input.env.GITHUB_SHA = "b".repeat(40);
+    runAllProviders({ ...f.input, run: f.run });
+    const result = JSON.parse(readFileSync(join(f.state.resultsDir, "qualification.json"), "utf8"));
+    assert.equal(result.status, "qualified");
+    assert.equal(result.sourceSha, "b".repeat(40));
+    for (const row of f.state.rows) {
+        assert.equal(row.env.GITHUB_SHA, "b".repeat(40));
+        assert.equal(row.env.GITHUB_WORKFLOW_SHA, "a".repeat(40));
+    }
+    for (const initial of result.initial) {
+        const report = JSON.parse(readFileSync(join(f.state.resultsDir, `${initial.report}.health.json`), "utf8"));
+        assert.equal(report.sourceSha, "b".repeat(40));
+    }
+});
+
 test("six failures across provider phases never launch sequential verification", t => {
     const f = qualificationFixture(t, [0, 3, 0, 3]);
     assert.throws(() => runAllProviders({ ...f.input, run: f.run }), /exceed the limit of 5/);

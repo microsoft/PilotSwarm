@@ -68,8 +68,10 @@ Most contributions live under `packages/sdk/src/`.
 ## Continuous Integration
 
 The full test suite is configured as a manual-trigger GitHub Action gated to
-the maintainer. Forks won't auto-run it. When you open a PR, the maintainer
-will run the suite once review converges.
+the maintainer. Forks won't auto-run it. Once review converges, a maintainer can
+dispatch **Tests** from `main` with your `pr_number`, `providers=all`, and a blank
+`suite`, then approve that exact head SHA. The result appears on the tested
+commit; new commits need a new run. See [maintainer PR testing](.github/CI.md#maintainer-triggered-tests-before-merging-a-pr).
 
 You can run the full local suite at any time:
 

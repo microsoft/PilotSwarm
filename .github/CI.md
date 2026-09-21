@@ -5,7 +5,8 @@ For installation and runnable local/CI setup steps, see [Local tests and CI setu
 Every pull request runs **PR checks / Basic checks** without cloud credentials:
 workspace builds, deployment tooling, CI policy checks, SDK API/unit tests and
 application unit tests. Forks use the same checks. Full live integration runs
-are restricted to trusted `main` and the protected `azure-deploy` environment.
+use workflow/control code from trusted `main` and the protected `azure-deploy`
+environment. Maintainers may explicitly select a reviewed PR head as test source.
 
 Release packaging validates the root and all package-local `LICENSE` files,
 then checks the complete notice inside each actual tarball before publication.
@@ -13,6 +14,64 @@ The release has three tarballs, `SHA256SUMS` (covering those tarballs), and a
 standalone `LICENSE`. **Add release license notice** is a separate manual,
 main-only protected workflow for additive notice maintenance on an existing
 release. It preserves existing asset identities/digests and performs no deploy.
+
+## Maintainer-triggered tests before merging a PR
+
+Dispatch **Tests** from `main`, set `pr_number` to the open PR number, leave
+`suite` blank, select `providers=all` and `mode=parallel`:
+
+```bash
+gh workflow run tests.yml --repo microsoft/PilotSwarm --ref main \
+  -f pr_number=84 -f providers=all -f mode=parallel
+```
+
+The UI equivalent is **Actions -> Tests -> Run workflow**, workflow branch
+`main`, with those inputs. A blank PR number retains the normal main run.
+Both same-repository and fork PRs targeting `main` are supported.
+
+Before requesting environment approval, a credential-free job validates
+maintainer/write access and resolves the PR's exact head SHA. Its summary shows
+the source repository, candidate commit and trusted workflow commit. The gated
+test job includes the full candidate SHA in its name. Review that snapshot
+before approving `azure-deploy`.
+
+**Approval means trusting that code, including dependency-install scripts,
+build scripts and tests, with the existing integration runner's credentials:
+model/database credentials and the Azure identity used for CI database access.**
+This is not an automatic fork-PR job or a sandbox for unreviewed contributions.
+The separate trusted checkout prevents accidentally selecting a PR's workflow,
+credential-preparation or qualification scripts; it does not make malicious
+candidate code safe on the same machine. Do not approve an unreviewed SHA.
+
+The approved candidate is checked out separately at its pinned SHA. Before
+private configuration or Azure login, the workflow rechecks that the PR is
+still open, its head is unchanged, and the checkout matches. If it changed while
+approval was pending, dispatch a new run and approve the new commit. This tests
+the PR **head**, not a synthetic merge result with the latest base.
+
+PR runs always use fresh GitHub-hosted runners, including `providers=horizondb`;
+they never use `PROVIDER_TEST_RUNNER`. The shared CI-database concurrency lock,
+default eight-file parallelism, real HDB preflight and bounded qualification
+policy remain unchanged. The tested processes and their qualification reports
+carry the candidate SHA, separately from the workflow's main SHA.
+
+A separate trusted job posts `Tests / all`, `Tests / baseline`, or
+`Tests / horizondb` on that exact PR commit, with a link to the workflow.
+Filtered runs have a distinct ` (filtered)` context. A successful status may
+mean an initial pass or accepted sequential qualification: consult the run
+summary for **PASSED** versus **QUALIFIED**. Cancellation, rejected/skipped
+execution and failures do not produce success. The status-writing token never
+enters the candidate test job.
+
+Dispatch a new workflow to select a new head. Rerunning source selection within
+an existing PR run is rejected so it cannot silently select a different SHA.
+Rerunning only a failed test job retains its original resolved SHA and rechecks
+the head and actor before running. A newer PR commit never inherits the old
+commit's status.
+
+These runs neither publish packages nor deploy an application. Successful PR
+tests are review evidence; **Create release** still qualifies its own captured,
+merged source commit rather than reusing a pre-merge result.
 
 ## Dedicated provider database
 
@@ -120,7 +179,7 @@ The release gate runs the complete baseline on its local Docker PostgreSQL
 service, then the additive tests against remote HorizonDB. It does not require
 an Azure runner or a complete second suite on HDB.
 
-Full-suite `providers=horizondb` with an empty `suite` is optional and explicitly dispatched. Only this
+Full-suite `providers=horizondb` with an empty `suite` on **main source** is optional and explicitly dispatched. Only this
 mode uses the repository or organization Actions variable `PROVIDER_TEST_RUNNER`
 to select a Linux/Docker runner near the dedicated database. Leave it unset to
 use a standard GitHub-hosted runner.
@@ -145,7 +204,8 @@ access. For GitHub-hosted runners, [Azure private networking](https://docs.githu
 places supported larger runners in the subnet's region. A dedicated ephemeral
 self-hosted runner is another option. Keep its infrastructure under the selected
 deployment provider; never run untrusted PR jobs on a privileged deployment
-runner. These protected provider/release workflows run only from `main`.
+runner. These protected provider/release workflows run only from `main`;
+approved PR-source tests still use hosted runners.
 Store actual labels and infrastructure identifiers in configuration, not these
 templates. Setting a label does not provision or grant access to a runner.
 
