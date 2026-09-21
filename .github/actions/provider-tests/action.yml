@@ -55,11 +55,15 @@ runs:
       shell: bash
     - name: Install dependencies
       working-directory: ${{ inputs.working-directory }}
-      run: npm ci
+      env:
+        TEST_SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+      run: GITHUB_SHA="$TEST_SOURCE_SHA" npm ci
       shell: bash
     - name: Build
       working-directory: ${{ inputs.working-directory }}
-      run: npm run build
+      env:
+        TEST_SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+      run: GITHUB_SHA="$TEST_SOURCE_SHA" npm run build
       shell: bash
     - name: Run tests
       working-directory: ${{ inputs.working-directory }}

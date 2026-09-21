@@ -176,6 +176,8 @@ test('composite action executes candidate tests with candidate identity and main
     assert(text.includes(`/scripts/${script}.mjs`) || text.includes(`$CI_CONTROL_SCRIPTS/${script}.mjs`));
   }
   assert.doesNotMatch(text, /node \.github\/scripts\//);
+  assert.match(text, /run: GITHUB_SHA="\$TEST_SOURCE_SHA" npm ci/);
+  assert.match(text, /run: GITHUB_SHA="\$TEST_SOURCE_SHA" npm run build/);
   const block = text.split('    - name: Run tests\n')[1].split('    - name: Remove temporary')[0];
   const script = block.match(/      run: \|\n((?: {8}.*\n|\n)+)/)[1]
     .split('\n').map(line => line.slice(8)).join('\n');
