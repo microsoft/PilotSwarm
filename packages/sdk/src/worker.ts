@@ -841,6 +841,10 @@ export class PilotSwarmWorker {
             this._rawLoadedAgents,
             this.factStore,
             this.config.workerNodeId,
+            {
+                beforeTurn: this.config.beforeTurn,
+                afterTurn: this.config.afterTurn,
+            },
             this.artifactStore,
         );
 

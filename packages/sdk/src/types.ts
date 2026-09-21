@@ -758,6 +758,10 @@ export interface SessionPolicy {
 
 export interface PilotSwarmWorkerOptions {
     store: string;
+    /** Runs before each complete run-turn activity attempt. */
+    beforeTurn?: import("./turn-lifecycle-hooks.js").BeforeTurnHook<SerializableSessionConfig>;
+    /** Runs after each complete run-turn activity attempt settles. */
+    afterTurn?: import("./turn-lifecycle-hooks.js").AfterTurnHook<SerializableSessionConfig, TurnResult>;
     /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a

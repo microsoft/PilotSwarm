@@ -33,6 +33,21 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
+export { StickyRepositoryWorkspace } from "./repository-worker.js";
+export type {
+    StickyRepositoryWorkspaceOptions,
+    StickyRepositoryWorkspaceStatus,
+} from "./repository-worker.js";
+export { runWithTurnLifecycleHooks } from "./turn-lifecycle-hooks.js";
+export type {
+    AfterTurnContext,
+    AfterTurnHook,
+    BeforeTurnHook,
+    RunWithTurnLifecycleHooksOptions,
+    TurnLifecycleContext,
+    TurnLifecycleHooks,
+    TurnLifecycleStatus,
+} from "./turn-lifecycle-hooks.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
