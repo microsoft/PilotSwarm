@@ -36,8 +36,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
-      issues: write
+      # PR conversation comments use the issues endpoint but need PR write access.
+      pull-requests: write
       statuses: write
     outputs:
       enabled: ${{ steps.target.outputs.enabled }}

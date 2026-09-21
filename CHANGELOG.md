@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the `/test all` resolver's PR-comment permission and identify failed
+  GitHub operations without exposing response bodies. A failed acknowledgement
+  no longer leaves a pending status implying tests are still running.
+
 - Accept maintainer `/test all` PR comments as a shortcut to the existing
   pinned-head, approval-gated all-provider Tests workflow, with an
   acknowledgement/run link and no extra GitHub App or personal token.
