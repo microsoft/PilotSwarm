@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Accept maintainer `/test all` PR comments as a shortcut to the existing
+  pinned-head, approval-gated all-provider Tests workflow, with an
+  acknowledgement/run link and no extra GitHub App or personal token.
+
 - Let maintainers dispatch full Tests for a reviewed, pinned PR head before
   merging, with trusted main controls, protected approval, hosted candidate
   runners and commit-specific results. Default main and release behavior remain

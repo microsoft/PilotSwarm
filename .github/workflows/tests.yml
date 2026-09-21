@@ -1,5 +1,7 @@
 name: Tests
 on:
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -26,24 +28,26 @@ on:
           - baseline
           - all
           - horizondb
-concurrency:
-  group: ci-provider-database
-  cancel-in-progress: false
 jobs:
   resolve:
     name: Select source for approval
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && contains(github.event.comment.body, '/test all')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+      issues: write
       statuses: write
     outputs:
+      enabled: ${{ steps.target.outputs.enabled }}
       pr_number: ${{ steps.target.outputs.pr_number }}
       source_sha: ${{ steps.target.outputs.source_sha }}
       source_repository: ${{ steps.target.outputs.source_repository }}
       source_directory: ${{ steps.target.outputs.source_directory }}
+      providers: ${{ steps.target.outputs.providers }}
+      mode: ${{ steps.target.outputs.mode }}
+      suite: ${{ steps.target.outputs.suite }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -59,15 +63,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           TEST_PROVIDERS: ${{ inputs.providers }}
+          TEST_MODE: ${{ inputs.mode }}
           TEST_SUITE: ${{ inputs.suite }}
   tests:
     needs: resolve
-    name: ${{ needs.resolve.outputs.pr_number != '' && format('PR {0} at {1} / {2}', needs.resolve.outputs.pr_number, needs.resolve.outputs.source_sha, inputs.providers) || inputs.providers == 'horizondb' && inputs.suite != '' && 'Targeted HDB diagnostics (not a release gate)' || inputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
+    name: ${{ needs.resolve.outputs.pr_number != '' && format('PR {0} at {1} / {2}', needs.resolve.outputs.pr_number, needs.resolve.outputs.source_sha, needs.resolve.outputs.providers) || needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite != '' && 'Targeted HDB diagnostics (not a release gate)' || needs.resolve.outputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
       'Baseline tests' }}
-    runs-on: ${{ needs.resolve.outputs.pr_number == '' && inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
-    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
+    if: github.ref == 'refs/heads/main' && needs.resolve.outputs.enabled == 'true'
+    # Only authorized test requests reserve the shared database, not ordinary PR comments.
+    concurrency:
+      group: ci-provider-database
+      cancel-in-progress: false
     environment: azure-deploy
-    timeout-minutes: ${{ inputs.providers != 'baseline' && 180 || 59 }}
+    timeout-minutes: ${{ needs.resolve.outputs.providers != 'baseline' && 180 || 59 }}
     permissions:
       contents: read
       pull-requests: read
@@ -111,7 +120,7 @@ jobs:
           TEST_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           TEST_SOURCE_DIRECTORY: ${{ needs.resolve.outputs.source_directory }}
       - name: Azure login with OIDC
-        if: inputs.providers != 'baseline'
+        if: needs.resolve.outputs.providers != 'baseline'
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -122,11 +131,11 @@ jobs:
         with:
           working-directory: ${{ needs.resolve.outputs.source_directory }}
           source-sha: ${{ needs.resolve.outputs.source_sha }}
-          providers: ${{ inputs.providers }}
-          mode: ${{ inputs.mode }}
-          suite: ${{ inputs.suite }}
-          hdb-diagnostic: ${{ inputs.providers == 'horizondb' && inputs.suite != '' }}
-          qualify-failures: ${{ inputs.providers != 'baseline' && inputs.suite == '' }}
+          providers: ${{ needs.resolve.outputs.providers }}
+          mode: ${{ needs.resolve.outputs.mode }}
+          suite: ${{ needs.resolve.outputs.suite }}
+          hdb-diagnostic: ${{ needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite != '' }}
+          qualify-failures: ${{ needs.resolve.outputs.providers != 'baseline' && needs.resolve.outputs.suite == '' }}
           postgres-container: ${{ job.services.postgres.id }}
         env:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
@@ -135,7 +144,7 @@ jobs:
   report:
     name: Report result on the pinned PR commit
     needs: [resolve, tests]
-    if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.pr_number != ''
+    if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.enabled == 'true' && needs.resolve.outputs.pr_number != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -155,6 +164,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
           TEST_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-          TEST_PROVIDERS: ${{ inputs.providers }}
-          TEST_SUITE: ${{ inputs.suite }}
+          TEST_PROVIDERS: ${{ needs.resolve.outputs.providers }}
+          TEST_SUITE: ${{ needs.resolve.outputs.suite }}
           TEST_JOB_RESULT: ${{ needs.tests.result }}

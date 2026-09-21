@@ -130,7 +130,7 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
-    "${{ needs.resolve.outputs.pr_number == '' && inputs.providers == 'horizondb' && inputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
+    "${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {

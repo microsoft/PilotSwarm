@@ -1,10 +1,44 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const shaPattern = /^[a-f0-9]{40}$/;
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
+
+export function commentTestRequest(event, repository, actor) {
+  if (event.action !== 'created' || !event.issue?.pull_request ||
+      typeof event.comment?.body !== 'string' || event.comment.body.trim() !== '/test all') return null;
+  if (!repositoryPattern.test(repository || '') ||
+      event.repository?.full_name?.toLowerCase() !== repository.toLowerCase() ||
+      !Number.isSafeInteger(event.issue.number) || event.issue.number < 1 ||
+      !Number.isSafeInteger(event.comment.id) || event.comment.id < 1 ||
+      !actor || event.comment.user?.login !== actor || event.sender?.login !== actor) {
+    throw new Error('PR comment identity does not match the workflow repository and actor.');
+  }
+  return { prNumber: String(event.issue.number), commentId: String(event.comment.id),
+    providers: 'all', mode: 'parallel', suite: '' };
+}
+
+export async function verifyCommentRequest(request, repository, actor, api) {
+  const comment = await api(`repos/${repository}/issues/comments/${request.commentId}`);
+  if (!comment || String(comment.id) !== request.commentId || comment.user?.login !== actor ||
+      typeof comment.body !== 'string' || comment.body.trim() !== '/test all' ||
+      comment.issue_url?.toLowerCase() !== `https://api.github.com/repos/${repository}/issues/${request.prNumber}`.toLowerCase()) {
+    throw new Error('The original comment no longer authorizes this PR test request; post a new /test all comment.');
+  }
+}
+
+export function writeOutputs(file, values) {
+  for (const [name, value] of Object.entries(values)) {
+    if (!/^[a-z_]+$/.test(name) || typeof value !== 'string') throw new Error('Invalid workflow output.');
+    const delimiter = `output_${randomBytes(16).toString('hex')}`;
+    appendFileSync(file, /[\r\n]/.test(value)
+      ? `${name}<<${delimiter}\n${value}\n${delimiter}\n`
+      : `${name}=${value}\n`);
+  }
+}
 
 export function testContext(providers, suite = '') {
   if (!['baseline', 'all', 'horizondb'].includes(providers)) throw new Error('Unknown test provider selection.');
@@ -96,32 +130,65 @@ export function githubApi({ token, fetchFn = fetch } = {}) {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) throw new Error(`GitHub ${body === undefined ? 'read' : 'status update'} failed (HTTP ${response.status}); response withheld.`);
-    return response.json();
+    if (!response.ok) throw new Error(`GitHub ${body === undefined ? 'read' : 'write'} failed (HTTP ${response.status}); response withheld.`);
+    try { return await response.json(); }
+    catch { throw new Error('GitHub returned unreadable JSON; response withheld.'); }
   };
 }
 
 export async function main(command, env = process.env, api) {
   if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REF !== 'refs/heads/main' ||
-      env.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
-    throw new Error('Maintainer test selection runs only in the manually dispatched main workflow.');
+      !['workflow_dispatch', 'issue_comment'].includes(env.GITHUB_EVENT_NAME)) {
+    throw new Error('Maintainer test selection runs only in the manually dispatched main workflow or its PR comment trigger.');
   }
   const repository = env.GITHUB_REPOSITORY;
+  const request = env.GITHUB_EVENT_NAME === 'issue_comment'
+    ? commentTestRequest(JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')), repository, env.GITHUB_ACTOR)
+    : { prNumber: env.PR_NUMBER || '', providers: env.TEST_PROVIDERS || 'baseline',
+      mode: env.TEST_MODE || 'parallel', suite: env.TEST_SUITE || '' };
+  if (!request) {
+    if (command !== 'resolve') throw new Error('No supported PR test comment was selected.');
+    writeOutputs(env.GITHUB_OUTPUT, { enabled: 'false' });
+    console.log('Ignoring comment: only a newly created standalone /test all command on a PR is supported.');
+    return;
+  }
+  if (request.commentId && command !== 'resolve' && request.prNumber !== env.PR_NUMBER) {
+    throw new Error('Comment and selected PR differ.');
+  }
   api ||= githubApi({ token: env.GH_TOKEN });
   if (command === 'resolve') {
-    if (env.PR_NUMBER?.trim() && env.GITHUB_RUN_ATTEMPT !== '1') {
-      throw new Error('Dispatch a new PR test run instead of rerunning source selection; the selected SHA must not change within a run.');
+    if (request.prNumber.trim() && env.GITHUB_RUN_ATTEMPT !== '1') {
+      throw new Error('Dispatch a new PR test run or post a new /test all comment instead of rerunning source selection; the selected SHA must not change within a run.');
     }
-    const context = testContext(env.TEST_PROVIDERS, env.TEST_SUITE);
+    if (!['parallel', 'sequential'].includes(request.mode)) throw new Error('Unknown test execution mode.');
+    const context = testContext(request.providers, request.suite);
     const target = await resolveTestTarget({ repository, workflowSha: env.GITHUB_SHA,
-      prNumber: env.PR_NUMBER, actor: env.GITHUB_ACTOR, triggeringActor: env.GITHUB_TRIGGERING_ACTOR, api });
-    appendFileSync(env.GITHUB_OUTPUT, `pr_number=${target.pr}\nsource_sha=${target.sha}\nsource_repository=${target.repository}\nsource_directory=${target.directory}\nstatus_context=${context}\n`);
+      prNumber: request.prNumber, actor: env.GITHUB_ACTOR, triggeringActor: env.GITHUB_TRIGGERING_ACTOR, api });
+    if (request.commentId) await verifyCommentRequest(request, repository, env.GITHUB_ACTOR, api);
+    writeOutputs(env.GITHUB_OUTPUT, { enabled: 'true', pr_number: target.pr, source_sha: target.sha,
+      source_repository: target.repository, source_directory: target.directory, status_context: context,
+      providers: request.providers, mode: request.mode, suite: request.suite });
     appendFileSync(env.GITHUB_STEP_SUMMARY, selectionSummary(target, repository, env.GITHUB_SHA, context));
+    if (request.commentId) appendFileSync(env.GITHUB_STEP_SUMMARY,
+      `Requested by @${env.GITHUB_ACTOR} in [this PR comment](https://github.com/${repository}/pull/${target.pr}#issuecomment-${request.commentId}).\n`);
     if (target.pr) await api(`repos/${repository}/statuses/${target.sha}`, {
       state: 'pending', context, description: 'Pinned PR head selected; awaiting approval and integration tests.',
       target_url: `https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}`,
     });
+    if (request.commentId) await api(`repos/${repository}/issues/${target.pr}/comments`, {
+      body: [
+        `Full integration tests requested by @${env.GITHUB_ACTOR} for commit \`${target.sha}\`.`,
+        '',
+        `[Open the Tests run](https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}) and review the selected SHA before approving \`azure-deploy\`.`,
+        'Coverage: complete PostgreSQL baseline plus additive real HorizonDB, parallel, no suite filter.',
+        '',
+        'Approval trusts this candidate with the integration runner credentials; it is not a sandbox. A changed head requires a new request. No release or application deployment is started.',
+      ].join('\n'),
+    });
   } else if (command === 'verify') {
+    if (request.commentId) {
+      await verifyCommentRequest(request, repository, env.GITHUB_ACTOR, api);
+    }
     if (env.PR_NUMBER) await requireMaintainer(repository, env.GITHUB_ACTOR, env.GITHUB_TRIGGERING_ACTOR, api);
     await verifyTestTarget({ repository, prNumber: env.PR_NUMBER, sha: env.TEST_SOURCE_SHA,
       directory: env.TEST_SOURCE_DIRECTORY, api });

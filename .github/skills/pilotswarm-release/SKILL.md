@@ -116,9 +116,16 @@ not proof that a load/concurrency issue was fixed.
 
 ### Standalone diagnosis
 
-For pre-merge integration tests, dispatch **Tests** from `main` with
+For pre-merge integration tests, a repository writer/maintainer can post a
+new standalone `/test all` PR comment. Follow its acknowledgement link, verify
+the pinned SHA and approve the protected environment. Edited, quoted or
+extended commands and ordinary issues are not accepted; the comment and
+author's current permission are rechecked before candidate execution.
+No extra GitHub App is needed, and this does not authorize a release/deployment.
+
+Alternatively, dispatch **Tests** from `main` with
 `pr_number=<number>`, `providers=all`, `mode=parallel`, and no suite filter.
-The unprivileged selection job pins the reviewed head before environment
+The selection job uses only the repository token and pins the reviewed head before environment
 approval. Verify its summary: approval intentionally trusts that candidate's
 install/build/test code with the existing CI credentials, including the Azure
 CI identity; a separate main control checkout is not a sandbox.

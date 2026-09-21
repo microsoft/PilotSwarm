@@ -17,7 +17,29 @@ release. It preserves existing asset identities/digests and performs no deploy.
 
 ## Maintainer-triggered tests before merging a PR
 
-Dispatch **Tests** from `main`, set `pr_number` to the open PR number, leave
+The quickest route is a **new PR conversation comment containing only**:
+
+```text
+/test all
+```
+
+The commenter must currently have repository write, maintain or admin access.
+The trusted main workflow checks that permission through the GitHub API, not
+the comment's author-association label. It selects `providers=all`,
+`mode=parallel`, and no suite filter, then replies on the PR with the pinned
+head SHA and a link to the run. Open that link, review the selected commit, and
+approve `azure-deploy` through **Review deployments**. The button may say
+**Approve and deploy**, but this workflow only runs tests.
+
+Only newly created, standalone commands are accepted. Editing an old comment,
+quoting the command, adding arguments, or posting it on an ordinary issue does
+not start tests. Removing or changing the original command before execution
+fails its post-approval verification. Post a fresh command for a new request.
+There is no separate GitHub App or personal-token setup: the same Tests
+workflow handles `issue_comment` from main without executing candidate code
+in the comment-handling job.
+
+Alternatively, dispatch **Tests** from `main`, set `pr_number` to the open PR number, leave
 `suite` blank, select `providers=all` and `mode=parallel`:
 
 ```bash
@@ -29,7 +51,8 @@ The UI equivalent is **Actions -> Tests -> Run workflow**, workflow branch
 `main`, with those inputs. A blank PR number retains the normal main run.
 Both same-repository and fork PRs targeting `main` are supported.
 
-Before requesting environment approval, a credential-free job validates
+Before requesting environment approval, a selection job with no Azure, model
+or database secrets validates
 maintainer/write access and resolves the PR's exact head SHA. Its summary shows
 the source repository, candidate commit and trusted workflow commit. The gated
 test job includes the full candidate SHA in its name. Review that snapshot
@@ -50,7 +73,9 @@ approval was pending, dispatch a new run and approve the new commit. This tests
 the PR **head**, not a synthetic merge result with the latest base.
 
 PR runs always use fresh GitHub-hosted runners, including `providers=horizondb`;
-they never use `PROVIDER_TEST_RUNNER`. The shared CI-database concurrency lock,
+they never use `PROVIDER_TEST_RUNNER`. Only an authorized, enabled test job
+acquires the shared CI-database concurrency lock; ordinary or rejected comments
+cannot displace its pending work. The
 default eight-file parallelism, real HDB preflight and bounded qualification
 policy remain unchanged. The tested processes and their qualification reports
 carry the candidate SHA, separately from the workflow's main SHA.
@@ -63,7 +88,7 @@ summary for **PASSED** versus **QUALIFIED**. Cancellation, rejected/skipped
 execution and failures do not produce success. The status-writing token never
 enters the candidate test job.
 
-Dispatch a new workflow to select a new head. Rerunning source selection within
+Dispatch a new workflow or post a new command to select a new head. Rerunning source selection within
 an existing PR run is rejected so it cannot silently select a different SHA.
 Rerunning only a failed test job retains its original resolved SHA and rechecks
 the head and actor before running. A newer PR commit never inherits the old

@@ -6,6 +6,20 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-09-22 — Maintainer PR comment command
+
+- **Agent:** repository `pilotswarm-release`, `2.2.0` to `2.3.0`.
+- **Model tested:** none; operational entry-point guidance.
+- **Observed behavior:** maintainers had to leave the PR to request full tests.
+- **Expected behavior:** accept a new standalone `/test all` comment only from
+  an authorized repository writer; acknowledge the pinned SHA/run on the PR,
+  retain environment approval and execute the existing complete coverage.
+  Ignore quoted/edited/ordinary-issue commands and isolate their handling from
+  the CI database concurrency lock.
+- **Validation:** comment identity/permission/change tests, fixed-profile and
+  acknowledgement fixtures, manual-input regression and workflow contracts.
+  No live full test run or model-compliance claim is made.
+
 ## 2026-09-22 — Maintainer-approved PR integration tests
 
 - **Agent:** repository `pilotswarm-release`, `2.1.0` to `2.2.0`.
