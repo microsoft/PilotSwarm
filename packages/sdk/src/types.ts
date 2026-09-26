@@ -247,6 +247,16 @@ export interface WorkspaceProvider {
     release?(req: WorkspaceAttachRequest): Promise<void>;
 }
 
+/** What a session adopted from its checkout (section 4.6): the `session.workspace_adopted` event data, less the revision. */
+export interface WorkspaceAdoptionReport {
+    /** Adopted repo agent names, sorted. */
+    agents: string[];
+    /** Adopted repo skill names, sorted. */
+    skills: string[];
+    /** Repo content left out, and why. */
+    skipped: Array<{ kind: "agent" | "skill"; file: string; name?: string; reason: string }>;
+}
+
 /** What getSessionWorkspace reports, read from the session's latest workspace events. */
 export interface SessionWorkspaceView {
     workspace: SessionWorkspace | null;
@@ -384,11 +394,18 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         path: string;
         realPath: string;
         adopt?: WorkspaceAdopt;
+        /** The repo agents and skills the path check read, when adopt asks for them. */
+        repo?: import("./workspace-check.js").RepoScan;
         /** What a later release on this worker sends the provider. */
         revision?: number;
         rootSessionId?: string;
         turnIndex?: number;
     };
+    /**
+     * Session workspaces: what this handle adopted from the checkout, set by
+     * SessionManager when it builds the CLI config. Runtime-only.
+     */
+    workspaceAdoption?: WorkspaceAdoptionReport;
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**

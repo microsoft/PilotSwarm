@@ -15,6 +15,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 import { checkWorkspaceForSpawn, prepareWorkspace, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
@@ -1200,6 +1201,47 @@ export function registerActivities(
         ...(clientConfig?.modelProvidersPath != null && { modelProvidersPath: clientConfig.modelProvidersPath }),
     });
 
+    /**
+     * Session workspaces (section 4.6): compare what a handle adopted from
+     * the checkout with the last session.workspace_adopted event. When it is
+     * new or changed, record a new event and return the note for this turn.
+     */
+    const noteWorkspaceAdoption = async (
+        session: any,
+        sessionId: string,
+        revision: number,
+        trace: (message: string) => void,
+    ): Promise<string | undefined> => {
+        const list = (value: unknown) => (Array.isArray(value) ? value : []);
+        const report: import("./types.js").WorkspaceAdoptionReport = session.getWorkspaceState().adoption ?? { agents: [], skills: [], skipped: [] };
+        let previous: import("./types.js").WorkspaceAdoptionReport | null | undefined = session.getRecordedAdoption();
+        if (previous === undefined) {
+            previous = null;
+            if (catalog) {
+                const [latest] = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_adopted"]).catch(() => []);
+                const data: any = latest?.data;
+                if (data) previous = { agents: list(data.agents), skills: list(data.skills), skipped: list(data.skipped) };
+            }
+        }
+        const empty = report.agents.length === 0 && report.skills.length === 0 && report.skipped.length === 0;
+        if ((previous === null && empty) || (previous && sameAdoption(previous, report))) {
+            session.setRecordedAdoption(previous);
+            return undefined;
+        }
+        if (catalog) {
+            await cmsRetryBestEffort(
+                `runTurn.recordEvent workspace-adopted session=${sessionId}`,
+                () => catalog!.recordEvents(sessionId, [{
+                    eventType: "session.workspace_adopted",
+                    data: { revision, ...report },
+                }], workerNodeId),
+                trace,
+            );
+        }
+        session.setRecordedAdoption(report);
+        return adoptionNote(previous, report);
+    };
+
     // ── runTurn ──────────────────────────────────────────────
     const runTurnHandler = async (
         activityCtx: any,
@@ -1622,6 +1664,7 @@ export function registerActivities(
                 path: prepared.path,
                 realPath: prepared.realPath,
                 ...(prepared.adopt ? { adopt: prepared.adopt } : {}),
+                ...(prepared.repo ? { repo: prepared.repo } : {}),
                 revision: workspaceRevision,
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
                 turnIndex: input.turnIndex ?? 0,
@@ -3755,6 +3798,27 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `[runTurn] dropped ${droppedAttachments.length}/${requestedAttachments.length} image attachment(s): `
                         + droppedAttachments.map((d) => `${d.filename}(${d.reason})`).join(", "),
                     );
+                }
+            }
+
+            // Session workspaces (section 4.6): the repo agents and skills this
+            // handle adopted, recorded when new or changed; the model is told
+            // in this turn's system-context block.
+            if ((runConfig as ManagedSessionConfig).workspaceAttach && typeof session?.getRecordedAdoption === "function") {
+                const note = await noteWorkspaceAdoption(session, input.sessionId, input.workspaceRevision ?? 1, (msg) => activityCtx.traceInfo(msg));
+                if (note) {
+                    const split = splitSystemContextBlock(effectivePrompt);
+                    effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${note}` : note);
+                    if (catalog) {
+                        await cmsRetryBestEffort(
+                            `runTurn.recordEvent workspace-adoption-note session=${input.sessionId}`,
+                            () => catalog!.recordEvents(input.sessionId, [{
+                                eventType: "system.message",
+                                data: { content: note, workspaceAdoption: true },
+                            }], workerNodeId),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    }
                 }
             }
 

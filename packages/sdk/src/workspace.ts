@@ -19,7 +19,7 @@ import {
     type WorkspaceProvider,
     type WorkspaceRoot,
 } from "./types.js";
-import { checkWorkspacePath, validateWorkspaceText, DEFAULT_PATH_CHECK_TIMEOUT_MS } from "./workspace-check.js";
+import { checkWorkspacePath, validateWorkspaceText, DEFAULT_PATH_CHECK_TIMEOUT_MS, type RepoScan } from "./workspace-check.js";
 
 export const DEFAULT_ATTACH_TIMEOUT_MS = 30_000;
 
@@ -68,6 +68,8 @@ export type WorkspacePreparation =
         realPath: string;
         /** What to adopt from the checkout. Undefined means nothing. */
         adopt?: WorkspaceAdopt;
+        /** The repo agents and skills read for adoption; only when adopt asks for them. */
+        repo?: RepoScan;
     }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 
@@ -183,20 +185,23 @@ export async function prepareWorkspace(
         return failure(WORKSPACE_ERROR_CODES.ATTACH_FAILED, "ensureAttached returned ok without an absolute path");
     }
 
+    const adopt = normalizeAdopt(attached.adopt);
+    const collect = adopt && (adopt.agents || adopt.skills) ? { agents: adopt.agents, skills: adopt.skills } : undefined;
     const checked = await checkWorkspacePath({
         rootName: rootCheck.root.name,
         rootPath: rootCheck.root.path,
         path: attached.path,
         timeoutMs: opts.checkTimeoutMs ?? DEFAULT_PATH_CHECK_TIMEOUT_MS,
+        ...(collect ? { collect } : {}),
     });
     if (!checked.ok) return failure(checked.code, checked.message);
-    const adopt = normalizeAdopt(attached.adopt);
     return {
         ok: true,
         root: rootCheck.root,
         path: path.normalize(attached.path),
         realPath: checked.realPath,
         ...(adopt ? { adopt } : {}),
+        ...(checked.repo ? { repo: checked.repo } : {}),
     };
 }
 

@@ -79,9 +79,27 @@ export interface WorkspacePathCheckRequest {
     /** The attach path from `ensureAttached()`. */
     path: string;
     timeoutMs?: number;
+    /** Also read the repo's agents and skills (section 4.6), inside the same deadline. */
+    collect?: { agents?: boolean; skills?: boolean };
 }
 
-export type WorkspacePathCheckResult = { ok: true; realPath: string } | WorkspaceCheckFailure;
+/** Repo limits from section 4.6. */
+export const MAX_REPO_AGENTS = 30;
+export const MAX_REPO_AGENT_BYTES = 64 * 1024;
+
+/**
+ * What the check read from the checkout for adoption. Agent files are read
+ * whole (at most MAX_REPO_AGENTS files of at most MAX_REPO_AGENT_BYTES).
+ * Skills are only named: the CLI reads them itself from `.github/skills`.
+ * A file or folder whose real path leaves the workspace is never read.
+ */
+export interface RepoScan {
+    agents: Array<{ file: string; content: string }>;
+    skills: string[];
+    skipped: Array<{ kind: "agent" | "skill"; file: string; reason: string }>;
+}
+
+export type WorkspacePathCheckResult = { ok: true; realPath: string; repo?: RepoScan } | WorkspaceCheckFailure;
 
 /**
  * Test only. A local `stat` never hangs, so tests make chosen checks sleep to
@@ -130,7 +148,55 @@ if (!st.isDirectory()) {
   out({ ok: false, code: req.codes.FOLDER_MISSING, message: "not a directory (a file, a FIFO, or a symlink to a file): " + req.path });
   process.exit(0);
 }
-out({ ok: true, realPath: real });
+if (!req.collect || (!req.collect.agents && !req.collect.skills)) { out({ ok: true, realPath: real }); process.exit(0); }
+// Adoption (section 4.6): read .github/agents and name .github/skills. A
+// path whose real location leaves the workspace is skipped, never read.
+const inside = (p) => { try { const r = fs.realpathSync(p); const rel2 = path.relative(real, r); return !(rel2 === ".." || rel2.startsWith(".." + path.sep) || path.isAbsolute(rel2)); } catch (e) { return false; } };
+const exists = (p) => { try { fs.lstatSync(p); return true; } catch (e) { return false; } };
+const repo = { agents: [], skills: [], skipped: [] };
+if (req.collect.agents) {
+  const dir = path.join(real, ".github", "agents");
+  if (exists(dir)) {
+    if (!inside(dir)) repo.skipped.push({ kind: "agent", file: ".github/agents", reason: "the folder resolves outside the workspace" });
+    else {
+      let names = [];
+      try { names = fs.readdirSync(dir).filter((n) => n.endsWith(".agent.md")).sort(); } catch (e) {}
+      for (const name of names) {
+        const file = ".github/agents/" + name;
+        const full = path.join(dir, name);
+        if (!inside(full)) { repo.skipped.push({ kind: "agent", file, reason: "the file resolves outside the workspace" }); continue; }
+        let fst; try { fst = fs.statSync(full); } catch (e) { repo.skipped.push({ kind: "agent", file, reason: "unreadable (" + (e.code || e.message) + ")" }); continue; }
+        if (!fst.isFile()) { repo.skipped.push({ kind: "agent", file, reason: "not a regular file" }); continue; }
+        if (fst.size > req.maxAgentBytes) { repo.skipped.push({ kind: "agent", file, reason: "larger than " + (req.maxAgentBytes / 1024) + " KB" }); continue; }
+        if (repo.agents.length >= req.maxAgents) { repo.skipped.push({ kind: "agent", file, reason: "more than " + req.maxAgents + " agents" }); continue; }
+        try { repo.agents.push({ file, content: fs.readFileSync(full, "utf8") }); }
+        catch (e) { repo.skipped.push({ kind: "agent", file, reason: "unreadable (" + (e.code || e.message) + ")" }); }
+      }
+    }
+  }
+}
+if (req.collect.skills) {
+  const dir = path.join(real, ".github", "skills");
+  if (exists(dir)) {
+    if (!inside(dir)) repo.skipped.push({ kind: "skill", file: ".github/skills", reason: "the folder resolves outside the workspace" });
+    else {
+      let names = [];
+      try { names = fs.readdirSync(dir).sort(); } catch (e) {}
+      const found = [];
+      let escaped = null;
+      for (const name of names) {
+        const skill = path.join(dir, name, "SKILL.md");
+        if (!exists(skill)) continue;
+        if (!inside(path.join(dir, name)) || !inside(skill)) { escaped = ".github/skills/" + name; break; }
+        found.push(name);
+      }
+      // The CLI reads the whole folder, so one escaping skill skips them all.
+      if (escaped) repo.skipped.push({ kind: "skill", file: escaped, reason: "resolves outside the workspace, so no repo skill is adopted" });
+      else repo.skills = found;
+    }
+  }
+}
+out({ ok: true, realPath: real, repo });
 `;
 
 interface RootCheckState {
@@ -238,6 +304,7 @@ function runCheck(state: RootCheckState, req: WorkspacePathCheckRequest, timeout
                         path: req.path,
                         sleepMs: hook?.sleepMs ?? 0,
                         codes: WORKSPACE_ERROR_CODES,
+                        ...(req.collect ? { collect: req.collect, maxAgents: MAX_REPO_AGENTS, maxAgentBytes: MAX_REPO_AGENT_BYTES } : {}),
                     }),
                 },
             });
@@ -265,7 +332,7 @@ function runCheck(state: RootCheckState, req: WorkspacePathCheckRequest, timeout
             try {
                 const parsed = JSON.parse(stdout);
                 if (parsed && parsed.ok === true && typeof parsed.realPath === "string") {
-                    settle({ ok: true, realPath: parsed.realPath });
+                    settle(parsed.repo ? { ok: true, realPath: parsed.realPath, repo: parsed.repo as RepoScan } : { ok: true, realPath: parsed.realPath });
                 } else if (parsed && parsed.ok === false && typeof parsed.code === "string") {
                     settle(fail(parsed.code, String(parsed.message ?? parsed.code)));
                 } else {

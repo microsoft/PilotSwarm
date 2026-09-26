@@ -1,7 +1,8 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
-import { NativeTaskAccess, type NativeTaskTools } from "./native-task-policy.js";
+import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
+import { resolveRepoAdoption, RepoAgentAccess } from "./workspace-repo-agents.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
@@ -2157,6 +2158,28 @@ export class SessionManager {
         const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
             : this.workerDefaults.skillDirectories ?? [];
+        // Session workspaces (section 4.6): the repo agents and skills the
+        // provider's adopt allows, filtered for this session. Agents need
+        // native tasks; they run as native task children.
+        const pilotswarmToolNames = new Set<string>([...allTools.map((t: any) => t.name), ...NATIVE_SYNCHRONOUS_TOOLS]);
+        const repoAdoption = workspaceAttach ? resolveRepoAdoption({
+            scan: workspaceAttach.repo,
+            adopt: workspaceAttach.adopt,
+            attachPath: workspaceAttach.path,
+            nativeTasks: nativeEnabled,
+            sessionModel: sdkModelName,
+            pilotswarmToolNames,
+            reservedAgentNames: new Set<string>([
+                ...NATIVE_TASK_NAMES,
+                ...NATIVE_BUILTIN_AGENTS,
+                ...(this.workerDefaults.customAgents ?? []).map((agent) => agent.name),
+            ]),
+        }) : null;
+        config.workspaceAdoption = repoAdoption?.report;
+        const repoAgentAccess = repoAdoption && repoAdoption.customAgents.length > 0
+            ? new RepoAgentAccess(new Set(repoAdoption.customAgents.map((agent) => agent.name)), pilotswarmToolNames)
+            : undefined;
+        const sessionSkillDirectories = [...sdkSkillDirectories, ...(repoAdoption?.skillDirectories ?? [])];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
@@ -2169,7 +2192,11 @@ export class SessionManager {
             mcpServers: effectiveMcpServers,
             excludedTools,
             tools: allTools.map(toolDeclarationForFingerprint),
-            ...(workspaceAttach ? { workspace: { path: workspaceAttach.path, adopt: workspaceAttach.adopt ?? null } } : {}),
+            ...(workspaceAttach ? { workspace: {
+                path: workspaceAttach.path,
+                adopt: workspaceAttach.adopt ?? null,
+                ...(repoAdoption?.hash ? { repoAgentHash: repoAdoption.hash } : {}),
+            } } : {}),
         }));
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
@@ -2222,7 +2249,7 @@ export class SessionManager {
             } : {}),
             hooks: withWorkspaceChangeDeny(
                 nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
-                    () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess) : config.hooks,
+                    () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess, repoAgentAccess) : config.hooks,
                 workspaceTools ? () => this.sessions.get(sessionId)?.isWorkspaceChangePending() ?? false : null,
             ),
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
@@ -2241,7 +2268,9 @@ export class SessionManager {
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools,
             ...(nativeEnabled ? {
-                customAgents: nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
+                customAgents: repoAdoption?.customAgents.length
+                    ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
+                    : nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
                 customAgentsLocalOnly: true,
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
@@ -2249,7 +2278,7 @@ export class SessionManager {
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            ...(sdkSkillDirectories.length && { skillDirectories: sdkSkillDirectories }),
+            ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
             ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
@@ -2412,6 +2441,7 @@ export class SessionManager {
         }
 
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
+        if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills

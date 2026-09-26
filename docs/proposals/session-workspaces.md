@@ -442,13 +442,14 @@ fixed one model; the deny fixes the rest.
   the running one. If the running check has already timed out, the queued
   check fails at once with `WORKSPACE_CHECK_TIMEOUT` and the session is held.
   Sessions on other roots, and sessions with no workspace, are not affected.
-- **Wall-clock cap.** If a turn hits the turn timeout, the worker cancels
-  running tasks (`rpc.tasks.cancel`) before it returns the error, so no shell
-  outlives the turn. Cancelling a shell does not make the CLI fire
-  `session.idle`: in the live check it still had not fired 15 s after the
-  cancel of an attached shell. So the cap path keeps its abort and settle
-  step after the cancel. Risk, not tested: the next turn on that warm session
-  may hang; the fingerprint-driven cold resume is the fallback.
+- **Wall-clock cap.** If a turn hits the turn timeout, the worker aborts the
+  turn, then stops every running shell before it returns the error, so no
+  shell outlives the turn (test F10). After an abort the CLI refuses
+  `rpc.tasks.cancel` (it answers `cancelled: false`), so the worker kills the
+  shell's process tree by the pid the CLI reports (`process-tree.ts`). The
+  abort comes first so the model cannot start a new shell after the stop.
+  Risk, not tested: the next turn on that warm session may hang; the
+  fingerprint-driven cold resume is the fallback.
 
 ### 4.5 Leaving a worker: `releaseWorkspace`
 
@@ -457,8 +458,10 @@ the session:
 
 ```text
 1. rpc.tasks.list() -> rpc.tasks.cancel({ id }) for every task with status running
-   or idle, of type shell (attached or detached) or agent
-2. rpc.tasks.list() again; stop when none remain
+   or idle, of type shell (attached or detached) or agent. A shell the CLI will
+   not cancel is killed with every process below it, by its pid
+2. rpc.tasks.list() again; stop when none remain. A shell whose pid is dead
+   counts as done, although the CLI still lists it as running
 3. ManagedSession.destroy(), which is the SDK's disconnect(): it releases the
    in-memory handle and never deletes the session directory
 4. provider.release(req)
@@ -467,7 +470,10 @@ the session:
 Step 1 is required. Live check on CLI 1.0.83: `disconnect()`, `client.stop()`,
 `abort()`, `forceStop()` and `rpc.shutdown()` all left a background shell
 running. Only `rpc.tasks.cancel` killed it, within 2 s, for attached and
-detached shells alike.
+detached shells alike, and only while the session had not been aborted.
+After an abort (a stopped turn, the wall-clock cap, the inactivity
+watchdog), `rpc.tasks.cancel` answers `cancelled: false` and the shell keeps
+running; the pid kill in step 1 covers that case.
 
 When it runs:
 
@@ -504,23 +510,35 @@ keep writing.
 | Repo files | Adopted when `adopt` allows |
 |---|---|
 | `.github/agents/*.agent.md` | Merged into `customAgents`. Limits: 30 agents, 64 KB each. Agents past the 30th, and any file over 64 KB, are skipped and listed in `session.workspace_adopted.skipped`. |
-| `.github/skills/<name>/SKILL.md` | Added to `skillDirectories` |
+| `.github/skills/<name>/SKILL.md` | `.github/skills` is added to `skillDirectories` |
 | `AGENTS.md`, `.github/copilot-instructions.md` and similar instruction files | Loaded by the CLI when `skipCustomInstructions` is false. The CLI puts them in its `custom_instructions` section, which PilotSwarm otherwise replaces with its base prompt; for a session that adopts instructions, PilotSwarm prepends its base to that section instead, so the repo's files follow it. |
 | `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, an agent's `mcp-servers` | Never. The CLI starts repo MCP servers only with discovery on and a trusted folder; PilotSwarm sets neither. |
 | `.github/hooks/*` | Never. `enableFileHooks: false` on every create and resume. Verified: without it the CLI runs repo hook commands on every prompt. |
 
-Filters on each repo agent:
+The out-of-process path check reads these files, inside its deadline, only
+when `adopt` asks for agents or skills (`workspace-check.ts`). A file or
+folder whose real path leaves the workspace is never read and is reported
+as skipped. The CLI reads the skills folder itself, so one skill that
+leaves the workspace skips every repo skill.
+
+Filters on each repo agent (`workspace-repo-agents.ts`):
 
 - **Tools:** pass the names through as written. The CLI resolves its own
   alias names (`read` → `view`; on 1.0.83 `search` resolves to nothing).
-  MCP-qualified names (`server/tool`) are always dropped. PilotSwarm tool
-  names the session lacks are dropped too, unless that would empty the list:
-  then they stay and are reported as unresolved. Never pass `[]`: the CLI
-  treats it as "no tools".
+  MCP-qualified names (`server/tool`) are dropped. PilotSwarm tool names are
+  dropped too: a native child cannot call a PilotSwarm tool. An agent left
+  with no tools is skipped, because the CLI reads `[]` as "no tools". A file
+  with no `tools` key passes none, and the CLI gives the agent every tool.
 - **MCP servers:** dropped.
-- **Model:** kept only if the session may use that model.
-- **Name collision:** a PilotSwarm agent with the same name wins, and the
-  repo agent is reported as skipped.
+- **Model:** the agent runs on the session's model. The child guard pins the
+  model on every `task` call anyway. A different model in the file is
+  reported.
+- **Name collision:** a PilotSwarm agent with the same name wins (the two
+  native profiles, the CLI's built-in agents, and the worker's loaded
+  agents), and so does an earlier repo file with the same name. The skipped
+  file is reported.
+- Every drop is listed in `session.workspace_adopted.skipped`, with the
+  agent's name when it was still adopted.
 
 PilotSwarm reads these files itself instead of turning on CLI discovery. Two
 verified reasons: a discovered repo agent cannot launch through `task` in the
@@ -535,21 +553,33 @@ How agents are used:
 
 - The CLI lists custom agents in its `task` tool, so the model runs a repo
   agent the way it would on a laptop. A user can also ask for one by name.
-- The native child guard in `native-subagents.ts` must learn about adopted
-  agents. Today its `onPreToolUse` hook denies every `task` call whose
-  `agent_type` is not `swarm-explore` or `swarm-task`, and denies a child
-  tool that is not in `childTools`. For a workspace session that adopts
-  agents, PilotSwarm adds each adopted agent name to the allowed `agent_type`
-  set and its resolved tool list to the per-agent allowlist (the
-  `access.allowsHook` path), for that session only.
+- The native child guard in `native-subagents.ts` knows the adopted agents.
+  Its `onPreToolUse` hook denies every `task` call whose `agent_type` is not
+  `swarm-explore`, `swarm-task` or an adopted agent, and denies a child tool
+  that is not in `childTools`. The CLI already limits each child to its
+  agent's resolved tool list, so for a child of an adopted agent the guard
+  allows any CLI tool, and still denies PilotSwarm tools, `task` (no
+  nesting) and detached shells. `RepoAgentAccess` maps each child to its
+  agent from the runtime's `subagent.started` events, never from model
+  arguments, for that session only.
 - Sessions that adopt repo agents need native tasks on for the owner
   (`copilot.native_tasks`). If it is off, agents are reported as skipped.
-- The changed-cwd note names the adopted agents and skills. So do
-  `get_session_workspace` and the portal inspector, from the
-  `session.workspace_adopted` event written after each resume that changed
-  the set. When a later turn changes the set (a branch switch, or a flip of
-  an `adopt` flag), that turn gets the agents-changed note: "Repo agents
-  changed: added <names>, removed <names>."
+- `get_session_workspace` and the portal inspector name the adopted agents
+  and skills, from the `session.workspace_adopted` event. The worker writes
+  it when a turn's adopted set is new or differs from the last event. That
+  turn's prompt gets a note in its system-context block:
+
+  ```
+  First adoption:  Repo agents available through the task tool: <names>.
+                   Repo skills available: <names>.
+  A later change:  Repo agents changed: added <names>, removed <names>.
+                   Repo skills changed: added <names>, removed <names>.
+  ```
+
+  A change is a branch switch that edits the agent files, a flip of an
+  `adopt` flag, or a new folder. The fingerprint carries a hash of the
+  adopted content (`repoAgentHash`), so a changed set resumes the session
+  even when the path and `adopt` stay the same.
 - The CLI's on-demand instruction discovery stays off (its default).
 
 ### 4.7 Failures and held prompts
@@ -1196,7 +1226,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | ID | Level | Required result |
 |---|---|---|
 | A1 | L | A repo agent appears in the agent list and the `task` tool only when `adopt.agents` is set and native tasks are on |
-| A2 | L | Names pass through; a `read`/`search` agent ends up with `view`; MCP-qualified names are dropped; `model` is dropped unless allowed; a list is never emptied; a name collision is reported. A `task` call with an adopted agent's name is allowed by the child guard, and that child can use its listed tools; a non-adopted name is still denied. |
+| A2 | L | Names pass through; a `read`/`search` agent ends up with `view`; MCP-qualified and PilotSwarm names are dropped; a different `model` is reported and the session model is used; an agent with no usable tools is skipped, never passed `[]`; a name collision is reported. A `task` call with an adopted agent's name is allowed by the child guard, and that child can use a listed tool that swarm children may not (`create`); a non-adopted name is still denied. |
 | A3 | L | Repo skills load through `skillDirectories`. Instructions load only when `adopt.instructions` is set. |
 | A4 | L | A branch switch, or a flip of any `adopt` flag between turns (the fake provider returns all three true, then all false), gives the next turn one resume with the new set: repo agents gone from the `task` tool list, no repo skills, `AGENTS.md` not loaded, and the agents-changed note. A third turn with the same adopt causes no resume. |
 | A5 | L | Neither the repo MCP config nor a repo hook starts a process: no marker files after a full turn |
@@ -1287,7 +1317,10 @@ The existing kill harness covers crashes mid-turn (M3).
 | `skillDirectories` pointing at the repo | Skills found, with discovery off |
 | A repo agent with `tools: ["read", "search"]` | Gets `view` only; `search` resolves to nothing; `[]` means no tools |
 | `disconnect()`, `stop()`, `abort()`, `forceStop()`, `shutdown()` with a background shell | The shell survives all five |
-| `rpc.tasks.cancel` on a shell task | Killed within 2 s, attached or detached |
+| `rpc.tasks.cancel` on a shell task | Killed within 2 s, attached or detached, if the session was not aborted |
+| `rpc.tasks.cancel` on a detached shell after `abort()` | Answers `{ cancelled: false }`; the shell keeps running (test F10) |
+| The pid the CLI reports for a detached shell | Not a process-group leader, so a group kill misses its children; PilotSwarm kills the process tree instead |
+| A shell task after its process dies | Still listed as running |
 | An attached async shell | Keeps the turn open until it exits |
 | A stop while a shell is blocked | Returns to PilotSwarm in about 10 ms |
 | Two captures of one fixed session | Differ only in the CLI-owned cwd, git root, tools and session-folder lines |

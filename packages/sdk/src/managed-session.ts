@@ -1,6 +1,7 @@
 import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-runtime.js";
 import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
+import { killProcessTree, processAlive } from "./process-tree.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -3391,6 +3392,12 @@ export class ManagedSession {
             // Timeout — kill it
             if (errMsg.includes("timed out")) {
                 try { await this.copilotSession.abort(); } catch {}
+                // Session workspaces: a shell the turn started keeps writing
+                // into the checkout after the abort. Cancel it before the
+                // turn returns, so a retry does not race it (test F10).
+                if (this.config.workspaceAttach) {
+                    try { await this.cancelBackgroundTasks({ rounds: 3 }); } catch {}
+                }
                 return {
                     type: "error",
                     message: "Copilot was taking too long to process and was killed.",
@@ -3507,8 +3514,27 @@ export class ManagedSession {
     }
 
     /** Session workspaces: this session's workspace and its last attach on this worker. */
-    getWorkspaceState(): { workspace?: ManagedSessionConfig["workspace"]; attach?: ManagedSessionConfig["workspaceAttach"] } {
-        return { workspace: this.config.workspace, attach: this.config.workspaceAttach };
+    getWorkspaceState(): {
+        workspace?: ManagedSessionConfig["workspace"];
+        attach?: ManagedSessionConfig["workspaceAttach"];
+        adoption?: ManagedSessionConfig["workspaceAdoption"];
+    } {
+        return { workspace: this.config.workspace, attach: this.config.workspaceAttach, adoption: this.config.workspaceAdoption };
+    }
+
+    /**
+     * Session workspaces: the adoption last recorded as a
+     * session.workspace_adopted event, as known to this handle. undefined:
+     * not known here yet (read the event); null: nothing was ever adopted.
+     */
+    private recordedAdoption: import("./types.js").WorkspaceAdoptionReport | null | undefined;
+
+    getRecordedAdoption(): import("./types.js").WorkspaceAdoptionReport | null | undefined {
+        return this.recordedAdoption;
+    }
+
+    setRecordedAdoption(report: import("./types.js").WorkspaceAdoptionReport | null): void {
+        this.recordedAdoption = report;
     }
 
     /**
@@ -3520,17 +3546,25 @@ export class ManagedSession {
      * last round.
      */
     async cancelBackgroundTasks({ rounds = 5, pauseMs = 200 }: { rounds?: number; pauseMs?: number } = {}): Promise<number> {
-        const active = (task: { type?: string; status?: string }) =>
-            (task.type === "shell" || task.type === "agent") && (task.status === "running" || task.status === "idle");
+        // CLI 1.0.83 keeps listing a shell as running after its process dies
+        // (see process-tree.ts), so a shell with a dead pid is done.
+        const active = (task: { type?: string; status?: string; pid?: unknown }) =>
+            (task.type === "shell" || task.type === "agent") && (task.status === "running" || task.status === "idle")
+            && !(task.type === "shell" && typeof task.pid === "number" && !processAlive(task.pid));
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
             if (tasks.length === 0) return cancelled;
             for (const task of tasks) {
+                let stopped = false;
                 try {
-                    await this.copilotSession.rpc.tasks.cancel({ id: task.id });
-                    cancelled++;
+                    stopped = (await this.copilotSession.rpc.tasks.cancel({ id: task.id }))?.cancelled === true;
                 } catch { /* listed again below */ }
+                // CLI 1.0.83: after session.abort(), tasks.cancel answers
+                // { cancelled: false } and the shell keeps running. Kill the
+                // shell and every process below it, by the pid the CLI reports.
+                if (!stopped && task.type === "shell") stopped = killProcessTree((task as { pid?: unknown }).pid);
+                if (stopped) cancelled++;
             }
             await new Promise((resolve) => setTimeout(resolve, pauseMs));
         }
@@ -3566,6 +3600,7 @@ export class ManagedSession {
         // for a reused handle; the revision and turn a later release reports
         // move on.
         if (config.workspaceAttach !== undefined) this.config.workspaceAttach = config.workspaceAttach;
+        if (config.workspaceAdoption !== undefined) this.config.workspaceAdoption = config.workspaceAdoption;
         if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
         if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;
         if (config.providerFingerprint !== undefined) this.config.providerFingerprint = config.providerFingerprint;

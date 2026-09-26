@@ -12,12 +12,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { SessionManager } from "../../dist/session-manager.js";
 
 const WORKSPACE = { schema: 1, root: "a", folder: "repo-x" };
 const ATTACH = { root: "a", rootPath: "/ws/a", path: "/ws/a/repo-x", realPath: "/ws/a/repo-x", revision: 3, rootSessionId: "root-1", turnIndex: 7 };
 
-function fixture(t, { tasks = [], stubborn = false, release } = {}) {
+function fixture(t, { tasks = [], stubborn = false, release, cancelAnswer, liveStatus } = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-ws-release-"));
     const order = [];
     const releases = [];
@@ -42,9 +43,13 @@ function fixture(t, { tasks = [], stubborn = false, release } = {}) {
                 disconnect: async () => { order.push("disconnect"); handle.disconnected = true; },
                 rpc: {
                     tasks: {
-                        list: async () => { order.push("list"); return { tasks: current.map((task) => ({ ...task })) }; },
+                        list: async () => {
+                            order.push("list");
+                            return { tasks: current.map((task) => ({ ...task, ...(liveStatus ? { status: liveStatus(task) } : {}) })) };
+                        },
                         cancel: async ({ id }) => {
                             order.push(`cancel:${id}`);
+                            if (cancelAnswer) return cancelAnswer;
                             if (!stubborn) current = current.map((task) => (task.id === id ? { ...task, status: "cancelled" } : task));
                             return { cancelled: true };
                         },
@@ -152,4 +157,30 @@ test("the eviction sweep releases a workspace session before it evicts it", asyn
     await h.manager.sweepIdleSessions(1_000);
     assert.deepEqual(h.releases.map((r) => [r.sessionId, r.workerNodeId]), [["s1", "worker-own-id"]]);
     assert.equal(h.manager.get("s1"), null);
+});
+
+test("a shell the CLI will not cancel (after an abort) is killed with every process below it", async (t) => {
+    // CLI 1.0.83, verified: after session.abort(), tasks.cancel answers
+    // { cancelled: false }; the reported pid is not a process-group leader;
+    // and the task stays "running" after the process dies. This fake does
+    // the same: a shell in our own process group, with a child.
+    const shell = spawn("sh", ["-c", "sleep 30 & echo $!; wait"], { stdio: ["ignore", "pipe", "ignore"] });
+    const childPid = Number(await new Promise((resolve) => shell.stdout.once("data", (chunk) => resolve(String(chunk).trim()))));
+    t.after(() => { for (const pid of [shell.pid, childPid]) { try { process.kill(pid, "SIGKILL"); } catch {} } });
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    assert.equal(alive(childPid), true);
+    const exited = new Promise((resolve) => shell.once("exit", resolve));
+    const h = fixture(t, {
+        tasks: [{ id: "sh-1", type: "shell", status: "running", pid: shell.pid }],
+        cancelAnswer: { cancelled: false },
+    });
+    await open(h);
+    const result = await h.manager.releaseWorkspace("s1", { reason: "idle", workerNodeId: "worker-a" });
+    await exited;
+    const deadline = Date.now() + 2_000;
+    while (alive(childPid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(alive(childPid), false, "the shell's child is dead too");
+    assert.equal(result.released, true);
+    assert.equal(result.cancelled, 1);
+    assert.equal(result.detail, undefined, `a dead pid counts as done although the CLI still says running: ${result.detail}`);
 });
