@@ -135,6 +135,9 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
                 import { mock } from "node:test";
                 mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
                     horizonConfigFromEnv: () => ({}),
+                    // Both entry points load extension modules before start.
+                    loadExtensionModules: async () => [],
+                    parseExtensionModules: () => [],
                     PilotSwarmWorker: class {
                         constructor(options) { this.options = options; }
                         async start() {

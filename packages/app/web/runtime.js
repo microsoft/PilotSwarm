@@ -903,6 +903,7 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -920,6 +921,7 @@ export class PortalRuntime {
                     owner,
                     isAdmin: resourceAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

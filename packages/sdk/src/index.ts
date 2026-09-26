@@ -181,6 +181,7 @@ export {
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace } from "./workspace-check.js";
 export { createBuiltInWorkspaceProvider } from "./workspace.js";
+export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";

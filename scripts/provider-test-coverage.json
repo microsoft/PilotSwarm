@@ -165,6 +165,7 @@
     "test/local/webapi-auth.test.js",
     "test/local/worker-provider-lifecycle.test.js",
     "test/local/workspace-repo-agents.test.js",
-    "test/local/workspace-turn.test.js"
+    "test/local/workspace-turn.test.js",
+    "test/local/workspace-webapi.test.js"
   ]
 }

@@ -14,8 +14,9 @@ import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
-import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
-import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { scriptTurns, systemText, startScriptedModel } from "../helpers/scripted-model.mjs";
+import { withScriptedModel, registerScriptedProvider, FIXTURE_QUALIFIED_MODEL } from "../helpers/scripted-workers.js";
+import { PilotSwarmClient, PilotSwarmWorker } from "../../src/index.ts";
 import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { patchSessionStartInput } from "../helpers/pinned-start.mjs";
@@ -545,6 +546,50 @@ describe("workspace turn", () => {
                 }
             });
         } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("a folder changed while warm is where a cold resume in a new CLI process lands (B2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b2-")));
+        for (const folder of ["repo-x", "repo-y"]) fs.mkdirSync(path.join(root, folder));
+        const model = await startScriptedModel({ respond: pwdEveryTurn });
+        const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
+        const workerFor = (workerNodeId) => new PilotSwarmWorker({
+            store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
+            sessionStateDir: env.sessionStateDir, workerNodeId, disableManagementAgents: true, logLevel: "error",
+            modelProvidersPath, workspaceRoots: [{ name: "a", path: root }],
+        });
+        const client = new PilotSwarmClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath });
+        let workerB;
+        const workerA = workerFor("b2-worker-a");
+        try {
+            await workerA.start();
+            await client.start();
+            const sessionId = randomUUID();
+            const session = await client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "repo-x" } });
+            assertEqual(await session.sendAndWait("b2 turn one", TIMEOUT), `out:${path.join(root, "repo-x")}`);
+            const mgmt = await createManagementClient(env);
+            try {
+                const set = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 1, workspace: { root: "a", folder: "repo-y" } });
+                assertEqual(set.status, "changed");
+            } finally {
+                await mgmt.stop();
+            }
+            // The session was warm on worker A. Stop it: the next turn needs a new worker and a new CLI process.
+            await workerA.stop();
+            workerB = workerFor("b2-worker-b");
+            await workerB.start();
+            assertEqual(await session.sendAndWait("b2 turn two", TIMEOUT), `out:${path.join(root, "repo-y")}`);
+            const turnTwo = model.sessionRequests("b2 turn one").find((r) => r.position.lastUserText.includes("b2 turn two"));
+            assert(systemText(turnTwo.body).includes(`Current working directory: ${path.join(root, "repo-y")}`), "the new CLI process has the new cwd");
+            assert(JSON.stringify(turnTwo.body.messages).includes("b2 turn one"), "the conversation was resumed, not restarted");
+        } finally {
+            await client.stop().catch(() => {});
+            await workerB?.stop().catch(() => {});
+            await workerA.stop().catch(() => {});
+            await model.close();
             fs.rmSync(root, { recursive: true, force: true });
         }
     });

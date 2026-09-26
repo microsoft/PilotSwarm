@@ -27,6 +27,8 @@
  *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
  *   POD_NAME                        — K8s pod name (default: hostname)
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
+ *   PILOTSWARM_EXTENSION_MODULES    — Comma-separated modules; each exports register(worker), called
+ *                                     before start (for example a session workspace provider)
  *
  * Usage:
  *   node --env-file=.env.remote examples/worker.js
@@ -35,7 +37,7 @@
 
 import os from "node:os";
 import fs from "node:fs";
-import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
 // for optional secrets that the user didn't provide. CSI Secret Store
@@ -132,6 +134,12 @@ const worker = new PilotSwarmWorker({
                 })(),
             },
         }),
+});
+
+// Extension modules (for example a session workspace provider) register
+// before start, so the first turn already sees them.
+await loadExtensionModules(worker, parseExtensionModules(process.env.PILOTSWARM_EXTENSION_MODULES), {
+    log: (message) => console.log(`[worker] ${message}`),
 });
 
 await worker.start();

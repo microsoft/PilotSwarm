@@ -164,7 +164,9 @@ export class PilotSwarmClient {
 
     // ─── Session Management ──────────────────────────────────
 
-    async createSession(config?: ManagedSessionConfig & {
+    async createSession(config?: Omit<ManagedSessionConfig, "workspace"> & {
+        /** Session workspaces: the working folder. `schema` may be left out; the folder-text check normalizes it. */
+        workspace?: SessionWorkspace | { root: string; folder?: string } | null;
         sessionId?: string;
         onUserInputRequest?: UserInputHandler;
         /** Names of tools registered on the worker via worker.registerTools(). */
@@ -222,8 +224,9 @@ export class PilotSwarmClient {
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false);
+        const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
-            ...(config ?? {}),
+            ...configWithoutWorkspace,
             ...(resolved ? {
                 model: resolved.model,
                 reasoningEffort: resolved.reasoning as ManagedSessionConfig["reasoningEffort"],
@@ -324,6 +327,8 @@ export class PilotSwarmClient {
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
+        /** Session workspaces: the working folder, { root, folder? }. */
+        workspace?: SessionWorkspace | { root: string; folder?: string } | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -345,6 +350,7 @@ export class PilotSwarmClient {
             owner: opts?.owner ?? null,
             groupId: opts?.groupId ?? null,
             visibility: opts?.visibility ?? null,
+            ...(opts?.workspace != null ? { workspace: opts.workspace } : {}),
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
