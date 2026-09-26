@@ -18,6 +18,7 @@ import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
+import { patchSessionStartInput } from "../helpers/pinned-start.mjs";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -82,6 +83,57 @@ describe("workspace turn", () => {
             assertEqual(attach.req.rootSessionId, sessionId);
             assertEqual(attach.req.workspace.folder, "x");
         });
+    });
+
+    it("a failing provider holds the prompt, follows the shortened schedule, and the recovery turn runs it once (F2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f2-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        provider.script({ type: "fail", code: "WORKSPACE_FOLDER_MISSING", message: "not there yet", times: 3 });
+        try {
+            await withScriptedModel(env, {
+                respond: scriptTurns([[{ content: "recovered" }]]),
+                worker: { workspaceProvider: provider },
+            }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const patch = patchSessionStartInput(client, (input) => ({ ...input, workspaceRetryScheduleMs: [400, 400, 400] }), { sessionId });
+                const startedAt = Date.now();
+                try {
+                    const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                    const sender = { kind: "user", provider: "test", subject: "ada", display: "Ada" };
+                    await session.send("held prompt text", { clientMessageIds: ["cm-f2"], sender });
+                    assertEqual(await session.wait(TIMEOUT), "recovered");
+                } finally {
+                    patch.restore();
+                }
+                assert(Date.now() - startedAt < 60_000, "the shortened schedule was followed");
+                assertEqual(provider.callsFor("ensureAttached", { sessionId }).length, 4, "three failed attempts, then one that passed");
+
+                const requests = model.sessionRequests();
+                assert(requests.length >= 1, "the recovery turn called the model");
+                const recovery = requests[0].position.lastUserText;
+                assert(recovery.includes("held prompt text"), `the recovery request carries the held prompt: ${recovery}`);
+                assert(!/Retrying the workspace|Internal orchestration wake-up/.test(recovery), `the recovery request carries only the held prompt: ${recovery}`);
+
+                const catalog = await createCatalog(env);
+                try {
+                    const all = await catalog.getSessionEvents(sessionId);
+                    const users = all.filter((e) => e.eventType === "user.message");
+                    assertEqual(users.length, 1, "exactly the one held user.message");
+                    assertEqual(users[0].data.content, "held prompt text");
+                    assertEqual(users[0].data.workspaceQueued, true);
+                    assertEqual(JSON.stringify(users[0].data.clientMessageIds), JSON.stringify(["cm-f2"]));
+                    assertEqual(users[0].data.sender?.subject, "ada");
+                    assertEqual(all.filter((e) => e.eventType === "session.workspace_unavailable").length, 3);
+                    assertEqual(all.filter((e) => e.eventType === "session.workspace_available").length, 1);
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it("a workspace session in a git clone starts no repo hook and no repo MCP server; a plain session in the same clone still runs hooks (A5)", { timeout: TIMEOUT }, async () => {

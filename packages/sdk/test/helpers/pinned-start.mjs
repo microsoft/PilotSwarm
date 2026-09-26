@@ -41,6 +41,31 @@ export function pinSessionStartVersion(client, version, { sessionId } = {}) {
     };
 }
 
+/**
+ * Patch the orchestration input of the next session starts on a started
+ * client, for test-only inputs such as `workspaceRetryScheduleMs` (the
+ * session-workspace schedule override). Returns { starts, restore }.
+ */
+export function patchSessionStartInput(client, patch, { sessionId } = {}) {
+    const duroxide = client._getDuroxideClient();
+    if (!duroxide) throw new Error("start the client before patching session starts");
+    const original = duroxide.startOrchestrationVersioned;
+    const starts = [];
+    duroxide.startOrchestrationVersioned = function (orchestrationId, name, input, version) {
+        const matches = name === DURABLE_SESSION_ORCHESTRATION_NAME
+            && (!sessionId || orchestrationId === `session-${sessionId}`);
+        const next = matches ? patch(input) : input;
+        if (matches) starts.push({ orchestrationId, input: next });
+        return original.call(this, orchestrationId, name, next, version);
+    };
+    return {
+        starts,
+        restore() {
+            duroxide.startOrchestrationVersioned = original;
+        },
+    };
+}
+
 /** The version a session orchestration runs, from Duroxide's instance record. */
 export async function sessionOrchestrationVersion(client, sessionId) {
     const info = await client._getDuroxideClient().getInstanceInfo(`session-${sessionId}`);

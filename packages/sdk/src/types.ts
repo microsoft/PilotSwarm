@@ -706,9 +706,13 @@ export interface OrchestrationInput {
     activeTimerState?: {
         remainingMs: number;
         reason: string;
+        // 1.0.80 also writes "workspace_retry" here (through a cast): the union
+        // stays as it was because frozen handlers type-check against it.
         type: "wait" | "cron" | "idle" | "agent-poll" | "input-grace";
         originalDurationMs?: number;
         shouldRehydrate?: boolean;
+        /** 1.0.80: the gate behind a wait timer, carried so it survives continue-as-new. */
+        gate?: "budget" | "workspace";
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
         content?: string;
         question?: string;
@@ -726,13 +730,26 @@ export interface OrchestrationInput {
      * epoch boundary. Each was durably recorded as a user.message at stash
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
-    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string }>;
+    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string; attachments?: PromptAttachmentRef[]; sender?: import("./message-sender.js").MessageSender }>;
+    // ─── Session workspaces (1.0.80) ─────────────────────────
+    /** Rises by one on every workspace set or clear. Absent = 0. */
+    workspaceRevision?: number;
+    /** `unavailable` while a workspace wait holds prompts. */
+    workspaceStatus?: { state: "ready" | "unavailable"; code?: string };
+    /** The changed-cwd or agents-changed note for the next turn of any kind. */
+    workspaceNotice?: string;
+    /** Retry state behind a held workspace wait. */
+    workspaceRetry?: { step: number; failures: { workerNodeId: string; count: number } };
+    /** Test only: the workspace retry schedule in milliseconds. */
+    workspaceRetryScheduleMs?: number[];
     /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
     interruptedWaitTimer?: {
         remainingSec: number;
         reason: string;
         shouldRehydrate: boolean;
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
+        budget?: boolean;
+        gate?: "budget" | "workspace";
     };
     /** Saved interrupted cron timer. The orchestration auto-resumes the remaining time unless cron is explicitly reset. */
     interruptedCronTimer?: {

@@ -15,7 +15,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 import { prepareWorkspace } from "./workspace.js";
-import { splitSystemContextBlock } from "./prompt-system-context.js";
+import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
@@ -691,7 +691,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string },
         ) {
             return routeHandoffActivity(ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
@@ -736,6 +736,13 @@ export function createSessionProxy(
                     ...(turnMeta?.stashedPrompts && turnMeta.stashedPrompts.length > 0
                         ? { stashedPrompts: turnMeta.stashedPrompts }
                         : {}),
+                    // 1.0.80 (each only when set): held images, the workspace
+                    // revision, and the pending workspace note.
+                    ...(turnMeta?.stashedAttachments && turnMeta.stashedAttachments.length > 0
+                        ? { stashedAttachments: turnMeta.stashedAttachments }
+                        : {}),
+                    ...(turnMeta?.workspaceRevision ? { workspaceRevision: turnMeta.workspaceRevision } : {}),
+                    ...(turnMeta?.workspaceNotice ? { workspaceNotice: turnMeta.workspaceNotice } : {}),
                 },
                 affinityKey,
             ), routingContract);
@@ -1196,6 +1203,10 @@ export function registerActivities(
             epochStart?: boolean;
             /** Session workspaces (1.0.80+): the workspace revision, for the provider's lease. */
             workspaceRevision?: number;
+            /** 1.0.80: the pending changed-cwd note, appended to the prompt the model gets. */
+            workspaceNotice?: string;
+            /** 1.0.80: image refs held with the stashed prompts; sent to the model, not re-recorded. */
+            stashedAttachments?: PromptAttachmentRef[];
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -1620,6 +1631,27 @@ export function registerActivities(
                     : `${stashed.join("\n\n")}\n\n${input.prompt}`;
                 activityCtx.traceInfo(
                     `[runTurn] replaying ${stashed.length} prompt(s) the budget gate had refused`);
+            }
+        }
+        // Session workspaces (1.0.80): the pending changed-cwd note rides the
+        // prompt the model finally gets, after any held prompts are folded
+        // in, inside the trailing system-context block. It is recorded once
+        // as system.message so the transcript shows what the model was told.
+        {
+            const notice = typeof input.workspaceNotice === "string" ? input.workspaceNotice.trim() : "";
+            if (notice) {
+                const split = splitSystemContextBlock(effectivePrompt);
+                effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${notice}` : notice);
+                if (catalog && (input.retryCount ?? 0) === 0) {
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent workspace-notice session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "system.message",
+                            data: { content: notice, workspaceNotice: true },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
             }
         }
         // Conditional epoch init (runTurn2): create a brand-new SDK session
@@ -3542,7 +3574,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // appended to the prompt and a runtime.attachment_dropped event is
             // recorded — the model is never sent a payload it cannot see, and
             // the operator is never silently ignored.
-            const requestedAttachments = sanitizePromptAttachmentRefs(input.attachments);
+            // Images held with stashed prompts come first, matching the
+            // order the stashed text is folded in above.
+            const requestedAttachments = sanitizePromptAttachmentRefs([
+                ...(Array.isArray(input.stashedAttachments) ? input.stashedAttachments : []),
+                ...(Array.isArray(input.attachments) ? input.attachments : []),
+            ]);
             const turnAttachmentBlobs: Array<{ data: string; mimeType: string; displayName?: string }> = [];
             if (requestedAttachments.length > 0) {
                 const droppedAttachments: Array<{ filename: string; contentType: string; reason: string }> = [];

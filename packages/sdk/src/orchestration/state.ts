@@ -1,4 +1,6 @@
 import { sanitizePromptAttachmentRefs } from "../types.js";
+import type { MessageSender } from "../message-sender.js";
+import type { PromptAttachmentRef } from "../types.js";
 import type { RegenState, PendingEpochCommit } from "../types.js";
 export type { RegenState, PendingEpochCommit } from "../types.js";
 import type {
@@ -14,7 +16,7 @@ export interface ActiveTimer {
     deadlineMs: number;
     originalDurationMs: number;
     reason: string;
-    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "input-grace";
+    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "input-grace" | "workspace_retry";
     shouldRehydrate?: boolean;
     waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     content?: string;
@@ -24,6 +26,8 @@ export interface ActiveTimer {
     agentIds?: string[];
     /** Set by the provider-budget gate. See TurnResult's wait variant. */
     budget?: boolean;
+    /** 1.0.80: the gate that created this wait. Read with timerGate(), which falls back to `budget`. */
+    gate?: "budget" | "workspace";
 }
 
 export type ShutdownMode = NonNullable<OrchestrationInput["pendingShutdown"]>["mode"];
@@ -41,6 +45,8 @@ export interface InterruptedWaitTimer {
     interruptKind?: "child" | "user";
     /** A budget pause is re-derived by the next turn, never re-armed. */
     budget?: boolean;
+    /** 1.0.80: a gate wait (budget or workspace) is never re-armed. */
+    gate?: "budget" | "workspace";
 }
 
 export interface InterruptedCronTimer {
@@ -56,6 +62,18 @@ export interface BudgetStashedPrompt {
     clientMessageIds?: string[];
     /** Turn-level contract that must survive a provider-budget refusal with its prompt. */
     requiredTool?: string;
+    /** 1.0.80: image refs held with the prompt; they ride the recovery turn as `attachments`. */
+    attachments?: PromptAttachmentRef[];
+    /** 1.0.80: who wrote the held prompt, also stamped on its stash-time user.message. */
+    sender?: MessageSender;
+}
+
+/** Session workspaces (1.0.80): the retry state behind a held workspace wait. */
+export interface WorkspaceRetryState {
+    /** How many failed attempts in a row; picks the next wait from the schedule. */
+    step: number;
+    /** Consecutive failures on one worker; two in a row release affinity. */
+    failures: { workerNodeId: string; count: number };
 }
 
 export interface DurableSessionState {
@@ -117,6 +135,17 @@ export interface DurableSessionState {
      */
     budgetStash: BudgetStashedPrompt[] | null;
     interruptedCronTimer: InterruptedCronTimer | null;
+
+    // ── Session workspaces (1.0.80) ──────────────────────────────
+    /** Rises by one on every set or clear. 0 = never set. */
+    workspaceRevision: number;
+    /** `unavailable` while a workspace wait holds prompts; cleared on recovery. */
+    workspaceStatus: { state: "ready" | "unavailable"; code?: string } | null;
+    /** The changed-cwd or agents-changed note for the next turn of any kind. */
+    workspaceNotice?: string;
+    workspaceRetry: WorkspaceRetryState | null;
+    /** Test only: the retry schedule in milliseconds, replacing WORKSPACE_RETRY_SCHEDULE_SECONDS. */
+    workspaceRetryScheduleMs?: number[];
     pendingChildDigest: PendingChildDigest | null;
     pendingShutdown: PendingShutdownState | null;
 
@@ -199,6 +228,49 @@ export interface DurableSessionRuntime {
 
 export const INTERNAL_SYSTEM_TURN_PROMPT =
     "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.";
+
+/**
+ * Session workspaces: how long to wait before the next attempt after a failed
+ * attach or path check: 30 s, 2 min, 5 min, then every 15 min, or the
+ * provider's retryAfterMs when larger (docs/proposals/session-workspaces.md 4.7).
+ */
+export const WORKSPACE_RETRY_SCHEDULE_SECONDS = [30, 120, 300, 900];
+
+/**
+ * The prompt a workspace retry wakes with. It is [SYSTEM:] traffic, so it is
+ * never stashed as a user message; when prompts are held, the activity runs
+ * them instead of this text.
+ */
+export const WORKSPACE_RETRY_WAKE_PROMPT =
+    "[SYSTEM: Retrying the workspace that held this session. The user did not send a new message. Continue with your task.]";
+
+/**
+ * 1.0.80: the prompt a budget wait's own timer wakes with. Before 1.0.80 it
+ * woke with "The N second wait is now complete. Continue with your task.",
+ * which the stash recorded as a queued USER message whenever the gate still
+ * refused (test F11).
+ */
+export const BUDGET_TIMER_WAKE_PROMPT =
+    "[SYSTEM: Checking again whether the budget that paused this session allows a turn. The user did not send a new message. Continue with your task.]";
+
+/** The gate behind a wait result, a timer or an interrupted wait. `budget: true` is the pre-1.0.80 spelling. */
+export function timerGate(value: { gate?: unknown; budget?: unknown } | null | undefined): "budget" | "workspace" | undefined {
+    if (!value) return undefined;
+    if (value.gate === "workspace") return "workspace";
+    if (value.gate === "budget" || value.budget === true) return "budget";
+    return undefined;
+}
+
+/** Milliseconds before the next workspace attempt. */
+export function workspaceRetryDelayMs(step: number, retryAfterMs: unknown, scheduleMs?: number[]): number {
+    const index = Math.max(0, Math.floor(step));
+    const schedule = Array.isArray(scheduleMs) && scheduleMs.length > 0
+        ? scheduleMs
+        : WORKSPACE_RETRY_SCHEDULE_SECONDS.map((seconds) => seconds * 1000);
+    const base = Number(schedule[Math.min(index, schedule.length - 1)]) || 0;
+    const provider = typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 0;
+    return Math.max(base, provider);
+}
 
 export const MAX_RETRIES = 3;
 export const MAX_SUB_AGENTS = 50;
@@ -335,6 +407,16 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,
         interruptedCronTimer: input.interruptedCronTimer ?? null,
+
+        workspaceRevision: typeof input.workspaceRevision === "number" && input.workspaceRevision > 0 ? input.workspaceRevision : 0,
+        workspaceStatus: input.workspaceStatus ? { ...input.workspaceStatus } : null,
+        workspaceNotice: typeof input.workspaceNotice === "string" && input.workspaceNotice ? input.workspaceNotice : undefined,
+        workspaceRetry: input.workspaceRetry
+            ? { step: input.workspaceRetry.step ?? 0, failures: { ...(input.workspaceRetry.failures ?? { workerNodeId: "", count: 0 }) } }
+            : null,
+        workspaceRetryScheduleMs: Array.isArray(input.workspaceRetryScheduleMs) && input.workspaceRetryScheduleMs.length > 0
+            ? [...input.workspaceRetryScheduleMs]
+            : undefined,
         pendingChildDigest: clonePendingChildDigest(input.pendingChildDigest),
         pendingShutdown: clonePendingShutdown(input.pendingShutdown),
 

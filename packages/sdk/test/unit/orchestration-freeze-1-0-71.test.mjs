@@ -154,7 +154,7 @@ test("session-manager renders the note into the system message ONLY for unflagge
 
 test("session-proxy strips the block from the persisted user.message and still records the note", () => {
     const sp = read("session-proxy.ts");
-    assert.match(sp, /import \{ splitSystemContextBlock \} from "\.\/prompt-system-context\.js";/);
+    assert.match(sp, /import \{[^}]*\bsplitSystemContextBlock\b[^}]*\} from "\.\/prompt-system-context\.js";/);
     assert.match(sp, /const promptForRecord = input\.config\?\.systemContextInPrompt\s*\? splitSystemContextBlock\(input\.prompt\)\.prompt\s*: input\.prompt;/);
     assert.match(sp, /const eventData: Record<string, unknown> = \{ content: promptForRecord \};/);
     // The note's own event is unchanged: still gated on turnSystemPrompt.

@@ -27,6 +27,8 @@ import {
     FIRST_SUMMARIZE_DELAY,
     INTERNAL_SYSTEM_TURN_PROMPT,
     REPEAT_SUMMARIZE_DELAY,
+    WORKSPACE_RETRY_WAKE_PROMPT,
+    timerGate,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -497,6 +499,13 @@ export function buildContinueInput(
         // A queued-while-blocked prompt must survive the epoch boundary too,
         // or continue-as-new becomes one more way to destroy it.
         ...(state.budgetStash && state.budgetStash.length > 0 ? { budgetStash: state.budgetStash } : {}),
+        // Session workspaces (1.0.80): each field only when set, so a session
+        // without a workspace continues-as-new with the same input as before.
+        ...(state.workspaceRevision > 0 ? { workspaceRevision: state.workspaceRevision } : {}),
+        ...(state.workspaceStatus ? { workspaceStatus: { ...state.workspaceStatus } } : {}),
+        ...(state.workspaceNotice ? { workspaceNotice: state.workspaceNotice } : {}),
+        ...(state.workspaceRetry ? { workspaceRetry: { step: state.workspaceRetry.step, failures: { ...state.workspaceRetry.failures } } } : {}),
+        ...(state.workspaceRetryScheduleMs?.length ? { workspaceRetryScheduleMs: [...state.workspaceRetryScheduleMs] } : {}),
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
         ...(state.pendingChildDigest ? { pendingChildDigest: state.pendingChildDigest } : {}),
         ...(state.pendingShutdown ? { pendingShutdown: state.pendingShutdown } : {}),
@@ -548,6 +557,9 @@ export function* versionedContinueAsNew(
             ...(state.activeTimer.choices ? { choices: state.activeTimer.choices } : {}),
             ...(state.activeTimer.allowFreeform !== undefined ? { allowFreeform: state.activeTimer.allowFreeform } : {}),
             ...(state.activeTimer.agentIds ? { agentIds: state.activeTimer.agentIds } : {}),
+            // 1.0.80: before this, a budget timer lost its flag at every
+            // continue-as-new, so a message after the boundary re-armed it.
+            ...(timerGate(state.activeTimer) ? { gate: timerGate(state.activeTimer) } : {}),
         };
     }
     // Lifecycle protocol: no checkpoint before a warm CAN — every turn
@@ -759,6 +771,23 @@ export function* handleCommand(
             publishStatus(runtime, "idle");
             return;
         }
+        case "retry_workspace": {
+            // Session workspaces: "retry now". Interrupts a workspace wait the
+            // way a message would; the retry turn runs the held prompts, or
+            // is held again with no model call.
+            const waiting = runtime.state.activeTimer?.type === "workspace_retry";
+            if (waiting) {
+                runtime.state.activeTimer = null;
+                runtime.state.pendingPrompt = mergePrompt(runtime.state.pendingPrompt, WORKSPACE_RETRY_WAKE_PROMPT);
+                runtime.state.bootstrapPrompt = true;
+            }
+            yield* writeCommandResponse(runtime, {
+                id: cmdMsg.id,
+                cmd: cmdMsg.cmd,
+                result: { ok: true, retried: waiting },
+            });
+            return;
+        }
         case "list_models": {
             publishStatus(runtime, "idle", { cmdProcessing: cmdMsg.id });
             let models: unknown;
@@ -837,6 +866,8 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
                 reason: timer.reason,
                 shouldRehydrate: timer.shouldRehydrate ?? false,
                 ...(timer.waitPlan ? { waitPlan: timer.waitPlan } : {}),
+                // A gate wait is dropped after the turn, never re-armed.
+                ...(timerGate(timer) ? { gate: timerGate(timer), ...(timerGate(timer) === "budget" ? { budget: true } : {}) } : {}),
             };
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; will auto-resume interrupted wait (${runtime.state.interruptedWaitTimer.remainingSec}s remain)`);
             runtime.state.activeTimer = null;
@@ -858,6 +889,7 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
         case "idle":
         case "agent-poll":
         case "input-grace":
+        case "workspace_retry":
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
             runtime.state.activeTimer = null;
             return;

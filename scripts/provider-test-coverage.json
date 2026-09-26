@@ -76,6 +76,7 @@
     "test/local/orchestration-schedule-fingerprint.test.js",
     "test/local/orchestration-version-upgrade.test.js",
     "test/local/orchestration-warm-resume.test.js",
+    "test/local/orchestration-workspace-gate.test.js",
     "test/local/outbox-bulk-reconcile.test.js",
     "test/local/package-reserved-quarantine.test.js",
     "test/local/pane-fullscreen-ui.test.js",
