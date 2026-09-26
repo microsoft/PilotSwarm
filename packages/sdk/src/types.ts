@@ -57,7 +57,12 @@ type TurnResultVariant =
     // it, but a budget pause must not be — that turn already re-asked the
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
-    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    // `gate` (1.0.80+) names the gate that created the wait. Budget waits
+    // keep `budget: true` as well, so frozen 1.0.79 still reads them. A
+    // workspace wait carries the failure `code`, the `workerNodeId` that
+    // failed, and the provider's `retryAfterMs`; the orchestration picks the
+    // wait length, and `seconds` is only a fallback for older handlers.
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -337,6 +342,19 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     providerFingerprint?: string;
     /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */
     admittedModel?: string;
+    /**
+     * Session workspaces: this turn's attach result, set by the runTurn
+     * activity after the attach and the path check pass. Runtime-only;
+     * never serialized, never stored across turns.
+     */
+    workspaceAttach?: {
+        root: string;
+        rootPath: string;
+        /** The provider's path: the CLI's working directory for this turn. */
+        path: string;
+        realPath: string;
+        adopt?: WorkspaceAdopt;
+    };
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**

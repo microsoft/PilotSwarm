@@ -19,7 +19,9 @@ import type {
     SessionResponsePayload,
     SessionOwnerInfo,
     PromptAttachmentRef,
+    SessionWorkspace,
 } from "./types.js";
+import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -109,6 +111,9 @@ export function projectSerializableSessionConfig(
         promptLayering: fullConfig?.promptLayering,
         childContract: fullConfig?.childContract,
         toolNames: allNames.length ? allNames : undefined,
+        // Session workspaces: present only when set, so a session without one
+        // projects exactly as before.
+        ...(fullConfig?.workspace ? { workspace: fullConfig.workspace } : {}),
     };
 }
 
@@ -204,6 +209,17 @@ export class PilotSwarmClient {
             }
         }
 
+        // Session workspaces: the folder-text check runs here, in process.
+        // Root names are checked by the worker, which knows the roots.
+        let workspace: SessionWorkspace | undefined;
+        if (config?.workspace !== undefined && config?.workspace !== null) {
+            const checked = validateWorkspaceText(config.workspace);
+            if (!checked.ok) {
+                throw Object.assign(new Error(`${checked.code}: ${checked.message}`), { code: checked.code, status: 400 });
+            }
+            workspace = checked.workspace;
+        }
+
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const resolvedConfig = {
@@ -235,6 +251,7 @@ export class PilotSwarmClient {
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
+                ...(workspace ? { workspace } : {}),
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }

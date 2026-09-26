@@ -14,6 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { prepareWorkspace } from "./workspace.js";
 import { splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
@@ -877,6 +878,12 @@ const boundAgentRestoreAnnounced = new Set<string>();
 const BOUND_AGENT_RESTORE_ANNOUNCED_SWEEP_AT = 5_000;
 
 /**
+ * Session workspaces: the `seconds` a workspace wait carries for handlers
+ * that do not own the retry schedule. 1.0.80+ computes its own schedule.
+ */
+const WORKSPACE_WAIT_FALLBACK_SECONDS = 30;
+
+/**
  * Backfill a session's bound agent from the CMS catalog row.
  *
  * WHY THIS EXISTS: a top-level session's creation config lives in an
@@ -1187,6 +1194,8 @@ export function registerActivities(
             transcriptEpoch?: number;
             /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
             epochStart?: boolean;
+            /** Session workspaces (1.0.80+): the workspace revision, for the provider's lease. */
+            workspaceRevision?: number;
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -1525,6 +1534,63 @@ export function registerActivities(
                     message: `Provider admission could not verify this turn: ${err?.message ?? err}`,
                 } as TurnResult;
             }
+        }
+
+        // ── the workspace gate (session workspaces) ─────────────────
+        //
+        // docs/proposals/session-workspaces.md, section 4.4. After the
+        // store-wins preamble and the budget gate, before any Copilot
+        // session is created or resumed: list the roots, attach, and check
+        // the path. A failure calls no model. It returns the same `wait`
+        // result the budget gate uses, with `gate: "workspace"`; the
+        // orchestration holds the prompt and owns the retry schedule.
+        if (runConfig.workspace) {
+            const workspaceRevision = input.workspaceRevision ?? 1;
+            const attachWorker = workerNodeId ?? os.hostname();
+            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), {
+                sessionId: input.sessionId,
+                rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                workspace: runConfig.workspace,
+                revision: workspaceRevision,
+                workerNodeId: attachWorker,
+                turnIndex: input.turnIndex ?? 0,
+            });
+            if (!prepared.ok) {
+                activityCtx.traceInfo(
+                    `[runTurn] workspace unavailable for ${input.sessionId}: ${prepared.code} ${prepared.message}`,
+                );
+                if (catalog) {
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent workspace-unavailable session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.workspace_unavailable",
+                            data: {
+                                revision: workspaceRevision,
+                                code: prepared.code,
+                                message: prepared.message,
+                                workerNodeId: attachWorker,
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+                return {
+                    type: "wait",
+                    seconds: WORKSPACE_WAIT_FALLBACK_SECONDS,
+                    reason: `workspace unavailable: ${prepared.message}`,
+                    gate: "workspace",
+                    code: prepared.code,
+                    workerNodeId: attachWorker,
+                    ...(prepared.retryAfterMs !== undefined ? { retryAfterMs: prepared.retryAfterMs } : {}),
+                } as TurnResult;
+            }
+            (runConfig as ManagedSessionConfig).workspaceAttach = {
+                root: prepared.root.name,
+                rootPath: prepared.root.path,
+                path: prepared.path,
+                realPath: prepared.realPath,
+                ...(prepared.adopt ? { adopt: prepared.adopt } : {}),
+            };
         }
 
         const executeTurnBody = async (): Promise<TurnResult> => {

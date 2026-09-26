@@ -11,7 +11,7 @@ import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMe
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
-import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceProvider } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
@@ -346,6 +346,90 @@ function toolDeclarationForFingerprint(tool: Tool<any>): Record<string, unknown>
         isTerminal: tool.isTerminal,
     };
 }
+
+/** A workspace session's part of the binding fingerprint. */
+export interface WorkspaceFingerprintPart {
+    /** The attach path, which is the CLI's working directory. */
+    path: string;
+    adopt: WorkspaceAdopt | null;
+    /** Hash of the adopted repo agents and skills; absent when none are adopted. */
+    repoAgentHash?: string;
+}
+
+/**
+ * The input to the binding fingerprint: what, when it changes, needs a fresh
+ * CLI handle at the next turn boundary. Pure, so tests can check it (test C3
+ * in docs/proposals/session-workspaces.md). The key order is part of the
+ * digest. A session without a workspace gets no workspace key at all, so its
+ * digest is the same as before workspaces existed.
+ */
+export function buildBindingFingerprintInput(parts: {
+    capabilityFingerprint: unknown;
+    baseAgentPolicy: unknown;
+    v2InventoryFingerprint?: string;
+    sdkSkillDirectories: unknown;
+    boundAgentName: unknown;
+    boundAgentSource: unknown;
+    boundAgentCopy: unknown;
+    mcpServers: unknown;
+    excludedTools: unknown;
+    tools: unknown;
+    workspace?: WorkspaceFingerprintPart;
+}): Record<string, unknown> {
+    return {
+        capabilityFingerprint: parts.capabilityFingerprint,
+        baseAgentPolicy: parts.baseAgentPolicy,
+        ...(parts.v2InventoryFingerprint ? { v2InventoryFingerprint: parts.v2InventoryFingerprint, sdkSkillDirectories: parts.sdkSkillDirectories } : {}),
+        boundAgentName: parts.boundAgentName,
+        boundAgentSource: parts.boundAgentSource,
+        boundAgentCopy: parts.boundAgentCopy,
+        mcpServers: parts.mcpServers,
+        excludedTools: parts.excludedTools,
+        tools: parts.tools,
+        ...(parts.workspace ? {
+            workspace: {
+                path: parts.workspace.path,
+                adopt: parts.workspace.adopt,
+                ...(parts.workspace.repoAgentHash ? { repoAgentHash: parts.workspace.repoAgentHash } : {}),
+            },
+        } : {}),
+    };
+}
+
+export function bindingFingerprintDigest(input: Record<string, unknown>): string {
+    return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
+/**
+ * Session workspaces: a session that adopts repo instructions keeps them.
+ *
+ * The CLI puts the instruction files it finds in the working directory
+ * (AGENTS.md, .github/copilot-instructions.md and the like) into its
+ * `custom_instructions` section. PilotSwarm replaces that section with its
+ * framework base, so those files never reach the model. For a workspace
+ * session whose provider adopts instructions, the base is prepended instead,
+ * and the repo's instructions follow it. Every other session is unchanged.
+ */
+export function keepAdoptedRepoInstructions(
+    message: SystemMessageConfig | undefined,
+    adoptInstructions: boolean,
+): SystemMessageConfig | undefined {
+    if (!adoptInstructions || !message || typeof message !== "object" || (message as any).mode !== "customize") return message;
+    const sections = (message as any).sections;
+    const custom = sections?.custom_instructions;
+    if (!custom || custom.action !== "replace") return message;
+    return {
+        ...(message as any),
+        sections: { ...sections, custom_instructions: { ...custom, action: "prepend" } },
+    } as SystemMessageConfig;
+}
+
+/**
+ * Session workspaces: the CLI process pool key gains the root, so a hung
+ * mount freezes only the processes that serve that root. Tokens never hold
+ * a NUL, so the separator cannot occur inside one.
+ */
+const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
 
 function buildEffectivePromptLayers(
     workerDefaults: WorkerDefaults,
@@ -991,7 +1075,7 @@ export class SessionManager {
     }
 
     /** Ensure the CopilotClient is started. */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -1009,7 +1093,8 @@ export class SessionManager {
             }
         }
 
-        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "");
+        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
+            + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
 
@@ -1108,9 +1193,12 @@ export class SessionManager {
     private async ensureClientForKey(key: string): Promise<CopilotClient> {
         const cached = this.clients.get(key);
         if (cached) return cached;
-        return key.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(key.slice(BYOK_CLIENT_PREFIX.length) || undefined, true)
-            : this.ensureClient(key || undefined);
+        const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
+        const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
+        const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
+        return base.startsWith(BYOK_CLIENT_PREFIX)
+            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot)
+            : this.ensureClient(base || undefined, false, workspaceRoot);
     }
 
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
@@ -1547,6 +1635,18 @@ export class SessionManager {
             turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
             turnInactivityTimeoutMs: this.workerDefaults.turnInactivityTimeoutMs,
         };
+        // Session workspaces: this turn's config decides. A workspace or an
+        // attach result the stored config still holds from an earlier turn
+        // must not survive a clear.
+        if (!effectiveSerializableConfig.workspace) delete config.workspace;
+        if (!(effectiveSerializableConfig as ManagedSessionConfig).workspaceAttach) delete config.workspaceAttach;
+        const workspaceAttach = config.workspace ? config.workspaceAttach : undefined;
+        if (config.workspace && !workspaceAttach) {
+            throw new Error(
+                `Session ${sessionId} has a workspace but reached getOrCreate without an attach result; `
+                + "the runTurn activity attaches the workspace before the session is created or resumed.",
+            );
+        }
         this.sessionConfigs.set(sessionId, config);
 
         // ── Catalog model is the source of truth ─────────────────────────
@@ -1667,7 +1767,8 @@ export class SessionManager {
             );
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
-        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "");
+        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
+            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -1686,7 +1787,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -1999,7 +2100,10 @@ export class SessionManager {
         config.baseV2CapabilityIndex = v2Inventory ? this._baseV2CapabilityIndexSection(v2Inventory) : undefined;
 
         // Build system message: worker base + client override
-        const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null);
+        const systemMessage = keepAdoptedRepoInstructions(
+            this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null),
+            workspaceAttach?.adopt?.instructions === true,
+        );
 
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include
@@ -2014,17 +2118,19 @@ export class SessionManager {
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
             : this.workerDefaults.skillDirectories ?? [];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
-        const bindingFingerprint = createHash("sha256").update(JSON.stringify({
+        const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
             baseAgentPolicy: config.baseAgentPolicy?.fingerprint,
-            ...(v2InventoryFingerprint ? { v2InventoryFingerprint, sdkSkillDirectories } : {}),
+            v2InventoryFingerprint,
+            sdkSkillDirectories,
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
             mcpServers: effectiveMcpServers,
             excludedTools,
             tools: allTools.map(toolDeclarationForFingerprint),
-        })).digest("hex");
+            ...(workspaceAttach ? { workspace: { path: workspaceAttach.path, adopt: workspaceAttach.adopt ?? null } } : {}),
+        }));
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
 
@@ -2067,7 +2173,13 @@ export class SessionManager {
             // configDir is intentionally omitted: the Copilot CLI does not honor it for
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
-            workingDirectory: config.workingDirectory,
+            workingDirectory: workspaceAttach?.path ?? config.workingDirectory,
+            // Session workspaces: repo hooks never run, and the repo's
+            // instruction files load only when the provider adopts them.
+            ...(workspaceAttach ? {
+                enableFileHooks: false,
+                skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
+            } : {}),
             hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
                 () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,

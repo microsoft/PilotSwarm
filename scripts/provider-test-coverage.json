@@ -162,6 +162,7 @@
     "test/local/wait-content-leak.test.js",
     "test/local/wait-interrupt.test.js",
     "test/local/webapi-auth.test.js",
-    "test/local/worker-provider-lifecycle.test.js"
+    "test/local/worker-provider-lifecycle.test.js",
+    "test/local/workspace-turn.test.js"
   ]
 }

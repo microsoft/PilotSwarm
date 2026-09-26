@@ -416,6 +416,8 @@ fixed one model; the deny fixes the rest.
      customAgents           = PilotSwarm agents + repo agents
      skillDirectories       = PilotSwarm folders + <clone root>/.github/skills
      skipCustomInstructions = !(adopt && adopt.instructions)
+     custom_instructions    = PilotSwarm's base prepended, not replaced,
+                              when instructions are adopted (see 4.6)
      enableFileHooks        = false     (repo hooks never run)
    The path, the three adopt flags and the repo-agent hash join the session
    fingerprint. A change to any of them drops the warm session and resumes the
@@ -501,7 +503,7 @@ keep writing.
 |---|---|
 | `.github/agents/*.agent.md` | Merged into `customAgents`. Limits: 30 agents, 64 KB each. Agents past the 30th, and any file over 64 KB, are skipped and listed in `session.workspace_adopted.skipped`. |
 | `.github/skills/<name>/SKILL.md` | Added to `skillDirectories` |
-| `AGENTS.md`, `.github/copilot-instructions.md` and similar instruction files | Loaded by the CLI when `skipCustomInstructions` is false |
+| `AGENTS.md`, `.github/copilot-instructions.md` and similar instruction files | Loaded by the CLI when `skipCustomInstructions` is false. The CLI puts them in its `custom_instructions` section, which PilotSwarm otherwise replaces with its base prompt; for a session that adopts instructions, PilotSwarm prepends its base to that section instead, so the repo's files follow it. |
 | `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, an agent's `mcp-servers` | Never. The CLI starts repo MCP servers only with discovery on and a trusted folder; PilotSwarm sets neither. |
 | `.github/hooks/*` | Never. `enableFileHooks: false` on every create and resume. Verified: without it the CLI runs repo hook commands on every prompt. |
 
@@ -654,10 +656,12 @@ from the latest workspace events, so no CMS migration is needed in v1.
 | `session.workspace_adopted` | `{ revision, agents, skills, skipped }` |
 
 **Errors:** `WORKSPACE_ROOT_UNKNOWN`, `WORKSPACE_PATH_INVALID` (also a
-symlink that leaves the root), `WORKSPACE_FOLDER_MISSING` (also a file, a
-FIFO or a symlink to a file), `WORKSPACE_CHECK_TIMEOUT`,
-`WORKSPACE_REVISION_CONFLICT`, `WORKSPACE_BUSY`. Provider codes, such as
-`WORKSPACE_IN_USE`, pass through unchanged.
+symlink that leaves the root, and a folder that fails the text check),
+`WORKSPACE_FOLDER_MISSING` (also a file, a FIFO or a symlink to a file),
+`WORKSPACE_CHECK_TIMEOUT`, `WORKSPACE_ATTACH_TIMEOUT` (the 30 s attach
+deadline passed), `WORKSPACE_ATTACH_FAILED` (the provider threw or returned
+no path), `WORKSPACE_REVISION_CONFLICT`, `WORKSPACE_BUSY`. Provider codes,
+such as `WORKSPACE_IN_USE`, pass through unchanged.
 
 ### 4.9 Compatibility: additive by construction
 
@@ -1258,6 +1262,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | `resumeSession` with a new cwd, warm or in a new CLI process | Honored |
 | `resumeSession` without a cwd | Falls back to the creation-time cwd, so always pass it |
 | `AGENTS.md` in the cwd | Loaded, unless `skipCustomInstructions` is set |
+| `AGENTS.md` in a PilotSwarm session's cwd | Not loaded, even without `skipCustomInstructions`: PilotSwarm replaces the `custom_instructions` section, where the CLI puts it. With the base prepended instead, it loads (test A3). |
 | `.github/hooks/*` in the cwd | Commands run on every prompt unless `enableFileHooks: false` |
 | Git edits, commits and branch switches | System prompt unchanged, so the prompt cache holds |
 | Discovery on | Repo agents and skills found; with a trusted folder, repo MCP servers also start |
