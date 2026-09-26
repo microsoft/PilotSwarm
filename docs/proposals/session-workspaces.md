@@ -338,7 +338,7 @@ Rules for provider implementations:
 | Whoever creates the session | `createSession({ workspace })` |
 | The agent | `set_session_workspace({ root, folder })` or `({ clear: true })` |
 | Owner, admin or app controller | `setSessionWorkspace(sessionId, { expectedRevision, workspace })` |
-| A parent spawning a child | `spawn_agent({ task, workspace })`. `workspace` is a full `{ root, folder }` record. Omitted: the child inherits the parent's workspace. A record: the child gets that workspace. `null`: the child gets none. The tool description tells the model: give the child its own folder when it will switch branches, stash, reset or commit while you keep working; two sessions in one clone share one HEAD, index and stash (K15). |
+| A parent spawning a child | `spawn_agent({ task, workspace })`. `workspace` is a full `{ root, folder }` record. Omitted: the child inherits the parent's workspace. A record: the child gets that workspace. `null`: the child gets none. A record is checked on the parent's worker at spawn time: a bad folder fails the `spawn_agent` call and no child is created. The tool description tells the model: give the child its own folder when it will switch branches, stash, reset or commit while you keep working; two sessions in one clone share one HEAD, index and stash (K15). |
 
 **Which sessions get the tools.** The two workspace tools and the
 `spawn_agent` `workspace` parameter are declared in a session when it has a
@@ -625,7 +625,18 @@ every further failure there releases affinity again, until a check passes.
 
 **Lost or retried turn.** The next turn of a workspace session gets the
 partial-changes note: "An earlier attempt may have changed files. Check
-`git status` first."
+`git status` first." The worker adds it when either signal is true:
+
+```
+retryCount > 0                    the orchestration is retrying a failed turn
+row.activeTurnIndex == turnIndex  an earlier attempt of this turn reached the
+                                  model call and was lost; a worker crash
+                                  sends the same input again, retryCount 0
+```
+
+The worker reads the session row at the top of the activity, before this
+attempt writes `activeTurnIndex`. A gate refusal returns before that write,
+so a held prompt does not count as an attempt.
 
 **The owner acts.** Retry now (interrupts the wait, like a message), clear,
 or pick another folder. Stop, cancel, complete and delete work as usual.
@@ -969,8 +980,9 @@ sequenceDiagram
   M->>R: create a session clone of repo B
   R-->>M: root a, folder sessions/s-1/repo-b
   M->>T: spawn_agent(task, workspace root a, folder sessions/s-1/repo-b)
-  T->>P: ensureAttached on the parent's worker, a quick check
+  T->>P: ensureAttached on the parent's worker, a quick check, under the child's new session ID
   P-->>T: ok
+  T->>P: release the check's attach, so no lease entry stays on this worker
   T-->>O: spawn the child with config.workspace
   O->>C: first turn on any worker
   C->>P: ensureAttached(child, same tree): a second entry in repo B's lease

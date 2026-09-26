@@ -14,7 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { prepareWorkspace } from "./workspace.js";
+import { checkWorkspaceForSpawn, prepareWorkspace, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
@@ -993,10 +993,12 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean) {
             return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
+                // Session workspaces (1.0.80): set only when the parent chose a record.
+                ...(workspaceChosen ? { workspaceChosen: true } : {}),
             }), routingContract);
         },
     /**
@@ -1160,6 +1162,8 @@ export function registerActivities(
         enhancedFactsSchema?: string;
         useManagedIdentity?: boolean;
         aadDbUser?: string;
+        /** The worker's explicit model-providers file, so the clients that create child sessions resolve the same providers. */
+        modelProvidersPath?: string;
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
@@ -1193,6 +1197,7 @@ export function registerActivities(
         ...(clientConfig?.enhancedFactsSchema != null && { enhancedFactsSchema: clientConfig.enhancedFactsSchema }),
         ...(clientConfig?.useManagedIdentity != null && { useManagedIdentity: clientConfig.useManagedIdentity }),
         ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
+        ...(clientConfig?.modelProvidersPath != null && { modelProvidersPath: clientConfig.modelProvidersPath }),
     });
 
     // ── runTurn ──────────────────────────────────────────────
@@ -1667,6 +1672,36 @@ export function registerActivities(
                         () => catalog!.recordEvents(input.sessionId, [{
                             eventType: "system.message",
                             data: { content: notice, workspaceNotice: true },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+            }
+        }
+        // Session workspaces: an earlier attempt of this turn may have left
+        // half-made changes in the checkout. Two signals:
+        //   retryCount > 0: the orchestration is retrying a failed turn.
+        //   activeTurnIndex == this turn: the CMS row got this index just
+        //     before an earlier attempt's model call, so that attempt ran
+        //     and was lost (a worker crash redelivers the same input).
+        // The row was read at the top of this activity, before this
+        // attempt writes the index.
+        if ((runConfig as ManagedSessionConfig).workspaceAttach) {
+            const earlierAttempt = (input.retryCount ?? 0) > 0
+                || (typeof catalogSessionRow?.activeTurnIndex === "number"
+                    && catalogSessionRow.activeTurnIndex === (input.turnIndex ?? 0));
+            if (earlierAttempt) {
+                const split = splitSystemContextBlock(effectivePrompt);
+                effectivePrompt = appendSystemContextBlock(
+                    split.prompt,
+                    split.note ? `${split.note}\n\n${WORKSPACE_PARTIAL_CHANGES_NOTE}` : WORKSPACE_PARTIAL_CHANGES_NOTE,
+                );
+                if (catalog) {
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent workspace-partial-changes session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "system.message",
+                            data: { content: WORKSPACE_PARTIAL_CHANGES_NOTE, workspacePartialChanges: true },
                         }], workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
                     );
@@ -2258,6 +2293,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 tool_names?: string[];
                 title?: string;
                 contract?: Record<string, unknown>;
+                workspace?: import("./types.js").SessionWorkspace | null;
             }) => {
                 try {
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
@@ -2363,6 +2399,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             `If you are unsure, omit model so the sub-agent inherits your current model.]`;
                     }
 
+                    // Session workspaces: a record is checked here, on the
+                    // parent's worker, so a bad folder fails at spawn and not
+                    // on the child's first turn. The child id is assigned
+                    // first because the provider attaches per session.
+                    let childSessionIdForWorkspace: string | undefined;
+                    if (args.workspace) {
+                        childSessionIdForWorkspace = randomUUID();
+                        const checked = await checkWorkspaceForSpawn(sessionManager.getWorkspaceProvider(), {
+                            sessionId: childSessionIdForWorkspace,
+                            rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                            workspace: args.workspace,
+                            revision: 1,
+                            workerNodeId: workerNodeId ?? os.hostname(),
+                            turnIndex: 0,
+                        });
+                        if (!checked.ok) {
+                            return `[SYSTEM: spawn_agent failed — ${checked.code}: ${checked.message}]`;
+                        }
+                    }
+
                     // v1.0.49: same-name duplicate spawns are allowed. The
                     // global MAX_SUB_AGENTS cap and per-spawn nesting limit
                     // still apply. The parent is responsible for closing
@@ -2397,6 +2453,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                         ...(args.contract ? { childContract: args.contract } : {}),
                     };
+                    // Session workspaces: omitted inherits the parent's
+                    // workspace (already in the spread), a record replaces
+                    // it, null gives the child none.
+                    if (args.workspace) childConfig.workspace = args.workspace;
+                    else if (args.workspace === null) delete childConfig.workspace;
 
                     const parentSystemMsg = typeof childConfig.systemMessage === "string"
                         ? childConfig.systemMessage
@@ -2434,9 +2495,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (normalizedModel) childConfig.model = normalizedModel;
 
                     const childSession = await sdkClient.createSession({
+                        ...(childSessionIdForWorkspace ? { sessionId: childSessionIdForWorkspace } : {}),
                         parentSessionId: input.sessionId,
                         nestingLevel: childNestingLevel,
                         ...childModelCreationOptions(childConfig),
+                        ...(childConfig.workspace ? { workspace: childConfig.workspace } : {}),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
@@ -4711,7 +4774,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Goes through the full SDK path: CMS registration + orchestration startup.
     registerHandoffActivity(runtime, "spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean },
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
@@ -4789,6 +4852,25 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 trace(`owner inheritance lookup done (${Date.now() - ownerLookupAt}ms; ${inheritedOwner ? "found" : "none"})`);
             }
 
+            // Session workspaces: a record the parent chose is checked here,
+            // so a bad folder fails at spawn. An inherited one is not: the
+            // parent is already using it.
+            if (input.workspaceChosen && input.config.workspace) {
+                const parentRow = catalog
+                    ? await cmsRetryBestEffort(`spawnChildSession.getSession parent=${input.parentSessionId}`, () => catalog!.getSession(input.parentSessionId), (msg) => activityCtx.traceInfo(msg))
+                    : null;
+                const checked = await checkWorkspaceForSpawn(sessionManager.getWorkspaceProvider(), {
+                    sessionId: childSessionId,
+                    rootSessionId: (parentRow as any)?.rootSessionId ?? input.parentSessionId,
+                    workspace: input.config.workspace,
+                    revision: 1,
+                    workerNodeId: workerNodeId ?? os.hostname(),
+                    turnIndex: 0,
+                });
+                trace(`workspace check done (ok=${checked.ok}${checked.ok ? "" : ` code=${checked.code}`})`);
+                if (!checked.ok) throw new Error(`${checked.code}: ${checked.message}`);
+            }
+
             // Create the child session via the SDK — handles CMS row + orchestration start
             const createSessionAt = Date.now();
             const session = await sdkClient.createSession({
@@ -4796,6 +4878,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 parentSessionId: input.parentSessionId,
                 nestingLevel: input.nestingLevel,
                 ...childModelCreationOptions(input.config),
+                ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,

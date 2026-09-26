@@ -795,6 +795,10 @@ export function* handleSubAgentAction(
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 ...(result.contract ? { childContract: result.contract } : {}),
             };
+            // Session workspaces: omitted inherits the parent's workspace
+            // (already in the spread), a record replaces it, null gives none.
+            if (result.workspace) childConfig.workspace = result.workspace;
+            else if (result.workspace === null) delete childConfig.workspace;
 
             const parentSystemMsg = typeof childConfig.systemMessage === "string"
                 ? childConfig.systemMessage
@@ -821,6 +825,7 @@ export function* handleSubAgentAction(
                     agentSplash,
                     agentTitleIsExplicit,
                     bootstrapRequiredTool,
+                    ...(result.workspace ? [true] : []),
                 );
             } catch (err: any) {
                 ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);

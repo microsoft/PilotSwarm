@@ -45,6 +45,8 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHa
     const timers = [];
     // releaseWorkspace races: { args, capMs }. `sequence` orders releases and events.
     const releases = [];
+    // spawnChildSession activity calls: the positional args.
+    const spawns = [];
     const sequence = [];
     const kv = new Map();
     const pendingMessages = queue.map((entry) => (typeof entry === "string" ? { afterTurns: 0, msg: entry } : entry));
@@ -139,13 +141,17 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHa
                     checks.push({ args, answer });
                     return answer;
                 }
+                if (effect.effect === "manager.spawnChildSession") {
+                    spawns.push(effect.args);
+                    return `child-${spawns.length}`;
+                }
                 if (effect.effect === "manager.getWorkerSessionPolicy") return { policy: null, allowedAgentNames: [] };
                 if (effect.effect === "manager.resolveAgentConfig") return null;
                 if (effect.effect === "manager.listModels") return [];
                 return undefined;
         }
     };
-    return { ctx, turns, recorded, timers, releases, sequence, checks, kv, resolve, hasDeliverable };
+    return { ctx, turns, recorded, timers, releases, sequence, checks, spawns, kv, resolve, hasDeliverable };
 }
 
 async function latestHandler() {
@@ -537,6 +543,32 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         expect(events(h, "session.workspace_changed").at(-1).data).toEqual({ workspace: null, revision: 2, path: null, source: "agent" });
         expect(h.turns[1].opts.workspaceRevision).toBeUndefined();
         expect(h.turns[1].opts.workspaceNotice).toMatch(/to the default working directory\.$/);
+    });
+
+    it("the orchestration's spawn_agent: omitted inherits, a record replaces and asks for the check, null drops the workspace (B10)", async () => {
+        const handler = await latestHandler();
+        const spawnWith = (extra) => {
+            const h = createHarness({
+                turnResults: [{ type: "spawn_agent", task: "child task", ...extra }, { type: "completed", content: "done" }],
+                queue: [prompt("spawn one")],
+            });
+            drive(handler(h.ctx, INPUT()), h);
+            expect(h.spawns).toHaveLength(1);
+            const [, childConfig, , , , , , , , , workspaceChosen] = h.spawns[0];
+            return { childConfig, workspaceChosen, args: h.spawns[0] };
+        };
+        const inherited = spawnWith({});
+        expect(inherited.childConfig.workspace).toEqual(WORKSPACE);
+        expect(inherited.args).toHaveLength(10);
+
+        const other = { schema: 1, root: "a", folder: "sessions/s-1/repo-b" };
+        const chosen = spawnWith({ workspace: other });
+        expect(chosen.childConfig.workspace).toEqual(other);
+        expect(chosen.workspaceChosen).toBe(true);
+
+        const none = spawnWith({ workspace: null });
+        expect("workspace" in none.childConfig).toBe(false);
+        expect(none.args).toHaveLength(10);
     });
 
     it("a session without a workspace carries no workspace fields and sends no revision", async () => {

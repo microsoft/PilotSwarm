@@ -71,7 +71,8 @@ export function isSessionRequest(body) {
  *
  * A step is { tools: [{ name, args }] } or { content } or a function
  * (body, position) => step. Turns or steps past the end of the script answer
- * with `fallback` (default "ok"), which ends the turn.
+ * with `fallback` (default "ok"), which ends the turn. A step
+ * { httpStatus, message } answers with that HTTP error instead.
  */
 export function scriptTurns(turns, { fallback = "ok" } = {}) {
     return (body, position) => {
@@ -153,6 +154,11 @@ export async function startScriptedModel(opts = {}) {
                 : await respondAuxiliary(body, record);
             record.answer = answer;
             if (res.destroyed) return;
+            if (answer?.httpStatus) {
+                res.writeHead(answer.httpStatus, { "content-type": "application/json" });
+                res.end(JSON.stringify({ error: { message: answer.message ?? "scripted error", type: "invalid_request_error" } }));
+                return;
+            }
             writeAnswer(res, body, answer ?? { content: "ok" }, `fixture-${index}`);
         } catch (error) {
             if (!res.destroyed) {

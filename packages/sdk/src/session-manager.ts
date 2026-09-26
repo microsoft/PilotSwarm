@@ -1862,7 +1862,7 @@ export class SessionManager {
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        const subAgentTools = ManagedSession.subAgentToolDefs()
+        const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = createFactTools({
             factStore: this.factStore,

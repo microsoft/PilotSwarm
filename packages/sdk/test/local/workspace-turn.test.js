@@ -422,6 +422,133 @@ describe("workspace turn", () => {
         }
     });
 
+    /** Polls `probe` until it returns a truthy value. */
+    const eventually = async (probe, what, timeoutMs = 90_000) => {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+            const value = await probe();
+            if (value) return value;
+            if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+    };
+
+    it("spawn_agent's workspace: omitted inherits, a record is used, null gives none and the default cwd, a bad folder fails at spawn (B10)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b10-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        const parentScript = scriptTurns([[
+            { tools: [
+                { name: "spawn_agent", args: { task: "child-inherit: report pwd" } },
+                { name: "spawn_agent", args: { task: "child-record: report pwd", workspace: { root: "a", folder: "repo-y" } } },
+                { name: "spawn_agent", args: { task: "child-none: report pwd", workspace: null } },
+                { name: "spawn_agent", args: { task: "child-bad: report pwd", workspace: { root: "a", folder: "missing" } } },
+            ] },
+            (_body, position) => ({ content: `spawned:${JSON.stringify(position.toolResults)}` }),
+        ]]);
+        const respond = (body, position) => (/child-|plain-probe/.test(position.firstUserText) ? pwdEveryTurn : parentScript)(body, position);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, model, qualifiedModel }) => {
+                const parentId = randomUUID();
+                const parent = await client.createSession({ sessionId: parentId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                const answer = await parent.sendAndWait("spawn the four", TIMEOUT);
+                const results = JSON.parse(answer.slice("spawned:".length));
+                assertEqual(results.filter((text) => text.includes("Sub-agent spawned successfully")).length, 3, `three spawns: ${answer}`);
+                const refused = results.filter((text) => text.includes("spawn_agent failed"));
+                assertEqual(refused.length, 1, "one refused spawn");
+                assert(refused[0].includes("WORKSPACE_FOLDER_MISSING"), `the bad folder fails at spawn: ${refused[0]}`);
+
+                const plain = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel });
+                const defaultCwd = (await plain.sendAndWait("plain-probe", TIMEOUT)).slice("out:".length);
+
+                const pwdOf = (task) => eventually(() => {
+                    const done = model.sessionRequests(task).find((r) => r.position.turn === 1 && r.position.step === 1);
+                    return done ? firstLine(done.position.toolResults) : null;
+                }, `${task} to report its pwd`);
+                assertEqual(await pwdOf("child-inherit"), path.join(root, "repo-x"), "omitted: the child shares the parent's folder");
+                assertEqual(await pwdOf("child-record"), path.join(root, "repo-y"), "a record: the child works there");
+                const noneCwd = await pwdOf("child-none");
+                assertEqual(noneCwd, defaultCwd, "null: the child lands in the default cwd");
+                assert(!noneCwd.startsWith(root), "null: the child is outside every workspace");
+
+                const catalog = await createCatalog(env);
+                try {
+                    const spawned = (await catalog.getSessionEvents(parentId)).filter((e) => e.eventType === "session.agent_spawned");
+                    assertEqual(spawned.length, 3, "the refused spawn created no child");
+                    const childFor = (prefix) => spawned.find((e) => e.data.task.startsWith(prefix)).data.childSessionId;
+                    const [inheritId, recordId, noneId] = ["child-inherit", "child-record", "child-none"].map(childFor);
+                    const created = async (id) => (await catalog.getSessionEvents(id))
+                        .filter((e) => e.eventType === "session.workspace_changed")
+                        .map((e) => [e.data.source, e.data.revision, e.data.workspace?.folder ?? null]);
+                    assertEqual(JSON.stringify(await created(inheritId)), JSON.stringify([["create", 1, "repo-x"]]));
+                    assertEqual(JSON.stringify(await created(recordId)), JSON.stringify([["create", 1, "repo-y"]]));
+                    assertEqual(JSON.stringify(await created(noneId)), "[]", "null: no workspace at all");
+
+                    // The record is checked on the parent's worker under the
+                    // child's id, and that attach is released before the
+                    // child's own first-turn attach.
+                    const attaches = provider.callsFor("ensureAttached", { sessionId: recordId });
+                    const releases = provider.callsFor("release", { sessionId: recordId });
+                    assert(attaches.length >= 2, `a quick check and a first-turn attach: ${attaches.length}`);
+                    assertEqual(releases.length >= 1, true, "the quick check was released");
+                    assert(attaches[0].seq < releases[0].seq && releases[0].seq < attaches[1].seq, "check, release, then the child's attach");
+                    assertEqual(attaches[0].req.rootSessionId, parentId, "the check leases under the parent's tree");
+                    assertEqual(attaches[1].req.rootSessionId, parentId, "the child attaches under the parent's tree");
+                    assertEqual(provider.callsFor("release", (r) => r.req?.workspace?.folder === "missing").length, 1,
+                        "a failed check still releases its attach");
+                    assertEqual(provider.callsFor("ensureAttached", { sessionId: noneId }).length, 0);
+                    assertEqual(provider.callsFor("ensureAttached", { sessionId: inheritId })[0].req.rootSessionId, parentId);
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("a retried turn in a workspace session gets the partial-changes note; a plain session's retry does not (F6)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f6-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        const NOTE = "An earlier attempt may have changed files. Check `git status` first.";
+        // Each conversation's first model call fails once; the orchestration
+        // retries the turn (retryCount 1).
+        const failed = new Set();
+        const respond = (_body, position) => {
+            if (!failed.has(position.firstUserText)) {
+                failed.add(position.firstUserText);
+                return { httpStatus: 400, message: "scripted failure" };
+            }
+            return { content: `note:${position.lastUserText.includes(NOTE)}` };
+        };
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, qualifiedModel }) => {
+                const workspaceId = randomUUID();
+                const withWorkspace = await client.createSession({ sessionId: workspaceId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                const plain = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel });
+                const [workspaceAnswer, plainAnswer] = await Promise.all([
+                    withWorkspace.sendAndWait("f6 workspace turn", TIMEOUT),
+                    plain.sendAndWait("f6 plain turn", TIMEOUT),
+                ]);
+                assertEqual(workspaceAnswer, "note:true", "the retried workspace turn carries the note");
+                assertEqual(plainAnswer, "note:false", "a plain session's retry gets no note");
+                const catalog = await createCatalog(env);
+                try {
+                    const notes = (await catalog.getSessionEvents(workspaceId)).filter((e) => e.eventType === "system.message" && e.data.workspacePartialChanges);
+                    assertEqual(notes.length, 1, "the note is recorded once");
+                    assertEqual(notes[0].data.content, NOTE);
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it("two setters racing on one revision: one wins, one gets WORKSPACE_REVISION_CONFLICT, the revision rises by one (R3)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-r3-")));

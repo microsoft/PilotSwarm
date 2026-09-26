@@ -847,6 +847,7 @@ export class PilotSwarmWorker {
                 enhancedFactsSchema: storage.runtime.provider === "horizondb" ? storage.runtime.factsSchema : undefined,
                 useManagedIdentity: storage.runtime.useManagedIdentity,
                 aadDbUser: storage.runtime.aadDbUser,
+                ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
             },
             this._loadedSystemAgents,
             this._sessionPolicy,

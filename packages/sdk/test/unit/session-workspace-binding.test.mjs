@@ -177,6 +177,14 @@ test("the workspace tools are declared only for workspace sessions and agents th
     const asking = fixture(t);
     await asking.manager.getOrCreate("asks", { toolNames: ["set_session_workspace"] }, { turnIndex: 0 });
     assert.ok(names(asking.calls.at(-1).config.tools).includes("set_session_workspace"), "an agent that lists the tool gets it without a workspace");
+
+    // spawn_agent's workspace parameter follows the same rule, in the
+    // declaration the model sees (subAgentToolDefs).
+    const spawnProps = (tools) => Object.keys(tools.find((tool) => tool.name === "spawn_agent").parameters.properties);
+    assert.equal(spawnProps(plain.calls.at(-1).config.tools).includes("workspace"), false);
+    assert.equal(spawnProps(withWorkspace.calls.at(-1).config.tools).includes("workspace"), true);
+    assert.deepEqual(spawnProps(ManagedSession.subAgentToolDefs()), spawnProps(ManagedSession.subAgentToolDefs({ workspaceTools: true })).filter((n) => n !== "workspace"),
+        "the other parameters are unchanged");
 });
 
 test("the deny hook refuses every tool while a workspace change is pending, and is absent otherwise", async () => {

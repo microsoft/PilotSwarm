@@ -24,6 +24,12 @@ import { checkWorkspacePath, validateWorkspaceText, DEFAULT_PATH_CHECK_TIMEOUT_M
 export const DEFAULT_ATTACH_TIMEOUT_MS = 30_000;
 
 /**
+ * The partial-changes note: what a workspace turn is told when an earlier
+ * attempt of it ran, failed or was lost with its worker (section 4.7).
+ */
+export const WORKSPACE_PARTIAL_CHANGES_NOTE = "An earlier attempt may have changed files. Check `git status` first.";
+
+/**
  * The provider for a deployment without application code: fixed roots,
  * `path` = root path + folder, and nothing adopted.
  */
@@ -138,7 +144,7 @@ export async function checkWorkspaceRoot(
 export async function prepareWorkspace(
     provider: WorkspaceProvider | null | undefined,
     req: WorkspaceAttachRequest,
-    opts: { attachTimeoutMs?: number; checkTimeoutMs?: number } = {},
+    opts: { attachTimeoutMs?: number; checkTimeoutMs?: number; onAttach?: (req: WorkspaceAttachRequest) => void } = {},
 ): Promise<WorkspacePreparation> {
     const attachTimeoutMs = opts.attachTimeoutMs ?? DEFAULT_ATTACH_TIMEOUT_MS;
     const text = validateWorkspaceText(req.workspace);
@@ -151,9 +157,11 @@ export async function prepareWorkspace(
 
     const timedOut: unique symbol = Symbol("timeout");
     let attached: WorkspaceAttachResult | typeof timedOut;
+    const attachRequest = { ...req, workspace };
+    opts.onAttach?.(attachRequest);
     try {
         attached = await withDeadline<WorkspaceAttachResult | typeof timedOut>(
-            Promise.resolve().then(() => provider!.ensureAttached({ ...req, workspace })),
+            Promise.resolve().then(() => provider!.ensureAttached(attachRequest)),
             remainingMs,
             () => timedOut,
         );
@@ -190,4 +198,30 @@ export async function prepareWorkspace(
         realPath: checked.realPath,
         ...(adopt ? { adopt } : {}),
     };
+}
+
+export const DEFAULT_SPAWN_RELEASE_TIMEOUT_MS = 10_000;
+
+/**
+ * The quick check spawn_agent runs on the parent's worker before it creates a
+ * child with a workspace record: roots, attach and path check, for the child.
+ * The attach is then released, so the provider keeps no lease entry for a
+ * worker the child may never run on. The child's first turn attaches for real.
+ */
+export async function checkWorkspaceForSpawn(
+    provider: WorkspaceProvider | null | undefined,
+    req: WorkspaceAttachRequest,
+    opts: { attachTimeoutMs?: number; checkTimeoutMs?: number; releaseTimeoutMs?: number } = {},
+): Promise<WorkspacePreparation> {
+    let attachRequest: WorkspaceAttachRequest | undefined;
+    const prepared = await prepareWorkspace(provider, req, { ...opts, onAttach: (sent) => { attachRequest = sent; } });
+    if (attachRequest && provider?.release) {
+        const sent = attachRequest;
+        await withDeadline<void>(
+            Promise.resolve().then(() => provider.release!(sent)).then(() => undefined, () => undefined),
+            opts.releaseTimeoutMs ?? DEFAULT_SPAWN_RELEASE_TIMEOUT_MS,
+            () => undefined,
+        );
+    }
+    return prepared;
 }

@@ -523,6 +523,20 @@ const GET_SESSION_WORKSPACE_TOOL_SPEC = {
     parameters: { type: "object", properties: {} },
 };
 
+/** Session workspaces: spawn_agent's workspace parameter, declared only for sessions with the workspace tools. */
+const SPAWN_WORKSPACE_PARAMETER = {
+    type: ["object", "null"],
+    properties: {
+        root: { type: "string", description: "A workspace root name." },
+        folder: { type: "string", description: "A folder relative to the root; omit for the root itself." },
+    },
+    description:
+        "Optional. Omit it: the child works in your workspace. { root, folder }: the child works in that folder, "
+        + "for example a checkout of another repo or its own clone. null: the child gets no workspace. Give the "
+        + "child its own folder when it will switch branches, stash, reset or commit while you keep working: two "
+        + "sessions in one clone share one HEAD, index and stash.",
+};
+
 const WORKSPACE_CHANGE_DENY_REASON =
     "The working directory is changing. This turn is ending. Stop; continue in the next turn.";
 
@@ -1042,12 +1056,13 @@ export class ManagedSession {
      * These are the LLM-visible tools for spawning and managing sub-agents.
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
-    static subAgentToolDefs(): Tool<any>[] {
+    static subAgentToolDefs(opts?: { workspaceTools?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
             description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
+                    ...(opts?.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
                         description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
@@ -2188,6 +2203,7 @@ export class ManagedSession {
             parameters: {
                 type: "object",
                 properties: {
+                    ...(this.config.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
                         description: "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
@@ -2229,8 +2245,22 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown>; workspace?: unknown }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
+                // Session workspaces: the parameter exists only where declared.
+                if (!this.config.workspaceTools && Object.hasOwn(args, "workspace")) {
+                    const { workspace: _ignored, ...rest } = args;
+                    args = rest;
+                }
+                let childWorkspace: import("./types.js").SessionWorkspace | null | undefined;
+                if (Object.hasOwn(args, "workspace")) {
+                    if (args.workspace === null) childWorkspace = null;
+                    else {
+                        const checked = validateWorkspaceText(args.workspace);
+                        if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
+                        childWorkspace = checked.workspace;
+                    }
+                }
                 if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                     return "Error: required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.";
                 }
@@ -2245,9 +2275,11 @@ export class ManagedSession {
                     return "Error: context_tier must be one of default, long_context.";
                 }
                 if (controlBridge) {
+                    const { workspace: _raw, ...spawnArgs } = args;
                     return await controlBridge.spawnAgent({
-                        ...args,
+                        ...spawnArgs,
                         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                        ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
                     });
                 }
                 turnState.pendingActions.push({
@@ -2261,6 +2293,7 @@ export class ManagedSession {
                     agentName: args.agent_name,
                     title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
                     contract: args.contract,
+                    ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
                 });
                 return acknowledgeTurnBoundary("spawn_agent");
             },
