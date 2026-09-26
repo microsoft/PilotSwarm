@@ -32,7 +32,10 @@ export type TurnAction =
     | { type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; query?: string; sessionId?: string; agentId?: string; state?: string; parentSessionId?: string; groupId?: string; includeChildren?: boolean; updatedSince?: string; limit?: number; events?: CapturedEvent[] }
     | { type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] }
-    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] };
+    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
+    // Session workspaces (1.0.80): the agent's set_session_workspace, applied by
+    // the orchestration after the turn. `workspace: null` clears.
+    | { type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; events?: CapturedEvent[] };
 
 type QueuedTurnActionCarrier = {
     queuedActions?: TurnAction[];
@@ -76,6 +79,7 @@ type TurnResultVariant =
     | ({ type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
     | { type: "error"; message: string; retryable?: boolean; events?: CapturedEvent[] };
@@ -175,6 +179,8 @@ export interface TurnOptions {
         cancelAgent(args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
         sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
+        /** Session workspaces: the attach and path check for set_session_workspace, on this worker. */
+        checkWorkspace?(args: { workspace: SessionWorkspace }): Promise<{ ok: true; path: string } | { ok: false; code: string; message: string }>;
         replySessionMessage(args: { request_id: string; session_id: string; body: string; verdict?: string }): Promise<string>;
     };
 }
@@ -358,6 +364,12 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     providerFingerprint?: string;
     /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */
     admittedModel?: string;
+    /**
+     * Session workspaces: this session gets set_session_workspace and
+     * get_session_workspace (it has a workspace, or its agent lists the tool).
+     * Runtime-only.
+     */
+    workspaceTools?: boolean;
     /**
      * Session workspaces: this turn's attach result, set by the runTurn
      * activity after the attach and the path check pass. Runtime-only;

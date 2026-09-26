@@ -15,7 +15,9 @@ import {
     buildBindingFingerprintInput,
     bindingFingerprintDigest,
     keepAdoptedRepoInstructions,
+    withWorkspaceChangeDeny,
 } from "../../dist/session-manager.js";
+import { ManagedSession } from "../../dist/managed-session.js";
 
 const WORKSPACE = { schema: 1, root: "a", folder: "repo-x" };
 const attach = (folder = "repo-x", adopt) => ({
@@ -154,4 +156,37 @@ test("keepAdoptedRepoInstructions turns only a replaced custom_instructions sect
     assert.equal(keepAdoptedRepoInstructions(undefined, true), undefined);
     const noCustom = { mode: "customize", sections: { guidelines: { action: "append", content: "G" } } };
     assert.equal(keepAdoptedRepoInstructions(noCustom, true), noCustom);
+});
+
+test("the workspace tools are declared only for workspace sessions and agents that list them (C6)", async (t) => {
+    const names = (tools) => tools.map((tool) => tool.name);
+    assert.deepEqual(names(ManagedSession.systemToolDefs({})).filter((n) => n.includes("session_workspace")), []);
+    assert.deepEqual(names(ManagedSession.systemToolDefs({ workspaceTools: true })).slice(-2), ["set_session_workspace", "get_session_workspace"]);
+    assert.deepEqual(names(ManagedSession.systemToolDefs({})), names(ManagedSession.systemToolDefs({ workspaceTools: true })).slice(0, -2),
+        "the other tools keep their order");
+
+    const plain = fixture(t);
+    await plain.manager.getOrCreate("plain", {}, { turnIndex: 0 });
+    assert.equal(names(plain.calls.at(-1).config.tools).some((n) => n.includes("session_workspace")), false);
+
+    const withWorkspace = fixture(t);
+    await withWorkspace.manager.getOrCreate("ws", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
+    const wsNames = names(withWorkspace.calls.at(-1).config.tools);
+    assert.ok(wsNames.includes("set_session_workspace") && wsNames.includes("get_session_workspace"));
+
+    const asking = fixture(t);
+    await asking.manager.getOrCreate("asks", { toolNames: ["set_session_workspace"] }, { turnIndex: 0 });
+    assert.ok(names(asking.calls.at(-1).config.tools).includes("set_session_workspace"), "an agent that lists the tool gets it without a workspace");
+});
+
+test("the deny hook refuses every tool while a workspace change is pending, and is absent otherwise", async () => {
+    const inner = { onPreToolUse: async () => ({ modifiedArgs: { x: 1 } }) };
+    assert.equal(withWorkspaceChangeDeny(inner, null), inner, "no hook without workspace tools");
+    let pending = false;
+    const wrapped = withWorkspaceChangeDeny(inner, () => pending);
+    assert.deepEqual(await wrapped.onPreToolUse({ toolName: "bash" }, {}), { modifiedArgs: { x: 1 } });
+    pending = true;
+    const denied = await wrapped.onPreToolUse({ toolName: "bash" }, {});
+    assert.equal(denied.permissionDecision, "deny");
+    assert.match(denied.permissionDecisionReason, /working directory is changing/);
 });

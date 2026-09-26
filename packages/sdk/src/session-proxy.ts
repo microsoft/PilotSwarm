@@ -1985,6 +1985,24 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const controlToolBridge = {
             /**
+             * Session workspaces: the attach and the path check behind the
+             * agent's set_session_workspace, run on this worker with the same
+             * code as the turn preamble, at the revision the change would get.
+             */
+            checkWorkspace: async (args: { workspace: import("./types.js").SessionWorkspace }) => {
+                const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), {
+                    sessionId: input.sessionId,
+                    rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                    workspace: args.workspace,
+                    revision: (input.workspaceRevision ?? 0) + 1,
+                    workerNodeId: workerNodeId ?? os.hostname(),
+                    turnIndex: input.turnIndex ?? 0,
+                });
+                return prepared.ok
+                    ? { ok: true as const, path: prepared.path }
+                    : { ok: false as const, code: prepared.code, message: prepared.message };
+            },
+            /**
              * Send a message to a session AS ITS USER.
              *
              * The message lands in the target's chat as a user turn, which is

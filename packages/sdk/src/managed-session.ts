@@ -13,6 +13,7 @@ import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
+import { sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
 import { NativeTaskObserver } from "./native-task-observer.js";
 
 /**
@@ -494,7 +495,36 @@ function acknowledgeTurnBoundary(action: string): string {
         `Finish any remaining tool results for the current step, then stop.]`;
 }
 
-const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "wait_for_agents", "list_sessions", "check_agents"]);
+const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "wait_for_agents", "list_sessions", "check_agents", "set_workspace"]);
+
+// ── Session workspaces (docs/proposals/session-workspaces.md 4.3) ──
+// One spec per tool: the declaration and the per-turn handler build from it.
+
+const SET_SESSION_WORKSPACE_TOOL_SPEC = {
+    description:
+        "Change this session's working directory to a folder of a workspace root, or clear it to return to the "
+        + "default working directory. Pass { root, folder } or { clear: true }. The change applies when this turn "
+        + "ends: after the tool accepts it, stop and end your turn; the next turn runs in the new folder. Refused "
+        + "while a background shell or task is running; stop it first.",
+    parameters: {
+        type: "object",
+        properties: {
+            root: { type: "string", description: "A workspace root name the deployment serves." },
+            folder: { type: "string", description: "A folder relative to the root. Omit for the root itself." },
+            clear: { type: "boolean", description: "Clear the workspace instead of setting one." },
+        },
+    },
+};
+
+const GET_SESSION_WORKSPACE_TOOL_SPEC = {
+    description:
+        "Show this session's workspace: its root and folder, the working directory path, and the workspace "
+        + "revision. Returns workspace: null when the session has none.",
+    parameters: { type: "object", properties: {} },
+};
+
+const WORKSPACE_CHANGE_DENY_REASON =
+    "The working directory is changing. This turn is ending. Stop; continue in the next turn.";
 
 function hasTerminalTurnBoundary(turnState: TurnState): boolean {
     return turnState.pendingActions.some((action) => TERMINAL_TURN_BOUNDARY_ACTIONS.has(action.type));
@@ -503,6 +533,12 @@ function hasTerminalTurnBoundary(turnState: TurnState): boolean {
 function blockedAfterTurnBoundary(toolName: string): string {
     return `[SYSTEM: ${toolName} was not executed because a previous control tool already scheduled this turn to suspend. ` +
         `Stop now; the runtime will resume with the control-tool result.]`;
+}
+
+/** How the workspace tools name a workspace to the model. */
+function describeWorkspaceForModel(workspace: { root: string; folder?: string } | null | undefined): string {
+    if (!workspace) return "cleared (the default working directory)";
+    return workspace.folder ? `root "${workspace.root}", folder "${workspace.folder}"` : `root "${workspace.root}"`;
 }
 
 function splitQualifiedModel(model: string | undefined): { provider: string; model: string } {
@@ -703,7 +739,7 @@ export class ManagedSession {
      * Manager agents and nobody else. Omitting it declares the tools every
      * session gets.
      */
-    static systemToolDefs(opts?: { agentIdentity?: string | null }): Tool<any>[] {
+    static systemToolDefs(opts?: { agentIdentity?: string | null; workspaceTools?: boolean }): Tool<any>[] {
         const waitTool = defineTool("wait", {
             // Defensive override: the Copilot SDK ships built-in tools named
             // `wait` in some configurations (e.g. the desktop-automation MCP
@@ -991,7 +1027,14 @@ export class ManagedSession {
         const loadSkillTool = defineTool("load_skill", LOAD_SKILL_TOOL_SPEC);
 
         return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool, ...capabilityToolDeclarations(),
-            ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : [])];
+            ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : []),
+            // Session workspaces: only for a session that has a workspace or
+            // whose agent lists set_session_workspace. Every other session keeps
+            // its tool list byte for byte (test C1).
+            ...(opts?.workspaceTools ? [
+                defineTool("set_session_workspace", { ...SET_SESSION_WORKSPACE_TOOL_SPEC, handler: async () => "stub" }),
+                defineTool("get_session_workspace", { ...GET_SESSION_WORKSPACE_TOOL_SPEC, handler: async () => "stub" }),
+            ] : [])];
     }
 
     /**
@@ -1296,6 +1339,15 @@ export class ManagedSession {
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
+        this.activeTurnState = turnState;
+        try {
+            return await this._runTurnWithState(prompt, turnState, opts);
+        } finally {
+            if (this.activeTurnState === turnState) this.activeTurnState = null;
+        }
+    }
+
+    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
         const controlBridge = opts?.controlToolBridge;
 
         // Build system tools (wait tool + ask_user tool)
@@ -2647,6 +2699,55 @@ export class ManagedSession {
             })]
             : [];
 
+        // Session workspaces: set_session_workspace and get_session_workspace,
+        // only where session-manager declared them.
+        const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
+            defineTool("set_session_workspace", {
+                ...SET_SESSION_WORKSPACE_TOOL_SPEC,
+                handler: async (args: { root?: string; folder?: string; clear?: boolean }) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_workspace");
+                    if (!controlBridge?.checkWorkspace) return "Error: set_session_workspace is unavailable in this session.";
+                    let next: import("./types.js").SessionWorkspace | null = null;
+                    if (args?.clear === true) {
+                        if (args.root !== undefined || args.folder !== undefined) return "Error: WORKSPACE_PATH_INVALID: pass either clear=true or a root, not both.";
+                    } else {
+                        const checked = validateWorkspaceText({ root: args?.root, ...(args?.folder !== undefined ? { folder: args.folder } : {}) });
+                        if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
+                        next = checked.workspace;
+                    }
+                    const current = this.config.workspace ?? null;
+                    if (sameWorkspace(current, next)) {
+                        return `No change: the workspace is already ${describeWorkspaceForModel(current)}. Continue your task.`;
+                    }
+                    const busy = await this.activeBackgroundTasks().catch(() => []);
+                    if (busy.length > 0) {
+                        return `Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
+                            + "Stop them first, then call set_session_workspace again.";
+                    }
+                    let path: string | null = null;
+                    if (next) {
+                        const checked = await controlBridge.checkWorkspace({ workspace: next });
+                        if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
+                        path = checked.path;
+                    }
+                    turnState.pendingActions.push({ type: "set_workspace", workspace: next, path });
+                    const oldPath = this.config.workspaceAttach?.path ?? this.config.workingDirectory ?? "the current working directory";
+                    return `Workspace change accepted: ${describeWorkspaceForModel(next)}.\n`
+                        + `[SYSTEM: set_session_workspace acknowledged. You are still in ${oldPath}. `
+                        + `The working directory becomes ${path ?? "the default working directory"} only after this turn ends. `
+                        + "Do not edit or run anything now. Stop and end your turn.]";
+                },
+            }),
+            defineTool("get_session_workspace", {
+                ...GET_SESSION_WORKSPACE_TOOL_SPEC,
+                handler: async () => JSON.stringify({
+                    workspace: this.config.workspace ?? null,
+                    path: this.config.workspace ? this.config.workspaceAttach?.path ?? null : null,
+                    revision: this.config.workspace ? this.config.workspaceAttach?.revision ?? null : null,
+                }),
+            }),
+        ] : [];
+
         const allTools: Tool<any>[] = [
             ...wrappedUserTools,
             ...systemToolsForTurn,
@@ -2655,6 +2756,7 @@ export class ManagedSession {
             ...createAgentSessionForTurn,
             ...messageAgentSessionForTurn,
             ...manageAgentSessionForTurn,
+            ...workspaceToolsForTurn,
         ];
 
         if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
@@ -3302,6 +3404,7 @@ export class ManagedSession {
                 case "complete_agent":
                 case "cancel_agent":
                 case "delete_agent":
+                case "set_workspace":
                     return { ...firstAction, events: collectedEvents, queuedActions };
                 default:
                     break;
@@ -3352,6 +3455,22 @@ export class ManagedSession {
      */
     async destroy(): Promise<void> {
         await this.copilotSession.disconnect();
+    }
+
+    /** Session workspaces: the running turn's state, read by the native deny hook. */
+    private activeTurnState: TurnState | null = null;
+
+    /** Session workspaces: set_session_workspace was accepted in the running turn, so every further tool call is refused. */
+    isWorkspaceChangePending(): boolean {
+        return this.activeTurnState?.pendingActions.some((action) => action.type === "set_workspace") ?? false;
+    }
+
+    /** Running or idle background shells and agent tasks (the WORKSPACE_BUSY check). */
+    private async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
+        const tasks = (await this.copilotSession.rpc.tasks.list()).tasks ?? [];
+        return tasks
+            .filter((task: any) => (task.type === "shell" || task.type === "agent") && (task.status === "running" || task.status === "idle"))
+            .map((task: any) => ({ id: String(task.id), type: String(task.type) }));
     }
 
     /** Session workspaces: this session's workspace and its last attach on this worker. */

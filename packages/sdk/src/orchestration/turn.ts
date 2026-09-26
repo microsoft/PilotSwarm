@@ -5,6 +5,7 @@ import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
+import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import {
     buildShutdownWaitReason,
@@ -40,8 +41,10 @@ import {
     MAX_RETRIES,
     SHUTDOWN_POLL_INTERVAL_MS,
     SHUTDOWN_TIMEOUT_MS,
+    WORKSPACE_CHANGED_CONTINUE_PROMPT,
     WORKSPACE_RETRY_WAKE_PROMPT,
     timerGate,
+    workspaceChangedNote,
     workspaceRetryDelayMs,
     type DurableSessionRuntime,
 } from "./state.js";
@@ -1073,6 +1076,45 @@ function* stashBudgetRefusedPrompt(
 }
 
 /**
+ * Session workspaces (1.0.80): the agent's set_session_workspace. The tool
+ * already checked the folder on the worker and ended the turn; here the
+ * change is stored, the revision rises by one, the event is emitted, and one
+ * system-only turn starts at once in the new folder with the changed-cwd
+ * note (docs/proposals/session-workspaces.md 4.3, agent flow).
+ */
+function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: TurnResult): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const action = result as any;
+    let next: NonNullable<typeof state.config.workspace> | null = null;
+    if (action.workspace !== null && action.workspace !== undefined) {
+        const checked = validateWorkspaceText(action.workspace);
+        if (!checked.ok) {
+            ctx.traceInfo(`[orch] ignoring set_workspace with an invalid record: ${checked.message}`);
+            return;
+        }
+        next = checked.workspace;
+    }
+    const previous = state.config.workspace ?? null;
+    if (sameWorkspace(previous, next)) return;
+    const revision = state.workspaceRevision + 1;
+    const path = typeof action.path === "string" ? action.path : null;
+    if (next) state.config.workspace = next;
+    else delete state.config.workspace;
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    state.workspaceRevision = revision;
+    state.workspaceNotice = workspaceChangedNote(previous, next, path);
+    state.workspaceRetry = null;
+    if (!next) state.workspaceStatus = null;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: { workspace: next, revision, path, source: "agent" },
+    }]);
+    state.pendingPrompt = mergePrompt(state.pendingPrompt, WORKSPACE_CHANGED_CONTINUE_PROMPT);
+    state.bootstrapPrompt = true;
+    ctx.traceInfo(`[orch] agent ${next ? "set" : "cleared"} the workspace: revision ${revision}; continuing in the new folder`);
+}
+
+/**
  * Session workspaces (1.0.80): the attach or the path check failed, so the
  * model was not called. Hold the prompt, pick the next attempt from the
  * schedule, and let another worker try after two failures in a row on one
@@ -1475,6 +1517,10 @@ export function* handleTurnResult(
             yield* schedulePostTurnContinuation(runtime);
             return;
         }
+
+        case "set_workspace":
+            yield* applyAgentWorkspaceChange(runtime, result);
+            return;
 
         case "spawn_agent":
         case "message_agent":

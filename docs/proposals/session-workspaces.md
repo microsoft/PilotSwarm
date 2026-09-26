@@ -362,13 +362,15 @@ byte. Test C1 uses a session whose agent lists no workspace tool.
       The working directory becomes <new path> only after this turn ends.
       Do not edit or run anything now. Stop and end your turn.]
 3. From that point, every further tool call in the same turn is refused:
-     PilotSwarm tools  -> the existing blockedAfterTurnBoundary text
-                          (set_workspace joins TERMINAL_TURN_BOUNDARY_ACTIONS)
-     native tools      -> the session's onPreToolUse hook returns
+     every tool        -> the session's onPreToolUse hook returns
                           permissionDecision "deny" with the reason
                           "The working directory is changing. This turn is ending.
                            Stop; continue in the next turn."
-   The hook is installed for every workspace session, also when native tasks are off.
+                          (verified: the hook also sees PilotSwarm tools)
+     PilotSwarm tools  -> as a backstop, the existing blockedAfterTurnBoundary text
+                          (set_workspace joins TERMINAL_TURN_BOUNDARY_ACTIONS)
+   The hook is installed for every session that has the workspace tools, also
+   when native tasks are off.
 4. The model stops. The CLI fires session.idle. The turn result carries the action.
 5. Orchestration stores the workspace, revision + 1, emits session.workspace_changed,
    and starts one system-only turn at once. That turn resumes the same conversation

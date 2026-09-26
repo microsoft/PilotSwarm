@@ -502,6 +502,43 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         }
     });
 
+    it("the agent's set_workspace is stored, announced, and followed by exactly one system-only turn in the new folder (B7)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [
+                { type: "set_workspace", workspace: { schema: 1, root: "a", folder: "lib" }, path: "/ws/a/lib" },
+                { type: "completed", content: "continued" },
+            ],
+            queue: [prompt("switch to lib, then fix the typo")],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(events(h, "session.workspace_changed").map((e) => e.data)).toEqual([
+            { workspace: WORKSPACE, revision: 1, path: null, source: "create" },
+            { workspace: { schema: 1, root: "a", folder: "lib" }, revision: 2, path: "/ws/a/lib", source: "agent" },
+        ]);
+        expect(h.turns).toHaveLength(2);
+        const continuation = h.turns[1];
+        expect(continuation.bootstrap).toBe(true);
+        expect(continuation.prompt).toMatch(/^Internal orchestration wake-up/);
+        expect(continuation.prompt).toMatch(/Continue your task in the new working directory/);
+        expect(continuation.opts.workspaceRevision).toBe(2);
+        expect(continuation.opts.workspaceNotice).toBe('The working directory changed from root "a", folder "sessions/s-1/app" to root "a", folder "lib" (/ws/a/lib).');
+        // The set_workspace turn ran, so it used its index; the continuation is the next one.
+        expect(continuation.turnIndex).toBe(1);
+    });
+
+    it("the agent's clear drops the workspace for the continuation turn", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "set_workspace", workspace: null, path: null }, { type: "completed", content: "done" }],
+            queue: [prompt("leave the checkout")],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(events(h, "session.workspace_changed").at(-1).data).toEqual({ workspace: null, revision: 2, path: null, source: "agent" });
+        expect(h.turns[1].opts.workspaceRevision).toBeUndefined();
+        expect(h.turns[1].opts.workspaceNotice).toMatch(/to the default working directory\.$/);
+    });
+
     it("a session without a workspace carries no workspace fields and sends no revision", async () => {
         const handler = await latestHandler();
         const h = createHarness({ turnResults: [{ type: "completed", content: "ok" }], queue: [prompt("hello")] });

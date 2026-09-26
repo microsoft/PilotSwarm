@@ -324,6 +324,104 @@ describe("workspace turn", () => {
         }
     });
 
+    it("the agent's change is acknowledged, every later tool call in the turn is refused, and one continuation turn runs in the new folder (B7)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b7-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        const respond = scriptTurns([
+            [
+                { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "repo-y" } }] },
+                // A model that keeps going after the acknowledgement.
+                { tools: [{ name: "bash", args: { command: "touch after.txt", description: "keep going" } }, { name: "wait", args: { seconds: 5, reason: "keep going" } }] },
+                { content: "stopping" },
+            ],
+            [
+                { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+                (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+            ],
+        ]);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("switch to repo-y, then fix the typo", TIMEOUT), `out:${path.join(root, "repo-y")}`);
+
+                const requests = model.sessionRequests("switch to repo-y");
+                const afterAck = requests.find((r) => r.position.turn === 1 && r.position.step === 1);
+                assert(afterAck.position.toolResults.join("").includes(`You are still in ${path.join(root, "repo-x")}`), "the acknowledgement names the old folder");
+                // Both later calls are refused: the deny hook covers every tool,
+                // PilotSwarm tools included; a PilotSwarm tool it misses answers
+                // with the turn-boundary text instead.
+                const refusals = requests.find((r) => r.position.turn === 1 && r.position.step === 2).position.toolResults;
+                assertEqual(refusals.length, 2, `two tool results: ${JSON.stringify(refusals)}`);
+                for (const text of refusals) {
+                    assert(/working directory is changing|was not executed because a previous control tool/.test(text), `refused: ${text}`);
+                }
+                assertEqual(fs.existsSync(path.join(root, "repo-x", "after.txt")) || fs.existsSync(path.join(root, "repo-y", "after.txt")), false, "the refused bash call ran nowhere");
+
+                const continuations = requests.filter((r) => r.position.turn === 2 && r.position.step === 0);
+                assertEqual(continuations.length, 1, "exactly one continuation turn");
+                assert(continuations[0].position.lastUserText.includes('The working directory changed from root "a", folder "repo-x" to root "a", folder "repo-y"'),
+                    `the continuation carries the changed-cwd note: ${continuations[0].position.lastUserText}`);
+
+                const catalog = await createCatalog(env);
+                try {
+                    const all = await catalog.getSessionEvents(sessionId);
+                    const changed = all.filter((e) => e.eventType === "session.workspace_changed").map((e) => e.data);
+                    assertEqual(JSON.stringify(changed.map((d) => [d.source, d.revision])), JSON.stringify([["create", 1], ["agent", 2]]));
+                    assertEqual(all.filter((e) => e.eventType === "session.wait_started").length, 0, "the refused wait created no durable wait");
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("the agent's change is refused with WORKSPACE_BUSY while a background shell runs, and 'no change' lets the turn go on (B8, B4)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b8-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        // One script per conversation, chosen by its first prompt.
+        const busyScript = scriptTurns([[
+            { tools: [{ name: "bash", args: { command: "sleep 30", description: "long job", mode: "async", detach: true } }] },
+            { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "repo-y" } }] },
+            (_body, position) => ({ content: `busy:${position.toolResults.join("").includes("WORKSPACE_BUSY")}` }),
+        ]]);
+        const sameScript = scriptTurns([[
+            { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "repo-x" } }] },
+            { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+            (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+        ]]);
+        const respond = (body, position) => (position.firstUserText.includes("try to switch") ? busyScript : sameScript)(body, position);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, qualifiedModel }) => {
+                const busyId = randomUUID();
+                const busy = await client.createSession({ sessionId: busyId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await busy.sendAndWait("try to switch", TIMEOUT), "busy:true");
+
+                // A fresh session with nothing running: only "no change" can keep this turn going.
+                const sameId = randomUUID();
+                const same = await client.createSession({ sessionId: sameId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await same.sendAndWait("same folder", TIMEOUT), `out:${path.join(root, "repo-x")}`, "'no change' did not end the turn");
+                const catalog = await createCatalog(env);
+                try {
+                    for (const id of [busyId, sameId]) {
+                        const changed = (await catalog.getSessionEvents(id)).filter((e) => e.eventType === "session.workspace_changed");
+                        assertEqual(changed.length, 1, "only the creation event: the call changed nothing");
+                    }
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it("two setters racing on one revision: one wins, one gets WORKSPACE_REVISION_CONFLICT, the revision rises by one (R3)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-r3-")));

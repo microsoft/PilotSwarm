@@ -244,6 +244,10 @@ export const WORKSPACE_RETRY_SCHEDULE_SECONDS = [30, 120, 300, 900];
 export const WORKSPACE_RETRY_WAKE_PROMPT =
     "[SYSTEM: Retrying the workspace that held this session. The user did not send a new message. Continue with your task.]";
 
+/** The system-only turn after the agent's set_session_workspace; the worker adds the changed-cwd note. */
+export const WORKSPACE_CHANGED_CONTINUE_PROMPT =
+    "[SYSTEM: The working directory changed at your request. Continue your task in the new working directory.]";
+
 /**
  * 1.0.80: the prompt a budget wait's own timer wakes with. Before 1.0.80 it
  * woke with "The N second wait is now complete. Continue with your task.",

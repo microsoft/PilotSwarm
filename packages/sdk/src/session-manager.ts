@@ -7,7 +7,7 @@ import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
-import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
+import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
@@ -423,6 +423,29 @@ export function keepAdoptedRepoInstructions(
         ...(message as any),
         sections: { ...sections, custom_instructions: { ...custom, action: "prepend" } },
     } as SystemMessageConfig;
+}
+
+/**
+ * Session workspaces: once set_session_workspace is accepted, the turn is
+ * ending, but the turn ends only when the model yields. Some models keep
+ * calling tools; this hook refuses every further native tool call in that
+ * turn (docs/proposals/session-workspaces.md 4.3, step 3). Installed only
+ * for sessions that have the workspace tools.
+ */
+export function withWorkspaceChangeDeny(hooks: SessionConfig["hooks"], isPending: (() => boolean) | null): SessionConfig["hooks"] {
+    if (!isPending) return hooks;
+    return {
+        ...hooks,
+        onPreToolUse: async (input: any, invocation: any) => {
+            if (isPending()) {
+                return {
+                    permissionDecision: "deny" as const,
+                    permissionDecisionReason: "The working directory is changing. This turn is ending. Stop; continue in the next turn.",
+                };
+            }
+            return hooks?.onPreToolUse?.(input, invocation);
+        },
+    };
 }
 
 /**
@@ -1826,8 +1849,17 @@ export class SessionManager {
         // per-turn handler still refuses with a clear message.
         // Canvas tools are declared for EVERY session now — sub-agents draw
         // their own canvases (slots 1-5), independent of the parent's.
+        // Session workspaces: the two workspace tools are declared only for a
+        // session that has a workspace, or whose agent lists
+        // set_session_workspace in its tools. Everything else is unchanged.
+        const workspaceTools = !isTunerSession && (Boolean(config.workspace)
+            || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
+            || (boundAgentCopy?.toolNames ?? []).includes("set_session_workspace"));
+        if (workspaceTools) config.workspaceTools = true;
+        else delete config.workspaceTools;
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs()
@@ -2188,8 +2220,11 @@ export class SessionManager {
                 enableFileHooks: false,
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
             } : {}),
-            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
-                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess) : config.hooks,
+            hooks: withWorkspaceChangeDeny(
+                nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
+                    () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess) : config.hooks,
+                workspaceTools ? () => this.sessions.get(sessionId)?.isWorkspaceChangePending() ?? false : null,
+            ),
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
