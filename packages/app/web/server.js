@@ -82,6 +82,10 @@ function sendSpaIndex(res) {
     res.sendFile(path.join(DIST_DIR, "index.html"));
 }
 
+/**
+ * @param {{ port?: number, host?: string, workers?: number }} [opts]
+ * @returns {Promise<(http.Server | https.Server) & { stopPortal: () => Promise<void> }>}
+ */
 export async function startServer(opts = {}) {
     const { port = Number(process.env.PORT) || 3001, host = process.env.PORTAL_HOST, workers } = opts;
     if (Number.isFinite(workers) && !process.env.WORKERS) {
@@ -126,9 +130,18 @@ export async function startServer(opts = {}) {
     app.use(express.json({ limit: "2mb" }));
 
     const { server, protocol } = createPortalServer({ app });
+    let shuttingDown = false;
 
     async function requireAuth(req, res, next) {
+        if (shuttingDown) {
+            res.status(503).json({ ok: false, error: { code: "SERVICE_UNAVAILABLE", message: "Portal is shutting down." } });
+            return;
+        }
         const auth = await authenticateRequest(req);
+        if (shuttingDown) {
+            res.status(503).json({ ok: false, error: { code: "SERVICE_UNAVAILABLE", message: "Portal is shutting down." } });
+            return;
+        }
         if (!auth.ok) {
             res.status(auth.status).json({ ok: false, error: auth.error || (auth.status === 403 ? "Forbidden" : "Unauthorized") });
             return;
@@ -344,51 +357,73 @@ export async function startServer(opts = {}) {
     // "unavailable" (browsers fall back to durable events) without a DB URL.
     const canvasPlane = createCanvasPlane();
     runtime.canvasPlane = canvasPlane;
-    canvasPlane.start().catch(() => { /* reconnect loop owns retries */ });
 
     const livePlane = createLivePlane({
         getLive: (sessionId, topics) => runtime.getLive(sessionId, topics),
     });
     runtime.livePlane = livePlane;
-    livePlane.start().catch(() => { /* reconnect loop owns retries */ });
 
     const socketServers = attachWebSockets(server, runtime, [
         { path: "/portal-ws", allowThemeMessages: true },
         { path: WS_PATH },
     ]);
 
-    async function shutdown() {
-        await canvasPlane.stop().catch(() => {});
-        await livePlane.stop().catch(() => {});
-        for (const socketServer of socketServers) {
-            for (const client of socketServer.clients) {
-                try {
-                    client.close();
-                } catch {}
-            }
+    let shutdownPromise = null;
+    function shutdown() {
+        if (!shutdownPromise) {
+            shuttingDown = true;
+            const serverClosed = new Promise(resolve => server.close(() => resolve()));
+            shutdownPromise = (async () => {
+                process.off("SIGINT", onSignal);
+                process.off("SIGTERM", onSignal);
+                await canvasPlane.stop().catch(() => {});
+                await livePlane.stop().catch(() => {});
+                for (const socketServer of socketServers) {
+                    for (const client of socketServer.clients) {
+                        try { client.close(); } catch {}
+                    }
+                }
+                try { await runtime.stop(); }
+                finally {
+                    server.closeIdleConnections();
+                    await serverClosed;
+                }
+            })();
         }
-        await runtime.stop().catch(() => {});
-        server.close();
+        return shutdownPromise;
     }
 
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
-
-    await new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(port, host, () => {
-            server.off("error", reject);
-            resolve();
+    function onSignal() {
+        shutdown().catch(() => {
+            console.error("[portal] Shutdown failed.");
         });
-    });
-    console.log(`[portal] PilotSwarm Web at ${protocol}://localhost:${port}`);
+    }
 
     // Test/embedder handle: stops the runtime and closes the server.
     server.stopPortal = shutdown;
-    return server;
+    try {
+        canvasPlane.start().catch(() => { /* reconnect loop owns retries */ });
+        livePlane.start().catch(() => { /* reconnect loop owns retries */ });
+        process.on("SIGINT", onSignal);
+        process.on("SIGTERM", onSignal);
+
+        await new Promise((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(port, host, () => {
+                server.off("error", reject);
+                resolve();
+            });
+        });
+        console.log(`[portal] PilotSwarm Web at ${protocol}://localhost:${server.address().port}`);
+        return server;
+    } catch (error) {
+        await shutdown().catch(() => {});
+        throw error;
+    }
 }
 
-if (process.argv[1]?.endsWith("server.js") || import.meta.url === `file://${process.argv[1]}`) {
+// Importing from another launcher must not start a second server.
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
     startServer().catch((error) => {
         console.error("[portal] Failed to start:", error);
         process.exitCode = 1;

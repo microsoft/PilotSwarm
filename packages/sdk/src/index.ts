@@ -33,6 +33,17 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
+export { HostServicesError } from "./host-services.js";
+export { EphemeralSessionError } from "./ephemeral-errors.js";
+export type { EphemeralSessionErrorCode } from "./ephemeral-errors.js";
+export type {
+    CmsConnection, CmsConnectionCallback, CmsQueryResult, WithCmsConnection,
+    HostPrincipal, PilotSwarmHostServices, HostServicesErrorCode,
+    EphemeralSessionRequest, EphemeralSessionResult, EphemeralSessionUsage, EphemeralSessionRunner,
+    EphemeralSessionProgress, EphemeralSessionUsageUpdate, EphemeralSessionResponse, EphemeralSessionDecision,
+    EphemeralSessionUsageDiagnostics, EphemeralUsageUnknownReason,
+    EphemeralNativeChildrenOptions, EphemeralNativeChildAssignment, EphemeralNativeChildProgress,
+} from "./host-services.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";

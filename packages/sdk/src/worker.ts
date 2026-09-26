@@ -14,6 +14,7 @@ import {
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
+import { createHostServices, HostEphemeralLifecycle, type PilotSwarmHostServices } from "./host-services.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
@@ -158,6 +159,7 @@ export class PilotSwarmWorker {
     private _started = false;
     private _runtimeStartup: Promise<void> | null = null;
     private _stopRequested = false;
+    private _ephemeralHost = new HostEphemeralLifecycle();
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
     /** Loaded skill directories from plugins + direct config. */
@@ -516,6 +518,13 @@ export class PilotSwarmWorker {
     /** Session catalog (CMS) — available when store is PostgreSQL. */
     get catalog(): SessionCatalog | null {
         return this._catalog;
+    }
+
+    /** Trusted host-only services. Drain consumers before gracefulShutdown(). */
+    getHostServices(): PilotSwarmHostServices {
+        if (arguments.length) throw new TypeError("getHostServices does not accept options.");
+        return createHostServices(() => this._started, () => this._catalog, () => this._modelProviderTypes,
+            this._ephemeralHost, { turnTimeoutMs: this.config?.turnTimeoutMs, turnInactivityTimeoutMs: this.config?.turnInactivityTimeoutMs });
     }
 
     /** Loaded skill directories. */
@@ -919,6 +928,7 @@ export class PilotSwarmWorker {
             throw err;
         }
         if (this._stopRequested) return;
+        this._ephemeralHost.reset();
         this._started = true;
         this._startProviderPolling();
 
@@ -959,6 +969,7 @@ export class PilotSwarmWorker {
     async stop(): Promise<void> {
         this._stopRequested = true;
         this._stopProviderPolling();
+        await this._ephemeralHost.stop();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
             this._evictionTimer = null;
@@ -1032,6 +1043,7 @@ export class PilotSwarmWorker {
     async gracefulShutdown(): Promise<void> {
         this._stopRequested = true;
         this._stopProviderPolling();
+        await this._ephemeralHost.stop();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
 

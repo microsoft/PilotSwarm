@@ -14,6 +14,8 @@ import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
 import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
+import { HostServicesError } from "./host-services.js";
+import type { CmsConnection, CmsConnectionCallback, CmsQueryResult, WithCmsConnection } from "./host-services.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -952,6 +954,9 @@ export interface FleetDirectiveRow {
 export interface SessionCatalog {
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
+    /** Trusted host-only borrowing; optional for non-Postgres catalog providers. */
+    readonly withCmsConnection?: WithCmsConnection;
+
     /**
      * Provider budgets (migrations 0049-0051). Optional, like every other
      * late feature here, so a duck-typed test double need not implement it.
@@ -1626,6 +1631,55 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this.initialized) return;
         await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
+    }
+
+    /**
+     * Borrow from this catalog's initialized pool. The frozen facade cannot
+     * release/close the connection and is revoked when the callback finishes.
+     */
+    async withCmsConnection<T>(callback: CmsConnectionCallback<T>): Promise<T> {
+        const pool = this.pool;
+        if (!this.initialized || !pool) throw new HostServicesError("CMS_NOT_INITIALIZED");
+        if (typeof callback !== "function") throw new TypeError("A CMS connection callback is required.");
+        const client = await pool.connect();
+        let active = true;
+        let completed = false;
+        const pending = new Set<Promise<unknown>>();
+        const connection: CmsConnection = Object.freeze({
+            query: <Row = Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
+                const query = (async (): Promise<CmsQueryResult<Row> | CmsQueryResult<Row>[]> => {
+                    if (!active) throw new HostServicesError("CMS_CONNECTION_RELEASED");
+                    if (typeof text !== "string" || !text.trim() || (values !== undefined && !Array.isArray(values))) {
+                        throw new HostServicesError("CMS_QUERY_INVALID");
+                    }
+                    const result = await client.query(text, values === undefined ? undefined : [...values]);
+                    const project = (item: CmsQueryResult<Row>): CmsQueryResult<Row> => ({
+                        rows: item.rows,
+                        rowCount: item.rowCount,
+                    });
+                    return Array.isArray(result) ? result.map(project) : project(result);
+                })();
+                pending.add(query);
+                void query.then(() => pending.delete(query), () => pending.delete(query));
+                return query;
+            },
+        });
+        try {
+            if (!this.initialized || this.pool !== pool) throw new HostServicesError("CMS_NOT_INITIALIZED");
+            const result = await callback(connection, this.sql.schema);
+            completed = true;
+            return result;
+        } finally {
+            active = false;
+            // Do not hand a socket back while a mistakenly unawaited query is
+            // still using it. The borrow itself always waits for release.
+            const settled = await Promise.allSettled([...pending]);
+            const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+            // Discard on failure so an aborted/open transaction cannot leak
+            // into another catalog operation. This never shuts down the pool.
+            client.release(!completed || rejected ? true : undefined);
+            if (completed && rejected) throw rejected.reason;
+        }
     }
 
     // ── Writes ───────────────────────────────────────────────
@@ -3780,6 +3834,7 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async close(): Promise<void> {
+        this.initialized = false;
         if (this.pool) {
             await this.pool.end();
             this.pool = null;

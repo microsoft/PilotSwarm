@@ -306,7 +306,7 @@ run_external_vitest_dir() {
 if [ "$EXTERNAL_ONLY" = "1" ]; then
     for dir in "${EXTERNAL_TEST_DIRS[@]}"; do
         echo "🧪 Running external tests ($(basename "$dir"))..."
-        run_external_vitest_dir "$dir" "${VITEST_ARGS[@]}" "${EXTERNAL_TEST_FILTERS[@]}" \
+        run_external_vitest_dir "$dir" "${VITEST_ARGS[@]}" ${EXTERNAL_TEST_FILTERS[@]+"${EXTERNAL_TEST_FILTERS[@]}"} \
             || { echo "❌ External tests failed: $dir"; exit 1; }
     done
     echo "Overall result: PASS"
@@ -662,6 +662,11 @@ run_sdk_unit_tests() {
     echo "🧪 Running SDK unit tests (node --test)..."
     (cd "$REPO_ROOT" && node --env-file-if-exists=.env --test packages/sdk/test/unit/*.test.mjs packages/sdk/api/test/*.test.mjs) \
         || { echo "❌ SDK unit tests failed"; exit 1; }
+    # The public-surface type fixture is a test too. The main tsconfig excludes
+    # test/, so without this its @ts-expect-error assertions never compile and
+    # a directive that stopped erroring would go unreported.
+    (cd "$REPO_ROOT/$SDK_DIR" && npm run --silent test:types) \
+        || { echo "❌ SDK public type fixture failed"; exit 1; }
     record_run_phase "SDK unit tests" "PASS"
     (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build) \
         || { echo "❌ horizon-store build failed"; exit 1; }
@@ -706,7 +711,7 @@ run_external_tests() {
     for dir in "${EXTERNAL_TEST_DIRS[@]}"; do
         label="external tests ($(basename "$dir"))"
         echo "🧪 Running $label..."
-        run_external_vitest_dir "$dir" "${external_args[@]}" "${EXTERNAL_TEST_FILTERS[@]}" || {
+        run_external_vitest_dir "$dir" "${external_args[@]}" ${EXTERNAL_TEST_FILTERS[@]+"${EXTERNAL_TEST_FILTERS[@]}"} || {
             record_run_phase "$label" "FAIL"
             echo "❌ $label failed"
             exit 1

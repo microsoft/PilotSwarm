@@ -105,13 +105,14 @@ synchronous; do not create durable sessions, schedule work, or detach commands. 
 agent's policy for whether the user must explicitly request durable delegation.`;
 }
 
-export function nativeSubagentDefinitions(model: string, access?: NativeTaskAccess): CustomAgentConfig[] {
+export function nativeSubagentDefinitions(model: string, access?: NativeTaskAccess,
+    additionalTools: readonly string[] = []): CustomAgentConfig[] {
     return [
         { name: "swarm-explore", description: "Explore the local workspace and return concise source-backed findings.",
             prompt: "Investigate the delegated question in the local workspace. Return concise findings with file references. Do not edit files. If you need user input or durable tools, report that to the parent. Complete the assigned investigation and return.", },
         { name: "swarm-task", description: "Run local tests, builds, and commands; summarize success and include failure details.",
             prompt: "Perform the delegated commands in the local workspace. Return a concise outcome; include actionable error details on failure. Await your commands; do not detach processes or schedule later work. If you need user input or durable tools, report that to the parent.", },
-    ].map(agent => ({ ...agent, model, tools: [...NATIVE_SUBAGENT_TOOLS, ...(access?.tools[agent.name as "swarm-explore" | "swarm-task"] ?? [])],
+    ].map(agent => ({ ...agent, model, tools: [...NATIVE_SUBAGENT_TOOLS, ...(access?.tools[agent.name as "swarm-explore" | "swarm-task"] ?? []), ...additionalTools],
         ...(access ? { mcpServers: access.mcpServers[agent.name as "swarm-explore" | "swarm-task"],
             description: agent.name === "swarm-explore"
                 ? "Investigate local files and allowlisted external sources; return concise source-backed findings."
@@ -122,7 +123,9 @@ export function nativeSubagentDefinitions(model: string, access?: NativeTaskAcce
 }
 
 /** Native execution remains in the CLI. Compose policy around the native tool. */
-export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, access?: NativeTaskAccess): SessionHooks {
+export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true,
+    access?: NativeTaskAccess,
+    policy: { background?: boolean; additionalChildTools?: readonly string[] } = {}): SessionHooks {
     return {
         ...hooks,
         onPreMcpToolCall: async (input, invocation) => {
@@ -136,7 +139,8 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmi
             if (previous?.permissionDecision === "deny") return previous;
             const deny = (reason: string) => ({ ...previous, permissionDecision: "deny" as const, permissionDecisionReason: reason });
             const isChild = Boolean(input.sessionId && input.sessionId !== invocation.sessionId);
-            if (isChild && !childTools.has(input.toolName) && !access?.allowsHook(input.sessionId, input.toolName)) {
+            if (isChild && !childTools.has(input.toolName) && !access?.allowsHook(input.sessionId, input.toolName)
+                && !policy.additionalChildTools?.includes(input.toolName)) {
                 return deny("Native workers can use only local CLI tools. Return this request to your PilotSwarm parent.");
             }
             if (NATIVE_EXCLUDED_TOOLS.includes(input.toolName)) {
@@ -154,14 +158,17 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmi
             if (!args || typeof args !== "object" || Array.isArray(args)) return deny("task arguments must be an object");
             const task = args as Record<string, unknown>;
             if (!names.has(String(task.agent_type))) return deny("Use the native swarm-explore or swarm-task agent.");
-            if (task.mode !== undefined && task.mode !== "sync") return deny("Use task(mode=sync). Background native tasks are unavailable on this worker.");
+            if (policy.background ? task.mode !== "background" : task.mode !== undefined && task.mode !== "sync") {
+                return deny(policy.background ? "Use task(mode=background) for assigned native children."
+                    : "Use task(mode=sync). Background native tasks are unavailable on this worker.");
+            }
             if (task.model !== undefined && task.model !== model) return deny("Native workers must use the parent session model; omit the model override.");
             if (task.reasoning_effort !== undefined || task.context_tier !== undefined) {
                 return deny("Native reasoning/context settings are managed by the worker; omit overrides.");
             }
             // Pin the admitted parent model rather than allowing runtime-specific
             // specialist defaults or an application hook to change providers.
-            return { ...previous, modifiedArgs: { ...task, mode: "sync", model } };
+            return { ...previous, modifiedArgs: { ...task, mode: policy.background ? "background" : "sync", model } };
         },
     };
 }
@@ -174,7 +181,7 @@ export function isNativeChildEvent(event: any): boolean {
  * Do not waitForPending(): its ten-minute wait may schedule follow-up turns.
  * A timeout/failure rejects the activity rather than claiming a safe boundary.
  */
-export async function settleNativeSubagents(session: CopilotSession, { timeoutMs = 5_000, rejectRunning = false }: { timeoutMs?: number; rejectRunning?: boolean } = {}): Promise<void> {
+export async function settleNativeSubagents(session: { rpc: { tasks: Pick<CopilotSession["rpc"]["tasks"], "list" | "cancel" | "remove"> } }, { timeoutMs = 5_000, rejectRunning = false }: { timeoutMs?: number; rejectRunning?: boolean } = {}): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
     const timeoutError = () => new Error("Native subagent cleanup timed out; turn cannot commit");

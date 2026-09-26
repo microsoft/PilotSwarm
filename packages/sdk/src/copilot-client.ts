@@ -49,7 +49,10 @@ export function createCopilotClient(options: CopilotClientOptions, provider?: un
         // worker into the experimental process-global in-process transport.
         // Stdio uses the pinned SDK runtime and honors COPILOT_CLI_PATH.
         connection: RuntimeConnection.forStdio(),
-        ...(needsByokRequestCompatibility(provider) ? { requestHandler: new ByokRequestCompatibility() } : {}),
+        // A caller that supplies its own handler is responsible for keeping the
+        // BYOK shim in its own chain; never silently replace it here.
+        ...(needsByokRequestCompatibility(provider) && !options.requestHandler
+            ? { requestHandler: new ByokRequestCompatibility() } : {}),
     });
 }
 

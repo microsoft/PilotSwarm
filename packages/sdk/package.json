@@ -51,6 +51,7 @@
         "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
         "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
         "lint": "tsc --noEmit",
+        "test:types": "tsc -p tsconfig.types-test.json",
         "clean": "rm -rf dist",
         "test:api": "node --test api/test/*.test.mjs",
         "test:local:snapshot-protocol": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-fs.test.js test/local/turn-lifecycle.test.js",
@@ -81,8 +82,8 @@
     "dependencies": {
         "@azure/identity": "^4.13.1",
         "@azure/storage-blob": "^12.31.0",
-        "@github/copilot": "1.0.83",
-        "@github/copilot-sdk": "1.0.13",
+        "@github/copilot": "1.0.85",
+        "@github/copilot-sdk": "1.0.14",
         "@opentelemetry/api": "^1.9.0",
         "duroxide": "^0.1.29",
         "file-type": "^20.5.0",

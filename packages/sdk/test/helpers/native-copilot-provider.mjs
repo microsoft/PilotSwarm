@@ -3,15 +3,22 @@ import { createServer } from "node:http";
 /** Scripted inference endpoint: exercise real native runtime behavior without credentials. */
 export async function createNativeCopilotProvider(respond) {
     const requests = [];
+    const paths = [];
     const server = createServer(async (req, res) => {
         try {
             const chunks = [];
             for await (const chunk of req) chunks.push(chunk);
             const body = JSON.parse(Buffer.concat(chunks).toString());
             requests.push(body);
+            paths.push(req.url);
             const index = requests.length;
             const answer = await respond(body, index);
             if (res.destroyed) return;
+            if (answer.status) {
+                res.writeHead(answer.status, { "content-type": "application/json", ...answer.headers });
+                res.end(JSON.stringify(answer.body ?? { error: { message: "Synthetic provider failure" } }));
+                return;
+            }
             const id = `native-${index}`;
             const calls = answer.tools?.map((t, i) => ({ id: `${id}-${i}`, type: "function", function: { name: t.name, arguments: JSON.stringify(t.args) } }));
             const assistant = { role: "assistant", content: answer.content ?? null, ...(calls ? { tool_calls: calls } : {}) };
@@ -31,6 +38,6 @@ export async function createNativeCopilotProvider(respond) {
         } catch (error) { if (!res.destroyed) { res.writeHead(500); res.end(String(error)); } }
     });
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-    return { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, requests,
+    return { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, requests, paths,
         async close() { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }

@@ -119,6 +119,9 @@ test('all-providers executes the baseline once plus HDB selection without duplic
   assert.deepEqual(sdk[1].args.filter(a => a.endsWith('.test.js')), horizonSdkFiles());
   assert.ok(sdk.every(c => c.workers === '8'));
   assert.equal(calls.filter(c => c.tool === 'node' && c.args.includes('--test')).length, 1, 'unit/API stage runs once');
+  const typeChecks = calls.filter(c => c.tool === 'npm' && c.args.includes('test:types'));
+  assert.equal(typeChecks.length, 1, 'public type fixture runs once across provider phases');
+  assert.equal(typeChecks[0].cwd, sdk[0].cwd, 'public type fixture runs in the SDK directory');
   assert.equal(calls.filter(c => c.tool === 'npm' && c.cwd.endsWith('/packages/sdk') && c.args.includes('build')).length, 1);
   assert.equal(calls.filter(c => c.args.includes('test/integration')).length, 1);
 });
@@ -133,5 +136,8 @@ test('both full-HDB spellings run the entire SDK suite on HDB, including CMS', t
     assert.ok(!sdk[0].args.some(a => a.endsWith('.test.js')), 'no additive filter in full HDB mode');
     assert.equal(calls.filter(c => c.args.includes('test/integration')).length, 1);
     assert.equal(calls.filter(c => c.tool === 'node' && c.args.includes('--test')).length, 1);
+    const typeChecks = calls.filter(c => c.tool === 'npm' && c.args.includes('test:types'));
+    assert.equal(typeChecks.length, 1, 'public type fixture runs once in full HDB mode');
+    assert.equal(typeChecks[0].cwd, sdk[0].cwd, 'public type fixture runs in the SDK directory');
   }
 });

@@ -33,6 +33,7 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { createHostServices, HostEphemeralLifecycle, type PilotSwarmHostServices } from "./host-services.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -675,6 +676,9 @@ export class PilotSwarmManagementClient {
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
+    private _startPromise: Promise<void> | null = null;
+    private _stopPromise: Promise<void> | null = null;
+    private _ephemeralHost = new HostEphemeralLifecycle();
 
     constructor(options: PilotSwarmManagementClientOptions | PilotSwarmWebOptions) {
         assertUnambiguousProvider(options, "PilotSwarmManagementClient");
@@ -699,8 +703,23 @@ export class PilotSwarmManagementClient {
 
     // ─── Lifecycle ───────────────────────────────────────────
 
+    /** Direct hosts only; reuses this client's already initialized catalog. */
+    getHostServices(): PilotSwarmHostServices {
+        if (arguments.length) throw new TypeError("getHostServices does not accept options.");
+        return createHostServices(() => this._started, () => this._catalog, () => this._modelProviders, this._ephemeralHost);
+    }
+
     async start(): Promise<void> {
+        if (this._stopPromise) await this._stopPromise;
         if (this._started) return;
+        if (!this._startPromise) {
+            this._startPromise = Promise.resolve().then(() => this._start())
+                .finally(() => { this._startPromise = null; });
+        }
+        await this._startPromise;
+    }
+
+    private async _start(): Promise<void> {
         const store = this.config.store;
         const storage = resolveStorageConfig({ options: this.config });
         const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
@@ -767,10 +786,23 @@ export class PilotSwarmManagementClient {
             systemAgents: this.config.systemAgents,
         });
 
+        this._ephemeralHost.reset();
         this._started = true;
     }
 
-    async stop(): Promise<void> {
+    stop(): Promise<void> {
+        if (!this._stopPromise) {
+            // Close admission before cleanup can invoke reentrant callbacks.
+            this._stopPromise = Promise.resolve().then(() => this._stop())
+                .finally(() => { this._stopPromise = null; });
+        }
+        return this._stopPromise;
+    }
+
+    private async _stop(): Promise<void> {
+        // A pending start owns any partial resources, including on startup failure.
+        if (this._startPromise) await Promise.allSettled([this._startPromise]);
+        await this._ephemeralHost.stop();
         for (const controller of [...this._activeStatusWaitControllers]) {
             controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
         }
