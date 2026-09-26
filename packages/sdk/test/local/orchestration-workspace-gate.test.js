@@ -37,7 +37,9 @@ const budgetRefusal = () => ({ type: "wait", seconds: 3600, reason: "provider ha
  * lets that many real (>1 s) timers fire when nothing is queued; after that a
  * real timer parks the drive. Every raced real timer's length is recorded.
  */
-function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHangs = false } = {}) {
+function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHangs = false, checkWorkspace } = {}) {
+    // checkWorkspace activity calls: the args, and what they answered.
+    const checks = [];
     const turns = [];
     const recorded = [];
     const timers = [];
@@ -131,13 +133,19 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHa
                     }
                     return undefined;
                 }
+                if (effect.effect === "session.checkWorkspace") {
+                    const args = effect.args[0];
+                    const answer = checkWorkspace ? checkWorkspace(args) : { ok: true, path: `/ws/${args.workspace.root}/${args.workspace.folder ?? ""}` };
+                    checks.push({ args, answer });
+                    return answer;
+                }
                 if (effect.effect === "manager.getWorkerSessionPolicy") return { policy: null, allowedAgentNames: [] };
                 if (effect.effect === "manager.resolveAgentConfig") return null;
                 if (effect.effect === "manager.listModels") return [];
                 return undefined;
         }
     };
-    return { ctx, turns, recorded, timers, releases, sequence, kv, resolve, hasDeliverable };
+    return { ctx, turns, recorded, timers, releases, sequence, checks, kv, resolve, hasDeliverable };
 }
 
 async function latestHandler() {
@@ -388,6 +396,110 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
         expect(h.releases).toHaveLength(1);
         expect(events(h, "session.affinity_released").map((e) => e.data.reason)).toEqual(["idle"]);
+    });
+
+    const setCmd = (id, expectedRevision, workspace) => JSON.stringify({ type: "cmd", cmd: "set_workspace", id, args: { expectedRevision, workspace } });
+    const responseOf = (h, id) => JSON.parse([...h.kv.entries()].find(([k]) => k === `command.response.${id}`)?.[1] ?? "null");
+
+    it("an external set on an idle session checks the folder, bumps the revision, and forces no model turn (B6)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "completed", content: "first" }, { type: "completed", content: "second" }],
+            queue: [
+                prompt("first"),
+                { afterTurns: 1, msg: setCmd("set-1", 1, { root: "a", folder: "b/" }) },
+                { afterTurns: 1, msg: prompt("second") },
+            ],
+        });
+        const outcome = drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(h.checks.map((c) => c.args)).toEqual([{ workspace: { schema: 1, root: "a", folder: "b" }, revision: 2, turnIndex: 1 }]);
+        expect(responseOf(h, "set-1").result).toEqual({ ok: true, changed: true, revision: 2, workspace: { schema: 1, root: "a", folder: "b" }, path: "/ws/a/b" });
+        const changed = events(h, "session.workspace_changed").map((e) => e.data);
+        expect(changed.at(-1)).toEqual({ workspace: { schema: 1, root: "a", folder: "b" }, revision: 2, path: "/ws/a/b", source: "external" });
+        // The command itself ran no turn; the next message's turn carries the note and the new revision.
+        expect(h.turns).toHaveLength(2);
+        expect(h.turns[1].prompt).toBe("second");
+        expect(h.turns[1].opts.workspaceRevision).toBe(2);
+        expect(h.turns[1].opts.workspaceNotice).toBe('The working directory changed from root "a", folder "sessions/s-1/app" to root "a", folder "b" (/ws/a/b).');
+        if (outcome.kind === "continueAsNew") expect(outcome.input.config.workspace).toEqual({ schema: 1, root: "a", folder: "b" });
+    });
+
+    it("the idle timer stays armed across an external set (B6)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "completed", content: "first" }],
+            queue: [prompt("first"), { afterTurns: 1, msg: setCmd("set-idle", 1, { root: "a", folder: "c" }) }],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(responseOf(h, "set-idle").result.changed).toBe(true);
+        // Raced before the command and again after it: the same 30-minute hold.
+        expect(h.timers.filter((ms) => ms === 1_800_000).length).toBeGreaterThanOrEqual(2);
+        expect(h.turns).toHaveLength(1);
+    });
+
+    it("a stale expectedRevision changes nothing (B5)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "completed", content: "first" }],
+            queue: [prompt("first"), { afterTurns: 1, msg: setCmd("stale", 7, { root: "a", folder: "b" }) }],
+        });
+        drive(handler(h.ctx, INPUT()), h);
+        const response = responseOf(h, "stale");
+        expect(response.error).toMatch(/^WORKSPACE_REVISION_CONFLICT/);
+        expect(response.result).toEqual({ code: "WORKSPACE_REVISION_CONFLICT", revision: 1 });
+        expect(h.checks).toHaveLength(0);
+        expect(events(h, "session.workspace_changed").map((e) => e.data.source)).toEqual(["create"]);
+    });
+
+    it("a failed check keeps the old workspace and revision", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "completed", content: "first" }, { type: "completed", content: "second" }],
+            queue: [prompt("first"), { afterTurns: 1, msg: setCmd("bad", 1, { root: "a", folder: "missing" }) }, { afterTurns: 1, msg: prompt("second") }],
+            checkWorkspace: () => ({ ok: false, code: "WORKSPACE_FOLDER_MISSING", message: "folder does not exist" }),
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        const response = responseOf(h, "bad");
+        expect(response.error).toBe("WORKSPACE_FOLDER_MISSING: folder does not exist");
+        expect(response.result).toEqual({ code: "WORKSPACE_FOLDER_MISSING", revision: 1 });
+        expect(h.turns[1].opts.workspaceRevision).toBe(1);
+        expect(h.turns[1].opts.workspaceNotice).toBeUndefined();
+    });
+
+    it("the same folder answers 'no change'; a clear needs no check and drops the workspace (B4, B9)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "completed", content: "first" }, { type: "completed", content: "second" }],
+            queue: [
+                prompt("first"),
+                { afterTurns: 1, msg: setCmd("same", 1, { root: "a", folder: "sessions/s-1/app" }) },
+                { afterTurns: 1, msg: setCmd("clear", 1, null) },
+                { afterTurns: 1, msg: prompt("second") },
+            ],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(responseOf(h, "same").result).toEqual({ ok: true, changed: false, revision: 1, workspace: WORKSPACE });
+        expect(responseOf(h, "clear").result).toEqual({ ok: true, changed: true, revision: 2, workspace: null, path: null });
+        expect(h.checks).toHaveLength(0);
+        expect(events(h, "session.workspace_changed").at(-1).data).toEqual({ workspace: null, revision: 2, path: null, source: "external" });
+        expect(h.turns[1].opts.workspaceRevision).toBeUndefined();
+        expect(h.turns[1].opts.workspaceNotice).toBe('The working directory changed from root "a", folder "sessions/s-1/app" to the default working directory.');
+    });
+
+    it("a set or a clear during a workspace wait runs the held prompts at once", async () => {
+        const handler = await latestHandler();
+        for (const [id, workspace] of [["reset", { root: "a", folder: "other" }], ["cleared", null]]) {
+            const h = createHarness({
+                turnResults: [refusal(), { type: "completed", content: "ran" }],
+                queue: [prompt("held"), { afterTurns: 1, msg: setCmd(id, 1, workspace) }],
+            });
+            drive(handler(h.ctx, INPUT()), h);
+            expect(responseOf(h, id).result.changed).toBe(true);
+            expect(h.turns).toHaveLength(2);
+            expect(h.turns[1].bootstrap).toBe(true);
+            expect(h.turns[1].opts.stashedPrompts).toEqual(["held"]);
+            expect(h.timers).toEqual([30_000]);
+        }
     });
 
     it("a session without a workspace carries no workspace fields and sends no revision", async () => {

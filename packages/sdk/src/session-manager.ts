@@ -11,6 +11,7 @@ import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMe
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
+import { sameWorkspace } from "./workspace-check.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
@@ -2219,6 +2220,22 @@ export class SessionManager {
         };
 
         let copilotSession: CopilotSession;
+
+        // Session workspaces: a warm session still bound to another folder (a
+        // set or clear since it was created) releases that folder first:
+        // its shells are cancelled and the provider is told, before the
+        // new resume (docs/proposals/session-workspaces.md 4.5).
+        {
+            const warm = this.sessions.get(sessionId);
+            const previousWorkspace = warm?.getWorkspaceState().workspace;
+            if (warm && previousWorkspace && !sameWorkspace(previousWorkspace, config.workspace)) {
+                await this.releaseWorkspace(sessionId, {
+                    reason: "workspace_changed",
+                    workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
+                    lockHeld: true,
+                });
+            }
+        }
 
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.

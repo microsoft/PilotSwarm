@@ -17,6 +17,7 @@ import {
     commandResponseKey,
 } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
+import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import {
     beginGracefulShutdown,
     cancelInFlightDistiller,
@@ -30,6 +31,7 @@ import {
     WORKSPACE_RELEASE_CAP_MS,
     WORKSPACE_RETRY_WAKE_PROMPT,
     timerGate,
+    workspaceChangedNote,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -791,6 +793,10 @@ export function* handleCommand(
             publishStatus(runtime, "idle");
             return;
         }
+        case "set_workspace": {
+            yield* handleSetWorkspaceCommand(runtime, cmdMsg);
+            return;
+        }
         case "retry_workspace": {
             // Session workspaces: "retry now". Interrupts a workspace wait the
             // way a message would; the retry turn runs the held prompts, or
@@ -871,6 +877,84 @@ export function* handleCommand(
             return;
         }
     }
+}
+
+/**
+ * Session workspaces (1.0.80): set or clear the workspace from outside the
+ * session (docs/proposals/session-workspaces.md 4.3, external flow). It
+ * runs between turns, so a busy session answers after its turn ends. No
+ * model turn is forced and the idle timer stays armed: the changed-cwd note
+ * waits for the next turn of any kind.
+ */
+function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: CommandMessage): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const reply = function* (response: { result?: unknown; error?: string }): Generator<any, void, any> {
+        yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, ...response });
+        publishStatus(runtime, state.pendingInputQuestion ? "input_required"
+            : state.activeTimer && state.activeTimer.type !== "idle" ? "waiting" : "idle");
+    };
+    const args = (cmdMsg.args ?? {}) as { expectedRevision?: unknown; workspace?: unknown; source?: unknown };
+    const expected = Number(args.expectedRevision);
+    if (!Number.isInteger(expected) || expected !== state.workspaceRevision) {
+        yield* reply({
+            error: `WORKSPACE_REVISION_CONFLICT: expected revision ${String(args.expectedRevision)}, current revision ${state.workspaceRevision}`,
+            result: { code: "WORKSPACE_REVISION_CONFLICT", revision: state.workspaceRevision },
+        });
+        return;
+    }
+    let next: NonNullable<typeof state.config.workspace> | null = null;
+    if (args.workspace !== null && args.workspace !== undefined) {
+        const checked = validateWorkspaceText(args.workspace);
+        if (!checked.ok) {
+            yield* reply({ error: `${checked.code}: ${checked.message}`, result: { code: checked.code, revision: state.workspaceRevision } });
+            return;
+        }
+        next = checked.workspace;
+    }
+    const previous = state.config.workspace ?? null;
+    if (sameWorkspace(previous, next)) {
+        yield* reply({ result: { ok: true, changed: false, revision: state.workspaceRevision, workspace: previous } });
+        return;
+    }
+    const revision = state.workspaceRevision + 1;
+    let path: string | null = null;
+    if (next) {
+        // The attach and the path check, on the worker that holds the
+        // session, with the same code as the turn preamble.
+        const raw: any = yield runtime.session.checkWorkspace({ workspace: next, revision, turnIndex: state.iteration });
+        const outcome = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (!outcome?.ok) {
+            const code = typeof outcome?.code === "string" ? outcome.code : "WORKSPACE_ATTACH_FAILED";
+            yield* reply({
+                error: `${code}: ${String(outcome?.message ?? "the workspace check failed")}`,
+                result: { code, revision: state.workspaceRevision },
+            });
+            return;
+        }
+        path = typeof outcome.path === "string" ? outcome.path : null;
+    }
+    if (next) state.config.workspace = next;
+    else delete state.config.workspace;
+    // The proxy carries the config into every turn; rebuild it from the
+    // changed config rather than rely on sharing one object.
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    state.workspaceRevision = revision;
+    state.workspaceNotice = workspaceChangedNote(previous, next, path);
+    state.workspaceRetry = null;
+    if (!next) state.workspaceStatus = null;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: { workspace: next, revision, path, source: args.source === "agent" ? "agent" : "external" },
+    }]);
+    // Prompts held by a workspace wait now run: in the new folder, or with
+    // no workspace at all after a clear.
+    if (state.activeTimer?.type === "workspace_retry") {
+        state.activeTimer = null;
+        state.pendingPrompt = mergePrompt(state.pendingPrompt, WORKSPACE_RETRY_WAKE_PROMPT);
+        state.bootstrapPrompt = true;
+    }
+    ctx.traceInfo(`[orch-cmd] workspace ${next ? "set" : "cleared"}: revision ${revision}${path ? ` path=${path}` : ""}`);
+    yield* reply({ result: { ok: true, changed: true, revision, workspace: next, path } });
 }
 
 function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, newModelLabel: string): Generator<any, void, any> {

@@ -3410,6 +3410,10 @@ export class ManagedSession {
         if (config.nativeFeatureAllowed !== undefined) this.config.nativeFeatureAllowed = config.nativeFeatureAllowed;
         if (config.featureToolFingerprint !== undefined) this.config.featureToolFingerprint = config.featureToolFingerprint;
         if (config.model !== undefined) this.config.model = config.model;
+        // Session workspaces: the fingerprint keeps path and adopt the same
+        // for a reused handle; the revision and turn a later release reports
+        // move on.
+        if (config.workspaceAttach !== undefined) this.config.workspaceAttach = config.workspaceAttach;
         if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
         if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;
         if (config.providerFingerprint !== undefined) this.config.providerFingerprint = config.providerFingerprint;

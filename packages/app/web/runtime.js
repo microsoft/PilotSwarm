@@ -716,6 +716,16 @@ export class PortalRuntime {
                 return this.transport.getSessionMetricSummary(safeParams.sessionId);
             case "getSessionFootprint":
                 return this.transport.getSessionFootprint(safeParams.sessionId);
+            case "getSessionWorkspace":
+                return this.transport.getSessionWorkspace(safeParams.sessionId);
+            case "setSessionWorkspace":
+                return this.transport.setSessionWorkspace(
+                    safeParams.sessionId,
+                    { expectedRevision: safeParams.expectedRevision, workspace: safeParams.workspace ?? null },
+                    safeParams.options || {},
+                );
+            case "retrySessionWorkspace":
+                return this.transport.retrySessionWorkspace(safeParams.sessionId, safeParams.options || {});
             case "regenerateSession":
                 return this.transport.regenerateSession(safeParams.sessionId, safeParams.options || {});
             case "getSessionTokensByModel":

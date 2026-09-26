@@ -236,6 +236,18 @@ export class HttpApiTransport {
         return this.api.call("setSessionModel", { sessionId, options });
     }
 
+    async getSessionWorkspace(sessionId) {
+        return this.api.call("getSessionWorkspace", { sessionId });
+    }
+
+    async setSessionWorkspace(sessionId, input = {}, options = {}) {
+        return this.api.call("setSessionWorkspace", { sessionId, expectedRevision: input.expectedRevision, workspace: input.workspace ?? null, options });
+    }
+
+    async retrySessionWorkspace(sessionId, options = {}) {
+        return this.api.call("retrySessionWorkspace", { sessionId, options });
+    }
+
     async regenerateSession(sessionId, options = {}) {
         return this.api.call("regenerateSession", { sessionId, options });
     }

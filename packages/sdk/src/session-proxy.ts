@@ -779,6 +779,14 @@ export function createSessionProxy(
                 affinityKey,
             );
         },
+        /** Session workspaces (1.0.80): the attach and the path check, on the worker that holds the session. */
+        checkWorkspace(args: { workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number }) {
+            return ctx.scheduleActivityOnSession(
+                "checkWorkspace",
+                { sessionId, ...args },
+                affinityKey,
+            );
+        },
         /** Session workspaces (1.0.80): cancel shells, disconnect and tell the provider, on the worker that holds the session. */
         releaseWorkspace(args: { reason: string; revision?: number; turnIndex?: number }) {
             return ctx.scheduleActivityOnSession(
@@ -4366,6 +4374,28 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
         await sessionManager.destroySession(input.sessionId);
+    });
+
+    // ── checkWorkspace (session workspaces, orchestration 1.0.80) ──
+    // Session-pinned: the external set command's attach and path check, with
+    // the same code as the turn preamble, on the worker that holds the session.
+    runtime.registerActivity("checkWorkspace", async (
+        activityCtx: any,
+        input: { sessionId: string; workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number },
+    ): Promise<{ ok: true; path: string } | { ok: false; code: string; message: string }> => {
+        const row = catalog
+            ? await cmsRetryBestEffort(`checkWorkspace.getSession session=${input.sessionId}`, () => catalog!.getSession(input.sessionId), (msg) => activityCtx.traceInfo?.(msg))
+            : null;
+        const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), {
+            sessionId: input.sessionId,
+            rootSessionId: (row as any)?.rootSessionId ?? input.sessionId,
+            workspace: input.workspace,
+            revision: input.revision,
+            workerNodeId: workerNodeId ?? os.hostname(),
+            turnIndex: input.turnIndex,
+        });
+        activityCtx.traceInfo?.(`[checkWorkspace] session=${input.sessionId} ok=${prepared.ok}${prepared.ok ? ` path=${prepared.path}` : ` code=${prepared.code}`}`);
+        return prepared.ok ? { ok: true, path: prepared.path } : { ok: false, code: prepared.code, message: prepared.message };
     });
 
     // ── releaseWorkspace (session workspaces, orchestration 1.0.80) ──

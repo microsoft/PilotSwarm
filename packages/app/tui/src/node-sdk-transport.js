@@ -1105,6 +1105,18 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionFootprint(sessionId);
     }
 
+    async getSessionWorkspace(sessionId) {
+        return this.mgmt.getSessionWorkspace(sessionId);
+    }
+
+    async setSessionWorkspace(sessionId, input = {}, options = {}) {
+        return this.mgmt.setSessionWorkspace(sessionId, input, options);
+    }
+
+    async retrySessionWorkspace(sessionId, options = {}) {
+        return this.mgmt.retrySessionWorkspace(sessionId, options);
+    }
+
     async regenerateSession(sessionId, options = {}) {
         return this.mgmt.regenerateSession(sessionId, options);
     }

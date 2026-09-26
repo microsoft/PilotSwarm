@@ -27,7 +27,10 @@ import type {
     SessionSummaryState,
     StopTurnResult,
     PromptAttachmentRef,
+    SessionWorkspace,
+    SessionWorkspaceView,
 } from "./types.js";
+import { validateWorkspaceText } from "./workspace-check.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -1630,6 +1633,135 @@ export class PilotSwarmManagementClient {
                 source: opts?.source ?? "user",
             },
         });
+    }
+
+    /**
+     * Session workspaces: set or clear a session's workspace from outside
+     * the session (docs/proposals/session-workspaces.md 4.3, external flow).
+     * The folder-text check runs here; the worker that holds the session
+     * checks the root and the path. A busy session answers after its turn.
+     *
+     * Resolves with the orchestration's answer. Rejects with an error whose
+     * `code` names the reason (WORKSPACE_REVISION_CONFLICT, WORKSPACE_PATH_INVALID,
+     * WORKSPACE_ROOT_UNKNOWN, WORKSPACE_FOLDER_MISSING, a provider code ...).
+     * If no answer arrives in time, resolves with `{ status: "pending" }`.
+     */
+    async setSessionWorkspace(
+        sessionId: string,
+        input: { expectedRevision: number; workspace: SessionWorkspace | { root: string; folder?: string } | null },
+        opts?: { timeoutMs?: number },
+    ): Promise<
+        | { status: "changed" | "unchanged"; revision: number; workspace: SessionWorkspace | null; path?: string | null }
+        | { status: "pending"; commandId: string }
+    > {
+        this._ensureStarted();
+        if (!Number.isInteger(input?.expectedRevision) || input.expectedRevision < 0) {
+            throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { code: "WORKSPACE_PATH_INVALID", status: 400 });
+        }
+        let workspace: SessionWorkspace | null = null;
+        if (input.workspace !== null && input.workspace !== undefined) {
+            const checked = validateWorkspaceText(input.workspace);
+            if (!checked.ok) throw Object.assign(new Error(`${checked.code}: ${checked.message}`), { code: checked.code, status: 400 });
+            workspace = checked.workspace;
+        }
+        const id = buildLifecycleCommandId("set-workspace");
+        await this.sendCommand(sessionId, {
+            cmd: "set_workspace",
+            id,
+            args: { expectedRevision: input.expectedRevision, workspace, source: "external" },
+        });
+        const resp = await this._awaitCommandResponse(sessionId, id, opts?.timeoutMs ?? 120_000);
+        if (!resp) return { status: "pending", commandId: id };
+        const result = (resp.result ?? {}) as Record<string, any>;
+        if (resp.error) {
+            const code = typeof result.code === "string" ? result.code : String(resp.error).split(":")[0];
+            throw Object.assign(new Error(resp.error), {
+                code,
+                status: code === "WORKSPACE_REVISION_CONFLICT" ? 409 : code === "WORKSPACE_PATH_INVALID" ? 400 : 422,
+                revision: result.revision,
+            });
+        }
+        return {
+            status: result.changed ? "changed" : "unchanged",
+            revision: Number(result.revision),
+            workspace: (result.workspace ?? null) as SessionWorkspace | null,
+            ...(result.path !== undefined ? { path: result.path } : {}),
+        };
+    }
+
+    /**
+     * Session workspaces: the session's workspace, read from its latest
+     * workspace events (no CMS migration in v1): the record, revision and
+     * path of the last change, whether prompts are held and why, and the
+     * repo content adopted at the last resume.
+     */
+    async getSessionWorkspace(sessionId: string): Promise<SessionWorkspaceView> {
+        this._ensureStarted();
+        const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted"];
+        const events = (await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, types))
+            .slice()
+            .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
+        const latest = (type: string) => [...events].reverse().find((e: any) => e.eventType === type) as any;
+        const changed = latest("session.workspace_changed");
+        const workspace = (changed?.data?.workspace ?? null) as SessionWorkspace | null;
+        const revision = Number(changed?.data?.revision ?? 0) || 0;
+        const unavailable = latest("session.workspace_unavailable");
+        const available = latest("session.workspace_available");
+        const boundary = Math.max(Number(available?.seq ?? 0), Number(changed?.seq ?? 0));
+        const held = Boolean(workspace && unavailable && Number(unavailable.seq) > boundary);
+        let heldPrompts = 0;
+        if (held) {
+            const users = await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, ["user.message"]);
+            heldPrompts = users.filter((e: any) => Number(e.seq) > boundary && e.data?.workspaceQueued === true).length;
+        }
+        const adopted = latest("session.workspace_adopted");
+        return {
+            workspace,
+            revision,
+            path: typeof changed?.data?.path === "string" ? changed.data.path : null,
+            status: !workspace ? "none" : held ? "unavailable" : "ready",
+            lastError: held
+                ? {
+                    code: String(unavailable.data?.code ?? "WORKSPACE_UNAVAILABLE"),
+                    message: String(unavailable.data?.message ?? ""),
+                    ...(unavailable.data?.workerNodeId ? { workerNodeId: String(unavailable.data.workerNodeId) } : {}),
+                    ...(unavailable.createdAt ? { at: new Date(unavailable.createdAt).toISOString() } : {}),
+                }
+                : null,
+            heldPrompts,
+            adopted: adopted?.data
+                ? {
+                    agents: Array.isArray(adopted.data.agents) ? adopted.data.agents : [],
+                    skills: Array.isArray(adopted.data.skills) ? adopted.data.skills : [],
+                    skipped: Array.isArray(adopted.data.skipped) ? adopted.data.skipped : [],
+                }
+                : null,
+        };
+    }
+
+    /**
+     * Session workspaces: "retry now". Interrupts a workspace wait; the retry
+     * turn runs the held prompts, or holds them again with no model call.
+     * `retried` is false when the session was not waiting on its workspace.
+     */
+    async retrySessionWorkspace(sessionId: string, opts?: { timeoutMs?: number }): Promise<{ retried: boolean } | { status: "pending"; commandId: string }> {
+        this._ensureStarted();
+        const id = buildLifecycleCommandId("retry-workspace");
+        await this.sendCommand(sessionId, { cmd: "retry_workspace", id });
+        const resp = await this._awaitCommandResponse(sessionId, id, opts?.timeoutMs ?? 60_000);
+        if (!resp) return { status: "pending", commandId: id };
+        if (resp.error) throw new Error(resp.error);
+        return { retried: Boolean((resp.result as any)?.retried) };
+    }
+
+    private async _awaitCommandResponse(sessionId: string, id: string, timeoutMs: number): Promise<SessionCommandResponse | null> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const resp = await this.getCommandResponse(sessionId, id).catch(() => null);
+            if (resp) return resp;
+            await sleep(300);
+        }
+        return null;
     }
 
     /**

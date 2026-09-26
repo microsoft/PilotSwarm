@@ -66,6 +66,8 @@ const GOLDEN_SURFACE = [
     "runtime.manager.updateCmsState",
     "runtime.manager.updateSessionModel",
     "runtime.session.abortTurn",
+    // 1.0.80 (session workspaces): the external set's attach and path check.
+    "runtime.session.checkWorkspace",
     "runtime.session.destroy",
     "runtime.session.hydrate",
     // 1.0.80 (session workspaces): the release before an affinity release.

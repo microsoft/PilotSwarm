@@ -259,6 +259,21 @@ export const BUDGET_TIMER_WAKE_PROMPT =
  */
 export const WORKSPACE_RELEASE_CAP_MS = 10_000;
 
+/** How a note names a workspace: its root and folder, or the default working directory. */
+export function describeWorkspace(workspace: { root: string; folder?: string } | null | undefined): string {
+    if (!workspace) return "the default working directory";
+    return workspace.folder ? `root "${workspace.root}", folder "${workspace.folder}"` : `root "${workspace.root}"`;
+}
+
+/** The changed-cwd note the next turn gets after a workspace set or clear. */
+export function workspaceChangedNote(
+    from: { root: string; folder?: string } | null | undefined,
+    to: { root: string; folder?: string } | null | undefined,
+    path?: string | null,
+): string {
+    return `The working directory changed from ${describeWorkspace(from)} to ${describeWorkspace(to)}${path ? ` (${path})` : ""}.`;
+}
+
 /** The gate behind a wait result, a timer or an interrupted wait. `budget: true` is the pre-1.0.80 spelling. */
 export function timerGate(value: { gate?: unknown; budget?: unknown } | null | undefined): "budget" | "workspace" | undefined {
     if (!value) return undefined;

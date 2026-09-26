@@ -24,6 +24,9 @@ import { createManagementClient } from "../helpers/local-workers.js";
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
+/** The first line of a tool result; the bash tool appends a "<shellId: ...>" status line. */
+const firstLine = (toolResults) => toolResults.join("").trim().split("\n")[0];
+
 /** One turn: run `command` in bash, then answer with the tool output. */
 function bashThenEcho(command) {
     return scriptTurns([[
@@ -212,6 +215,137 @@ describe("workspace turn", () => {
                 assert(await heartbeatStopped(hb), "the detached shell stopped writing");
                 assert(fs.existsSync(hb), "the files stay");
                 assertEqual(provider.callsFor("release", { sessionId }).length, 1);
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    /** Every turn: run `pwd`, then answer "out:<its output>". */
+    const pwdEveryTurn = (_body, position) => (position.step === 0
+        ? { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] }
+        : { content: `out:${firstLine(position.toolResults)}` });
+
+    it("an external set moves the next turn into the folder with the changed-cwd note; a stale revision and a clear behave (B1, B5, B9)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-ext-")));
+        const home = path.join(root, "home");
+        fs.mkdirSync(path.join(root, "repo-x"), { recursive: true });
+        fs.mkdirSync(home);
+        try {
+            await withScriptedModel(env, {
+                respond: pwdEveryTurn,
+                worker: { workspaceRoots: [{ name: "a", path: root }] },
+            }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workingDirectory: home });
+                assertEqual(await session.sendAndWait("turn one", TIMEOUT), `out:${home}`);
+                const mgmt = await createManagementClient(env);
+                try {
+                    const set = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 0, workspace: { root: "a", folder: "repo-x" } });
+                    assertEqual(set.status, "changed");
+                    assertEqual(set.revision, 1);
+                    assertEqual(set.path, path.join(root, "repo-x"));
+
+                    const stale = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 0, workspace: { root: "a", folder: "repo-y" } }).then(() => null, (err) => err);
+                    assert(stale, "a stale revision is rejected");
+                    assertEqual(stale.code, "WORKSPACE_REVISION_CONFLICT");
+                    assertEqual(stale.status, 409);
+
+                    assertEqual(await session.sendAndWait("turn two", TIMEOUT), `out:${path.join(root, "repo-x")}`);
+                    const turnTwo = model.sessionRequests().find((r) => r.position.lastUserText.includes("turn two"));
+                    assert(turnTwo.position.lastUserText.includes('The working directory changed from the default working directory to root "a", folder "repo-x"'),
+                        `the model got the changed-cwd note: ${turnTwo.position.lastUserText}`);
+
+                    const view = await mgmt.getSessionWorkspace(sessionId);
+                    assertEqual(view.revision, 1);
+                    assertEqual(view.status, "ready");
+                    assertEqual(view.workspace.folder, "repo-x");
+
+                    fs.writeFileSync(path.join(root, "repo-x", "keep.txt"), "kept");
+                    const cleared = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 1, workspace: null });
+                    assertEqual(cleared.revision, 2);
+                    assertEqual(await session.sendAndWait("turn three", TIMEOUT), `out:${home}`, "a clear returns to config.workingDirectory");
+                    assert(fs.existsSync(path.join(root, "repo-x", "keep.txt")), "a clear deletes no files");
+                    assertEqual((await mgmt.getSessionWorkspace(sessionId)).status, "none");
+                } finally {
+                    await mgmt.stop();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("a set during a running turn waits for it, then the next turn resumes in the new folder and the old folder's shell is cancelled (B14)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b14-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        const respond = scriptTurns([
+            [
+                { tools: [{ name: "bash", args: { command: "while true; do date +%s >> hb.txt; sleep 0.2; done", description: "heartbeat", mode: "async", detach: true } }] },
+                { tools: [{ name: "bash", args: { command: "sleep 4; pwd", description: "slow pwd" } }] },
+                (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+            ],
+            [
+                { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+                (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+            ],
+        ]);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                await session.send("slow turn");
+                const mgmt = await createManagementClient(env);
+                const catalog = await createCatalog(env);
+                try {
+                    // Wait until the slow turn is running, then change the workspace under it.
+                    await waitForEventCount(catalog, sessionId, "tool.execution_start", 2, 60_000).catch(() => {});
+                    const set = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 1, workspace: { root: "a", folder: "repo-y" } });
+                    assertEqual(set.status, "changed");
+                    assertEqual(await session.wait(TIMEOUT), `out:${path.join(root, "repo-x")}`, "the running turn stayed in the old folder");
+                    const all = await catalog.getSessionEvents(sessionId);
+                    const lastAnswer = all.filter((e) => e.eventType === "assistant.message").at(-1);
+                    const changed = all.filter((e) => e.eventType === "session.workspace_changed").at(-1);
+                    assert(Number(changed.seq) > Number(lastAnswer.seq), "workspace_changed follows the running turn");
+                    assertEqual(await session.sendAndWait("next turn", TIMEOUT), `out:${path.join(root, "repo-y")}`);
+                    assert(await heartbeatStopped(path.join(root, "repo-x", "hb.txt")), "the old folder's detached shell was cancelled before the new resume");
+                    const nextRequest = model.sessionRequests().find((r) => r.position.lastUserText.includes("next turn"));
+                    assert(nextRequest.position.lastUserText.includes('to root "a", folder "repo-y"'), "the next turn got the changed-cwd note");
+                } finally {
+                    await catalog.close?.();
+                    await mgmt.stop();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("two setters racing on one revision: one wins, one gets WORKSPACE_REVISION_CONFLICT, the revision rises by one (R3)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-r3-")));
+        for (const f of ["repo-x", "repo-y", "repo-z"]) fs.mkdirSync(path.join(root, f));
+        try {
+            await withScriptedModel(env, { respond: pwdEveryTurn, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                await session.sendAndWait("hello", TIMEOUT);
+                const mgmt = await createManagementClient(env);
+                try {
+                    const results = await Promise.allSettled([
+                        mgmt.setSessionWorkspace(sessionId, { expectedRevision: 1, workspace: { root: "a", folder: "repo-y" } }),
+                        mgmt.setSessionWorkspace(sessionId, { expectedRevision: 1, workspace: { root: "a", folder: "repo-z" } }),
+                    ]);
+                    assertEqual(results.filter((r) => r.status === "fulfilled").length, 1);
+                    const loser = results.find((r) => r.status === "rejected");
+                    assertEqual(loser?.reason?.code, "WORKSPACE_REVISION_CONFLICT");
+                    assertEqual((await mgmt.getSessionWorkspace(sessionId)).revision, 2);
+                } finally {
+                    await mgmt.stop();
+                }
             });
         } finally {
             fs.rmSync(root, { recursive: true, force: true });

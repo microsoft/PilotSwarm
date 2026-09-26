@@ -239,6 +239,22 @@ export interface WorkspaceProvider {
     release?(req: WorkspaceAttachRequest): Promise<void>;
 }
 
+/** What getSessionWorkspace reports, read from the session's latest workspace events. */
+export interface SessionWorkspaceView {
+    workspace: SessionWorkspace | null;
+    /** Rises by one on every set or clear. 0 = never set. */
+    revision: number;
+    /** The attach path the last change reported, when known. */
+    path: string | null;
+    /** `none` without a workspace; `unavailable` while prompts are held. */
+    status: "none" | "ready" | "unavailable";
+    lastError: { code: string; message: string; workerNodeId?: string; at?: string } | null;
+    /** Prompts held since the workspace became unavailable. */
+    heldPrompts: number;
+    /** The repo content adopted at the last resume that changed it. */
+    adopted: { agents: string[]; skills: string[]; skipped: unknown[] } | null;
+}
+
 /** Error codes PilotSwarm raises for workspaces. Provider codes pass through unchanged. */
 export const WORKSPACE_ERROR_CODES = {
     ROOT_UNKNOWN: "WORKSPACE_ROOT_UNKNOWN",
