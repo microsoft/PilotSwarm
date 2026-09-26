@@ -247,6 +247,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isShiftM = !key.ctrl && !key.meta && !key.alt && (input === "M" || (key.shift && key.name === "m"));
         const isShiftD = input === "D" || (key.shift && key.name === "d");
         const isShiftR = !key.ctrl && !key.meta && !key.alt && (input === "R" || (key.shift && key.name === "r"));
+        const isShiftW = !key.ctrl && !key.meta && !key.alt && (input === "W" || (key.shift && key.name === "w"));
+        const isShiftY = !key.ctrl && !key.meta && !key.alt && (input === "Y" || (key.shift && key.name === "y"));
         const isShiftT = !key.ctrl && !key.meta && !key.alt && (input === "T" || (key.shift && key.name === "t"));
         const isShiftA = !key.ctrl && !key.meta && !key.alt && (input === "A" || (key.shift && key.name === "a"));
         const isAltBackspace = key.meta && (key.backspace || key.delete || key.name === "backspace" || key.name === "delete");
@@ -508,7 +510,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
-            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession") {
+            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession" || modal.type === "sessionWorkspace") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                     return;
@@ -519,6 +521,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.leftArrow) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursor(-1);
+                    else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursor(-1);
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(-1);
                     else if (modal.type === "shareSession") controller.moveShareSessionCursor(-1);
                     else controller.moveArtifactUploadCursor(-1);
@@ -526,6 +529,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.rightArrow) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursor(1);
+                    else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursor(1);
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(1);
                     else if (modal.type === "shareSession") controller.moveShareSessionCursor(1);
                     else controller.moveArtifactUploadCursor(1);
@@ -533,6 +537,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.home) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursorToBoundary("start");
+                    else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursorToBoundary("start");
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("start");
                     else if (modal.type === "shareSession") controller.moveShareSessionCursorToBoundary("start");
                     else controller.moveArtifactUploadCursorToBoundary("start");
@@ -540,6 +545,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.end) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursorToBoundary("end");
+                    else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursorToBoundary("end");
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("end");
                     else if (modal.type === "shareSession") controller.moveShareSessionCursorToBoundary("end");
                     else controller.moveArtifactUploadCursorToBoundary("end");
@@ -547,6 +553,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.backspace || key.delete) {
                     if (modal.type === "renameSession") controller.deleteRenameSessionChar();
+                    else if (modal.type === "sessionWorkspace") controller.deleteSetWorkspaceChar();
                     else if (modal.type === "sessionGroupName") controller.deleteSessionGroupNameChar();
                     else if (modal.type === "shareSession") controller.deleteShareSessionChar();
                     else controller.deleteArtifactUploadChar();
@@ -554,6 +561,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (!key.ctrl && !key.meta && input) {
                     if (modal.type === "renameSession") controller.insertRenameSessionText(input);
+                    else if (modal.type === "sessionWorkspace") controller.insertSetWorkspaceText(input);
                     else if (modal.type === "sessionGroupName") controller.insertSessionGroupNameText(input);
                     else if (modal.type === "shareSession") controller.insertShareSessionText(input);
                     else controller.insertArtifactUploadText(input);
@@ -955,6 +963,15 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (plainShortcut && isShiftR) {
             controller.handleCommand(UI_COMMANDS.REGENERATE_SESSION).catch(() => {});
+            return;
+        }
+        // Session workspaces: W opens set/clear, Y retries a held workspace.
+        if (plainShortcut && isShiftW) {
+            controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE).catch(() => {});
+            return;
+        }
+        if (plainShortcut && isShiftY) {
+            controller.handleCommand(UI_COMMANDS.RETRY_WORKSPACE).catch(() => {});
             return;
         }
         if (focus !== "prompt" && (input === "h" || key.leftArrow)) {

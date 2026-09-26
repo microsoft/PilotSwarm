@@ -82,9 +82,12 @@ test("the app renders without throwing", () => {
 
 test("every inspector tab renders", () => {
     // The Artifacts crash was tab-specific — a smoke test that only rendered
-    // the default tab would have missed it entirely.
+    // the default tab would have missed it entirely. The inspector lives in
+    // the Diagnostics column, which is off by default: open it, or no tab
+    // is drawn at all.
     for (const tab of INSPECTOR_TABS) {
         const controller = makeController();
+        controller.dispatch({ type: "ui/diagnosticsOpen" });
         controller.dispatch({ type: "ui/inspectorTab", inspectorTab: tab });
         assert.doesNotThrow(() => render(controller), `inspector tab "${tab}" must render`);
     }
@@ -137,4 +140,43 @@ test("the full-screen artifact preview renders", () => {
     controller.dispatch({ type: "files/previewOrigin", origin: "chat", restoreArtifactId: null });
     controller.dispatch({ type: "files/fullscreen", fullscreen: true });
     assert.doesNotThrow(() => render(controller), "fullscreen preview must render");
+});
+
+// Session workspaces (test B12): the stats tab's Workspace block and the
+// set dialog, for a session that has a held workspace.
+function workspaceController() {
+    const controller = makeController();
+    controller.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "ws-1", title: "Workspace", status: "idle", createdAt: 1, updatedAt: 1 }] });
+    controller.dispatch({ type: "sessions/selected", sessionId: "ws-1" });
+    controller.dispatch({
+        type: "sessionStats/loaded",
+        sessionId: "ws-1",
+        summary: { sessionId: "ws-1" },
+        tokensByModel: [],
+        workspace: {
+            workspace: { schema: 1, root: "a", folder: "repo-x" }, revision: 3, path: "/ws/a/repo-x", status: "unavailable",
+            lastError: { code: "WORKSPACE_FOLDER_MISSING", message: "folder does not exist" }, heldPrompts: 1,
+            adopted: { agents: ["reviewer"], skills: [], skipped: [] },
+        },
+    });
+    return controller;
+}
+
+test("the stats tab renders a session's workspace", () => {
+    const controller = workspaceController();
+    // Diagnostics (the inspector column) is off by default in the portal.
+    controller.dispatch({ type: "ui/diagnosticsOpen" });
+    controller.dispatch({ type: "ui/inspectorTab", inspectorTab: "stats" });
+    const html = render(controller);
+    // Rows are cut to the column width (32 characters under SSR), so check
+    // short values: the folder, the status and the held count.
+    assert.ok(html.includes("a/repo-x") && html.includes("unavailable") && html.includes("1 prompt"), "the Workspace block is in the stats tab");
+});
+
+test("the set-workspace dialog renders", () => {
+    const controller = workspaceController();
+    controller.openSetWorkspaceModal();
+    assert.equal(controller.getState().ui.modal?.type, "sessionWorkspace");
+    const html = render(controller);
+    assert.ok(html.includes("Workspace (") && html.includes("a/repo-x"), "the dialog renders with the current workspace");
 });
