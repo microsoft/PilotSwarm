@@ -19,6 +19,7 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { patchSessionStartInput } from "../helpers/pinned-start.mjs";
+import { createManagementClient } from "../helpers/local-workers.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -130,6 +131,87 @@ describe("workspace turn", () => {
                 } finally {
                     await catalog.close?.();
                 }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    /** A turn that starts a detached shell appending to hb.txt every 200 ms, then answers. */
+    const startHeartbeat = scriptTurns([[
+        { tools: [{ name: "bash", args: { command: "while true; do date +%s >> hb.txt; sleep 0.2; done", description: "heartbeat", mode: "async", detach: true } }] },
+        { content: "started" },
+    ]]);
+    const heartbeatStopped = async (file) => {
+        const before = fs.statSync(file).size;
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        return fs.statSync(file).size === before;
+    };
+
+    it("the hold-window release cancels a detached shell and tells the provider (M1, one worker)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-m1-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        try {
+            await withScriptedModel(env, {
+                respond: startHeartbeat,
+                worker: { workspaceProvider: provider },
+                client: { dehydrateOnIdle: 3 },
+            }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("start the heartbeat", TIMEOUT), "started");
+                const hb = path.join(root, "repo-x", "hb.txt");
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                // Before the 3 s hold window ends, the shell must be writing.
+                assert(fs.existsSync(hb) && !(await heartbeatStopped(hb)), "the heartbeat shell is writing before the release");
+                const catalog = await createCatalog(env);
+                try {
+                    const [released] = await waitForEventCount(catalog, sessionId, "session.workspace_released", 1, 60_000);
+                    assertEqual(released.data.reason, "idle");
+                    assert(released.data.cancelled >= 1, `at least one task cancelled: ${JSON.stringify(released.data)}`);
+                } finally {
+                    await catalog.close?.();
+                }
+                assert(await heartbeatStopped(hb), "the detached shell stopped writing after the release");
+                const releases = provider.callsFor("release", { sessionId });
+                assertEqual(releases.length, 1, "the provider heard about the release once");
+                assertEqual(releases[0].req.workerNodeId, "test-worker-a");
+                assertEqual(releases[0].req.workspace.folder, "repo-x");
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("completing the session releases through destroySession and keeps the files (M5)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-m5-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        try {
+            await withScriptedModel(env, {
+                respond: startHeartbeat,
+                worker: { workspaceProvider: provider },
+            }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("start the heartbeat", TIMEOUT), "started");
+                const hb = path.join(root, "repo-x", "hb.txt");
+                const mgmt = await createManagementClient(env);
+                const catalog = await createCatalog(env);
+                try {
+                    await mgmt.completeSession(sessionId, "done for now");
+                    const [released] = await waitForEventCount(catalog, sessionId, "session.workspace_released", 1, 60_000);
+                    assertEqual(released.data.reason, "destroy");
+                } finally {
+                    await catalog.close?.();
+                    await mgmt.stop();
+                }
+                assert(await heartbeatStopped(hb), "the detached shell stopped writing");
+                assert(fs.existsSync(hb), "the files stay");
+                assertEqual(provider.callsFor("release", { sessionId }).length, 1);
             });
         } finally {
             fs.rmSync(root, { recursive: true, force: true });

@@ -779,6 +779,14 @@ export function createSessionProxy(
                 affinityKey,
             );
         },
+        /** Session workspaces (1.0.80): cancel shells, disconnect and tell the provider, on the worker that holds the session. */
+        releaseWorkspace(args: { reason: string; revision?: number; turnIndex?: number }) {
+            return ctx.scheduleActivityOnSession(
+                "releaseWorkspace",
+                { sessionId, ...args },
+                affinityKey,
+            );
+        },
         checkpoint() {
             return ctx.scheduleActivityOnSession(
                 "checkpointSession",
@@ -1601,6 +1609,9 @@ export function registerActivities(
                 path: prepared.path,
                 realPath: prepared.realPath,
                 ...(prepared.adopt ? { adopt: prepared.adopt } : {}),
+                revision: workspaceRevision,
+                rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                turnIndex: input.turnIndex ?? 0,
             };
         }
 
@@ -4331,10 +4342,58 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
     // ── destroySession ──────────────────────────────────────
     runtime.registerActivity("destroySession", async (
-        _ctx: any,
+        activityCtx: any,
         input: { sessionId: string },
     ): Promise<void> => {
+        // Session workspaces: complete, cancel and delete release the
+        // workspace first (section 4.5). A session without a workspace, or
+        // not in memory here, skips it. The files stay.
+        const released = await sessionManager.releaseWorkspace(input.sessionId, {
+            reason: "destroy",
+            workerNodeId: workerNodeId ?? os.hostname(),
+        });
+        if (released.released) {
+            activityCtx.traceInfo?.(`[destroySession] released workspace of ${input.sessionId}: ${released.cancelled} task(s) cancelled${released.detail ? `; ${released.detail}` : ""}`);
+            if (catalog) {
+                await cmsRetryBestEffort(
+                    `destroySession.recordEvent workspace-released session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.workspace_released",
+                        data: { reason: "destroy", cancelled: released.cancelled, workerNodeId: workerNodeId ?? os.hostname(), ...(released.detail ? { detail: released.detail } : {}) },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo?.(msg),
+                );
+            }
+        }
         await sessionManager.destroySession(input.sessionId);
+    });
+
+    // ── releaseWorkspace (session workspaces, orchestration 1.0.80) ──
+    // Session-pinned: runs on the worker that holds the session, before the
+    // orchestration releases affinity. The orchestration races it against a
+    // cap and releases affinity anyway if it does not finish.
+    runtime.registerActivity("releaseWorkspace", async (
+        activityCtx: any,
+        input: { sessionId: string; reason: string; revision?: number; turnIndex?: number },
+    ): Promise<{ released: boolean; cancelled: number; detail?: string }> => {
+        const result = await sessionManager.releaseWorkspace(input.sessionId, {
+            reason: input.reason,
+            workerNodeId: workerNodeId ?? os.hostname(),
+            ...(input.revision !== undefined ? { revision: input.revision } : {}),
+            ...(input.turnIndex !== undefined ? { turnIndex: input.turnIndex } : {}),
+        });
+        activityCtx.traceInfo?.(`[releaseWorkspace] session=${input.sessionId} reason=${input.reason} released=${result.released} cancelled=${result.cancelled}${result.detail ? ` detail=${result.detail}` : ""}`);
+        if (catalog && result.released) {
+            await cmsRetryBestEffort(
+                `releaseWorkspace.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{
+                    eventType: "session.workspace_released",
+                    data: { reason: input.reason, cancelled: result.cancelled, workerNodeId: workerNodeId ?? os.hostname(), ...(result.detail ? { detail: result.detail } : {}) },
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo?.(msg),
+            );
+        }
+        return result;
     });
 
     // ── checkpointSession ───────────────────────────────────

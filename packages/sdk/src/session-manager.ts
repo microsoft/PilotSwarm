@@ -593,6 +593,8 @@ export class SessionManager {
     private featureFlags: FeatureFlagCache | null = null;
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
+    /** The worker's own ID, for releases this manager starts itself (eviction). */
+    private workspaceWorkerNodeId: string | undefined;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -972,8 +974,9 @@ export class SessionManager {
         this.sessionCatalog = catalog;
     }
 
-    setWorkspaceProvider(provider: WorkspaceProvider | null): void {
+    setWorkspaceProvider(provider: WorkspaceProvider | null, workerNodeId?: string): void {
         this.workspaceProvider = provider;
+        if (workerNodeId) this.workspaceWorkerNodeId = workerNodeId;
     }
 
     getWorkspaceProvider(): WorkspaceProvider | null {
@@ -1388,7 +1391,11 @@ export class SessionManager {
                     const dirExists = fs.existsSync(sessionDir);
                     const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
                     const existing = this.sessions.get(sessionId);
-                    if (existing) {
+                    if (existing?.getWorkspaceState().workspace) {
+                        // Session workspaces: the eviction clock is the backstop
+                        // for a release that never ran (section 4.5).
+                        await this.releaseWorkspace(sessionId, { reason: "eviction", workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(), lockHeld: true });
+                    } else if (existing) {
                         try { await existing.destroy(); } catch {}
                         this._forgetWarmSession(sessionId);
                     }
@@ -2687,6 +2694,70 @@ export class SessionManager {
     /**
      * Destroy a session and remove from tracking.
      */
+    /**
+     * Session workspaces: the session leaves this worker (docs/proposals/
+     * session-workspaces.md, section 4.5). For a workspace session held in
+     * memory here: cancel its shells and agent tasks, disconnect, and tell
+     * the provider. Without an in-memory copy there is nothing to cancel,
+     * and the provider is not called; it learns about a dead holder at the
+     * next ensureAttached. Never throws.
+     */
+    async releaseWorkspace(
+        sessionId: string,
+        opts: { reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string; lockHeld?: boolean; releaseTimeoutMs?: number },
+    ): Promise<{ released: boolean; cancelled: number; detail?: string }> {
+        if (!opts.lockHeld) {
+            return this._withSessionLock(sessionId, "releaseWorkspace", () => this.releaseWorkspace(sessionId, { ...opts, lockHeld: true }));
+        }
+        const managed = this.sessions.get(sessionId);
+        const workspace = managed?.getWorkspaceState().workspace;
+        if (!managed || !workspace) {
+            return { released: false, cancelled: 0, detail: managed ? "no workspace" : "not in memory on this worker" };
+        }
+        const attach = managed.getWorkspaceState().attach;
+        let cancelled = 0;
+        let detail: string | undefined;
+        try {
+            cancelled = await managed.cancelBackgroundTasks();
+        } catch (error: unknown) {
+            detail = `task cancel: ${normalizeError(error).message}`;
+        }
+        try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
+        this._forgetWarmSession(sessionId);
+        const provider = this.workspaceProvider;
+        if (provider?.release) {
+            const request = {
+                sessionId,
+                rootSessionId: opts.rootSessionId ?? attach?.rootSessionId ?? sessionId,
+                workspace,
+                revision: opts.revision ?? attach?.revision ?? 1,
+                workerNodeId: opts.workerNodeId,
+                turnIndex: opts.turnIndex ?? attach?.turnIndex ?? 0,
+            };
+            try {
+                await Promise.race([
+                    Promise.resolve().then(() => provider.release!(request)),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("provider release timed out")), opts.releaseTimeoutMs ?? 5_000).unref?.()),
+                ]);
+            } catch (error: unknown) {
+                detail = [detail, `provider release: ${normalizeError(error).message}`].filter(Boolean).join("; ");
+            }
+        }
+        emitSessionManagerTrace(sessionId, `workspace released (${opts.reason}): cancelled ${cancelled} task(s)${detail ? `; ${detail}` : ""}`);
+        return { released: true, cancelled, ...(detail ? { detail } : {}) };
+    }
+
+    /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped. */
+    async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string }): Promise<number> {
+        let released = 0;
+        for (const [sessionId, managed] of [...this.sessions]) {
+            if (!managed.getWorkspaceState().workspace || this.sessionLocks.has(sessionId)) continue;
+            const result = await this.releaseWorkspace(sessionId, opts).catch(() => null);
+            if (result?.released) released++;
+        }
+        return released;
+    }
+
     async destroySession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));

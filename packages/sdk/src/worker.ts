@@ -378,7 +378,8 @@ export class PilotSwarmWorker {
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
-            ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null));
+            ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
+        this.config.workerNodeId ?? undefined);
     }
 
     private _startProviderPolling(): void {
@@ -502,7 +503,7 @@ export class PilotSwarmWorker {
      * any earlier provider; pass null to remove it.
      */
     setWorkspaceProvider(provider: WorkspaceProvider | null): void {
-        this.sessionManager.setWorkspaceProvider(provider);
+        this.sessionManager.setWorkspaceProvider(provider, this.config.workerNodeId ?? undefined);
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -1065,6 +1066,20 @@ export class PilotSwarmWorker {
             await this.runtime.shutdown(drainBudgetMs);
             this.runtime = null;
             this._runtimeStartup = null;
+        }
+
+        // Session workspaces: idle workspace sessions tell their provider
+        // they left before this worker goes (section 4.5). Sessions whose
+        // turn the drain cut are skipped; the provider sees the dead holder
+        // at the next attach.
+        try {
+            const released = await this.sessionManager.releaseIdleWorkspaces({
+                reason: "worker_shutdown",
+                workerNodeId: this.config.workerNodeId ?? os.hostname(),
+            });
+            if (released > 0) console.error(`[PilotSwarmWorker] drain released ${released} workspace session(s)`);
+        } catch (err: any) {
+            console.warn(`[PilotSwarmWorker] drain workspace release failed: ${err?.message ?? err}`);
         }
 
         // Release everything this worker served, via the same lock-aware

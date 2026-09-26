@@ -354,6 +354,10 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         path: string;
         realPath: string;
         adopt?: WorkspaceAdopt;
+        /** What a later release on this worker sends the provider. */
+        revision?: number;
+        rootSessionId?: string;
+        turnIndex?: number;
     };
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];

@@ -27,6 +27,7 @@ import {
     FIRST_SUMMARIZE_DELAY,
     INTERNAL_SYSTEM_TURN_PROMPT,
     REPEAT_SUMMARIZE_DELAY,
+    WORKSPACE_RELEASE_CAP_MS,
     WORKSPACE_RETRY_WAKE_PROMPT,
     timerGate,
     type DurableSessionRuntime,
@@ -172,6 +173,25 @@ export function* releaseAffinity(
     const { ctx, state } = runtime;
     ctx.traceInfo(`[orch] releasing worker affinity (reason=${reason})`);
     state.activeTimer = null;
+    // Session workspaces (1.0.80): before the session can move, the worker
+    // that holds it cancels its shells, disconnects and tells the provider,
+    // so no process there keeps writing to the shared checkout. Raced against
+    // a cap: a session-pinned activity has no timeout of its own, and a dead
+    // or hung worker must not hold the session. Only workspace sessions yield
+    // here, so every present and future release site gets it for free.
+    if (state.config.workspace) {
+        try {
+            const raced: any = yield ctx.race(
+                runtime.session.releaseWorkspace({ reason, revision: Math.max(1, state.workspaceRevision), turnIndex: state.iteration }),
+                ctx.scheduleTimer(WORKSPACE_RELEASE_CAP_MS),
+            );
+            if (raced?.index === 1) {
+                ctx.traceInfo(`[orch] releaseWorkspace did not finish within ${WORKSPACE_RELEASE_CAP_MS}ms; releasing affinity anyway`);
+            }
+        } catch (err: any) {
+            ctx.traceInfo(`[orch] releaseWorkspace failed (${err?.message ?? err}); releasing affinity anyway`);
+        }
+    }
     state.affinityKey = yield ctx.newGuid();
     runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
     try {

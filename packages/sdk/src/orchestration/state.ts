@@ -253,6 +253,12 @@ export const WORKSPACE_RETRY_WAKE_PROMPT =
 export const BUDGET_TIMER_WAKE_PROMPT =
     "[SYSTEM: Checking again whether the budget that paused this session allows a turn. The user did not send a new message. Continue with your task.]";
 
+/**
+ * Session workspaces: how long the orchestration waits for releaseWorkspace
+ * before it releases affinity anyway. Under the 15 s retry floor.
+ */
+export const WORKSPACE_RELEASE_CAP_MS = 10_000;
+
 /** The gate behind a wait result, a timer or an interrupted wait. `budget: true` is the pre-1.0.80 spelling. */
 export function timerGate(value: { gate?: unknown; budget?: unknown } | null | undefined): "budget" | "workspace" | undefined {
     if (!value) return undefined;

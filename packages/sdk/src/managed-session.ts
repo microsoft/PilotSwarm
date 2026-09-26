@@ -3354,6 +3354,41 @@ export class ManagedSession {
         await this.copilotSession.disconnect();
     }
 
+    /** Session workspaces: this session's workspace and its last attach on this worker. */
+    getWorkspaceState(): { workspace?: ManagedSessionConfig["workspace"]; attach?: ManagedSessionConfig["workspaceAttach"] } {
+        return { workspace: this.config.workspace, attach: this.config.workspaceAttach };
+    }
+
+    /**
+     * Session workspaces: cancel every background shell (attached or
+     * detached) and agent task that is running or idle, then list again
+     * until none remain. disconnect() leaves them running; only
+     * rpc.tasks.cancel stops them (docs/proposals/session-workspaces.md 4.5).
+     * Returns how many cancels were sent. Throws if tasks remain after the
+     * last round.
+     */
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200 }: { rounds?: number; pauseMs?: number } = {}): Promise<number> {
+        const active = (task: { type?: string; status?: string }) =>
+            (task.type === "shell" || task.type === "agent") && (task.status === "running" || task.status === "idle");
+        let cancelled = 0;
+        for (let round = 0; round < rounds; round++) {
+            const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+            if (tasks.length === 0) return cancelled;
+            for (const task of tasks) {
+                try {
+                    await this.copilotSession.rpc.tasks.cancel({ id: task.id });
+                    cancelled++;
+                } catch { /* listed again below */ }
+            }
+            await new Promise((resolve) => setTimeout(resolve, pauseMs));
+        }
+        const remaining = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+        if (remaining.length > 0) {
+            throw new Error(`${remaining.length} background task(s) still active after ${rounds} cancel rounds`);
+        }
+        return cancelled;
+    }
+
     /**
      * Get conversation messages from the underlying session.
      * copilot-sdk 1.0.6 renamed getMessages() → getEvents() (same

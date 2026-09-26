@@ -37,10 +37,13 @@ const budgetRefusal = () => ({ type: "wait", seconds: 3600, reason: "provider ha
  * lets that many real (>1 s) timers fire when nothing is queued; after that a
  * real timer parks the drive. Every raced real timer's length is recorded.
  */
-function createHarness({ turnResults = [], queue = [], fireTimers = 0 } = {}) {
+function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHangs = false } = {}) {
     const turns = [];
     const recorded = [];
     const timers = [];
+    // releaseWorkspace races: { args, capMs }. `sequence` orders releases and events.
+    const releases = [];
+    const sequence = [];
     const kv = new Map();
     const pendingMessages = queue.map((entry) => (typeof entry === "string" ? { afterTurns: 0, msg: entry } : entry));
     const script = [...turnResults];
@@ -99,6 +102,12 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0 } = {}) {
                     return { index: 0, value: script.shift() };
                 }
                 const sides = [effect.left, effect.right];
+                const releaseIx = sides.findIndex((s) => s?.effect === "session.releaseWorkspace");
+                if (releaseIx >= 0) {
+                    releases.push({ args: sides[releaseIx].args[0], capMs: sides[1 - releaseIx]?.ms });
+                    sequence.push("releaseWorkspace");
+                    return releaseHangs ? { index: 1 - releaseIx } : { index: releaseIx, value: { released: true, cancelled: 0 } };
+                }
                 const dequeueIx = sides.findIndex((s) => s?.effect === "dequeueEvent");
                 const timerIx = sides.findIndex((s) => s?.effect === "scheduleTimer");
                 if (timerIx >= 0 && sides[timerIx].ms > 1000) timers.push(sides[timerIx].ms);
@@ -116,7 +125,10 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0 } = {}) {
             default:
                 if (effect.effect === "manager.recordSessionEvent") {
                     const [sessionId, events] = effect.args;
-                    for (const e of events ?? []) recorded.push({ sessionId, ...e });
+                    for (const e of events ?? []) {
+                        recorded.push({ sessionId, ...e });
+                        sequence.push(`event:${e.eventType}`);
+                    }
                     return undefined;
                 }
                 if (effect.effect === "manager.getWorkerSessionPolicy") return { policy: null, allowedAgentNames: [] };
@@ -125,7 +137,7 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0 } = {}) {
                 return undefined;
         }
     };
-    return { ctx, turns, recorded, timers, kv, resolve, hasDeliverable };
+    return { ctx, turns, recorded, timers, releases, sequence, kv, resolve, hasDeliverable };
 }
 
 async function latestHandler() {
@@ -340,6 +352,42 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         expect(h.turns).toHaveLength(1);
         expect(h.turns[0].prompt).toMatch(/^The 3600 second wait is now complete\./);
         expect(events(h, "user.message")).toHaveLength(0);
+    });
+
+    it("releasing affinity runs releaseWorkspace on the holder first, raced with a 10 s cap (C3)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [refusal({ worker: "w-a" }), refusal({ worker: "w-a" })],
+            queue: [prompt("work")],
+            fireTimers: 1,
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(h.releases).toEqual([{ args: { reason: "workspace_unavailable", revision: 1, turnIndex: 0 }, capMs: 10_000 }]);
+        const at = h.sequence.indexOf("releaseWorkspace");
+        const released = h.sequence.findIndex((entry, i) => i > at && entry === "event:session.affinity_released");
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(released).toBeGreaterThan(at);
+    });
+
+    it("the hold-window release runs releaseWorkspace for a workspace session and not for a plain one (M1)", async () => {
+        const handler = await latestHandler();
+        const ws = createHarness({ turnResults: [{ type: "completed", content: "ok" }], queue: [prompt("hi")], fireTimers: 1 });
+        drive(handler(ws.ctx, INPUT({ blobEnabled: true })), ws);
+        expect(ws.releases.map((r) => r.args.reason)).toEqual(["idle"]);
+        expect(events(ws, "session.affinity_released").map((e) => e.data.reason)).toEqual(["idle"]);
+
+        const plain = createHarness({ turnResults: [{ type: "completed", content: "ok" }], queue: [prompt("hi")], fireTimers: 1 });
+        drive(handler(plain.ctx, INPUT({ blobEnabled: true, config: { model: "fixture:model" } })), plain);
+        expect(plain.releases).toEqual([]);
+        expect(events(plain, "session.affinity_released").map((e) => e.data.reason)).toEqual(["idle"]);
+    });
+
+    it("a hanging releaseWorkspace does not hold the move beyond the cap (M6)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({ turnResults: [{ type: "completed", content: "ok" }], queue: [prompt("hi")], fireTimers: 1, releaseHangs: true });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(h.releases).toHaveLength(1);
+        expect(events(h, "session.affinity_released").map((e) => e.data.reason)).toEqual(["idle"]);
     });
 
     it("a session without a workspace carries no workspace fields and sends no revision", async () => {
