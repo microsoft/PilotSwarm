@@ -11,7 +11,7 @@ import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMe
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
-import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
@@ -507,6 +507,8 @@ export class SessionManager {
     }
     private sessions = new Map<string, ManagedSession>();
     private featureFlags: FeatureFlagCache | null = null;
+    /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
+    private workspaceProvider: WorkspaceProvider | null = null;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -884,6 +886,14 @@ export class SessionManager {
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
     setSessionCatalog(catalog: SessionCatalog | null): void {
         this.sessionCatalog = catalog;
+    }
+
+    setWorkspaceProvider(provider: WorkspaceProvider | null): void {
+        this.workspaceProvider = provider;
+    }
+
+    getWorkspaceProvider(): WorkspaceProvider | null {
+        return this.workspaceProvider;
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {

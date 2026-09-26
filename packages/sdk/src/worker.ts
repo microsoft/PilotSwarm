@@ -34,7 +34,8 @@ import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
 import type { Tool } from "@github/copilot-sdk";
-import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
+import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
+import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
@@ -376,6 +377,8 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+        this.sessionManager.setWorkspaceProvider(options.workspaceProvider
+            ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null));
     }
 
     private _startProviderPolling(): void {
@@ -491,6 +494,15 @@ export class PilotSwarmWorker {
             byPackage: this._agentPackageToolsByPackage,
             staticNames: new Set(this.toolRegistry.keys()),
         });
+    }
+
+    /**
+     * Session workspaces: set the application's provider. PilotSwarm calls it
+     * before every turn of a workspace session. Replaces `workspaceRoots` and
+     * any earlier provider; pass null to remove it.
+     */
+    setWorkspaceProvider(provider: WorkspaceProvider | null): void {
+        this.sessionManager.setWorkspaceProvider(provider);
     }
 
     /** Store full config (with tools/hooks) for a session. */

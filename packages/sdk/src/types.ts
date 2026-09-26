@@ -174,6 +174,78 @@ export interface TurnOptions {
     };
 }
 
+// ─── Session Workspaces ──────────────────────────────────────────
+// See docs/proposals/session-workspaces.md. A workspace is the folder a
+// session uses as its working directory. The application's provider makes it
+// ready on whichever worker runs the next turn.
+
+/** A session's folder: a root (one exported directory) plus a folder inside it. */
+export interface SessionWorkspace {
+    /** Record version. v1 holds one folder. */
+    schema: 1;
+    /** A root name from the provider's `listRoots()`. */
+    root: string;
+    /** Relative to the root. Omitted means the root itself. */
+    folder?: string;
+}
+
+/** Which repo content a session adopts from its checkout. Omitted means none. */
+export interface WorkspaceAdopt {
+    agents: boolean;
+    skills: boolean;
+    instructions: boolean;
+}
+
+/** One exported directory, mounted at the same path on every worker. */
+export interface WorkspaceRoot {
+    name: string;
+    path: string;
+}
+
+export interface WorkspaceAttachRequest {
+    sessionId: string;
+    /** The session tree, for leases. */
+    rootSessionId: string;
+    workspace: SessionWorkspace;
+    revision: number;
+    /** The worker's own ID (its pod name), not the Kubernetes node. */
+    workerNodeId: string;
+    /** Rises every turn. */
+    turnIndex: number;
+}
+
+export type WorkspaceAttachResult =
+    | { ok: true; path: string; adopt?: WorkspaceAdopt }
+    | { ok: false; code: string; message: string; retryAfterMs?: number };
+
+/**
+ * Application code that makes a workspace ready on a worker. PilotSwarm
+ * calls `listRoots` and `ensureAttached` before every turn of a workspace
+ * session, and `release` when the session leaves the worker.
+ *
+ * Rules: give the same workspace the same path on every worker; never make
+ * synchronous file calls on the mount inside a method (use child processes);
+ * an empty mount point is not proof of a mount.
+ */
+export interface WorkspaceProvider {
+    listRoots(): Promise<WorkspaceRoot[]>;
+    ensureAttached(req: WorkspaceAttachRequest): Promise<WorkspaceAttachResult>;
+    /** Best effort. */
+    release?(req: WorkspaceAttachRequest): Promise<void>;
+}
+
+/** Error codes PilotSwarm raises for workspaces. Provider codes pass through unchanged. */
+export const WORKSPACE_ERROR_CODES = {
+    ROOT_UNKNOWN: "WORKSPACE_ROOT_UNKNOWN",
+    PATH_INVALID: "WORKSPACE_PATH_INVALID",
+    FOLDER_MISSING: "WORKSPACE_FOLDER_MISSING",
+    CHECK_TIMEOUT: "WORKSPACE_CHECK_TIMEOUT",
+    ATTACH_TIMEOUT: "WORKSPACE_ATTACH_TIMEOUT",
+    ATTACH_FAILED: "WORKSPACE_ATTACH_FAILED",
+    REVISION_CONFLICT: "WORKSPACE_REVISION_CONFLICT",
+    BUSY: "WORKSPACE_BUSY",
+} as const;
+
 // ─── Session Config ──────────────────────────────────────────────
 
 /** Serializable config — travels through duroxide (no functions). */
@@ -195,6 +267,12 @@ export interface SerializableSessionConfig {
      */
     systemContextInPrompt?: boolean;
     workingDirectory?: string;
+    /**
+     * The session's workspace (session workspaces, orchestration 1.0.80+).
+     * Present only when set; every workspace behavior keys on its presence.
+     * The attach path is per-turn data and is never written to config.
+     */
+    workspace?: SessionWorkspace;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
@@ -852,6 +930,17 @@ export interface PilotSwarmWorkerOptions {
     aadDbUser?: string;
     /** Experimental same-worker native Copilot delegation. Default: PILOTSWARM_NATIVE_SUBAGENTS or off. */
     nativeSubagents?: "off" | "sync";
+
+    /**
+     * Session workspaces: the application's provider. Takes precedence over
+     * `workspaceRoots`. Can also be set later with `setWorkspaceProvider()`.
+     */
+    workspaceProvider?: WorkspaceProvider;
+    /**
+     * Session workspaces without an application provider: fixed roots served
+     * by the built-in provider (`path` = root path + folder, adopts nothing).
+     */
+    workspaceRoots?: WorkspaceRoot[];
 
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
