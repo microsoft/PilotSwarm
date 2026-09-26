@@ -8,7 +8,7 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-function createCtx(values, queue = []) {
+function createCtx(values, queue = [], turns = []) {
     const queuedEvents = [...queue];
     return {
         traceInfo: () => {},
@@ -39,9 +39,26 @@ function createCtx(values, queue = []) {
                 case "dehydrate":
                 case "destroy":
                     return undefined;
-                case "race":
-                    throw new Error("Unexpected race in version upgrade test harness");
+                case "race": {
+                    // Newer handlers race the message queue against a short
+                    // poll timer: a queued message wins, otherwise the poll fires.
+                    const sides = [effect.left, effect.right];
+                    // A turn the handler runs (1.0.79 carries "Continue on <model>.") completes.
+                    const turnIx = sides.findIndex((side) => side?.effect === "session.runTurn");
+                    if (turnIx >= 0) {
+                        turns.push(sides[turnIx].args);
+                        return { index: turnIx, value: { type: "completed", content: "ok" } };
+                    }
+                    const dequeueIx = sides.findIndex((side) => side?.effect === "dequeueEvent");
+                    if (dequeueIx >= 0 && queuedEvents.length > 0) return { index: dequeueIx, value: queuedEvents.shift() };
+                    const timerIx = sides.findIndex((side) => side?.effect === "scheduleTimer" && side.ms <= 1000);
+                    if (timerIx >= 0) return { index: timerIx };
+                    throw new Error(`Unexpected race in version upgrade test harness: ${JSON.stringify(sides)}`);
+                }
                 default:
+                    // Newer handlers call more manager and session methods
+                    // (see the proxies in beforeEach); none of them matter here.
+                    if (/^(manager|session)\./.test(String(effect.effect))) return undefined;
                     throw new Error(`Unexpected effect: ${JSON.stringify(effect)}`);
             }
         },
@@ -56,7 +73,9 @@ async function loadHandler(version) {
         return mod[`durableSessionOrchestration_${fileVersion}`];
     }
     const fileVersion = version.replace(/\./g, "_");
-    const mod = await import(`../../src/orchestration_${fileVersion}.ts`);
+    // Frozen versions are a single file (older) or a folder (1.0.79 and later).
+    const mod = await import(`../../src/orchestration_${fileVersion}.ts`)
+        .catch(() => import(`../../src/orchestration_${fileVersion}/index.ts`));
     return mod[`durableSessionOrchestration_${fileVersion}`];
 }
 
@@ -76,18 +95,24 @@ function driveUntilStop(gen, ctx) {
 
 describe("orchestration version upgrades", () => {
     beforeEach(() => {
-        mockSession = {
+        // Any other method answers with an effect named after it.
+        const answerAny = (target, prefix) => new Proxy(target, {
+            get: (object, prop) => (prop in object ? object[prop] : (...args) => ({ effect: `${prefix}.${String(prop)}`, args })),
+        });
+        mockSession = answerAny({
             checkpoint: vi.fn(() => ({ effect: "checkpoint" })),
             hydrate: vi.fn(() => ({ effect: "hydrate" })),
             dehydrate: vi.fn(() => ({ effect: "dehydrate" })),
             destroy: vi.fn(() => ({ effect: "destroy" })),
-        };
-        mockManager = {
+        }, "session");
+        mockManager = answerAny({
             recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
-        };
+        }, "manager");
     });
 
-    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42"]) {
+    // 1.0.79 is the version frozen when session workspaces opened 1.0.80
+    // (test C4): its sessions carry no config.workspace into 1.0.80.
+    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79"]) {
         it(`upgrades ${sourceVersion} snapshots into the latest orchestration`, async () => {
             const values = new Map();
             const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
@@ -122,13 +147,18 @@ describe("orchestration version upgrades", () => {
             expect(sourceResult.effect.input.sourceOrchestrationVersion).toBe(sourceVersion);
             expect(sourceResult.effect.input.config.model).toBe("github-copilot:gpt-5.4-mini");
 
+            // Test C4: a session from before workspaces carries none into 1.0.80.
+            expect("workspace" in sourceResult.effect.input.config).toBe(false);
+            expect(sourceResult.effect.input.iteration).toBe(0);
+
+            const latestTurns = [];
             const latestCtx = createCtx(values, [
                 JSON.stringify({
                     type: "cmd",
                     cmd: "get_info",
                     id: `get-info-${sourceVersion}`,
                 }),
-            ]);
+            ], latestTurns);
 
             const latestGen = latestHandler(latestCtx, sourceResult.effect.input);
             const latestResult = driveUntilStop(latestGen, latestCtx);
@@ -147,6 +177,14 @@ describe("orchestration version upgrades", () => {
                 },
             });
             expect(latestResult.done).toBe(false);
+            if (sourceVersion === "1.0.79") {
+                // 1.0.79 asks for one turn on the new model; 1.0.80 runs it
+                // with no workspace fields on the wire.
+                expect(latestTurns).toHaveLength(1);
+                expect(latestTurns[0][0]).toMatch(/^Continue on github-copilot:gpt-5\.4-mini\./);
+                const turnMeta = latestTurns[0][3] ?? {};
+                expect("workspaceRevision" in turnMeta || "workspaceNotice" in turnMeta).toBe(false);
+            }
         });
     }
 });

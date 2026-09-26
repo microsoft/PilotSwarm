@@ -14,6 +14,7 @@
  *
  * Run: npx vitest run test/local/repo-workspaces.test.js
  */
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
@@ -32,13 +33,14 @@ const getEnv = useSuiteEnv(import.meta.url);
 const firstLine = (toolResults) => toolResults.join("").trim().split("\n")[0];
 
 /** A fixture, a repo service on it, and the provider and tools a worker loads. */
-async function deployment(t) {
+async function deployment(extra = {}) {
     const fixture = await createGitFixture();
     const service = createRepoService({
         root: fixture.root,
         rootName: "fx",
         repos: { app: { remote: fixture.remote } },
         runGit: (args) => git(args),
+        ...extra,
     });
     const url = await service.listen();
     let workerRef = null;
@@ -181,6 +183,65 @@ describe("reference repo workspaces", () => {
             });
         } finally {
             await d.fixture.setMirrorReadOnly(false).catch(() => {});
+            await d.close();
+        }
+    });
+});
+
+describe("reference repo workspaces on two workers", () => {
+    it("a parent and its child on two workers share a checkout; the child's attach keeps the parent's lock until both entries are dead (R5)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const alive = new Set(["local-a", "local-b"]);
+        const d = await deployment({ isWorkerAlive: (worker) => alive.has(worker) });
+        const saved = [process.env.PILOTSWARM_WORKER_CONCURRENCY, process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY];
+        // One turn slot per worker: while the parent's turn holds one worker,
+        // the child's turn has to run on the other.
+        process.env.PILOTSWARM_WORKER_CONCURRENCY = "1";
+        process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY = "4";
+        try {
+            const parent = scriptTurns([[
+                { tools: [{ name: "bash", args: { command: "touch .git/index.lock && echo locked", description: "take the index lock" } }] },
+                { tools: [{ name: "spawn_agent", args: { task: "R5-CHILD: check the lock" } }] },
+                { tools: [{ name: "bash", args: { command: "sleep 20; echo parent-done", description: "keep the parent's turn running" } }] },
+                { content: "parent finished" },
+            ]]);
+            const child = scriptTurns([[
+                { tools: [{ name: "bash", args: { command: "test -f .git/index.lock && echo lock-present || echo lock-missing", description: "look" } }] },
+                (_body, position) => ({ content: `child:${firstLine(position.toolResults)}` }),
+            ]]);
+            const respond = (body, position) => (position.firstUserText.includes("R5-CHILD") ? child : parent)(body, position);
+            await withScriptedModel(env, { respond, workers: 2, worker: { workspaceProvider: d.provider } }, async ({ client, worker, model, qualifiedModel }) => {
+                d.bind(worker);
+                const tree = randomUUID();
+                const made = await fetch(new URL("/v1/clones", d.url), {
+                    method: "POST", headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ rootSessionId: tree, repo: "app" }),
+                }).then((r) => r.json());
+                const lock = path.join(made.path, ".git", "index.lock");
+                const session = await client.createSession({ sessionId: tree, model: qualifiedModel, workspace: made.workspace });
+                assertEqual(await session.sendAndWait("r5 parent locks, spawns, and keeps working", TIMEOUT), "parent finished");
+
+                const childAnswer = model.sessionRequests("R5-CHILD").find((r) => r.position.step === 1);
+                assert(childAnswer, "the child ran its turn");
+                assertEqual(firstLine(childAnswer.position.toolResults), "lock-present", "the child's attach kept the parent's lock");
+                const entries = d.service.state().leases[made.workspace.folder];
+                const workersSeen = new Set(entries.map((e) => e.workerNodeId));
+                assertEqual(workersSeen.size, 2, `the parent and the child ran on two workers: ${JSON.stringify(entries)}`);
+                assert(fs.existsSync(lock), "the lock is still there while the entries are live");
+
+                // Both workers leave the registry: the next attach in the tree clears the lock.
+                alive.clear();
+                const cleared = await fetch(new URL("/v1/leases", d.url), {
+                    method: "POST", headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ checkout: made.workspace.folder, sessionId: "r5-late", rootSessionId: tree, workerNodeId: "local-c", turnIndex: 0 }),
+                }).then((r) => r.json());
+                assertEqual(JSON.stringify(cleared.removedLocks), JSON.stringify([".git/index.lock"]));
+                assertEqual(fs.existsSync(lock), false);
+            });
+        } finally {
+            const restore = (key, value) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+            restore("PILOTSWARM_WORKER_CONCURRENCY", saved[0]);
+            restore("PILOTSWARM_ORCHESTRATION_CONCURRENCY", saved[1]);
             await d.close();
         }
     });

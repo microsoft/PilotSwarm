@@ -17,9 +17,10 @@ import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 import { scriptTurns, systemText, startScriptedModel } from "../helpers/scripted-model.mjs";
 import { withScriptedModel, registerScriptedProvider, FIXTURE_QUALIFIED_MODEL } from "../helpers/scripted-workers.js";
 import { PilotSwarmClient, PilotSwarmWorker } from "../../src/index.ts";
+import { setWorkspaceCheckTestHook } from "../../src/workspace-check.ts";
 import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
-import { patchSessionStartInput } from "../helpers/pinned-start.mjs";
+import { patchSessionStartInput, pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { createManagementClient } from "../helpers/local-workers.js";
 
 const TIMEOUT = 180_000;
@@ -690,6 +691,185 @@ describe("workspace turn", () => {
             });
         } finally {
             for (const dir of Object.values(dirs)) fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("a session pinned at 1.0.79 replays on a new worker, then a command moves it to 1.0.80 with its state (C4)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const model = await startScriptedModel({ respond: scriptTurns([[{ content: "c4 one" }], [{ content: "continued" }], [{ content: "c4 three" }]]) });
+        const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
+        const workerFor = (workerNodeId) => new PilotSwarmWorker({
+            store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
+            sessionStateDir: env.sessionStateDir, workerNodeId, disableManagementAgents: true, logLevel: "error", modelProvidersPath,
+        });
+        const client = new PilotSwarmClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath });
+        const workerA = workerFor("c4-worker-a");
+        let workerB;
+        try {
+            await workerA.start();
+            await client.start();
+            const sessionId = randomUUID();
+            const pin = pinSessionStartVersion(client, "1.0.79", { sessionId });
+            const session = await client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL });
+            assertEqual(await session.sendAndWait("c4 turn one", TIMEOUT), "c4 one");
+            pin.restore();
+            assertEqual(await sessionOrchestrationVersion(client, sessionId), "1.0.79");
+
+            // A new worker replays the 1.0.79 history for the next message.
+            await workerA.stop();
+            workerB = workerFor("c4-worker-b");
+            await workerB.start();
+            const mgmt = await createManagementClient(env);
+            try {
+                await mgmt.sendCommand(sessionId, { cmd: "set_model", id: `c4-${randomUUID()}`, args: { model: FIXTURE_QUALIFIED_MODEL } });
+            } finally {
+                await mgmt.stop();
+            }
+            const deadline = Date.now() + 90_000;
+            while (!model.sessionRequests("c4 turn one").some((r) => /Continue on /.test(r.position.lastUserText)) && Date.now() < deadline) {
+                await new Promise((r) => setTimeout(r, 250));
+            }
+            assert(model.sessionRequests("c4 turn one").some((r) => /Continue on /.test(r.position.lastUserText)), "the continuation turn ran");
+            const catalog = await createCatalog(env);
+            try {
+                // The continuation's answer is recorded before the next prompt goes in.
+                await waitForEventCount(catalog, sessionId, "assistant.message", 2, 60_000);
+            } finally {
+                await catalog.close?.();
+            }
+            assertEqual(await sessionOrchestrationVersion(client, sessionId), "1.0.80", "the command moved the session to 1.0.80");
+
+            // No execution failed; the conversation and the turn count carried over.
+            const duroxide = client._getDuroxideClient();
+            const instanceId = `session-${sessionId}`;
+            for (const executionId of await duroxide.listExecutions(instanceId)) {
+                const history = await duroxide.readExecutionHistory(instanceId, executionId);
+                const failures = history.filter((event) => /^(Orchestration|Execution)\w*Failed$/.test(event.kind) || /nondetermin/i.test(event.data ?? ""));
+                assertEqual(failures.length, 0, `execution ${executionId}: ${JSON.stringify(failures).slice(0, 400)}`);
+            }
+            assert(!/fail/i.test((await duroxide.getInstanceInfo(instanceId)).status), "the instance is not failed");
+            assertEqual(await session.sendAndWait("c4 turn three", TIMEOUT), "c4 three");
+            const three = model.sessionRequests("c4 turn one").find((r) => r.position.lastUserText.includes("c4 turn three"));
+            assert(three && three.position.turn >= 3, `the same conversation continued on 1.0.80 (turn ${three?.position.turn})`);
+        } finally {
+            await client.stop().catch(() => {});
+            await workerB?.stop().catch(() => {});
+            await workerA.stop().catch(() => {});
+            await model.close();
+        }
+    });
+
+    /** Runs `fn` with the worker's turn and orchestration slots raised, so many turns run at once. */
+    const withConcurrency = async (slots, fn) => {
+        const saved = [process.env.PILOTSWARM_WORKER_CONCURRENCY, process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY];
+        process.env.PILOTSWARM_WORKER_CONCURRENCY = String(slots);
+        process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY = String(slots);
+        try {
+            return await fn();
+        } finally {
+            const restore = (key, value) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+            restore("PILOTSWARM_WORKER_CONCURRENCY", saved[0]);
+            restore("PILOTSWARM_ORCHESTRATION_CONCURRENCY", saved[1]);
+        }
+    };
+
+    it("a hung path check holds that root's sessions; other roots and plain sessions keep running turns (F3, F5)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const rootA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f3a-")));
+        const rootB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f3b-")));
+        for (const dir of [path.join(rootA, "x"), path.join(rootA, "y"), path.join(rootB, "z")]) fs.mkdirSync(dir);
+        // The check of a/x hangs past its deadline and cannot be killed: root a stays hung for 12 s.
+        setWorkspaceCheckTestHook((req) => (req.path === path.join(rootA, "x") ? { sleepMs: 12_000, unkillable: true } : undefined));
+        try {
+            await withConcurrency(8, () => withScriptedModel(env, {
+                respond: pwdEveryTurn,
+                worker: { workspaceRoots: [{ name: "a", path: rootA }, { name: "b", path: rootB }] },
+            }, async ({ client, model, qualifiedModel }) => {
+                const make = (workspace) => client.createSession({ sessionId: randomUUID(), model: qualifiedModel, ...(workspace ? { workspace } : {}) });
+                const [onX, onY, onZ, plain] = await Promise.all([make({ root: "a", folder: "x" }), make({ root: "a", folder: "y" }), make({ root: "b", folder: "z" }), make(null)]);
+                const started = Date.now();
+                await onX.send("f3 hung x");
+                await new Promise((r) => setTimeout(r, 500));
+                await onY.send("f3 queued y");
+                const [z, p] = await Promise.all([onZ.sendAndWait("f3 other root", TIMEOUT), plain.sendAndWait("f3 no workspace", TIMEOUT)]);
+                assertEqual(z, `out:${path.join(rootB, "z")}`);
+                assert(p.startsWith("out:"), p);
+                assert(Date.now() - started < 11_000, `the other root and the plain session answered while root a was hung (${Date.now() - started} ms)`);
+
+                const catalog = await createCatalog(env);
+                try {
+                    for (const session of [onX, onY]) {
+                        const [held] = await waitForEventCount(catalog, session.sessionId, "session.workspace_unavailable", 1, 30_000);
+                        assertEqual(held.data.code, "WORKSPACE_CHECK_TIMEOUT");
+                    }
+                } finally {
+                    await catalog.close?.();
+                }
+                assertEqual(model.sessionRequests().filter((r) => /f3 (hung|queued)/.test(r.position.lastUserText)).length, 0, "no model call for the held sessions");
+            }));
+        } finally {
+            setWorkspaceCheckTestHook(null);
+            await new Promise((r) => setTimeout(r, 12_500)); // let the unkillable check exit before cleanup
+            for (const dir of [rootA, rootB]) fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("ten sessions in ten folders of one root run at once in one CLI process; a slow check delays, a hung one holds the rest (F8)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f8-")));
+        const hungRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f8h-")));
+        const folders = Array.from({ length: 10 }, (_, i) => `f${i}`);
+        for (const folder of folders) {
+            fs.mkdirSync(path.join(root, folder));
+            fs.mkdirSync(path.join(hungRoot, folder));
+        }
+        try {
+            await withConcurrency(24, () => withScriptedModel(env, {
+                respond: pwdEveryTurn,
+                worker: { workspaceRoots: [{ name: "a", path: root }, { name: "h", path: hungRoot }] },
+            }, async ({ client, worker, model, qualifiedModel }) => {
+                const sessions = await Promise.all(folders.map((folder) => client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "a", folder } })));
+                const answers = await Promise.all(sessions.map((session, i) => session.sendAndWait(`f8 turn one ${i}`, TIMEOUT)));
+                answers.forEach((answer, i) => assertEqual(answer, `out:${path.join(root, folders[i])}`));
+                // The client pool (one CopilotClient, so one CLI process, per key): one entry for the root.
+                const workspaceClients = [...worker.sessionManager.clients.keys()].filter((key) => key.includes("\0workspace-root:"));
+                assertEqual(workspaceClients.length, 1, "one CLI process serves the root");
+
+                // A slow but live check (2 s) for one session: the other nine wait and pass.
+                setWorkspaceCheckTestHook((req) => (req.path === path.join(root, "f0") ? { sleepMs: 2_000 } : undefined));
+                await sessions[0].send("f8 slow 0");
+                await new Promise((r) => setTimeout(r, 300));
+                const slowAnswers = await Promise.all(sessions.slice(1).map((session, i) => session.sendAndWait(`f8 slow ${i + 1}`, TIMEOUT)));
+                slowAnswers.forEach((answer, i) => assertEqual(answer, `out:${path.join(root, folders[i + 1])}`));
+                assertEqual(await sessions[0].wait(TIMEOUT), `out:${path.join(root, "f0")}`);
+
+                // A hung check on the other root: the nine queued behind it fail within about 5 s and are held.
+                const onHung = await Promise.all(folders.map((folder) => client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "h", folder } })));
+                setWorkspaceCheckTestHook((req) => (req.path === path.join(hungRoot, "f0") ? { sleepMs: 15_000, unkillable: true } : undefined));
+                await onHung[0].send("f8 hung 0");
+                await new Promise((r) => setTimeout(r, 300));
+                const started = Date.now();
+                await Promise.all(onHung.slice(1).map((session, i) => session.send(`f8 hung ${i + 1}`)));
+                const catalog = await createCatalog(env);
+                try {
+                    for (const session of onHung) {
+                        const [held] = await waitForEventCount(catalog, session.sessionId, "session.workspace_unavailable", 1, 30_000);
+                        assertEqual(held.data.code, "WORKSPACE_CHECK_TIMEOUT");
+                    }
+                    assert(Date.now() - started < 12_000, `the nine were held within about 5 s of the hung check (${Date.now() - started} ms)`);
+                    for (const session of sessions) {
+                        assertEqual((await catalog.getSessionEvents(session.sessionId)).filter((e) => e.eventType === "session.workspace_unavailable").length, 0,
+                            "the slow check held nobody on root a");
+                    }
+                } finally {
+                    await catalog.close?.();
+                }
+                assertEqual(model.sessionRequests().filter((r) => /f8 hung/.test(r.position.lastUserText)).length, 0, "no model call on the hung root");
+            }));
+        } finally {
+            setWorkspaceCheckTestHook(null);
+            await new Promise((r) => setTimeout(r, 15_500)); // let the unkillable check exit before cleanup
+            for (const dir of [root, hungRoot]) fs.rmSync(dir, { recursive: true, force: true });
         }
     });
 
