@@ -502,7 +502,7 @@ keep writing.
 | `.github/agents/*.agent.md` | Merged into `customAgents`. Limits: 30 agents, 64 KB each. Agents past the 30th, and any file over 64 KB, are skipped and listed in `session.workspace_adopted.skipped`. |
 | `.github/skills/<name>/SKILL.md` | Added to `skillDirectories` |
 | `AGENTS.md`, `.github/copilot-instructions.md` and similar instruction files | Loaded by the CLI when `skipCustomInstructions` is false |
-| `.vscode/mcp.json`, `.mcp.json`, an agent's `mcp-servers` | Never |
+| `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, an agent's `mcp-servers` | Never. The CLI starts repo MCP servers only with discovery on and a trusted folder; PilotSwarm sets neither. |
 | `.github/hooks/*` | Never. `enableFileHooks: false` on every create and resume. Verified: without it the CLI runs repo hook commands on every prompt. |
 
 Filters on each repo agent:
@@ -1048,18 +1048,21 @@ call a real model. The scripted fake endpoint
 (`packages/sdk/test/helpers/native-copilot-provider.mjs`) is used only in
 tests that drive `SessionManager` directly. These helpers close that gap:
 
-| Helper | What it does |
-|---|---|
-| Scripted-model harness | Registers the fake endpoint as the model provider for one or two full workers with PostgreSQL. Details below. |
-| Request normalizer | For C1. Compares the system message and the tools array only, after masking the CLI-owned lines. |
-| Differential capture | For C1 and C3. Captures at the merge-base and on the branch in one run, then diffs. Details below. |
-| C1 mutation patch | For the one-time proof that C1 can fail. The differential script applies a temporary patch that declares the `spawn_agent` `workspace` parameter for every session, runs C1, and expects a non-empty diff. The patch is never committed. |
-| Pinned 1.0.79 start | For C4. The harness starts one session with the raw Duroxide client's `startOrchestrationVersioned(..., "1.0.79")`, because PilotSwarm's client hard-codes the latest version. The frozen handler is still registered by `worker.ts`, so no recorded history is needed and nothing goes stale. |
-| `createGitFixture()` | Builds a small git setup in a temp folder. Details below. |
-| Token-protected git server | A small Node HTTP server in front of `git http-backend`. It answers 401 with `WWW-Authenticate: Basic` and accepts only the fake minter's token as the password. |
-| Fake `WorkspaceProvider` | Records every call with its order. Plays back scripted outcomes: ok, fail N times, hang, or a given error code. |
-| Hung-check hook | A test-only switch that makes PilotSwarm's path-check process sleep. A local `stat` never hangs, so this is the only way to test F3 and F5. |
-| Schedule override | A test-only orchestration input that shortens the retry schedule, so F2 and F4 run in seconds. |
+| Helper | What it does | File (under `packages/sdk/`) |
+|---|---|---|
+| Scripted-model harness | Registers the fake endpoint as the model provider for one or two full workers with PostgreSQL. Details below. | `test/helpers/scripted-model.mjs`, `test/helpers/scripted-workers.js` |
+| Request normalizer | For C1. Compares the system message and the tools array only, after masking the CLI-owned lines. | `test/helpers/request-normalizer.mjs` |
+| Differential capture | For C1 and C3. Captures at the merge-base and on the branch in one run, then diffs. Details below. | `scripts/differential-capture.mjs` (`npm run test:differential`), `test/local/request-capture.test.js`, `test/helpers/fingerprint-capture.mjs` |
+| C1 mutation patch | Proves that C1 and C3 can fail. `npm run test:differential:mutate` compares the merge-base with a copy of it where `spawn_agent` declares a `workspace` parameter for every session, and passes only if every capture differs. The patch lives only in the script. | `scripts/differential-capture.mjs --mutate` |
+| Pinned-version start | For C4. Wraps the raw Duroxide client's `startOrchestrationVersioned` so the next session starts at a given frozen version, because PilotSwarm's client hard-codes the latest version. The frozen handler is still registered by `worker.ts`, so no recorded history is needed and nothing goes stale. | `test/helpers/pinned-start.mjs` |
+| `createGitFixture()` | Builds a small git setup in a temp folder. Details below. | `test/helpers/git-fixture.mjs` |
+| Token-protected git server | A small Node HTTP server in front of `git http-backend`. It answers 401 with `WWW-Authenticate: Basic` and accepts only the fake minter's token as the password. | `test/helpers/git-token-server.mjs` |
+| Fake `WorkspaceProvider` | Records every call with its order. Plays back scripted outcomes: ok, fail N times, hang, or a given error code. | `test/helpers/fake-workspace-provider.mjs` |
+| Hung-check hook | A test-only switch that makes PilotSwarm's path-check process sleep. A local `stat` never hangs, so this is the only way to test F3 and F5. | Phase 2, in `workspace-check.ts` |
+| Schedule override | A test-only orchestration input that shortens the retry schedule, so F2 and F4 run in seconds. | Phase 2, in orchestration 1.0.80 |
+
+The last two switch code that does not exist yet, so they are built in phase 2
+with that code.
 
 **Scripted-model harness**
 
@@ -1072,10 +1075,14 @@ tests that drive `SessionManager` directly. These helpers close that gap:
 
 - The normalizer replaces the CLI-owned lines (`Current working directory`,
   `Git repository root`, `Available tools`, `Session folder`) with fixed
-  tokens. It never sorts or reformats the tools array.
+  tokens. It never sorts or reformats the tools array. Two runs of the same
+  code, in two different folders, differ only in those four lines.
 - The differential script checks out `git merge-base HEAD origin/main` in a
-  worktree, builds it, and runs the same capture there and on the branch in
-  one run. No checked-in golden. It prints a unified diff on failure.
+  worktree, copies the branch's capture files into it so both sides capture
+  the same way, builds it, and runs the same capture there and on the branch
+  in one run. No checked-in golden. It prints a unified diff on failure.
+- Each capture runs once with native tasks off and once with them on, and
+  checks that the CLI's `task` tool is present only in the second run.
 - `GOLDEN_SURFACE` in `test/local/orchestration-schedule-fingerprint.test.js`
   changes with the 1.0.80 bump (release and check activities) and is
   regenerated after the freeze. C2 compares drive sequences, not that surface.
@@ -1089,8 +1096,10 @@ tests that drive `SessionManager` directly. These helpers close that gap:
 - Session clones made with `clone --shared`, with the alternates rewritten to
   a relative path.
 - Fixture content: `.github/agents`, `.github/skills`, `.github/hooks`,
-  `AGENTS.md`, `.vscode/mcp.json`. The hook and the MCP command each create a
-  marker file.
+  `AGENTS.md`, and an MCP server in each of `.mcp.json`, `.github/mcp.json`
+  and `.vscode/mcp.json`. Each hook and each MCP server appends its name to a
+  marker file, so a test can tell which one ran. The fixture's own tests run
+  every command once to prove it can create its marker.
 - When a test needs an upstream rewrite, it runs
   `git -C remote.git update-ref refs/heads/<branch> <old-commit>`, which runs
   no `pre-receive` hook. The token-protected HTTP path never bypasses the
@@ -1252,6 +1261,8 @@ The existing kill harness covers crashes mid-turn (M3).
 | `.github/hooks/*` in the cwd | Commands run on every prompt unless `enableFileHooks: false` |
 | Git edits, commits and branch switches | System prompt unchanged, so the prompt cache holds |
 | Discovery on | Repo agents and skills found; with a trusted folder, repo MCP servers also start |
+| Repo MCP config files | The CLI reads `.mcp.json`, or `.github/mcp.json` when there is no `.mcp.json`. It no longer reads `.vscode/mcp.json`. It starts those servers only when discovery is on and the folder is trusted (`COPILOT_ALLOW_ALL=true` or a saved trust entry). With either missing, none start. |
+| `.github/hooks/*.json` format | `{ "version": 1, "hooks": { "<event>": [ { "type": "command", "bash": "...", "timeoutSec": 10 } ] } }`. `sessionStart` and `userPromptSubmitted` both fire. Version 2, or `cmd` in place of `bash`, runs nothing. |
 | Discovery on, `task(agent_type=<repo agent>)` with the SDK's bundled runtime (`RuntimeConnection.forStdio()` in `copilot-client.ts`) | The agent is listed but fails to launch: `Standalone server does not support session effect custom_agent_prompt`. The same agent passed through `customAgents` launches. The full CLI binary as the runtime does launch discovered agents. |
 | Explicit `customAgents` plus discovery | Discovered agents are dropped |
 | `skillDirectories` pointing at the repo | Skills found, with discovery off |
@@ -1279,8 +1290,8 @@ calls after the acknowledgement, in the same turn.
 
 | Check | Result |
 |---|---|
-| Forbidden mirror commands after an upstream force push | `git prune`, `git gc --prune=now`, `git repack -a -d`: clone `fsck` broken |
-| Allowed mirror commands | `git gc`, `git maintenance run`, `git repack -A -d`, `git repack --cruft -d`: clone clean |
+| Forbidden mirror commands after an upstream force push | Clone `fsck` broken: `git prune --expire=now` when the unreachable objects are loose, `git repack -a -d` when they are packed, `git gc --prune=now` in both cases |
+| Allowed mirror commands | `git gc`, `git maintenance run`, `git repack -A -d`, `git repack --cruft -d`, `git repack -a -d -k`: clone clean, loose or packed |
 | Commit in a clone whose alternates store is read-only | Works, `fsck` clean |
 
 **Still to verify**
@@ -1314,7 +1325,7 @@ Paths are relative to `packages/sdk/src` unless stated; `test/helpers/` is
 | New `workspace-check.ts` | The folder-text check and the path check; out-of-process checks, one per root at a time; the hung-check hook |
 | New `workspace-repo-agents.ts` | Read, filter and hash repo agents and skills |
 | `session-manager.ts` | Provider call; path, adopt flags and agent hash in the fingerprint; the fingerprint input builder exported as a pure function for C3; pool key = (credential, root) for workspace sessions (`ensureClientForKey` parses the key back into a token, so the root part needs its own separator and a parser change; record the composite key in `sessionClientKeys` so the existing key-change teardown recycles the warm session); `customAgents` and `skillDirectories` merge; `enableFileHooks: false`; the native deny hook |
-| `managed-session.ts` | `get_session_workspace`, `set_session_workspace`, busy check through `rpc.tasks.list`, the acknowledgement, `set_workspace` in the terminal actions, cancel on the wall-clock cap |
+| `managed-session.ts` | `get_session_workspace`, `set_session_workspace`, busy check through `rpc.tasks.list`, the acknowledgement, `set_workspace` in the terminal actions, cancel on the wall-clock cap. The `spawn_agent` `workspace` parameter goes in both declarations: the model sees only the `subAgentToolDefs()` one, and the `runTurn()` one supplies the handler (checked with the differential run) |
 | `native-subagents.ts`, `native-task-observer.ts` | Allowed `agent_type` set and per-agent tool allowlist extended for adopted repo agents; shell rows no longer filtered out where the busy check and release need them |
 | `session-proxy.ts` | `releaseWorkspace` activity, `checkWorkspace` activity, `destroySession` extension, child workspace, attachments and sender in the held-prompt wire |
 | `orchestration/` (1.0.80) | Set and clear commands, results, held prompts with `gate`, `workspace_retry` timer, the budget wake as a `[SYSTEM: ...]` prompt, release inside `releaseAffinity` (workspace sessions only), notes, events, the new input fields in `buildContinueInput` |
@@ -1329,8 +1340,8 @@ Paths are relative to `packages/sdk/src` unless stated; `test/helpers/` is
 
 | Phase | Scope | Done when |
 |---|---|---|
-| 1. Test infrastructure | The helpers in section 9 | The helpers run in the local suite; C1 shows an empty diff on unchanged code and a non-empty diff under the mutation patch |
-| 2. PilotSwarm core | Section 4, orchestration 1.0.80, APIs, portal and TUI, the module hook | C, B, F, M, A, R and the local G tests pass. C1–C6 prove that sessions without a workspace are unchanged. |
+| 1. Test infrastructure | The helpers in section 9, except the hung-check hook and the schedule override | The helpers run in the local suite; C1 shows an empty diff on unchanged code and a non-empty diff under the mutation patch |
+| 2. PilotSwarm core | Section 4, orchestration 1.0.80, APIs, portal and TUI, the module hook, the hung-check hook and the schedule override | C, B, F, M, A, R and the local G tests pass. C1–C6 prove that sessions without a workspace are unchanged. |
 | 3. Reference deployment | Section 12.1, in the release environment | Q1–Q5, Q8, G3, G4 and P1–P4 pass there, on a user pool of at least two nodes |
 | 4. Downstream adoption | A downstream deployment copies phase 3 (section 12.2) | Its own Q6 and Q7 pass |
 
