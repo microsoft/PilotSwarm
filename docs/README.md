@@ -65,3 +65,5 @@ Building **on** PilotSwarm, deploying it, and contributing **to** it.
 **Design records** (not onboarding material): [proposals](./proposals/) — open designs ·
 [proposals-impl](./proposals-impl/README.md) — implemented designs, kept as history ·
 [bugreports](./bugreports/) · [_archive](./_archive/) — retired point-in-time docs.
+
+- [Session workspaces](./proposals/session-workspaces.md) — proposed: an agent works in a git checkout on a separate repo pod, as on a dev box, across worker moves, with repo-native agents and a test plan.
