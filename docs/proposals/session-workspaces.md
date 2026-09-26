@@ -9,18 +9,136 @@ uses its native tools and native git as if it were on a developer's machine.
 The session can move between workers and keep both its conversation and its
 files. Sub-agents can work in the same checkout or in another repo.
 
-**In short**
+## High-level design
 
-- The application keeps repos on a repo pod and exports them over NFS.
-- PilotSwarm asks an application hook, `ensureAttached`, to make a session's
-  folder ready on whichever worker runs the next turn. Then it points the
-  Copilot CLI at that folder.
-- NFS keeps one copy of the data, so a session sees every change after any
-  move.
-- The session also picks up the agents and skills the repo ships in
-  `.github/`. It never runs the repo's MCP servers or hooks.
-- The change is additive. Sessions without a workspace behave exactly as
-  they do today, and tests prove it.
+**The problem.** A PilotSwarm session does not stay on one machine. Each
+turn runs on a worker: the PilotSwarm process in one agent pod. A later turn
+may run on a different worker. PilotSwarm carries the conversation from
+worker to worker, but not a working folder, and workers share no disk. So an
+agent cannot keep a git checkout and work in it with its native tools, the
+way a developer does on a dev box.
+
+**The solution.** Keep each session's checkout on a repo pod. Every worker
+reaches it over NFS, a network file system. Just before each turn, the
+worker that runs the turn makes sure the folder is mounted.
+
+```mermaid
+flowchart LR
+  subgraph AP["Agent pods (many)"]
+    W1["Worker 1<br/>model loop + Copilot CLI"]
+    W2["Worker 2"]
+  end
+  subgraph RP["Repo pod (application)"]
+    CO[("session checkouts")]
+    MI[("git mirrors")]
+  end
+  GS["Git server<br/>GitHub or Azure DevOps"]
+  W1 -- "NFS: the checkout is the agent's folder" --> CO
+  W2 -. "NFS: same files after a move" .-> CO
+  CO -. "borrow objects" .-> MI
+  MI -- "fetch" --> GS
+  W1 -- "git push" --> GS
+```
+
+The main ideas:
+
+- **A workspace** is a session's folder on the NFS export: a root (one
+  exported directory, such as `/ws/a`) plus a folder inside it.
+- **One checkout per session tree.** A session tree is a root session and
+  its children. The repo pod keeps a mirror of each repo and makes one
+  `git clone --shared` per tree. The clone has its own branches, index and
+  stash. It borrows git objects from the mirror, so it uses little disk.
+- **Mount on demand.** Before each turn, PilotSwarm calls the application's
+  workspace provider, a module loaded into the worker, and asks it to make
+  the folder ready on this worker (`ensureAttached`).
+- **One copy of the files.** The files live only on the repo pod. A session
+  that moves to another worker, and back, always sees the latest files.
+- **Dev-box git.** The agent uses its native tools and real git. It pushes
+  with the deployment's git identity. The git servers enforce the rules,
+  such as protected branches.
+- **Repo agents.** If the provider allows it, the session also uses the
+  agents, skills and instructions the repo ships. Repo hooks and repo MCP
+  servers never run.
+- **Scale.** One repo pod serves many repos and sessions. The target is
+  about 100 sessions at once. A deployment may run several repo pods.
+
+**One turn**
+
+```text
+On the worker that runs the turn:
+1. Load the newest conversation from the database (as today).
+2. Call ensureAttached. The provider makes sure the export is mounted on
+   this node, checks the folder, and records that this worker now holds the
+   session.
+3. Check the path: it exists, it is a folder, and it stays inside the export.
+4. If the provider allows it, add the repo's agents, skills and
+   instructions to the session.
+5. Start or resume the Copilot CLI with the folder as its working directory.
+6. The model runs the turn.
+
+If step 2 or 3 fails, the model is not called. The prompt is held, the
+session shows "waiting", and PilotSwarm retries later. After two failures
+on one worker, the retry may go to another worker.
+```
+
+**A move to another worker, and back**
+
+```text
+The session is pinned to worker 1. The pin ends, for example, after 30
+minutes with no turn, or when a long wait starts.
+1. Worker 1 stops the session's background shells and tasks, drops the
+   session from memory, and tells the provider it left (release).
+2. PilotSwarm removes the pin. Any worker may run the next turn.
+3. Worker 2 runs the next turn with the steps above. It sees the same
+   files, because there is only one copy.
+4. A later turn back on worker 1 works the same way. Its mount is still
+   there, and it sees every change made on worker 2.
+```
+
+Step 1 matters. Without it, a shell left running on worker 1 would keep
+writing to the checkout after the session moved.
+
+**Setting a workspace**
+
+| Who | How |
+|---|---|
+| Whoever creates the session | `createSession({ workspace })` |
+| The agent | The tool `set_session_workspace`. The new folder takes effect in a new turn that starts at once. Every other tool call in the current turn is refused, so nothing runs in the old folder by mistake. |
+| The owner, an admin or the app | `setSessionWorkspace`, through the client, the Web API or MCP |
+| A parent agent | `spawn_agent({ workspace })`. Leave it out to share the parent's checkout. Pass another folder to work in another repo. Pass `null` for no workspace. |
+
+**Who owns what**
+
+| Owner | Owns |
+|---|---|
+| PilotSwarm core | The session's workspace. The turn steps above. The release when a session leaves a worker. Held prompts. Merging repo agents and skills into the session. The tools, APIs, portal and TUI. It has no git, NFS, Kubernetes or cloud code. |
+| The application | The repo service on the repo pod: mirrors, fetches, session checkouts, cleanup, and leases (which session and worker hold each checkout). The provider module: mount requests, checks, and which repo content to adopt. |
+| The deployment | The repo pod's NFS server and internal load balancer. The attacher, a helper on each agent node that mounts the export. Git and a git credential helper in the worker image. The rules on the git servers. |
+
+**What does not change**
+
+- A session without a workspace gets the same tools and prompt, and runs
+  the same orchestration steps, as today. Only sessions that have a
+  workspace, or whose agent asks for the workspace tool, see anything new.
+  Tests C1 to C6 prove this, so there is no feature flag.
+- Existing repo tools and repo caches keep working as they are. Workspaces
+  use their own repo pod.
+
+**Main choices**
+
+| Chosen | Instead of | Why |
+|---|---|---|
+| Mount on demand, through the provider | Mounts at pod start, plus routing each session to a worker that has its mount | Any worker can run any session. The application keeps its own mount and lease logic. |
+| A clone per session tree | Git worktrees of one shared repo | Worktrees share branches and stash. Two sessions could not both check out `main`, and one could pop the other's stash. |
+| Rules on the git servers | A guard in the agent's tools | Real git in a shell goes around any tool-level guard. |
+
+The work ships in four phases (section 12): test tools, PilotSwarm core, a
+reference deployment in the release environment that uses the public
+PilotSwarm repo, and adoption by a downstream deployment.
+
+For details, see section 3 (the parts), 4 (PilotSwarm), 5 (the repo pod,
+NFS, leases and git credentials), 6 (step-by-step diagrams) and 7 (what
+still differs from a dev box).
 
 ## Contents
 
