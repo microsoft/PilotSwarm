@@ -863,6 +863,13 @@ ensureAttached(req):
 release(req): DELETE the caller's entry. The clone stays owned by its tree until it is deleted.
 ```
 
+The reference provider's own error codes, which PilotSwarm passes through:
+`WORKSPACE_NOT_MOUNTED` (no marker), `WORKSPACE_STALE_MOUNT` (`ESTALE`: a
+remount is needed), `WORKSPACE_ATTACH_TIMEOUT` (the marker check hung),
+`WORKSPACE_ATTACH_FAILED` (the repo service did not answer), and from the
+repo service `WORKSPACE_IN_USE` and `WORKSPACE_FOLDER_MISSING` (no clone
+record). Every one except the last two carries `retryAfterMs`.
+
 Lease rules, kept by the repo service and not on the export:
 
 - One lease per checkout, keyed by the clone's folder
@@ -1236,11 +1243,11 @@ The existing kill harness covers crashes mid-turn (M3).
 
 | ID | Level | Required result |
 |---|---|---|
-| R1 | L | A second tree calling `ensureAttached` on tree A's checkout gets `WORKSPACE_IN_USE` while A holds a live entry and after A's idle release removed every entry; a child of tree A attaches; after tree A ends and `DELETE /v1/clones` runs, the second tree succeeds |
+| R1 | L | A second tree calling `ensureAttached` on tree A's checkout gets `WORKSPACE_IN_USE` while A holds a live entry and after A's idle release removed every entry; a child of tree A attaches; cleanup (`DELETE /v1/clones`) is refused while any entry is live; after it runs, the second tree is no longer refused as "in use" (the checkout is gone: `WORKSPACE_FOLDER_MISSING`) and makes its own clone |
 | R2 | L | Deleting the bound folder makes the next turn fail its path check with `WORKSPACE_FOLDER_MISSING`: no model call, the prompt is held, `session.workspace_unavailable` is emitted. Recreating the folder and calling `retrySessionWorkspace` runs the held prompt exactly once. Cleanup refuses a checkout with a live lease entry. |
 | R3 | L | Two external setters racing on one `expectedRevision`: one wins, one gets `WORKSPACE_REVISION_CONFLICT`. The revision rises by exactly one. |
 | R4 | L | The fake provider drops root B after start-up: `set_session_workspace` and `spawn_agent` reject B with `WORKSPACE_ROOT_UNKNOWN`; a session created with root B is held with `WORKSPACE_ROOT_UNKNOWN` on its first turn; a session already on B is held with `WORKSPACE_ROOT_UNKNOWN` and its held prompt runs once when B returns. A root C added after start-up is usable without a worker restart. |
-| R5 | W | A parent on W1 and its child on W2 run turns at the same time in one checkout; the child's attach does not remove the parent's `.git/index.lock`, and locks are removed only after both entries are dead |
+| R5 | U, W | A parent on W1 and its child on W2 run turns at the same time in one checkout; the child's attach does not remove the parent's `.git/index.lock`, and locks are removed only after both entries are dead. U: the repo service's lease rules with two entries and a worker registry the test controls. W: the same with two real workers. |
 
 ### Git dev-box
 
@@ -1425,7 +1432,7 @@ deploy/providers/azure/gitops/worker/components/workspaces/
     attacher DaemonSet (privileged, hostNetwork, Bidirectional hostPath /mnt/ps)
     worker patch: hostPath /mnt/ps at /ws (HostToContainer), the attacher socket,
       terminationGracePeriodSeconds 90,
-      PILOTSWARM_EXTENSION_MODULES=/app/examples/repo-workspaces/index.js
+      PILOTSWARM_EXTENSION_MODULES=/app/examples/repo-workspaces/index.mjs
         (comma-separated module paths; worker.js imports each before worker.start()
          and calls its register(worker)),
       REPO_SERVICE_URL, ATTACHER_SOCKET=/run/pilotswarm-attacher/sock
@@ -1438,11 +1445,14 @@ deploy/scripts/test/services-manifest.test.mjs
     overlay for the worker, runAll skips the repo-cache service when false, and the worker
     bicep param follows the same key; rollout waits on a StatefulSet; the allSequence
     assertion gains repo-cache
-examples/repo-workspaces/                        maintained sample
-    index.js    register(worker): setWorkspaceProvider + registerTools
-    provider/   attach through the socket, marker check, leases through the repo service, adopt policy
-    tools/      create, list and remove session clones through the repo service
-    agents/     repo-coder.agent.md, loaded through PLUGIN_DIRS
+examples/repo-workspaces/                        maintained sample (built in phase 2, local version)
+    index.mjs              register(worker): setWorkspaceProvider + registerTools
+    provider.mjs           marker check, leases through the repo service, adopt from the repo config;
+                           phase 3 adds the attacher socket (the attach option)
+    tools.mjs              create, list and remove session clones through the repo service
+    repo-service.mjs       the repo service: clones, leases, stale locks, maintenance allowlist, tokens
+    credential-helper.mjs  the per-clone git credential helper
+    agents/                repo-coder.agent.md, loaded through PLUGIN_DIRS (phase 3)
     README.md   how to copy the pattern
 ```
 

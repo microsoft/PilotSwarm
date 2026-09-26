@@ -594,6 +594,105 @@ describe("workspace turn", () => {
         }
     });
 
+    it("a deleted folder holds the next prompt with no model call; retry now after it is back runs it once (R2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-r2-")));
+        const folder = path.join(root, "repo-x");
+        fs.mkdirSync(folder);
+        try {
+            await withScriptedModel(env, { respond: pwdEveryTurn, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                // A long retry schedule: only "retry now" can run the held prompt in time.
+                const patch = patchSessionStartInput(client, (input) => ({ ...input, workspaceRetryScheduleMs: [600_000] }), { sessionId });
+                const mgmt = await createManagementClient(env);
+                const catalog = await createCatalog(env);
+                try {
+                    const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                    assertEqual(await session.sendAndWait("r2 turn one", TIMEOUT), `out:${folder}`);
+                    fs.rmSync(folder, { recursive: true, force: true });
+                    await session.send("r2 held turn");
+                    const [held] = await waitForEventCount(catalog, sessionId, "session.workspace_unavailable", 1, 60_000);
+                    assertEqual(held.data.code, "WORKSPACE_FOLDER_MISSING");
+                    assertEqual(model.sessionRequests().filter((r) => r.position.lastUserText.includes("r2 held turn")).length, 0, "no model call while held");
+                    assertEqual((await mgmt.getSessionWorkspace(sessionId)).status, "unavailable");
+
+                    fs.mkdirSync(folder);
+                    await mgmt.retrySessionWorkspace(sessionId);
+                    assertEqual(await session.wait(TIMEOUT), `out:${folder}`);
+                    const ran = model.sessionRequests().filter((r) => r.position.lastUserText.includes("r2 held turn") && r.position.step === 0);
+                    assertEqual(ran.length, 1, "the held prompt ran exactly once");
+                    assertEqual((await mgmt.getSessionWorkspace(sessionId)).status, "ready");
+                } finally {
+                    patch.restore();
+                    await catalog.close?.();
+                    await mgmt.stop();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("a root the provider drops holds its sessions and is refused by the agent's tools; it and a new root work when listed again (R4)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const dirs = Object.fromEntries(["a", "b", "c"].map((name) => {
+            const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `ps-ws-r4-${name}-`)));
+            fs.mkdirSync(path.join(dir, "repo"));
+            return [name, dir];
+        }));
+        const rootsOf = (...names) => names.map((name) => ({ name, path: dirs[name] }));
+        const provider = createFakeWorkspaceProvider({ roots: rootsOf("a", "b") });
+        const agentScript = scriptTurns([[
+            { tools: [
+                { name: "set_session_workspace", args: { root: "b", folder: "repo" } },
+                { name: "spawn_agent", args: { task: "R4-CHILD: never runs", workspace: { root: "b", folder: "repo" } } },
+            ] },
+            (_body, position) => ({ content: `results:${JSON.stringify(position.toolResults)}` }),
+        ]]);
+        const respond = (body, position) => (position.firstUserText.includes("r4 agent") ? agentScript : pwdEveryTurn)(body, position);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, model, qualifiedModel }) => {
+                const patch = patchSessionStartInput(client, (input) => ({ ...input, workspaceRetryScheduleMs: [300, 300, 300] }));
+                const catalog = await createCatalog(env);
+                try {
+                    const onB = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "b", folder: "repo" } });
+                    assertEqual(await onB.sendAndWait("r4 on b", TIMEOUT), `out:${path.join(dirs.b, "repo")}`);
+
+                    provider.setRoots(rootsOf("a"));
+                    await onB.send("r4 held on b");
+                    const newOnB = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "b", folder: "repo" } });
+                    await newOnB.send("r4 new on b");
+                    for (const id of [onB.sessionId, newOnB.sessionId]) {
+                        const [held] = await waitForEventCount(catalog, id, "session.workspace_unavailable", 1, 60_000);
+                        assertEqual(held.data.code, "WORKSPACE_ROOT_UNKNOWN");
+                    }
+
+                    const agent = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "a", folder: "repo" } });
+                    const answer = await agent.sendAndWait("r4 agent tries root b", TIMEOUT);
+                    const results = JSON.parse(answer.slice("results:".length));
+                    assertEqual(results.length, 2);
+                    assert(results.every((text) => text.includes("WORKSPACE_ROOT_UNKNOWN")), `both refuse root b: ${answer}`);
+                    assertEqual(model.sessionRequests("R4-CHILD").length, 0, "no child was made");
+
+                    // B comes back and C is new: no worker restart.
+                    provider.setRoots(rootsOf("a", "b", "c"));
+                    assertEqual(await onB.wait(TIMEOUT), `out:${path.join(dirs.b, "repo")}`);
+                    assertEqual(await newOnB.wait(TIMEOUT), `out:${path.join(dirs.b, "repo")}`);
+                    for (const text of ["r4 held on b", "r4 new on b"]) {
+                        assertEqual(model.sessionRequests().filter((r) => r.position.lastUserText.includes(text) && r.position.step === 0).length, 1, `${text} ran once`);
+                    }
+                    const onC = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "c", folder: "repo" } });
+                    assertEqual(await onC.sendAndWait("r4 on c", TIMEOUT), `out:${path.join(dirs.c, "repo")}`);
+                } finally {
+                    patch.restore();
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            for (const dir of Object.values(dirs)) fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it("two setters racing on one revision: one wins, one gets WORKSPACE_REVISION_CONFLICT, the revision rises by one (R3)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-r3-")));
