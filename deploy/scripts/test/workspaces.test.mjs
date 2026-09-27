@@ -230,6 +230,28 @@ test("rendered repo-cache: one image in all three containers, the exports mounte
   assert.ok(objects["NetworkPolicy/repo-cache"]);
 });
 
+test("the repo pod lands on the repocache pool, and only it tolerates that pool's taint", (t) => {
+  // aks.bicep declares the pool; the repo pod must select its label and
+  // tolerate its taint, and the attacher must not land there (no workers).
+  const bicep = readFileSync(join(REPO_ROOT, "deploy/providers/azure/services/base-infra/bicep/aks.bicep"), "utf8");
+  const pool = bicep.slice(bicep.indexOf("name: 'repocache'"));
+  const label = /nodeLabels: \{\s*'([^']+)': '([^']+)'/.exec(pool);
+  const taint = /nodeTaints: \[\s*'([^=]+)=([^:]+):(\w+)'/.exec(pool);
+  assert.ok(label && taint, "aks.bicep declares the repocache pool's label and taint");
+
+  const repo = stage(t, "repo-cache", { IMAGE: "stub.azurecr.io/pilotswarm-repo-cache:t1" });
+  const r = render(t, join(repo, "overlays/default"));
+  if (!r) return;
+  const spec = r["Deployment/repo-cache"].spec.template.spec;
+  assert.equal(spec.nodeSelector[label[1]], label[2]);
+  assert.ok(spec.tolerations.some((tol) => tol.key === taint[1] && tol.value === taint[2] && tol.effect === taint[3]));
+
+  const worker = stage(t, "worker", stampEnv({ WORKSPACES_ENABLED: "true" }));
+  const w = render(t, join(worker, "overlays/default"));
+  const attacherTolerations = w["DaemonSet/pilotswarm-attacher"].spec.template.spec.tolerations ?? [];
+  assert.ok(!attacherTolerations.some((tol) => tol.key === taint[1] || tol.operator === "Exists" && !tol.key));
+});
+
 test("the pieces agree: roots, exports, paths, service address and sample files", (t) => {
   const worker = stage(t, "worker", stampEnv({ WORKSPACES_ENABLED: "true" }));
   const repo = stage(t, "repo-cache", { IMAGE: "stub.azurecr.io/pilotswarm-repo-cache:t1" });

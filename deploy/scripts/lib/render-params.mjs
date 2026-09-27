@@ -11,8 +11,19 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deploysPostgres } from "./database-env.mjs";
+import { workspacesEnabled } from "./workspaces.mjs";
+import { userPoolMinCount } from "./aks-env.mjs";
 
 const PLACEHOLDER_RE = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
+
+// Keys rendered unquoted as a JSON boolean or number: each is normalized and
+// checked here, so a value like " TRUE " or "2x" fails with its own message
+// instead of as broken JSON.
+const NORMALIZED_KEYS = {
+  DEPLOY_POSTGRES: deploysPostgres,
+  WORKSPACES_ENABLED: workspacesEnabled,
+  USER_POOL_MIN_COUNT: userPoolMinCount,
+};
 
 // Render <module>.params.template.json against an env map.
 // Returns { renderedPath, substituted: string[] }.
@@ -22,7 +33,7 @@ export function renderParams({ module, templatePath, envMap, outDir }) {
   const substituted = [];
 
   const out = raw.replace(PLACEHOLDER_RE, (_match, key) => {
-    const v = key === "DEPLOY_POSTGRES" ? deploysPostgres(envMap) : envMap[key];
+    const v = Object.hasOwn(NORMALIZED_KEYS, key) ? NORMALIZED_KEYS[key](envMap) : envMap[key];
     // Treat only undefined/null as missing. An explicit empty string is a
     // legitimate value (e.g. SSL_CERT_DOMAIN_SUFFIX is empty on the OSS
     // afd+letsencrypt path because bicep derives the cert subject from the

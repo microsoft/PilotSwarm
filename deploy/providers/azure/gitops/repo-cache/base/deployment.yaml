@@ -42,7 +42,17 @@ spec:
         # save a node.
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
-      # No spot toleration: an eviction would pause every workspace session.
+      # The `repocache` node pool (base-infra aks.bicep, added when
+      # WORKSPACES_ENABLED=true): one always-on node, tainted so only this pod
+      # runs there. No spot toleration: an eviction would pause every
+      # workspace session.
+      nodeSelector:
+        pilotswarm.dev/pool: repo-cache
+      tolerations:
+        - key: pilotswarm.dev/repo-cache
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
       terminationGracePeriodSeconds: 30
       initContainers:
         # Lays out the disk before either container starts. Idempotent: it

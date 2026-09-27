@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
 import { DATABASE_ENV_DEFAULTS, DATABASE_INPUT_KEYS, DATABASE_URL_KEYS, deploysPostgres } from "./database-env.mjs";
 import { WORKSPACES_ENV_DEFAULTS } from "./workspaces.mjs";
+import { AKS_ENV_DEFAULTS } from "./aks-env.mjs";
 
 // Repo root: this file lives at <repo>/deploy/scripts/lib/common.mjs
 const __filename = fileURLToPath(import.meta.url);
@@ -129,7 +130,7 @@ export function loadEnv(envName) {
 
   // Compatibility defaults for newly introduced switches, not a cascade
   // onto the mutable scaffolding template.
-  const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...WORKSPACES_ENV_DEFAULTS, ...parseEnvFile(envFile) };
+  const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...WORKSPACES_ENV_DEFAULTS, ...AKS_ENV_DEFAULTS, ...parseEnvFile(envFile) };
 
   // Resolve provisioning intent before allowing any ambient database URL.
   for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {

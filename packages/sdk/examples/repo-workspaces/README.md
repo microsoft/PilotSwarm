@@ -125,13 +125,16 @@ at start.
 ## Deploying it
 
 The Azure deployment ships this example when `WORKSPACES_ENABLED=true` is in
-the environment settings (default `false`):
+the environment settings (default `false`). Set `USER_POOL_MIN_COUNT=2` too,
+so cross-node tests have two worker nodes:
 
 ```text
 deploy/Dockerfile.repo-cache                        the repo pod image: git, the NFS server, this folder
 deploy/Dockerfile.worker                            + git, nfs-common, this folder
 deploy/Dockerfile.portal                            + plugin/
 deploy/providers/azure/services/repo-cache/         the repo-cache service (bicep: manifest container + Flux)
+deploy/providers/azure/services/base-infra/bicep/aks.bicep   the `repocache` node pool: one node, no
+                                                    autoscaling, tainted so only the repo pod runs there
 deploy/providers/azure/gitops/repo-cache/           the repo pod: Deployment (init layout, repo-service,
                                                     privileged nfs), disk, Service (2049, 8080),
                                                     NetworkPolicy (8080 from worker pods only)
@@ -144,6 +147,12 @@ deploy/scripts/lib/workspaces.mjs                   the switch: deploy repo-cach
 The nodes need the kernel NFS server module (`nfsd`); Azure Linux has it. The
 NFSv4 root of the repo pod's server is a small in-memory folder with the disk
 mounted under it: the kernel cannot export a container's own root (overlayfs).
+
+Turning the switch off later stops deploying these parts but does not remove
+what is running: Flux keeps the repo pod from its last upload, and the node
+pool stays. To remove them, delete the `repo-cache` Flux configuration
+(`az k8s-configuration flux delete`; Flux then deletes the pod and its disk)
+and the node pool (`az aks nodepool delete --name repocache`).
 
 What a copy with real repos changes: its repo list and `adopt` per repo, real
 remotes with a token minter that uses the deployment identity, server-side

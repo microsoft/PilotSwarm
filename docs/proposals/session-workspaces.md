@@ -1811,6 +1811,7 @@ removed.
 | A check's attaches are held while the session is on the worker | Releasing them at once, which can drop a shared lease entry |
 | A set from outside without `extra` keeps the extra folders | Whole-record replacement, which silently dropped them for older callers |
 | The repo pod is a Deployment with `Recreate` (phase 3) | A StatefulSet: the deploy tool waits on Deployments |
+| The repo pod runs on its own node pool: one node, no autoscaling, tainted | Sharing worker nodes, where workers compete with the NFS server's file cache for memory |
 | A ClusterIP Service for NFS when the repo pod is in the workers' cluster | An internal load balancer with a static IP, which only a repo pod in another cluster needs |
 | The deploy tool adds a `workspaces` component to the staged worker and portal overlays when `WORKSPACES_ENABLED=true`, as it adds its database-secrets component | A second worker overlay chosen by a bicep parameter: it cannot reach the portal, whose overlays are keyed by edge and TLS mode |
 | The portal loads the sample plugin too | The portal lists and starts only agents it loads itself |
@@ -1964,11 +1965,17 @@ deploy/Dockerfile.worker                         + git 2.47 (apt), nfs-common fo
                                                    COPY packages/sdk/examples/repo-workspaces/
 deploy/Dockerfile.portal                         + COPY packages/sdk/examples/repo-workspaces/plugin/
 deploy/providers/azure/services/deploy-manifest.json      services: worker, repo-cache, portal
+deploy/providers/azure/services/base-infra/bicep/aks.bicep
+    the `repocache` node pool when WORKSPACES_ENABLED=true: one node (Standard_D4ds_v5),
+    no autoscaling, label pilotswarm.dev/pool=repo-cache, taint
+    pilotswarm.dev/repo-cache=true:NoSchedule; the repo pod selects it and tolerates it.
+    The user pool's autoscaler minimum comes from USER_POOL_MIN_COUNT (default 1).
 deploy/providers/azure/services/repo-cache/deploy.json    kind app, image pilotswarm-repo-cache,
                                                           rollout deployment/repo-cache
 deploy/providers/azure/services/repo-cache/bicep/         blob container + Flux configuration, as the worker's
 deploy/providers/azure/gitops/repo-cache/base + overlays/default/.env
-    Deployment `repo-cache`, 1 replica, strategy Recreate, safe-to-evict false:
+    Deployment `repo-cache`, 1 replica, strategy Recreate, safe-to-evict false,
+      on the repocache node pool:
       init container `layout`   owners, modes and markers of /ws/a, /ws/a/sessions, /ws/shared
       repo-service              node repo-service.mjs, port 8080, runs as root
       nfs                       nfs-server.sh, privileged, port 2049; a tmpfs at /srv/nfs with
@@ -2042,10 +2049,10 @@ How it is deployed and tested:
   `hostPath`; images in a registry the policy add-on accepts; and a user
   pool of at least two agent nodes for Q1, Q5 and the P tests, because
   worker pods on one node share one NFS mount. The bicep default count is 2,
-  but the autoscaler minimum is 1, so a count alone does not hold two nodes.
-  Before phase 3, raise the user pool minimum to 2 (expose `minCount`
-  through `main.bicep` or set it on the stamp), or run Q5 while the load
-  tests have scaled the pool out.
+  but the autoscaler minimum was 1, so a count alone does not hold two nodes.
+  `USER_POOL_MIN_COUNT=2` in the environment settings raises the minimum.
+  The repo pod gets its own node pool, `repocache`, so it never competes
+  with workers for memory (section 5.5).
 - **Switching it on:** `WORKSPACES_ENABLED=true` in the environment settings
   (for the release environment, a line in its `AZURE_DEPLOY_ENV` secret).
   One function, `workspacesEnabled()` in `deploy/scripts/lib/workspaces.mjs`,

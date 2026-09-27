@@ -139,6 +139,31 @@ test("old local env accepts a process override for newly introduced database key
   }
 });
 
+test("an old local env without the node-pool and workspaces keys gets their defaults", () => {
+  cleanup();
+  const keys = ["WORKSPACES_ENABLED", "USER_POOL_MIN_COUNT"];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    const { env } = loadEnv(TEST_NAME);
+    assert.equal(env.WORKSPACES_ENABLED, "false");
+    assert.equal(env.USER_POOL_MIN_COUNT, "1");
+    // A value in the file wins over the default.
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nWORKSPACES_ENABLED=true\nUSER_POOL_MIN_COUNT=2\n");
+    const loaded = loadEnv(TEST_NAME).env;
+    assert.equal(loaded.WORKSPACES_ENABLED, "true");
+    assert.equal(loaded.USER_POOL_MIN_COUNT, "2");
+  } finally {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
+    cleanup();
+  }
+});
+
 test("loadEnv() throws helpful message when local env is missing", () => {
   cleanup();
   assert.throws(

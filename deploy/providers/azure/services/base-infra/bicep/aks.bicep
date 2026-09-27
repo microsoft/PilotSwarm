@@ -72,6 +72,17 @@ param userPoolVmSize string = 'Standard_D4ds_v5'
 @description('User node pool initial node count.')
 param userPoolCount int = 2
 
+@description('User node pool autoscaler minimum.')
+@minValue(1)
+@maxValue(10)
+param userPoolMinCount int = 1
+
+@description('Add the `repocache` node pool for the session-workspaces repo pod: one always-on node, tainted so nothing else lands there. The repo-cache Deployment (deploy/providers/azure/gitops/repo-cache) selects it by label and tolerates the taint.')
+param repoCachePoolEnabled bool = false
+
+@description('VM size of the repocache pool. The NFS server caches files in the node\'s memory (docs/proposals/session-workspaces.md, section 5.5).')
+param repoCachePoolVmSize string = 'Standard_D4ds_v5'
+
 @description('Availability zones. Empty array disables zone placement (useful for dev in zone-limited regions).')
 param availabilityZones array = []
 
@@ -100,7 +111,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
         objectId: kubeletIdentityPrincipalId
       }
     }
-    agentPoolProfiles: [
+    agentPoolProfiles: concat([
       union({
         name: 'systempool'
         mode: 'System'
@@ -124,8 +135,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       union({
         name: 'userpool'
         mode: 'User'
-        count: userPoolCount
-        minCount: 1
+        count: max(userPoolCount, userPoolMinCount)
+        minCount: userPoolMinCount
         maxCount: 10
         enableAutoScaling: true
         vmSize: userPoolVmSize
@@ -138,7 +149,31 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       }, edgeMode == 'public' ? {} : {
         vnetSubnetID: aksSubnetId
       })
-    ]
+    ], repoCachePoolEnabled ? [
+      // Session workspaces: the repo pod's own node. No autoscaling, so it is
+      // always there; the taint keeps workers and everything else off it.
+      union({
+        name: 'repocache'
+        mode: 'User'
+        count: 1
+        enableAutoScaling: false
+        vmSize: repoCachePoolVmSize
+        osType: 'Linux'
+        osSKU: 'AzureLinux'
+        osDiskSizeGB: 128
+        osDiskType: 'Ephemeral'
+        type: 'VirtualMachineScaleSets'
+        availabilityZones: availabilityZones
+        nodeLabels: {
+          'pilotswarm.dev/pool': 'repo-cache'
+        }
+        nodeTaints: [
+          'pilotswarm.dev/repo-cache=true:NoSchedule'
+        ]
+      }, edgeMode == 'public' ? {} : {
+        vnetSubnetID: aksSubnetId
+      })
+    ] : [])
     addonProfiles: edgeMode == 'afd' ? {
       azureKeyvaultSecretsProvider: {
         enabled: true
