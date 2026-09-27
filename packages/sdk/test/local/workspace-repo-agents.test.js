@@ -90,6 +90,55 @@ describe("workspace repo agents and skills", () => {
         }
     });
 
+    it("search_capabilities lists the adopted repo agent, and the task that runs it names the repo (A7)", { timeout: TIMEOUT }, async () => {
+        // The base instructions send the model to search_capabilities for a
+        // named capability. Repo agents are not in the catalog, so the model
+        // used to report one as not found; and the portal showed the task as a
+        // plain "Native task". Found on the release stamp with tfenv's agents.
+        const env = getEnv();
+        await nativeTasksOn(env);
+        const fixture = await createGitFixture();
+        try {
+            const clone = await fixture.cloneSession({ rootSessionId: "a7" });
+            const provider = createFakeWorkspaceProvider({ roots: [{ name: "fx", path: fixture.root }] });
+            provider.setAdopt({ agents: true, skills: false, instructions: false });
+            let searchResult = "";
+            const parent = scriptTurns([[
+                { tools: [{ name: "search_capabilities", args: { query: "reviewer agent" } }] },
+                (_body, position) => {
+                    searchResult = position.toolResults.join("");
+                    return { tools: [{ name: "task", args: { name: "review", agent_type: "reviewer", description: "Review the readme", prompt: "CHILD-A7: report done", mode: "sync" } }] };
+                },
+                (_body, position) => ({ content: `results:${JSON.stringify(position.toolResults)}` }),
+            ]]);
+            const child = scriptTurns([[{ content: "A7-REVIEWED" }]]);
+            const respond = (body, position) => (position.firstUserText.includes("CHILD-A7") ? child : parent)(body, position);
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider, nativeSubagents: "sync" } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, owner: OWNER, workspace: { root: "fx", folder: path.relative(fixture.root, clone) } });
+                const answer = await session.sendAndWait("a7 find and run the reviewer", TIMEOUT);
+                assert(answer.includes("A7-REVIEWED"), `the repo agent ran: ${answer}`);
+
+                const found = JSON.parse(searchResult);
+                const hit = found.capabilities.find((c) => c.name === "reviewer");
+                assert(hit, `the search lists the adopted repo agent: ${searchResult.slice(0, 800)}`);
+                assertEqual(hit.source, "workspace");
+                assertEqual(hit.repo, path.basename(clone));
+                assert(/task tool with agent_type "reviewer"/.test(hit.how_to_use), hit.how_to_use);
+                assertEqual(found.capabilities[0].name, "reviewer", "the working folder's own agent comes first");
+
+                const updates = await events(env, sessionId, "native.task_updated");
+                const task = updates.map((e) => e.data).filter((d) => d.profile === "reviewer").at(-1);
+                assert(task, `a task update for the reviewer: ${JSON.stringify(updates.map((e) => e.data)).slice(0, 800)}`);
+                assertEqual(task.repo, path.basename(clone), "the task names the repo its agent came from");
+                const [adopted] = await events(env, sessionId, "session.workspace_adopted");
+                assertEqual(adopted.data.repo, path.basename(clone), "the adoption record names the repo too");
+            });
+        } finally {
+            await fixture.cleanup();
+        }
+    });
+
     it("filters repo agents, and the child guard lets an adopted agent's child work while a stranger is denied (A2)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         await nativeTasksOn(env);

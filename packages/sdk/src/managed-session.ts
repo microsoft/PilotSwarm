@@ -2997,6 +2997,9 @@ export class ManagedSession {
         const nativeTasks = this.config.nativeSubagents === "sync"
             ? new NativeTaskObserver(this.copilotSession, {
                 turnIndex: opts?.turnIndex,
+                ...(this.config.workspaceAdoption?.agents.length
+                    ? { repoAgents: { repo: this.config.workspaceAdoption.repo, names: this.config.workspaceAdoption.agents } }
+                    : {}),
                 emit: (event) => {
                     if (event.eventType !== "session.native_tasks_tick") collectedEvents.push(event);
                     try { opts?.onEvent?.(event); } catch {}

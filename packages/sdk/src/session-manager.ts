@@ -1,4 +1,4 @@
-import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
@@ -2212,7 +2212,23 @@ export class SessionManager {
         Object.assign(effectiveMcpServers, attached.mcpServers);
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
-            search: async args => capabilityCatalog.search(await getOwner(), sessionId, args),
+            search: async args => {
+                const result = await capabilityCatalog.search(await getOwner(), sessionId, args);
+                // The working folder's adopted repo agents and skills are not
+                // in the catalog. Matching ones come first: they are this
+                // session's own (session workspaces, section 4.6).
+                const report = config.workspaceAdoption;
+                if (!report || (report.agents.length === 0 && report.skills.length === 0)) return result;
+                const descriptions = new Map((repoAdoption?.customAgents ?? []).map((agent) => [agent.name, agent.description]));
+                const limit = Math.max(1, Math.min(30, Math.trunc(args?.limit ?? 8)));
+                const hits = workspaceCapabilityHits({
+                    repo: report.repo,
+                    agents: report.agents.map((name) => ({ name, description: descriptions.get(name) })),
+                    skills: report.skills,
+                }, args, limit);
+                if (hits.length === 0) return result;
+                return { ...result, capabilities: [...hits, ...result.capabilities].slice(0, limit), coverage: { ...result.coverage, workspace: "available" } };
+            },
             load: async (ref, kind) => capabilityCatalog.load(await getOwner(), sessionId, ref, kind),
             list: async () => {
                 const state = await readState();

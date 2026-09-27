@@ -244,6 +244,15 @@ describe("resolveRepoAdoption", () => {
         assert.ok(result.customAgents.every((a) => a.tools === undefined || a.tools.length > 0), "never []");
     });
 
+    it("names the repo by its clone folder, even from a subfolder; outside a clone there is no name", () => {
+        const inside = resolveRepoAdoption(base({ scan: scanOf({ ".github/agents/a.agent.md": agentFile("a") }) }));
+        assert.equal(inside.report.repo, "repo", "attach /ws/a/repo/lib, clone root .. -> repo");
+        const atRoot = resolveRepoAdoption(base({ attachPath: "/ws/a/sessions/t1/tfenv", scan: scanOf({}, [], { cloneRoot: "" }) }));
+        assert.equal(atRoot.report.repo, "tfenv");
+        const noClone = resolveRepoAdoption(base({ scan: scanOf({}, [], { cloneRoot: undefined }) }));
+        assert.equal(Object.hasOwn(noClone.report, "repo"), false);
+    });
+
     it("reports a name collision with a PilotSwarm agent and a repeated repo name", () => {
         const result = resolveRepoAdoption(base({ scan: scanOf({
             ".github/agents/1.agent.md": agentFile("explore"),

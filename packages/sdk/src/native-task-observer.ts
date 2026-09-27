@@ -7,6 +7,12 @@ export interface NativeTaskSummary {
     agentId?: string;
     title: string;
     profile?: string;
+    /**
+     * Set when the task runs an agent adopted from the session workspace's
+     * repo (session workspaces, section 4.6): the repo's name, so a viewer can
+     * show which repo agent was triggered.
+     */
+    repo?: string;
     model?: string;
     status: "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
     startedAt: string;
@@ -35,6 +41,8 @@ interface Options {
     intervalMs?: number;
     timeoutMs?: number;
     emit: (event: { eventType: string; data: any }) => void;
+    /** The agents adopted from the working folder's repo, and the repo's name. */
+    repoAgents?: { repo?: string; names: readonly string[] };
 }
 
 const terminal = (status: string) => !["running", "waiting"].includes(status);
@@ -97,6 +105,7 @@ export class NativeTaskObserver {
                 title: text(args.description ?? args.name ?? data.agentDisplayName) ?? "Native task",
                 profile: text(args.agent_type ?? data.agentName),
                 status: "running", startedAt: iso(event.timestamp), toolCalls: 0 };
+            this.markRepoAgent(task);
             this.tasks.set(callId, task);
         }
         // A completed invocation is immutable except for the parent tool's
@@ -109,6 +118,7 @@ export class NativeTaskObserver {
         if (kind === "subagent.completed" && data.firstDispatchedModel) task.model = text(data.firstDispatchedModel);
         if (kind === "subagent.started") {
             task.profile = text(data.agentName ?? data.agentType) ?? task.profile;
+            this.markRepoAgent(task);
             this.invalidate();
         }
         if (kind === "subagent.completed" || kind === "subagent.failed") {
@@ -157,6 +167,13 @@ export class NativeTaskObserver {
         if (this.refreshTimer) clearTimeout(this.refreshTimer);
         if (this.rpcTimer) clearTimeout(this.rpcTimer);
         this.publish();
+    }
+
+    /** A task whose agent was adopted from the workspace's repo carries the repo's name. */
+    private markRepoAgent(task: NativeTaskSummary): void {
+        const repoAgents = this.options.repoAgents;
+        if (task.profile && repoAgents?.names.includes(task.profile)) task.repo = repoAgents.repo ?? "repo";
+        else delete task.repo;
     }
 
     private setTerminal(task: NativeTaskSummary, status: NativeTaskSummary["status"], timestamp?: string): void {

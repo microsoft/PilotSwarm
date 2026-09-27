@@ -215,7 +215,8 @@ export function resolveRepoAdoption(input: RepoAdoptionInput): RepoAdoption {
     const skillDirectories = skills.length > 0 && typeof scan?.cloneRoot === "string"
         ? [path.join(input.attachPath, scan.cloneRoot, ".github", "skills")]
         : [];
-    const report: WorkspaceAdoptionReport = { agents: [...agentNames].sort(), skills, skipped };
+    const repo = typeof scan?.cloneRoot === "string" ? path.basename(path.resolve(input.attachPath, scan.cloneRoot)) : undefined;
+    const report: WorkspaceAdoptionReport = { ...(repo ? { repo } : {}), agents: [...agentNames].sort(), skills, skipped };
     const asked = Boolean(adopt?.agents || adopt?.skills || adopt?.instructions);
     return {
         customAgents,

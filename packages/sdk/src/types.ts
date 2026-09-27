@@ -350,6 +350,8 @@ export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
 
 /** What a session adopted from its checkout (section 4.6): the `session.workspace_adopted` event data, less the revision. */
 export interface WorkspaceAdoptionReport {
+    /** The repo's name: its clone folder's name, for example "tfenv". Absent outside a clone. */
+    repo?: string;
     /** Adopted repo agent names, sorted. */
     agents: string[];
     /** Adopted repo skill names, sorted. */

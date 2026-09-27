@@ -106,6 +106,45 @@ function lexicalScore(query: string, name: string, description: string): number 
 function artifactId(artifact: CapabilityArtifact, index: number): string {
     return artifact.id ?? `${artifact.kind}:${index}:${artifact.name}`;
 }
+/** A session workspace's adopted repo agents and skills (session workspaces, section 4.6). */
+export interface WorkspaceCapabilities {
+    repo?: string;
+    agents: Array<{ name: string; description?: string }>;
+    skills: string[];
+}
+/**
+ * Search hits for the working folder's adopted repo agents and skills. The
+ * base instructions send the model to search_capabilities for any named
+ * capability, and these are not in the catalog, so without them it reported
+ * a repo agent as not found before using it. They carry no ref: nothing loads
+ * or activates them; the hit says how to use them.
+ */
+export function workspaceCapabilityHits(workspace: WorkspaceCapabilities | undefined, args: { query: string; kinds?: CapabilityKind[] }, limit: number) {
+    if (!workspace) return [];
+    const kinds = args.kinds ?? ["skill", "agent", "tool", "mcp"];
+    const repo = workspace.repo ?? "the working folder's repo";
+    const hits: any[] = [];
+    if (kinds.includes("agent")) {
+        for (const agent of workspace.agents) {
+            const score = lexicalScore(args.query, agent.name, `${workspace.repo ?? ""} repo repository ${agent.description ?? ""}`);
+            if (!score) continue;
+            hits.push({ kind: "agent", name: agent.name, description: String(agent.description ?? "").slice(0, 600),
+                source: "workspace", ownership: "repo", scope: "session", repo: workspace.repo,
+                how_to_use: `Adopted from ${repo}. Call the task tool with agent_type "${agent.name}"; it runs as a native task in this session's working folder, on the session's model.`,
+                score });
+        }
+    }
+    if (kinds.includes("skill")) {
+        for (const skill of workspace.skills) {
+            const score = lexicalScore(args.query, skill, `${workspace.repo ?? ""} repo repository skill`);
+            if (!score) continue;
+            hits.push({ kind: "skill", name: skill, description: "", source: "workspace", ownership: "repo", scope: "session",
+                repo: workspace.repo, how_to_use: `Adopted from ${repo}. Invoke it with the skill tool: skill "${skill}".`, score });
+        }
+    }
+    return hits.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
+}
+
 /** Complete, body-free inventory trusted for automatic Base V2 discovery. */
 export function ownedAndStaticCapabilityInventory(sources: CapabilitySource[], owner: FeatureOwner | null) {
     const entries: Array<{ kind: "skill" | "agent"; name: string; description: string; package: string;

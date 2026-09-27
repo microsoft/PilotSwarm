@@ -753,6 +753,23 @@ How agents are used:
   edited `AGENTS.md` must resume it.
 - The CLI's on-demand instruction discovery stays off (its default).
 
+**Finding and seeing adopted agents** (added after the release-stamp trial,
+2026-09-27). The base instructions send the model to `search_capabilities`
+for any named capability. The catalog holds deployment and package agents,
+not repo agents, so the model first reported "not found" and only then used
+the repo agent. Now:
+
+- `search_capabilities` also returns the working folder's adopted repo agents
+  and skills that match the query, first, as `source: "workspace"` and
+  `ownership: "repo"`, with the repo's name and how to use them (the task
+  tool's `agent_type`, or the skill tool). They carry no reference: nothing
+  loads or activates them. The tool's declaration is unchanged, so sessions
+  without a workspace see the same requests.
+- The adoption record names the repo (its clone folder's name), and a native
+  task that runs an adopted agent carries `repo`. The portal labels it
+  "Repo agent · <name>", with the repo in its tooltip and details line,
+  instead of "Native task".
+
 ### 4.7 Failures and held prompts
 
 **The wait result.** A failed attach or path check does not call the model.
@@ -1656,6 +1673,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | A4 | L | A branch switch, or a flip of any `adopt` flag between turns (the fake provider returns all three true, then all false), gives the next turn one resume with the new set: repo agents gone from the `task` tool list, no repo skills, `AGENTS.md` not loaded, and the agents-changed note. A third turn with the same adopt causes no resume. |
 | A5 | L | Neither the repo MCP config nor a repo hook starts a process: no marker files after a full turn |
 | A6 | L | A child in another repo adopts that repo's agents |
+| A7 | L | `search_capabilities` lists the adopted repo agent first, with how to call it; the task that runs it, and the adoption record, name the repo |
 
 ### Reference provider and leases
 

@@ -18,6 +18,31 @@ function harness(overrides = {}, options = {}) {
 afterEach(() => vi.useRealTimers());
 
 describe("native task observation", () => {
+    it("names the repo of a task that runs an adopted repo agent, and of no other task", async () => {
+        vi.useFakeTimers();
+        const h = harness({}, { repoAgents: { repo: "tfenv", names: ["architect", "reviewer"] } });
+        h.emit("tool.execution_start", { toolName: "task", toolCallId: "repo", arguments: { description: "Survey tfenv architecture", agent_type: "architect" } });
+        h.emit("subagent.started", { toolCallId: "repo", agentName: "architect" }, "a1");
+        h.emit("tool.execution_start", { toolName: "task", toolCallId: "own", arguments: { description: "Read the runtime", agent_type: "swarm-explore" } });
+        h.emit("subagent.started", { toolCallId: "own", agentName: "swarm-explore" }, "a2");
+        await vi.advanceTimersByTimeAsync(600);
+        const tasks = h.tick().tasks;
+        expect(tasks.find((t) => t.toolCallId === "repo")).toMatchObject({ profile: "architect", repo: "tfenv" });
+        expect(tasks.find((t) => t.toolCallId === "own").repo).toBeUndefined();
+        h.emit("tool.execution_complete", { toolName: "task", toolCallId: "repo", success: true, result: { content: "done" } });
+        h.observer.finish();
+        expect(h.summaries().filter((s) => s.toolCallId === "repo").at(-1)).toMatchObject({ profile: "architect", repo: "tfenv", status: "completed" });
+    });
+
+    it("names no repo without adopted agents", async () => {
+        vi.useFakeTimers();
+        const h = harness();
+        h.emit("tool.execution_start", { toolName: "task", toolCallId: "c", arguments: { description: "x", agent_type: "architect" } });
+        await vi.advanceTimersByTimeAsync(600);
+        expect(h.tick().tasks[0].repo).toBeUndefined();
+        h.observer.finish();
+    });
+
     it("reports configured and dispatched models, never the requested override", async () => {
         vi.useFakeTimers();
         const row = { type: "agent", id: "agent", toolCallId: "call", status: "running", model: "requested-parent" };
