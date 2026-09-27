@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRepoService } from "../../examples/repo-workspaces/repo-service.mjs";
 import { SANDBOX_PRE_RECEIVE_MESSAGES } from "../../examples/repo-workspaces/sandbox-remote.mjs";
-import { callAttacher, createAttacher, DEFAULT_MOUNT_OPTIONS, isMountedAt, parseAttacherRoots } from "../../examples/repo-workspaces/attacher.mjs";
+import { callAttacher, createAttacher, DEFAULT_MOUNT_OPTIONS, isMountedAt, mountAtStart, parseAttacherRoots } from "../../examples/repo-workspaces/attacher.mjs";
 import { createPlainRootProvider } from "../../examples/repo-workspaces/provider.mjs";
 import { createWorkspaceProvider } from "../../examples/repo-workspaces/index.mjs";
 import { createGitFixture, git, tryGit } from "../helpers/git-fixture.mjs";
@@ -245,6 +245,45 @@ describe("the node attacher", () => {
             await assert.rejects(() => attacher.mount("b"), /unknown root "b"/);
             assert.deepEqual(attacher.status().roots, [{ root: "a", path: path.join(base, "a"), mounted: true }]);
         } finally {
+            fs.rmSync(base, { recursive: true, force: true });
+        }
+    });
+
+    it("at start, keeps retrying a root whose server is not there yet, until it is mounted", async () => {
+        // Seen on the stamp: the attachers started with the workers, before
+        // the repo pod's service existed, and gave up after one try.
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), "ps-attacher-start-"));
+        let mountinfo = "";
+        let lookups = 0;
+        const attacher = createAttacher({
+            roots: [{ name: "a", server: "repo-cache.svc", exportPath: "/ws/a" }, { name: "shared", server: "10.0.0.5", exportPath: "/ws/shared" }],
+            mountBase: base,
+            mountOptions: "nfsvers=4.1",
+            readMountinfo: () => mountinfo,
+            log: () => {},
+            // The service name resolves only on the third try.
+            resolveHost: async (host) => {
+                if (host !== "repo-cache.svc") return host;
+                lookups += 1;
+                if (lookups < 3) throw new Error("getaddrinfo ENOTFOUND repo-cache.svc");
+                return "10.0.0.9";
+            },
+            run: async (command, args) => {
+                if (command === "mount") mountinfo += `1 1 0:0 / ${args.at(-1)} rw - nfs4 ${args.at(-2)} rw\n`;
+                return "";
+            },
+        });
+        const started = mountAtStart(attacher, ["a", "shared"], { intervalMs: 20, log: () => {} });
+        try {
+            await started.done;
+            assert.deepEqual([...started.pending], ["a"], "shared mounted in the first round; a not yet");
+            const deadline = Date.now() + 2_000;
+            while (started.pending.size > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+            assert.equal(started.pending.size, 0, "a was mounted by a later round");
+            assert.equal(lookups, 3);
+            assert.deepEqual(attacher.status().roots.map((root) => root.mounted), [true, true]);
+        } finally {
+            started.stop();
             fs.rmSync(base, { recursive: true, force: true });
         }
     });

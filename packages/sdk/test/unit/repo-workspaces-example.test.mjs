@@ -94,6 +94,18 @@ describe("repo service: clones", () => {
     });
 });
 
+describe("repo service: removing a clone", () => {
+    it("keeps the tree's folder while anything else is in it", async () => {
+        const fx = await fixture();
+        const svc = await serviceFor(fx);
+        await svc.call("POST", "/v1/clones", { rootSessionId: "tree-c", repo: "app" });
+        fs.mkdirSync(path.join(fx.root, "sessions/tree-c/notes"));
+        assert.equal((await svc.call("DELETE", "/v1/clones", { rootSessionId: "tree-c", repo: "app" })).body.deleted, true);
+        assert.equal(fs.existsSync(path.join(fx.root, "sessions/tree-c/app")), false);
+        assert.ok(fs.existsSync(path.join(fx.root, "sessions/tree-c/notes")), "the other folder and the tree stay");
+    });
+});
+
 describe("repo service: leases", () => {
     const lease = (svc, sessionId, rootSessionId, workerNodeId, checkout = "sessions/tree-a/app") =>
         svc.call("POST", "/v1/leases", { checkout, sessionId, rootSessionId, workerNodeId, turnIndex: 1 }).then((r) => r.body);
@@ -118,6 +130,7 @@ describe("repo service: leases", () => {
         await svc.call("DELETE", "/v1/leases", { checkout: "sessions/tree-a/app", sessionId: "a1-child" });
         assert.equal((await svc.call("DELETE", "/v1/clones", { rootSessionId: "tree-a", repo: "app" })).body.deleted, true);
         assert.equal(fs.existsSync(path.join(fx.root, "sessions/tree-a/app")), false);
+        assert.equal(fs.existsSync(path.join(fx.root, "sessions/tree-a")), false, "the tree's folder goes with its last clone");
         // The other tree is no longer refused as "in use": the checkout is
         // gone, and the tree makes its own clone.
         assert.equal((await lease(svc, "b1", "tree-b", "w2")).code, "WORKSPACE_FOLDER_MISSING");

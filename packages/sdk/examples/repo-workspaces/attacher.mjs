@@ -18,7 +18,8 @@
  *   ATTACHER_MOUNT_BASE     default /mnt/ps
  *   ATTACHER_SOCKET         default /run/pilotswarm-attacher/sock
  *   ATTACHER_MOUNT_OPTIONS  default nfsvers=4.1,hard,timeo=600,retrans=2,actimeo=3,lookupcache=positive,nconnect=4,nosharecache
- *   ATTACHER_EAGER          "1" (default): mount every root at start; "0": only when asked
+ *   ATTACHER_EAGER          "1" (default): mount every root at start, and retry each
+ *                           one that fails every 30 s until it is mounted; "0": only when asked
  *
  * HTTP over the socket:
  *   POST /mount   { root }   mount it unless it is mounted     -> { root, path, mounted: true }
@@ -166,6 +167,42 @@ export function createAttacher(options) {
     return { mount, remount, status, server, mountPointOf };
 }
 
+/**
+ * Mounts every root at start, and keeps trying the ones that fail every
+ * `intervalMs` until each is mounted. The repo pod can come up after the
+ * attacher: a deploy rolls the workers, and so the attachers, before the repo
+ * pod's service exists. Meanwhile a root a session asks for is mounted then.
+ * Returns { done, stop, pending }: `done` settles after the first round.
+ */
+export function mountAtStart(attacher, names, { intervalMs = 30_000, log = (message) => console.error(`[attacher] ${message}`) } = {}) {
+    const pending = new Set(names);
+    let timer = null;
+    let stopped = false;
+    const round = async () => {
+        for (const name of [...pending]) {
+            try {
+                await attacher.mount(name);
+                pending.delete(name);
+            } catch (error) {
+                log(`mount ${name} at start: ${error.message}; trying again in ${Math.round(intervalMs / 1000)} s`);
+            }
+        }
+        if (pending.size > 0 && !stopped) {
+            timer = setTimeout(() => { round().catch(() => undefined); }, intervalMs);
+            timer.unref?.();
+        }
+    };
+    const done = round();
+    return {
+        done,
+        pending,
+        stop() {
+            stopped = true;
+            if (timer) clearTimeout(timer);
+        },
+    };
+}
+
 /** Worker side: ask the attacher over its socket. */
 export function callAttacher(socketPath, method, pathname, body, timeoutMs = 25_000) {
     return new Promise((resolve, reject) => {
@@ -207,10 +244,8 @@ async function main() {
     fs.chmodSync(socket, 0o666);
     console.log(`[attacher] listening on ${socket}; roots ${roots.map((root) => root.name).join(", ")}`);
     if ((env.ATTACHER_EAGER ?? "1") !== "0") {
-        for (const root of roots) {
-            // A root whose server is not up yet is mounted on the first ask.
-            await attacher.mount(root.name).catch((error) => console.error(`[attacher] mount ${root.name} at start: ${error.message}`));
-        }
+        // A root whose server is not up yet is retried, and mounted on the first ask.
+        await mountAtStart(attacher, roots.map((root) => root.name)).done;
     }
     // Never unmount: on SIGTERM, stop taking requests and leave the mounts.
     const stop = () => attacher.server.close(() => process.exit(0));

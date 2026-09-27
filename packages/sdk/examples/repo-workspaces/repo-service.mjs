@@ -340,6 +340,13 @@ export function createRepoService(options) {
                 throw new ServiceError(409, "CHECKOUT_UNSAFE", `${checkout} or its .git is not a plain folder; refusing to delete through a link`);
             }
             fs.rmSync(path.join(root, checkout), { recursive: true, force: true });
+            // The tree's folder goes with its last clone. rmdir removes only an
+            // empty folder, and segmentsAreReal above checked it is no link.
+            try {
+                fs.rmdirSync(path.dirname(path.join(root, checkout)));
+            } catch (error) {
+                if (error?.code !== "ENOTEMPTY" && error?.code !== "EEXIST" && error?.code !== "ENOENT") throw error;
+            }
             clones.delete(checkout);
             leases.delete(checkout);
             persist();
