@@ -1896,6 +1896,14 @@ calls after the acknowledgement, in the same turn.
 | A file written on one client | Read on the other client at once |
 | The Azure Linux 3.0 kernel configuration | `CONFIG_NFSD=m`, `CONFIG_NFSD_V4=y` |
 
+**Verified against the release stamp's AKS cluster (`az deployment group validate`, which runs the same preflight check as a deploy), 2026-09-27**
+
+| Check | Result |
+|---|---|
+| A new pool in `agentPoolProfiles` of an existing cluster | Refused: "A new agent pool was introduced. Adding agent pools to an existing cluster is not allowed through managed cluster operations." The first deploy of phase 3 failed on it. |
+| The same pool as a separate `managedClusters/agentPools` resource | Passes |
+| Raising the user pool's `minCount` from 1 to 2 through the managed cluster resource | Passes |
+
 **Still to verify**
 
 | ID | Item |
@@ -1969,6 +1977,8 @@ deploy/providers/azure/services/base-infra/bicep/aks.bicep
     the `repocache` node pool when WORKSPACES_ENABLED=true: one node (Standard_D4ds_v5),
     no autoscaling, label pilotswarm.dev/pool=repo-cache, taint
     pilotswarm.dev/repo-cache=true:NoSchedule; the repo pod selects it and tolerates it.
+    It is its own agent pool resource: AKS refuses a new pool in an existing
+    cluster's agentPoolProfiles.
     The user pool's autoscaler minimum comes from USER_POOL_MIN_COUNT (default 1).
 deploy/providers/azure/services/repo-cache/deploy.json    kind app, image pilotswarm-repo-cache,
                                                           rollout deployment/repo-cache

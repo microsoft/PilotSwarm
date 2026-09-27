@@ -111,7 +111,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
         objectId: kubeletIdentityPrincipalId
       }
     }
-    agentPoolProfiles: concat([
+    agentPoolProfiles: [
       union({
         name: 'systempool'
         mode: 'System'
@@ -149,31 +149,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       }, edgeMode == 'public' ? {} : {
         vnetSubnetID: aksSubnetId
       })
-    ], repoCachePoolEnabled ? [
-      // Session workspaces: the repo pod's own node. No autoscaling, so it is
-      // always there; the taint keeps workers and everything else off it.
-      union({
-        name: 'repocache'
-        mode: 'User'
-        count: 1
-        enableAutoScaling: false
-        vmSize: repoCachePoolVmSize
-        osType: 'Linux'
-        osSKU: 'AzureLinux'
-        osDiskSizeGB: 128
-        osDiskType: 'Ephemeral'
-        type: 'VirtualMachineScaleSets'
-        availabilityZones: availabilityZones
-        nodeLabels: {
-          'pilotswarm.dev/pool': 'repo-cache'
-        }
-        nodeTaints: [
-          'pilotswarm.dev/repo-cache=true:NoSchedule'
-        ]
-      }, edgeMode == 'public' ? {} : {
-        vnetSubnetID: aksSubnetId
-      })
-    ] : [])
+    ]
     addonProfiles: edgeMode == 'afd' ? {
       azureKeyvaultSecretsProvider: {
         enabled: true
@@ -261,6 +237,38 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
 // we assign the role to the control-plane UAMI's principal directly.
 // ---------------------------------------------------------------------------
 var managedIdentityOperatorRoleId = 'f1a07417-d97a-45cb-824c-7a7467783830'
+
+// Session workspaces: the repo pod's own node. A separate agent pool
+// resource, not an entry in agentPoolProfiles: AKS refuses to add a pool to
+// an existing cluster through the managed cluster API ("Adding agent pools to
+// an existing cluster is not allowed through managed cluster operations"). A
+// later cluster update that does not list this pool leaves it alone. No
+// autoscaling, so the node is always there; the taint keeps workers and
+// everything else off it. Turning the switch off does not delete the pool.
+resource repoCachePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-05-01' = if (repoCachePoolEnabled) {
+  parent: aks
+  name: 'repocache'
+  properties: union({
+    mode: 'User'
+    count: 1
+    enableAutoScaling: false
+    vmSize: repoCachePoolVmSize
+    osType: 'Linux'
+    osSKU: 'AzureLinux'
+    osDiskSizeGB: 128
+    osDiskType: 'Ephemeral'
+    type: 'VirtualMachineScaleSets'
+    availabilityZones: availabilityZones
+    nodeLabels: {
+      'pilotswarm.dev/pool': 'repo-cache'
+    }
+    nodeTaints: [
+      'pilotswarm.dev/repo-cache=true:NoSchedule'
+    ]
+  }, edgeMode == 'public' ? {} : {
+    vnetSubnetID: aksSubnetId
+  })
+}
 
 resource kubeletIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: last(split(kubeletIdentityResourceId, '/'))

@@ -252,6 +252,18 @@ test("the repo pod lands on the repocache pool, and only it tolerates that pool'
   assert.ok(!attacherTolerations.some((tol) => tol.key === taint[1] || tol.operator === "Exists" && !tol.key));
 });
 
+test("aks.bicep adds the repocache pool as its own agent pool resource, never in agentPoolProfiles", () => {
+  // AKS refuses a new pool in agentPoolProfiles on an existing cluster ("A new
+  // agent pool was introduced. Adding agent pools to an existing cluster is not
+  // allowed through managed cluster operations"): the stamp's first deploy
+  // failed on it, and `az deployment group validate` against the live cluster
+  // reproduced it. Only the agentPools resource passes.
+  const bicep = readFileSync(join(REPO_ROOT, "deploy/providers/azure/services/base-infra/bicep/aks.bicep"), "utf8");
+  const profiles = bicep.slice(bicep.indexOf("agentPoolProfiles:"), bicep.indexOf("addonProfiles:"));
+  assert.ok(profiles.length > 0 && !profiles.includes("repocache"), "the cluster's pool list does not name repocache");
+  assert.match(bicep, /resource \w+ 'Microsoft\.ContainerService\/managedClusters\/agentPools@[^']+' = if \(repoCachePoolEnabled\) \{\s*parent: aks\s*name: 'repocache'/);
+});
+
 test("the pieces agree: roots, exports, paths, service address and sample files", (t) => {
   const worker = stage(t, "worker", stampEnv({ WORKSPACES_ENABLED: "true" }));
   const repo = stage(t, "repo-cache", { IMAGE: "stub.azurecr.io/pilotswarm-repo-cache:t1" });
