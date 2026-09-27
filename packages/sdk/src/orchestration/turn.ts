@@ -18,6 +18,7 @@ import {
     refreshTrackedSubAgents,
 } from "./agents.js";
 import {
+    applyAgentWorkspaceExtrasChange,
     applyCronAtAction,
     applyCronAction,
     continueInput,
@@ -45,6 +46,7 @@ import {
     WORKSPACE_RETRY_WAKE_PROMPT,
     timerGate,
     workspaceChangedNote,
+    extraFoldersChangedNote,
     workspaceRetryDelayMs,
     type DurableSessionRuntime,
 } from "./state.js";
@@ -1126,11 +1128,13 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     if (sameWorkspace(previous, next)) return;
     const revision = state.workspaceRevision + 1;
     const path = typeof action.path === "string" ? action.path : null;
+    const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     if (next) state.config.workspace = next;
     else delete state.config.workspace;
     runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
     state.workspaceRevision = revision;
-    state.workspaceNotice = workspaceChangedNote(previous, next, path);
+    state.workspaceNotice = [workspaceChangedNote(previous, next, path), next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined]
+        .filter(Boolean).join(" ");
     state.workspaceRetry = null;
     if (!next) state.workspaceStatus = null;
     if (!next && previous) state.workspaceReleasePending = true;
@@ -1591,6 +1595,10 @@ export function* handleTurnResult(
 
         case "set_workspace":
             yield* applyAgentWorkspaceChange(runtime, result);
+            return;
+
+        case "set_workspace_extra":
+            yield* applyAgentWorkspaceExtrasChange(runtime, result as Extract<TurnResult, { type: "set_workspace_extra" }>);
             return;
 
         case "spawn_agent":

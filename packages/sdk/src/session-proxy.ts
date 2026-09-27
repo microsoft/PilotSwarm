@@ -14,7 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
@@ -1208,6 +1208,41 @@ export function registerActivities(
     });
 
     /**
+     * Session workspaces: the attach and path check behind a change, on this
+     * worker, with the same code as the turn preamble: the working folder
+     * (unless skipped) and the named extra folders (by default all). At set
+     * time any failure refuses the change, whether or not the extra folder
+     * is required; only later turns treat an optional folder softly.
+     */
+    const checkWorkspaceHere = async (
+        req: import("./types.js").WorkspaceAttachRequest,
+        opts: { extras?: string[]; skipWorkingFolder?: boolean } = {},
+    ): Promise<
+        | { ok: true; path: string | null; extras: Array<{ name: string; path: string; readOnly?: boolean }> }
+        | { ok: false; code: string; message: string }
+    > => {
+        const provider = sessionManager.getWorkspaceProvider();
+        let path: string | null = null;
+        if (!opts.skipWorkingFolder) {
+            const prepared = await prepareWorkspace(provider, req);
+            if (!prepared.ok) return { ok: false, code: prepared.code, message: prepared.message };
+            path = prepared.path;
+        }
+        const extras = req.workspace.extra && Object.keys(req.workspace.extra).length > 0
+            ? await prepareWorkspaceExtras(provider, req, opts.extras ? { names: opts.extras } : {})
+            : [];
+        const bad = extras.find((extra) => !extra.ok);
+        if (bad && !bad.ok) return { ok: false, code: bad.code, message: `extra folder "${bad.name}": ${bad.message}` };
+        return {
+            ok: true,
+            path,
+            extras: extras.flatMap((extra) => (extra.ok
+                ? [{ name: extra.name, path: extra.attach.path, ...(extra.attach.readOnly ? { readOnly: true } : {}) }]
+                : [])),
+        };
+    };
+
+    /**
      * Session workspaces (section 4.6): compare what a handle adopted from
      * the checkout with the last session.workspace_adopted event. When it is
      * new or changed, record a new event and return the note for this turn.
@@ -1644,17 +1679,17 @@ export function registerActivities(
         if (runConfig.workspace) {
             const workspaceRevision = input.workspaceRevision ?? 1;
             const attachWorker = workerNodeId ?? os.hostname();
-            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), {
+            const attachRequest = {
                 sessionId: input.sessionId,
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
                 workspace: runConfig.workspace,
                 revision: workspaceRevision,
                 workerNodeId: attachWorker,
                 turnIndex: input.turnIndex ?? 0,
-            });
-            if (!prepared.ok) {
+            };
+            const holdForWorkspace = async (failure: { code: string; message: string; retryAfterMs?: number }, attachment?: string): Promise<TurnResult> => {
                 activityCtx.traceInfo(
-                    `[runTurn] workspace unavailable for ${input.sessionId}: ${prepared.code} ${prepared.message}`,
+                    `[runTurn] workspace unavailable for ${input.sessionId}${attachment ? ` (extra folder ${attachment})` : ""}: ${failure.code} ${failure.message}`,
                 );
                 if (catalog) {
                     await cmsRetryBestEffort(
@@ -1663,9 +1698,10 @@ export function registerActivities(
                             eventType: "session.workspace_unavailable",
                             data: {
                                 revision: workspaceRevision,
-                                code: prepared.code,
-                                message: prepared.message,
+                                code: failure.code,
+                                message: failure.message,
                                 workerNodeId: attachWorker,
+                                ...(attachment ? { attachment } : {}),
                             },
                         }], workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
@@ -1674,12 +1710,35 @@ export function registerActivities(
                 return {
                     type: "wait",
                     seconds: WORKSPACE_WAIT_FALLBACK_SECONDS,
-                    reason: `workspace unavailable: ${prepared.message}`,
+                    reason: `workspace unavailable: ${failure.message}`,
                     gate: "workspace",
-                    code: prepared.code,
+                    code: failure.code,
                     workerNodeId: attachWorker,
-                    ...(prepared.retryAfterMs !== undefined ? { retryAfterMs: prepared.retryAfterMs } : {}),
+                    ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
                 } as TurnResult;
+            };
+            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), attachRequest);
+            if (!prepared.ok) return await holdForWorkspace(prepared);
+            // Extra folders (section 4.10): a required one that fails holds
+            // the prompt like the working folder; an optional one is left
+            // out of this turn and the model is told.
+            const extras = runConfig.workspace.extra && Object.keys(runConfig.workspace.extra).length > 0
+                ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest)
+                : [];
+            const heldBy = extras.find((extra) => !extra.ok && extra.required);
+            if (heldBy && !heldBy.ok) {
+                return await holdForWorkspace({
+                    code: heldBy.code,
+                    message: `extra folder "${heldBy.name}": ${heldBy.message}`,
+                    ...(heldBy.retryAfterMs !== undefined ? { retryAfterMs: heldBy.retryAfterMs } : {}),
+                }, heldBy.name);
+            }
+            const extrasAttached = extras.flatMap((extra) => (extra.ok ? [extra.attach] : []));
+            const extrasUnavailable = extras.flatMap((extra) => (extra.ok ? [] : [{
+                name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), code: extra.code, message: extra.message,
+            }]));
+            for (const missing of extrasUnavailable) {
+                activityCtx.traceInfo(`[runTurn] optional extra folder ${missing.name} unavailable for ${input.sessionId}: ${missing.code} ${missing.message}`);
             }
             (runConfig as ManagedSessionConfig).workspaceAttach = {
                 root: prepared.root.name,
@@ -1692,6 +1751,9 @@ export function registerActivities(
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
                 turnIndex: input.turnIndex ?? 0,
                 ...(typeof activityCtx?.sessionId === "string" && activityCtx.sessionId ? { affinityKey: activityCtx.sessionId } : {}),
+                ...(prepared.readOnly ? { readOnly: true } : {}),
+                ...(extrasAttached.length > 0 ? { extras: extrasAttached } : {}),
+                ...(extrasUnavailable.length > 0 ? { extrasUnavailable } : {}),
             };
         }
 
@@ -2091,19 +2153,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              * agent's set_session_workspace, run on this worker with the same
              * code as the turn preamble, at the revision the change would get.
              */
-            checkWorkspace: async (args: { workspace: import("./types.js").SessionWorkspace }) => {
-                const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), {
-                    sessionId: input.sessionId,
-                    rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
-                    workspace: args.workspace,
-                    revision: (input.workspaceRevision ?? 0) + 1,
-                    workerNodeId: workerNodeId ?? os.hostname(),
-                    turnIndex: input.turnIndex ?? 0,
-                });
-                return prepared.ok
-                    ? { ok: true as const, path: prepared.path }
-                    : { ok: false as const, code: prepared.code, message: prepared.message };
-            },
+            checkWorkspace: async (args: { workspace: import("./types.js").SessionWorkspace; extras?: string[]; skipWorkingFolder?: boolean }) => checkWorkspaceHere({
+                sessionId: input.sessionId,
+                rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                workspace: args.workspace,
+                revision: (input.workspaceRevision ?? 0) + 1,
+                workerNodeId: workerNodeId ?? os.hostname(),
+                turnIndex: input.turnIndex ?? 0,
+            }, {
+                ...(args.extras ? { extras: args.extras } : {}),
+                ...(args.skipWorkingFolder ? { skipWorkingFolder: true } : {}),
+            }),
             /**
              * Send a message to a session AS ITS USER.
              *
@@ -3825,6 +3885,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
             }
 
+            // Session workspaces (section 4.10): an optional extra folder that
+            // could not be attached is left out of this turn; say so.
+            const extrasUnavailable = (runConfig as ManagedSessionConfig).workspaceAttach?.extrasUnavailable ?? [];
+            if (extrasUnavailable.length > 0) {
+                const note = extrasUnavailable.map((missing) => `Extra folder "${missing.name}" (root ${missing.root}${missing.folder ? `, folder ${missing.folder}` : ""}) is not available this turn: `
+                    + `${missing.code}: ${missing.message}. Do not use its path in this turn.`).join("\n");
+                const split = splitSystemContextBlock(effectivePrompt);
+                effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${note}` : note);
+            }
+
             // Session workspaces (section 4.6): the repo agents and skills this
             // handle adopted, recorded when new or changed; the model is told
             // in this turn's system-context block.
@@ -4559,11 +4629,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     runtime.registerActivity("checkWorkspace", async (
         activityCtx: any,
         input: { sessionId: string; workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number },
-    ): Promise<{ ok: true; path: string } | { ok: false; code: string; message: string }> => {
+    ): Promise<{ ok: true; path: string | null; extras: Array<{ name: string; path: string; readOnly?: boolean }> } | { ok: false; code: string; message: string }> => {
         const row = catalog
             ? await cmsRetryBestEffort(`checkWorkspace.getSession session=${input.sessionId}`, () => catalog!.getSession(input.sessionId), (msg) => activityCtx.traceInfo?.(msg))
             : null;
-        const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), {
+        // The working folder and every extra folder of the record.
+        const checked = await checkWorkspaceHere({
             sessionId: input.sessionId,
             rootSessionId: (row as any)?.rootSessionId ?? input.sessionId,
             workspace: input.workspace,
@@ -4571,8 +4642,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             workerNodeId: workerNodeId ?? os.hostname(),
             turnIndex: input.turnIndex,
         });
-        activityCtx.traceInfo?.(`[checkWorkspace] session=${input.sessionId} ok=${prepared.ok}${prepared.ok ? ` path=${prepared.path}` : ` code=${prepared.code}`}`);
-        return prepared.ok ? { ok: true, path: prepared.path } : { ok: false, code: prepared.code, message: prepared.message };
+        activityCtx.traceInfo?.(`[checkWorkspace] session=${input.sessionId} ok=${checked.ok}${checked.ok ? ` path=${checked.path} extras=${checked.extras.length}` : ` code=${checked.code}`}`);
+        return checked;
     });
 
     // ── releaseWorkspace (session workspaces, orchestration 1.0.80) ──

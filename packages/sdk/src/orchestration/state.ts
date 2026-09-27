@@ -290,6 +290,32 @@ export function workspaceChangedNote(
     return `The working directory changed from ${describeWorkspace(from)} to ${describeWorkspace(to)}${path ? ` (${path})` : ""}.`;
 }
 
+/**
+ * The note the next turn gets when extra folders changed (section 4.10):
+ * added, moved or removed, with the paths when known. undefined when the
+ * folders stayed the same.
+ */
+export function extraFoldersChangedNote(
+    from: { extra?: Record<string, { root: string; folder?: string }> } | null | undefined,
+    to: { extra?: Record<string, { root: string; folder?: string }> } | null | undefined,
+    paths?: Record<string, string> | null,
+): string | undefined {
+    const before = from?.extra ?? {};
+    const after = to?.extra ?? {};
+    const parts: string[] = [];
+    for (const name of Object.keys(after).sort()) {
+        const next = after[name];
+        const old = before[name];
+        if (old && old.root === next.root && (old.folder ?? "") === (next.folder ?? "")) continue;
+        const at = paths?.[name] ? `, at ${paths[name]}` : "";
+        parts.push(`${old ? "moved" : "added"} "${name}" (${describeWorkspace(next)}${at})`);
+    }
+    for (const name of Object.keys(before).sort()) {
+        if (!after[name]) parts.push(`removed "${name}"`);
+    }
+    return parts.length > 0 ? `Your extra folders changed: ${parts.join("; ")}.` : undefined;
+}
+
 /** The gate behind a wait result, a timer or an interrupted wait. `budget: true` is the pre-1.0.80 spelling. */
 export function timerGate(value: { gate?: unknown; budget?: unknown } | null | undefined): "budget" | "workspace" | undefined {
     if (!value) return undefined;

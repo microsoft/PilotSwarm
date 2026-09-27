@@ -335,3 +335,69 @@ test("the deny hook refuses every tool once a workspace change is requested or p
     await refusing.onPreToolUse({ toolName: "set_session_workspace" }, {});
     assert.equal(requested, 0);
 });
+
+// ── Extra folders (section 4.10) ─────────────────────────────────
+
+test("extra folders reach the CLI as additional directories on create and on resume; a session without them gets no such key", async (t) => {
+    const h = fixture(t);
+    const extras = [
+        { name: "logs", root: "logs", rootPath: "/ws/logs", path: "/ws/logs/svc", realPath: "/ws/logs/svc", required: false },
+        { name: "shared", root: "shared", rootPath: "/ws/shared", path: "/ws/shared/notes", realPath: "/ws/shared/notes", required: true },
+    ];
+    const workspace = { ...WORKSPACE, extra: { logs: { root: "logs", folder: "svc", required: false }, shared: { root: "shared", folder: "notes" } } };
+    await h.manager.getOrCreate("s1", { workspace, workspaceAttach: { ...attach(), extras } }, { turnIndex: 0 });
+    assert.equal(h.calls.at(-1).kind, "create");
+    assert.deepEqual(h.calls.at(-1).config.additionalDirectories, ["/ws/logs/svc", "/ws/shared/notes"]);
+    assert.equal(h.calls.at(-1).config.workingDirectory, "/ws/a/repo-x");
+
+    // A new handle (new working folder) passes them again: the CLI keeps
+    // them only until a cold resume.
+    await h.manager.getOrCreate("s1", { workspace: { ...workspace, folder: "repo-y" }, workspaceAttach: { ...attach("repo-y"), extras } }, { turnIndex: 1 });
+    assert.equal(h.calls.at(-1).kind, "resume");
+    assert.deepEqual(h.calls.at(-1).config.additionalDirectories, ["/ws/logs/svc", "/ws/shared/notes"]);
+
+    // An optional folder that could not be attached is not passed.
+    await h.manager.getOrCreate("s2", {
+        workspace, workspaceAttach: { ...attach(), extras: [extras[1]], extrasUnavailable: [{ name: "logs", root: "logs", folder: "svc", code: "WORKSPACE_NOT_MOUNTED", message: "no marker" }] },
+    }, { turnIndex: 0 });
+    assert.deepEqual(h.calls.at(-1).config.additionalDirectories, ["/ws/shared/notes"]);
+
+    await h.manager.getOrCreate("s3", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
+    assert.equal("additionalDirectories" in h.calls.at(-1).config, false, "no extra folders, no key");
+    await h.manager.getOrCreate("plain", { workingDirectory: "/home/app" }, { turnIndex: 0 });
+    assert.equal("additionalDirectories" in h.calls.at(-1).config, false);
+});
+
+test("a change of extra folders keeps the warm session: they are not part of the fingerprint", async (t) => {
+    const h = fixture(t);
+    const first = await h.manager.getOrCreate("s1", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
+    const withLogs = {
+        workspace: { ...WORKSPACE, extra: { logs: { root: "logs", folder: "svc" } } },
+        workspaceAttach: { ...attach(), extras: [{ name: "logs", root: "logs", rootPath: "/ws/logs", path: "/ws/logs/svc", realPath: "/ws/logs/svc", required: true }] },
+    };
+    const same = await h.manager.getOrCreate("s1", withLogs, { turnIndex: 1 });
+    assert.equal(same, first, "adding an extra folder keeps the handle, so running shells keep running");
+    assert.equal(h.calls.length, 1);
+    const digest = (extras) => bindingFingerprintDigest(buildBindingFingerprintInput({
+        capabilityFingerprint: "c", baseAgentPolicy: undefined, sdkSkillDirectories: [], boundAgentName: undefined,
+        boundAgentSource: undefined, boundAgentCopy: undefined, mcpServers: {}, excludedTools: [], tools: [],
+        workspace: { path: "/ws/a/repo-x", adopt: null, ...(extras ? { extras } : {}) },
+    }));
+    assert.equal(digest(undefined), digest(["/ws/logs/svc"]), "the fingerprint input ignores anything but path, adopt and the repo hash");
+});
+
+test("an extra-folder-only set call marks no change, so the calls after it in the same message run", async () => {
+    const inner = { onPreToolUse: async () => ({ modifiedArgs: { x: 1 } }) };
+    let state = "none";
+    let requested = 0;
+    const change = { state: () => state, noteRequested: () => { requested += 1; state = "requested"; } };
+    const wrapped = withWorkspaceChangeDeny(inner, change);
+    await wrapped.onPreToolUse({ toolName: "set_session_workspace", toolArgs: { extra: { logs: { root: "logs", folder: "svc" } } } }, {});
+    await wrapped.onPreToolUse({ toolName: "set_session_workspace", toolArgs: JSON.stringify({ extra: { logs: null } }) }, {});
+    assert.equal(requested, 0);
+    assert.deepEqual(await wrapped.onPreToolUse({ toolName: "bash" }, {}), { modifiedArgs: { x: 1 } }, "the next call is not denied");
+
+    await wrapped.onPreToolUse({ toolName: "set_session_workspace", toolArgs: { root: "a", folder: "repo-y", extra: { logs: null } } }, {});
+    assert.equal(requested, 1, "a call that also moves the working folder is a change");
+    assert.equal((await wrapped.onPreToolUse({ toolName: "bash" }, {})).permissionDecision, "deny");
+});

@@ -1725,10 +1725,22 @@ export class PilotSwarmManagementClient {
             heldPrompts = users.filter((e: any) => Number(e.seq) > boundary && e.data?.workspaceQueued === true).length;
         }
         const adopted = latest("session.workspace_adopted");
+        // Extra folders' paths: the latest path each change reported, for the
+        // folders the current record still names.
+        const extraPaths: Record<string, string> = {};
+        for (const event of events) {
+            if ((event as any).eventType !== "session.workspace_changed") continue;
+            const paths = (event as any).data?.extraPaths;
+            if (paths && typeof paths === "object") {
+                for (const [name, value] of Object.entries(paths)) if (typeof value === "string") extraPaths[name] = value;
+            }
+        }
+        for (const name of Object.keys(extraPaths)) if (!workspace?.extra?.[name]) delete extraPaths[name];
         return {
             workspace,
             revision,
             path: typeof changed?.data?.path === "string" ? changed.data.path : null,
+            ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
             status: !workspace ? "none" : held ? "unavailable" : "ready",
             lastError: held
                 ? {

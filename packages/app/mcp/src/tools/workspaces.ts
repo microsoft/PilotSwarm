@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { mergeWorkspaceChange } from "pilotswarm-sdk";
 import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
@@ -10,7 +11,8 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
  * as its working directory.
  *
  *   get_session_workspace    the record, revision, path, status and adopted content
- *   set_session_workspace    set { root, folder } or clear, with the expected revision
+ *   set_session_workspace    change the working folder or the extra folders, or clear,
+ *                            with the expected revision; what is not named stays
  *   retry_session_workspace  retry now: run the held prompts, or hold them again
  */
 export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
@@ -33,24 +35,34 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
         {
             title: "Set Session Workspace",
             description:
-                "Set a session's workspace to { root, folder }, or clear it with clear=true. expected_revision must "
-                + "match the current revision (read it with get_session_workspace). Applied between turns: a busy "
-                + "session answers after its turn. The next turn runs in the new folder.",
+                "Change a session's workspace. { root, folder } sets the working folder; extra: { <name>: { root, folder, "
+                + "required } } adds or replaces an extra folder and extra: { <name>: null } removes one; clear=true clears "
+                + "everything. What you do not name stays as it is. expected_revision must match the current revision "
+                + "(read it with get_session_workspace). Applied between turns: a busy session answers after its turn.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to change"),
                 expected_revision: z.number().int().min(0).describe("The current workspace revision"),
-                root: z.string().optional().describe("A root name the deployment serves"),
+                root: z.string().optional().describe("A root name the deployment serves, for the working folder"),
                 folder: z.string().optional().describe("A folder relative to the root; omit for the root itself"),
-                clear: z.boolean().optional().describe("Clear the workspace instead of setting one"),
+                extra: z.record(z.string(), z.object({
+                    root: z.string(),
+                    folder: z.string().optional(),
+                    required: z.boolean().optional(),
+                }).nullable()).optional().describe("Extra folders by name: { root, folder, required } adds or replaces, null removes"),
+                clear: z.boolean().optional().describe("Clear the working folder and every extra folder"),
                 timeout_ms: z.number().int().min(1_000).max(300_000).optional().describe("Max time to wait for the answer, 1000 to 300000 ms"),
             },
         },
-        withToolErrors(async ({ session_id, expected_revision, root, folder, clear, timeout_ms }) => {
-            if (clear && root) return errorResult("pass either clear=true or a root, not both", { session_id });
-            if (!clear && !root) return errorResult("pass a root to set, or clear=true to clear", { session_id });
+        withToolErrors(async ({ session_id, expected_revision, root, folder, extra, clear, timeout_ms }) => {
+            // The same merge rules as the agent's tool, on the record read
+            // now: nothing the caller leaves out is dropped. The revision
+            // check catches a change made in between.
+            const current = await ctx.mgmt.getSessionWorkspace(session_id);
+            const merged = mergeWorkspaceChange(current.workspace, { root, folder, extra, clear });
+            if (!merged.ok) return errorResult(`${merged.code}: ${merged.message}`, { session_id });
             const result = await ctx.mgmt.setSessionWorkspace(
                 session_id,
-                { expectedRevision: expected_revision, workspace: clear ? null : { root: root!, ...(folder !== undefined ? { folder } : {}) } },
+                { expectedRevision: expected_revision, workspace: merged.next },
                 { ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) },
             );
             return jsonResult(result);

@@ -817,3 +817,128 @@ describe("workspace gate: fixes from the adversarial review", () => {
         expect(h.turns[1].opts.workspaceRevision).toBe(1);
     });
 });
+
+describe("workspace gate: extra folders (section 4.10)", () => {
+    beforeEach(() => { mockSession = null; mockManager = null; proxyConfigs = []; });
+    const setCmd = (id, expectedRevision, workspace) => JSON.stringify({ type: "cmd", cmd: "set_workspace", id, args: { expectedRevision, workspace } });
+    const responseOf = (h, id) => JSON.parse([...h.kv.entries()].find(([k]) => k === `command.response.${id}`)?.[1] ?? "null");
+    const LOGS = { root: "logs", folder: "svc" };
+    const addLogs = { type: "set_workspace_extra", extra: { logs: LOGS }, path: "/ws/a/sessions/s-1/app", extraPaths: { logs: "/ws/logs/svc" } };
+
+    it("the agent's extra-folder change rides a finished turn: stored and announced, with no continuation turn; the next turn gets the note", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "added", queuedActions: [addLogs] }), ran({ type: "completed", content: "second" })],
+            queue: [prompt("add the logs"), { afterTurns: 1, msg: prompt("second") }],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        const next = { ...WORKSPACE, extra: { logs: LOGS } };
+        expect(events(h, "session.workspace_changed").map((e) => e.data)).toEqual([
+            { workspace: WORKSPACE, revision: 1, path: null, source: "create" },
+            { workspace: next, revision: 2, path: "/ws/a/sessions/s-1/app", extraPaths: { logs: "/ws/logs/svc" }, source: "agent" },
+        ]);
+        // No system-only turn: the second turn is the user's next message.
+        expect(h.turns).toHaveLength(2);
+        expect(h.turns[1].prompt).toBe("second");
+        expect(h.turns[1].bootstrap).toBe(false);
+        expect(h.turns[1].opts.workspaceRevision).toBe(2);
+        expect(h.turns[1].opts.workspaceNotice).toBe('Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc).');
+        expect(proxyConfigs.at(-1).workspace).toEqual(next);
+        // Nothing moved the session: no release ran.
+        expect(h.releases).toHaveLength(0);
+    });
+
+    it("a removal drops the folder from the record; one for a name that is gone, or after a clear, changes nothing", async () => {
+        const handler = await latestHandler();
+        const withLogs = { ...WORKSPACE, extra: { logs: LOGS } };
+        const h = createHarness({
+            turnResults: [
+                ran({ type: "completed", content: "removed", queuedActions: [{ type: "set_workspace_extra", extra: { logs: null } }] }),
+                ran({ type: "completed", content: "again", queuedActions: [{ type: "set_workspace_extra", extra: { logs: null } }] }),
+            ],
+            queue: [prompt("drop the logs"), { afterTurns: 1, msg: prompt("drop them again") }],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true, config: { model: "fixture:model", workspace: withLogs } })), h);
+        const changed = events(h, "session.workspace_changed").map((e) => e.data);
+        expect(changed.map((e) => [e.revision, e.workspace])).toEqual([[1, withLogs], [2, WORKSPACE]]);
+        expect(h.turns[1].opts.workspaceNotice).toBe('Your extra folders changed: removed "logs".');
+
+        // A session with no workspace has nothing to add extra folders to.
+        const none = createHarness({
+            turnResults: [{ type: "completed", content: "done", queuedActions: [addLogs] }],
+            queue: [prompt("add without a workspace")],
+        });
+        drive(handler(none.ctx, INPUT({ blobEnabled: true, config: { model: "fixture:model" } })), none);
+        expect(events(none, "session.workspace_changed")).toHaveLength(0);
+    });
+
+    it("an extra-folder change is stored as soon as its turn ends, before the session waits for the next message", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "added", queuedActions: [addLogs] })],
+            queue: [prompt("add the logs")],
+        });
+        // Nothing else arrives: the drive parks in the idle wait.
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(events(h, "session.workspace_changed").map((e) => e.data.revision)).toEqual([1, 2]);
+        const order = h.sequence.filter((step) => step === "event:session.workspace_changed" || step === "event:session.turn_completed");
+        expect(order.at(-1)).toBe("event:session.workspace_changed");
+    });
+
+    it("a failed turn still stores an accepted extra-folder change, and the retry after the continue-as-new runs with it (review F8)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [ran({ type: "error", message: "Copilot was taking too long to process and was killed.", queuedActions: [addLogs] })],
+            queue: [prompt("add the logs, then work")],
+            fireTimers: 1,
+        });
+        const first = drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(first.kind).toBe("continueAsNew");
+        const next = { ...WORKSPACE, extra: { logs: LOGS } };
+        expect(events(h, "session.workspace_changed").map((e) => e.data)).toEqual([
+            { workspace: WORKSPACE, revision: 1, path: null, source: "create" },
+            { workspace: next, revision: 2, path: "/ws/a/sessions/s-1/app", extraPaths: { logs: "/ws/logs/svc" }, source: "agent" },
+        ]);
+        expect(first.input.config.workspace).toEqual(next);
+        expect(first.input.pendingToolActions).toBeUndefined();
+
+        // The retried prompt runs in the next execution with the new record.
+        const retry = createHarness({ turnResults: [ran({ type: "completed", content: "retried" })] });
+        drive(handler(retry.ctx, first.input), retry);
+        expect(retry.turns).toHaveLength(1);
+        expect(retry.turns[0].opts.workspaceRevision).toBe(2);
+        expect(proxyConfigs.at(-1).workspace).toEqual(next);
+    });
+
+    it("an external set that changes extra folders only checks them, keeps the working-directory note out, and names the folders", async () => {
+        const handler = await latestHandler();
+        const next = { ...WORKSPACE, extra: { logs: LOGS } };
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "first" }), ran({ type: "completed", content: "second" })],
+            queue: [prompt("first"), { afterTurns: 1, msg: setCmd("extras", 1, next) }, { afterTurns: 1, msg: prompt("second") }],
+            checkWorkspace: (args) => ({ ok: true, path: "/ws/a/sessions/s-1/app", extras: Object.keys(args.workspace.extra ?? {}).map((name) => ({ name, path: `/ws/${name}/svc` })) }),
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(h.checks.map((c) => c.args.workspace)).toEqual([next]);
+        expect(responseOf(h, "extras").result).toMatchObject({ ok: true, changed: true, revision: 2, workspace: next });
+        expect(events(h, "session.workspace_changed").at(-1).data).toEqual({
+            workspace: next, revision: 2, path: "/ws/a/sessions/s-1/app", extraPaths: { logs: "/ws/logs/svc" }, source: "external",
+        });
+        expect(h.turns[1].opts.workspaceNotice).toBe('Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc).');
+    });
+
+    it("the agent's working-folder change with a new extra folder notes both", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [
+                { type: "set_workspace", workspace: { schema: 1, root: "a", folder: "lib", extra: { logs: LOGS } }, path: "/ws/a/lib", extraPaths: { logs: "/ws/logs/svc" } },
+                { type: "completed", content: "continued" },
+            ],
+            queue: [prompt("switch to lib with the logs")],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(h.turns[1].opts.workspaceNotice).toBe(
+            'The working directory changed from root "a", folder "sessions/s-1/app" to root "a", folder "lib" (/ws/a/lib). '
+            + 'Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc).');
+    });
+});

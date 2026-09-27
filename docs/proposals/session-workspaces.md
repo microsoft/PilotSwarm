@@ -2,14 +2,17 @@
 
 **Status:** Phases 1 and 2 implemented on a feature branch; phase 3 (the
 reference deployment in the release environment) not started. **Date:**
-2026-09-27, revision 4. Revision 3 folded in review feedback and live checks
+2026-09-27, revision 5. Revision 3 folded in review feedback and live checks
 against the real Copilot CLI. Revision 4 records the fixes from the
-adversarial reviews of phase 2.
+adversarial reviews of phase 2. Revision 5 adds extra folders: folders a
+session can use next to its working folder (section 4.10).
 
 An agent works in a real git checkout that lives on a separate repo pod. It
 uses its native tools and native git as if it were on a developer's machine.
 The session can move between workers and keep both its conversation and its
-files. Sub-agents can work in the same checkout or in another repo.
+files. Sub-agents can work in the same checkout or in another repo. A session
+can also use a few extra folders next to its checkout, such as a log share
+or a shared notes folder.
 
 ## High-level design
 
@@ -199,7 +202,8 @@ Accepted, and stated here so nobody expects otherwise:
 | Repo service | The HTTP service inside the repo pod. It creates and removes session clones and holds their leases. |
 | Existing repo cache | An application's current pod for its repo tools, reached through exec. It does not export NFS, and this proposal does not touch it. |
 | Root | One exported directory, mounted at the same path on the repo pod and the agent pods. Example: `/ws/a`. |
-| Workspace | The folder a session uses as its working directory (cwd): `{ root, folder }`. |
+| Workspace | The folder a session uses as its working directory (cwd): `{ root, folder }`. Also called the working folder. |
+| Extra folder | Another folder a session can use next to its working folder, by name, for example a log share. Attached like the working folder, passed to the CLI as an additional directory, never its cwd. Section 4.10. |
 | Session clone | One `git clone --shared` of a mirror per session tree, shared by parent and children unless a child is given its own folder. It has its own branches, index, stash, config and hooks, and borrows objects from the mirror. Also called the checkout. |
 | Session tree | A root session and all of its child sessions. `rootSessionId` names the tree. |
 | Workspace provider | Application code that PilotSwarm calls to make a workspace ready on a worker: `listRoots`, `ensureAttached`, `release`. Called "the provider" below. |
@@ -317,9 +321,11 @@ cleanup, and the rules on its git servers.
 
 ```ts
 interface SessionWorkspace {
-    schema: 1;         // record version; v1 = one folder
+    schema: 1;         // record version
     root: string;      // a root name
     folder?: string;   // relative to the root; omitted = the root itself
+    extra?: Record<string, { root: string; folder?: string; required?: boolean }>;
+                       // extra folders by name (section 4.10); omitted = none
 }
 ```
 
@@ -350,8 +356,9 @@ interface SessionWorkspace {
   root names. The agent tool and `spawn_agent` do, because they run on a
   worker. A session created with an unknown root is held with
   `WORKSPACE_ROOT_UNKNOWN` on its first turn.
-- **v1 has one workspace per session.** The `schema` field lets a later
-  version hold several named folders.
+- **One working folder, up to four extra folders.** The working folder is
+  the cwd. Extra folders are named folders next to it (section 4.10). The
+  `schema` field stays 1: extra folders shipped with the first version.
 
 ### 4.2 The provider hook
 
@@ -365,15 +372,17 @@ interface WorkspaceProvider {
 interface WorkspaceAttachRequest {
     sessionId: string;
     rootSessionId: string;      // the session tree, for leases
-    workspace: SessionWorkspace;
+    workspace: SessionWorkspace; // ONE folder: { schema, root, folder }, never with extra
     revision: number;
     workerNodeId: string;       // the worker's own ID (its pod name), not the Kubernetes node
     turnIndex: number;          // rises every turn
+    attachment?: string;        // an extra folder's name (section 4.10); absent for the working folder
 }
 
 type WorkspaceAttachResult =
     | { ok: true; path: string;
-        adopt?: { agents: boolean; skills: boolean; instructions: boolean } }
+        adopt?: { agents: boolean; skills: boolean; instructions: boolean };  // ignored for an extra folder
+        readOnly?: boolean }    // the model is told; the mount enforces it
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 
 interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
@@ -410,9 +419,13 @@ Rules for provider implementations:
 | Who | How |
 |---|---|
 | Whoever creates the session | `createSession({ workspace })` |
-| The agent | `set_session_workspace({ root, folder })` or `({ clear: true })` |
+| The agent | `set_session_workspace({ root, folder })`, `({ extra: { <name>: {…} or null } })` or `({ clear: true })`. What the call does not name stays (section 4.10). |
 | Owner, admin or app controller | `setSessionWorkspace(sessionId, { expectedRevision, workspace })` |
 | A parent spawning a child | `spawn_agent({ task, workspace })`. `workspace` is a full `{ root, folder }` record. Omitted: the child inherits the parent's workspace. A record: the child gets that workspace. `null`: the child gets none. A record is checked on the parent's worker at spawn time: a bad folder fails the `spawn_agent` call and no child is created. The tool description tells the model: give the child its own folder when it will switch branches, stash, reset or commit while you keep working; two sessions in one clone share one HEAD, index and stash (K15). |
+
+The rest of this section is about a change of the working folder. A call
+that changes extra folders only does not end the turn; section 4.10 has its
+flow.
 
 **Which sessions get the tools.** The two workspace tools and the
 `spawn_agent` `workspace` parameter are declared in a session when it has a
@@ -911,6 +924,110 @@ C1–C6 prove that nothing else changes.
 | Orchestration | 1.0.80; freeze 1.0.79. Sessions without a workspace schedule the same activities and timers. The orchestration reacts to `config.workspace`, which is recorded data. Frozen 1.0.79 imports the live `session-proxy.ts`, `wait-affinity.ts` and `provider-budgets.ts`, so any change to a shared type must stay backward compatible: new fields on the runTurn input (`turnMeta`), on `TurnResult` (`workspaceAttached`) and on the `spawn_agent` action are optional and omitted when unset. The new activities (`releaseWorkspace`, `checkWorkspace`) are scheduled only from the 1.0.80 folder. C4 checks this. |
 | CMS | No migration in v1. The Web API, MCP and the portal read the current workspace from the latest `session.workspace_changed` event. The orchestration reads `config.workspace`. `sessions.creation_config` holds the creation-time workspace only and is never read as current. Session lists do not show or filter by workspace in v1. |
 
+### 4.10 Extra folders
+
+A session has one working folder, its cwd. It may also use up to four extra
+folders next to it: a log share, a shared notes folder, or a clone of a
+second repo on another repo pod. Each extra folder is attached before every
+turn like the working folder, and the CLI gets it as an additional
+directory. Nothing is adopted from an extra folder.
+
+```ts
+extra?: Record<string, {         // name: 1-32 of a-z 0-9 - _, starting with a letter or digit
+    root: string;
+    folder?: string;
+    required?: boolean;          // default true; the stored record leaves true out
+}>;
+```
+
+Rules on the record, checked by every caller with the folder-text check:
+
+- At most four extra folders (`MAX_WORKSPACE_EXTRAS`).
+- Each folder follows the working folder's text rules.
+- No two folders of one record overlap in a root: equal, or one inside the
+  other. A provider may lease a folder once per session. The reference
+  provider leases the clone that holds a folder, so an extra folder inside
+  the working clone would share its lease entry, and its release would
+  delete the working folder's entry. The text check does not follow links.
+
+**What differs from the working folder**
+
+| Part | Working folder | Extra folder |
+|---|---|---|
+| The CLI gets it as | `workingDirectory` | `additionalDirectories` |
+| A change applies | After the turn ends (4.3) | In the same turn |
+| The change ends the turn | Yes: later calls are denied | No |
+| Busy check (a running shell or task) | Refuses any change | Refuses a removal or a move; adding is allowed |
+| Attach fails before a turn | Prompt held (4.7) | `required`: held, and the notice names the folder. Optional: the turn runs without it, and the model gets a note |
+| Adopted content | Per `adopt` (4.6) | Nothing, whatever `adopt` says |
+| Fingerprint (4.4) | Path, adopt, repo hash | Not included: a new CLI handle would stop the session's running shells (4.5) |
+| Release (4.5) | Its own call | One call per folder, same reason, `attachment` = its name |
+
+**The provider** sees one folder per call. The working folder's request has
+no `attachment`; an extra folder's names it. `req.workspace` is always one
+`{ schema, root, folder }`, never the record with `extra`. A worker has one
+provider; `combineWorkspaceProviders([...])` sends each call to the provider
+that lists the request's root, so one worker can serve repo clones and plain
+folders. The reference example does this with `PS_PLAIN_ROOTS` (section 5).
+
+**The agent tool merges.** What the call does not name stays:
+
+```text
+set_session_workspace({ root, folder })            new working folder; the extra folders stay
+set_session_workspace({ extra: { logs: {…} } })    adds or replaces "logs"; ready in this turn
+set_session_workspace({ extra: { logs: null } })   removes "logs"; released after the turn
+set_session_workspace({ clear: true })             clears the working folder and every extra folder
+```
+
+The deny hook (4.3 step 3) decides from the call's arguments: a call with
+`root`, `folder` or `clear` changes the working folder; a call with only
+`extra` does not. A call that changes both applies when the turn ends, like
+a working-folder change, and its extra folders come with it.
+
+```text
+A change of extra folders only:
+1. Merge into the record as of this turn, including changes accepted earlier in it.
+2. Busy check, only when a folder is removed or moved.
+3. Attach and path check of each added or moved folder, on this worker. A failure
+   refuses the call, whether or not the folder is required.
+4. Answer with each new folder's path. The turn goes on.
+5. The change rides the turn result as a queued action (set_workspace_extra). The
+   orchestration stores it as soon as the turn ends, with the schedule actions:
+   revision + 1, the event with the folders' paths, and a note for the next turn:
+     "Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc)."
+   There is no continuation turn. A turn that fails after the answer still carries
+   the change (review F8).
+6. The next turn on this worker releases the removed or moved folders (reason
+   "changed"). The CLI handle and its shells stay. A folder the next turn keeps is
+   not released, also when the working folder changes.
+```
+
+**The external set** (`setSessionWorkspace`) still replaces the whole
+record, and its check covers the working folder and every extra folder. The
+portal's dialog edits the working folder only and sends the extra folders
+along, so a set from the portal drops none. The MCP tool
+`set_session_workspace` follows the agent tool's merge rules: it reads the
+record, merges, and sends the whole record with the expected revision.
+
+**Children.** `spawn_agent` without `workspace`: the child inherits the
+working folder and the extra folders. A record: the child gets exactly that
+record, and the spawn check attaches and releases every folder in it.
+`null`: none.
+
+**What the CLI does with them** (verified, CLI 1.0.83, section 10):
+
+- The environment section of the system prompt lists them: "Additional
+  directories available for file access".
+- Nothing is loaded from them: no agents, skills, `AGENTS.md`, MCP servers or
+  hooks, also with `skipCustomInstructions: false`.
+- The list is not kept across a cold resume, so PilotSwarm passes it on every
+  create and resume. A warm session keeps the list it started with until its
+  next resume; the note tells the model about a change in between.
+
+**Cost.** One more attach and path check per extra folder per turn, run side
+by side. A session without extra folders gets no `additionalDirectories` key
+and no new calls.
+
 ## 5. Reference deployment
 
 This is the application side, for guidance. PilotSwarm does not enforce it.
@@ -1110,6 +1227,14 @@ Remount of root `a` on one node:
    mount reuse the stale instance, so step 1 must finish first (or mount with
    `nosharecache`).
 ```
+
+**Plain roots.** A folder with no repo service behind it, such as a log
+share or a folder every session may write, is a plain root. The reference
+module serves plain roots from `PS_PLAIN_ROOTS` (`name=path`, a comma list)
+through PilotSwarm's built-in provider, combined with the repo provider by
+`combineWorkspaceProviders`: no leases and nothing adopted. Sessions use them
+as extra folders (section 4.10). A plain root name that is also a repo root
+stops the worker at start.
 
 ### 5.4 Git credentials and protections
 
@@ -1493,6 +1618,20 @@ The existing kill harness covers crashes mid-turn (M3).
 | P3 | P | 100 sessions running search, edit, status and commit: repo pod CPU, disk and NFS latency within budget, with no turn stalls |
 | P4 | P | 20 session clones created at once |
 
+### Extra folders (section 4.10)
+
+| ID | Level | Required result |
+|---|---|---|
+| X1 | U | Record rules: names, count, shapes, overlap; `required: true` left out; `sameWorkspace` compares extra folders, `sameWorkingFolder` does not |
+| X2 | U | Merge rules: add, replace, remove, clear, and the refusals; a new working folder keeps the extra folders |
+| X3 | U | The provider sees one folder per call, with `attachment`; nothing is adopted from an extra folder; `readOnly` passes through; the spawn check attaches and releases every folder; `combineWorkspaceProviders` routes by root and refuses a root listed twice |
+| X4 | U | Release: each folder by name with one reason; a change of extra folders releases only the removed or moved ones and keeps the handle and its shells; a kept folder is not released when the working folder changes |
+| X5 | U | CLI options: `additionalDirectories` on create and resume, never for a session without extra folders; extra folders are not in the fingerprint; the deny hook marks only working-folder changes |
+| X6 | L (orchestration) | A change of extra folders is stored when its turn ends, with the note and no continuation turn; a failed turn stores it before the retry; an external set of extra folders only notes the folders, not the working directory |
+| X7 | L | Real CLI: the folder is listed to the model and readable, nothing is adopted from it, and `get_session_workspace` shows it; added and used in the same turn; an optional folder that fails is left out with a note, a required one holds the prompt; adding while a shell runs works, removing is refused; the end releases every folder; a child inherits them |
+| X8 | L | Reference example: a git clone as the working folder and a log share as an extra folder. The agent reads the logs, commits in the clone, drops the logs in the middle of a turn, and the end releases the clone's lease |
+| X9 | U, L | Clients: the portal keeps extra folders on a set; MCP merges; the view reports the folders' paths |
+
 ### Fixes from the adversarial reviews (2026-09-27)
 
 Four reviewers read phase 2: orchestration, worker and CLI, security, and
@@ -1545,6 +1684,10 @@ removed.
 | C1 is a differential test against the merge-base | A checked-in golden |
 | Local tests use a scripted model and simulated git | Real models and real git servers |
 | Workspace turns and activities routed by an activity tag, `pilotswarm.workspaces.v1` (added 2026-09-27) | Relying on activity names during a rolling deploy |
+| Extra folders through the one `set_session_workspace` tool, with merge rules (added 2026-09-27) | Separate attach and detach tools |
+| Extra folders left out of the fingerprint | A new CLI handle on every change, which stops running shells |
+| A change of extra folders stored when its turn ends | At the orchestration's next wake-up |
+| No two folders of a record overlap in a root | Leases per attachment in every provider |
 
 **Verified with the real CLI 1.0.83 and a fake model endpoint**
 
@@ -1574,6 +1717,9 @@ removed.
 | An attached async shell | Keeps the turn open until it exits |
 | A stop while a shell is blocked | Returns to PilotSwarm in about 10 ms |
 | Two captures of one fixed session | Differ only in the CLI-owned cwd, git root, tools and session-folder lines |
+| `additionalDirectories` on create or resume | Listed in the environment section ("Additional directories available for file access"); a file there can be read |
+| Agents, skills, `AGENTS.md`, `.mcp.json` and hooks in an additional directory, discovery off | None loaded or started, also with `skipCustomInstructions: false` (the cwd's `AGENTS.md` does load then) |
+| A cold resume without `additionalDirectories` | The list is gone from the prompt; passing it again brings it back |
 
 **Verified with Duroxide (the durable-execution runtime)**
 

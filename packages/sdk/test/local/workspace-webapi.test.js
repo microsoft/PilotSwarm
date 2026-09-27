@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { deepStrictEqual } from "node:assert";
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -56,7 +57,7 @@ describe("session workspaces over the Web API", () => {
     beforeAll(async () => {
         env = createTestEnv("ws-webapi");
         root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-webapi-")));
-        for (const folder of ["repo-x", "repo-y"]) fs.mkdirSync(path.join(root, folder));
+        for (const folder of ["repo-x", "repo-y", "notes"]) fs.mkdirSync(path.join(root, folder));
         model = await startScriptedModel({ respond: pwdEveryTurn });
         const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
 
@@ -171,8 +172,29 @@ describe("session workspaces over the Web API", () => {
                 assertEqual(JSON.stringify(answer), JSON.stringify(retries.web), `${name} retry matches`);
             }
 
+            // Extra folders (section 4.10): MCP merges like the agent's tool.
+            // An extra-only set keeps the working folder; a working-folder
+            // set keeps the extra folders; null removes one.
+            const addExtra = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 2, extra: { notes: { root: "a", folder: "notes", required: false } } });
+            assert(!addExtra.isError, JSON.stringify(addExtra.value));
+            const withExtraView = await transport.getSessionWorkspace(session.sessionId);
+            assertEqual(withExtraView.extraPaths?.notes, path.join(root, "notes"), "the view reports the extra folder's path");
+            const withExtra = withExtraView.workspace;
+            // Key order does not survive the database.
+            deepStrictEqual(withExtra, { schema: 1, root: "a", folder: "repo-y", extra: { notes: { root: "a", folder: "notes", required: false } } });
+            const moveKeeps = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 3, root: "a", folder: "repo-x" });
+            assert(!moveKeeps.isError, JSON.stringify(moveKeeps.value));
+            const moved = (await directMgmt.getSessionWorkspace(session.sessionId)).workspace;
+            assertEqual(moved.folder, "repo-x");
+            deepStrictEqual(moved.extra, { notes: { root: "a", folder: "notes", required: false } }, "the extra folder stayed");
+            const unknownName = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 4, extra: { nope: null } });
+            assert(unknownName.isError && JSON.stringify(unknownName.value).includes('no extra folder is named \\"nope\\"'), JSON.stringify(unknownName.value));
+            const dropExtra = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 4, extra: { notes: null } });
+            assert(!dropExtra.isError, JSON.stringify(dropExtra.value));
+            assertEqual((await webMgmt.getSessionWorkspace(session.sessionId)).workspace.extra, undefined);
+
             // A clear through the transport, read back through the direct client.
-            await transport.setSessionWorkspace(session.sessionId, { expectedRevision: 2, workspace: null });
+            await transport.setSessionWorkspace(session.sessionId, { expectedRevision: 5, workspace: null });
             assertEqual((await directMgmt.getSessionWorkspace(session.sessionId)).status, "none");
         } finally {
             await mcp.close?.();

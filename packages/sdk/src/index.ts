@@ -164,6 +164,8 @@ export type {
     SendAttachmentInput,
     PromptAttachmentRef,
     SessionWorkspace,
+    SessionWorkspaceExtra,
+    WorkspaceExtraAttach,
     WorkspaceAdopt,
     WorkspaceRoot,
     WorkspaceAttachRequest,
@@ -181,8 +183,8 @@ export {
     WORKSPACE_ERROR_CODES,
 } from "./types.js";
 // Session workspaces
-export { validateWorkspaceText, sameWorkspace } from "./workspace-check.js";
-export { createBuiltInWorkspaceProvider } from "./workspace.js";
+export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
+export { createBuiltInWorkspaceProvider, combineWorkspaceProviders } from "./workspace.js";
 export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader

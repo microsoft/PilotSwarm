@@ -13,59 +13,268 @@
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { WORKSPACE_ERROR_CODES, type SessionWorkspace } from "./types.js";
+import { WORKSPACE_ERROR_CODES, type SessionWorkspace, type SessionWorkspaceExtra } from "./types.js";
 
 export type WorkspaceCheckFailure = { ok: false; code: string; message: string };
 
 const MAX_ROOT_NAME_LENGTH = 128;
 const MAX_FOLDER_LENGTH = 1024;
-const WORKSPACE_FIELDS = new Set(["schema", "root", "folder"]);
+const WORKSPACE_FIELDS = new Set(["schema", "root", "folder", "extra"]);
+const EXTRA_FIELDS = new Set(["root", "folder", "required"]);
+
+/** The most extra folders one workspace may name (section 4.10). */
+export const MAX_WORKSPACE_EXTRAS = 4;
+/** An extra folder's name: what the model and the provider call it. */
+const EXTRA_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 function fail(code: string, message: string): WorkspaceCheckFailure {
     return { ok: false, code, message };
 }
 
+const invalid = (message: string) => fail(WORKSPACE_ERROR_CODES.PATH_INVALID, message);
+
+/** The root and folder rules, shared by the working folder and each extra folder. */
+function checkRootAndFolder(root: unknown, folder: unknown, what: string): { ok: true; root: string; folder?: string } | WorkspaceCheckFailure {
+    if (typeof root !== "string" || root.length === 0) return invalid(`${what} root must be a non-empty string`);
+    if (root.length > MAX_ROOT_NAME_LENGTH) return invalid(`${what} root is longer than ${MAX_ROOT_NAME_LENGTH} characters`);
+    if (root.includes("\0") || root.includes("/") || root !== root.trim()) {
+        return invalid(`${what} root must be a root name, not a path`);
+    }
+    if (folder === undefined || folder === null) return { ok: true, root };
+    if (typeof folder !== "string") return invalid(`${what} folder must be a string`);
+    if (folder.length > MAX_FOLDER_LENGTH) return invalid(`${what} folder is longer than ${MAX_FOLDER_LENGTH} characters`);
+    if (folder.includes("\0")) return invalid(`${what} folder must not contain a NUL character`);
+    if (folder.startsWith("/")) return invalid(`${what} folder must be relative to the root`);
+    const normalized = path.posix.normalize(folder).replace(/\/+$/, "");
+    if (normalized === ".." || normalized.startsWith("../")) return invalid(`${what} folder must stay inside the root`);
+    if (normalized === "" || normalized === ".") return { ok: true, root };
+    return { ok: true, root, folder: normalized };
+}
+
 /**
- * The folder-text check. Accepts `{ root, folder? }` (schema optional, must
- * be 1 when given) and returns the normalized record: folder is relative, has
- * no NUL, no `..` after normalizing, and no trailing slash. An empty folder or
- * "." means the root itself, so `folder` is left out. Root names are not
- * checked against a list here; only a worker knows the roots.
+ * The extra-folder map: names, shapes and the count. With `allowNull`, a
+ * null value (remove that folder) is kept as null; that form is only for
+ * the agent tool's merge. Names come back sorted.
+ */
+function checkExtraMap(input: unknown, allowNull: boolean): { ok: true; extra: Record<string, SessionWorkspaceExtra | null> } | WorkspaceCheckFailure {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+        return invalid("extra must be an object that maps a folder name to { root, folder, required }");
+    }
+    const names = Object.keys(input as Record<string, unknown>).sort();
+    if (names.length > MAX_WORKSPACE_EXTRAS * 2) return invalid(`extra names too many folders; at most ${MAX_WORKSPACE_EXTRAS} are allowed`);
+    const extra: Record<string, SessionWorkspaceExtra | null> = {};
+    for (const name of names) {
+        if (!EXTRA_NAME.test(name)) {
+            return invalid(`extra folder name "${name}" must be 1-32 lowercase letters, digits, "-" or "_", starting with a letter or digit`);
+        }
+        const value = (input as Record<string, unknown>)[name];
+        if (value === null && allowNull) {
+            extra[name] = null;
+            continue;
+        }
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return invalid(`extra folder "${name}" must be an object with a root, an optional folder and an optional required flag`);
+        }
+        const raw = value as Record<string, unknown>;
+        for (const key of Object.keys(raw)) {
+            if (!EXTRA_FIELDS.has(key)) return invalid(`unknown field "${key}" in extra folder "${name}"; expected root, folder and required`);
+        }
+        const checked = checkRootAndFolder(raw.root, raw.folder, `extra folder "${name}"`);
+        if (!checked.ok) return checked;
+        if (raw.required !== undefined && typeof raw.required !== "boolean") return invalid(`extra folder "${name}": required must be true or false`);
+        extra[name] = {
+            root: checked.root,
+            ...(checked.folder ? { folder: checked.folder } : {}),
+            ...(raw.required === false ? { required: false } : {}),
+        };
+    }
+    return { ok: true, extra };
+}
+
+/** One folder is the other, or holds it, in the same root. The text only; links are not followed. */
+function foldersOverlap(a: { root: string; folder?: string }, b: { root: string; folder?: string }): boolean {
+    if (a.root !== b.root) return false;
+    const x = a.folder ?? "";
+    const y = b.folder ?? "";
+    return x === y || x === "" || y === "" || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+/**
+ * The folder-text check. Accepts `{ root, folder?, extra? }` (schema
+ * optional, must be 1 when given) and returns the normalized record: each
+ * folder is relative, has no NUL, no `..` after normalizing, and no trailing
+ * slash. An empty folder or "." means the root itself, so `folder` is left
+ * out. Extra folders (section 4.10): at most MAX_WORKSPACE_EXTRAS, by name;
+ * `required: true` is the default and is left out; no two folders of the
+ * record may overlap, because a provider may lease a folder once per
+ * session. Root names are not checked against a list here; only a worker
+ * knows the roots.
  */
 export function validateWorkspaceText(input: unknown): { ok: true; workspace: SessionWorkspace } | WorkspaceCheckFailure {
-    const invalid = (message: string) => fail(WORKSPACE_ERROR_CODES.PATH_INVALID, message);
     if (!input || typeof input !== "object" || Array.isArray(input)) {
         return invalid("workspace must be an object with a root and an optional folder");
     }
     const raw = input as Record<string, unknown>;
     for (const key of Object.keys(raw)) {
-        if (!WORKSPACE_FIELDS.has(key)) return invalid(`unknown workspace field "${key}"; expected root and folder`);
+        if (!WORKSPACE_FIELDS.has(key)) return invalid(`unknown workspace field "${key}"; expected root, folder and extra`);
     }
     if (raw.schema !== undefined && raw.schema !== 1) {
         return invalid(`unsupported workspace schema ${String(raw.schema)}; this version supports schema 1`);
     }
-    const root = raw.root;
-    if (typeof root !== "string" || root.length === 0) return invalid("workspace root must be a non-empty string");
-    if (root.length > MAX_ROOT_NAME_LENGTH) return invalid(`workspace root is longer than ${MAX_ROOT_NAME_LENGTH} characters`);
-    if (root.includes("\0") || root.includes("/") || root !== root.trim()) {
-        return invalid("workspace root must be a root name, not a path");
+    const base = checkRootAndFolder(raw.root, raw.folder, "workspace");
+    if (!base.ok) return base;
+    const workspace: SessionWorkspace = { schema: 1, root: base.root, ...(base.folder ? { folder: base.folder } : {}) };
+    if (raw.extra === undefined || raw.extra === null) return { ok: true, workspace };
+    const checked = checkExtraMap(raw.extra, false);
+    if (!checked.ok) return checked;
+    const names = Object.keys(checked.extra);
+    if (names.length > MAX_WORKSPACE_EXTRAS) return invalid(`a workspace has at most ${MAX_WORKSPACE_EXTRAS} extra folders; this one names ${names.length}`);
+    if (names.length === 0) return { ok: true, workspace };
+    const extra = checked.extra as Record<string, SessionWorkspaceExtra>;
+    for (const name of names) {
+        if (foldersOverlap(extra[name], workspace)) {
+            return invalid(`extra folder "${name}" overlaps the working folder; pick a folder outside it`);
+        }
     }
-    const folder = raw.folder;
-    if (folder === undefined || folder === null) return { ok: true, workspace: { schema: 1, root } };
-    if (typeof folder !== "string") return invalid("workspace folder must be a string");
-    if (folder.length > MAX_FOLDER_LENGTH) return invalid(`workspace folder is longer than ${MAX_FOLDER_LENGTH} characters`);
-    if (folder.includes("\0")) return invalid("workspace folder must not contain a NUL character");
-    if (folder.startsWith("/")) return invalid("workspace folder must be relative to the root");
-    const normalized = path.posix.normalize(folder).replace(/\/+$/, "");
-    if (normalized === ".." || normalized.startsWith("../")) return invalid("workspace folder must stay inside the root");
-    if (normalized === "" || normalized === ".") return { ok: true, workspace: { schema: 1, root } };
-    return { ok: true, workspace: { schema: 1, root, folder: normalized } };
+    for (let i = 0; i < names.length; i += 1) {
+        for (let j = i + 1; j < names.length; j += 1) {
+            if (foldersOverlap(extra[names[i]], extra[names[j]])) {
+                return invalid(`extra folders "${names[i]}" and "${names[j]}" overlap; each must be a separate folder`);
+            }
+        }
+    }
+    workspace.extra = extra;
+    return { ok: true, workspace };
 }
 
-/** Two records name the same folder. Both must already be normalized. */
-export function sameWorkspace(a: SessionWorkspace | null | undefined, b: SessionWorkspace | null | undefined): boolean {
+/** The working folder alone: the record without its extra folders. */
+export function workingFolderOf(workspace: SessionWorkspace): SessionWorkspace {
+    return { schema: 1, root: workspace.root, ...(workspace.folder ? { folder: workspace.folder } : {}) };
+}
+
+/** One extra folder as a record of its own, for the provider. */
+export function extraFolderRecord(extra: SessionWorkspaceExtra): SessionWorkspace {
+    return { schema: 1, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}) };
+}
+
+/** Two records name the same working folder. Extra folders are not compared. */
+export function sameWorkingFolder(a: SessionWorkspace | null | undefined, b: SessionWorkspace | null | undefined): boolean {
     if (!a || !b) return !a && !b;
     return a.root === b.root && (a.folder ?? "") === (b.folder ?? "");
+}
+
+function sameExtra(a: SessionWorkspaceExtra | undefined, b: SessionWorkspaceExtra | undefined): boolean {
+    if (!a || !b) return !a && !b;
+    return a.root === b.root && (a.folder ?? "") === (b.folder ?? "") && (a.required !== false) === (b.required !== false);
+}
+
+/** Two records name the same folders: the working folder and every extra folder. Both must already be normalized. */
+export function sameWorkspace(a: SessionWorkspace | null | undefined, b: SessionWorkspace | null | undefined): boolean {
+    if (!sameWorkingFolder(a, b)) return false;
+    if (!a || !b) return true;
+    const names = new Set([...Object.keys(a.extra ?? {}), ...Object.keys(b.extra ?? {})]);
+    for (const name of names) {
+        if (!sameExtra(a.extra?.[name], b.extra?.[name])) return false;
+    }
+    return true;
+}
+
+/**
+ * Whether a set_session_workspace call changes the working folder: it has
+ * a root, a folder or clear. A call with only `extra` does not, so it does
+ * not end the turn. The deny hook asks this before the handler runs.
+ */
+export function callChangesWorkingFolder(args: unknown): boolean {
+    let value = args;
+    if (typeof value === "string") {
+        try { value = JSON.parse(value); } catch { return true; }
+    }
+    if (!value || typeof value !== "object") return true;
+    const raw = value as Record<string, unknown>;
+    // Anything but a plain extra-only call is treated as a change of the
+    // working folder, so a malformed call still gets the stricter handling.
+    // The handler drops the mark again if it accepts extras only.
+    const extraOnly = raw.extra !== undefined && raw.extra !== null
+        && raw.root === undefined && raw.folder === undefined && raw.clear !== true;
+    return !extraOnly;
+}
+
+export interface WorkspaceChangeInput {
+    root?: unknown;
+    folder?: unknown;
+    clear?: unknown;
+    extra?: unknown;
+}
+
+export type WorkspaceMerge =
+    | {
+        ok: true;
+        /** The record after the change; null after clear. */
+        next: SessionWorkspace | null;
+        /** The working folder changes (or is cleared), so the change waits for the turn to end. */
+        changesWorkingFolder: boolean;
+        /** The patch as given, normalized: a record adds or replaces, null removes. */
+        extraPatch: Record<string, SessionWorkspaceExtra | null>;
+        added: string[];
+        replaced: string[];
+        removed: string[];
+    }
+    | WorkspaceCheckFailure;
+
+/**
+ * The agent tool's change, merged into the current record (section 4.10):
+ *
+ *   { root, folder }        a new working folder; the extra folders stay
+ *   { extra: { logs: {…} } } adds or replaces "logs"; the rest stays
+ *   { extra: { logs: null } } removes "logs"
+ *   { clear: true }         clears the working folder and every extra folder
+ *
+ * Omitted parts keep their current value, so the model never resends what
+ * it keeps.
+ */
+export function mergeWorkspaceChange(current: SessionWorkspace | null | undefined, change: WorkspaceChangeInput): WorkspaceMerge {
+    const hasRoot = change.root !== undefined && change.root !== null;
+    const hasFolder = change.folder !== undefined && change.folder !== null;
+    const hasExtra = change.extra !== undefined && change.extra !== null;
+    if (change.clear !== undefined && change.clear !== true && change.clear !== false) return invalid("clear must be true or false");
+    if (change.clear === true) {
+        if (hasRoot || hasFolder || hasExtra) return invalid("pass either clear=true or a change, not both");
+        const removed = Object.keys(current?.extra ?? {});
+        return { ok: true, next: null, changesWorkingFolder: true, extraPatch: {}, added: [], replaced: [], removed };
+    }
+    if (hasFolder && !hasRoot) return invalid("pass root with folder; omit both to keep the working folder");
+    if (!hasRoot && !hasExtra) return invalid("pass root and folder for a new working folder, extra to change extra folders, or clear=true");
+    let patch: Record<string, SessionWorkspaceExtra | null> = {};
+    if (hasExtra) {
+        const checked = checkExtraMap(change.extra, true);
+        if (!checked.ok) return checked;
+        patch = checked.extra;
+    }
+    const base = hasRoot
+        ? { root: change.root, ...(hasFolder ? { folder: change.folder } : {}) }
+        : current ? workingFolderOf(current) : null;
+    if (!base) return invalid("set a working folder first (root and folder); extra folders need one");
+    const extra: Record<string, SessionWorkspaceExtra> = { ...(current?.extra ?? {}) };
+    const added: string[] = [];
+    const replaced: string[] = [];
+    const removed: string[] = [];
+    for (const [name, value] of Object.entries(patch)) {
+        if (value === null) {
+            if (!extra[name]) return invalid(`no extra folder is named "${name}"`);
+            delete extra[name];
+            removed.push(name);
+        } else {
+            if (!extra[name]) added.push(name);
+            else if (!sameExtra(extra[name], value)) replaced.push(name);
+            extra[name] = value;
+        }
+    }
+    const candidate: Record<string, unknown> = { schema: 1, ...base };
+    if (Object.keys(extra).length > 0) candidate.extra = extra;
+    const checked = validateWorkspaceText(candidate);
+    if (!checked.ok) return checked;
+    const changesWorkingFolder = hasRoot && !sameWorkingFolder(current ?? null, checked.workspace);
+    return { ok: true, next: checked.workspace, changesWorkingFolder, extraPatch: patch, added, replaced, removed };
 }
 
 // ─── Path check ───────────────────────────────────────────────────

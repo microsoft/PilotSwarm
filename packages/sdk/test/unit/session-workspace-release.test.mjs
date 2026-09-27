@@ -258,3 +258,67 @@ test("the quick check before a child is created releases with spawn_check", asyn
     assert.equal(checked.ok, true, checked.message);
     assert.deepEqual(provider.callsFor("release").map((r) => [r.req.sessionId, r.req.reason]), [["child-1", "spawn_check"]]);
 });
+
+// ── Extra folders (section 4.10) ─────────────────────────────────
+
+const WITH_EXTRAS = {
+    ...WORKSPACE,
+    extra: { logs: { root: "logs", folder: "svc" }, shared: { root: "shared", folder: "notes", required: false } },
+};
+const extraAttach = (name, root, folder) => ({
+    name, root, folder, rootPath: `/ws/${root}`, path: `/ws/${root}/${folder}`, realPath: `/ws/${root}/${folder}`, required: true,
+});
+const ATTACH_WITH_EXTRAS = {
+    ...ATTACH,
+    extras: [extraAttach("logs", "logs", "svc"), extraAttach("shared", "shared", "notes")],
+};
+const byAttachment = (releases) => releases
+    .map((r) => [r.attachment ?? "(working folder)", r.workspace, r.reason])
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+test("a release tells the provider about the working folder and each extra folder, by name, with one reason", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    await h.manager.releaseWorkspace("s1", { reason: "destroy", workerNodeId: "worker-a" });
+    assert.deepEqual(byAttachment(h.releases), [
+        ["(working folder)", WORKSPACE, "ended"],
+        ["logs", { schema: 1, root: "logs", folder: "svc" }, "ended"],
+        ["shared", { schema: 1, root: "shared", folder: "notes" }, "ended"],
+    ], "the working folder goes without its extra folders; each extra folder goes on its own");
+    for (const r of h.releases) {
+        assert.equal(r.sessionId, "s1");
+        assert.equal(r.rootSessionId, "root-1");
+        assert.equal(r.workerNodeId, "worker-a");
+    }
+});
+
+test("changing extra folders only releases the removed or moved ones at the next turn, and keeps the handle and its shells", async (t) => {
+    const h = fixture(t, { tasks: [{ id: "sh-1", type: "shell", status: "running" }] });
+    const first = await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    const next = {
+        workspace: { ...WORKSPACE, extra: { logs: { root: "logs", folder: "other" } } },
+        workspaceAttach: { ...ATTACH, extras: [extraAttach("logs", "logs", "other")] },
+    };
+    const again = await h.manager.getOrCreate("s1", next, { turnIndex: 1 });
+    assert.equal(again, first, "the warm session stays: extra folders are not in the fingerprint");
+    assert.equal(h.handles.length, 1, "no new CLI handle");
+    assert.deepEqual(h.order, ["release", "release"], "no task cancel, no disconnect");
+    assert.deepEqual(byAttachment(h.releases), [
+        ["logs", { schema: 1, root: "logs", folder: "svc" }, "changed"],
+        ["shared", { schema: 1, root: "shared", folder: "notes" }, "changed"],
+    ], "the moved one at its old folder, and the removed one");
+});
+
+test("a new working folder releases the old one but not an extra folder the next turn keeps", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    const moved = {
+        workspace: { schema: 1, root: "a", folder: "repo-y", extra: { logs: { root: "logs", folder: "svc" } } },
+        workspaceAttach: { ...ATTACH, path: "/ws/a/repo-y", realPath: "/ws/a/repo-y", extras: [extraAttach("logs", "logs", "svc")] },
+    };
+    await h.manager.getOrCreate("s1", moved, { turnIndex: 1 });
+    assert.deepEqual(byAttachment(h.releases), [
+        ["(working folder)", WORKSPACE, "changed"],
+        ["shared", { schema: 1, root: "shared", folder: "notes" }, "changed"],
+    ], "logs stays attached: the preamble of this turn attached it again");
+});

@@ -14,9 +14,11 @@
  *   { type: "throw", error? }                         rejects with an Error
  * Every outcome takes `times` (omitted = every call). When the count runs out,
  * the call falls back to the next matching script, then to the default.
- * Scope: { method = "ensureAttached", workerNodeId?, sessionId? }. The most
- * specific match wins (session + worker, then session, then worker, then all);
- * among equals, the newest script wins.
+ * Scope: { method = "ensureAttached", workerNodeId?, sessionId?, attachment? }.
+ * `attachment` matches the extra folder's name in the request (section 4.10);
+ * "" matches the working folder only. The most specific match wins
+ * (attachment first, then session + worker, then session, then worker, then
+ * all); among equals, the newest script wins.
  *
  * Records: { seq, method, req, workerNodeId, sessionId, outcome, pending,
  * result? , error? }. `req` and `result` are deep copies. `error` is a plain
@@ -39,7 +41,7 @@ const copyRoots = list => list.map(({ name, path: rootPath }) => ({ name, path: 
 const clone = value => (value === undefined ? undefined : structuredClone(value));
 
 function specificity(entry) {
-    return (entry.sessionId != null ? 2 : 0) + (entry.workerNodeId != null ? 1 : 0);
+    return (entry.attachment != null ? 4 : 0) + (entry.sessionId != null ? 2 : 0) + (entry.workerNodeId != null ? 1 : 0);
 }
 
 function matches(record, filter) {
@@ -143,6 +145,7 @@ export function createFakeWorkspaceProvider(opts = {}) {
             if (entry.method !== record.method) continue;
             if (entry.workerNodeId != null && entry.workerNodeId !== record.workerNodeId) continue;
             if (entry.sessionId != null && entry.sessionId !== record.sessionId) continue;
+            if (entry.attachment != null && entry.attachment !== (record.req?.attachment ?? "")) continue;
             if (!best || specificity(entry) > specificity(best)
                 || (specificity(entry) === specificity(best) && entry.order > best.order)) best = entry;
         }
@@ -226,6 +229,8 @@ export function createFakeWorkspaceProvider(opts = {}) {
         // to the one that finished last.
         for (const { kind, record } of events) {
             if (!record.sessionId) continue;
+            // Holders track the working folder; extra folders are not leased here.
+            if (record.req?.attachment) continue;
             const holder = state.get(record.sessionId);
             if (record.method === "ensureAttached") {
                 if (kind === "call" && holder && !holder.released && holder.workerNodeId !== record.workerNodeId) dead.add(record.sessionId);
@@ -260,13 +265,14 @@ export function createFakeWorkspaceProvider(opts = {}) {
             else rootAdopt.set(root, clone(adopt));
         },
 
-        script(outcome, { method = "ensureAttached", workerNodeId, sessionId } = {}) {
+        script(outcome, { method = "ensureAttached", workerNodeId, sessionId, attachment } = {}) {
             if (!METHODS.has(method)) throw new TypeError(`fake provider: unknown method ${method}`);
             checkOutcome(outcome);
             scripts.push({
                 method,
                 workerNodeId: workerNodeId ?? null,
                 sessionId: sessionId ?? null,
+                attachment: attachment ?? null,
                 outcome: { ...outcome },
                 remaining: outcome.times ?? Infinity,
                 order: ++scriptOrder,
@@ -278,7 +284,8 @@ export function createFakeWorkspaceProvider(opts = {}) {
             if (!scope) { scripts = []; return; }
             const method = scope.method ?? "ensureAttached";
             scripts = scripts.filter(e => !(e.method === method
-                && e.workerNodeId === (scope.workerNodeId ?? null) && e.sessionId === (scope.sessionId ?? null)));
+                && e.workerNodeId === (scope.workerNodeId ?? null) && e.sessionId === (scope.sessionId ?? null)
+                && e.attachment === (scope.attachment ?? null)));
         },
 
         /** Lets hung calls go on. settleWith: an ok, fail or throw outcome; omitted = default behavior. */

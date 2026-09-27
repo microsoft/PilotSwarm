@@ -7650,10 +7650,22 @@ export function normalizeSessionWorkspaceView(view, sessionId = null) {
     const workspace = view.workspace && typeof view.workspace === "object" ? view.workspace : null;
     const status = ["none", "ready", "unavailable"].includes(view.status) ? view.status : (workspace ? "ready" : "none");
     const adopted = view.adopted && typeof view.adopted === "object" ? view.adopted : null;
+    // Extra folders (section 4.10): the session can use them next to its
+    // working folder. Paths are known once a change has reported them.
+    const extraPaths = view.extraPaths && typeof view.extraPaths === "object" ? view.extraPaths : {};
+    const extras = Object.entries(workspace?.extra && typeof workspace.extra === "object" ? workspace.extra : {})
+        .filter(([, extra]) => extra && typeof extra === "object")
+        .map(([name, extra]) => ({
+            name,
+            label: formatSessionWorkspace(extra),
+            required: extra.required !== false,
+            path: typeof extraPaths[name] === "string" ? extraPaths[name] : null,
+        }));
     return {
         sessionId,
         workspace,
         label: formatSessionWorkspace(workspace),
+        extras,
         root: workspace?.root ?? null,
         folder: workspace?.folder ?? null,
         status,
@@ -7689,6 +7701,9 @@ function buildSessionWorkspaceLines(state, sessionId, w) {
     }
     lines.push(row("Revision", String(view.revision), "gray"));
     if (view.path) lines.push(row("Path", view.path, "gray"));
+    for (const extra of view.extras) {
+        lines.push(row("Extra", `${extra.name}: ${extra.label}${extra.required ? "" : " (optional)"}`));
+    }
     if (view.adoptedAgents.length) lines.push(row("Agents", view.adoptedAgents.join(", ")));
     if (view.adoptedSkills.length) lines.push(row("Skills", view.adoptedSkills.join(", ")));
     lines.push(plainInspectorLine(`W set or clear${view.actions.retry ? " · Y retry now" : ""}`, "gray"));
@@ -7705,6 +7720,7 @@ export function selectSessionWorkspaceModal(state, maxWidth = 80) {
     const root = slash < 0 ? trimmed : trimmed.slice(0, slash);
     const folder = slash < 0 ? "" : trimmed.slice(slash + 1);
     const current = formatSessionWorkspace(modal.current);
+    const extras = Object.keys(modal.current?.extra && typeof modal.current.extra === "object" ? modal.current.extra : {});
     return {
         title: modal.title || "Workspace",
         value,
@@ -7728,6 +7744,9 @@ export function selectSessionWorkspaceModal(state, maxWidth = 80) {
             trimmed
                 ? [{ text: "Next: ", color: "gray" }, { text: `root "${root}"${folder ? `, folder "${folder}"` : ""}`, color: "white", bold: true }]
                 : [{ text: "Next: ", color: "gray" }, { text: "no workspace (clear)", color: "white", bold: true }],
+            ...(extras.length > 0
+                ? [[{ text: "Extra folders: ", color: "gray" }, { text: `${extras.join(", ")} (${trimmed ? "kept" : "cleared too"})`, color: "white" }]]
+                : []),
             [{ text: "A running turn finishes first; the next turn runs in the new folder.", color: "gray" }],
         ],
         idealWidth: Math.min(Math.max(64, displayLength(value) + 18), maxWidth),

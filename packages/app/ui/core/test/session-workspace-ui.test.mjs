@@ -179,3 +179,41 @@ test("both hosts reach the same three commands", () => {
     assert.match(web, /workspace\?\.actions\.clear \? React\.createElement\("button", \{[\s\S]{0,200}UI_COMMANDS\.CLEAR_WORKSPACE/);
     assert.match(web, /workspace\?\.actions\.retry \? React\.createElement\("button", \{[\s\S]{0,200}UI_COMMANDS\.RETRY_WORKSPACE/);
 });
+
+// ── Extra folders (section 4.10) ─────────────────────────────────
+
+const WITH_EXTRAS = {
+    ...READY,
+    workspace: { schema: 1, root: "a", folder: "repo-x", extra: { logs: { root: "logs", folder: "svc", required: false }, shared: { root: "shared" } } },
+    extraPaths: { logs: "/ws/logs/svc", gone: "/ws/old" },
+};
+
+test("the selector and the stats tab show extra folders, with their paths when known", async () => {
+    const h = await seeded(WITH_EXTRAS);
+    const view = selectSessionWorkspace(h.state());
+    assert.deepEqual(view.extras, [
+        { name: "logs", label: "logs/svc", required: false, path: "/ws/logs/svc" },
+        { name: "shared", label: "shared", required: true, path: null },
+    ]);
+    const text = statsText(h.state());
+    assert.match(text, /Extra\s+logs: logs\/svc \(optional\)\n/);
+    assert.match(text, /Extra\s+shared: shared\n/);
+    assert.deepEqual(selectSessionWorkspace((await seeded(READY)).state()).extras, [], "none without extra folders");
+});
+
+test("setting the working folder from the dialog keeps the extra folders; the dialog says so", async () => {
+    const h = await seeded(WITH_EXTRAS);
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    const modal = selectSessionWorkspaceModal(h.state());
+    const details = modal.detailsLines.map(lineText).join("\n");
+    assert.match(details, /Extra folders: logs, shared \(kept\)/);
+    h.controller.setSetWorkspaceValue("a/repo-y");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.deepEqual(h.calls.find((c) => c[0] === "set")[2].workspace, {
+        root: "a", folder: "repo-y", extra: WITH_EXTRAS.workspace.extra,
+    }, "the whole-record set carries the extra folders, so none is dropped");
+
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    h.controller.setSetWorkspaceValue("");
+    assert.match(selectSessionWorkspaceModal(h.state()).detailsLines.map(lineText).join("\n"), /Extra folders: logs, shared \(cleared too\)/);
+});

@@ -16,11 +16,20 @@ import {
     type WorkspaceAdopt,
     type WorkspaceAttachRequest,
     type WorkspaceAttachResult,
+    type WorkspaceExtraAttach,
     type WorkspaceProvider,
     type WorkspaceReleaseReason,
+    type WorkspaceReleaseRequest,
     type WorkspaceRoot,
 } from "./types.js";
-import { checkWorkspacePath, validateWorkspaceText, DEFAULT_PATH_CHECK_TIMEOUT_MS, type RepoScan } from "./workspace-check.js";
+import {
+    checkWorkspacePath,
+    extraFolderRecord,
+    validateWorkspaceText,
+    workingFolderOf,
+    DEFAULT_PATH_CHECK_TIMEOUT_MS,
+    type RepoScan,
+} from "./workspace-check.js";
 import { WORKSPACE_ORCHESTRATION_MIN_VERSION } from "./orchestration-version.js";
 
 export const DEFAULT_ATTACH_TIMEOUT_MS = 30_000;
@@ -92,6 +101,8 @@ export type WorkspacePreparation =
         adopt?: WorkspaceAdopt;
         /** The repo agents and skills read for adoption; only when adopt asks for them. */
         repo?: RepoScan;
+        /** The provider says the folder is mounted read-only. */
+        readOnly?: boolean;
     }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 
@@ -173,7 +184,10 @@ export async function prepareWorkspace(
     const attachTimeoutMs = opts.attachTimeoutMs ?? DEFAULT_ATTACH_TIMEOUT_MS;
     const text = validateWorkspaceText(req.workspace);
     if (!text.ok) return failure(text.code, text.message);
-    const workspace = text.workspace;
+    // The provider attaches one folder per call: the working folder here,
+    // or one extra folder (req.attachment names it). Never the whole record.
+    const workspace = workingFolderOf(text.workspace);
+    const isExtra = typeof req.attachment === "string" && req.attachment.length > 0;
     const startedAt = Date.now();
     const rootCheck = await checkWorkspaceRoot(provider, workspace, attachTimeoutMs);
     if (!rootCheck.ok) return rootCheck;
@@ -207,7 +221,8 @@ export async function prepareWorkspace(
         return failure(WORKSPACE_ERROR_CODES.ATTACH_FAILED, "ensureAttached returned ok without an absolute path");
     }
 
-    const adopt = normalizeAdopt(attached.adopt);
+    // Nothing is adopted from an extra folder (section 4.10).
+    const adopt = isExtra ? undefined : normalizeAdopt(attached.adopt);
     const collect = adopt && (adopt.agents || adopt.skills || adopt.instructions)
         ? { agents: adopt.agents, skills: adopt.skills, instructions: adopt.instructions }
         : undefined;
@@ -226,6 +241,95 @@ export async function prepareWorkspace(
         realPath: checked.realPath,
         ...(adopt ? { adopt } : {}),
         ...(checked.repo ? { repo: checked.repo } : {}),
+        ...(attached.readOnly === true ? { readOnly: true } : {}),
+    };
+}
+
+export type WorkspaceExtraPreparation =
+    | { name: string; required: boolean; ok: true; attach: WorkspaceExtraAttach }
+    | { name: string; required: boolean; root: string; folder?: string; ok: false; code: string; message: string; retryAfterMs?: number };
+
+/**
+ * Make the extra folders of a record ready on this worker (section 4.10):
+ * one prepareWorkspace per folder, in parallel, each with its own deadline
+ * and `attachment` set to its name. Nothing is adopted from them. `names`
+ * limits the work to those folders; by default every extra folder.
+ */
+export async function prepareWorkspaceExtras(
+    provider: WorkspaceProvider | null | undefined,
+    req: WorkspaceAttachRequest,
+    opts: { attachTimeoutMs?: number; checkTimeoutMs?: number; onAttach?: (req: WorkspaceAttachRequest) => void; names?: string[] } = {},
+): Promise<WorkspaceExtraPreparation[]> {
+    const extras = req.workspace.extra ?? {};
+    const names = (opts.names ?? Object.keys(extras)).filter((name) => extras[name]).sort();
+    return Promise.all(names.map(async (name): Promise<WorkspaceExtraPreparation> => {
+        const extra = extras[name];
+        const required = extra.required !== false;
+        const prepared = await prepareWorkspace(provider, { ...req, workspace: extraFolderRecord(extra), attachment: name }, opts);
+        if (!prepared.ok) {
+            return {
+                name, required, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
+                ok: false, code: prepared.code, message: prepared.message,
+                ...(prepared.retryAfterMs !== undefined ? { retryAfterMs: prepared.retryAfterMs } : {}),
+            };
+        }
+        return {
+            name, required, ok: true,
+            attach: {
+                name,
+                root: prepared.root.name,
+                ...(extra.folder ? { folder: extra.folder } : {}),
+                rootPath: prepared.root.path,
+                path: prepared.path,
+                realPath: prepared.realPath,
+                required,
+                ...(prepared.readOnly ? { readOnly: true } : {}),
+            },
+        };
+    }));
+}
+
+/**
+ * Serve several kinds of roots from one worker, which has one provider:
+ * each call goes to the provider that lists the request's root. Root names
+ * must be unique across the providers; a name two of them list fails the
+ * attach. Example: repo clones from the repo provider, plus a log share
+ * from the built-in provider.
+ */
+export function combineWorkspaceProviders(providers: WorkspaceProvider[]): WorkspaceProvider {
+    const list = providers.filter(Boolean);
+    const route = async (rootName: string): Promise<WorkspaceProvider | null> => {
+        for (const provider of list) {
+            const roots = await provider.listRoots();
+            if (Array.isArray(roots) && roots.some((root) => root?.name === rootName)) return provider;
+        }
+        return null;
+    };
+    return {
+        async listRoots() {
+            const all: WorkspaceRoot[] = [];
+            const seen = new Set<string>();
+            for (const provider of list) {
+                const roots = await provider.listRoots();
+                for (const root of Array.isArray(roots) ? roots : []) {
+                    if (seen.has(root.name)) throw new Error(`workspace root "${root.name}" is listed by two providers`);
+                    seen.add(root.name);
+                    all.push({ name: root.name, path: root.path });
+                }
+            }
+            return all;
+        },
+        async ensureAttached(req) {
+            const provider = await route(req.workspace.root);
+            if (!provider) {
+                return { ok: false, code: WORKSPACE_ERROR_CODES.ROOT_UNKNOWN, message: `workspace root "${req.workspace.root}" is not served by any provider on this worker` };
+            }
+            return provider.ensureAttached(req);
+        },
+        async release(req: WorkspaceReleaseRequest) {
+            const provider = await route(req.workspace.root);
+            await provider?.release?.(req);
+        },
     };
 }
 
@@ -251,24 +355,30 @@ export const DEFAULT_SPAWN_RELEASE_TIMEOUT_MS = 10_000;
 
 /**
  * The quick check spawn_agent runs on the parent's worker before it creates a
- * child with a workspace record: roots, attach and path check, for the child.
- * The attach is then released, so the provider keeps no lease entry for a
- * worker the child may never run on. The child's first turn attaches for real.
+ * child with a workspace record: roots, attach and path check, for the child,
+ * of the working folder and every extra folder. Each attach is then
+ * released, so the provider keeps no lease entry for a worker the child may
+ * never run on. The child's first turn attaches for real.
  */
 export async function checkWorkspaceForSpawn(
     provider: WorkspaceProvider | null | undefined,
     req: WorkspaceAttachRequest,
     opts: { attachTimeoutMs?: number; checkTimeoutMs?: number; releaseTimeoutMs?: number } = {},
 ): Promise<WorkspacePreparation> {
-    let attachRequest: WorkspaceAttachRequest | undefined;
-    const prepared = await prepareWorkspace(provider, req, { ...opts, onAttach: (sent) => { attachRequest = sent; } });
-    if (attachRequest && provider?.release) {
-        const sent = attachRequest;
-        await withDeadline<void>(
-            Promise.resolve().then(() => provider.release!({ ...sent, reason: "spawn_check" })).then(() => undefined, () => undefined),
+    const sent: WorkspaceAttachRequest[] = [];
+    const onAttach = (request: WorkspaceAttachRequest) => { sent.push(request); };
+    let result: WorkspacePreparation = await prepareWorkspace(provider, req, { ...opts, onAttach });
+    if (result.ok && req.workspace?.extra && Object.keys(req.workspace.extra).length > 0) {
+        const extras = await prepareWorkspaceExtras(provider, req, { ...opts, onAttach });
+        const bad = extras.find((extra) => !extra.ok);
+        if (bad && !bad.ok) result = failure(bad.code, `extra folder "${bad.name}": ${bad.message}`, bad.retryAfterMs);
+    }
+    if (sent.length > 0 && provider?.release) {
+        await Promise.all(sent.map((request) => withDeadline<void>(
+            Promise.resolve().then(() => provider.release!({ ...request, reason: "spawn_check" })).then(() => undefined, () => undefined),
             opts.releaseTimeoutMs ?? DEFAULT_SPAWN_RELEASE_TIMEOUT_MS,
             () => undefined,
-        );
+        )));
     }
-    return prepared;
+    return result;
 }

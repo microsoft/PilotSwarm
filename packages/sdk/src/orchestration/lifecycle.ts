@@ -17,7 +17,7 @@ import {
     commandResponseKey,
 } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
-import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
+import { sameWorkingFolder, sameWorkspace, validateWorkspaceText, workingFolderOf } from "../workspace-check.js";
 import {
     beginGracefulShutdown,
     cancelInFlightDistiller,
@@ -32,6 +32,7 @@ import {
     WORKSPACE_RETRY_WAKE_PROMPT,
     timerGate,
     workspaceChangedNote,
+    extraFoldersChangedNote,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -308,13 +309,69 @@ export function* applyCronAtAction(
     }]);
 }
 
+/**
+ * Session workspaces (1.0.80): set_session_workspace changed extra folders
+ * only (section 4.10). The turn went on, so there is no continuation turn:
+ * the change is merged into the stored record, the revision rises by one,
+ * and the event is emitted, as soon as the turn ends (it is drained with
+ * the queued schedule actions, not left for the next wake-up). The next
+ * turn gets a short note, because the CLI lists extra folders only when it
+ * next resumes from disk.
+ */
+export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime, result: Extract<TurnAction, { type: "set_workspace_extra" }>): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const action = result as any;
+    const previous = state.config.workspace ?? null;
+    if (!previous) {
+        ctx.traceInfo("[orch] ignoring an extra-folder change: the session has no workspace now");
+        return;
+    }
+    const extra: Record<string, unknown> = { ...(previous.extra ?? {}) };
+    for (const [name, value] of Object.entries(action.extra && typeof action.extra === "object" ? action.extra : {})) {
+        if (value === null) delete extra[name];
+        else extra[name] = value;
+    }
+    const checked = validateWorkspaceText({ ...workingFolderOf(previous), ...(Object.keys(extra).length > 0 ? { extra } : {}) });
+    if (!checked.ok) {
+        ctx.traceInfo(`[orch] ignoring an extra-folder change with an invalid result: ${checked.message}`);
+        return;
+    }
+    const next = checked.workspace;
+    if (sameWorkspace(previous, next)) return;
+    const revision = state.workspaceRevision + 1;
+    const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
+    state.config.workspace = next;
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    state.workspaceRevision = revision;
+    const note = extraFoldersChangedNote(previous, next, extraPaths);
+    if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: {
+            workspace: next, revision,
+            path: typeof action.path === "string" ? action.path : null,
+            ...(extraPaths ? { extraPaths } : {}),
+            source: "agent",
+        },
+    }]);
+    ctx.traceInfo(`[orch] agent changed extra folders: revision ${revision}`);
+}
+
+/**
+ * What a turn queued that applies as soon as it ends: schedule changes, and
+ * (1.0.80) extra-folder changes. Only the leading run of them; anything
+ * after waits for its turn in decide().
+ */
 export function* drainLeadingQueuedScheduleActions(runtime: DurableSessionRuntime, sourcePrompt?: string): Generator<any, void, any> {
-    while (runtime.state.pendingToolActions[0]?.type === "cron" || runtime.state.pendingToolActions[0]?.type === "cron_at") {
+    const drains = new Set(["cron", "cron_at", "set_workspace_extra"]);
+    while (drains.has(runtime.state.pendingToolActions[0]?.type as string)) {
         const action = runtime.state.pendingToolActions.shift()!;
         if (action.type === "cron") {
             applyCronAction(runtime, action as Extract<TurnAction, { type: "cron" }>, sourcePrompt);
-        } else {
+        } else if (action.type === "cron_at") {
             yield* applyCronAtAction(runtime, action as Extract<TurnAction, { type: "cron_at" }>, sourcePrompt);
+        } else {
+            yield* applyAgentWorkspaceExtrasChange(runtime, action as Extract<TurnAction, { type: "set_workspace_extra" }>);
         }
     }
 }
@@ -930,9 +987,11 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     }
     const revision = state.workspaceRevision + 1;
     let path: string | null = null;
+    let extraPaths: Record<string, string> | null = null;
     if (next) {
         // The attach and the path check, on the worker that holds the
-        // session, with the same code as the turn preamble.
+        // session, with the same code as the turn preamble: the working
+        // folder and every extra folder.
         // A failed activity (a worker that does not know it, say, during a
         // rolling deploy) answers the command; it must not fail the session.
         let outcome: any;
@@ -951,6 +1010,11 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
             return;
         }
         path = typeof outcome.path === "string" ? outcome.path : null;
+        if (Array.isArray(outcome.extras) && outcome.extras.length > 0) {
+            extraPaths = Object.fromEntries(outcome.extras
+                .filter((extra: any) => typeof extra?.name === "string" && typeof extra?.path === "string")
+                .map((extra: any) => [extra.name, extra.path]));
+        }
     }
     if (next) state.config.workspace = next;
     else delete state.config.workspace;
@@ -958,13 +1022,18 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     // changed config rather than rely on sharing one object.
     runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
     state.workspaceRevision = revision;
-    state.workspaceNotice = workspaceChangedNote(previous, next, path);
+    // A change of extra folders only (section 4.10) keeps the working
+    // directory, so its note names the extra folders alone.
+    state.workspaceNotice = [
+        sameWorkingFolder(previous, next) ? undefined : workspaceChangedNote(previous, next, path),
+        next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined,
+    ].filter(Boolean).join(" ") || undefined;
     state.workspaceRetry = null;
     if (!next) state.workspaceStatus = null;
     if (!next && previous) state.workspaceReleasePending = true;
     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
         eventType: "session.workspace_changed",
-        data: { workspace: next, revision, path, source: args.source === "agent" ? "agent" : "external" },
+        data: { workspace: next, revision, path, ...(extraPaths ? { extraPaths } : {}), source: args.source === "agent" ? "agent" : "external" },
     }]);
     // Prompts held by a workspace wait now run: in the new folder, or with
     // no workspace at all after a clear.

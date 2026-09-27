@@ -11,10 +11,13 @@
  *        with WORKSPACE_IN_USE
  *   G7   from the agent's shell: deleting the mirror and fetching inside it
  *        fail, a commit in the clone works
+ *   4.10 a git clone and a log share in one session: the clone is the
+ *        working folder, the log share an extra folder (a plain root)
  *
  * Run: npx vitest run test/local/repo-workspaces.test.js
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
@@ -27,6 +30,9 @@ import { createGitFixture, git } from "../helpers/git-fixture.mjs";
 import { createRepoService } from "../../examples/repo-workspaces/repo-service.mjs";
 import { createRepoWorkspaceProvider } from "../../examples/repo-workspaces/provider.mjs";
 import { createRepoTools } from "../../examples/repo-workspaces/tools.mjs";
+import { createWorkspaceProvider } from "../../examples/repo-workspaces/index.mjs";
+import { systemText } from "../helpers/scripted-model.mjs";
+import { createManagementClient } from "../helpers/local-workers.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -184,6 +190,100 @@ describe("reference repo workspaces", () => {
             });
         } finally {
             await d.fixture.setMirrorReadOnly(false).catch(() => {});
+            await d.close();
+        }
+    });
+});
+
+describe("reference repo workspaces: a git clone and a log share in one session (section 4.10)", () => {
+    it("the clone is the working folder and the log share an extra folder: the agent reads the logs, commits in the clone, then drops the logs mid-turn", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const d = await deployment();
+        const logsRoot = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ps-logs-")));
+        const day = path.join(logsRoot, "checkout-svc", "2026-09-27");
+        fs.mkdirSync(day, { recursive: true });
+        const LOG_LINE = "2026-09-27T14:02:11Z ERROR NullReference in PaymentMapper.cs:88";
+        fs.writeFileSync(path.join(day, "app-1.log"), `2026-09-27T14:02:10Z INFO started\n${LOG_LINE}\n`);
+        // The worker's one provider: the repo root and the plain logs root.
+        const provider = createWorkspaceProvider({
+            roots: [{ name: "fx", path: d.fixture.root }],
+            serviceUrls: { fx: d.url },
+            plainRoots: [{ name: "logs", path: logsRoot }],
+        });
+        try {
+            const respond = scriptTurns([
+                [
+                    { tools: [{ name: "create_session_clone", args: { repo: "app" } }] },
+                    (_body, position) => {
+                        const made = JSON.parse(position.toolResults.join(""));
+                        return { tools: [{ name: "set_session_workspace", args: {
+                            ...made.workspace,
+                            extra: { logs: { root: "logs", folder: "checkout-svc/2026-09-27", required: false } },
+                        } }] };
+                    },
+                    { content: "moving" },
+                ],
+                [
+                    { tools: [{ name: "bash", args: {
+                        command: `grep -h ERROR '${day}'/*.log | head -1 > incident.txt && git add incident.txt `
+                            + "&& git -c user.name=agent -c user.email=agent@example.invalid commit -q -m 'note the incident' "
+                            + "&& git log -1 --format=%s && pwd",
+                        description: "read the logs, commit in the clone",
+                    } }] },
+                    (_body, position) => ({ content: `out:${position.toolResults.join("").trim().split("\n").slice(0, 2).join("|")}` }),
+                ],
+                [
+                    { tools: [{ name: "set_session_workspace", args: { extra: { logs: null } } }] },
+                    { tools: [{ name: "bash", args: { command: "pwd", description: "still here" } }] },
+                    (_body, position) => ({ content: `after:${firstLine(position.toolResults)}` }),
+                ],
+            ]);
+            await withScriptedModel(env, { respond, tools: d.tools, worker: { workspaceProvider: provider } }, async ({ client, worker, model, qualifiedModel }) => {
+                d.bind(worker);
+                const sessionId = randomUUID();
+                const session = await client.createSession({
+                    sessionId, model: qualifiedModel,
+                    toolNames: ["create_session_clone", "list_session_clones", "remove_session_clone", "set_session_workspace"],
+                });
+                const checkout = `sessions/${sessionId}/app`;
+                const clonePath = path.join(d.fixture.root, checkout);
+                assertEqual(await session.sendAndWait("investigate the checkout errors", TIMEOUT), `out:note the incident|${clonePath}`,
+                    "the continuation turn read the logs and committed in the clone");
+                assertEqual(await git(["-C", clonePath, "log", "-1", "--format=%s"]), "note the incident");
+                assertEqual(fs.readFileSync(path.join(clonePath, "incident.txt"), "utf8").trim(), LOG_LINE);
+                assertEqual(JSON.stringify(leaseOf(d.service, checkout)), JSON.stringify([[sessionId, sessionId]]), "the clone is leased; the log share needs no lease");
+
+                const continuation = model.sessionRequests("investigate the checkout errors").find((r) => r.position.turn === 2);
+                const system = systemText(continuation.body);
+                assert(system.includes(`Current working directory: ${clonePath}`), "the working folder is the clone");
+                assert(system.includes("Additional directories available for file access") && system.includes(day), "the CLI lists the log share");
+                assert(continuation.position.lastUserText.includes(`Your extra folders changed: added "logs" (root "logs", folder "checkout-svc/2026-09-27", at ${day}).`),
+                    "the continuation got both notes");
+
+                assertEqual(await session.sendAndWait("drop the logs", TIMEOUT), `after:${clonePath}`, "removing the extra folder did not end the turn");
+                const catalog = await createCatalog(env);
+                try {
+                    const changed = await waitForEventCount(catalog, sessionId, "session.workspace_changed", 2, 30_000);
+                    const last = changed.at(-1).data.workspace;
+                    assertEqual(last.extra, undefined, "the record has no extra folders now");
+                    assertEqual(last.folder, checkout);
+                } finally {
+                    await catalog.close?.();
+                }
+
+                const mgmt = await createManagementClient(env);
+                try {
+                    await mgmt.completeSession(sessionId, "done");
+                } finally {
+                    await mgmt.stop();
+                }
+                const deadline = Date.now() + 60_000;
+                while (leaseOf(d.service, checkout).length > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
+                assertEqual(leaseOf(d.service, checkout).length, 0, "the end released the clone's lease");
+                assert(fs.existsSync(path.join(clonePath, "incident.txt")), "the files stay");
+            });
+        } finally {
+            fs.rmSync(logsRoot, { recursive: true, force: true });
             await d.close();
         }
     });

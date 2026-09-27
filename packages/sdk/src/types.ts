@@ -35,7 +35,12 @@ export type TurnAction =
     | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
     // Session workspaces (1.0.80): the agent's set_session_workspace, applied by
     // the orchestration after the turn. `workspace: null` clears.
-    | { type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; events?: CapturedEvent[] };
+    | { type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] }
+    // Session workspaces (1.0.80): a change to the extra folders only. It does
+    // not end the turn; the orchestration merges `extra` into the stored
+    // record after the turn (a null entry removes that folder). `path` is the
+    // working folder's path, `extraPaths` the new folders' paths.
+    | { type: "set_workspace_extra"; extra: Record<string, SessionWorkspaceExtra | null>; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] };
 
 type QueuedTurnActionCarrier = {
     queuedActions?: TurnAction[];
@@ -90,7 +95,8 @@ type TurnResultVariant =
     | ({ type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "set_workspace_extra"; extra: Record<string, SessionWorkspaceExtra | null>; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
     | { type: "error"; message: string; retryable?: boolean; events?: CapturedEvent[] };
@@ -193,7 +199,14 @@ export interface TurnOptions {
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
         sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
         /** Session workspaces: the attach and path check for set_session_workspace, on this worker. */
-        checkWorkspace?(args: { workspace: SessionWorkspace }): Promise<{ ok: true; path: string } | { ok: false; code: string; message: string }>;
+        /**
+         * Session workspaces: attach and check on this worker. `extras`
+         * names the extra folders to check; omitted, every extra folder in
+         * the record. `skipWorkingFolder` checks the extra folders only.
+         */
+        checkWorkspace?(args: { workspace: SessionWorkspace; extras?: string[]; skipWorkingFolder?: boolean }): Promise<
+            | { ok: true; path: string | null; extras: Array<{ name: string; path: string; readOnly?: boolean }> }
+            | { ok: false; code: string; message: string }>;
         replySessionMessage(args: { request_id: string; session_id: string; body: string; verdict?: string }): Promise<string>;
     };
 }
@@ -203,14 +216,38 @@ export interface TurnOptions {
 // session uses as its working directory. The application's provider makes it
 // ready on whichever worker runs the next turn.
 
-/** A session's folder: a root (one exported directory) plus a folder inside it. */
+/**
+ * A session's folders: the working folder (a root, one exported directory,
+ * plus a folder inside it), and optional extra folders the session can use
+ * next to it, by name.
+ */
 export interface SessionWorkspace {
-    /** Record version. v1 holds one folder. */
+    /** Record version. */
     schema: 1;
     /** A root name from the provider's `listRoots()`. */
     root: string;
     /** Relative to the root. Omitted means the root itself. */
     folder?: string;
+    /**
+     * Extra folders, by name (section 4.10). Each is attached before every
+     * turn like the working folder and passed to the CLI as an additional
+     * directory. Nothing is adopted from them. At most MAX_WORKSPACE_EXTRAS.
+     */
+    extra?: Record<string, SessionWorkspaceExtra>;
+}
+
+/** One extra folder of a session's workspace. */
+export interface SessionWorkspaceExtra {
+    /** A root name from the provider's `listRoots()`. */
+    root: string;
+    /** Relative to the root. Omitted means the root itself. */
+    folder?: string;
+    /**
+     * false: when the folder cannot be attached, the turn runs without it
+     * and the model is told. Omitted (the default) or true: the prompt is
+     * held, as for the working folder.
+     */
+    required?: boolean;
 }
 
 /** Which repo content a session adopts from its checkout. Omitted means none. */
@@ -230,17 +267,41 @@ export interface WorkspaceAttachRequest {
     sessionId: string;
     /** The session tree, for leases. */
     rootSessionId: string;
+    /** The one folder to attach: `{ schema, root, folder }`, never with `extra`. */
     workspace: SessionWorkspace;
     revision: number;
     /** The worker's own ID (its pod name), not the Kubernetes node. */
     workerNodeId: string;
     /** Rises every turn. */
     turnIndex: number;
+    /** The extra folder's name. Absent for the working folder. */
+    attachment?: string;
 }
 
 export type WorkspaceAttachResult =
-    | { ok: true; path: string; adopt?: WorkspaceAdopt }
+    | {
+        ok: true;
+        path: string;
+        /** Ignored for an extra folder: nothing is adopted from it. */
+        adopt?: WorkspaceAdopt;
+        /** The folder is mounted read-only. PilotSwarm only tells the model; the mount enforces it. */
+        readOnly?: boolean;
+    }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
+
+/** An extra folder attached for one turn (section 4.10). */
+export interface WorkspaceExtraAttach {
+    name: string;
+    root: string;
+    folder?: string;
+    rootPath: string;
+    /** The provider's path: what the CLI gets as an additional directory. */
+    path: string;
+    /** The same folder with every symlink resolved. */
+    realPath: string;
+    required: boolean;
+    readOnly?: boolean;
+}
 
 /**
  * Application code that makes a workspace ready on a worker. PilotSwarm
@@ -297,6 +358,8 @@ export interface SessionWorkspaceView {
     revision: number;
     /** The attach path the last change reported, when known. */
     path: string | null;
+    /** Extra folders' paths, by name, as changes reported them (section 4.10). */
+    extraPaths?: Record<string, string>;
     /** `none` without a workspace; `unavailable` while prompts are held. */
     status: "none" | "ready" | "unavailable";
     lastError: { code: string; message: string; workerNodeId?: string; at?: string } | null;
@@ -448,6 +511,11 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         turnIndex?: number;
         /** The affinity key the turn ran under; a release sent under an older key skips a newer attach. */
         affinityKey?: string;
+        readOnly?: boolean;
+        /** The extra folders attached for this turn (section 4.10), sorted by name. */
+        extras?: WorkspaceExtraAttach[];
+        /** Optional extra folders that could not be attached; the turn runs without them. */
+        extrasUnavailable?: Array<{ name: string; root: string; folder?: string; code: string; message: string }>;
     };
     /**
      * Session workspaces: what this handle adopted from the checkout, set by

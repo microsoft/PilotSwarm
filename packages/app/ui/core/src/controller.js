@@ -6839,7 +6839,13 @@ export class PilotSwarmUiController {
             return;
         }
         const slash = text.indexOf("/");
-        const workspace = slash < 0 ? { root: text } : { root: text.slice(0, slash), folder: text.slice(slash + 1) };
+        // The dialog edits the working folder only. The extra folders go
+        // with the record, or the whole-record set would drop them.
+        const extra = modal.current?.extra && typeof modal.current.extra === "object" ? modal.current.extra : null;
+        const workspace = {
+            ...(slash < 0 ? { root: text } : { root: text.slice(0, slash), folder: text.slice(slash + 1) }),
+            ...(extra && Object.keys(extra).length > 0 ? { extra } : {}),
+        };
         this.dispatch({ type: "ui/status", text: `Setting the workspace of ${shortSessionIdValue(modal.sessionId)}...` });
         try {
             const result = await this.transport.setSessionWorkspace(modal.sessionId, { expectedRevision: modal.expectedRevision ?? 0, workspace });
