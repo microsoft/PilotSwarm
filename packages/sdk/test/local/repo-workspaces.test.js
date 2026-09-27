@@ -148,7 +148,8 @@ describe("reference repo workspaces", () => {
         }
     });
 
-    it("from the agent's shell the mirror cannot be deleted or fetched into, and the clone still commits (G7)", { timeout: TIMEOUT }, async () => {
+    // As root, the file permissions this test relies on do not hold (T9).
+    it.skipIf(process.getuid?.() === 0)("from the agent's shell the mirror cannot be deleted or fetched into, and the clone still commits (G7)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const d = await deployment();
         try {

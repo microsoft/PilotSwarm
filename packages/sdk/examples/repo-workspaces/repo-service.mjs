@@ -15,15 +15,20 @@
  *   GET    /v1/clones?rootSessionId=                     list clones
  *   DELETE /v1/clones        { rootSessionId, repo }     remove one (refused while a lease entry is live)
  *   POST   /v1/leases        { checkout, sessionId, rootSessionId, workerNodeId, turnIndex }
- *   DELETE /v1/leases        { checkout, sessionId }
- *   POST   /v1/mirrors/fetch { repo }                    fetch the mirror from its remote
- *   POST   /v1/maintenance   { repo, args }              allowed mirror maintenance only
- *   POST   /v1/token         { protocol, host, path }    a token for a clone's own remote only
+ *   DELETE /v1/leases        { checkout, sessionId, workerNodeId, turnIndex }   only the holder's own entry
+ *   POST   /v1/mirrors/fetch { repo }                    fetch the mirror from its remote        (admin token)
+ *   POST   /v1/maintenance   { repo, operation }         a named maintenance operation           (admin token)
+ *   POST   /v1/token         { protocol, host, path }    a token for a served repo's remote only
+ *
+ * Worker pods, and so agent shells, can reach this port (section 5.2). The
+ * two admin endpoints therefore need the admin token, which workers never
+ * get; without one configured they are off.
  *
  * Run on the pod: node repo-service.mjs (configuration from the environment,
  * see main() at the end). Tests import createRepoService().
  */
 import { execFile } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -54,74 +59,73 @@ export function parseCheckout(folder) {
     return { rootSessionId: parts[1], repo: parts[2] };
 }
 
-/** Expands `-adk` into `-a -d -k`; long flags pass through. */
-function expandFlags(args) {
-    const out = [];
-    for (const arg of args) {
-        if (/^-[A-Za-z]{2,}$/.test(arg)) for (const letter of arg.slice(1)) out.push(`-${letter}`);
-        else out.push(arg);
-    }
-    return out;
-}
+/**
+ * Mirror maintenance (section 5.1), by name only. Callers never pass git
+ * arguments: git accepts abbreviated long options (`--prun=now`) and options
+ * that undo others (`--no-keep-unreachable`), so no argument filter is safe.
+ * Every operation pins gc.pruneExpire=never, so no unreachable object that a
+ * session clone may borrow is dropped.
+ */
+export const MAINTENANCE_OPERATIONS = Object.freeze({
+    gc: ["-c", "gc.pruneExpire=never", "gc"],
+    "maintenance-run": ["-c", "gc.pruneExpire=never", "maintenance", "run"],
+    "repack-keep-unreachable": ["-c", "gc.pruneExpire=never", "repack", "-a", "-d", "-k"],
+    "repack-cruft": ["-c", "gc.pruneExpire=never", "repack", "--cruft", "--cruft-expiration=never", "-d"],
+});
 
 /**
- * Mirror maintenance allowlist (section 5.1). Everything that can drop an
- * unreachable object a session clone may still borrow is refused.
- *
- *   allowed:   git gc, git maintenance run, git repack -A -d,
- *              git repack --cruft -d, git repack -a -d -k, git repack -d
- *   forbidden: git prune, git gc --prune=<time>, git repack -a -d without -A or -k
+ * Checks every segment of a path under the root (and the clone's .git when
+ * asked): each must be a real directory, never a symlink. The service acts
+ * as a more privileged uid than sessions, and a session can plant links.
  */
-export function checkMaintenanceCommand(args) {
-    if (!Array.isArray(args) || args.length === 0 || args.some((arg) => typeof arg !== "string")) {
-        return { ok: false, reason: "args must be a non-empty list of strings" };
+function segmentsAreReal(root, relative, { withGit = true } = {}) {
+    let current = root;
+    for (const segment of [...relative.split("/"), ...(withGit ? [".git"] : [])]) {
+        current = path.join(current, segment);
+        let stat;
+        try { stat = fs.lstatSync(current); } catch { return false; }
+        if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
     }
-    const [command, ...rest] = args;
-    const flags = expandFlags(rest);
-    if (command === "gc") {
-        if (flags.some((flag) => flag.startsWith("--prune") && flag !== "--prune=never")) {
-            return { ok: false, reason: "git gc --prune=<time> drops unreachable objects that session clones may borrow" };
-        }
-        return { ok: true };
-    }
-    if (command === "maintenance") {
-        return flags[0] === "run" ? { ok: true } : { ok: false, reason: "only git maintenance run is allowed" };
-    }
-    if (command === "repack") {
-        const has = (flag) => flags.includes(flag);
-        if (has("-a") && has("-d") && !has("-A") && !has("-k") && !has("--cruft")) {
-            return { ok: false, reason: "git repack -a -d without -A or -k drops unreachable objects that session clones may borrow" };
-        }
-        return { ok: true };
-    }
-    if (command === "prune") return { ok: false, reason: "git prune drops unreachable objects that session clones may borrow" };
-    return { ok: false, reason: `git ${command} is not an allowed mirror maintenance command` };
+    return true;
 }
 
-function defaultRunGit(args, { cwd, env, uid } = {}) {
-    // A deployment runs clone creation as the session uid (1000) with setpriv.
+/** Runs a command, as `uid` through setpriv when given (the deployment's session uid, 1000). */
+function runAs(command, args, { cwd, env, uid } = {}) {
     const [file, argv] = uid === undefined
-        ? ["git", args]
-        : ["setpriv", [`--reuid=${uid}`, `--regid=${uid}`, "--clear-groups", "git", ...args]];
+        ? [command, args]
+        : ["setpriv", [`--reuid=${uid}`, `--regid=${uid}`, "--clear-groups", command, ...args]];
     return new Promise((resolve, reject) => {
         execFile(file, argv, { cwd, env: env ?? process.env, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
-            if (error) reject(Object.assign(new Error(`git ${args.join(" ")} failed: ${String(stderr || error.message).trim()}`), { stderr: String(stderr) }));
+            if (error) reject(Object.assign(new Error(`${command} ${args.join(" ")} failed: ${String(stderr || error.message).trim()}`), { stderr: String(stderr) }));
             else resolve(String(stdout).trim());
         });
     });
 }
 
-/** Removes stale git lock files in a clone's .git, never under objects/. Returns the removed paths. */
+function defaultRunGit(args, opts = {}) {
+    return runAs("git", args, opts);
+}
+
+const MAX_LOCK_WALK_ENTRIES = 20_000;
+
+/**
+ * Removes stale git lock files in a clone's .git, never under objects/.
+ * Returns the removed paths. The caller checks the checkout with
+ * segmentsAreReal first; the walk never follows a symlink (Dirent types are
+ * the link's own) and stops after MAX_LOCK_WALK_ENTRIES entries.
+ */
 export function removeStaleGitLocks(clonePath) {
     const removed = [];
+    let visited = 0;
     const walk = (dir) => {
         let entries;
         try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
         for (const entry of entries) {
+            if (++visited > MAX_LOCK_WALK_ENTRIES) return;
             const full = path.join(dir, entry.name);
             if (entry.isDirectory()) {
                 if (entry.name !== "objects") walk(full);
-            } else if (entry.name.endsWith(".lock")) {
+            } else if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".lock")) {
                 try { fs.unlinkSync(full); removed.push(path.relative(clonePath, full)); } catch { /* already gone */ }
             }
         }
@@ -142,6 +146,7 @@ export function removeStaleGitLocks(clonePath) {
  *        a short-lived token for the repo's remote, minted with the deployment identity
  * @param {string} [options.credentialHelper]  the helper each clone sets after clearing others
  * @param {number} [options.cloneUid]      the session uid clone creation runs as (a deployment sets 1000)
+ * @param {string} [options.adminToken]    required for mirror fetch and maintenance; without it they are off
  * @param {string} [options.stateFile]     service-private state; never on the export
  * @param {() => number} [options.now]
  * @param {Function} [options.runGit]
@@ -186,6 +191,16 @@ export function createRepoService(options) {
     };
     const mirrorPath = (repo) => path.join(root, "repos", `${repo}.git`);
 
+    /** Mirror fetch and maintenance: only with the admin token, which workers never get. */
+    const requireAdmin = (req) => {
+        if (!options.adminToken) throw new ServiceError(403, "ADMIN_DISABLED", "mirror fetch and maintenance are off: no admin token is configured");
+        const presented = Buffer.from(String(req?.headers?.authorization ?? "").replace(/^Bearer\s+/i, ""));
+        const expected = Buffer.from(options.adminToken);
+        if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+            throw new ServiceError(403, "ADMIN_REQUIRED", "this endpoint needs the repo service admin token");
+        }
+    };
+
     async function isLive(entry) {
         if (now() - entry.time > entryTtlMs) return false;
         try { return Boolean(await isWorkerAlive(entry.workerNodeId)); } catch { return true; }
@@ -227,7 +242,13 @@ export function createRepoService(options) {
             if (existing) return { workspace: { root: rootName, folder: checkout }, path: target, created: false };
             if (fs.existsSync(target)) throw new ServiceError(409, "CHECKOUT_EXISTS", `${checkout} exists but is not a clone this service made`);
             const mirror = await ensureMirror(repo);
-            fs.mkdirSync(path.dirname(target), { recursive: true });
+            // sessions/<tree> belongs to the session uid, so the clone step (as that uid) can write in it.
+            if (options.cloneUid === undefined) fs.mkdirSync(path.dirname(target), { recursive: true });
+            else await runAs("mkdir", ["-p", path.dirname(target)], { uid: options.cloneUid });
+            // A symlinked sessions/ or sessions/<tree> would put the clone somewhere else.
+            if (!segmentsAreReal(root, path.posix.dirname(checkout), { withGit: false })) {
+                throw new ServiceError(409, "CHECKOUT_UNSAFE", `${path.posix.dirname(checkout)} is not a plain folder`);
+            }
             await runGit(["clone", "-q", "--shared", mirror, target], { uid: options.cloneUid });
             // Relative alternates keep the clone valid at the same path on every pod.
             const objectsDir = path.join(target, ".git", "objects");
@@ -260,6 +281,9 @@ export function createRepoService(options) {
             if (live.length > 0) {
                 throw new ServiceError(409, "CHECKOUT_IN_USE", `${checkout} has ${live.length} live lease entr${live.length === 1 ? "y" : "ies"}`);
             }
+            if (fs.existsSync(path.join(root, checkout)) && !segmentsAreReal(root, checkout)) {
+                throw new ServiceError(409, "CHECKOUT_UNSAFE", `${checkout} or its .git is not a plain folder; refusing to delete through a link`);
+            }
             fs.rmSync(path.join(root, checkout), { recursive: true, force: true });
             clones.delete(checkout);
             leases.delete(checkout);
@@ -268,6 +292,7 @@ export function createRepoService(options) {
         },
 
         async "POST /v1/leases"({ checkout, sessionId, rootSessionId, workerNodeId, turnIndex }) {
+            if (!parseCheckout(checkout)) throw new ServiceError(400, "BAD_REQUEST", "checkout must be sessions/<rootSessionId>/<repo>");
             const record = clones.get(checkout);
             if (!record) return { ok: false, code: "WORKSPACE_FOLDER_MISSING", message: `${checkout} is not a session clone` };
             // A clone belongs to one session tree until cleanup deletes it,
@@ -283,7 +308,7 @@ export function createRepoService(options) {
             let removedLocks = [];
             // Lock files are removed only when no live entry remains: a live
             // entry may belong to a git command still running (K15, test R5).
-            if (dead.length > 0 && !anyLive) removedLocks = removeStaleGitLocks(path.join(root, checkout));
+            if (dead.length > 0 && !anyLive && segmentsAreReal(root, checkout)) removedLocks = removeStaleGitLocks(path.join(root, checkout));
             for (const entry of dead) entries.delete(entry.sessionId);
             entries.set(sessionId, { sessionId, rootSessionId, workerNodeId, turnIndex, time: now() });
             leases.set(checkout, entries);
@@ -291,27 +316,42 @@ export function createRepoService(options) {
             return { ok: true, adopt: repos[record.repo]?.adopt ?? null, ...(removedLocks.length ? { removedLocks } : {}) };
         },
 
-        async "DELETE /v1/leases"({ checkout, sessionId }) {
+        async "DELETE /v1/leases"({ checkout, sessionId, workerNodeId, turnIndex }) {
             const entries = leases.get(checkout);
-            const deleted = Boolean(entries?.delete(sessionId));
-            if (entries && entries.size === 0) leases.delete(checkout);
+            const entry = entries?.get(sessionId);
+            if (!entry) return { deleted: false };
+            // A release can arrive late, after the session attached on
+            // another worker, or again on this one in a newer turn. It must
+            // not delete that newer entry: without a live entry, cleanup and
+            // stale-lock removal would run under a working session.
+            if (workerNodeId !== undefined && entry.workerNodeId !== workerNodeId) {
+                return { deleted: false, reason: "another worker holds the entry" };
+            }
+            if (Number.isInteger(turnIndex) && Number.isInteger(entry.turnIndex) && entry.turnIndex > turnIndex) {
+                return { deleted: false, reason: "a newer turn holds the entry" };
+            }
+            entries.delete(sessionId);
+            if (entries.size === 0) leases.delete(checkout);
             persist();
-            return { deleted };
+            return { deleted: true };
         },
 
-        async "POST /v1/mirrors/fetch"({ repo }) {
+        async "POST /v1/mirrors/fetch"({ repo }, _query, req) {
+            requireAdmin(req);
             repoConfig(repo);
             const mirror = await ensureMirror(repo);
             await runGit(["-C", mirror, "fetch", "-q", "--prune", "origin"]);
             return { fetched: true };
         },
 
-        async "POST /v1/maintenance"({ repo, args }) {
+        async "POST /v1/maintenance"({ repo, operation }, _query, req) {
+            requireAdmin(req);
             repoConfig(repo);
-            const checked = checkMaintenanceCommand(args);
-            if (!checked.ok) throw new ServiceError(403, "MAINTENANCE_REFUSED", checked.reason);
-            await runGit(["-C", mirrorPath(repo), ...args]);
-            return { ran: args };
+            if (!Object.hasOwn(MAINTENANCE_OPERATIONS, String(operation))) {
+                throw new ServiceError(400, "MAINTENANCE_UNKNOWN", `unknown maintenance operation "${operation}"; use one of ${Object.keys(MAINTENANCE_OPERATIONS).join(", ")}`);
+            }
+            await runGit(["-C", mirrorPath(repo), ...MAINTENANCE_OPERATIONS[operation]]);
+            return { ran: operation };
         },
 
         async "POST /v1/token"({ protocol, host, path: repoPath }) {
@@ -342,7 +382,7 @@ export function createRepoService(options) {
             const chunks = [];
             for await (const chunk of req) chunks.push(chunk);
             const text = Buffer.concat(chunks).toString();
-            reply(200, await handler(text ? JSON.parse(text) : {}, url.searchParams));
+            reply(200, await handler(text ? JSON.parse(text) : {}, url.searchParams, req));
         } catch (error) {
             if (error instanceof ServiceError) return reply(error.status, { error: { code: error.code, message: error.message } });
             reply(500, { error: { code: "INTERNAL", message: String(error?.message ?? error) } });
@@ -377,6 +417,7 @@ export function createRepoService(options) {
  *   REPO_SERVICE_PORT        default 8080
  *   REPO_SERVICE_CLONE_UID   the session uid for clone creation (default 1000)
  *   REPO_SERVICE_CREDENTIAL_HELPER  the helper command clones set
+ *   REPO_SERVICE_ADMIN_TOKEN the admin token for mirror fetch and maintenance (never given to workers)
  * Token minting and the worker registry are deployment-specific; wire them
  * in a wrapper that calls createRepoService() with mintToken and isWorkerAlive.
  */
@@ -389,6 +430,7 @@ async function main() {
         stateFile: env.REPO_SERVICE_STATE_FILE || "/var/lib/repo-service/state.json",
         cloneUid: env.REPO_SERVICE_CLONE_UID ? Number(env.REPO_SERVICE_CLONE_UID) : 1000,
         credentialHelper: env.REPO_SERVICE_CREDENTIAL_HELPER || undefined,
+        adminToken: env.REPO_SERVICE_ADMIN_TOKEN || undefined,
     });
     const url = await service.listen(Number(env.REPO_SERVICE_PORT || 8080), "0.0.0.0");
     console.log(`[repo-service] listening at ${url}`);

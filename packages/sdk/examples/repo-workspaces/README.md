@@ -7,10 +7,10 @@ sections 5 and 12.1.
 
 | File | Runs on | What it does |
 |---|---|---|
-| `repo-service.mjs` | the repo pod | Owns the mirrors (`repos/<repo>.git`) and the session clones (`sessions/<rootSessionId>/<repo>`). Keeps the leases, removes stale git lock files, runs only allowed mirror maintenance, and mints tokens for a clone's own remote. `node repo-service.mjs` starts it; see `main()` for the environment. |
-| `provider.mjs` | each worker | The `WorkspaceProvider`: checks the root's `.pilotswarm-export` marker in a child process, then takes a lease for a session clone. |
+| `repo-service.mjs` | the repo pod | Owns the mirrors (`repos/<repo>.git`) and the session clones (`sessions/<rootSessionId>/<repo>`). Keeps the leases, removes stale git lock files, runs named mirror maintenance only, and mints tokens for the remotes of the repos it serves. Mirror fetch and maintenance need the admin token (`REPO_SERVICE_ADMIN_TOKEN`), which workers never get. `node repo-service.mjs` starts it; see `main()` for the environment. |
+| `provider.mjs` | each worker | The `WorkspaceProvider`: checks the root's `.pilotswarm-export` marker in a child process, then takes a lease on the session clone that holds the folder. It serves session clones and folders inside them only. A release deletes only this worker's own lease entry. |
 | `tools.mjs` | each worker | Agent tools: `create_session_clone`, `list_session_clones`, `remove_session_clone`. |
-| `credential-helper.mjs` | each worker | The git credential helper each clone sets after an empty one. It asks the repo service for a token, which answers only for the clone's own remote. |
+| `credential-helper.mjs` | each worker | The git credential helper each clone sets after an empty one. It sends the repo service the protocol, host and path git asks about. The service answers only for the remote of a repo it serves; it does not check that the remote is the calling clone's own. |
 | `index.mjs` | each worker | `register(worker)`: the provider and the tools, loaded through `PILOTSWARM_EXTENSION_MODULES`. |
 
 Worker environment:
@@ -18,7 +18,8 @@ Worker environment:
 ```text
 PILOTSWARM_EXTENSION_MODULES=/app/examples/repo-workspaces/index.mjs
 PS_WORKSPACE_ROOTS=a=/ws/a                  root name = its path on this pod
-REPO_SERVICE_URL=http://repo-cache:8080     per root: REPO_SERVICE_URL_<NAME>
+REPO_SERVICE_URL=http://repo-cache:8080     the tools and the credential helper use this one;
+                                            the provider also reads REPO_SERVICE_URL_<NAME> per root
 ```
 
 How an agent starts working in a repo:

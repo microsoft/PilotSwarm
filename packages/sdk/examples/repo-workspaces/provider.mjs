@@ -4,9 +4,15 @@
  * ensureAttached(req), on the worker that runs the turn:
  *   1. the root is not mounted here -> attach(root)          (a deployment's attacher; optional)
  *   2. child process: stat <root>/.pilotswarm-export         (an empty mount point is not a mount)
- *   3. the folder is a session clone -> POST <service>/v1/leases
+ *      and resolve the folder's real path under the root     (symlinks cannot pick the checkout)
+ *   3. the real path must be sessions/<tree>/<repo>[/...]; its first three
+ *      segments name the checkout -> POST <service>/v1/leases
  *   4. { ok: true, path, adopt }                             (adopt comes from the service's repo config)
- * release(req): DELETE the caller's lease entry. Best effort.
+ * release(req): DELETE the caller's lease entry for the checkout it attached,
+ *   if this worker still holds it. Best effort.
+ *
+ * The provider serves session clones only: every attach, a subfolder of a
+ * clone included, takes a lease on the clone that contains it.
  *
  * File calls on the mount run in child processes with a deadline: a call
  * into a hung NFS mount blocks for as long as the server is gone.
@@ -15,20 +21,33 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { MARKER_FILE, parseCheckout } from "./repo-service.mjs";
 
-const STAT_SCRIPT = `
-const fs = require("fs");
-try { fs.statSync(process.argv[1]); process.stdout.write("ok"); }
-catch (e) { process.stdout.write(e.code || "ERROR"); }
+// Marker check, then the folder's real path relative to the root's real path.
+const PROBE_SCRIPT = `
+const fs = require("fs"), path = require("path");
+const [root, folder, marker] = process.argv.slice(1);
+const out = (value) => process.stdout.write(JSON.stringify(value));
+try { fs.statSync(path.join(root, marker)); } catch (e) { out({ marker: e.code || "ERROR" }); process.exit(0); }
+try {
+  const rel = path.relative(fs.realpathSync(root), fs.realpathSync(path.join(root, folder)));
+  out({ marker: "ok", rel: rel.split(path.sep).join("/") });
+} catch (e) { out({ marker: "ok", folderError: e.code || "ERROR" }); }
 `;
 
-/** stat in a child process. Resolves "ok", an errno code, or "TIMEOUT". */
-export function statOutOfProcess(file, timeoutMs) {
+/** The marker check and real-path probe in a child process, with a deadline. */
+export function probeOutOfProcess(rootPath, folder, timeoutMs) {
     return new Promise((resolve) => {
-        execFile(process.execPath, ["-e", STAT_SCRIPT, file], { timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout) => {
-            if (error && (error.killed || error.signal)) return resolve("TIMEOUT");
-            resolve(String(stdout || "").trim() || "ERROR");
+        execFile(process.execPath, ["-e", PROBE_SCRIPT, rootPath, folder, MARKER_FILE], { timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout) => {
+            if (error && (error.killed || error.signal)) return resolve({ marker: "TIMEOUT" });
+            try { resolve(JSON.parse(String(stdout || ""))); } catch { resolve({ marker: "ERROR" }); }
         });
     });
+}
+
+/** The checkout (sessions/<tree>/<repo>) that contains a real path under the root, or null. */
+export function checkoutOf(relativeRealPath) {
+    const parts = String(relativeRealPath || "").split("/");
+    if (parts.length < 3 || parts[0] !== "sessions") return null;
+    return parseCheckout(parts.slice(0, 3).join("/")) ? parts.slice(0, 3).join("/") : null;
 }
 
 async function callService(fetchImpl, baseUrl, method, pathname, body, timeoutMs) {
@@ -60,6 +79,9 @@ export function createRepoWorkspaceProvider(options) {
     const serviceTimeoutMs = options.serviceTimeoutMs ?? 10_000;
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     const fail = (code, message) => ({ ok: false, code, message });
+    // What each session leased here, per workspace record, so a release names the same checkout.
+    const leased = new Map();
+    const leaseKey = (sessionId, workspace) => `${sessionId}\0${workspace?.root ?? ""}\0${workspace?.folder ?? ""}`;
 
     return {
         async listRoots() {
@@ -74,20 +96,25 @@ export function createRepoWorkspaceProvider(options) {
                     return { ...fail("WORKSPACE_ATTACH_FAILED", `attach of root "${root.name}" failed: ${error?.message ?? error}`), retryAfterMs: 30_000 };
                 }
             }
-            const marker = await statOutOfProcess(path.join(root.path, MARKER_FILE), statTimeoutMs);
+            const folder = req.workspace.folder ?? "";
+            const probe = await probeOutOfProcess(root.path, folder, statTimeoutMs);
+            const marker = probe.marker;
             if (marker === "TIMEOUT") return { ...fail("WORKSPACE_ATTACH_TIMEOUT", `root "${root.name}" did not answer within ${statTimeoutMs} ms`), retryAfterMs: 30_000 };
             if (marker === "ESTALE") return { ...fail("WORKSPACE_STALE_MOUNT", `root "${root.name}" has a stale file handle; it needs a remount`), retryAfterMs: 30_000 };
             if (marker !== "ok") return { ...fail("WORKSPACE_NOT_MOUNTED", `root "${root.name}" has no ${MARKER_FILE} marker (${marker})`), retryAfterMs: 30_000 };
+            if (probe.folderError) return fail("WORKSPACE_FOLDER_MISSING", `folder "${folder}" is not available (${probe.folderError})`);
 
-            const folder = req.workspace.folder ?? "";
             const attachPath = folder ? path.join(root.path, folder) : root.path;
-            if (!parseCheckout(folder)) return { ok: true, path: attachPath };
+            const checkout = checkoutOf(probe.rel);
+            if (!checkout) {
+                return fail("WORKSPACE_PATH_INVALID", `folder "${folder}" is not inside a session clone (sessions/<tree>/<repo>)`);
+            }
 
             const serviceUrl = options.serviceUrls[root.name];
             let lease;
             try {
                 lease = await callService(fetchImpl, serviceUrl, "POST", "/v1/leases", {
-                    checkout: folder,
+                    checkout,
                     sessionId: req.sessionId,
                     rootSessionId: req.rootSessionId,
                     workerNodeId: req.workerNodeId,
@@ -97,15 +124,33 @@ export function createRepoWorkspaceProvider(options) {
                 return { ...fail("WORKSPACE_ATTACH_FAILED", `repo service: ${error?.message ?? error}`), retryAfterMs: 30_000 };
             }
             if (!lease.ok) return fail(lease.code || "WORKSPACE_ATTACH_FAILED", lease.message || "the repo service refused the lease");
+            leased.set(leaseKey(req.sessionId, req.workspace), { root: root.name, checkout });
             return { ok: true, path: attachPath, ...(lease.adopt ? { adopt: lease.adopt } : {}) };
         },
 
         async release(req) {
-            const folder = req.workspace?.folder ?? "";
-            if (!parseCheckout(folder)) return;
-            const serviceUrl = options.serviceUrls[req.workspace.root];
+            // The checkout this worker leased; after a restart, resolve it again.
+            const key = leaseKey(req.sessionId, req.workspace);
+            let target = leased.get(key);
+            if (!target && req.workspace) {
+                const root = roots.find((candidate) => candidate.name === req.workspace.root);
+                const probe = root ? await probeOutOfProcess(root.path, req.workspace.folder ?? "", statTimeoutMs) : null;
+                const checkout = probe && !probe.folderError ? checkoutOf(probe.rel) : null;
+                if (checkout) target = { root: root.name, checkout };
+            }
+            if (!target) return;
+            leased.delete(key);
+            const serviceUrl = options.serviceUrls[target.root];
             if (!serviceUrl) return;
-            await callService(fetchImpl, serviceUrl, "DELETE", "/v1/leases", { checkout: folder, sessionId: req.sessionId }, serviceTimeoutMs)
+            // The service deletes the entry only if this worker still holds
+            // it: a release that arrives after the session moved on must not
+            // delete the new worker's entry.
+            await callService(fetchImpl, serviceUrl, "DELETE", "/v1/leases", {
+                checkout: target.checkout,
+                sessionId: req.sessionId,
+                workerNodeId: req.workerNodeId,
+                turnIndex: req.turnIndex,
+            }, serviceTimeoutMs)
                 .catch(() => { /* best effort: the entry ages out */ });
         },
     };

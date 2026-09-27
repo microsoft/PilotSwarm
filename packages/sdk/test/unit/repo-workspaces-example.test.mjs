@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import { createGitFixture, git, gitEnv, tryGit } from "../helpers/git-fixture.mjs";
 import { startGitTokenServer } from "../helpers/git-token-server.mjs";
 import {
-    checkMaintenanceCommand,
+    MAINTENANCE_OPERATIONS,
     createRepoService,
     parseCheckout,
 } from "../../examples/repo-workspaces/repo-service.mjs";
@@ -47,9 +47,9 @@ async function serviceFor(fixture, extra = {}) {
     });
     const url = await service.listen();
     cleanups.push(() => service.close());
-    const call = async (method, pathname, body) => {
+    const call = async (method, pathname, body, headers = {}) => {
         const response = await fetch(new URL(pathname, url), {
-            method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+            method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
         });
         return { status: response.status, body: await response.json() };
     };
@@ -125,6 +125,27 @@ describe("repo service: leases", () => {
         assert.equal((await lease(svc, "b1", "tree-b", "w2", "sessions/tree-b/app")).ok, true);
     });
 
+    it("a release deletes only the holder's own entry: a late one from another worker or an older turn keeps it (review R5)", async () => {
+        const fx = await fixture();
+        const svc = await serviceFor(fx);
+        await svc.call("POST", "/v1/clones", { rootSessionId: "tree-a", repo: "app" });
+        const checkout = "sessions/tree-a/app";
+        // The session moved: worker 2 attached in turn 4 after worker 1's turn 3.
+        await svc.call("POST", "/v1/leases", { checkout, sessionId: "a1", rootSessionId: "tree-a", workerNodeId: "w1", turnIndex: 3 });
+        await svc.call("POST", "/v1/leases", { checkout, sessionId: "a1", rootSessionId: "tree-a", workerNodeId: "w2", turnIndex: 4 });
+
+        const late = await svc.call("DELETE", "/v1/leases", { checkout, sessionId: "a1", workerNodeId: "w1", turnIndex: 4 });
+        assert.deepEqual(late.body, { deleted: false, reason: "another worker holds the entry" });
+        const older = await svc.call("DELETE", "/v1/leases", { checkout, sessionId: "a1", workerNodeId: "w2", turnIndex: 3 });
+        assert.deepEqual(older.body, { deleted: false, reason: "a newer turn holds the entry" });
+        const refused = await svc.call("DELETE", "/v1/clones", { rootSessionId: "tree-a", repo: "app" });
+        assert.equal(refused.body.error.code, "CHECKOUT_IN_USE", "the kept entry still guards the clone");
+
+        const own = await svc.call("DELETE", "/v1/leases", { checkout, sessionId: "a1", workerNodeId: "w2", turnIndex: 5 });
+        assert.deepEqual(own.body, { deleted: true });
+        assert.equal((await svc.call("DELETE", "/v1/clones", { rootSessionId: "tree-a", repo: "app" })).body.deleted, true);
+    });
+
     it("lock files stay while any entry is live and go when every entry is dead (R5)", async () => {
         const fx = await fixture();
         const svc = await serviceFor(fx, { entryTtlMs: 60_000 });
@@ -152,38 +173,83 @@ describe("repo service: leases", () => {
 });
 
 describe("repo service: mirror maintenance (G2)", () => {
-    it("the allowlist refuses what drops borrowed objects and allows the rest", () => {
-        for (const args of [["prune"], ["gc", "--prune=now"], ["gc", "--prune"], ["repack", "-a", "-d"], ["repack", "-ad"], ["repack", "-a", "-d", "-q"], ["fsck"], []]) {
-            assert.equal(checkMaintenanceCommand(args).ok, false, `refused: ${args.join(" ")}`);
-        }
-        for (const args of [["gc"], ["gc", "--prune=never"], ["maintenance", "run"], ["repack", "-A", "-d"], ["repack", "--cruft", "-d"], ["repack", "-a", "-d", "-k"], ["repack", "-adk"], ["repack", "-d"]]) {
-            assert.equal(checkMaintenanceCommand(args).ok, true, `allowed: ${args.join(" ")}`);
-        }
-    });
-
-    it("refuses over the API, and the allowed commands leave a borrowing clone fsck-clean", async () => {
+    it("runs named operations only, with the admin token; every operation keeps a borrowing clone fsck-clean", async () => {
         const fx = await fixture({ layout: "packed" });
-        const svc = await serviceFor(fx);
+        const admin = { authorization: "Bearer admin-secret" };
+        const svc = await serviceFor(fx, { adminToken: "admin-secret" });
         let clone;
         await fx.createUnreachableObjects({
-            // The clone borrows the commit through its alternates, so checking
-            // it out needs no fetch: exactly the object a bad prune would drop.
+            // The clone borrows the commit through its alternates: exactly the object a bad prune would drop.
             prepare: async (commit) => {
                 clone = (await svc.call("POST", "/v1/clones", { rootSessionId: "tree-g2", repo: "app" })).body.path;
                 await git(["-C", clone, "checkout", "-q", "--detach", commit]);
             },
         });
-        for (const args of [["prune"], ["repack", "-a", "-d"]]) {
-            const refused = await svc.call("POST", "/v1/maintenance", { repo: "app", args });
-            assert.equal(refused.status, 403, args.join(" "));
-            assert.equal(refused.body.error.code, "MAINTENANCE_REFUSED");
+        // Workers, and so agent shells, can reach the service: no token, no maintenance.
+        assert.equal((await svc.call("POST", "/v1/maintenance", { repo: "app", operation: "gc" })).body.error.code, "ADMIN_REQUIRED");
+        assert.equal((await svc.call("POST", "/v1/maintenance", { repo: "app", operation: "gc" }, { authorization: "Bearer wrong" })).body.error.code, "ADMIN_REQUIRED");
+        assert.equal((await svc.call("POST", "/v1/mirrors/fetch", { repo: "app" })).body.error.code, "ADMIN_REQUIRED");
+        // Git arguments are never accepted: the forms that got past an argument filter cannot be sent at all.
+        for (const body of [{ repo: "app", args: ["gc", "--prun=now"] }, { repo: "app", operation: "prune" }, { repo: "app", operation: "gc --prune=now" }]) {
+            const refused = await svc.call("POST", "/v1/maintenance", body, admin);
+            assert.equal(refused.status, 400, JSON.stringify(body));
+            assert.equal(refused.body.error.code, "MAINTENANCE_UNKNOWN");
         }
-        for (const args of [["gc"], ["maintenance", "run"], ["repack", "-A", "-d"], ["repack", "--cruft", "-d"], ["repack", "-a", "-d", "-k"]]) {
-            const ran = await svc.call("POST", "/v1/maintenance", { repo: "app", args });
-            assert.equal(ran.status, 200, `${args.join(" ")}: ${JSON.stringify(ran.body)}`);
+        for (const operation of Object.keys(MAINTENANCE_OPERATIONS)) {
+            const ran = await svc.call("POST", "/v1/maintenance", { repo: "app", operation }, admin);
+            assert.equal(ran.status, 200, `${operation}: ${JSON.stringify(ran.body)}`);
         }
         const fsck = await tryGit(["-C", clone, "fsck", "--full"]);
         assert.equal(fsck.ok, true, fsck.stderr);
+        assert.equal((await svc.call("POST", "/v1/mirrors/fetch", { repo: "app" }, admin)).body.fetched, true);
+
+        const off = await serviceFor(fx);
+        assert.equal((await off.call("POST", "/v1/maintenance", { repo: "app", operation: "gc" }, admin)).body.error.code, "ADMIN_DISABLED");
+    });
+
+    it("every named operation pins gc.pruneExpire=never or keeps unreachable objects", () => {
+        for (const [name, args] of Object.entries(MAINTENANCE_OPERATIONS)) {
+            assert.ok(args.includes("gc.pruneExpire=never") || args.includes("-k"), name);
+            assert.ok(!args.some((arg) => /^--(prune|expire)=(?!never)/.test(arg) || /expiration=(?!never)/.test(arg)), name);
+        }
+    });
+});
+
+describe("repo service: links a session can plant", () => {
+    it("cleanup refuses to delete through a linked tree folder; lock removal skips a linked .git", async () => {
+        const fx = await fixture();
+        const svc = await serviceFor(fx, { entryTtlMs: 1000 });
+        const made = (await svc.call("POST", "/v1/clones", { rootSessionId: "tree-l", repo: "app" })).body;
+        // The session swaps its tree folder for a link to somewhere else.
+        const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "ps-link-target-"));
+        cleanups.push(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+        fs.mkdirSync(path.join(elsewhere, "app"));
+        fs.writeFileSync(path.join(elsewhere, "app", "precious.txt"), "keep");
+        fs.renameSync(path.join(fx.root, "sessions/tree-l"), path.join(fx.root, "sessions/tree-l.real"));
+        fs.symlinkSync(elsewhere, path.join(fx.root, "sessions/tree-l"));
+        const refused = await svc.call("DELETE", "/v1/clones", { rootSessionId: "tree-l", repo: "app" });
+        assert.equal(refused.status, 409);
+        assert.equal(refused.body.error.code, "CHECKOUT_UNSAFE");
+        assert.ok(fs.existsSync(path.join(elsewhere, "app", "precious.txt")), "nothing behind the link was deleted");
+        fs.unlinkSync(path.join(fx.root, "sessions/tree-l"));
+        fs.renameSync(path.join(fx.root, "sessions/tree-l.real"), path.join(fx.root, "sessions/tree-l"));
+
+        // The session swaps its .git for a link to the mirror, which has a lock file.
+        const mirrorLock = path.join(fx.mirror, "packed-refs.lock");
+        fs.writeFileSync(mirrorLock, "");
+        cleanups.push(() => fs.rmSync(mirrorLock, { force: true }));
+        fs.renameSync(path.join(made.path, ".git"), path.join(made.path, ".git.real"));
+        fs.symlinkSync(fx.mirror, path.join(made.path, ".git"));
+        const lease = (sessionId, worker) => svc.call("POST", "/v1/leases", { checkout: "sessions/tree-l/app", sessionId, rootSessionId: "tree-l", workerNodeId: worker, turnIndex: 0 }).then((r) => r.body);
+        await lease("l1", "w1");
+        svc.alive.delete("w1");
+        svc.advance(2_000);
+        const next = await lease("l2", "w2");
+        assert.equal(next.ok, true);
+        assert.equal(next.removedLocks, undefined, "no lock removal through a linked .git");
+        assert.ok(fs.existsSync(mirrorLock), "the mirror's lock file is intact");
+        assert.equal((await svc.call("POST", "/v1/leases", { checkout: "sessions/tree-l/app/src", sessionId: "l3", rootSessionId: "tree-l", workerNodeId: "w2", turnIndex: 0 })).status, 400,
+            "a lease names an exact checkout");
     });
 });
 
@@ -244,11 +310,27 @@ describe("provider, tools and register()", () => {
         assert.equal(svc.service.state().leases["sessions/tree-p/app"].length, 1);
         assert.deepEqual(await provider.ensureAttached(req("sessions/tree-p/app", { rootSessionId: "tree-q" })),
             { ok: false, code: "WORKSPACE_IN_USE", message: "sessions/tree-p/app belongs to session tree tree-p" });
-        assert.deepEqual(await provider.ensureAttached(req("markers")), { ok: true, path: path.join(fx.root, "markers") }, "not a clone: no lease");
         assert.equal((await provider.ensureAttached({ ...req("x"), workspace: { schema: 1, root: "nope" } })).code, "WORKSPACE_ROOT_UNKNOWN");
+        // Only session clones: the root, a tree folder and other folders are refused.
+        for (const folder of [undefined, "markers", "sessions", "sessions/tree-p", "repos/app.git"]) {
+            assert.equal((await provider.ensureAttached(req(folder))).code, "WORKSPACE_PATH_INVALID", `refused: ${folder}`);
+        }
+        assert.equal((await provider.ensureAttached(req("sessions/tree-p/app/missing"))).code, "WORKSPACE_FOLDER_MISSING");
+        // A subfolder of a clone, or a link into one, leases the clone that contains it.
+        fs.mkdirSync(path.join(fx.root, "sessions/tree-p/app/src"));
+        assert.equal((await provider.ensureAttached(req("sessions/tree-p/app/src", { rootSessionId: "tree-q", sessionId: "q1" }))).code, "WORKSPACE_IN_USE",
+            "another tree cannot use a subfolder of the clone");
+        fs.mkdirSync(path.join(fx.root, "sessions/tree-q"), { recursive: true });
+        fs.symlinkSync(path.join(fx.root, "sessions/tree-p/app"), path.join(fx.root, "sessions/tree-q/borrowed"));
+        assert.equal((await provider.ensureAttached(req("sessions/tree-q/borrowed", { rootSessionId: "tree-q", sessionId: "q1" }))).code, "WORKSPACE_IN_USE",
+            "nor a link into it");
+        const child = await provider.ensureAttached(req("sessions/tree-p/app/src", { sessionId: "p1-child" }));
+        assert.equal(child.ok, true);
+        assert.deepEqual(svc.service.state().leases["sessions/tree-p/app"].map((e) => e.sessionId).sort(), ["p1", "p1-child"], "the subfolder session holds an entry on the clone");
+        await provider.release(req("sessions/tree-p/app/src", { sessionId: "p1-child" }));
 
         await provider.release(req("sessions/tree-p/app"));
-        assert.equal(svc.service.state().leases["sessions/tree-p/app"], undefined, "released");
+        assert.equal(svc.service.state().leases["sessions/tree-p/app"], undefined, "released, the subfolder session's entry included");
 
         fs.rmSync(path.join(fx.root, ".pilotswarm-export"));
         const unmounted = await provider.ensureAttached(req("sessions/tree-p/app"));
