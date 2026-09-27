@@ -118,6 +118,9 @@ writing to the checkout after the session moved.
 | The application | The repo service on the repo pod: mirrors, fetches, session checkouts, cleanup, and leases (which session and worker hold each checkout). The provider module: mount requests, checks, and which repo content to adopt. |
 | The deployment | The repo pod's NFS server and internal load balancer. The attacher, a helper on each agent node that mounts the export. Git and a git credential helper in the worker image. The rules on the git servers. |
 
+Section 3 has the full split, concern by concern, and how the two sides
+work together in the git scenario.
+
 **What does not change**
 
 - A session without a workspace gets the same tools and prompt, and runs
@@ -244,17 +247,69 @@ flowchart LR
   WP -- "HTTP 8080" --> SVC
 ```
 
-| Part | Owner |
-|---|---|
-| Mirrors, session clones, fetch, cleanup, leases | Application (repo service) |
-| NFS export, internal load balancer, attacher, credential helper, worker image contents | Deployment |
-| `listRoots`, `ensureAttached`, `release`, which repo content to adopt | Application provider |
-| The session's workspace, revision and status | PilotSwarm |
-| Calling the provider, checking the path, pointing the CLI at it | PilotSwarm |
-| Repo agents and skills merged into the session | PilotSwarm |
-| Workspace for sub-agents; APIs, MCP, portal and TUI | PilotSwarm |
+PilotSwarm core has no git, NFS, Kubernetes or cloud code. In the table
+below, "the deployment" is everything else: the application's code (its
+provider, its agent tools and its repo service, which
+`examples/repo-workspaces/` supplies as a reference) and its infrastructure
+(the repo pod, NFS, the attacher and the worker image).
 
-PilotSwarm core has no git, NFS, Kubernetes or cloud code.
+| Concern | Core supplies | The deployment supplies | Where they meet |
+|---|---|---|---|
+| Where folders live | Named roots. The root list is asked for again before every turn. A built-in provider for fixed roots (the `workspaceRoots` worker option). | The storage: a repo pod exporting `/ws/a` over NFS, mounted on each node; the list of roots | `provider.listRoots()` |
+| Making a folder ready on this worker | A call to the provider before every turn, with a 30 s deadline | Mounts the root if needed, checks the export marker, takes a lease, says what to adopt | `provider.ensureAttached(req)`, which returns `{ ok, path, adopt }` or an error code with `retryAfterMs` |
+| Checking the folder | A check in a child process, 5 s, one at a time per root: inside the root, a directory, links followed | Optional stricter rules inside `ensureAttached` (the reference serves session clones only) | None |
+| Running the turn | The CLI's working directory, repo hooks off, one CLI process per credential and root, the partial-changes note after a lost attempt | Git 2.46 or later and the credential helper in the worker image; `gh` and `az` wrappers | None |
+| Folder unavailable | The prompt held with no model call, the retry schedule, status `waiting`, "retry now", a move to another worker after two failures on one | Error codes, an optional `retryAfterMs`, a remount after `ESTALE` | The error result of `ensureAttached` |
+| Leaving a worker | Shells stopped (never a process that reused a pid), a disconnect, then the provider told. At every affinity release, on complete, cancel and delete, on a workspace change, on shutdown and on eviction. | The worker's own lease entry dropped | `provider.release(req)` |
+| Who holds a clone | Only the calls above, each with the session, the tree, the worker and the turn index | Lease entries, the dead-entry rules (worker registry, age), stale git lock removal, `WORKSPACE_IN_USE` for another tree | `ensureAttached` and `release` |
+| Making clones and mirrors | Nothing | The repo service: mirrors, `clone --shared` with relative alternates, the real origin, a credential helper per clone; agent tools to create, list and remove clones | The tools return a `{ root, folder }` record |
+| Choosing a session's workspace | The record and its revision; set at creation, by the agent (`set_session_workspace`), from outside (client, Web API, MCP, portal, TUI) and for children (`spawn_agent`); the acknowledgement and the refusals after it | Which folder to use (its tools return the record), and which agents list `set_session_workspace` | The `{ root, folder }` record |
+| Repo agents, skills and instructions | The clone root found, the files read and filtered, merged into the session, the model told, changes tracked in the fingerprint | Per-repo `adopt` flags | The `adopt` field of the `ensureAttached` result |
+| Git credentials and branch rules | Nothing | The credential helper, token minting, the rules on the git servers | None |
+| Cleanup | Never deletes files; releases only | Deletes clones (the remove tool today; a cleanup pass is still to be built) and maintains the mirrors | Session status, from the management API |
+| Loading the deployment's code | `worker.setWorkspaceProvider()`, `worker.registerTools()`, `PILOTSWARM_EXTENSION_MODULES` | A module that exports `register(worker)` | The module hook |
+| Worker liveness | The worker registry | The lease rules read it (`isWorkerAlive`) | The registry lookup |
+
+How the two sides work together in the git scenario:
+
+```text
+Setup
+ 1. [deployment]  The repo pod exports /ws/a. Workers load the module: the
+                  provider and the clone tools.
+Start working
+ 2. [agent -> deployment]  create_session_clone({ repo: "app" }): the repo
+                  service makes the mirror if needed, then the clone, and
+                  returns { root: "a", folder: "sessions/<tree>/app" }
+ 3. [agent -> core]  set_session_workspace(that record): core asks the
+                  provider to attach (the node mounts the root if needed; the
+                  service adds a lease entry), checks the path, and
+                  acknowledges. The turn ends; core stores the record.
+ 4. [core]        The next turn runs in the clone and adopts the repo's agents
+                  and skills, as the provider's adopt flags allow.
+Every turn
+ 5. [core -> deployment]  ensureAttached again (the lease entry is refreshed),
+                  the path check, then the turn.
+ 6. [deployment]  git push: the clone's credential helper asks the repo
+                  service for a short-lived token; the git server's rules
+                  decide.
+Moves and changes
+ 7. [core -> deployment]  The session leaves a worker: shells stopped,
+                  disconnected, then release (the service drops that entry).
+ 8. [core -> deployment]  The next turn on another worker: ensureAttached (a
+                  new entry); the same files over NFS.
+ 9. [core]        The folder is unavailable: the prompt is held, retried, and
+                  run once when the folder is back.
+End
+10. [core -> deployment]  The session ends: release. The files stay.
+11. [deployment]  Cleanup deletes the clone once every session in its tree
+                  has ended.
+```
+
+What `examples/repo-workspaces/` already supplies: the provider, the three
+clone tools, the repo service with its leases, the credential helper, and
+the `register(worker)` module. What every deployment still builds: the NFS
+export and the attacher, token minting, the worker-registry wiring, the
+cleanup, and the rules on its git servers.
 
 ## 4. PilotSwarm design
 
