@@ -1,0 +1,30 @@
+{
+    "name": "pilotswarm-relay-core",
+    "version": "0.0.1",
+    "private": true,
+    "description": "Relay core: run commands on machines outside Kubernetes. The same for every relay service; services plug in as providers.",
+    "type": "module",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./testing/contract": "./test/contract.mjs"
+    },
+    "bin": {
+        "pilotswarm-relay-cluster-keygen": "./dist/cluster-keygen.js"
+    },
+    "scripts": {
+        "build": "tsc",
+        "test": "node --test test/*.test.mjs",
+        "keygen": "node dist/cluster-keygen.js"
+    },
+    "engines": {
+        "node": ">=24.0.0"
+    },
+    "dependencies": {},
+    "devDependencies": {
+        "typescript": "^5.9.3"
+    },
+    "license": "MIT"
+}
