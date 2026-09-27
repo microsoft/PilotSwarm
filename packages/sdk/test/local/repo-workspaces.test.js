@@ -202,6 +202,9 @@ describe("reference repo workspaces: a git clone and a log share in one session 
         const logsRoot = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ps-logs-")));
         const day = path.join(logsRoot, "checkout-svc", "2026-09-27");
         fs.mkdirSync(day, { recursive: true });
+        // A plain root needs its export marker: the provider refuses an
+        // empty mount point.
+        fs.writeFileSync(path.join(logsRoot, ".pilotswarm-export"), "");
         const LOG_LINE = "2026-09-27T14:02:11Z ERROR NullReference in PaymentMapper.cs:88";
         fs.writeFileSync(path.join(day, "app-1.log"), `2026-09-27T14:02:10Z INFO started\n${LOG_LINE}\n`);
         // The worker's one provider: the repo root and the plain logs root.

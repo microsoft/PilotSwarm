@@ -1,0 +1,7 @@
+{
+  "name": "repo-workspaces",
+  "description": "The reference deployment's sample agent for session workspaces: a coder that works in a real git clone on the repo pod, with a shared folder next to it.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "agents": "agents/"
+}

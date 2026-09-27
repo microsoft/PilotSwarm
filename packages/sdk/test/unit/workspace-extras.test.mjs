@@ -314,14 +314,18 @@ describe("combineWorkspaceProviders", () => {
     });
 
     it("the example combines its repo roots with plain roots, and refuses a name used by both", async () => {
+        const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-plain-root-")));
+        fs.mkdirSync(path.join(plain, "notes"));
+        fs.writeFileSync(path.join(plain, ".pilotswarm-export"), "");
         const provider = createWorkspaceProvider({
             roots: [{ name: "a", path: "/ws/a" }],
             serviceUrls: { a: "http://127.0.0.1:9" },
-            plainRoots: [{ name: "shared", path: "/ws/shared" }],
+            plainRoots: [{ name: "shared", path: plain }],
         });
         assert.deepEqual((await provider.listRoots()).map((root) => root.name), ["a", "shared"]);
         const shared = await provider.ensureAttached({ ...REQ, workspace: { schema: 1, root: "shared", folder: "notes" }, attachment: "shared" });
-        assert.deepEqual(shared, { ok: true, path: "/ws/shared/notes" });
+        fs.rmSync(plain, { recursive: true, force: true });
+        assert.deepEqual(shared, { ok: true, path: path.join(plain, "notes") });
         assert.throws(() => createWorkspaceProvider({
             roots: [{ name: "a", path: "/ws/a" }], serviceUrls: {}, plainRoots: [{ name: "a", path: "/ws/other" }],
         }), /also a repo root/);

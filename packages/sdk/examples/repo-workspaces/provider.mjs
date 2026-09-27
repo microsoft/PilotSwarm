@@ -100,7 +100,11 @@ export function createRepoWorkspaceProvider(options) {
             const probe = await probeOutOfProcess(root.path, folder, statTimeoutMs);
             const marker = probe.marker;
             if (marker === "TIMEOUT") return { ...fail("WORKSPACE_ATTACH_TIMEOUT", `root "${root.name}" did not answer within ${statTimeoutMs} ms`), retryAfterMs: 30_000 };
-            if (marker === "ESTALE") return { ...fail("WORKSPACE_STALE_MOUNT", `root "${root.name}" has a stale file handle; it needs a remount`), retryAfterMs: 30_000 };
+            if (marker === "ESTALE") {
+                // Ask the attacher for a fresh mount; the next attempt uses it.
+                Promise.resolve().then(() => options.remount?.(root)).catch(() => undefined);
+                return { ...fail("WORKSPACE_STALE_MOUNT", `root "${root.name}" has a stale file handle; it needs a remount`), retryAfterMs: 30_000 };
+            }
             if (marker !== "ok") return { ...fail("WORKSPACE_NOT_MOUNTED", `root "${root.name}" has no ${MARKER_FILE} marker (${marker})`), retryAfterMs: 30_000 };
             if (probe.folderError) return fail("WORKSPACE_FOLDER_MISSING", `folder "${folder}" is not available (${probe.folderError})`);
 
@@ -152,6 +156,54 @@ export function createRepoWorkspaceProvider(options) {
                 turnIndex: req.turnIndex,
             }, serviceTimeoutMs)
                 .catch(() => { /* best effort: the entry ages out */ });
+        },
+    };
+}
+
+/**
+ * A provider for plain roots (section 5.3, "Plain roots"): folders with no
+ * repo service behind them, such as a shared folder every session may write,
+ * or a log share. Sessions use them as extra folders (section 4.10).
+ *
+ * Unlike PilotSwarm's built-in provider it checks the mount: the root's
+ * `.pilotswarm-export` marker must be there (an unmounted mount point is an
+ * empty local folder, and writes would land on the node), and the folder
+ * must resolve inside the root. No leases; nothing adopted; release does
+ * nothing.
+ *
+ * @param {object} options
+ * @param {Array<{ name: string, path: string }>} options.roots
+ * @param {(root: { name: string, path: string }) => (boolean|Promise<boolean>)} [options.isMounted]
+ * @param {(root: { name: string, path: string }) => Promise<void>} [options.attach]
+ * @param {(root: { name: string, path: string }) => Promise<void>} [options.remount]
+ * @param {number} [options.statTimeoutMs]
+ */
+export function createPlainRootProvider(options) {
+    const roots = options.roots.map((root) => ({ name: root.name, path: root.path }));
+    const statTimeoutMs = options.statTimeoutMs ?? 5_000;
+    const fail = (code, message) => ({ ok: false, code, message });
+    return {
+        async listRoots() {
+            return roots.map((root) => ({ ...root }));
+        },
+        async ensureAttached(req) {
+            const root = roots.find((candidate) => candidate.name === req.workspace.root);
+            if (!root) return fail("WORKSPACE_ROOT_UNKNOWN", `root "${req.workspace.root}" is not served by this provider`);
+            if (options.attach && !(await options.isMounted?.(root))) {
+                try { await options.attach(root); } catch (error) {
+                    return { ...fail("WORKSPACE_ATTACH_FAILED", `attach of root "${root.name}" failed: ${error?.message ?? error}`), retryAfterMs: 30_000 };
+                }
+            }
+            const folder = req.workspace.folder ?? "";
+            const probe = await probeOutOfProcess(root.path, folder, statTimeoutMs);
+            if (probe.marker === "TIMEOUT") return { ...fail("WORKSPACE_ATTACH_TIMEOUT", `root "${root.name}" did not answer within ${statTimeoutMs} ms`), retryAfterMs: 30_000 };
+            if (probe.marker === "ESTALE") {
+                Promise.resolve().then(() => options.remount?.(root)).catch(() => undefined);
+                return { ...fail("WORKSPACE_STALE_MOUNT", `root "${root.name}" has a stale file handle; it needs a remount`), retryAfterMs: 30_000 };
+            }
+            if (probe.marker !== "ok") return { ...fail("WORKSPACE_NOT_MOUNTED", `root "${root.name}" has no ${MARKER_FILE} marker (${probe.marker})`), retryAfterMs: 30_000 };
+            if (probe.folderError) return fail("WORKSPACE_FOLDER_MISSING", `folder "${folder}" is not available (${probe.folderError})`);
+            return { ok: true, path: folder ? path.join(root.path, folder) : root.path };
         },
     };
 }

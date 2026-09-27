@@ -19,6 +19,9 @@
  *   POST   /v1/mirrors/fetch { repo }                    fetch the mirror from its remote        (admin token)
  *   POST   /v1/maintenance   { repo, operation }         a named maintenance operation           (admin token)
  *   POST   /v1/token         { protocol, host, path }    a token for a served repo's remote only
+ *   GET/POST /git/<repo>.git/...                         a repo's sandbox remote (git smart HTTP,
+ *                                                        token in HTTP Basic auth); only for repos
+ *                                                        with `sandbox: true`
  *
  * Worker pods, and so agent shells, can reach this port (section 5.2). The
  * two admin endpoints therefore need the admin token, which workers never
@@ -28,11 +31,12 @@
  * see main() at the end). Tests import createRepoService().
  */
 import { execFile } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSandboxRemotes } from "./sandbox-remote.mjs";
 
 export const MARKER_FILE = ".pilotswarm-export";
 /** The hold window plus the eviction margin (section 5.3): an entry older than this is dead. */
@@ -102,6 +106,11 @@ function runAs(command, args, { cwd, env, uid } = {}) {
     });
 }
 
+/** Quotes one word for sh, which runs git's --upload-pack command. */
+function shellQuote(value) {
+    return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 function defaultRunGit(args, opts = {}) {
     return runAs("git", args, opts);
 }
@@ -138,7 +147,11 @@ export function removeStaleGitLocks(clonePath) {
  * @param {object} options
  * @param {string} options.root            the export root on this pod
  * @param {string} [options.rootName]      the root's name in workspace records (default "a")
- * @param {Record<string, { remote: string, adopt?: { agents?: boolean, skills?: boolean, instructions?: boolean } }>} options.repos
+ * @param {Record<string, { remote?: string, upstream?: string, sandbox?: boolean, adopt?: { agents?: boolean, skills?: boolean, instructions?: boolean } }>} options.repos
+ *        `remote` is the clones' origin. `upstream`, when given, is where the
+ *        mirror fetches from instead. `sandbox: true` makes this service host
+ *        the remote itself (sandbox-remote.mjs), at `${publicUrl}/git/<repo>.git`.
+ * @param {string} [options.publicUrl]     this service's URL as workers reach it; needed for sandboxes
  * @param {(workerNodeId: string) => (boolean|Promise<boolean>)} [options.isWorkerAlive]
  *        the worker registry; without it, only an entry's age decides
  * @param {number} [options.entryTtlMs]    hold window plus eviction margin
@@ -154,12 +167,36 @@ export function removeStaleGitLocks(clonePath) {
 export function createRepoService(options) {
     const root = path.resolve(options.root);
     const rootName = options.rootName ?? "a";
-    const repos = options.repos ?? {};
+    // A sandbox repo's remote is this service; fill it in from publicUrl.
+    const repos = Object.fromEntries(Object.entries(options.repos ?? {}).map(([name, config]) => {
+        if (!config?.sandbox) return [name, config];
+        if (!options.publicUrl) throw new Error(`repo "${name}" has a sandbox remote, which needs publicUrl`);
+        return [name, { ...config, remote: `${String(options.publicUrl).replace(/\/+$/, "")}/git/${name}.git` }];
+    }));
     const entryTtlMs = options.entryTtlMs ?? DEFAULT_ENTRY_TTL_MS;
     const now = options.now ?? (() => Date.now());
     const runGit = options.runGit ?? defaultRunGit;
     const isWorkerAlive = options.isWorkerAlive ?? (() => true);
     const stateFile = options.stateFile ?? null;
+    // Sandbox remotes get tokens from this service: random, short-lived, in
+    // memory. A deployment with real remotes passes its own mintToken.
+    const sandboxTokens = new Map();
+    const tokenTtlMs = options.tokenTtlMs ?? 15 * 60 * 1000;
+    const mintSandboxToken = () => {
+        for (const [token, expiry] of sandboxTokens) if (expiry <= now()) sandboxTokens.delete(token);
+        const token = randomBytes(24).toString("base64url");
+        sandboxTokens.set(token, now() + tokenTtlMs);
+        return token;
+    };
+    const hasSandbox = Object.values(repos).some((config) => config?.sandbox);
+    const sandboxes = hasSandbox ? createSandboxRemotes({
+        root,
+        runGit: (args) => runGit(args),
+        isValidToken: (token) => {
+            const expiry = sandboxTokens.get(token);
+            return typeof expiry === "number" && expiry > now();
+        },
+    }) : null;
     // clones: checkout -> { rootSessionId, repo, createdAt }
     // leases: checkout -> Map(sessionId -> { sessionId, rootSessionId, workerNodeId, turnIndex, time })
     const clones = new Map();
@@ -221,7 +258,7 @@ export function createRepoService(options) {
         fs.mkdirSync(path.dirname(mirror), { recursive: true });
         await runGit(["init", "-q", "--bare", mirror]);
         for (const [key, value] of [
-            ["remote.origin.url", config.remote],
+            ["remote.origin.url", config.upstream ?? config.remote],
             ["remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
             ["gc.auto", "0"],
             ["maintenance.auto", "false"],
@@ -229,7 +266,19 @@ export function createRepoService(options) {
         ]) await runGit(["-C", mirror, "config", key, value]);
         await runGit(["-C", mirror, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]);
         await runGit(["-C", mirror, "fetch", "-q", "--prune", "origin"]);
+        await followUpstreamHead(mirror);
         return mirror;
+    }
+
+    /**
+     * Points the mirror's HEAD at the upstream's default branch. `git init`
+     * names its own default (often master); a clone of a mirror whose HEAD
+     * names a missing branch checks out nothing.
+     */
+    async function followUpstreamHead(mirror) {
+        const symref = await runGit(["-C", mirror, "ls-remote", "--symref", "origin", "HEAD"]).catch(() => "");
+        const match = /^ref:\s+(refs\/heads\/\S+)\s+HEAD/m.exec(symref);
+        if (match) await runGit(["-C", mirror, "symbolic-ref", "HEAD", match[1]]);
     }
 
     const handlers = {
@@ -249,7 +298,13 @@ export function createRepoService(options) {
             if (!segmentsAreReal(root, path.posix.dirname(checkout), { withGit: false })) {
                 throw new ServiceError(409, "CHECKOUT_UNSAFE", `${path.posix.dirname(checkout)} is not a plain folder`);
             }
-            await runGit(["clone", "-q", "--shared", mirror, target], { uid: options.cloneUid });
+            // The clone runs as the session uid, but the mirror belongs to the
+            // service. Git refuses to read a repository another uid owns
+            // ("dubious ownership"), and a -c before `clone` does not reach
+            // the upload-pack that reads the mirror. So the exception is given
+            // to that upload-pack only, and names only this mirror.
+            const uploadPack = `git -c ${shellQuote(`safe.directory=${mirror}`)} upload-pack`;
+            await runGit(["clone", "-q", "--shared", `--upload-pack=${uploadPack}`, mirror, target], { uid: options.cloneUid });
             // Relative alternates keep the clone valid at the same path on every pod.
             const objectsDir = path.join(target, ".git", "objects");
             fs.writeFileSync(path.join(objectsDir, "info", "alternates"), `${path.relative(objectsDir, path.join(mirror, "objects"))}\n`);
@@ -364,13 +419,39 @@ export function createRepoService(options) {
                     return `${url.protocol.replace(/:$/, "")}://${url.host}/${url.pathname.replace(/^\/+/, "")}`.replace(/\.git$/, "") === asked;
                 } catch { return false; }
             });
-            if (!match || !options.mintToken) return {};
+            if (!match) return {};
+            if (match[1].sandbox) return { username: "x-token", password: mintSandboxToken() };
+            if (!options.mintToken) return {};
             const token = await options.mintToken({ repo: match[0], url: match[1].remote });
             return token ? { username: "x-token", password: token } : {};
         },
     };
 
+    /** Mirrors every repo, and makes its sandbox; at start, before the first clone asks. */
+    async function prepare() {
+        for (const [repo, config] of Object.entries(repos)) {
+            const existed = fs.existsSync(mirrorPath(repo));
+            const mirror = await ensureMirror(repo);
+            if (existed) await followUpstreamHead(mirror);
+            if (config?.sandbox) {
+                await sandboxes.ensure(repo, mirror);
+                await sandboxes.syncFromMirror(repo, mirror);
+            }
+        }
+    }
+
+    /** Fetches every mirror from its upstream, then brings each sandbox's protected branches up to date. */
+    async function refresh() {
+        for (const [repo, config] of Object.entries(repos)) {
+            const mirror = mirrorPath(repo);
+            if (!fs.existsSync(mirror)) continue;
+            await runGit(["-C", mirror, "fetch", "-q", "--prune", "origin"]);
+            if (config?.sandbox) await sandboxes.syncFromMirror(repo, mirror);
+        }
+    }
+
     const server = http.createServer(async (req, res) => {
+        if (sandboxes && sandboxes.handle(req, res)) return;
         const url = new URL(req.url, "http://repo-service");
         const handler = handlers[`${req.method} ${url.pathname}`];
         const reply = (status, body) => {
@@ -389,8 +470,17 @@ export function createRepoService(options) {
         }
     });
 
+    let refreshTimer = null;
     return {
         server,
+        prepare,
+        refresh,
+        /** Refreshes every `intervalMs` in the background; errors are logged, not thrown. */
+        startRefresh(intervalMs, log = console.error) {
+            if (refreshTimer || !(intervalMs > 0)) return;
+            refreshTimer = setInterval(() => { refresh().catch((error) => log(`[repo-service] refresh failed: ${error?.message ?? error}`)); }, intervalMs);
+            refreshTimer.unref?.();
+        },
         /** Test and admin view of the service state. */
         state: () => ({
             clones: Object.fromEntries(clones),
@@ -402,6 +492,8 @@ export function createRepoService(options) {
             return `http://${address.address}:${address.port}`;
         },
         async close() {
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = null;
             server.closeAllConnections?.();
             await new Promise((resolve) => server.close(resolve));
         },
@@ -412,7 +504,9 @@ export function createRepoService(options) {
  * Pod entry point. Environment:
  *   REPO_SERVICE_ROOT        the export root (default /ws/a)
  *   REPO_SERVICE_ROOT_NAME   its name in workspace records (default a)
- *   REPO_SERVICE_REPOS       JSON: { "<repo>": { "remote": "<url>", "adopt": { ... } } }
+ *   REPO_SERVICE_REPOS       JSON: { "<repo>": { "remote": "<url>", "upstream"?: "<url>", "sandbox"?: true, "adopt": { ... } } }
+ *   REPO_SERVICE_PUBLIC_URL  this service's URL as workers reach it (sandbox remotes need it)
+ *   REPO_SERVICE_REFRESH_S   how often mirrors fetch and sandboxes follow them (default 300; 0 = never)
  *   REPO_SERVICE_STATE_FILE  service-private state (default /var/lib/repo-service/state.json)
  *   REPO_SERVICE_PORT        default 8080
  *   REPO_SERVICE_CLONE_UID   the session uid for clone creation (default 1000)
@@ -431,8 +525,13 @@ async function main() {
         cloneUid: env.REPO_SERVICE_CLONE_UID ? Number(env.REPO_SERVICE_CLONE_UID) : 1000,
         credentialHelper: env.REPO_SERVICE_CREDENTIAL_HELPER || undefined,
         adminToken: env.REPO_SERVICE_ADMIN_TOKEN || undefined,
+        publicUrl: env.REPO_SERVICE_PUBLIC_URL || undefined,
     });
+    // Mirror and sandbox every repo before taking requests: a first clone
+    // then finds a ready mirror.
+    await service.prepare();
     const url = await service.listen(Number(env.REPO_SERVICE_PORT || 8080), "0.0.0.0");
+    service.startRefresh(Number(env.REPO_SERVICE_REFRESH_S ?? 300) * 1000);
     console.log(`[repo-service] listening at ${url}`);
 }
 
