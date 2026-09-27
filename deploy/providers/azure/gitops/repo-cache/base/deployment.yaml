@@ -1,0 +1,179 @@
+# The repo pod (docs/proposals/session-workspaces.md, sections 5.1 and 5.2).
+#
+# One replica that owns one disk. `Recreate` stops the old pod before the new
+# one starts, so the disk (ReadWriteOnce) can move. A Deployment, not a
+# StatefulSet, because the deploy tool waits on Deployments.
+#
+# The disk, as every container sees it (the nfs container sees it one level
+# down, at /srv/nfs/ws):
+#
+#   /ws/a                     root 0755   the repo root, exported (fsid=1)
+#     .pilotswarm-export      root 0644   the marker the provider checks
+#     repos/duroxide.git      root        the mirror; sessions only read it
+#     remotes/duroxide.git    root        the sandbox remote; reached over HTTP only
+#     sessions/               1000 0755   session clones, made as uid 1000
+#   /ws/shared                root 1777   a folder every session can read and
+#     .pilotswarm-export      root 0644   write, exported (fsid=2); the sticky
+#                                         bit keeps the marker
+#   /ws/.repo-service/        root        clone records and leases (not exported)
+#   /ws/.nfsdcld/             root        the NFS server's client list (not exported)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repo-cache
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: repo-cache
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: repo-cache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: repo-cache
+      annotations:
+        # Every worker node mounts this pod's exports; do not move it to
+        # save a node.
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      # No spot toleration: an eviction would pause every workspace session.
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        # Lays out the disk before either container starts. Idempotent: it
+        # runs at every start and rewrites only owners, modes and markers.
+        - name: layout
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - |
+              mkdir -p /ws/a/sessions /ws/shared /ws/.repo-service /ws/.nfsdcld
+              chown 0:0 /ws/a /ws/shared /ws/.repo-service /ws/.nfsdcld
+              chmod 0755 /ws/a
+              chmod 0700 /ws/.repo-service /ws/.nfsdcld
+              chown 1000:1000 /ws/a/sessions
+              chmod 0755 /ws/a/sessions
+              chmod 1777 /ws/shared
+              : > /ws/a/.pilotswarm-export
+              : > /ws/shared/.pilotswarm-export
+              chmod 0644 /ws/a/.pilotswarm-export /ws/shared/.pilotswarm-export
+          volumeMounts:
+            - name: data
+              mountPath: /ws
+      containers:
+        # Listed first: the deploy tool checks the first container's image tag.
+        - name: repo-service
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          # The mirror of the public duroxide repo, made at start (a few
+          # seconds) and fetched every 5 minutes. Sessions clone from it and
+          # push to its sandbox remote, never to GitHub. `adopt` lets sessions
+          # working in a duroxide clone use the repo's own instructions and
+          # skills (section 4.6).
+          env:
+            - name: REPO_SERVICE_ROOT
+              value: /ws/a
+            - name: REPO_SERVICE_ROOT_NAME
+              value: a
+            - name: REPO_SERVICE_REPOS
+              value: >-
+                {"duroxide": {"upstream": "https://github.com/microsoft/duroxide.git",
+                "sandbox": true,
+                "adopt": {"agents": true, "skills": true, "instructions": true}}}
+            - name: REPO_SERVICE_PUBLIC_URL
+              value: http://repo-cache.pilotswarm.svc.cluster.local:8080
+            - name: REPO_SERVICE_REFRESH_S
+              value: "300"
+            - name: REPO_SERVICE_STATE_FILE
+              value: /ws/.repo-service/state.json
+            - name: REPO_SERVICE_CLONE_UID
+              value: "1000"
+            # Set in each clone's own .git/config. It runs in worker pods,
+            # where the worker image has this file.
+            - name: REPO_SERVICE_CREDENTIAL_HELPER
+              value: "!node /app/packages/sdk/examples/repo-workspaces/credential-helper.mjs"
+          ports:
+            - name: http
+              containerPort: 8080
+          # exec probes: they need no network path from the node, which the
+          # NetworkPolicy does not open.
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('net').connect(8080, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"
+            periodSeconds: 10
+          startupProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('net').connect(8080, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"
+            periodSeconds: 5
+            # The first start clones the upstream before it listens.
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /ws
+        # The node kernel's NFS server, in this pod's network namespace.
+        - name: nfs
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["./nfs-server.sh"]
+          securityContext:
+            privileged: true
+          env:
+            - name: NFS_ROOT
+              value: /srv/nfs
+            - name: NFSDCLD_DIR
+              value: /srv/nfs/ws/.nfsdcld
+          ports:
+            - name: nfs
+              containerPort: 2049
+          readinessProbe:
+            exec:
+              command: ["grep", "-q", "2049", "/proc/fs/nfsd/portlist"]
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            # The NFSv4 root must be a file system the kernel can export; the
+            # container's own root is overlayfs. The disk sits under it, so
+            # clients mount <server>:/ws/a, the path everything else uses.
+            - name: nfs-root
+              mountPath: /srv/nfs
+            - name: data
+              mountPath: /srv/nfs/ws
+            - name: exports
+              mountPath: /etc/exports.d
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: repo-cache-data
+        - name: nfs-root
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: exports
+          configMap:
+            name: repo-cache-exports

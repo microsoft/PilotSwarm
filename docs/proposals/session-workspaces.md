@@ -1,11 +1,15 @@
 # Session workspaces
 
 **Status:** Phases 1 and 2 implemented on a feature branch; phase 3 (the
-reference deployment in the release environment) not started. **Date:**
-2026-09-27, revision 5. Revision 3 folded in review feedback and live checks
-against the real Copilot CLI. Revision 4 records the fixes from the
-adversarial reviews of phase 2. Revision 5 adds extra folders: folders a
-session can use next to its working folder (section 4.10).
+reference deployment in the release environment) built and tested locally,
+not yet deployed. **Date:** 2026-09-27, revision 6. Revision 3 folded in
+review feedback and live checks against the real Copilot CLI. Revision 4
+records the fixes from the adversarial reviews of phase 2. Revision 5 adds
+extra folders: folders a session can use next to its working folder
+(section 4.10). Revision 6 records phase 3 as built: the sample repo is
+github.com/microsoft/duroxide, the sample plain root is a folder all sessions
+share, and a run on a real kernel with two uids changed five details
+(sections 5.1, 5.2, 5.3 and 12.1).
 
 An agent works in a real git checkout that lives on a separate repo pod. It
 uses its native tools and native git as if it were on a developer's machine.
@@ -143,7 +147,7 @@ work together in the git scenario.
 
 The work ships in four phases (section 12): test tools, PilotSwarm core, a
 reference deployment in the release environment that uses the public
-PilotSwarm repo, and adoption by a downstream deployment.
+duroxide repo and a shared folder, and adoption by a downstream deployment.
 
 For details, see section 3 (the parts), 4 (PilotSwarm), 5 (the repo pod,
 NFS, leases and git credentials), 6 (step-by-step diagrams) and 7 (what
@@ -1081,10 +1085,10 @@ environment, so downstream deployments can copy a working example.
 ### 5.1 Repo pod layout and ownership
 
 ```text
-/ws/a/                              uid 2000  0755   root of the export
-  .pilotswarm-export                uid 2000  0644   marker; sessions can stat it, not delete it
-  repos/<repo>.git                  uid 2000  0755   mirror; an object cache; sessions read only
-  remotes/<name>.git                uid 2000  0755   sandbox remote (reference deployment only);
+/ws/a/                              service   0755   root of the export
+  .pilotswarm-export                service   0644   marker; sessions can stat it, not delete it
+  repos/<repo>.git                  service   0755   mirror; an object cache; sessions read only
+  remotes/<name>.git                service   0755   sandbox remote (reference deployment only);
                                                      sessions reach it over HTTP, never through the mount
   sessions/                         uid 1000  0755
     <rootSessionId>/<repo>/         uid 1000         session clone = the session's cwd
@@ -1095,18 +1099,33 @@ environment, so downstream deployments can copy a working example.
 
 ```text
 Who runs as what:
-  repo service (fetch, mirror maintenance)             uid 2000
+  repo service (fetch, mirror maintenance)             the service's uid: root in the reference image
   clone creation (git clone --shared into sessions/)   uid 1000, spawned by the repo service
   worker, Copilot CLI, agent bash                      uid 1000
 ```
 
+The service's uid was planned as 2000. The reference image runs the service
+as root, because it makes each clone as uid 1000 through `setpriv`, which
+needs root. What matters is that mirrors, sandbox remotes and markers do not
+belong to 1000, and the export squashes root, so a client's root cannot
+change them either.
+
 - **Why two uids.** Deleting a file needs write permission on its parent
-  directory. With `repos/` owned by 2000 and mode 0755, a session cannot
-  delete, rename or add anything under a mirror. A clone only reads the
-  mirror; new commits go into the clone's own `.git/objects`. Verified: a
+  directory. With `repos/` owned by the service and mode 0755, a session
+  cannot delete, rename or add anything under a mirror. A clone only reads
+  the mirror; new commits go into the clone's own `.git/objects`. Verified: a
   clone commits normally with a read-only object store. Git's "dubious
   ownership" check looks at the clone's own `.git`, owned by 1000, so it
   passes. `root_squash` alone is not isolation: it only remaps root.
+- **Making the clone reads the mirror as uid 1000.** `git clone --shared`
+  reads the mirror through `git upload-pack`, and git 2.45.1 to 2.47 refuses
+  to read a repository another uid owns ("dubious ownership"). The repo
+  pod's git is Debian's 2.47; git 2.50 and 2.55 allow it. A `-c` before
+  `clone` does not reach upload-pack, because git clears command-line
+  configuration for the process it starts on the source repository. So the
+  service passes `--upload-pack="git -c 'safe.directory=<mirror>'
+  upload-pack"`: the exception covers one mirror for one command and is
+  written nowhere. Found in phase 3: the earlier tests ran as one uid.
 - **Clone per session tree, not a git worktree.** Worktrees share branches,
   stash, config and hooks through the mirror. Two sessions cannot both check
   out `main`, and one can pop another's stash. The same holds for a parent
@@ -1149,29 +1168,40 @@ Who runs as what:
 
 ### 5.2 Export and attach
 
-- **NFS server** in the repo pod, NFS 4.1 only. Export options:
-  `rw,sync,no_subtree_check,root_squash,fsid=1`. The fixed `fsid` keeps file
-  handles valid across restarts. Client tracking must survive restarts too:
-  run `nfsdcld` in the pod, with `rpc_pipefs` mounted and its storage
-  directory `/var/lib/nfs/nfsdcld` on the same persistent volume as `/ws/a`,
-  so it also follows the pod in K7. Otherwise the server ends its grace
-  period early and clients lose their locks (opens recover anyway). These
-  export options are kernel-nfsd `exports(5)` syntax. NFS-Ganesha uses an
-  `EXPORT` block (`Squash`, `Filesystem_Id`, `Protocols`), so the fallback is
-  a config rewrite, not a drop-in.
-- **Mount source:** with `fsid=1` the attacher mounts `<ilb-ip>:/ws/a`. Only
-  `fsid=0` would make the export the v4 root and the source `<ilb-ip>:/`.
-- **Internal load balancer** with a static private IP, port 2049,
-  `externalTrafficPolicy: Local`. Annotations:
+- **NFS server** in the repo pod: the node kernel's nfsd, in a privileged
+  container, NFS 4.1 and 4.2 only (`rpc.nfsd -N 3 -N 4.0 -V 4.1 -V 4.2`; the
+  nfs-utils in Debian 13 has no NFSv2, so `-N 2` fails). No rpcbind. Export
+  options: `rw,sync,no_subtree_check,root_squash,fsid=1`. The fixed `fsid`
+  keeps file handles valid across restarts. Client tracking must survive
+  restarts too: run `nfsdcld` in the pod, with `rpc_pipefs` mounted (Debian
+  keeps it at `/run/rpc_pipefs`) and its storage directory on the same
+  persistent volume as `/ws/a`, so it also follows the pod in K7. Otherwise
+  the server ends its grace period early and clients lose their locks (opens
+  recover anyway). These export options are kernel-nfsd `exports(5)` syntax.
+  NFS-Ganesha uses an `EXPORT` block (`Squash`, `Filesystem_Id`,
+  `Protocols`), so the fallback is a config rewrite, not a drop-in. The
+  reference: `packages/sdk/examples/repo-workspaces/nfs-server.sh`.
+- **The NFSv4 root must be exportable.** Without an `fsid=0` export, the
+  server builds its NFSv4 root from the container's own `/`. That is overlayfs,
+  which the kernel cannot export, and every mount fails with "No such file or
+  directory". So the exports are relative to the nfs-utils `rootdir`
+  setting: a small tmpfs (an emptyDir with medium `Memory`) at `/srv/nfs`,
+  with the volume mounted under it at `/srv/nfs/ws`. The export lines still
+  say `/ws/a`, and clients still mount `/ws/a`. Clients see only the paths
+  that lead to exports: the service's state folders on the volume stay
+  hidden.
+- **Mount source:** with `fsid=1` the attacher mounts `<server>:/ws/a`.
+- **Service address.** In one cluster, a ClusterIP Service, port 2049. The
+  attacher runs on the host network with cluster DNS
+  (`dnsPolicy: ClusterFirstWithHostNet`), and kube-proxy on the node sends the
+  mount's traffic to the repo pod. The ClusterIP stays the same when the repo
+  pod restarts or moves, so clients reconnect by themselves and reclaim state
+  in the grace period (section 6.4). A repo pod in another cluster needs an
+  internal load balancer with a static private IP instead (section 12.2),
+  with `externalTrafficPolicy: Local` and the annotations
   `service.beta.kubernetes.io/azure-load-balancer-internal: "true"` and
   `service.beta.kubernetes.io/azure-load-balancer-ipv4: <ip>` (add
-  `azure-load-balancer-internal-subnet` if the IP is in another subnet). It
-  is the address the node kernel mounts. Inside one cluster, kube-proxy
-  rewrites the load balancer IP to the repo pod IP on the node itself. The
-  Azure load balancer carries traffic only when the repo pod is in another
-  cluster (section 12.2). When the repo pod restarts or moves, clients keep
-  the same IP, reconnect by themselves, and reclaim state in the grace period
-  (section 6.4).
+  `azure-load-balancer-internal-subnet` if the IP is in another subnet).
 - **Same uid and gid** for session clones on both sides: 1000. If the uids
   differ, every git command run from the checkout fails with `fatal: detected
   dubious ownership in repository`, and git does not read the clone's
@@ -1197,12 +1227,19 @@ Who runs as what:
   sidecar: when the pod ends, kubelet cleans the emptyDir and could delete
   files on the export.
 - **Mount options:**
-  `nfsvers=4.1,hard,timeo=600,retrans=2,actimeo=3,lookupcache=positive,nconnect=4`.
+  `nfsvers=4.1,hard,timeo=600,retrans=2,actimeo=3,lookupcache=positive,nconnect=4,nosharecache`.
   Data is rechecked on every open (close-to-open). Attributes are cached for
-  at most 3 s. "Does not exist" is never cached.
-- **NetworkPolicy.** NFS traffic comes from node IPs, never from pod IPs, so
-  the 2049 rule is an `ipBlock` for the agent node subnet. The 8080 rule is a
-  `podSelector` for worker pods.
+  at most 3 s. "Does not exist" is never cached. `nosharecache` makes each
+  mount its own kernel instance, so a remount replaces a stale one (section
+  5.3); each root is mounted once per node, so nothing else changes.
+- **NetworkPolicy.** The 8080 rule is a `podSelector` for worker pods. NFS
+  traffic comes from node IPs, never from pod IPs, so a pod selector cannot
+  name it; a copy with a known node subnet makes the 2049 rule an `ipBlock`
+  for it. The reference leaves 2049 open to any source, because the node
+  subnet differs per stamp. A pod that speaks NFS to the server directly gets
+  no more than the mount gives every session: root is squashed, and whatever
+  a session must not change belongs to root. The `secure` export option is no
+  guard against pods: containerd 2 lets pods bind ports below 1024.
 
 ### 5.3 Provider behavior
 
@@ -1267,9 +1304,10 @@ Remount of root `a` on one node:
    unreachable server, or returns EBUSY while a process is inside.
 3. The attacher mounts root a again at the same path. Processes still inside
    the old mount keep the old instance until they exit. With the default
-   `sharecache`, a lingering old mount of the same export can make the new
-   mount reuse the stale instance, so step 1 must finish first (or mount with
-   `nosharecache`).
+   `sharecache`, a lingering old mount of the same export makes the new mount
+   reuse the stale instance: in a test on a real kernel, the new mount kept
+   the old device number. So the reference attacher mounts with
+   `nosharecache`, and the new mount is always a new instance.
 ```
 
 **Plain roots.** A folder with no repo service behind it, such as a log
@@ -1694,6 +1732,25 @@ and API, security and docs. Each fix has a test that fails with it removed.
 | A check's release could drop a lease entry the working folder shares | A check's attaches are held while the session is on the worker | release test "held while the session is on this worker" |
 | An external set overwrote an undelivered note; the view lost or kept stale paths; names like `constructor` matched prototype properties; `null` meant different things to the hook and the merge; MCP dropped unknown fields; a plain root could hold a repo root | Notes are added; paths follow their folder; reserved names are refused; `null` is "not given"; MCP is strict; overlapping plain roots stop the worker | gate, unit, MCP and example tests |
 
+### Phase 3, before deployment (2026-09-27)
+
+These run in the normal suites; the Q, G3, G4 and P tests above run on the
+stamp. Each test fails with its change removed.
+
+| What | Checks | Where |
+|---|---|---|
+| Sandbox remote | Upstream mirrored; the sandbox has the mirror's branches; a clone's `origin` is the sandbox and its HEAD follows the upstream's default branch; a token only for the sandbox; a push needs one; a new branch is taken, `main` is refused; a refresh moves `main` and keeps the sessions' branches; the hook is rewritten at start | `packages/sdk/test/unit/repo-workspaces-phase3.test.mjs` |
+| A clone as another uid | The clone command gives the ownership exception to the mirror's upload-pack only, for that mirror only; with a git that refuses another uid's repository, the clone still works (skipped where git allows it) | same |
+| Attacher | Roots parsed and refused; mount points read from mountinfo; one mount for two asks; the socket API; the mount options, `nosharecache` included | same |
+| Plain roots | The marker check, mounting through the attacher, a remount on `ESTALE` | same, and `workspace-extras.test.mjs` |
+| The switch | `WORKSPACES_ENABLED` is true or false only; `all` deploys repo-cache after the worker only when true; repo-cache on its own does nothing when false; the component lands once in the staged worker and every portal overlay, beside the database-secrets component | `deploy/scripts/test/workspaces.test.mjs`, `deploy/scripts/test/deploy-database.test.mjs` |
+| Rendered objects (`kubectl kustomize`) | The attacher runs from the worker image, on the host network, Bidirectional; worker pods keep their base settings and get `/ws` (HostToContainer), the socket, the sample's settings and a 90 s grace period; the portal keeps its plugin folder and adds the sample's; the repo pod's three containers use its image, and it has no Namespace of its own | `deploy/scripts/test/workspaces.test.mjs` |
+| The pieces agree | Worker roots, attacher mounts and NFS exports name the same roots and paths; the worker, the repo service and the Service agree on the address; the policy admits worker pods; every file a setting names exists in the sample | same |
+| Images | The worker image copies the sample, installs git and nfs-common and drops the setuid bit; the portal copies the plugin; the repo pod image has git and the NFS server | `deploy/scripts/test/dockerfile-lockfile.test.mjs` |
+
+A run on a real kernel in local Docker, with two uids, is recorded in section
+10. It is not automated: it needs a privileged container and the kernel's nfsd.
+
 ### Fixes from the adversarial reviews (2026-09-27)
 
 Four reviewers read phase 2: orchestration, worker and CLI, security, and
@@ -1742,7 +1799,7 @@ removed.
 | No feature flag: additive by construction, proven by tests C1–C6 | A flag |
 | A separate repo pod for workspace sessions | Changing an existing repo cache |
 | The reference provider loads through a module hook in the stock worker | A separate worker image |
-| A reference deployment in the release environment, using the public PilotSwarm repo | Each downstream deployment designing its own |
+| A reference deployment in the release environment, using the public duroxide repo, with a folder all sessions share as the sample plain root | Each downstream deployment designing its own |
 | C1 is a differential test against the merge-base | A checked-in golden |
 | Local tests use a scripted model and simulated git | Real models and real git servers |
 | Workspace turns and activities routed by an activity tag, `pilotswarm.workspaces.v1` (added 2026-09-27) | Relying on activity names during a rolling deploy |
@@ -1753,6 +1810,11 @@ removed.
 | The session manager holds every folder attached on a worker, per session, and releases by root and folder | Releasing only what the last turn's attach listed |
 | A check's attaches are held while the session is on the worker | Releasing them at once, which can drop a shared lease entry |
 | A set from outside without `extra` keeps the extra folders | Whole-record replacement, which silently dropped them for older callers |
+| The repo pod is a Deployment with `Recreate` (phase 3) | A StatefulSet: the deploy tool waits on Deployments |
+| A ClusterIP Service for NFS when the repo pod is in the workers' cluster | An internal load balancer with a static IP, which only a repo pod in another cluster needs |
+| The deploy tool adds a `workspaces` component to the staged worker and portal overlays when `WORKSPACES_ENABLED=true`, as it adds its database-secrets component | A second worker overlay chosen by a bicep parameter: it cannot reach the portal, whose overlays are keyed by edge and TLS mode |
+| The portal loads the sample plugin too | The portal lists and starts only agents it loads itself |
+| The repo pod's NFS root is a tmpfs with the volume under it (nfs-utils `rootdir`) | The container's own root, which the kernel cannot export |
 
 **Verified with the real CLI 1.0.83 and a fake model endpoint**
 
@@ -1815,11 +1877,29 @@ calls after the acknowledgement, in the same turn.
 | Allowed mirror commands | `git gc`, `git maintenance run`, `git repack -A -d`, `git repack --cruft -d`, `git repack -a -d -k`: clone clean, loose or packed |
 | Commit in a clone whose alternates store is read-only | Works, `fsck` clean |
 
+**Verified on a real kernel in local Docker (Linux 7.0.12, nfs-utils 2.8.3, git 2.47.3), 2026-09-27**
+
+| Check | Result |
+|---|---|
+| The node kernel's nfsd in a privileged container | Serves NFS 4.1 in the container's network namespace |
+| No `fsid=0` export, container root on overlayfs | Every mount fails with "No such file or directory". With `rootdir` on a tmpfs and the volume under it, mounts work at the same paths. |
+| `rpc.nfsd -N 2` | Fails ("Unsupported version"): nfs-utils 2.8 has no NFSv2 |
+| `nfsdcld` with the pipe folder not mounted where Debian expects it | Exits; Debian's `rpc_pipefs` is `/run/rpc_pipefs` |
+| A server restart with the `nfsdcld` state on the volume | Both clients reclaimed at once; a read, an append and `git status` worked within a second, with no remount |
+| The NFSv4 root seen by a client | Only `ws/a` and `ws/shared` |
+| Owners over NFS (AUTH_SYS, no id mapping) | The real uids, 1000 and 0 |
+| `git clone --shared` as uid 1000 from a mirror root owns | Refused by git 2.47 ("dubious ownership"); allowed by 2.50 and 2.55. `-c safe.directory` before `clone` does not help; the `--upload-pack` form does (section 5.1). |
+| Clone, commit and push as uid 1000 through the mount | A branch push to the sandbox works with the helper's token; a push to `main` is refused by the hook; a push without the token is refused; `fsck` is clean |
+| The guards | uid 1000 cannot delete a marker or write a mirror, a mirror's config or a sandbox hook; a client's root is squashed and cannot either |
+| A remount while a process holds the old mount | With `sharecache` the new mount reuses the old instance (same device number); with `nosharecache` it is new |
+| A file written on one client | Read on the other client at once |
+| The Azure Linux 3.0 kernel configuration | `CONFIG_NFSD=m`, `CONFIG_NFSD_V4=y` |
+
 **Still to verify**
 
 | ID | Item |
 |---|---|
-| V1 | On the repo pod's node image: the node kernel ships the `nfsd` module; a privileged container can `mount -t nfsd nfsd /proc/fs/nfsd`; `rpc.nfsd` and `rpc.mountd` from nfs-utils start with `-N 2 -N 3`, so no rpcbind, lockd or statd; `nfsdcld` runs with its state directory on the PV; the PV is an exportable block filesystem (ext4 or xfs), not overlayfs or an emptyDir. Fallback: NFS-Ganesha, which needs no kernel module but needs root or `CAP_DAC_READ_SEARCH` + `CAP_DAC_OVERRIDE` for FSAL_VFS, `NFS_CORE_PARAM { Protocols = 4; Enable_NLM = false; Enable_RQUOTA = false; }`, a fixed `Filesystem_Id` per export, and its recovery directory (`/var/lib/nfs/ganesha`) on the PV. (Q2) |
+| V1 | On the stamp's Azure Linux nodes: the `nfsd` module loads when the nfs container mounts the nfsd file system. The kernel configuration has it, and the rest of the server setup is verified above. Fallback: NFS-Ganesha, which needs no kernel module but needs root or `CAP_DAC_READ_SEARCH` + `CAP_DAC_OVERRIDE` for FSAL_VFS, `NFS_CORE_PARAM { Protocols = 4; Enable_NLM = false; Enable_RQUOTA = false; }`, a fixed `Filesystem_Id` per export, and its recovery directory (`/var/lib/nfs/ganesha`) on the PV. (Q2) |
 | V2 | DaemonSet mounts made on the host network propagate into running pods (Q1) |
 | V3 | Git and `grep` speed over NFS on a large repo (P2) |
 | V4 | The credential helper works end to end against real servers (G4) |
@@ -1852,7 +1932,7 @@ Paths are relative to `packages/sdk/src` unless stated; `test/helpers/` is
 | `orchestration/` (1.0.80) | Set and clear commands, results, held prompts with `gate`, `workspace_retry` timer, the budget wake as a `[SYSTEM: ...]` prompt, release inside `releaseAffinity` (workspace sessions only), notes, events, the new input fields in `buildContinueInput` |
 | `client.ts`, `management-client.ts`, Web API, `HttpApiTransport`, MCP | Create option, three operations |
 | Shared UI, portal, TUI | Inspector section: state, adopted agents, actions |
-| `packages/sdk/examples/worker.js`, `deploy/Dockerfile.worker` | `PILOTSWARM_EXTENSION_MODULES`; git, the credential helper and the wrappers; `COPY examples/repo-workspaces/` |
+| `packages/sdk/examples/worker.js`, `deploy/Dockerfile.worker` | `PILOTSWARM_EXTENSION_MODULES`; git, nfs-common (without the setuid bit), `COPY packages/sdk/examples/repo-workspaces/` |
 | `deploy/providers/azure/...`, `deploy/scripts/...` | Section 12.1 |
 | Docs and builder templates | Canonical docs once shipped |
 | `test/helpers/` | The test infrastructure in section 9 |
@@ -1868,55 +1948,69 @@ Paths are relative to `packages/sdk/src` unless stated; `test/helpers/` is
 
 ### 12.1 Reference deployment in the release environment
 
-A working copy of section 5 that downstream deployments can copy. It uses
-the public PilotSwarm repository as its test repo, so reading needs no git
-credentials.
+A working copy of section 5 that downstream deployments can copy. It mirrors
+the public github.com/microsoft/duroxide repository, so reading needs no git
+credentials, and it adds a folder every session can read and write, as the
+sample plain root for extra folders (section 4.10).
+
+As built (phase 3):
 
 ```text
-deploy/Dockerfile.repo-cache                     git (2.40 or later), node, NFS server, nfsdcld
-deploy/Dockerfile.worker                         + git (2.46 or later, apt), the credential helper,
-                                                   thin gh/az wrappers that call the repo service's
-                                                   POST /v1/token (the real gh and az CLIs are not
-                                                   installed in v1), COPY examples/repo-workspaces/;
-                                                   update docs/developer/deploy/aks.md ("builds a minimal image")
-deploy/providers/azure/services/deploy-manifest.json      services += repo-cache
-deploy/providers/azure/services/repo-cache/deploy.json    kind app, image, rollout.statefulset
-deploy/providers/azure/services/repo-cache/bicep/         blob container + flux config, copied from worker
-deploy/providers/azure/services/deploy.schema.json        rollout accepts statefulset
+deploy/Dockerfile.repo-cache                     the repo pod image: git 2.47, node, the NFS server
+                                                   (nfs-kernel-server: exportfs, rpc.mountd, rpc.nfsd,
+                                                   nfsdcld), COPY packages/sdk/examples/repo-workspaces/
+deploy/Dockerfile.worker                         + git 2.47 (apt), nfs-common for the attacher with the
+                                                   setuid bit removed from mount.nfs,
+                                                   COPY packages/sdk/examples/repo-workspaces/
+deploy/Dockerfile.portal                         + COPY packages/sdk/examples/repo-workspaces/plugin/
+deploy/providers/azure/services/deploy-manifest.json      services: worker, repo-cache, portal
+deploy/providers/azure/services/repo-cache/deploy.json    kind app, image pilotswarm-repo-cache,
+                                                          rollout deployment/repo-cache
+deploy/providers/azure/services/repo-cache/bicep/         blob container + Flux configuration, as the worker's
 deploy/providers/azure/gitops/repo-cache/base + overlays/default/.env
-    StatefulSet, 1 replica: repo service + NFS server container (privileged for kernel nfsd,
-      or CAP_DAC_READ_SEARCH + CAP_DAC_OVERRIDE for Ganesha), one Premium SSD volume
-      (ext4 or xfs) at /ws/a, safe-to-evict false, uids 2000 and 1000 as in 5.1
-    Service: internal load balancer, port 2049
-    Service: ClusterIP, port 8080 (repo service API)
-    NetworkPolicy: 2049 from the node subnet (ipBlock); 8080 from worker pods
+    Deployment `repo-cache`, 1 replica, strategy Recreate, safe-to-evict false:
+      init container `layout`   owners, modes and markers of /ws/a, /ws/a/sessions, /ws/shared
+      repo-service              node repo-service.mjs, port 8080, runs as root
+      nfs                       nfs-server.sh, privileged, port 2049; a tmpfs at /srv/nfs with
+                                the volume at /srv/nfs/ws (section 5.2)
+    PersistentVolumeClaim `repo-cache-data`: 64 GiB, managed-csi-premium
+    ConfigMap `repo-cache-exports`: /ws/a (fsid=1) and /ws/shared (fsid=2)
+    Service `repo-cache`: ClusterIP, ports 2049 and 8080
+    NetworkPolicy: 8080 from worker pods only; 2049 from any source (section 5.2)
+    No Namespace: the worker's kustomization owns `pilotswarm`
 deploy/providers/azure/gitops/worker/components/workspaces/
-    attacher DaemonSet (privileged, hostNetwork, Bidirectional hostPath /mnt/ps)
+    attacher DaemonSet `pilotswarm-attacher`: the worker image, privileged, host network,
+      cluster DNS, hostPath /mnt/ps (Bidirectional), socket in /run/pilotswarm-attacher,
+      the worker's spot toleration
     worker patch: hostPath /mnt/ps at /ws (HostToContainer), the attacher socket,
       terminationGracePeriodSeconds 90,
-      PILOTSWARM_EXTENSION_MODULES=/app/examples/repo-workspaces/index.mjs
-        (comma-separated module paths; worker.js imports each before worker.start()
-         and calls its register(worker)),
-      REPO_SERVICE_URL, ATTACHER_SOCKET=/run/pilotswarm-attacher/sock
-deploy/providers/azure/gitops/worker/overlays/workspaces/  the default overlay plus components/workspaces
-deploy/providers/azure/services/worker/bicep/main.bicep   kustomizationPath becomes a param:
-                                                            overlays/default or overlays/workspaces
-deploy/scripts/deploy.mjs, lib/stage-manifests.mjs, lib/wait-rollout.mjs,
-deploy/scripts/test/services-manifest.test.mjs
-    WORKSPACES_ENABLED (like HORIZONDB_ENABLED): resolveOverlayName picks the workspaces
-    overlay for the worker, runAll skips the repo-cache service when false, and the worker
-    bicep param follows the same key; rollout waits on a StatefulSet; the allSequence
-    assertion gains repo-cache
-examples/repo-workspaces/                        maintained sample (built in phase 2, local version)
-    index.mjs              register(worker): setWorkspaceProvider + registerTools
-    provider.mjs           marker check, leases through the repo service, adopt from the repo config;
-                           phase 3 adds the attacher socket (the attach option)
+      PILOTSWARM_EXTENSION_MODULES=/app/packages/sdk/examples/repo-workspaces/index.mjs,
+      PS_WORKSPACE_ROOTS=a=/ws/a, PS_PLAIN_ROOTS=shared=/ws/shared, REPO_SERVICE_URL,
+      ATTACHER_SOCKET, PLUGIN_DIRS (the repo-coder agent), a git author and committer
+deploy/providers/azure/gitops/portal/components/workspaces/
+    portal patch: PLUGIN_DIRS keeps the app plugin and adds the sample's plugin folder
+deploy/scripts/lib/workspaces.mjs
+    WORKSPACES_ENABLED (default false; only true or false): deploy.mjs deploys repo-cache
+    only when true, in `all` mode and on its own; stage-manifests adds
+    `- ../../components/workspaces` to the staged worker and portal overlays, as
+    database-secrets.mjs adds its component. The Flux paths and the worker bicep do not change.
+packages/sdk/examples/repo-workspaces/           the maintained sample
+    index.mjs              register(worker): the repo provider, the plain-root provider, the clone tools
+    provider.mjs           marker check, leases through the repo service, adopt from the repo config,
+                           mount through the attacher, remount on ESTALE; the plain-root provider
     tools.mjs              create, list and remove session clones through the repo service
-    repo-service.mjs       the repo service: clones, leases, stale locks, named maintenance, tokens
+    repo-service.mjs       the repo service: mirrors from an upstream, clones, leases, stale locks,
+                           named maintenance, tokens, refresh
+    sandbox-remote.mjs     sandbox remotes over git smart HTTP, with the pre-receive rules
     credential-helper.mjs  the per-clone git credential helper
-    agents/                repo-coder.agent.md, loaded through PLUGIN_DIRS (phase 3)
-    README.md   how to copy the pattern
+    attacher.mjs           the node attacher
+    nfs-server.sh          the NFS server's start script
+    plugin/                repo-coder.agent.md, loaded through PLUGIN_DIRS
+    README.md              how to copy the pattern
 ```
+
+No `gh` or `az` wrappers: the sandbox remote has no pull requests. A copy
+with real remotes adds them (section 12.2).
 
 A Kustomize component is an optional folder of manifests that an overlay can
 include.
@@ -1925,14 +2019,14 @@ The repo service, inside the repo pod:
 
 | Part | What it does |
 |---|---|
-| Start-up | Phase 3: mirrors the public PilotSwarm repo at `/ws/a/repos/pilotswarm.git` if it isn't there yet, and fetches every few minutes, following the mirror rules in section 5.1. The phase 2 version makes a mirror on the first clone of a repo and fetches only when asked. |
+| Start-up | Mirrors each configured repo at `/ws/a/repos/<repo>.git` if it isn't there yet (duroxide: `/ws/a/repos/duroxide.git`), points the mirror's HEAD at the upstream's default branch, makes the sandbox remote, and then listens. Fetches every 5 minutes (`REPO_SERVICE_REFRESH_S`), following the mirror rules in section 5.1. |
 | `POST /v1/clones` | `{ rootSessionId, repo }` creates a session clone as uid 1000 from the mirror's default branch, and returns `{ workspace: { root, folder }, path, created }`. Again for the same tree and repo: the same clone, `created: false`. |
 | `GET /v1/clones?rootSessionId=` | Lists the clones of a session tree |
 | `DELETE /v1/clones` | `{ rootSessionId, repo }`: removes a clone after its tree ends and no live lease entry remains. Refused when a folder on the way is a link. |
 | `POST` / `DELETE /v1/leases` | Lease entries, section 5.3. A delete removes only the caller's own entry: the entry must name the caller's worker, and must not come from a newer turn, so a late release cannot remove the entry of the worker that took over. |
-| `POST /v1/mirrors/fetch`, `POST /v1/maintenance` | `{ repo }` and `{ repo, operation }`, with the admin token (`REPO_SERVICE_ADMIN_TOKEN`). Without a configured token both are off. |
-| Sandbox remote | A bare repo at `/ws/a/remotes/pilotswarm-sandbox.git`, owned by uid 2000 with mode 0755 like a mirror, so a session cannot edit its refs or hooks through the mount. Served over HTTP with Basic auth. It has the same `pre-receive` rules as the test fixture and no bypass of any kind. Session clones push here, never to GitHub. |
-| `POST /v1/token` | `{ protocol, host, path }`: mints a short-lived sandbox token for the credential helper, for the remote of any repo the service serves, and for nothing else. It stands in for a real identity. Any session can call it, also for another served repo's remote; that is the accepted model (S7). |
+| `POST /v1/mirrors/fetch`, `POST /v1/maintenance` | `{ repo }` and `{ repo, operation }`, with the admin token (`REPO_SERVICE_ADMIN_TOKEN`). Without a configured token both are off. The reference sets none. |
+| Sandbox remote | A bare repo at `/ws/a/remotes/<repo>.git`, owned by the service with mode 0755 like a mirror, so a session cannot edit its refs or hooks through the mount. Served over HTTP with Basic auth at `<REPO_SERVICE_PUBLIC_URL>/git/<repo>.git`, which is the clones' `origin`. Its `pre-receive` hook refuses deletions, pushes to `main`, `master` and `release/*`, and non-fast-forward updates, with no bypass of any kind; the service rewrites the hook at every start. `main`, `master`, `release/*` and the tags follow the mirror on each fetch. Session clones push here, never to GitHub. |
+| `POST /v1/token` | `{ protocol, host, path }`: mints a short-lived sandbox token (15 minutes) for the credential helper, for the remote of any repo the service serves, and for nothing else. It stands in for a real identity. Any session can call it, also for another served repo's remote; that is the accepted model (S7). |
 
 How it is deployed and tested:
 
@@ -1952,9 +2046,15 @@ How it is deployed and tested:
   Before phase 3, raise the user pool minimum to 2 (expose `minCount`
   through `main.bicep` or set it on the stamp), or run Q5 while the load
   tests have scaled the pool out.
-- **Switching it on:** `WORKSPACES_ENABLED=true` in the environment settings.
-  The three places that read it must move together: the worker bicep param,
-  `resolveOverlayName`, and the `runAll` filter.
+- **Switching it on:** `WORKSPACES_ENABLED=true` in the environment settings
+  (for the release environment, a line in its `AZURE_DEPLOY_ENV` secret).
+  One function, `workspacesEnabled()` in `deploy/scripts/lib/workspaces.mjs`,
+  decides both effects: whether repo-cache deploys, and whether the staged
+  worker and portal overlays get the component. A value other than `true` or
+  `false` stops the deploy.
+- **Release images:** the "reconcile release configuration" mode of the
+  Deploy Azure stamp workflow reuses a release's images and builds none. It
+  works with workspaces on only for a release that has a repo-cache image.
 - **Who runs the Q, G3, G4 and P tests:** a new post-deploy job in the deploy
   workflow; today the pipeline has no test step (its steps are build, bicep,
   seed-secrets, push, manifests, rollout). The job reaches the pods with
@@ -1972,10 +2072,14 @@ How it is deployed and tested:
 
 | Reference | Downstream |
 |---|---|
-| The public PilotSwarm repo | Its own repo list, repo-to-root mapping, and per-repo `adopt` policy |
+| The public duroxide repo | Its own repo list, repo-to-root mapping, and per-repo `adopt` policy |
+| A shared folder on the repo pod's disk, as the sample plain root | Its own plain roots (a log share, a notes folder), each with the `.pilotswarm-export` marker, each exported and listed in the attacher's roots |
 | The sandbox remote and `/v1/token` | Real remotes, and a credential helper that mints tokens with the deployment identity |
 | Sandbox `pre-receive` rules | Server-side rules in its git servers, proven per repo before listing (section 5.4) |
-| Repo pod and workers in one cluster | The repo pod may be in another cluster. Port 2049 must be open from the agent node subnet (NFS traffic comes from node IPs, section 5.2), and port 8080 from the worker pods. |
+| Repo pod and workers in one cluster, reached through a ClusterIP Service | The repo pod may be in another cluster, behind an internal load balancer with a static IP (section 5.2). Port 2049 must be open from the agent node subnet (NFS traffic comes from node IPs), and port 8080 from the worker pods. |
+| NFS port 2049 open to any source in the cluster | An `ipBlock` for the agent node subnet, when the copy knows it |
+| No `gh` or `az` wrappers | Thin wrappers on `PATH` that call the token service, for pull requests (section 5.4) |
+| Commits by one git identity, set on the worker | The identity its git servers expect |
 | Zones off (`availabilityZones: []`) | If the copy turns zones on, the repo pod's Azure Disk is zonal: the pod can only return to a node in that zone, and a multi-zone pool may not scale up there. Run the repo pod in a single-zone node pool. |
 | A new repo pod | A separate repo pod for workspaces, so existing repo tools stay untouched (section 5.1) |
 | Environment settings | Its own settings |

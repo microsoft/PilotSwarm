@@ -1,0 +1,57 @@
+# Worker pods with session workspaces. Strategic merge: env entries and volumes
+# merge by name into the base Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copilot-runtime-worker
+spec:
+  template:
+    spec:
+      # A draining worker releases its workspaces before it stops (section 4.5).
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: worker
+          env:
+            # register(worker) in the sample: the workspace provider and the
+            # clone tools (packages/sdk/examples/repo-workspaces/index.mjs).
+            - name: PILOTSWARM_EXTENSION_MODULES
+              value: /app/packages/sdk/examples/repo-workspaces/index.mjs
+            # Roots, as paths in this pod: the repo root and a plain root.
+            - name: PS_WORKSPACE_ROOTS
+              value: a=/ws/a
+            - name: PS_PLAIN_ROOTS
+              value: shared=/ws/shared
+            # The repo service. Git's credential helper, run by agents' shells
+            # in session clones, reads it too.
+            - name: REPO_SERVICE_URL
+              value: http://repo-cache.pilotswarm.svc.cluster.local:8080
+            - name: ATTACHER_SOCKET
+              value: /run/pilotswarm-attacher/sock
+            # The repo-coder agent. The portal loads the same folder.
+            - name: PLUGIN_DIRS
+              value: /app/packages/sdk/examples/repo-workspaces/plugin
+            # Who commits: agents commit in session clones, and git needs a name.
+            - name: GIT_AUTHOR_NAME
+              value: PilotSwarm agent
+            - name: GIT_AUTHOR_EMAIL
+              value: agent@pilotswarm.invalid
+            - name: GIT_COMMITTER_NAME
+              value: PilotSwarm agent
+            - name: GIT_COMMITTER_EMAIL
+              value: agent@pilotswarm.invalid
+          volumeMounts:
+            - name: workspaces
+              mountPath: /ws
+              mountPropagation: HostToContainer
+            - name: attacher-socket
+              mountPath: /run/pilotswarm-attacher
+      volumes:
+        # The attacher's mounts. Kubelet never deletes through a hostPath.
+        - name: workspaces
+          hostPath:
+            path: /mnt/ps
+            type: DirectoryOrCreate
+        - name: attacher-socket
+          hostPath:
+            path: /run/pilotswarm-attacher
+            type: DirectoryOrCreate

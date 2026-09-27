@@ -54,3 +54,22 @@ test("starter image stages every workspace manifest before npm ci", () => {
   assert.match(source, /COPY packages\/app\/package\.json \.\/packages\/app\//);
   assert.match(stripComments(source), /RUN\s+npm\s+ci\b/);
 });
+
+// Session workspaces: the manifests in gitops/*/components/workspaces and
+// gitops/repo-cache name files and programs these images must carry. The
+// render tests in workspaces.test.mjs check that the paths exist in the
+// source tree; these check that each image copies them.
+test("images carry what the session-workspaces manifests name", () => {
+  const worker = stripComments(readDockerfile("Dockerfile.worker"));
+  assert.match(worker, /COPY packages\/sdk\/examples\/repo-workspaces\/ \.\/packages\/sdk\/examples\/repo-workspaces\//);
+  assert.match(worker, /apt-get install[^\n]*\bgit\b[^\n]*\bnfs-common\b/, "git for agents, mount.nfs4 for the attacher");
+  assert.match(worker, /chmod u-s \/usr\/sbin\/mount\.nfs/, "no setuid mount.nfs for agent shells");
+
+  const portal = stripComments(readDockerfile("Dockerfile.portal"));
+  assert.match(portal, /COPY packages\/sdk\/examples\/repo-workspaces\/plugin\/ \.\/packages\/sdk\/examples\/repo-workspaces\/plugin\//);
+
+  const repoCache = stripComments(readDockerfile("Dockerfile.repo-cache"));
+  assert.match(repoCache, /apt-get install[^\n]*\bgit\b[^\n]*\bnfs-kernel-server\b/);
+  assert.match(repoCache, /WORKDIR \/app\/packages\/sdk\/examples\/repo-workspaces\n/);
+  assert.match(repoCache, /COPY packages\/sdk\/examples\/repo-workspaces\/ \.\//);
+});

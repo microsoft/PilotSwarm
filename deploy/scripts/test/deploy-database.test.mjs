@@ -320,3 +320,40 @@ for (const service of ["worker", "portal"]) {
     });
   }
 }
+
+// Session workspaces (lib/workspaces.mjs), through the same harness: the
+// switch decides whether the repo-cache service runs and whether the staged
+// worker and portal overlays get the workspaces component.
+for (const enabled of [false, true]) {
+  test(`all path with WORKSPACES_ENABLED=${enabled}: repo-cache ${enabled ? "runs after worker" : "is skipped"}, and the component follows the switch`, (t) => {
+    const f = fixture(t, {
+      DATABASE_URL: passwordUrl, PILOTSWARM_CMS_FACTS_DATABASE_URL: passwordUrl,
+      ...(enabled ? { WORKSPACES_ENABLED: "true" } : {}),
+    });
+    const result = f.run("all", "bicep,seed-secrets,manifests");
+    assert.equal(result.status, 0, result.stderr);
+    const sequence = result.stdout.split("\n").find((line) => line.includes("Bring-up sequence")) ?? "";
+    assert.equal(sequence.includes("worker → repo-cache → portal"), enabled, sequence);
+    assert.equal(sequence.includes("repo-cache"), enabled, sequence);
+    const uploads = f.calls().filter(({ args }) => args.includes("upload-batch"));
+    assert.equal(uploads.some(({ args }) => args.includes("repo-cache-manifests")), enabled);
+    for (const [service, overlay] of [["worker", "default"], ["portal", "afd-letsencrypt"]]) {
+      const kustomization = readFileSync(join(f.stage(service), "gitops", service, "overlays", overlay, "kustomization.yaml"), "utf8");
+      assert.equal(kustomization.includes("  - ../../components/workspaces"), enabled, service);
+    }
+    const repoCacheEnv = join(f.stage("repo-cache"), "gitops/repo-cache/overlays/default/.env");
+    if (enabled) {
+      assert.match(readFileSync(repoCacheEnv, "utf8"), /^IMAGE=test\.azurecr\.io\/pilotswarm-repo-cache:fixture$/m);
+    } else {
+      assert.equal(existsSync(repoCacheEnv), false);
+    }
+  });
+}
+
+test("repo-cache on its own does nothing until WORKSPACES_ENABLED=true", (t) => {
+  const f = fixture(t);
+  const result = f.run("repo-cache", "bicep");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /WORKSPACES_ENABLED=false — 'repo-cache' is not deployed/);
+  assert.ok(!f.calls().some(({ args }) => args[0] === "deployment"), "no Bicep deployment ran");
+});

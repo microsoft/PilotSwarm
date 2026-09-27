@@ -1,0 +1,24 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "OSS per-service deploy manifest for repo-cache: the repo pod for session workspaces (docs/proposals/session-workspaces.md, section 12.1). Conditional service: deploy.mjs skips it unless WORKSPACES_ENABLED=true (deploy/scripts/lib/workspaces.mjs). Listed after worker, whose kustomization owns the pilotswarm namespace.",
+  "name": "repo-cache",
+  "kind": "app",
+  "bicep": {
+    "modules": [
+      { "name": "base-infra", "scope": "group" },
+      { "name": "repo-cache", "scope": "group" }
+    ],
+    "allModeModules": [
+      { "name": "repo-cache", "scope": "group" }
+    ]
+  },
+  "image": {
+    "repo":       "pilotswarm-repo-cache",
+    "dockerfile": "deploy/Dockerfile.repo-cache"
+  },
+  "rollout": {
+    "deployment": "repo-cache",
+    "namespace": "pilotswarm"
+  }
+}

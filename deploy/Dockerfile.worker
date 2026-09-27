@@ -3,8 +3,16 @@
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
 FROM node:24-trixie-slim
 
-# Install CA certificates for HTTPS
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# CA certificates for HTTPS. git for agents that work in session workspaces
+# (docs/proposals/session-workspaces.md, section 5.4: 2.46 or later; trixie
+# ships 2.47). nfs-common gives mount.nfs4 to the workspace attacher, which
+# runs from this image as root (packages/sdk/examples/repo-workspaces/attacher.mjs).
+# Debian installs mount.nfs setuid root for user mounts; nothing here needs
+# that, so the bit goes, and an agent's shell gets no new setuid program.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git nfs-common \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod u-s /usr/sbin/mount.nfs
 
 WORKDIR /app
 
@@ -34,6 +42,11 @@ RUN npm ci --omit=dev --force
 COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+# The session-workspaces sample: the provider and clone tools
+# (PILOTSWARM_EXTENSION_MODULES), the git credential helper, the node attacher,
+# and the repo-coder agent (PLUGIN_DIRS). Used only when a deployment turns
+# workspaces on; see deploy/providers/azure/gitops/worker/components/workspaces.
+COPY packages/sdk/examples/repo-workspaces/ ./packages/sdk/examples/repo-workspaces/
 COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
 
 # api-client (plain ESM) — the SDK's dist/web/api-connection.js imports it at

@@ -43,6 +43,7 @@ fi
 
 OVERLAYS=(
   "${SCRIPT_DIR}/worker/overlays/default"
+  "${SCRIPT_DIR}/repo-cache/overlays/default"
   "${SCRIPT_DIR}/cert-manager/overlays/default"
   "${SCRIPT_DIR}/cert-manager-issuers/overlays/default"
   "${SCRIPT_DIR}/portal/overlays/afd-letsencrypt"

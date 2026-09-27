@@ -1,0 +1,7 @@
+# NFS 4.1 exports of the repo pod (docs/proposals/session-workspaces.md, 5.2).
+# Paths are relative to the nfs container's NFS_ROOT. The fixed fsid keeps
+# file handles valid after a restart. root_squash maps a client's root to
+# nobody, so nothing owned by root here (mirrors, sandbox remotes, markers)
+# can be changed over NFS.
+/ws/a       *(rw,sync,no_subtree_check,root_squash,fsid=1)
+/ws/shared  *(rw,sync,no_subtree_check,root_squash,fsid=2)

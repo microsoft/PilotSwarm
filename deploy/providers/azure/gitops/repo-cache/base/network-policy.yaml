@@ -1,0 +1,39 @@
+# Who may reach the repo pod (docs/proposals/session-workspaces.md, 5.2).
+#
+#   8080 (the repo service)  worker pods only: the clone tools, the provider's
+#                            leases, the credential helper and git pushes to
+#                            the sandbox all run in worker pods
+#   2049 (NFS)               any source. Mounts come from node IPs (the
+#                            attacher runs on the host network), which a pod
+#                            selector cannot name. A copy with a known node
+#                            subnet should narrow this to an ipBlock. A pod
+#                            that speaks NFS to the server directly gets no
+#                            more than the mount gives every session: root is
+#                            squashed, and whatever a session must not change
+#                            belongs to root.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: repo-cache
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: repo-cache
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: repo-cache
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+      from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pilotswarm
+              app.kubernetes.io/component: worker
+    - ports:
+        - protocol: TCP
+          port: 2049

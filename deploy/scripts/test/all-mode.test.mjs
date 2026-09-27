@@ -27,6 +27,9 @@ test("ALL_SEQUENCE matches the enterprise services.json infraOrder + service ord
     "cert-manager",
     "cert-manager-issuers",
     "worker",
+    // Session workspaces' repo pod; deploy.mjs skips it unless
+    // WORKSPACES_ENABLED=true. After worker, which owns the namespace.
+    "repo-cache",
     "portal",
   ]);
 });
@@ -41,6 +44,7 @@ test("ALL_MODE_MODULES has exactly one module per service (no redundant redeploy
   // (base-infra) that single-service mode redeploys for safety.
   assert.equal(ALL_MODE_MODULES.worker[0], SERVICE_TO_MODULES.worker.at(-1));
   assert.equal(ALL_MODE_MODULES.portal[0], SERVICE_TO_MODULES.portal.at(-1));
+  assert.equal(ALL_MODE_MODULES["repo-cache"][0], SERVICE_TO_MODULES["repo-cache"].at(-1));
   assert.equal(ALL_MODE_MODULES["base-infra"][0], "base-infra");
   assert.equal(ALL_MODE_MODULES["global-infra"][0], "global-infra");
   assert.equal(ALL_MODE_MODULES["pls-anchor"][0], "pls-anchor");
@@ -63,7 +67,7 @@ test("validateService accepts 'all' as a virtual aggregate", () => {
   // current set so accidental removals are caught.
   assert.deepEqual(
     [...SERVICES].sort(),
-    ["base-infra", "cert-manager", "cert-manager-issuers", "global-infra", "horizondb", "pls-anchor", "portal", "worker"],
+    ["base-infra", "cert-manager", "cert-manager-issuers", "global-infra", "horizondb", "pls-anchor", "portal", "repo-cache", "worker"],
   );
 });
 
@@ -92,8 +96,8 @@ test("step intersection: --steps manifests,rollout skips infra-only services", (
     const effective = resolved.filter((s) => defaultPipelineFor(svc).includes(s));
     assert.deepEqual(effective, ["manifests"], `${svc} should publish manifests but not rollout`);
   }
-  // Worker and portal (default pipeline = full chain) keep both.
-  for (const svc of ["worker", "portal"]) {
+  // Worker, repo-cache and portal (default pipeline = full chain) keep both.
+  for (const svc of ["worker", "repo-cache", "portal"]) {
     const resolved = resolveSteps("manifests,rollout", svc);
     const effective = resolved.filter((s) => defaultPipelineFor(svc).includes(s));
     assert.deepEqual(effective, ["manifests", "rollout"], `${svc} should run app-only steps`);
@@ -109,6 +113,7 @@ test("default (no --steps) full all-mode runs full pipeline for app services, bi
     "cert-manager": ["bicep", "manifests"],
     "cert-manager-issuers": ["bicep", "manifests"],
     worker: ["build", "bicep", "push", "manifests", "rollout"],
+    "repo-cache": ["build", "bicep", "push", "manifests", "rollout"],
     portal: ["build", "bicep", "push", "manifests", "rollout"],
   };
   for (const svc of ALL_SEQUENCE) {

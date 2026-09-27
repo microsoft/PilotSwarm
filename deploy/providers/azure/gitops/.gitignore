@@ -11,3 +11,4 @@
 !portal/overlays/private-akv/.env
 !portal/overlays/public-letsencrypt/.env
 !pls-anchor/overlays/default/.env
+!repo-cache/overlays/default/.env
