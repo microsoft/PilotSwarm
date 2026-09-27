@@ -2036,7 +2036,7 @@ The repo service, inside the repo pod:
 
 | Part | What it does |
 |---|---|
-| Start-up | Mirrors each configured repo at `/ws/a/repos/<repo>.git` if it isn't there yet (duroxide: `/ws/a/repos/duroxide.git`), points the mirror's HEAD at the upstream's default branch, makes the sandbox remote, and then listens. Fetches every 5 minutes (`REPO_SERVICE_REFRESH_S`), following the mirror rules in section 5.1. |
+| Start-up | Mirrors each configured repo at `/ws/a/repos/<repo>.git` if it isn't there yet (duroxide and tfenv: tfenv ships 11 agents in `.github/agents`, the sample for adopted repo agents), points the mirror's HEAD at the upstream's default branch, makes the sandbox remote, and then listens. Fetches every 5 minutes (`REPO_SERVICE_REFRESH_S`), following the mirror rules in section 5.1. |
 | `POST /v1/clones` | `{ rootSessionId, repo }` creates a session clone as uid 1000 from the mirror's default branch, and returns `{ workspace: { root, folder }, path, created }`. Again for the same tree and repo: the same clone, `created: false`. |
 | `GET /v1/clones?rootSessionId=` | Lists the clones of a session tree |
 | `DELETE /v1/clones` | `{ rootSessionId, repo }`: removes a clone after its tree ends and no live lease entry remains. Refused when a folder on the way is a link. |
@@ -2073,6 +2073,10 @@ How it is deployed and tested:
   decides both effects: whether repo-cache deploys, and whether the staged
   worker and portal overlays get the component. A value other than `true` or
   `false` stops the deploy.
+- **Adopted repo agents** run as native tasks, so the stamp also sets
+  `PILOTSWARM_NATIVE_SUBAGENTS=sync` (a GitHub variable of `azure-deploy`,
+  passed to the worker's settings like the switches above) and turns on the
+  `copilot.native_tasks` feature flag cluster-wide.
 - **Release images:** the "reconcile release configuration" mode of the
   Deploy Azure stamp workflow reuses a release's images and builds none. It
   works with workspaces on only for a release that has a repo-cache image.

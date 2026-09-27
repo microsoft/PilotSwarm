@@ -332,4 +332,8 @@ test("the pieces agree: roots, exports, paths, service address and sample files"
   const repos = JSON.parse(serviceEnv.REPO_SERVICE_REPOS);
   assert.equal(repos.duroxide.upstream, "https://github.com/microsoft/duroxide.git");
   assert.equal(repos.duroxide.sandbox, true);
+  // tfenv carries agents in .github/agents: the sample for adopted repo agents.
+  assert.equal(repos.tfenv.upstream, "https://github.com/tfutils/tfenv.git");
+  assert.equal(repos.tfenv.sandbox, true);
+  assert.equal(repos.tfenv.adopt.agents, true);
 });

@@ -191,6 +191,29 @@ test("a process variable sets the workspaces and node-pool keys over the file (h
   }
 });
 
+test("PILOTSWARM_NATIVE_SUBAGENTS: off by default, sync from the file or a process variable, anything else refused", () => {
+  cleanup();
+  const before = process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+  try {
+    delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "off");
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nPILOTSWARM_NATIVE_SUBAGENTS= SYNC \n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    process.env.PILOTSWARM_NATIVE_SUBAGENTS = "sync";
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
+    // A bad value would crash every worker at start; the deploy refuses it first.
+    process.env.PILOTSWARM_NATIVE_SUBAGENTS = "on";
+    assert.throws(() => loadEnv(TEST_NAME), /PILOTSWARM_NATIVE_SUBAGENTS must be off or sync/);
+  } finally {
+    if (before === undefined) delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+    else process.env.PILOTSWARM_NATIVE_SUBAGENTS = before;
+    cleanup();
+  }
+});
+
 test("loadEnv() throws helpful message when local env is missing", () => {
   cleanup();
   assert.throws(

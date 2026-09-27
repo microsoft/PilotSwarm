@@ -93,3 +93,4 @@ jobs:
           # deploy/scripts/lib/common.mjs).
           WORKSPACES_ENABLED: ${{ vars.WORKSPACES_ENABLED }}
           USER_POOL_MIN_COUNT: ${{ vars.USER_POOL_MIN_COUNT }}
+          PILOTSWARM_NATIVE_SUBAGENTS: ${{ vars.PILOTSWARM_NATIVE_SUBAGENTS }}

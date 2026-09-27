@@ -82,11 +82,15 @@ spec:
         - name: repo-service
           image: __IMAGE__
           imagePullPolicy: IfNotPresent
-          # The mirror of the public duroxide repo, made at start (a few
-          # seconds) and fetched every 5 minutes. Sessions clone from it and
-          # push to its sandbox remote, never to GitHub. `adopt` lets sessions
-          # working in a duroxide clone use the repo's own instructions and
-          # skills (section 4.6).
+          # Mirrors of two public repos, made at start (a few seconds) and
+          # fetched every 5 minutes. Sessions clone from them and push to
+          # their sandbox remotes, never to GitHub. `adopt` lets sessions
+          # working in a clone use the repo's own instructions, skills and
+          # agents (section 4.6):
+          #   duroxide  instructions and one skill
+          #   tfenv     instructions and 11 agents in .github/agents; adopted
+          #             agents run as native tasks, so they need the
+          #             copilot.native_tasks feature and native workers
           env:
             - name: REPO_SERVICE_ROOT
               value: /ws/a
@@ -95,6 +99,9 @@ spec:
             - name: REPO_SERVICE_REPOS
               value: >-
                 {"duroxide": {"upstream": "https://github.com/microsoft/duroxide.git",
+                "sandbox": true,
+                "adopt": {"agents": true, "skills": true, "instructions": true}},
+                "tfenv": {"upstream": "https://github.com/tfutils/tfenv.git",
                 "sandbox": true,
                 "adopt": {"agents": true, "skills": true, "instructions": true}}}
             - name: REPO_SERVICE_PUBLIC_URL

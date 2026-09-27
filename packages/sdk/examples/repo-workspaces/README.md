@@ -7,8 +7,13 @@ sections 5 and 12.1.
 
 The release environment runs this example when its settings have
 `WORKSPACES_ENABLED=true` (see [Deploying it](#deploying-it)). There the repo
-pod mirrors the public github.com/microsoft/duroxide repo, and every session
-can also use a shared folder that all sessions read and write.
+pod mirrors two public repos, and every session can also use a shared folder
+that all sessions read and write:
+
+| Repo | What it shows |
+|---|---|
+| github.com/microsoft/duroxide | repo instructions and a repo skill |
+| github.com/tfutils/tfenv | repo instructions and 11 repo agents (`.github/agents`): architect, bug-finder, documenter, reviewer and more |
 
 ## Files
 
@@ -17,7 +22,7 @@ can also use a shared folder that all sessions read and write.
 | `repo-service.mjs` | the repo pod | Owns the mirrors (`repos/<repo>.git`) and the session clones (`sessions/<rootSessionId>/<repo>`). Mirrors each repo at start and fetches every few minutes. Keeps the leases, removes stale git lock files, runs named mirror maintenance only, and mints tokens for the remotes of the repos it serves. Mirror fetch and maintenance need the admin token (`REPO_SERVICE_ADMIN_TOKEN`), which workers never get. `node repo-service.mjs` starts it; see `main()` for the environment. |
 | `sandbox-remote.mjs` | the repo pod | A sandbox remote per repo (`remotes/<repo>.git`), served over git smart HTTP by the repo service. Session clones push there, never to the real upstream. Its `pre-receive` hook refuses deletions, pushes to `main`, `master` and `release/*`, and non-fast-forward updates. |
 | `nfs-server.sh` | the repo pod | Starts the node kernel's NFS server for the repo pod's exports (NFS 4.1 and 4.2 only). Needs a privileged container. |
-| `attacher.mjs` | each worker node | The node attacher: mounts each root's NFS export at `/mnt/ps/<root>` on the node, when asked over a unix socket. Worker pods see `/mnt/ps` at `/ws`. It never unmounts. |
+| `attacher.mjs` | each worker node | The node attacher: mounts each root's NFS export at `/mnt/ps/<root>` on the node, at start and when asked over a unix socket. A root it cannot mount at start (the repo pod may come up later) is retried every 30 s. Worker pods see `/mnt/ps` at `/ws`. It never unmounts. |
 | `provider.mjs` | each worker | The `WorkspaceProvider`s. The repo provider checks the root's `.pilotswarm-export` marker in a child process, then takes a lease on the session clone that holds the folder; it serves session clones and folders inside them only. The plain-root provider checks the marker and nothing else: no leases. Both ask the attacher to mount a root that is not mounted, and to remount one that answers `ESTALE`. |
 | `tools.mjs` | each worker | Agent tools: `create_session_clone`, `list_session_clones`, `remove_session_clone`. |
 | `credential-helper.mjs` | each worker | The git credential helper each clone sets after an empty one. It sends the repo service the protocol, host and path git asks about. The service answers only for the remote of a repo it serves; it does not check that the remote is the calling clone's own. |
@@ -66,7 +71,9 @@ REPO_SERVICE_ROOT=/ws/a                     the export root
 REPO_SERVICE_ROOT_NAME=a                    its name in workspace records
 REPO_SERVICE_REPOS={"duroxide": {"upstream": "https://github.com/microsoft/duroxide.git",
                                  "sandbox": true,
-                                 "adopt": {"agents": true, "skills": true, "instructions": true}}}
+                                 "adopt": {"agents": true, "skills": true, "instructions": true}},
+                    "tfenv": {"upstream": "https://github.com/tfutils/tfenv.git", "sandbox": true,
+                              "adopt": {"agents": true, "skills": true, "instructions": true}}}
 REPO_SERVICE_PUBLIC_URL=http://repo-cache:8080   how workers reach this service; a sandbox
                                             repo's remote is <this URL>/git/<repo>.git
 REPO_SERVICE_CREDENTIAL_HELPER=!node /app/packages/sdk/examples/repo-workspaces/credential-helper.mjs
@@ -94,7 +101,11 @@ like) for sessions whose working folder is in that repo's clone. Only an exact
 `true` counts; a repo with no `adopt` adopts nothing. Repo MCP servers and
 hooks never run, whatever it says. Proposal section 4.6 has the rules.
 duroxide has `.github/copilot-instructions.md` and a skill, so a session in a
-duroxide clone gets both.
+duroxide clone gets both. tfenv adds agents. An adopted agent runs as a native
+task on the session's model (its own `model` line is dropped), so it needs
+workers with `PILOTSWARM_NATIVE_SUBAGENTS=sync` and the `copilot.native_tasks`
+feature flag on (Admin Console, Features). Agents that work through GitHub
+issues or `gh` cannot do their job against the sandbox remote.
 
 ## How an agent works
 
