@@ -260,7 +260,7 @@ provider, its agent tools and its repo service, which
 | Checking the folder | A check in a child process, 5 s, one at a time per root: inside the root, a directory, links followed | Optional stricter rules inside `ensureAttached` (the reference serves session clones only) | None |
 | Running the turn | The CLI's working directory, repo hooks off, one CLI process per credential and root, the partial-changes note after a lost attempt | Git 2.46 or later and the credential helper in the worker image; `gh` and `az` wrappers | None |
 | Folder unavailable | The prompt held with no model call, the retry schedule, status `waiting`, "retry now", a move to another worker after two failures on one | Error codes, an optional `retryAfterMs`, a remount after `ESTALE` | The error result of `ensureAttached` |
-| Leaving a worker | Shells stopped (never a process that reused a pid), a disconnect, then the provider told. At every affinity release, on complete, cancel and delete, on a workspace change, on shutdown and on eviction. | The worker's own lease entry dropped | `provider.release(req)` |
+| Leaving a worker | Shells stopped (never a process that reused a pid), a disconnect, then the provider told why (`req.reason`). At every affinity release, on complete, cancel and delete, on a workspace change, on shutdown and on eviction. | The worker's own lease entry dropped; a session that `ended` can be marked for cleanup | `provider.release(req)` |
 | Who holds a clone | Only the calls above, each with the session, the tree, the worker and the turn index | Lease entries, the dead-entry rules (worker registry, age), stale git lock removal, `WORKSPACE_IN_USE` for another tree | `ensureAttached` and `release` |
 | Making clones and mirrors | Nothing | The repo service: mirrors, `clone --shared` with relative alternates, the real origin, a credential helper per clone; agent tools to create, list and remove clones | The tools return a `{ root, folder }` record |
 | Choosing a session's workspace | The record and its revision; set at creation, by the agent (`set_session_workspace`), from outside (client, Web API, MCP, portal, TUI) and for children (`spawn_agent`); the acknowledgement and the refusals after it | Which folder to use (its tools return the record), and which agents list `set_session_workspace` | The `{ root, folder }` record |
@@ -359,7 +359,7 @@ interface SessionWorkspace {
 interface WorkspaceProvider {
     listRoots(): Promise<Array<{ name: string; path: string }>>;
     ensureAttached(req: WorkspaceAttachRequest): Promise<WorkspaceAttachResult>;
-    release?(req: WorkspaceAttachRequest): Promise<void>;          // best effort
+    release?(req: WorkspaceReleaseRequest): Promise<void>;         // best effort
 }
 
 interface WorkspaceAttachRequest {
@@ -375,7 +375,23 @@ type WorkspaceAttachResult =
     | { ok: true; path: string;
         adopt?: { agents: boolean; skills: boolean; instructions: boolean } }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
+
+interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
+    reason: "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check";
+}
 ```
+
+Why a release happens, so a provider can tell a session that ended from one
+that only left the worker:
+
+| Reason | When |
+|---|---|
+| `ended` | The session completed, was cancelled or was deleted |
+| `moved` | The session left this worker and stays open: its hold window ended, a long wait or cron timer started, a failed turn is retried, or the folder failed twice on this worker |
+| `changed` | The session's workspace was changed or cleared; the request names the old folder |
+| `evicted` | This worker dropped the idle session from memory; the session stays open |
+| `shutdown` | This worker is shutting down; the session stays open |
+| `spawn_check` | The quick check before `spawn_agent` creates a child; the child attaches for real at its first turn |
 
 Rules for provider implementations:
 

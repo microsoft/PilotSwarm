@@ -187,7 +187,12 @@ export function* releaseAffinity(
         state.workspaceReleasePending = false;
         try {
             const raced: any = yield ctx.race(
-                runtime.session.releaseWorkspace({ reason, revision: Math.max(1, state.workspaceRevision), turnIndex: state.iteration }),
+                // After a clear, the folder released is the old one.
+                runtime.session.releaseWorkspace({
+                    reason: state.config.workspace ? reason : "workspace_changed",
+                    revision: Math.max(1, state.workspaceRevision),
+                    turnIndex: state.iteration,
+                }),
                 ctx.scheduleTimer(WORKSPACE_RELEASE_CAP_MS),
             );
             if (raced?.index === 1) {

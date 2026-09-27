@@ -185,6 +185,7 @@ describe("workspace turn", () => {
                 assertEqual(releases.length, 1, "the provider heard about the release once");
                 assertEqual(releases[0].req.workerNodeId, "test-worker-a");
                 assertEqual(releases[0].req.workspace.folder, "repo-x");
+                assertEqual(releases[0].req.reason, "moved", "the session left the worker and stays open");
             });
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
@@ -215,6 +216,7 @@ describe("workspace turn", () => {
                         assert(await heartbeatStopped(hb), `${end}: the detached shell stopped writing`);
                         assert(fs.existsSync(hb), `${end}: the files stay`);
                         assertEqual(provider.callsFor("release", { sessionId }).length, 1, `${end}: one release`);
+                        assertEqual(provider.callsFor("release", { sessionId })[0].req.reason, "ended", `${end}: the session ended`);
                         // A deleted session's events go with it.
                         if (end !== "deleteSession") {
                             const [released] = await waitForEventCount(catalog, sessionId, "session.workspace_released", 1, 60_000);
@@ -506,6 +508,7 @@ describe("workspace turn", () => {
                     const releases = provider.callsFor("release", { sessionId: recordId });
                     assert(attaches.length >= 2, `a quick check and a first-turn attach: ${attaches.length}`);
                     assertEqual(releases.length >= 1, true, "the quick check was released");
+                    assertEqual(releases[0].req.reason, "spawn_check", "the provider can tell the quick check from a real release");
                     assert(attaches[0].seq < releases[0].seq && releases[0].seq < attaches[1].seq, "check, release, then the child's attach");
                     assertEqual(attaches[0].req.rootSessionId, parentId, "the check leases under the parent's tree");
                     assertEqual(attaches[1].req.rootSessionId, parentId, "the child attaches under the parent's tree");

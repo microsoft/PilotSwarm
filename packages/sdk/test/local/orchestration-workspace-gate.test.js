@@ -760,7 +760,9 @@ describe("workspace gate: fixes from the adversarial review", () => {
             fireTimers: 1,
         });
         const out = drive(handler(h.ctx, INPUT({ blobEnabled: true, idleTimeout: 60 })), h);
-        expect(h.releases.map((r) => [r.args.reason, r.args.revision])).toEqual([["idle", 2]]);
+        // The idle release, sent as a workspace change: the folder released is the old one.
+        expect(h.releases.map((r) => [r.args.reason, r.args.revision])).toEqual([["workspace_changed", 2]]);
+        expect(events(h, "session.affinity_released").map((e) => e.data.reason)).toEqual(["idle"]);
         expect(out.kind).toBe("continueAsNew");
         expect("workspaceReleasePending" in out.input).toBe(false);
 
@@ -771,7 +773,7 @@ describe("workspace gate: fixes from the adversarial review", () => {
             fireTimers: 1,
         });
         drive(handler(agent.ctx, INPUT({ blobEnabled: true, idleTimeout: 60 })), agent);
-        expect(agent.releases.map((r) => [r.args.reason, r.args.revision])).toEqual([["idle", 2]]);
+        expect(agent.releases.map((r) => [r.args.reason, r.args.revision])).toEqual([["workspace_changed", 2]]);
     });
 
     it("a hold keeps the retry count across a continue-as-new (F4)", async () => {

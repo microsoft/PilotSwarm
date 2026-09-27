@@ -13,6 +13,7 @@ import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility 
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { sameWorkspace } from "./workspace-check.js";
+import { workspaceReleaseReason } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
@@ -2916,6 +2917,9 @@ export class SessionManager {
                 revision: opts.revision ?? attach?.revision ?? 1,
                 workerNodeId: opts.workerNodeId,
                 turnIndex: opts.turnIndex ?? attach?.turnIndex ?? 0,
+                // Why, so the provider can tell a session that ended from one
+                // that only left this worker.
+                reason: workspaceReleaseReason(opts.reason),
             };
             try {
                 await Promise.race([

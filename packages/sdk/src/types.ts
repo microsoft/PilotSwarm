@@ -255,7 +255,29 @@ export interface WorkspaceProvider {
     listRoots(): Promise<WorkspaceRoot[]>;
     ensureAttached(req: WorkspaceAttachRequest): Promise<WorkspaceAttachResult>;
     /** Best effort. */
-    release?(req: WorkspaceAttachRequest): Promise<void>;
+    release?(req: WorkspaceReleaseRequest): Promise<void>;
+}
+
+/**
+ * Why PilotSwarm releases a workspace on a worker (WorkspaceProvider.release):
+ *
+ *   ended        the session completed, was cancelled or was deleted
+ *   moved        the session left this worker and stays open: its hold
+ *                window ended, a long wait or cron timer started, a failed
+ *                turn is retried, or the folder failed twice on this worker
+ *   changed      the session's workspace was changed or cleared; the request
+ *                names the old folder
+ *   evicted      this worker dropped the idle session from memory; the
+ *                session stays open
+ *   shutdown     this worker is shutting down; the session stays open
+ *   spawn_check  the quick check before spawn_agent creates a child; the
+ *                child attaches for real at its first turn
+ */
+export type WorkspaceReleaseReason = "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check";
+
+/** What WorkspaceProvider.release gets: the attach request, and why. */
+export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
+    reason: WorkspaceReleaseReason;
 }
 
 /** What a session adopted from its checkout (section 4.6): the `session.workspace_adopted` event data, less the revision. */

@@ -17,6 +17,7 @@ import {
     type WorkspaceAttachRequest,
     type WorkspaceAttachResult,
     type WorkspaceProvider,
+    type WorkspaceReleaseReason,
     type WorkspaceRoot,
 } from "./types.js";
 import { checkWorkspacePath, validateWorkspaceText, DEFAULT_PATH_CHECK_TIMEOUT_MS, type RepoScan } from "./workspace-check.js";
@@ -228,6 +229,24 @@ export async function prepareWorkspace(
     };
 }
 
+/**
+ * The release reason a provider sees, from the trigger PilotSwarm records in
+ * session.workspace_released. The triggers are internal; the reasons are the
+ * documented WorkspaceReleaseReason values. Every affinity release (the hold
+ * window, a long wait or cron, an error retry, a lossy handoff, repeated
+ * attach failures) is "moved": the session stays open.
+ */
+export function workspaceReleaseReason(trigger: string): WorkspaceReleaseReason {
+    switch (trigger) {
+        case "destroy": return "ended";
+        case "workspace_changed": return "changed";
+        case "eviction": return "evicted";
+        case "worker_shutdown": return "shutdown";
+        case "spawn_check": return "spawn_check";
+        default: return "moved";
+    }
+}
+
 export const DEFAULT_SPAWN_RELEASE_TIMEOUT_MS = 10_000;
 
 /**
@@ -246,7 +265,7 @@ export async function checkWorkspaceForSpawn(
     if (attachRequest && provider?.release) {
         const sent = attachRequest;
         await withDeadline<void>(
-            Promise.resolve().then(() => provider.release!(sent)).then(() => undefined, () => undefined),
+            Promise.resolve().then(() => provider.release!({ ...sent, reason: "spawn_check" })).then(() => undefined, () => undefined),
             opts.releaseTimeoutMs ?? DEFAULT_SPAWN_RELEASE_TIMEOUT_MS,
             () => undefined,
         );

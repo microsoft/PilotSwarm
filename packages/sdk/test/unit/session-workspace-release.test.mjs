@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { SessionManager } from "../../dist/session-manager.js";
+import { checkWorkspaceForSpawn, workspaceReleaseReason } from "../../dist/workspace.js";
+import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 
 const WORKSPACE = { schema: 1, root: "a", folder: "repo-x" };
 const ATTACH = { root: "a", rootPath: "/ws/a", path: "/ws/a/repo-x", realPath: "/ws/a/repo-x", revision: 3, rootSessionId: "root-1", turnIndex: 7 };
@@ -87,7 +89,7 @@ test("cancels running and idle shells and agents, lists again, disconnects, then
     assert.deepEqual(result, { released: true, cancelled: 2 });
     assert.deepEqual(h.order, ["list", "cancel:sh-1", "cancel:ag-1", "list", "disconnect", "release"]);
     assert.deepEqual(h.releases, [{
-        sessionId: "s1", rootSessionId: "root-1", workspace: WORKSPACE, revision: 3, workerNodeId: "worker-a", turnIndex: 7,
+        sessionId: "s1", rootSessionId: "root-1", workspace: WORKSPACE, revision: 3, workerNodeId: "worker-a", turnIndex: 7, reason: "moved",
     }]);
     assert.equal(h.manager.get("s1"), null, "the warm session is dropped");
 });
@@ -146,7 +148,7 @@ test("releaseIdleWorkspaces skips a session whose turn holds the lock", async (t
     await new Promise((resolve) => setTimeout(resolve, 10));
     const released = await h.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" });
     assert.equal(released, 1);
-    assert.deepEqual(h.releases.map((r) => r.sessionId), ["s1"]);
+    assert.deepEqual(h.releases.map((r) => [r.sessionId, r.reason]), [["s1", "shutdown"]]);
     unlock();
     await busy;
 });
@@ -156,7 +158,7 @@ test("the eviction sweep releases a workspace session before it evicts it", asyn
     await open(h);
     h.manager.sessionLastTouchedAt.set("s1", Date.now() - 60_000);
     await h.manager.sweepIdleSessions(1_000);
-    assert.deepEqual(h.releases.map((r) => [r.sessionId, r.workerNodeId]), [["s1", "worker-own-id"]]);
+    assert.deepEqual(h.releases.map((r) => [r.sessionId, r.workerNodeId, r.reason]), [["s1", "worker-own-id", "evicted"]]);
     assert.equal(h.manager.get("s1"), null);
 });
 
@@ -220,6 +222,39 @@ test("a new root or a clear releases the old folder with the provider before the
         await open(h);
         await h.manager.getOrCreate("s1", next, { turnIndex: 1 });
         assert.deepEqual(h.order, ["list", "cancel:sh-1", "list", "disconnect", "release"]);
-        assert.deepEqual(h.releases.map((r) => r.workspace), [WORKSPACE], "the old folder, not the new one");
+        assert.deepEqual(h.releases.map((r) => [r.workspace, r.reason]), [[WORKSPACE, "changed"]], "the old folder, not the new one");
     }
+});
+
+test("the provider learns why: a session that ended, one that moved, and the triggers behind each reason", async (t) => {
+    const expected = {
+        destroy: "ended",
+        idle: "moved", timer: "moved", cron: "moved", cron_at: "moved", error: "moved",
+        lossy_handoff: "moved", workspace_unavailable: "moved",
+        workspace_changed: "changed",
+        eviction: "evicted",
+        worker_shutdown: "shutdown",
+        spawn_check: "spawn_check",
+        "some-future-trigger": "moved",
+    };
+    for (const [trigger, reason] of Object.entries(expected)) assert.equal(workspaceReleaseReason(trigger), reason, trigger);
+
+    // The destroySession activity releases with "destroy"; an affinity release with its own trigger.
+    const h = fixture(t);
+    await open(h, "ends");
+    await open(h, "moves");
+    await h.manager.releaseWorkspace("ends", { reason: "destroy", workerNodeId: "worker-a" });
+    await h.manager.releaseWorkspace("moves", { reason: "timer", workerNodeId: "worker-a" });
+    assert.deepEqual(h.releases.map((r) => [r.sessionId, r.reason]), [["ends", "ended"], ["moves", "moved"]]);
+});
+
+test("the quick check before a child is created releases with spawn_check", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "ps-ws-spawn-check-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "repo"));
+    const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+    const req = { sessionId: "child-1", rootSessionId: "root-1", workspace: { schema: 1, root: "a", folder: "repo" }, revision: 1, workerNodeId: "worker-a", turnIndex: 0 };
+    const checked = await checkWorkspaceForSpawn(provider, req);
+    assert.equal(checked.ok, true, checked.message);
+    assert.deepEqual(provider.callsFor("release").map((r) => [r.req.sessionId, r.req.reason]), [["child-1", "spawn_check"]]);
 });

@@ -116,6 +116,7 @@ describe("workspace moves between workers", () => {
                 assertEqual(await session.sendAndWait("m2 one run: echo hello > notes.txt && pwd", TIMEOUT), `out:${folder}`);
                 await workerA.gracefulShutdown();
                 assertEqual(c.provider.callsFor("release", { sessionId }).map((r) => r.req.workerNodeId).join(","), "m2-a", "A released on its way out");
+                assertEqual(c.provider.callsFor("release", { sessionId })[0].req.reason, "shutdown", "A's release says the worker shut down");
 
                 const workerB = await c.worker("m2-b");
                 assertEqual(await session.sendAndWait("m2 two run: cat notes.txt && pwd && echo edited >> notes.txt", TIMEOUT), `out:hello|${folder}`);
@@ -230,6 +231,7 @@ describe("workspace moves between workers", () => {
                 await session.send("m1 wait across workers");
                 await until(() => c.provider.callsFor("release", { sessionId }).length > 0, "the release before the wait timer");
                 const [release] = c.provider.callsFor("release", { sessionId });
+                assertEqual(release.req.reason, "moved", "the session left A and stays open");
                 assertEqual(release.req.workerNodeId, "m1-a", "released on the worker that ran the turn");
                 assert(c.model.sessionRequests("m1 wait").every((r) => !r.position.lastUserText.includes("wait is now complete")), "released before the timer fired");
                 // A finishes its part of the release (the affinity goes) before it stops.

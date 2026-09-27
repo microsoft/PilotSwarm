@@ -169,6 +169,8 @@ export type {
     WorkspaceAttachRequest,
     WorkspaceAttachResult,
     WorkspaceProvider,
+    WorkspaceReleaseReason,
+    WorkspaceReleaseRequest,
 } from "./types.js";
 export {
     IMAGE_ATTACHMENT_CONTENT_TYPES,
