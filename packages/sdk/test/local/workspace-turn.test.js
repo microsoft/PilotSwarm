@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice B: the per-turn attach on a real worker with the
+ * Session workspaces: the per-turn attach on a real worker with the
  * real Copilot CLI and the scripted model (docs/proposals/session-workspaces.md,
  * section 4.4). Covers the happy path of B1, the worker half of F1, A5, and
  * the instruction half of A3.
@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
@@ -190,33 +191,40 @@ describe("workspace turn", () => {
         }
     });
 
-    it("completing the session releases through destroySession and keeps the files (M5)", { timeout: TIMEOUT }, async () => {
+    it("complete, cancel and delete release through destroySession and keep the files (M5)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-m5-")));
-        fs.mkdirSync(path.join(root, "repo-x"));
         const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
         try {
             await withScriptedModel(env, {
                 respond: startHeartbeat,
                 worker: { workspaceProvider: provider },
             }, async ({ client, qualifiedModel }) => {
-                const sessionId = randomUUID();
-                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
-                assertEqual(await session.sendAndWait("start the heartbeat", TIMEOUT), "started");
-                const hb = path.join(root, "repo-x", "hb.txt");
                 const mgmt = await createManagementClient(env);
                 const catalog = await createCatalog(env);
                 try {
-                    await mgmt.completeSession(sessionId, "done for now");
-                    const [released] = await waitForEventCount(catalog, sessionId, "session.workspace_released", 1, 60_000);
-                    assertEqual(released.data.reason, "destroy");
+                    for (const [end, reason] of [["completeSession", "done for now"], ["cancelSession", "not needed"], ["deleteSession", "gone"]]) {
+                        const folder = `repo-${end}`;
+                        fs.mkdirSync(path.join(root, folder));
+                        const sessionId = randomUUID();
+                        const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder } });
+                        assertEqual(await session.sendAndWait("start the heartbeat", TIMEOUT), "started");
+                        const hb = path.join(root, folder, "hb.txt");
+                        await mgmt[end](sessionId, reason);
+                        await eventually(() => provider.callsFor("release", { sessionId }).length > 0, `${end}: the provider release`);
+                        assert(await heartbeatStopped(hb), `${end}: the detached shell stopped writing`);
+                        assert(fs.existsSync(hb), `${end}: the files stay`);
+                        assertEqual(provider.callsFor("release", { sessionId }).length, 1, `${end}: one release`);
+                        // A deleted session's events go with it.
+                        if (end !== "deleteSession") {
+                            const [released] = await waitForEventCount(catalog, sessionId, "session.workspace_released", 1, 60_000);
+                            assertEqual(released.data.reason, "destroy");
+                        }
+                    }
                 } finally {
                     await catalog.close?.();
                     await mgmt.stop();
                 }
-                assert(await heartbeatStopped(hb), "the detached shell stopped writing");
-                assert(fs.existsSync(hb), "the files stay");
-                assertEqual(provider.callsFor("release", { sessionId }).length, 1);
             });
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
@@ -398,6 +406,9 @@ describe("workspace turn", () => {
             { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
             (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
         ]]);
+        // Only a detached shell: CLI 1.0.83 asks the model again only after an
+        // attached background shell ends, so within a turn an attached shell is
+        // never running when set_session_workspace is called.
         const respond = (body, position) => (position.firstUserText.includes("try to switch") ? busyScript : sameScript)(body, position);
         try {
             await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, qualifiedModel }) => {
@@ -643,12 +654,17 @@ describe("workspace turn", () => {
         }));
         const rootsOf = (...names) => names.map((name) => ({ name, path: dirs[name] }));
         const provider = createFakeWorkspaceProvider({ roots: rootsOf("a", "b") });
+        // Two messages: a call sent after set_session_workspace in the same
+        // message is refused before it runs (review R3), so spawn_agent would
+        // never reach its own check.
+        let setResult = "";
         const agentScript = scriptTurns([[
-            { tools: [
-                { name: "set_session_workspace", args: { root: "b", folder: "repo" } },
-                { name: "spawn_agent", args: { task: "R4-CHILD: never runs", workspace: { root: "b", folder: "repo" } } },
-            ] },
-            (_body, position) => ({ content: `results:${JSON.stringify(position.toolResults)}` }),
+            { tools: [{ name: "set_session_workspace", args: { root: "b", folder: "repo" } }] },
+            (_body, position) => {
+                setResult = position.toolResults.join("");
+                return { tools: [{ name: "spawn_agent", args: { task: "R4-CHILD: never runs", workspace: { root: "b", folder: "repo" } } }] };
+            },
+            (_body, position) => ({ content: `results:${JSON.stringify([setResult, ...position.toolResults])}` }),
         ]]);
         const respond = (body, position) => (position.firstUserText.includes("r4 agent") ? agentScript : pwdEveryTurn)(body, position);
         try {
@@ -779,7 +795,14 @@ describe("workspace turn", () => {
         const rootB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f3b-")));
         for (const dir of [path.join(rootA, "x"), path.join(rootA, "y"), path.join(rootB, "z")]) fs.mkdirSync(dir);
         // The check of a/x hangs past its deadline and cannot be killed: root a stays hung for 12 s.
-        setWorkspaceCheckTestHook((req) => (req.path === path.join(rootA, "x") ? { sleepMs: 12_000, unkillable: true } : undefined));
+        // The hook runs when a check starts, so it also signals that start (T9).
+        let hungStarted;
+        const hung = new Promise((resolve) => { hungStarted = resolve; });
+        setWorkspaceCheckTestHook((req) => {
+            if (req.path !== path.join(rootA, "x")) return undefined;
+            hungStarted();
+            return { sleepMs: 12_000, unkillable: true };
+        });
         try {
             await withConcurrency(8, () => withScriptedModel(env, {
                 respond: pwdEveryTurn,
@@ -789,7 +812,7 @@ describe("workspace turn", () => {
                 const [onX, onY, onZ, plain] = await Promise.all([make({ root: "a", folder: "x" }), make({ root: "a", folder: "y" }), make({ root: "b", folder: "z" }), make(null)]);
                 const started = Date.now();
                 await onX.send("f3 hung x");
-                await new Promise((r) => setTimeout(r, 500));
+                await hung;
                 await onY.send("f3 queued y");
                 const [z, p] = await Promise.all([onZ.sendAndWait("f3 other root", TIMEOUT), plain.sendAndWait("f3 no workspace", TIMEOUT)]);
                 assertEqual(z, `out:${path.join(rootB, "z")}`);
@@ -835,19 +858,27 @@ describe("workspace turn", () => {
                 const workspaceClients = [...worker.sessionManager.clients.keys()].filter((key) => key.includes("\0workspace-root:"));
                 assertEqual(workspaceClients.length, 1, "one CLI process serves the root");
 
+                // The hook runs when a check starts; `startOf` resolves at that start (T9).
+                const startOf = (target, answer) => new Promise((resolve) => {
+                    setWorkspaceCheckTestHook((req) => {
+                        if (req.path !== target) return undefined;
+                        resolve();
+                        return answer;
+                    });
+                });
                 // A slow but live check (2 s) for one session: the other nine wait and pass.
-                setWorkspaceCheckTestHook((req) => (req.path === path.join(root, "f0") ? { sleepMs: 2_000 } : undefined));
+                const slowStarted = startOf(path.join(root, "f0"), { sleepMs: 2_000 });
                 await sessions[0].send("f8 slow 0");
-                await new Promise((r) => setTimeout(r, 300));
+                await slowStarted;
                 const slowAnswers = await Promise.all(sessions.slice(1).map((session, i) => session.sendAndWait(`f8 slow ${i + 1}`, TIMEOUT)));
                 slowAnswers.forEach((answer, i) => assertEqual(answer, `out:${path.join(root, folders[i + 1])}`));
                 assertEqual(await sessions[0].wait(TIMEOUT), `out:${path.join(root, "f0")}`);
 
                 // A hung check on the other root: the nine queued behind it fail within about 5 s and are held.
                 const onHung = await Promise.all(folders.map((folder) => client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "h", folder } })));
-                setWorkspaceCheckTestHook((req) => (req.path === path.join(hungRoot, "f0") ? { sleepMs: 15_000, unkillable: true } : undefined));
+                const hungStarted = startOf(path.join(hungRoot, "f0"), { sleepMs: 15_000, unkillable: true });
                 await onHung[0].send("f8 hung 0");
-                await new Promise((r) => setTimeout(r, 300));
+                await hungStarted;
                 const started = Date.now();
                 await Promise.all(onHung.slice(1).map((session, i) => session.send(`f8 hung ${i + 1}`)));
                 const catalog = await createCatalog(env);
@@ -901,7 +932,7 @@ describe("workspace turn", () => {
         }
     });
 
-    it("a workspace session in a git clone starts no repo hook and no repo MCP server; a plain session in the same clone still runs hooks (A5)", { timeout: TIMEOUT }, async () => {
+    it("a workspace session in a git clone runs no repo hook; a plain session in the same clone still runs hooks (A5)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const fixture = await createGitFixture();
         try {
@@ -916,7 +947,9 @@ describe("workspace turn", () => {
                 });
                 assertEqual(await session.sendAndWait("first prompt", TIMEOUT), "done");
                 assertEqual(fs.existsSync(fixture.markers.hook), false, "no repo hook ran in the workspace session");
-                assertEqual(fs.existsSync(fixture.markers.mcp), false, "no repo MCP server started");
+                // Repo MCP servers need CLI discovery and a trusted folder, which
+                // PilotSwarm never turns on for any session; this harness cannot
+                // make one start, so it makes no claim about them (T7).
 
                 // Control: the same clone as a plain working directory. Repo
                 // hooks run there today and must keep running (additive rule),
@@ -955,6 +988,142 @@ describe("workspace turn", () => {
             });
         } finally {
             await fixture.cleanup();
+        }
+    });
+    it("after a clear, turns run in the default folder with repo hooks off, and the checkout's shells are stopped (review R1, R2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const fixture = await createGitFixture();
+        try {
+            const clone = await fixture.cloneSession({ rootSessionId: "clear" });
+            const respond = scriptTurns([
+                [
+                    { tools: [{ name: "bash", args: { command: "while true; do date +%s >> hb.txt; sleep 0.2; done", description: "heartbeat", mode: "async", detach: true } }] },
+                    { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+                    (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+                ],
+                [
+                    { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+                    (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+                ],
+            ]);
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "fx", path: fixture.root }] } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "fx", folder: path.relative(fixture.root, clone) } });
+                assertEqual(await session.sendAndWait("clear turn one", TIMEOUT), `out:${clone}`);
+                const mgmt = await createManagementClient(env);
+                try {
+                    assertEqual((await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 1, workspace: null })).revision, 2);
+                } finally {
+                    await mgmt.stop();
+                }
+                // A resume with no folder would land back in the checkout the CLI
+                // session was created in, and run its hooks.
+                assertEqual(await session.sendAndWait("clear turn two", TIMEOUT), `out:${fs.realpathSync(process.cwd())}`);
+                assertEqual(fs.existsSync(fixture.markers.hook), false, "no repo hook ran after the clear");
+                assert(await heartbeatStopped(path.join(clone, "hb.txt")), "the checkout's detached shell was stopped when the session left it");
+            });
+        } finally {
+            await fixture.cleanup();
+        }
+    });
+
+    it("a tool call after set_session_workspace in the same message is refused; after a refused change the turn goes on (review R3)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-r3same-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        const touch = (file) => ({ name: "bash", args: { command: `touch ${file}`, description: "same message" } });
+        const accepted = scriptTurns([
+            [
+                { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "repo-y" } }, touch("same-message.txt")] },
+                (_body, position) => ({ content: `results:${position.toolResults.join(" | ")}` }),
+            ],
+            [{ content: "continued" }],
+        ]);
+        const refused = scriptTurns([[
+            { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "missing" } }, touch("too-early.txt")] },
+            { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+            (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+        ]]);
+        const respond = (body, position) => (position.firstUserText.includes("refused change") ? refused : accepted)(body, position);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, model, qualifiedModel }) => {
+                const moved = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await moved.sendAndWait("switch and touch", TIMEOUT), "continued");
+                for (const folder of ["repo-x", "repo-y"]) {
+                    assertEqual(fs.existsSync(path.join(root, folder, "same-message.txt")), false, `the call after the change ran nowhere (${folder})`);
+                }
+                const results = model.sessionRequests("switch and touch").find((r) => r.position.turn === 1 && r.position.step === 1).position.toolResults.join(" | ");
+                assert(/has not answered yet/.test(results), `the same-message call was refused: ${results}`);
+
+                const stays = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await stays.sendAndWait("refused change", TIMEOUT), `out:${path.join(root, "repo-x")}`, "the refused change let the turn go on");
+                assertEqual(fs.existsSync(path.join(root, "repo-x", "too-early.txt")), false, "the call sent with the refused change did not run");
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("a turn cut by the wall-clock cap after the agent's change was accepted still moves the session (review F8)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f8cap-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        const respond = (_body, position) => {
+            if (position.turn === 1 && position.step === 0) return { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "repo-y" } }] };
+            // The model hangs after the acknowledgement; the cap ends the turn.
+            if (position.turn === 1) return new Promise((resolve) => setTimeout(() => resolve({ content: "too late" }), 20_000));
+            if (position.step === 0) return { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] };
+            return { content: `out:${firstLine(position.toolResults)}` };
+        };
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }], turnTimeoutMs: 4_000 } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("switch, then hang", TIMEOUT), `out:${path.join(root, "repo-y")}`, "the retried turn ran in the new folder");
+                const catalog = await createCatalog(env);
+                try {
+                    const changed = (await catalog.getSessionEvents(sessionId))
+                        .filter((e) => e.eventType === "session.workspace_changed")
+                        .map((e) => [e.data.source, e.data.revision]);
+                    assertEqual(JSON.stringify(changed), JSON.stringify([["create", 1], ["agent", 2]]));
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+    it("a regular file, a FIFO or a link to a file at the folder is refused at once as not a directory (F7)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-f7-")));
+        fs.writeFileSync(path.join(root, "file"), "not a folder");
+        execFileSync("mkfifo", [path.join(root, "fifo")]);
+        fs.symlinkSync(path.join(root, "file"), path.join(root, "link"));
+        try {
+            await withScriptedModel(env, {
+                respond: scriptTurns([[{ content: "never" }]]),
+                worker: { workspaceRoots: [{ name: "a", path: root }] },
+            }, async ({ client, model, qualifiedModel }) => {
+                const catalog = await createCatalog(env);
+                try {
+                    for (const folder of ["file", "fifo", "link"]) {
+                        const sessionId = randomUUID();
+                        const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder } });
+                        await session.send(`f7 ${folder}`);
+                        const [held] = await waitForEventCount(catalog, sessionId, "session.workspace_unavailable", 1, 30_000);
+                        // A check that opened the FIFO would hang and fail with WORKSPACE_CHECK_TIMEOUT instead.
+                        assertEqual(held.data.code, "WORKSPACE_FOLDER_MISSING", folder);
+                    }
+                } finally {
+                    await catalog.close?.();
+                }
+                assertEqual(model.sessionRequests().filter((r) => /f7 /.test(r.position.lastUserText)).length, 0, "no model call");
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
         }
     });
 });

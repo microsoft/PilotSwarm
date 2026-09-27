@@ -466,10 +466,17 @@ export function* processPrompt(
             // apart so the new prompt's user.message is not credited with them.
             ...(heldAttachments.length > 0 ? { stashedAttachments: heldAttachments } : {}),
             // Session workspaces (1.0.80): the revision the provider leases
-            // under, and the pending changed-cwd note, which the activity
-            // appends to whatever prompt it finally sends.
-            ...(state.config.workspace ? { workspaceRevision: Math.max(1, state.workspaceRevision) } : {}),
-            ...(state.workspaceNotice ? { workspaceNotice: state.workspaceNotice } : {}),
+            // under, and the pending notes, which the activity appends to
+            // whatever prompt it finally sends. The revision also goes out
+            // after a clear: the worker then still passes an explicit
+            // working folder, and the agent's next set checks under the
+            // right revision.
+            ...(state.config.workspace || state.workspaceRevision > 0
+                ? { workspaceRevision: Math.max(1, state.workspaceRevision) }
+                : {}),
+            ...(state.workspaceNotice || state.workspaceHeldNote
+                ? { workspaceNotice: mergePrompt(state.workspaceNotice, state.workspaceHeldNote) }
+                : {}),
             ...(sender ? { sender } : {}),
             ...(attachments && attachments.length > 0 ? { attachments } : {}),
             // Store-wins (1.0.59): send only the turnKey. expectedVersion is
@@ -584,7 +591,14 @@ export function* processPrompt(
     // carried count, continued-as-new, and started over. An invalid
     // credential looped an execution every ~18 seconds for ever
     // (2026-08-24, found live by the regression workflow).
-    if ((result as any)?.type !== "error") state.retryCount = 0;
+    //
+    // Session workspaces: a refusal by the workspace check is not a success
+    // either. The retry turn keeps the count, so the worker adds the
+    // partial-changes note and does not record the prompt twice (review F4).
+    if ((result as any)?.type !== "error"
+        && !((result as any)?.type === "wait" && timerGate(result as any) === "workspace")) {
+        state.retryCount = 0;
+    }
     // Lifecycle protocol: adopt the version the activity committed. The
     // returned value is authoritative even when it disagrees with the
     // expectation (self-healing after a store restore). state.snapshotVersion
@@ -633,8 +647,14 @@ export function* processPrompt(
     const gateRefused = result.type === "wait" && timerGate(result as any) !== undefined;
     if (!gateRefused) state.iteration++;
     // A turn that ran (any result but a gate refusal) delivered the pending
-    // workspace note; a refused one did not, so the note waits for the next.
-    if (!gateRefused && state.workspaceNotice) state.workspaceNotice = undefined;
+    // workspace notes; a refused one did not, so they wait for the next. For
+    // a session with a workspace, only a turn that got past the workspace
+    // check delivered them (review F1).
+    if (!gateRefused && (state.workspaceNotice || state.workspaceHeldNote)
+        && (!state.config.workspace || (result as any).workspaceAttached === true)) {
+        state.workspaceNotice = undefined;
+        state.workspaceHeldNote = undefined;
+    }
     yield* maybeSummarize(runtime);
     yield* refreshTrackedSubAgents(runtime);
 
@@ -973,6 +993,8 @@ function coerceChildQuestionToWait(
             reason: "waiting for parent answer",
             content: result.content.trim(),
             model: (result as any).model,
+            // Session workspaces: the turn got past the workspace check.
+            ...(result.workspaceAttached === true ? { workspaceAttached: true } : {}),
         } as TurnResult;
     }
     return result;
@@ -997,6 +1019,10 @@ function* stashBudgetRefusedPrompt(
     gate: "budget" | "workspace" = "budget",
     sender?: MessageSender,
     attachments?: PromptAttachmentRef[],
+    // Session workspaces: a retried prompt was recorded by its first
+    // attempt, and the worker does not record a retry again. Recording it
+    // here as well put it in the transcript twice (review F4).
+    alreadyRecorded = false,
 ): Generator<any, void, any> {
     const { state } = runtime;
     // 1.0.71: the turn's note rides in the prompt as a trailing block. It is
@@ -1049,20 +1075,22 @@ function* stashBudgetRefusedPrompt(
     // folds a system-sender one into a collapsed row), and the reader can
     // still see what the session was told to do while it sits paused.
     const heldAttachments = sanitizePromptAttachmentRefs(attachments);
-    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-        eventType: "user.message",
-        data: {
-            content: prompt,
-            ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
-            // Marked, so a reader of the raw events can tell a message that
-            // ran from one waiting for the budget (or the workspace) to clear.
-            ...(gate === "workspace" ? { workspaceQueued: true } : { budgetQueued: true }),
-            ...(isBootstrap
-                ? { sender: { kind: "system", display: "agent kickoff" } }
-                : sender ? { sender } : {}),
-            ...(heldAttachments.length > 0 ? { attachments: heldAttachments } : {}),
-        },
-    }]);
+    if (!alreadyRecorded) {
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "user.message",
+            data: {
+                content: prompt,
+                ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
+                // Marked, so a reader of the raw events can tell a message that
+                // ran from one waiting for the budget (or the workspace) to clear.
+                ...(gate === "workspace" ? { workspaceQueued: true } : { budgetQueued: true }),
+                ...(isBootstrap
+                    ? { sender: { kind: "system", display: "agent kickoff" } }
+                    : sender ? { sender } : {}),
+                ...(heldAttachments.length > 0 ? { attachments: heldAttachments } : {}),
+            },
+        }]);
+    }
     stash.push({
         prompt,
         ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
@@ -1105,6 +1133,7 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     state.workspaceNotice = workspaceChangedNote(previous, next, path);
     state.workspaceRetry = null;
     if (!next) state.workspaceStatus = null;
+    if (!next && previous) state.workspaceReleasePending = true;
     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
         eventType: "session.workspace_changed",
         data: { workspace: next, revision, path, source: "agent" },
@@ -1112,6 +1141,35 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     state.pendingPrompt = mergePrompt(state.pendingPrompt, WORKSPACE_CHANGED_CONTINUE_PROMPT);
     state.bootstrapPrompt = true;
     ctx.traceInfo(`[orch] agent ${next ? "set" : "cleared"} the workspace: revision ${revision}; continuing in the new folder`);
+}
+
+/**
+ * Session workspaces (1.0.80): the note a refused turn carried is held for
+ * the next turn that gets past the workspace check. The note can hold a
+ * child update, a cron or wait wake-up, or a model notice; each was taken
+ * from state when the turn was built, so dropping it lost it (review F2,
+ * F5). The retry and budget wake-ups' own sentences are left out: they
+ * describe the attempt, not the task.
+ */
+function holdRefusedTurnNote(runtime: DurableSessionRuntime, sourcePrompt: string): void {
+    const { state } = runtime;
+    const split = splitSystemContextBlock(typeof sourcePrompt === "string" ? sourcePrompt : "");
+    let note = split.note ?? "";
+    for (const wake of [WORKSPACE_RETRY_WAKE_PROMPT, BUDGET_TIMER_WAKE_PROMPT]) {
+        const body = extractPromptSystemContext(wake).systemPrompt;
+        if (body) note = note.split(body).join("");
+    }
+    // A finished wait wakes with its own sentence as the prompt, which the
+    // stash does not keep.
+    const body = split.prompt.trim();
+    const parts = [
+        /^The \d+ second wait is now complete\./.test(body) ? body : undefined,
+        note.replace(/\n{3,}/g, "\n\n").trim() || undefined,
+    ].filter((part): part is string => Boolean(part));
+    for (const part of parts) {
+        if (state.workspaceHeldNote?.includes(part)) continue;
+        state.workspaceHeldNote = mergePrompt(state.workspaceHeldNote, part);
+    }
 }
 
 /**
@@ -1132,8 +1190,15 @@ function* holdForWorkspace(
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     const wait = result as any;
-    state.interruptedWaitTimer = null;
-    yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool, "workspace", sender, attachments);
+    // The agent's own wait, interrupted by the refused message, is still
+    // owed: it resumes after the turn that finally runs, as the held note
+    // tells the model. A gate's wait is never re-armed.
+    if (timerGate(state.interruptedWaitTimer)) state.interruptedWaitTimer = null;
+    yield* stashBudgetRefusedPrompt(
+        runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool, "workspace", sender, attachments,
+        state.retryCount > 0,
+    );
+    holdRefusedTurnNote(runtime, sourcePrompt);
 
     const failedOn = typeof wait.workerNodeId === "string" ? wait.workerNodeId : "";
     const code = typeof wait.code === "string" ? wait.code : undefined;
@@ -1238,11 +1303,17 @@ export function* handleTurnResult(
     // Any result other than a gate refusal means the turn actually reached
     // the model, and the activity folded the stashed prompts into it. They
     // are delivered; holding them longer would replay them twice.
-    if (!budgetRefusal && state.budgetStash) {
+    //
+    // Session workspaces: for a session with a workspace, only a result the
+    // activity marked `workspaceAttached` got past the workspace check. An
+    // error returned before it (a failed budget query) delivered nothing and
+    // says nothing about the folder (review F1).
+    const pastGates = !budgetRefusal && (!state.config.workspace || result.workspaceAttached === true);
+    if (pastGates && state.budgetStash) {
         state.budgetStash = null;
     }
     // Session workspaces: a turn got past the gate, so the workspace is back.
-    if (!budgetRefusal && state.config.workspace && state.workspaceStatus?.state === "unavailable") {
+    if (pastGates && state.config.workspace && state.workspaceStatus?.state === "unavailable") {
         state.workspaceStatus = { state: "ready" };
         state.workspaceRetry = null;
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{

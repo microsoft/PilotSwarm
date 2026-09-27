@@ -42,7 +42,7 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
                 root: z.string().optional().describe("A root name the deployment serves"),
                 folder: z.string().optional().describe("A folder relative to the root; omit for the root itself"),
                 clear: z.boolean().optional().describe("Clear the workspace instead of setting one"),
-                timeout_ms: z.number().int().positive().optional().describe("Max time to wait for the answer"),
+                timeout_ms: z.number().int().min(1_000).max(300_000).optional().describe("Max time to wait for the answer, 1000 to 300000 ms"),
             },
         },
         withToolErrors(async ({ session_id, expected_revision, root, folder, clear, timeout_ms }) => {
@@ -66,7 +66,7 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
                 + "workspace is back, or are held again with no model call.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to retry"),
-                timeout_ms: z.number().int().positive().optional().describe("Max time to wait for the answer"),
+                timeout_ms: z.number().int().min(1_000).max(300_000).optional().describe("Max time to wait for the answer, 1000 to 300000 ms"),
             },
         },
         withToolErrors(async ({ session_id, timeout_ms }) =>

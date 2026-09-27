@@ -50,7 +50,18 @@ type SnapshotCommitCarrier = {
     snapshotVersion?: number;
 };
 
-export type TurnResult = TurnResultVariant & SnapshotCommitCarrier;
+/**
+ * Session workspaces (1.0.80): set on every result of a turn that got past
+ * the workspace check. For a session with a workspace, the orchestration
+ * clears held prompts and marks the workspace available only on such a
+ * result. An error returned before the check (a failed budget query, a lock
+ * timeout) delivered nothing and says nothing about the folder.
+ */
+type WorkspaceAttachCarrier = {
+    workspaceAttached?: boolean;
+};
+
+export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
@@ -383,6 +394,19 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workspaceTools?: boolean;
     /**
+     * Session workspaces: the orchestration running this turn is older than
+     * 1.0.80 and would drop a workspace change, so the workspace tools are
+     * not declared. Set by the runTurn activity. Runtime-only.
+     */
+    workspaceToolsBlocked?: boolean;
+    /**
+     * Session workspaces: the session had a workspace and it was cleared.
+     * The CLI still gets an explicit working folder and no repo hooks: a
+     * resume without a folder falls back to the checkout the CLI session was
+     * created in. Set by the runTurn activity. Runtime-only.
+     */
+    workspaceCleared?: boolean;
+    /**
      * Session workspaces: this turn's attach result, set by the runTurn
      * activity after the attach and the path check pass. Runtime-only;
      * never serialized, never stored across turns.
@@ -400,6 +424,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         revision?: number;
         rootSessionId?: string;
         turnIndex?: number;
+        /** The affinity key the turn ran under; a release sent under an older key skips a newer attach. */
+        affinityKey?: string;
     };
     /**
      * Session workspaces: what this handle adopted from the checkout, set by
@@ -787,8 +813,12 @@ export interface OrchestrationInput {
     workspaceRevision?: number;
     /** `unavailable` while a workspace wait holds prompts. */
     workspaceStatus?: { state: "ready" | "unavailable"; code?: string };
-    /** The changed-cwd or agents-changed note for the next turn of any kind. */
+    /** The changed-cwd note for the next turn of any kind that gets past the workspace check. */
     workspaceNotice?: string;
+    /** The notes of turns the workspace check refused, for the next turn that gets past it. */
+    workspaceHeldNote?: string;
+    /** A cleared workspace is still owed a release on the worker that holds the session. */
+    workspaceReleasePending?: boolean;
     /** Retry state behind a held workspace wait. */
     workspaceRetry?: { step: number; failures: { workerNodeId: string; count: number } };
     /** Test only: the workspace retry schedule in milliseconds. */

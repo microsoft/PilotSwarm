@@ -238,6 +238,16 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
     }
 }
 
+/**
+ * Session workspaces: how long a workspace command waits for its answer,
+ * 1 s to 5 min. The wait may hold a Web API request, so it is bounded here
+ * too, not only at the edge.
+ */
+function commandWaitMs(value: unknown, fallback: number): number {
+    const numeric = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+    return Math.max(1_000, Math.min(numeric, 300_000));
+}
+
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1670,7 +1680,7 @@ export class PilotSwarmManagementClient {
             id,
             args: { expectedRevision: input.expectedRevision, workspace, source: "external" },
         });
-        const resp = await this._awaitCommandResponse(sessionId, id, opts?.timeoutMs ?? 120_000);
+        const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 120_000));
         if (!resp) return { status: "pending", commandId: id };
         const result = (resp.result ?? {}) as Record<string, any>;
         if (resp.error) {
@@ -1748,7 +1758,7 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         const id = buildLifecycleCommandId("retry-workspace");
         await this.sendCommand(sessionId, { cmd: "retry_workspace", id });
-        const resp = await this._awaitCommandResponse(sessionId, id, opts?.timeoutMs ?? 60_000);
+        const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 60_000));
         if (!resp) return { status: "pending", commandId: id };
         if (resp.error) throw new Error(resp.error);
         return { retried: Boolean((resp.result as any)?.retried) };

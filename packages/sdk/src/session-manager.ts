@@ -432,19 +432,41 @@ export function keepAdoptedRepoInstructions(
  * calling tools; this hook refuses every further native tool call in that
  * turn (docs/proposals/session-workspaces.md 4.3, step 3). Installed only
  * for sessions that have the workspace tools.
+ *
+ * The CLI runs the pre-tool hooks of every call in a model message before
+ * any handler. So the hook itself notes a set_session_workspace call when
+ * it sees one, and refuses the calls after it in the same message; the
+ * handler drops the mark if it refuses the change (review R3). A call
+ * listed before set_session_workspace still runs, in the old folder, as
+ * the model asked.
  */
-export function withWorkspaceChangeDeny(hooks: SessionConfig["hooks"], isPending: (() => boolean) | null): SessionConfig["hooks"] {
-    if (!isPending) return hooks;
+export function withWorkspaceChangeDeny(
+    hooks: SessionConfig["hooks"],
+    change: { state: () => "none" | "requested" | "accepted"; noteRequested: () => void } | null,
+): SessionConfig["hooks"] {
+    if (!change) return hooks;
     return {
         ...hooks,
         onPreToolUse: async (input: any, invocation: any) => {
-            if (isPending()) {
+            const state = change.state();
+            if (state === "accepted") {
                 return {
                     permissionDecision: "deny" as const,
                     permissionDecisionReason: "The working directory is changing. This turn is ending. Stop; continue in the next turn.",
                 };
             }
-            return hooks?.onPreToolUse?.(input, invocation);
+            if (state === "requested") {
+                return {
+                    permissionDecision: "deny" as const,
+                    permissionDecisionReason: "set_session_workspace, called earlier in this message, has not answered yet. "
+                        + "Wait for its answer; if it refuses the change, call this tool again.",
+                };
+            }
+            const result = await hooks?.onPreToolUse?.(input, invocation);
+            if (input?.toolName === "set_session_workspace" && (result as any)?.permissionDecision !== "deny") {
+                change.noteRequested();
+            }
+            return result;
         },
     };
 }
@@ -455,6 +477,24 @@ export function withWorkspaceChangeDeny(hooks: SessionConfig["hooks"], isPending
  * a NUL, so the separator cannot occur inside one.
  */
 const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
+
+/**
+ * Session workspaces: how long a release may spend cancelling tasks and
+ * disconnecting before the worker stops waiting for the CLI (review R9). A
+ * CLI frozen by a hung mount never answers. The orchestration stops waiting
+ * after 10 s; the worker keeps trying a little longer, since a slow cancel
+ * that finishes still stops the shells.
+ */
+const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
+
+function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms);
+        (timer as { unref?: () => void }).unref?.();
+    });
+    return Promise.race([work, deadline]).finally(() => { if (timer) clearTimeout(timer); });
+}
 
 function buildEffectivePromptLayers(
     workerDefaults: WorkerDefaults,
@@ -1245,6 +1285,7 @@ export class SessionManager {
     private async _resetSessionState(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this._cancelWorkspaceShells(sessionId, existing, "a state reset");
             try {
                 await existing.destroy();
             } catch {}
@@ -1283,6 +1324,7 @@ export class SessionManager {
     private async _resetSessionStateForEpoch(sessionId: string, epoch: number): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this._cancelWorkspaceShells(sessionId, existing, "an epoch reset");
             try {
                 await existing.destroy();
             } catch {}
@@ -1671,7 +1713,9 @@ export class SessionManager {
         // attach result the stored config still holds from an earlier turn
         // must not survive a clear.
         if (!effectiveSerializableConfig.workspace) delete config.workspace;
-        if (!(effectiveSerializableConfig as ManagedSessionConfig).workspaceAttach) delete config.workspaceAttach;
+        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared"] as const) {
+            if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
+        }
         const workspaceAttach = config.workspace ? config.workspaceAttach : undefined;
         if (config.workspace && !workspaceAttach) {
             throw new Error(
@@ -1680,6 +1724,24 @@ export class SessionManager {
             );
         }
         this.sessionConfigs.set(sessionId, config);
+
+        // Session workspaces: a warm session still bound to another folder (a
+        // set or clear since it was created) releases that folder first: its
+        // shells are cancelled and the provider is told, before the new
+        // resume (docs/proposals/session-workspaces.md 4.5). This runs before
+        // the client check below, which drops the warm session when the root
+        // changes or the workspace is cleared (review R2).
+        {
+            const warm = this.sessions.get(sessionId);
+            const previousWorkspace = warm?.getWorkspaceState().workspace;
+            if (warm && previousWorkspace && !sameWorkspace(previousWorkspace, config.workspace)) {
+                await this.releaseWorkspace(sessionId, {
+                    reason: "workspace_changed",
+                    workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
+                    lockHeld: true,
+                });
+            }
+        }
 
         // ── Catalog model is the source of truth ─────────────────────────
         // The CMS session row's `model` is what the user selected and what
@@ -1815,6 +1877,7 @@ export class SessionManager {
                     `copilot credential or provider transport changed; recycling warm session onto new client`,
                     { trace },
                 );
+                await this._cancelWorkspaceShells(sessionId, existingWarm, "a client change");
                 try { await existingWarm.destroy(); } catch {}
                 this._forgetWarmSession(sessionId);
             }
@@ -1853,7 +1916,7 @@ export class SessionManager {
         // Session workspaces: the two workspace tools are declared only for a
         // session that has a workspace, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
-        const workspaceTools = !isTunerSession && (Boolean(config.workspace)
+        const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
             || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
             || (boundAgentCopy?.toolNames ?? []).includes("set_session_workspace"));
         if (workspaceTools) config.workspaceTools = true;
@@ -2240,17 +2303,25 @@ export class SessionManager {
             // configDir is intentionally omitted: the Copilot CLI does not honor it for
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
-            workingDirectory: workspaceAttach?.path ?? config.workingDirectory,
+            // Session workspaces: after a clear the folder stays explicit, or
+            // the resume falls back to the checkout the CLI session was
+            // created in (review R1).
+            workingDirectory: workspaceAttach?.path ?? config.workingDirectory
+                ?? (config.workspaceCleared ? process.cwd() : undefined),
             // Session workspaces: repo hooks never run, and the repo's
-            // instruction files load only when the provider adopts them.
+            // instruction files load only when the provider adopts them. A
+            // cleared session keeps hooks off.
             ...(workspaceAttach ? {
                 enableFileHooks: false,
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
-            } : {}),
+            } : config.workspaceCleared ? { enableFileHooks: false } : {}),
             hooks: withWorkspaceChangeDeny(
                 nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
                     () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess, repoAgentAccess) : config.hooks,
-                workspaceTools ? () => this.sessions.get(sessionId)?.isWorkspaceChangePending() ?? false : null,
+                workspaceTools ? {
+                    state: () => this.sessions.get(sessionId)?.workspaceChangeState() ?? "none",
+                    noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
+                } : null,
             ),
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
@@ -2285,22 +2356,6 @@ export class SessionManager {
 
         let copilotSession: CopilotSession;
 
-        // Session workspaces: a warm session still bound to another folder (a
-        // set or clear since it was created) releases that folder first:
-        // its shells are cancelled and the provider is told, before the
-        // new resume (docs/proposals/session-workspaces.md 4.5).
-        {
-            const warm = this.sessions.get(sessionId);
-            const previousWorkspace = warm?.getWorkspaceState().workspace;
-            if (warm && previousWorkspace && !sameWorkspace(previousWorkspace, config.workspace)) {
-                await this.releaseWorkspace(sessionId, {
-                    reason: "workspace_changed",
-                    workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
-                    lockHeld: true,
-                });
-            }
-        }
-
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.
         const existing = this.sessions.get(sessionId);
@@ -2316,6 +2371,7 @@ export class SessionManager {
                     `[SessionManager] epoch-start for ${sessionId} (epoch ${transcriptEpoch}); ` +
                     `discarding the warm Copilot session of the previous epoch.`,
                 );
+                await this._cancelWorkspaceShells(sessionId, existing, "an epoch start");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else if (bindingChanged || existing.requiresModelRebind(config)) {
@@ -2323,6 +2379,7 @@ export class SessionManager {
                     `[SessionManager] model or agent configuration changed for ${sessionId}; ` +
                     `disconnecting warm Copilot session so it can resume with the updated configuration.`,
                 );
+                await this._cancelWorkspaceShells(sessionId, existing, "a rebind");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else {
@@ -2496,9 +2553,30 @@ export class SessionManager {
     async dropWarmSession(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this._cancelWorkspaceShells(sessionId, existing, "a hydrate");
             try { await existing.destroy(); } catch {}
         }
         this._forgetWarmSession(sessionId);
+    }
+
+    /**
+     * Session workspaces: stop the background shells of a warm workspace
+     * session before its handle is dropped. A resumed handle does not see
+     * them (CLI 1.0.83: tasks.list() is empty after disconnect and resume),
+     * so no later release could find them, and they would keep writing into
+     * the checkout (review R2). One deadline covers the cancel: a CLI frozen
+     * by a hung mount must not hold the caller (review R9). Never throws.
+     */
+    private async _cancelWorkspaceShells(sessionId: string, managed: ManagedSession | undefined, reason: string): Promise<number> {
+        if (!managed?.getWorkspaceState().workspace) return 0;
+        try {
+            const cancelled = await withWorkspaceDeadline(managed.cancelBackgroundTasks(), "task cancel");
+            if (cancelled > 0) emitSessionManagerTrace(sessionId, `cancelled ${cancelled} background task(s) before ${reason}`);
+            return cancelled;
+        } catch (error: unknown) {
+            emitSessionManagerTrace(sessionId, `background tasks not cancelled before ${reason}: ${normalizeError(error).message}`, { level: "warn" });
+            return 0;
+        }
     }
 
     /**
@@ -2786,7 +2864,12 @@ export class SessionManager {
      */
     async releaseWorkspace(
         sessionId: string,
-        opts: { reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string; lockHeld?: boolean; releaseTimeoutMs?: number },
+        opts: {
+            reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string; lockHeld?: boolean;
+            releaseTimeoutMs?: number; affinityKey?: string;
+            /** How long the task cancel and the disconnect may take together. Default WORKSPACE_RELEASE_DEADLINE_MS. */
+            deadlineMs?: number;
+        },
     ): Promise<{ released: boolean; cancelled: number; detail?: string }> {
         if (!opts.lockHeld) {
             return this._withSessionLock(sessionId, "releaseWorkspace", () => this.releaseWorkspace(sessionId, { ...opts, lockHeld: true }));
@@ -2797,14 +2880,32 @@ export class SessionManager {
             return { released: false, cancelled: 0, detail: managed ? "no workspace" : "not in memory on this worker" };
         }
         const attach = managed.getWorkspaceState().attach;
+        // The orchestration stops waiting for a release after 10 s and moves
+        // the session on. If the next turn then ran here, under the new
+        // affinity key, a release that arrives late must not undo that
+        // turn's attach: its shells and its lease (review F7).
+        if (opts.affinityKey && attach?.affinityKey && attach.affinityKey !== opts.affinityKey
+            && typeof opts.turnIndex === "number" && typeof attach.turnIndex === "number"
+            && attach.turnIndex >= opts.turnIndex) {
+            return { released: false, cancelled: 0, detail: `a newer turn (${attach.turnIndex}) holds the workspace here` };
+        }
         let cancelled = 0;
         let detail: string | undefined;
+        // One deadline over the cancel and the disconnect: a CLI frozen by a
+        // hung mount never answers, and the caller holds the session lock
+        // (review R9). The handle is dropped either way.
         try {
-            cancelled = await managed.cancelBackgroundTasks();
+            await withWorkspaceDeadline((async () => {
+                try {
+                    cancelled = await managed.cancelBackgroundTasks();
+                } catch (error: unknown) {
+                    detail = `task cancel: ${normalizeError(error).message}`;
+                }
+                try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
+            })(), "task cancel and disconnect", opts.deadlineMs);
         } catch (error: unknown) {
-            detail = `task cancel: ${normalizeError(error).message}`;
+            detail = [detail, normalizeError(error).message].filter(Boolean).join("; ");
         }
-        try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
         this._forgetWarmSession(sessionId);
         const provider = this.workspaceProvider;
         if (provider?.release) {
@@ -2830,14 +2931,13 @@ export class SessionManager {
     }
 
     /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped. */
-    async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string }): Promise<number> {
-        let released = 0;
-        for (const [sessionId, managed] of [...this.sessions]) {
-            if (!managed.getWorkspaceState().workspace || this.sessionLocks.has(sessionId)) continue;
-            const result = await this.releaseWorkspace(sessionId, opts).catch(() => null);
-            if (result?.released) released++;
-        }
-        return released;
+    async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string; deadlineMs?: number }): Promise<number> {
+        // In parallel: one frozen CLI must not stop the others (review R9).
+        // Each release has its own deadline, so this ends within about one.
+        const results = await Promise.all([...this.sessions]
+            .filter(([sessionId, managed]) => Boolean(managed.getWorkspaceState().workspace) && !this.sessionLocks.has(sessionId))
+            .map(([sessionId]) => this.releaseWorkspace(sessionId, opts).catch(() => null)));
+        return results.filter((result) => result?.released).length;
     }
 
     async destroySession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
@@ -2862,6 +2962,7 @@ export class SessionManager {
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
+        await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
         try {
             await session.destroy();
         } catch {}

@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice D: repo agents and skills
+ * Session workspaces: repo agents and skills
  * (docs/proposals/session-workspaces.md, section 4.6).
  *
  *   - the path check reads .github/agents and names .github/skills, inside
@@ -12,7 +12,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { checkWorkspacePath, MAX_REPO_AGENTS, MAX_REPO_AGENT_BYTES } from "../../dist/workspace-check.js";
+import {
+    checkWorkspacePath, MAX_REPO_AGENTS, MAX_REPO_AGENT_BYTES, MAX_REPO_AGENT_OVERFLOW, MAX_REPO_SKILL_ENTRIES,
+} from "../../dist/workspace-check.js";
 import { prepareWorkspace } from "../../dist/workspace.js";
 import { parseRepoAgentFile, resolveRepoAdoption, adoptionNote, sameAdoption, RepoAgentAccess } from "../../dist/workspace-repo-agents.js";
 import { nativeSubagentHooks } from "../../dist/native-subagents.js";
@@ -21,17 +23,24 @@ import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.
 const temps = [];
 after(() => { for (const dir of temps) fs.rmSync(dir, { recursive: true, force: true }); });
 
-/** A root with one workspace folder; `files` maps relative paths to contents. */
-function workspace(files = {}) {
+/**
+ * A root with one git clone, `repo`; `files` maps paths relative to the clone
+ * to contents. `git: false` leaves out `.git`. `sub` makes the workspace a
+ * folder inside the clone.
+ */
+function workspace(files = {}, { git = true, sub } = {}) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-repo-agents-")));
     temps.push(root);
-    const folder = path.join(root, "repo");
-    fs.mkdirSync(folder);
+    const clone = path.join(root, "repo");
+    fs.mkdirSync(clone);
+    if (git) fs.mkdirSync(path.join(clone, ".git"));
     for (const [rel, content] of Object.entries(files)) {
-        fs.mkdirSync(path.dirname(path.join(folder, rel)), { recursive: true });
-        fs.writeFileSync(path.join(folder, rel), content);
+        fs.mkdirSync(path.dirname(path.join(clone, rel)), { recursive: true });
+        fs.writeFileSync(path.join(clone, rel), content);
     }
-    return { root, folder };
+    const folder = sub ? path.join(clone, sub) : clone;
+    fs.mkdirSync(folder, { recursive: true });
+    return { root, clone, folder };
 }
 
 const agentFile = (name, tools = '["read"]') => `---\nname: ${name}\ndescription: The ${name} agent.\ntools: ${tools}\n---\n\nYou are ${name}.\n`;
@@ -56,6 +65,7 @@ describe("the path check collects repo agents and skills", () => {
         assert.match(both.repo.agents[0].content, /You are a\./);
         assert.deepEqual(both.repo.skills, ["build"]);
         assert.deepEqual(both.repo.skipped, []);
+        assert.equal(both.repo.cloneRoot, "", "the workspace is the clone root");
 
         const agentsOnly = await check(ws, { agents: true });
         assert.deepEqual(agentsOnly.repo.skills, []);
@@ -79,7 +89,7 @@ describe("the path check collects repo agents and skills", () => {
         const result = await check(ws, { agents: true, skills: true });
         assert.deepEqual(result.repo.agents.map((a) => a.file), [".github/agents/ok.agent.md"]);
         assert.ok(!JSON.stringify(result.repo).includes("TOP SECRET"), "the target was not read");
-        assert.deepEqual(result.repo.skipped, [{ kind: "agent", file: ".github/agents/leak.agent.md", reason: "the file resolves outside the workspace" }]);
+        assert.deepEqual(result.repo.skipped, [{ kind: "agent", file: ".github/agents/leak.agent.md", reason: "the file resolves outside the clone" }]);
         assert.deepEqual(result.repo.skills, ["good"]);
 
         const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ps-repo-skill-out-"));
@@ -89,17 +99,74 @@ describe("the path check collects repo agents and skills", () => {
         const escaped = await check(ws, { skills: true });
         assert.deepEqual(escaped.repo.skills, [], "one escaping skill skips them all: the CLI reads the whole folder");
         assert.equal(escaped.repo.skipped[0].kind, "skill");
-        assert.match(escaped.repo.skipped[0].reason, /outside the workspace/);
+        assert.match(escaped.repo.skipped[0].reason, /outside the clone/);
     });
 
-    it("prepareWorkspace asks for the collection only when adopt allows agents or skills", async () => {
-        const ws = workspace({ ".github/agents/a.agent.md": agentFile("a"), ".github/skills/s/SKILL.md": "s" });
+    it("reads from the clone root above a subfolder workspace; a folder outside any clone adopts nothing (review R6)", async () => {
+        const files = { ".github/agents/a.agent.md": agentFile("a"), ".github/skills/build/SKILL.md": "build" };
+        const sub = workspace(files, { sub: "packages/api" });
+        const fromSub = await check(sub, { agents: true, skills: true });
+        assert.deepEqual(fromSub.repo.agents.map((a) => a.file), [".github/agents/a.agent.md"]);
+        assert.deepEqual(fromSub.repo.skills, ["build"]);
+        assert.equal(fromSub.repo.cloneRoot, path.join("..", ".."));
+
+        const plain = workspace(files, { git: false });
+        const none = await check(plain, { agents: true, skills: true });
+        assert.deepEqual([none.repo.agents, none.repo.skills], [[], []]);
+        assert.equal("cloneRoot" in none.repo, false);
+        assert.deepEqual(none.repo.skipped.map((s) => [s.kind, s.file]), [["agent", ".github/agents"], ["skill", ".github/skills"]]);
+        assert.match(none.repo.skipped[0].reason, /not inside a git clone/);
+
+        // The walk stops at the root: a .git above the root does not count.
+        const outer = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-repo-outer-")));
+        temps.push(outer);
+        fs.mkdirSync(path.join(outer, ".git"));
+        fs.mkdirSync(path.join(outer, "root", "repo", ".github", "agents"), { recursive: true });
+        fs.writeFileSync(path.join(outer, "root", "repo", ".github", "agents", "a.agent.md"), agentFile("a"));
+        const above = await checkWorkspacePath({ rootName: "outer", rootPath: path.join(outer, "root"), path: path.join(outer, "root", "repo"), collect: { agents: true } });
+        assert.deepEqual(above.repo.agents, []);
+        assert.equal("cloneRoot" in above.repo, false);
+    });
+
+    it("looks at a bounded number of agent files and skill folders (review S-W4)", async () => {
+        const files = {};
+        const total = MAX_REPO_AGENTS + MAX_REPO_AGENT_OVERFLOW + 50;
+        for (let i = 0; i < total; i++) files[`.github/agents/n${String(i).padStart(3, "0")}.agent.md`] = agentFile(`n${i}`);
+        const many = await check(workspace(files), { agents: true });
+        assert.equal(many.repo.agents.length, MAX_REPO_AGENTS);
+        assert.equal(many.repo.skipped.length, MAX_REPO_AGENT_OVERFLOW + 1, "one entry per looked-at extra file, then one summary");
+        assert.deepEqual(many.repo.skipped.at(-1), { kind: "agent", file: ".github/agents", reason: "50 more agent files, not read" });
+
+        const skills = {};
+        for (let i = 0; i <= MAX_REPO_SKILL_ENTRIES; i++) skills[`.github/skills/s${i}/SKILL.md`] = "s";
+        const crowded = await check(workspace(skills), { skills: true });
+        assert.deepEqual(crowded.repo.skills, []);
+        assert.match(crowded.repo.skipped[0].reason, new RegExp(`more than ${MAX_REPO_SKILL_ENTRIES} entries, so no repo skill is adopted`));
+    });
+
+    it("stamps the instruction files when instructions are adopted, and the stamp moves when one changes (review R7)", async () => {
+        const ws = workspace({ "AGENTS.md": "Rule one.", ".github/copilot-instructions.md": "Be brief." }, { sub: "lib" });
+        fs.writeFileSync(path.join(ws.folder, "AGENTS.md"), "Local rule.");
+        const first = await check(ws, { instructions: true });
+        assert.deepEqual(first.repo.instructions.map(([file]) => file).sort(), ["../.github/copilot-instructions.md", "../AGENTS.md", "AGENTS.md"]);
+        assert.deepEqual([first.repo.agents, first.repo.skills], [[], []], "instructions alone read no agents");
+        fs.writeFileSync(path.join(ws.clone, "AGENTS.md"), "Rule one, and rule two.");
+        const second = await check(ws, { instructions: true });
+        assert.notDeepEqual(second.repo.instructions, first.repo.instructions);
+    });
+
+    it("prepareWorkspace asks for the collection only when adopt allows agents, skills or instructions", async () => {
+        const ws = workspace({ ".github/agents/a.agent.md": agentFile("a"), ".github/skills/s/SKILL.md": "s", "AGENTS.md": "rules" });
         const provider = createFakeWorkspaceProvider({ roots: [{ name: "r", path: ws.root }] });
         const req = { sessionId: "s1", rootSessionId: "s1", revision: 1, workerNodeId: "w", turnIndex: 0, workspace: { schema: 1, root: "r", folder: "repo" } };
         provider.setAdopt(null);
         assert.equal("repo" in (await prepareWorkspace(provider, req)), false);
-        provider.setAdopt({ agents: false, skills: false, instructions: true });
+        provider.setAdopt({ agents: false, skills: false, instructions: false });
         assert.equal("repo" in (await prepareWorkspace(provider, req)), false);
+        provider.setAdopt({ agents: false, skills: false, instructions: true });
+        const instructions = await prepareWorkspace(provider, req);
+        assert.deepEqual([instructions.repo.agents, instructions.repo.skills], [[], []]);
+        assert.deepEqual(instructions.repo.instructions.map(([file]) => file), ["AGENTS.md"]);
         provider.setAdopt({ agents: true, skills: false, instructions: false });
         const agents = await prepareWorkspace(provider, req);
         assert.deepEqual(agents.repo.agents.map((a) => a.file), [".github/agents/a.agent.md"]);
@@ -133,14 +200,26 @@ describe("parseRepoAgentFile", () => {
         assert.match(parseRepoAgentFile("a.agent.md", "---\nname: x\nBody").reason, /no closing/);
         assert.match(parseRepoAgentFile("a.agent.md", "---\nname: x\n---\n\n").reason, /no instructions/);
     });
+
+    it("reads frontmatter after a byte-order mark or with spaces after ---, and refuses one it cannot read (review R8)", () => {
+        const bom = parseRepoAgentFile("r.agent.md", "\uFEFF---\nname: reviewer\ntools: [view, grep]\n---\nReview.\n");
+        assert.deepEqual([bom.agent.name, bom.agent.tools, bom.agent.prompt], ["reviewer", ["view", "grep"], "Review."]);
+        const spaced = parseRepoAgentFile("r.agent.md", "--- \r\nname: reviewer\r\ntools: [view]\r\n---\t\r\nReview.\r\n");
+        assert.deepEqual([spaced.agent.tools, spaced.agent.prompt], [["view"], "Review."]);
+        // Never read as all prompt: its tools line would be lost.
+        assert.match(parseRepoAgentFile("r.agent.md", "\n---\nname: r\ntools: [view]\n---\nReview.").reason, /must start with a --- line/);
+        assert.match(parseRepoAgentFile("r.agent.md", "----\nname: r\ntools: [view]\n----\nReview.").reason, /must start with a --- line/);
+        assert.match(parseRepoAgentFile("r.agent.md", "--- x\nname: r\n---\nReview.").reason, /must start with a --- line/);
+    });
 });
 
 describe("resolveRepoAdoption", () => {
-    const scanOf = (files, skills = []) => ({ agents: Object.entries(files).map(([file, content]) => ({ file, content })), skills, skipped: [] });
+    // The workspace is repo/lib inside the clone repo.
+    const scanOf = (files, skills = [], extra = {}) => ({ agents: Object.entries(files).map(([file, content]) => ({ file, content })), skills, skipped: [], cloneRoot: "..", ...extra });
     const base = (over = {}) => ({
         scan: scanOf({}),
         adopt: { agents: true, skills: true, instructions: false },
-        attachPath: "/ws/a/repo",
+        attachPath: "/ws/a/repo/lib",
         nativeTasks: true,
         sessionModel: "model-1",
         pilotswarmToolNames: new Set(["store_fact", "spawn_agent"]),
@@ -182,17 +261,31 @@ describe("resolveRepoAdoption", () => {
         const result = resolveRepoAdoption(base({ nativeTasks: false, scan: scanOf({ ".github/agents/a.agent.md": agentFile("a") }, ["build"]) }));
         assert.deepEqual(result.customAgents, []);
         assert.match(result.report.skipped[0].reason, /native tasks are off/);
-        assert.deepEqual(result.skillDirectories, ["/ws/a/repo/.github/skills"]);
+        assert.deepEqual(result.skillDirectories, ["/ws/a/repo/.github/skills"], "the clone root's skills folder");
         assert.deepEqual(result.report.skills, ["build"]);
     });
 
-    it("adopts nothing the flags do not allow, and hashes only when agents or skills are asked for", () => {
-        const scan = scanOf({ ".github/agents/a.agent.md": agentFile("a") }, ["build"]);
-        const none = resolveRepoAdoption(base({ scan, adopt: { agents: false, skills: false, instructions: true } }));
+    it("adopts nothing the flags do not allow, and hashes only when something is adopted", () => {
+        const scan = scanOf({ ".github/agents/a.agent.md": agentFile("a") }, ["build"], { instructions: [["AGENTS.md", 5, 1000]] });
+        const none = resolveRepoAdoption(base({ scan, adopt: { agents: false, skills: false, instructions: false } }));
         assert.deepEqual([none.customAgents, none.skillDirectories, none.report.agents, none.report.skills], [[], [], [], []]);
         assert.equal(none.hash, undefined);
         const noAdopt = resolveRepoAdoption(base({ scan, adopt: undefined }));
         assert.equal(noAdopt.hash, undefined);
+
+        // Instructions alone: the stamp of the files the CLI reads decides (review R7).
+        const instructions = { agents: false, skills: false, instructions: true };
+        const stamped = resolveRepoAdoption(base({ scan, adopt: instructions }));
+        assert.deepEqual([stamped.customAgents, stamped.skillDirectories], [[], []]);
+        assert.equal(typeof stamped.hash, "string");
+        const touched = resolveRepoAdoption(base({ scan: { ...scan, instructions: [["AGENTS.md", 9, 2000]] }, adopt: instructions }));
+        assert.notEqual(touched.hash, stamped.hash, "an edited AGENTS.md changes the hash");
+        assert.equal(resolveRepoAdoption(base({ scan: { ...scan, instructions: [["AGENTS.md", 9, 2000]] } })).hash,
+            resolveRepoAdoption(base({ scan })).hash, "without instructions adopted, the stamp does not count");
+
+        // Skills need a clone root.
+        const noClone = resolveRepoAdoption(base({ scan: { ...scan, cloneRoot: undefined } }));
+        assert.deepEqual(noClone.skillDirectories, []);
 
         const one = resolveRepoAdoption(base({ scan }));
         assert.equal(one.hash, resolveRepoAdoption(base({ scan })).hash, "stable");

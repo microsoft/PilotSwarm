@@ -2,7 +2,7 @@
  * Session workspaces over the Web API (docs/proposals/session-workspaces.md,
  * section 4.8): the real portal server, with no embedded workers, and one
  * scripted worker in this process on the same database. Covers the Web API
- * half of E1 (createSession with a workspace), B11 (the direct client, the
+ * create-with-a-workspace half, B11 (the direct client, the
  * Web API clients, HttpApiTransport and MCP give the same results) and B13.
  *
  * Run: npx vitest run test/local/workspace-webapi.test.js
@@ -105,7 +105,7 @@ describe("session workspaces over the Web API", () => {
         if (env) await env.cleanup();
     }, 120_000);
 
-    it("creates a session with a workspace, and every client reads and changes it the same way (E1, B11, B13)", { timeout: TIMEOUT }, async () => {
+    it("creates a session with a workspace, and every client reads and changes it the same way (B11, B13)", { timeout: TIMEOUT }, async () => {
         const webClient = new PilotSwarmClient({ apiUrl });
         const webMgmt = new PilotSwarmManagementClient({ apiUrl });
         const directMgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
@@ -123,7 +123,7 @@ describe("session workspaces over the Web API", () => {
             try { return { isError: Boolean(res.isError), value: JSON.parse(text) }; } catch { return { isError: Boolean(res.isError), value: text }; }
         };
         try {
-            // E1: the web client carries workspace on createSession.
+            // The web client carries workspace on createSession.
             const session = await webClient.createSession({ model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "repo-x" } });
             assertEqual(await session.sendAndWait("webapi turn one", TIMEOUT), `out:${path.join(root, "repo-x")}`);
 
@@ -180,7 +180,7 @@ describe("session workspaces over the Web API", () => {
         }
     });
 
-    it("the Web API refuses a bad workspace at creation with a structured error; MCP creates with one (E1)", { timeout: TIMEOUT }, async () => {
+    it("the Web API refuses a bad workspace at creation with a structured error; MCP creates with one (B3)", { timeout: TIMEOUT }, async () => {
         const api = new ApiClient({ apiUrl });
         const refused = await api.call("createSession", { model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "/etc" } }).then(() => null, (e) => e);
         assert(refused, "refused");

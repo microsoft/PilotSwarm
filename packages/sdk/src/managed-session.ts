@@ -1,7 +1,7 @@
 import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-runtime.js";
 import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
-import { killProcessTree, processAlive } from "./process-tree.js";
+import { killProcessTree, taskProcessAlive } from "./process-tree.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -27,6 +27,12 @@ interface TurnState {
     cycleReport?: CycleReport;
     session: CopilotSession | null;
     waitThreshold: number;
+    /**
+     * Session workspaces: the deny hook saw a set_session_workspace call
+     * that its handler has not answered yet. Tool calls sent after it in
+     * the same model message are refused (review R3).
+     */
+    workspaceChangeRequested?: boolean;
 }
 
 const DEFAULT_WAIT_TOOL_DESCRIPTION ="The ONLY way to wait, pause, delay, or pause-before-retry inside a turn: a durable timer that survives " +
@@ -496,6 +502,20 @@ function acknowledgeTurnBoundary(action: string): string {
         `Finish any remaining tool results for the current step, then stop.]`;
 }
 
+/**
+ * Session workspaces: a background shell or agent task that still runs.
+ * CLI 1.0.83 lists a detached shell as running after its process ended, and
+ * the pid it keeps may since belong to another process (process-tree.ts).
+ * The busy check and the release use this one test, so a finished shell
+ * neither blocks a workspace change nor gets another process killed.
+ */
+function backgroundTaskRuns(task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }): boolean {
+    if (task.type !== "shell" && task.type !== "agent") return false;
+    if (task.status !== "running" && task.status !== "idle") return false;
+    if (task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt);
+    return true;
+}
+
 const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "wait_for_agents", "list_sessions", "check_agents", "set_workspace"]);
 
 // ── Session workspaces (docs/proposals/session-workspaces.md 4.3) ──
@@ -519,8 +539,9 @@ const SET_SESSION_WORKSPACE_TOOL_SPEC = {
 
 const GET_SESSION_WORKSPACE_TOOL_SPEC = {
     description:
-        "Show this session's workspace: its root and folder, the working directory path, and the workspace "
-        + "revision. Returns workspace: null when the session has none.",
+        "Show this session's workspace: its root and folder, the working directory path, the workspace "
+        + "revision, and the repo agents and skills adopted from the checkout. Returns workspace: null when "
+        + "the session has none.",
     parameters: { type: "object", properties: {} },
 };
 
@@ -2739,29 +2760,36 @@ export class ManagedSession {
             defineTool("set_session_workspace", {
                 ...SET_SESSION_WORKSPACE_TOOL_SPEC,
                 handler: async (args: { root?: string; folder?: string; clear?: boolean }) => {
-                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_workspace");
-                    if (!controlBridge?.checkWorkspace) return "Error: set_session_workspace is unavailable in this session.";
+                    // Any answer but "accepted" lets the model work on, so the
+                    // mark the deny hook set for this call is dropped.
+                    const refuse = (message: string) => {
+                        turnState.workspaceChangeRequested = false;
+                        return message;
+                    };
+                    if (hasTerminalTurnBoundary(turnState)) return refuse(blockedAfterTurnBoundary("set_session_workspace"));
+                    if (!controlBridge?.checkWorkspace) return refuse("Error: set_session_workspace is unavailable in this session.");
                     let next: import("./types.js").SessionWorkspace | null = null;
                     if (args?.clear === true) {
-                        if (args.root !== undefined || args.folder !== undefined) return "Error: WORKSPACE_PATH_INVALID: pass either clear=true or a root, not both.";
+                        if (args.root !== undefined || args.folder !== undefined) return refuse("Error: WORKSPACE_PATH_INVALID: pass either clear=true or a root, not both.");
                     } else {
                         const checked = validateWorkspaceText({ root: args?.root, ...(args?.folder !== undefined ? { folder: args.folder } : {}) });
-                        if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
+                        if (!checked.ok) return refuse(`Error: ${checked.code}: ${checked.message}`);
                         next = checked.workspace;
                     }
                     const current = this.config.workspace ?? null;
                     if (sameWorkspace(current, next)) {
-                        return `No change: the workspace is already ${describeWorkspaceForModel(current)}. Continue your task.`;
+                        return refuse(`No change: the workspace is already ${describeWorkspaceForModel(current)}. Continue your task.`);
                     }
                     const busy = await this.activeBackgroundTasks().catch(() => []);
                     if (busy.length > 0) {
-                        return `Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
-                            + "Stop them first, then call set_session_workspace again.";
+                        return refuse(`Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
+                            + "Stop them first, then call set_session_workspace again.");
                     }
                     let path: string | null = null;
                     if (next) {
-                        const checked = await controlBridge.checkWorkspace({ workspace: next });
-                        if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
+                        const checked = await controlBridge.checkWorkspace({ workspace: next })
+                            .catch((error: unknown) => ({ ok: false as const, code: "WORKSPACE_ATTACH_FAILED", message: String((error as Error)?.message ?? error) }));
+                        if (!checked.ok) return refuse(`Error: ${checked.code}: ${checked.message}`);
                         path = checked.path;
                     }
                     turnState.pendingActions.push({ type: "set_workspace", workspace: next, path });
@@ -2778,6 +2806,10 @@ export class ManagedSession {
                     workspace: this.config.workspace ?? null,
                     path: this.config.workspace ? this.config.workspaceAttach?.path ?? null : null,
                     revision: this.config.workspace ? this.config.workspaceAttach?.revision ?? null : null,
+                    // What this turn's CLI session adopted from the checkout (section 4.6).
+                    ...(this.config.workspace && this.config.workspaceAdoption
+                        ? { adopted: { agents: this.config.workspaceAdoption.agents, skills: this.config.workspaceAdoption.skills } }
+                        : {}),
                 }),
             }),
         ] : [];
@@ -3361,6 +3393,7 @@ export class ManagedSession {
             }
 
             if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
+                const accepted = turnState.pendingActions.filter((action) => action.type === "set_workspace");
                 const diagnostic: CapturedEvent = {
                     eventType: "runtime.required_tool_not_invoked",
                     data: { toolName: opts.requiredTool, final: true, sessionId: this.sessionId },
@@ -3372,10 +3405,16 @@ export class ManagedSession {
                     message: `Required tool "${opts.requiredTool}" was not invoked after ${requiredToolCorrections + 1} attempts.`,
                     retryable: false,
                     events: collectedEvents,
+                    ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
                 } as any;
             }
         } catch (err: any) {
             const errMsg = err.message ?? String(err);
+            // Session workspaces: set_session_workspace told the model the
+            // change was accepted. A turn that then fails still carries the
+            // change, and the orchestration applies it (review F8).
+            const accepted = turnState.pendingActions.filter((action) => action.type === "set_workspace");
+            const acceptedChange = accepted.length > 0 ? { queuedActions: accepted } : {};
             // Inactivity watchdog — the CLI subprocess is presumed dead or
             // wedged. Settle as a retryable transport-loss error: the message
             // matches isCopilotConnectionClosedError(), so the orchestration
@@ -3387,6 +3426,7 @@ export class ManagedSession {
                     type: "error",
                     message: errMsg,
                     events: collectedEvents,
+                    ...acceptedChange,
                 } as any;
             }
             // Timeout — kill it
@@ -3401,6 +3441,7 @@ export class ManagedSession {
                 return {
                     type: "error",
                     message: "Copilot was taking too long to process and was killed.",
+                    ...acceptedChange,
                 };
             }
             // Other send() errors — check if any handler aborted first
@@ -3500,16 +3541,34 @@ export class ManagedSession {
     /** Session workspaces: the running turn's state, read by the native deny hook. */
     private activeTurnState: TurnState | null = null;
 
-    /** Session workspaces: set_session_workspace was accepted in the running turn, so every further tool call is refused. */
-    isWorkspaceChangePending(): boolean {
-        return this.activeTurnState?.pendingActions.some((action) => action.type === "set_workspace") ?? false;
+    /**
+     * Session workspaces: where a change stands in the running turn.
+     * "accepted": set_session_workspace was accepted, so every further tool
+     * call is refused. "requested": it was called and has not answered yet,
+     * so the calls after it in the same message are refused.
+     */
+    workspaceChangeState(): "none" | "requested" | "accepted" {
+        const turn = this.activeTurnState;
+        if (!turn) return "none";
+        if (turn.pendingActions.some((action) => action.type === "set_workspace")) return "accepted";
+        return turn.workspaceChangeRequested === true ? "requested" : "none";
+    }
+
+    /**
+     * Session workspaces: the deny hook saw a set_session_workspace call.
+     * The CLI runs every pre-tool hook of a model message before any
+     * handler, so a call sent after it in the same message would otherwise
+     * run in the old folder after the model asked to move (review R3).
+     */
+    noteWorkspaceChangeRequested(): void {
+        if (this.activeTurnState) this.activeTurnState.workspaceChangeRequested = true;
     }
 
     /** Running or idle background shells and agent tasks (the WORKSPACE_BUSY check). */
     private async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
         const tasks = (await this.copilotSession.rpc.tasks.list()).tasks ?? [];
         return tasks
-            .filter((task: any) => (task.type === "shell" || task.type === "agent") && (task.status === "running" || task.status === "idle"))
+            .filter(backgroundTaskRuns)
             .map((task: any) => ({ id: String(task.id), type: String(task.type) }));
     }
 
@@ -3546,11 +3605,7 @@ export class ManagedSession {
      * last round.
      */
     async cancelBackgroundTasks({ rounds = 5, pauseMs = 200 }: { rounds?: number; pauseMs?: number } = {}): Promise<number> {
-        // CLI 1.0.83 keeps listing a shell as running after its process dies
-        // (see process-tree.ts), so a shell with a dead pid is done.
-        const active = (task: { type?: string; status?: string; pid?: unknown }) =>
-            (task.type === "shell" || task.type === "agent") && (task.status === "running" || task.status === "idle")
-            && !(task.type === "shell" && typeof task.pid === "number" && !processAlive(task.pid));
+        const active = backgroundTaskRuns;
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);

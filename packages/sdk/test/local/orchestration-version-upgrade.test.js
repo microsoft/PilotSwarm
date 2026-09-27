@@ -8,7 +8,7 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-function createCtx(values, queue = [], turns = []) {
+function createCtx(values, queue = [], turns = [], calls = []) {
     const queuedEvents = [...queue];
     return {
         traceInfo: () => {},
@@ -58,7 +58,10 @@ function createCtx(values, queue = [], turns = []) {
                 default:
                     // Newer handlers call more manager and session methods
                     // (see the proxies in beforeEach); none of them matter here.
-                    if (/^(manager|session)\./.test(String(effect.effect))) return undefined;
+                    if (/^(manager|session)\./.test(String(effect.effect))) {
+                        calls.push(String(effect.effect));
+                        return undefined;
+                    }
                     throw new Error(`Unexpected effect: ${JSON.stringify(effect)}`);
             }
         },
@@ -129,11 +132,13 @@ describe("orchestration version upgrades", () => {
                 }),
             ]);
 
+            // 1.0.79 starts mid-life, so the turn index must survive into 1.0.80 (T4).
+            const startIteration = sourceVersion === "1.0.79" ? 5 : 0;
             const sourceGen = sourceHandler(sourceCtx, {
                 sessionId: `upgrade-${sourceVersion}`,
                 config: { model: "github-copilot:gpt-5.4" },
                 sourceOrchestrationVersion: sourceVersion,
-                iteration: 0,
+                iteration: startIteration,
                 isSystem: true,
                 blobEnabled: false,
             });
@@ -147,18 +152,17 @@ describe("orchestration version upgrades", () => {
             expect(sourceResult.effect.input.sourceOrchestrationVersion).toBe(sourceVersion);
             expect(sourceResult.effect.input.config.model).toBe("github-copilot:gpt-5.4-mini");
 
-            // Test C4: a session from before workspaces carries none into 1.0.80.
-            expect("workspace" in sourceResult.effect.input.config).toBe(false);
-            expect(sourceResult.effect.input.iteration).toBe(0);
+            expect(sourceResult.effect.input.iteration).toBe(startIteration);
 
             const latestTurns = [];
+            const latestCalls = [];
             const latestCtx = createCtx(values, [
                 JSON.stringify({
                     type: "cmd",
                     cmd: "get_info",
                     id: `get-info-${sourceVersion}`,
                 }),
-            ], latestTurns);
+            ], latestTurns, latestCalls);
 
             const latestGen = latestHandler(latestCtx, sourceResult.effect.input);
             const latestResult = driveUntilStop(latestGen, latestCtx);
@@ -177,11 +181,14 @@ describe("orchestration version upgrades", () => {
                 },
             });
             expect(latestResult.done).toBe(false);
+            // Test C4: a session from before workspaces makes no workspace call in 1.0.80.
+            expect(latestCalls.filter((call) => /workspace/i.test(call))).toEqual([]);
             if (sourceVersion === "1.0.79") {
                 // 1.0.79 asks for one turn on the new model; 1.0.80 runs it
-                // with no workspace fields on the wire.
+                // at the carried turn index, with no workspace fields on the wire.
                 expect(latestTurns).toHaveLength(1);
                 expect(latestTurns[0][0]).toMatch(/^Continue on github-copilot:gpt-5\.4-mini\./);
+                expect(latestTurns[0][2]).toBe(5);
                 const turnMeta = latestTurns[0][3] ?? {};
                 expect("workspaceRevision" in turnMeta || "workspaceNotice" in turnMeta).toBe(false);
             }

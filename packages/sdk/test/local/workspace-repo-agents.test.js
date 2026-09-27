@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice D: repo agents and skills on a real worker with
+ * Session workspaces: repo agents and skills on a real worker with
  * the real Copilot CLI and the scripted model
  * (docs/proposals/session-workspaces.md, section 4.6). Covers A1, A2, A4,
  * A6 and F10.
@@ -159,16 +159,29 @@ describe("workspace repo agents and skills", () => {
             const clone = await fixture.cloneSession({ rootSessionId: "a4" });
             const provider = createFakeWorkspaceProvider({ roots: [{ name: "fx", path: fixture.root }] });
             await withScriptedModel(env, {
-                respond: scriptTurns([[{ content: "one" }], [{ content: "two" }], [{ content: "three" }]]),
+                respond: scriptTurns([
+                    [
+                        // The agent's own view names what was adopted.
+                        { tools: [{ name: "get_session_workspace", args: {} }] },
+                        (_body, position) => ({ content: `one:${position.toolResults.join("")}` }),
+                    ],
+                    [{ content: "two" }],
+                    [{ content: "three" }],
+                ]),
                 worker: { workspaceProvider: provider, nativeSubagents: "sync" },
-            }, async ({ client, model, qualifiedModel }) => {
+            }, async ({ client, model, qualifiedModel, worker }) => {
                 const sessionId = randomUUID();
                 const session = await client.createSession({ sessionId, model: qualifiedModel, owner: OWNER, workspace: { root: "fx", folder: path.relative(fixture.root, clone) } });
                 provider.setAdopt(ALL);
-                assertEqual(await session.sendAndWait("a4 turn one", TIMEOUT), "one");
+                const answerOne = await session.sendAndWait("a4 turn one", TIMEOUT);
+                assert(answerOne.startsWith("one:") && answerOne.includes('"adopted":{"agents":["reviewer"],"skills":["build"]}'),
+                    `get_session_workspace names the adopted agents and skills: ${answerOne}`);
                 provider.setAdopt(NONE);
                 assertEqual(await session.sendAndWait("a4 turn two", TIMEOUT), "two");
+                const warmAfterTwo = worker.sessionManager.sessions.get(sessionId);
                 assertEqual(await session.sendAndWait("a4 turn three", TIMEOUT), "three");
+                // The same adopt again: the warm session is reused, not resumed (T6).
+                assert(warmAfterTwo && worker.sessionManager.sessions.get(sessionId) === warmAfterTwo, "turn three reused turn two's warm session");
 
                 const byTurn = (text) => model.sessionRequests("a4 turn one").find((r) => r.position.lastUserText.includes(text));
                 const [one, two, three] = ["a4 turn one", "a4 turn two", "a4 turn three"].map(byTurn);

@@ -53,16 +53,26 @@ function toolList(value: string): string[] {
  * used). Other keys are ignored. The body is the agent's prompt.
  */
 export function parseRepoAgentFile(file: string, content: string): { ok: true; agent: ParsedRepoAgent } | { ok: false; reason: string } {
-    const text = content.replace(/\r\n/g, "\n");
+    // A byte-order mark and trailing spaces on the --- lines are allowed. A
+    // file that opens a frontmatter block that does not parse is refused,
+    // never read as all prompt: its `tools:` line would be lost, and the
+    // agent would get every tool (review R8).
+    const text = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
     const fallbackName = path.posix.basename(file).replace(/\.agent\.md$/, "");
     let meta: Record<string, string | string[]> = {};
     let body = text;
     let hasMcpServers = false;
-    if (text.startsWith("---\n")) {
-        const end = text.indexOf("\n---", 3);
-        if (end < 0) return { ok: false, reason: "the frontmatter has no closing ---" };
-        const lines = text.slice(4, end).split("\n");
-        body = text.slice(end + 4).replace(/^[^\n]*\n?/, "");
+    const allLines = text.split("\n");
+    const fence = (line: string) => /^---[ \t]*$/.test(line);
+    const firstContent = allLines.findIndex((line) => line.trim() !== "");
+    if (firstContent >= 0 && allLines[firstContent].trimStart().startsWith("---")) {
+        if (firstContent !== 0 || !fence(allLines[0])) {
+            return { ok: false, reason: "the frontmatter must start with a --- line at the top of the file" };
+        }
+        const close = allLines.findIndex((line, index) => index > 0 && fence(line));
+        if (close < 0) return { ok: false, reason: "the frontmatter has no closing ---" };
+        const lines = allLines.slice(1, close);
+        body = allLines.slice(close + 1).join("\n");
         let key: string | null = null;
         let block: string[] | null = null;
         const flush = () => {
@@ -119,7 +129,7 @@ export function parseRepoAgentFile(file: string, content: string): { ok: true; a
 export interface RepoAdoptionInput {
     scan: RepoScan | undefined;
     adopt: WorkspaceAdopt | undefined;
-    /** The attach path: where the CLI finds `.github/skills`. */
+    /** The attach path. The CLI finds `.github/skills` at the scan's clone root, relative to it. */
     attachPath: string;
     /** Native tasks are on for this session (worker setting and the owner's copilot.native_tasks). */
     nativeTasks: boolean;
@@ -135,7 +145,7 @@ export interface RepoAdoption {
     customAgents: CustomAgentConfig[];
     skillDirectories: string[];
     report: WorkspaceAdoptionReport;
-    /** A digest of everything that reaches the CLI. Set only when adopt asks for agents or skills. */
+    /** A digest of everything that reaches the CLI. Set only when adopt asks for agents, skills or instructions. */
     hash?: string;
 }
 
@@ -200,9 +210,13 @@ export function resolveRepoAdoption(input: RepoAdoptionInput): RepoAdoption {
         }
     }
     const skills = adopt?.skills && scan ? [...scan.skills].sort() : [];
-    const skillDirectories = skills.length > 0 ? [path.join(input.attachPath, ".github", "skills")] : [];
+    // The skills folder is the clone root's, which is above the attach path
+    // when the workspace is a subfolder of the clone.
+    const skillDirectories = skills.length > 0 && typeof scan?.cloneRoot === "string"
+        ? [path.join(input.attachPath, scan.cloneRoot, ".github", "skills")]
+        : [];
     const report: WorkspaceAdoptionReport = { agents: [...agentNames].sort(), skills, skipped };
-    const asked = Boolean(adopt?.agents || adopt?.skills);
+    const asked = Boolean(adopt?.agents || adopt?.skills || adopt?.instructions);
     return {
         customAgents,
         skillDirectories,
@@ -212,6 +226,9 @@ export function resolveRepoAdoption(input: RepoAdoptionInput): RepoAdoption {
                 agents: customAgents.map((a) => [a.name, a.description, a.prompt, a.tools ?? null, (a as any).model]),
                 skills,
                 skillDirectories,
+                // The CLI reads the instruction files when it creates or
+                // resumes the session, so a changed file must resume it.
+                ...(adopt?.instructions ? { instructions: scan?.instructions ?? [] } : {}),
             })).digest("hex"),
         } : {}),
     };

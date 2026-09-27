@@ -181,7 +181,10 @@ export function* releaseAffinity(
     // a cap: a session-pinned activity has no timeout of its own, and a dead
     // or hung worker must not hold the session. Only workspace sessions yield
     // here, so every present and future release site gets it for free.
-    if (state.config.workspace) {
+    // After a clear, the worker may still hold the old folder: the release
+    // is owed once (review F6). The worker releases what it has in memory.
+    if (state.config.workspace || state.workspaceReleasePending) {
+        state.workspaceReleasePending = false;
         try {
             const raced: any = yield ctx.race(
                 runtime.session.releaseWorkspace({ reason, revision: Math.max(1, state.workspaceRevision), turnIndex: state.iteration }),
@@ -514,7 +517,9 @@ export function buildContinueInput(
         nestingLevel: options.nestingLevel,
         ...(options.isSystem ? { isSystem: true } : {}),
         ...(input.agentId ? { agentId: input.agentId } : {}),
-        retryCount: 0,
+        // Session workspaces: a turn held by the workspace check keeps its
+        // retry count, so the retry still gets the partial-changes note.
+        retryCount: state.workspaceStatus?.state === "unavailable" ? state.retryCount : 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
@@ -526,6 +531,8 @@ export function buildContinueInput(
         ...(state.workspaceRevision > 0 ? { workspaceRevision: state.workspaceRevision } : {}),
         ...(state.workspaceStatus ? { workspaceStatus: { ...state.workspaceStatus } } : {}),
         ...(state.workspaceNotice ? { workspaceNotice: state.workspaceNotice } : {}),
+        ...(state.workspaceHeldNote ? { workspaceHeldNote: state.workspaceHeldNote } : {}),
+        ...(state.workspaceReleasePending ? { workspaceReleasePending: true } : {}),
         ...(state.workspaceRetry ? { workspaceRetry: { step: state.workspaceRetry.step, failures: { ...state.workspaceRetry.failures } } } : {}),
         ...(state.workspaceRetryScheduleMs?.length ? { workspaceRetryScheduleMs: [...state.workspaceRetryScheduleMs] } : {}),
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
@@ -921,8 +928,15 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     if (next) {
         // The attach and the path check, on the worker that holds the
         // session, with the same code as the turn preamble.
-        const raw: any = yield runtime.session.checkWorkspace({ workspace: next, revision, turnIndex: state.iteration });
-        const outcome = typeof raw === "string" ? JSON.parse(raw) : raw;
+        // A failed activity (a worker that does not know it, say, during a
+        // rolling deploy) answers the command; it must not fail the session.
+        let outcome: any;
+        try {
+            const raw: any = yield runtime.session.checkWorkspace({ workspace: next, revision, turnIndex: state.iteration });
+            outcome = typeof raw === "string" ? JSON.parse(raw) : raw;
+        } catch (err: any) {
+            outcome = { ok: false, code: "WORKSPACE_ATTACH_FAILED", message: `the workspace check did not run: ${err?.message ?? err}` };
+        }
         if (!outcome?.ok) {
             const code = typeof outcome?.code === "string" ? outcome.code : "WORKSPACE_ATTACH_FAILED";
             yield* reply({
@@ -942,6 +956,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     state.workspaceNotice = workspaceChangedNote(previous, next, path);
     state.workspaceRetry = null;
     if (!next) state.workspaceStatus = null;
+    if (!next && previous) state.workspaceReleasePending = true;
     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
         eventType: "session.workspace_changed",
         data: { workspace: next, revision, path, source: args.source === "agent" ? "agent" : "external" },

@@ -79,24 +79,42 @@ export interface WorkspacePathCheckRequest {
     /** The attach path from `ensureAttached()`. */
     path: string;
     timeoutMs?: number;
-    /** Also read the repo's agents and skills (section 4.6), inside the same deadline. */
-    collect?: { agents?: boolean; skills?: boolean };
+    /**
+     * Also read the repo's agents and skills, and stamp its instruction
+     * files (section 4.6), inside the same deadline.
+     */
+    collect?: { agents?: boolean; skills?: boolean; instructions?: boolean };
 }
 
 /** Repo limits from section 4.6. */
 export const MAX_REPO_AGENTS = 30;
 export const MAX_REPO_AGENT_BYTES = 64 * 1024;
+/** Agent files looked at past the limit; the rest are counted, not opened. */
+export const MAX_REPO_AGENT_OVERFLOW = 20;
+/** A skills folder with more entries is not adopted: the CLI would read every entry, and the check could not look at each. */
+export const MAX_REPO_SKILL_ENTRIES = 200;
 
 /**
- * What the check read from the checkout for adoption. Agent files are read
- * whole (at most MAX_REPO_AGENTS files of at most MAX_REPO_AGENT_BYTES).
- * Skills are only named: the CLI reads them itself from `.github/skills`.
- * A file or folder whose real path leaves the workspace is never read.
+ * What the check read from the checkout for adoption. Everything comes from
+ * the clone root: the nearest folder at or above the attach path, inside the
+ * root, that holds `.git`. With no clone root, nothing is adopted. Agent
+ * files are read whole (at most MAX_REPO_AGENTS files of at most
+ * MAX_REPO_AGENT_BYTES). Skills are only named: the CLI reads them itself
+ * from `.github/skills`. A file or folder whose real path leaves the clone
+ * root is never read.
  */
 export interface RepoScan {
     agents: Array<{ file: string; content: string }>;
     skills: string[];
     skipped: Array<{ kind: "agent" | "skill"; file: string; reason: string }>;
+    /** The clone root, relative to the attach path: "" when they are the same folder. Absent: no clone root. */
+    cloneRoot?: string;
+    /**
+     * The instruction files the CLI may load, as [file, size, mtimeMs], when
+     * instructions are adopted. Only their stamp is read: it joins the
+     * fingerprint, so an edited AGENTS.md resumes the session.
+     */
+    instructions?: Array<[string, number, number]>;
 }
 
 export type WorkspacePathCheckResult = { ok: true; realPath: string; repo?: RepoScan } | WorkspaceCheckFailure;
@@ -148,51 +166,107 @@ if (!st.isDirectory()) {
   out({ ok: false, code: req.codes.FOLDER_MISSING, message: "not a directory (a file, a FIFO, or a symlink to a file): " + req.path });
   process.exit(0);
 }
-if (!req.collect || (!req.collect.agents && !req.collect.skills)) { out({ ok: true, realPath: real }); process.exit(0); }
-// Adoption (section 4.6): read .github/agents and name .github/skills. A
-// path whose real location leaves the workspace is skipped, never read.
-const inside = (p) => { try { const r = fs.realpathSync(p); const rel2 = path.relative(real, r); return !(rel2 === ".." || rel2.startsWith(".." + path.sep) || path.isAbsolute(rel2)); } catch (e) { return false; } };
+if (!req.collect || (!req.collect.agents && !req.collect.skills && !req.collect.instructions)) { out({ ok: true, realPath: real }); process.exit(0); }
+// Adoption (section 4.6) reads from the clone root: the nearest folder at or
+// above the attach path, inside the root, that holds .git. With no clone
+// root, nothing is adopted. A path whose real location leaves the clone
+// root is skipped, never read.
 const exists = (p) => { try { fs.lstatSync(p); return true; } catch (e) { return false; } };
+let clone = null;
+for (let dir = real; ; dir = path.dirname(dir)) {
+  if (exists(path.join(dir, ".git"))) { clone = dir; break; }
+  if (path.relative(rootReal, dir) === "" || dir === path.dirname(dir)) break;
+}
 const repo = { agents: [], skills: [], skipped: [] };
+if (req.collect.instructions) {
+  // Only a stamp: the CLI reads these itself. It joins the fingerprint.
+  const stamp = [];
+  const note = (dir, prefix) => {
+    for (const name of ["AGENTS.md", ".github/copilot-instructions.md"]) {
+      try { const s = fs.statSync(path.join(dir, name)); if (s.isFile()) stamp.push([prefix + name, s.size, s.mtimeMs]); } catch (e) {}
+    }
+  };
+  note(real, "");
+  if (clone && clone !== real) note(clone, path.relative(real, clone) + "/");
+  try {
+    const idir = path.join(clone || real, ".github", "instructions");
+    for (const name of fs.readdirSync(idir).filter((n) => n.endsWith(".instructions.md")).sort().slice(0, 50)) {
+      try { const s = fs.statSync(path.join(idir, name)); stamp.push([".github/instructions/" + name, s.size, s.mtimeMs]); } catch (e) {}
+    }
+  } catch (e) {}
+  repo.instructions = stamp;
+}
+if (!clone) {
+  if (req.collect.agents && exists(path.join(real, ".github", "agents"))) repo.skipped.push({ kind: "agent", file: ".github/agents", reason: "the folder is not inside a git clone, so nothing is adopted" });
+  if (req.collect.skills && exists(path.join(real, ".github", "skills"))) repo.skipped.push({ kind: "skill", file: ".github/skills", reason: "the folder is not inside a git clone, so nothing is adopted" });
+  out({ ok: true, realPath: real, repo });
+  process.exit(0);
+}
+repo.cloneRoot = path.relative(real, clone);
+const inside = (p) => { try { const r = fs.realpathSync(p); const rel2 = path.relative(clone, r); return !(rel2 === ".." || rel2.startsWith(".." + path.sep) || path.isAbsolute(rel2)); } catch (e) { return false; } };
+// Read at most max + 1 bytes, so a file that grew after its stat is still refused.
+const readBounded = (full, max) => {
+  const fd = fs.openSync(full, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  try {
+    const buf = Buffer.alloc(max + 1);
+    const n = fs.readSync(fd, buf, 0, max + 1, 0);
+    return n > max ? null : buf.subarray(0, n).toString("utf8");
+  } finally { fs.closeSync(fd); }
+};
 if (req.collect.agents) {
-  const dir = path.join(real, ".github", "agents");
+  const dir = path.join(clone, ".github", "agents");
   if (exists(dir)) {
-    if (!inside(dir)) repo.skipped.push({ kind: "agent", file: ".github/agents", reason: "the folder resolves outside the workspace" });
+    if (!inside(dir)) repo.skipped.push({ kind: "agent", file: ".github/agents", reason: "the folder resolves outside the clone" });
     else {
       let names = [];
       try { names = fs.readdirSync(dir).filter((n) => n.endsWith(".agent.md")).sort(); } catch (e) {}
-      for (const name of names) {
+      // Files past the limit are counted, never opened: a huge folder must
+      // not use up the check's deadline.
+      const looked = names.slice(0, req.maxAgents + req.maxAgentOverflow);
+      for (const name of looked) {
         const file = ".github/agents/" + name;
+        if (repo.agents.length >= req.maxAgents) { repo.skipped.push({ kind: "agent", file, reason: "more than " + req.maxAgents + " agents" }); continue; }
         const full = path.join(dir, name);
-        if (!inside(full)) { repo.skipped.push({ kind: "agent", file, reason: "the file resolves outside the workspace" }); continue; }
+        if (!inside(full)) { repo.skipped.push({ kind: "agent", file, reason: "the file resolves outside the clone" }); continue; }
         let fst; try { fst = fs.statSync(full); } catch (e) { repo.skipped.push({ kind: "agent", file, reason: "unreadable (" + (e.code || e.message) + ")" }); continue; }
         if (!fst.isFile()) { repo.skipped.push({ kind: "agent", file, reason: "not a regular file" }); continue; }
-        if (fst.size > req.maxAgentBytes) { repo.skipped.push({ kind: "agent", file, reason: "larger than " + (req.maxAgentBytes / 1024) + " KB" }); continue; }
-        if (repo.agents.length >= req.maxAgents) { repo.skipped.push({ kind: "agent", file, reason: "more than " + req.maxAgents + " agents" }); continue; }
-        try { repo.agents.push({ file, content: fs.readFileSync(full, "utf8") }); }
-        catch (e) { repo.skipped.push({ kind: "agent", file, reason: "unreadable (" + (e.code || e.message) + ")" }); }
+        const tooBig = { kind: "agent", file, reason: "larger than " + (req.maxAgentBytes / 1024) + " KB" };
+        if (fst.size > req.maxAgentBytes) { repo.skipped.push(tooBig); continue; }
+        try {
+          const content = readBounded(full, req.maxAgentBytes);
+          if (content === null) repo.skipped.push(tooBig);
+          else repo.agents.push({ file, content });
+        } catch (e) { repo.skipped.push({ kind: "agent", file, reason: "unreadable (" + (e.code || e.message) + ")" }); }
+      }
+      if (names.length > looked.length) {
+        repo.skipped.push({ kind: "agent", file: ".github/agents", reason: (names.length - looked.length) + " more agent files, not read" });
       }
     }
   }
 }
 if (req.collect.skills) {
-  const dir = path.join(real, ".github", "skills");
+  const dir = path.join(clone, ".github", "skills");
   if (exists(dir)) {
-    if (!inside(dir)) repo.skipped.push({ kind: "skill", file: ".github/skills", reason: "the folder resolves outside the workspace" });
+    if (!inside(dir)) repo.skipped.push({ kind: "skill", file: ".github/skills", reason: "the folder resolves outside the clone" });
     else {
       let names = [];
       try { names = fs.readdirSync(dir).sort(); } catch (e) {}
-      const found = [];
-      let escaped = null;
-      for (const name of names) {
-        const skill = path.join(dir, name, "SKILL.md");
-        if (!exists(skill)) continue;
-        if (!inside(path.join(dir, name)) || !inside(skill)) { escaped = ".github/skills/" + name; break; }
-        found.push(name);
+      if (names.length > req.maxSkillEntries) {
+        // The CLI reads the whole folder, and every entry needs its check.
+        repo.skipped.push({ kind: "skill", file: ".github/skills", reason: "more than " + req.maxSkillEntries + " entries, so no repo skill is adopted" });
+      } else {
+        const found = [];
+        let escaped = null;
+        for (const name of names) {
+          const skill = path.join(dir, name, "SKILL.md");
+          if (!exists(skill)) continue;
+          if (!inside(path.join(dir, name)) || !inside(skill)) { escaped = ".github/skills/" + name; break; }
+          found.push(name);
+        }
+        // The CLI reads the whole folder, so one escaping skill skips them all.
+        if (escaped) repo.skipped.push({ kind: "skill", file: escaped, reason: "resolves outside the clone, so no repo skill is adopted" });
+        else repo.skills = found;
       }
-      // The CLI reads the whole folder, so one escaping skill skips them all.
-      if (escaped) repo.skipped.push({ kind: "skill", file: escaped, reason: "resolves outside the workspace, so no repo skill is adopted" });
-      else repo.skills = found;
     }
   }
 }
@@ -304,7 +378,13 @@ function runCheck(state: RootCheckState, req: WorkspacePathCheckRequest, timeout
                         path: req.path,
                         sleepMs: hook?.sleepMs ?? 0,
                         codes: WORKSPACE_ERROR_CODES,
-                        ...(req.collect ? { collect: req.collect, maxAgents: MAX_REPO_AGENTS, maxAgentBytes: MAX_REPO_AGENT_BYTES } : {}),
+                        ...(req.collect ? {
+                            collect: req.collect,
+                            maxAgents: MAX_REPO_AGENTS,
+                            maxAgentBytes: MAX_REPO_AGENT_BYTES,
+                            maxAgentOverflow: MAX_REPO_AGENT_OVERFLOW,
+                            maxSkillEntries: MAX_REPO_SKILL_ENTRIES,
+                        } : {}),
                     }),
                 },
             });

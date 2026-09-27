@@ -20,6 +20,7 @@ import {
     type WorkspaceRoot,
 } from "./types.js";
 import { checkWorkspacePath, validateWorkspaceText, DEFAULT_PATH_CHECK_TIMEOUT_MS, type RepoScan } from "./workspace-check.js";
+import { WORKSPACE_ORCHESTRATION_MIN_VERSION } from "./orchestration-version.js";
 
 export const DEFAULT_ATTACH_TIMEOUT_MS = 30_000;
 
@@ -28,6 +29,26 @@ export const DEFAULT_ATTACH_TIMEOUT_MS = 30_000;
  * attempt of it ran, failed or was lost with its worker (section 4.7).
  */
 export const WORKSPACE_PARTIAL_CHANGES_NOTE = "An earlier attempt may have changed files. Check `git status` first.";
+
+/**
+ * Whether the orchestration that scheduled a turn applies workspace
+ * changes (1.0.80 and later). An older one drops the result of
+ * set_session_workspace, so its turns do not get the workspace tools. The
+ * version comes from the activity context; without one, the answer is yes.
+ */
+export function orchestrationSupportsWorkspaces(version: unknown): boolean {
+    const parts = (text: unknown) => {
+        const match = typeof text === "string" ? /^(\d+)\.(\d+)\.(\d+)$/.exec(text.trim()) : null;
+        return match ? match.slice(1).map(Number) : null;
+    };
+    const have = parts(version);
+    const need = parts(WORKSPACE_ORCHESTRATION_MIN_VERSION)!;
+    if (!have) return true;
+    for (let i = 0; i < 3; i += 1) {
+        if (have[i] !== need[i]) return have[i] > need[i];
+    }
+    return true;
+}
 
 /**
  * The provider for a deployment without application code: fixed roots,
@@ -186,7 +207,9 @@ export async function prepareWorkspace(
     }
 
     const adopt = normalizeAdopt(attached.adopt);
-    const collect = adopt && (adopt.agents || adopt.skills) ? { agents: adopt.agents, skills: adopt.skills } : undefined;
+    const collect = adopt && (adopt.agents || adopt.skills || adopt.instructions)
+        ? { agents: adopt.agents, skills: adopt.skills, instructions: adopt.instructions }
+        : undefined;
     const checked = await checkWorkspacePath({
         rootName: rootCheck.root.name,
         rootPath: rootCheck.root.path,

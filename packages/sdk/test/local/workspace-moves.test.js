@@ -10,6 +10,9 @@
  *       note; no release ran; the provider saw a dead holder
  *   M4  a graceful shutdown finishes the short turn within the drain budget,
  *       cuts the long one, releases the idle sessions but not the cut one
+ *   F4  two failed attaches on one worker release the session, so another
+ *       worker runs it promptly
+ *   M7  a hold survives a continue-as-new, and the held prompt runs once
  *
  * Run: npx vitest run test/local/workspace-moves.test.js
  */
@@ -21,27 +24,35 @@ import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { startScriptedModel } from "../helpers/scripted-model.mjs";
-import { registerScriptedProvider, FIXTURE_QUALIFIED_MODEL } from "../helpers/scripted-workers.js";
+import { registerScriptedProvider, FIXTURE_PROVIDER, FIXTURE_QUALIFIED_MODEL } from "../helpers/scripted-workers.js";
 import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
-import { PilotSwarmClient, PilotSwarmWorker } from "../../src/index.ts";
+import { PilotSwarmClient, PilotSwarmManagementClient, PilotSwarmWorker } from "../../src/index.ts";
+import { patchSessionStartInput } from "../helpers/pinned-start.mjs";
 
 const TIMEOUT = 240_000;
 const getEnv = useSuiteEnv(import.meta.url);
 const NOTE = "An earlier attempt may have changed files";
+/** A second model of the scripted provider, for a model switch. */
+const SECOND_MODEL = "fixture-model-2";
 
 /** A scripted model, a shared fake provider, a client, and workers made on demand. */
-async function cluster(env, respond, clientOptions = {}) {
+async function cluster(env, respond, clientOptions = {}, { extraModels = [] } = {}) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-moves-")));
     fs.mkdirSync(path.join(root, "repo"));
     const model = await startScriptedModel({ respond });
     const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
+    if (extraModels.length > 0) {
+        const file = JSON.parse(fs.readFileSync(modelProvidersPath, "utf8"));
+        file.providers[0].models.push(...extraModels.map((name) => ({ name, description: "Another scripted model." })));
+        fs.writeFileSync(modelProvidersPath, JSON.stringify(file, null, 2));
+    }
     const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
     const workers = [];
     const client = new PilotSwarmClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath, ...clientOptions });
     await client.start();
     return {
-        root, model, provider, client,
+        root, model, provider, client, modelProvidersPath,
         async worker(workerNodeId) {
             const worker = new PilotSwarmWorker({
                 store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
@@ -191,6 +202,9 @@ describe("workspace moves between workers", () => {
                 assertEqual(c.model.sessionRequests("m4 short").filter((r) => r.position.step === 0).length, 1, "the short turn ran once, on A");
                 assertEqual(await long.wait(TIMEOUT), "long:again", "the cut turn ran again on B with the note");
                 assert(c.provider.deadHolderSeen(long.sessionId), "the provider saw A as a dead holder for the cut session");
+                // The idle session must attach on B before a dead holder can show (T5).
+                assertEqual(await idle.sendAndWait("m4 idle again", TIMEOUT), "idle:done");
+                assertEqual(c.provider.lastAttach(idle.sessionId).req.workerNodeId, "m4-b");
                 assert(!c.provider.deadHolderSeen(idle.sessionId), "not for a released one");
             });
         } finally {
@@ -233,6 +247,89 @@ describe("workspace moves between workers", () => {
                 assertEqual(calls.length, 1, "the wake-up on B ran no release");
                 assertEqual(c.provider.lastAttach(sessionId).req.workerNodeId, "m1-b", "the wake-up attached on B");
             });
+        } finally {
+            await c.close();
+        }
+    });
+    it("two failed attaches on one worker release the session, so another worker runs it promptly (F4)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const c = await cluster(env, () => ({ content: "ran" }));
+        try {
+            await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "300" }, async () => {
+                // The mount is gone on A only.
+                c.provider.script({ type: "fail", code: "WORKSPACE_FOLDER_MISSING", message: "the mount is gone on A" }, { workerNodeId: "f4-a" });
+                const workerA = await c.worker("f4-a");
+                const sessionId = randomUUID();
+                // A quick first retry, then a long one: the second failure on A
+                // releases the session, and the next attempt comes 8 s later.
+                const patch = patchSessionStartInput(c.client, (input) => ({ ...input, workspaceRetryScheduleMs: [300, 8_000, 600_000] }), { sessionId });
+                let session;
+                try {
+                    session = await c.client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "repo" } });
+                    await session.send("f4 run anywhere");
+                } finally {
+                    patch.restore();
+                }
+                const catalog = await createCatalog(env);
+                try {
+                    const [released] = await waitForEventCount(catalog, sessionId, "session.affinity_released", 1, 60_000);
+                    assertEqual(released.data.reason, "workspace_unavailable");
+                    assertEqual(released.data.failures, 2);
+                } finally {
+                    await catalog.close?.();
+                }
+                assertEqual(c.provider.callsFor("ensureAttached", { sessionId }).filter((r) => r.req.workerNodeId === "f4-a").length, 2);
+                await workerA.stop();
+
+                // The released session takes a new key, which B can take at once.
+                // Without the release, B would wait out A's ownership of the old key.
+                const stoppedAt = Date.now();
+                await c.worker("f4-b");
+                assertEqual(await session.wait(TIMEOUT), "ran");
+                assert(Date.now() - stoppedAt < 20_000, `B ran the turn promptly (${Date.now() - stoppedAt} ms)`);
+                assertEqual(c.provider.lastAttach(sessionId).req.workerNodeId, "f4-b");
+            });
+        } finally {
+            await c.close();
+        }
+    });
+    it("a hold survives a continue-as-new: after a model switch the held prompt runs once and the workspace comes back (M7)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const respond = (_body, position) => ({ content: `ran:${position.lastUserText.includes("m7 held prompt") ? "held" : "other"}` });
+        const c = await cluster(env, respond, {}, { extraModels: [SECOND_MODEL] });
+        try {
+            c.provider.script({ type: "fail", code: "WORKSPACE_FOLDER_MISSING", message: "not there yet" });
+            await c.worker("m7-a");
+            const sessionId = randomUUID();
+            // A long schedule: only the model switch brings the next attempt.
+            const patch = patchSessionStartInput(c.client, (input) => ({ ...input, workspaceRetryScheduleMs: [600_000] }), { sessionId });
+            let session;
+            try {
+                session = await c.client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "repo" } });
+                await session.send("m7 held prompt", { clientMessageIds: ["cm-m7"] });
+            } finally {
+                patch.restore();
+            }
+            const catalog = await createCatalog(env);
+            const mgmt = new PilotSwarmManagementClient({
+                store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
+                modelProvidersPath: c.modelProvidersPath,
+            });
+            await mgmt.start();
+            try {
+                await waitForEventCount(catalog, sessionId, "session.workspace_unavailable", 1, 60_000);
+                c.provider.clearScripts();
+                // The switch continues the session as new; its first turn is the next attempt.
+                await mgmt.setSessionModel(sessionId, `${FIXTURE_PROVIDER}:${SECOND_MODEL}`);
+                assertEqual(await session.wait(TIMEOUT), "ran:held");
+                const all = await catalog.getSessionEvents(sessionId);
+                assertEqual(all.filter((e) => e.eventType === "user.message").length, 1, "the held prompt was recorded once");
+                assertEqual(all.filter((e) => e.eventType === "session.workspace_available").length, 1);
+                assertEqual(c.model.sessionRequests().filter((r) => r.position.lastUserText.includes("m7 held prompt")).length, 1, "it ran once");
+            } finally {
+                await mgmt.stop();
+                await catalog.close?.();
+            }
         } finally {
             await c.close();
         }

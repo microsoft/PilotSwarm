@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice A: the folder-text check, the out-of-process path
+ * Session workspaces: the folder-text check, the out-of-process path
  * check (one check per root at a time, with a deadline), the built-in
  * provider, and the per-turn attach (docs/proposals/session-workspaces.md,
  * sections 4.1, 4.2 and 4.4; tests B3-U, F1-U, F7-U, and the worker half of F8).
@@ -146,10 +146,16 @@ describe("path check", () => {
         assert.match(late.message, /still hung/);
         assert.ok(Date.now() - lateStart < 200, "a check after the timeout fails at once");
 
-        // The stuck process exits when its sleep ends; the root recovers.
-        await new Promise((resolve) => setTimeout(resolve, 1_800 - (Date.now() - started)));
+        // The stuck process exits when its sleep ends; the root recovers. Poll
+        // for that instead of guessing how long node takes to start (T9).
         setWorkspaceCheckTestHook(null);
-        const recovered = await checkWorkspacePath({ ...hung, timeoutMs: 3_000 });
+        const deadline = Date.now() + 10_000;
+        let recovered;
+        for (;;) {
+            recovered = await checkWorkspacePath({ ...hung, timeoutMs: 3_000 });
+            if (recovered.ok || Date.now() > deadline) break;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
         assert.equal(recovered.ok, true, recovered.message);
     });
 

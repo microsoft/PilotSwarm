@@ -141,8 +141,20 @@ export interface DurableSessionState {
     workspaceRevision: number;
     /** `unavailable` while a workspace wait holds prompts; cleared on recovery. */
     workspaceStatus: { state: "ready" | "unavailable"; code?: string } | null;
-    /** The changed-cwd or agents-changed note for the next turn of any kind. */
+    /** The changed-cwd note for the next turn of any kind that gets past the workspace check. */
     workspaceNotice?: string;
+    /**
+     * The notes of turns the workspace check refused (a child update, a
+     * cron or wait wake-up, a model notice). They ride the next turn that
+     * gets past the check, with the held prompts.
+     */
+    workspaceHeldNote?: string;
+    /**
+     * The workspace was cleared, and the worker that holds the session may
+     * still have the old folder attached, with shells running in it. The
+     * next affinity release tells that worker to release it.
+     */
+    workspaceReleasePending: boolean;
     workspaceRetry: WorkspaceRetryState | null;
     /** Test only: the retry schedule in milliseconds, replacing WORKSPACE_RETRY_SCHEDULE_SECONDS. */
     workspaceRetryScheduleMs?: number[];
@@ -436,6 +448,8 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         workspaceRevision: typeof input.workspaceRevision === "number" && input.workspaceRevision > 0 ? input.workspaceRevision : 0,
         workspaceStatus: input.workspaceStatus ? { ...input.workspaceStatus } : null,
         workspaceNotice: typeof input.workspaceNotice === "string" && input.workspaceNotice ? input.workspaceNotice : undefined,
+        workspaceHeldNote: typeof input.workspaceHeldNote === "string" && input.workspaceHeldNote ? input.workspaceHeldNote : undefined,
+        workspaceReleasePending: input.workspaceReleasePending === true,
         workspaceRetry: input.workspaceRetry
             ? { step: input.workspaceRetry.step ?? 0, failures: { ...(input.workspaceRetry.failures ?? { workerNodeId: "", count: 0 }) } }
             : null,

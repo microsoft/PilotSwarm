@@ -199,6 +199,9 @@ describe("sessions without a workspace (C2)", () => {
         expect(all).toMatch(/runTurn\(.*The 120 second wait is now complete/);
         expect(all).toContain("session.cron_started");
         expect(all).toMatch(/runTurn\(.*Scheduled cron wake-up for/);
+        // The idle-hold release, the one place 1.0.80 adds a step for a
+        // workspace session (T11).
+        expect(all).toMatch(/manager\.recordSessionEvent\(.*"session\.affinity_released".*"reason":"idle"/);
         expect(latest.outcomes.filter((k) => k === "continueAsNew").length).toBeGreaterThan(0);
         expect(latest.segments.at(-1).join("\n")).toMatch(/runTurn\(.*Continue on fixture:model-2\./);
 

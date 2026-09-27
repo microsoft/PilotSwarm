@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -14,7 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { checkWorkspaceForSpawn, prepareWorkspace, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
@@ -694,7 +694,7 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string },
         ) {
-            return routeHandoffActivity(ctx.scheduleActivityOnSession(
+            const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
@@ -746,7 +746,13 @@ export function createSessionProxy(
                     ...(turnMeta?.workspaceNotice ? { workspaceNotice: turnMeta.workspaceNotice } : {}),
                 },
                 affinityKey,
-            ), routingContract);
+            );
+            // Session workspaces (1.0.80): the turn of a session that has, or
+            // had, a workspace goes only to workers that know workspaces. An
+            // older worker would run it in its own folder.
+            return (config as { workspace?: unknown }).workspace || (turnMeta?.workspaceRevision ?? 0) > 0
+                ? routeWorkspaceActivity(task)
+                : routeHandoffActivity(task, routingContract);
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -782,19 +788,19 @@ export function createSessionProxy(
         },
         /** Session workspaces (1.0.80): the attach and the path check, on the worker that holds the session. */
         checkWorkspace(args: { workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number }) {
-            return ctx.scheduleActivityOnSession(
+            return routeWorkspaceActivity(ctx.scheduleActivityOnSession(
                 "checkWorkspace",
                 { sessionId, ...args },
                 affinityKey,
-            );
+            ));
         },
         /** Session workspaces (1.0.80): cancel shells, disconnect and tell the provider, on the worker that holds the session. */
         releaseWorkspace(args: { reason: string; revision?: number; turnIndex?: number }) {
-            return ctx.scheduleActivityOnSession(
+            return routeWorkspaceActivity(ctx.scheduleActivityOnSession(
                 "releaseWorkspace",
                 { sessionId, ...args },
                 affinityKey,
-            );
+            ));
         },
         checkpoint() {
             return ctx.scheduleActivityOnSession(
@@ -1332,6 +1338,17 @@ export function registerActivities(
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        // Session workspaces: an orchestration older than 1.0.80 drops the
+        // result of set_session_workspace, so its turns get no workspace
+        // tools (review F3).
+        if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
+            (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
+        }
+        // Session workspaces: a cleared workspace still sends its revision;
+        // the worker then passes an explicit folder and keeps hooks off.
+        if (!runConfig.workspace && (input.workspaceRevision ?? 0) > 0) {
+            (runConfig as ManagedSessionConfig).workspaceCleared = true;
+        }
         if (catalogSessionRow?.model) {
             const staleConfiguredModel = String(input.config.model || "").trim();
             if (staleConfiguredModel && staleConfiguredModel !== catalogSessionRow.model) {
@@ -1472,7 +1489,13 @@ export function registerActivities(
                     `returning stored result without re-running the turn`,
                 );
                 await recordLifecycleHydration(pre.version);
-                return { ...(pre.result as TurnResult), snapshotVersion: pre.version };
+                // Session workspaces: a committed turn got past the
+                // workspace check (a refusal returns before the commit).
+                return {
+                    ...(pre.result as TurnResult),
+                    snapshotVersion: pre.version,
+                    ...(runConfig.workspace ? { workspaceAttached: true } : {}),
+                };
             }
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
@@ -1668,6 +1691,7 @@ export function registerActivities(
                 revision: workspaceRevision,
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
                 turnIndex: input.turnIndex ?? 0,
+                ...(typeof activityCtx?.sessionId === "string" && activityCtx.sessionId ? { affinityKey: activityCtx.sessionId } : {}),
             };
         }
 
@@ -4126,7 +4150,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             return result;
             };
 
-        const bodyResult = await executeTurnBody();
+        // Session workspaces: every result from here on comes from a turn
+        // that got past the workspace check (see WorkspaceAttachCarrier).
+        const bodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
+            ? { ...(await executeTurnBody()), workspaceAttached: true }
+            : await executeTurnBody();
 
         // ── Session lifecycle protocol commit (proposal §3.2) ───────────
         // The turn and its snapshot durability are one activity completion:
@@ -4195,7 +4223,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     `[runTurn] session=${input.sessionId} racing attempt committed v${committed.version} first; ` +
                     `adopting its stored result`,
                 );
-                return { ...(committed.storedResult as TurnResult), snapshotVersion: committed.version };
+                return {
+                    ...(committed.storedResult as TurnResult),
+                    snapshotVersion: committed.version,
+                    ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
+                };
             }
             return { ...bodyResult, snapshotVersion: committed.version };
         }
@@ -4556,6 +4588,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             workerNodeId: workerNodeId ?? os.hostname(),
             ...(input.revision !== undefined ? { revision: input.revision } : {}),
             ...(input.turnIndex !== undefined ? { turnIndex: input.turnIndex } : {}),
+            ...(typeof activityCtx?.sessionId === "string" && activityCtx.sessionId ? { affinityKey: activityCtx.sessionId } : {}),
         });
         activityCtx.traceInfo?.(`[releaseWorkspace] session=${input.sessionId} reason=${input.reason} released=${result.released} cancelled=${result.cancelled}${result.detail ? ` detail=${result.detail}` : ""}`);
         if (catalog && result.released) {

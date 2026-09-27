@@ -14,3 +14,9 @@
  */
 export const DURABLE_SESSION_LATEST_VERSION = "1.0.80";
 export const DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION = "1.0.47";
+
+/**
+ * Session workspaces: the first orchestration version that applies the
+ * results of set_session_workspace and the spawn `workspace` parameter.
+ */
+export const WORKSPACE_ORCHESTRATION_MIN_VERSION = "1.0.80";

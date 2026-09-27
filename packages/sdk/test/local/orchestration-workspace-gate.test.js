@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice C2: the workspace gate in orchestration 1.0.80
+ * Session workspaces: the workspace gate in orchestration 1.0.80
  * (docs/proposals/session-workspaces.md, section 4.7). The drives run the
  * REAL latest orchestration generator with a scripted session proxy, the
  * pattern of orchestration-budget-resume.test.js.
@@ -16,13 +16,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockSession;
 let mockManager;
+// The config each session proxy was built with: what the next turn runs with.
+let proxyConfigs = [];
 
 vi.mock("../../src/session-proxy.js", () => ({
-    createSessionProxy: () => mockSession,
+    createSessionProxy: (_ctx, _sessionId, _affinityKey, config) => {
+        proxyConfigs.push(JSON.parse(JSON.stringify(config ?? null)));
+        return mockSession;
+    },
     createSessionManagerProxy: () => mockManager,
 }));
 
 const WORKSPACE = { schema: 1, root: "a", folder: "sessions/s-1/app" };
+
+/** A result of a turn that got past the workspace check: the activity marks it. */
+const ran = (result) => ({ ...result, workspaceAttached: true });
 
 /** A workspace refusal, exactly as the runTurn activity returns one. */
 const refusal = ({ worker = "worker-a", code = "WORKSPACE_FOLDER_MISSING", retryAfterMs } = {}) => ({
@@ -49,15 +57,17 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHa
     const spawns = [];
     const sequence = [];
     const kv = new Map();
-    const pendingMessages = queue.map((entry) => (typeof entry === "string" ? { afterTurns: 0, msg: entry } : entry));
+    const pendingMessages = queue.map((entry) => (typeof entry === "string" ? { afterTurns: 0, msg: entry } : { afterTurns: 0, ...entry }));
     const script = [...turnResults];
     let timersLeft = fireTimers;
+    // `afterReleases` holds a message back until that many releaseWorkspace calls ran.
+    const deliverable = (e) => e.afterTurns <= turns.length && (e.afterReleases ?? 0) <= releases.length;
     const nextDeliverable = () => {
-        const ix = pendingMessages.findIndex((e) => e.afterTurns <= turns.length);
+        const ix = pendingMessages.findIndex(deliverable);
         if (ix < 0) return null;
         return pendingMessages.splice(ix, 1)[0].msg;
     };
-    const hasDeliverable = () => pendingMessages.some((e) => e.afterTurns <= turns.length);
+    const hasDeliverable = () => pendingMessages.some(deliverable);
 
     mockSession = new Proxy({}, {
         get: (_t, prop) => {
@@ -139,7 +149,8 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHa
                     const args = effect.args[0];
                     const answer = checkWorkspace ? checkWorkspace(args) : { ok: true, path: `/ws/${args.workspace.root}/${args.workspace.folder ?? ""}` };
                     checks.push({ args, answer });
-                    return answer;
+                    // An Error stands for a failed activity: it is thrown into the handler.
+                    return answer instanceof Error ? { __throw: answer } : answer;
                 }
                 if (effect.effect === "manager.spawnChildSession") {
                     spawns.push(effect.args);
@@ -162,13 +173,19 @@ async function latestHandler() {
 
 function drive(gen, harness, { maxSteps = 600 } = {}) {
     let input;
+    let thrown = null;
     for (let i = 0; i < maxSteps; i += 1) {
-        const next = gen.next(input);
+        const next = thrown ? gen.throw(thrown) : gen.next(input);
+        thrown = null;
         if (next.done) return { kind: "return", value: next.value };
         const effect = next.value;
         if (effect?.effect === "continueAsNew") return { kind: "continueAsNew", input: effect.input };
         if (effect?.effect === "dequeueEvent" && !harness.hasDeliverable()) return { kind: "blocked" };
         input = harness.resolve(effect);
+        if (input?.__throw) {
+            thrown = input.__throw;
+            input = undefined;
+        }
         if (input?.effect === "PARKED") return { kind: "parked" };
     }
     throw new Error("drive exceeded step limit");
@@ -186,7 +203,7 @@ const prompt = (text, extra = {}) => JSON.stringify({ prompt: text, ...extra });
 const events = (h, type) => h.recorded.filter((e) => e.eventType === type);
 
 describe("workspace gate (orchestration 1.0.80)", () => {
-    beforeEach(() => { mockSession = null; mockManager = null; });
+    beforeEach(() => { mockSession = null; mockManager = null; proxyConfigs = []; });
 
     it("a refusal holds the prompt with its images and sender, sends the revision, and does not burn the turn index", async () => {
         const handler = await latestHandler();
@@ -211,11 +228,12 @@ describe("workspace gate (orchestration 1.0.80)", () => {
     it("the retry schedule is 30 s, 2 min, 5 min, then every 15 min, or the provider's larger retryAfterMs (F12)", async () => {
         const handler = await latestHandler();
         const h = createHarness({
-            turnResults: [refusal(), refusal(), refusal({ retryAfterMs: 400_000 }), refusal(), refusal(), refusal()],
+            turnResults: [refusal(), refusal({ retryAfterMs: 10_000 }), refusal({ retryAfterMs: 400_000 }), refusal(), refusal(), refusal()],
             queue: [prompt("work")],
             fireTimers: 5,
         });
         drive(handler(h.ctx, INPUT()), h);
+        // Step 2's 10 s from the provider is under the schedule's 2 min: the larger wins.
         expect(h.timers).toEqual([30_000, 120_000, 400_000, 900_000, 900_000, 900_000]);
         // The retries are machinery: one user.message for the one prompt.
         expect(events(h, "user.message")).toHaveLength(1);
@@ -234,7 +252,7 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         const handler = await latestHandler();
         const attachments = [{ filename: "a.png", contentType: "image/png", sizeBytes: 5 }];
         const h = createHarness({
-            turnResults: [refusal(), refusal(), { type: "completed", content: "done" }, { type: "completed", content: "next" }],
+            turnResults: [refusal(), refusal(), ran({ type: "completed", content: "done" }), ran({ type: "completed", content: "next" })],
             queue: [
                 prompt("held prompt", { attachments }),
                 { afterTurns: 3, msg: prompt("a later message") },
@@ -281,7 +299,7 @@ describe("workspace gate (orchestration 1.0.80)", () => {
     it("a message during a workspace wait clears the retry timer, and the wait is not re-armed after recovery (F9)", async () => {
         const handler = await latestHandler();
         const h = createHarness({
-            turnResults: [refusal(), { type: "completed", content: "answered" }],
+            turnResults: [refusal(), ran({ type: "completed", content: "answered" })],
             queue: [prompt("first"), { afterTurns: 1, msg: prompt("second") }],
         });
         const outcome = drive(handler(h.ctx, INPUT()), h);
@@ -368,7 +386,7 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         expect(events(h, "user.message")).toHaveLength(0);
     });
 
-    it("releasing affinity runs releaseWorkspace on the holder first, raced with a 10 s cap (C3)", async () => {
+    it("releasing affinity runs releaseWorkspace on the holder first, raced with a 10 s cap", async () => {
         const handler = await latestHandler();
         const h = createHarness({
             turnResults: [refusal({ worker: "w-a" }), refusal({ worker: "w-a" })],
@@ -427,7 +445,9 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         expect(h.turns[1].prompt).toBe("second");
         expect(h.turns[1].opts.workspaceRevision).toBe(2);
         expect(h.turns[1].opts.workspaceNotice).toBe('The working directory changed from root "a", folder "sessions/s-1/app" to root "a", folder "b" (/ws/a/b).');
-        if (outcome.kind === "continueAsNew") expect(outcome.input.config.workspace).toEqual({ schema: 1, root: "a", folder: "b" });
+        expect(outcome.kind).not.toBe("continueAsNew");
+        // The proxy the next turn runs on carries the new workspace (T2).
+        expect(proxyConfigs.at(-1).workspace).toEqual({ schema: 1, root: "a", folder: "b" });
     });
 
     it("the idle timer stays armed across an external set (B6)", async () => {
@@ -488,7 +508,9 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         expect(responseOf(h, "clear").result).toEqual({ ok: true, changed: true, revision: 2, workspace: null, path: null });
         expect(h.checks).toHaveLength(0);
         expect(events(h, "session.workspace_changed").at(-1).data).toEqual({ workspace: null, revision: 2, path: null, source: "external" });
-        expect(h.turns[1].opts.workspaceRevision).toBeUndefined();
+        // The revision still goes out after a clear: the worker then passes an
+        // explicit folder and keeps repo hooks off (review R1).
+        expect(h.turns[1].opts.workspaceRevision).toBe(2);
         expect(h.turns[1].opts.workspaceNotice).toBe('The working directory changed from root "a", folder "sessions/s-1/app" to the default working directory.');
     });
 
@@ -541,7 +563,7 @@ describe("workspace gate (orchestration 1.0.80)", () => {
         });
         drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
         expect(events(h, "session.workspace_changed").at(-1).data).toEqual({ workspace: null, revision: 2, path: null, source: "agent" });
-        expect(h.turns[1].opts.workspaceRevision).toBeUndefined();
+        expect(h.turns[1].opts.workspaceRevision).toBe(2);
         expect(h.turns[1].opts.workspaceNotice).toMatch(/to the default working directory\.$/);
     });
 
@@ -573,16 +595,223 @@ describe("workspace gate (orchestration 1.0.80)", () => {
 
     it("a session without a workspace carries no workspace fields and sends no revision", async () => {
         const handler = await latestHandler();
-        const h = createHarness({ turnResults: [{ type: "completed", content: "ok" }], queue: [prompt("hello")] });
+        const h = createHarness({
+            turnResults: [{ type: "completed", content: "ok" }],
+            // A model switch forces a continue-as-new, so the carried input is checked (T2).
+            queue: [prompt("hello"), { afterTurns: 1, msg: JSON.stringify({ type: "cmd", cmd: "set_model", id: "m-1", args: { model: "fixture:other" } }) }],
+        });
         const outcome = drive(handler(h.ctx, INPUT({ config: { model: "fixture:model" } })), h);
         expect(h.turns[0].opts.workspaceRevision).toBeUndefined();
         expect(h.turns[0].opts.workspaceNotice).toBeUndefined();
         expect(h.turns[0].opts.stashedAttachments).toBeUndefined();
-        if (outcome.kind === "continueAsNew") {
-            for (const key of ["workspaceRevision", "workspaceStatus", "workspaceNotice", "workspaceRetry", "workspaceRetryScheduleMs"]) {
-                expect(key in outcome.input).toBe(false);
-            }
+        expect(outcome.kind).toBe("continueAsNew");
+        for (const key of ["workspaceRevision", "workspaceStatus", "workspaceNotice", "workspaceHeldNote", "workspaceReleasePending", "workspaceRetry", "workspaceRetryScheduleMs"]) {
+            expect(key in outcome.input, key).toBe(false);
         }
         expect(events(h, "session.workspace_available")).toHaveLength(0);
+    });
+});
+
+describe("workspace gate: fixes from the adversarial review", () => {
+    beforeEach(() => { mockSession = null; mockManager = null; proxyConfigs = []; });
+    const setCmd = (id, expectedRevision, workspace) => JSON.stringify({ type: "cmd", cmd: "set_workspace", id, args: { expectedRevision, workspace } });
+    const modelCmd = (id) => JSON.stringify({ type: "cmd", cmd: "set_model", id, args: { model: "fixture:other" } });
+    const responseOf = (h, id) => JSON.parse([...h.kv.entries()].find(([k]) => k === `command.response.${id}`)?.[1] ?? "null");
+
+    it("an error returned before the workspace check keeps the held prompt, the unavailable state and the retry step (F1)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [
+                refusal(),
+                // A failed budget query returns before the check, so the activity does not mark it.
+                { type: "error", message: "Provider admission could not verify this turn: connection reset" },
+            ],
+            queue: [prompt("fix the bug", { clientMessageIds: ["cm-1"] })],
+            fireTimers: 1,
+        });
+        const out = drive(handler(h.ctx, INPUT({ workspaceNotice: "The working directory changed from A to B." })), h);
+        expect(out.kind).toBe("continueAsNew");
+        expect(out.input.budgetStash).toEqual([{ prompt: "fix the bug", clientMessageIds: ["cm-1"] }]);
+        expect(out.input.workspaceNotice).toBe("The working directory changed from A to B.");
+        expect(out.input.workspaceStatus).toEqual({ state: "unavailable", code: "WORKSPACE_FOLDER_MISSING" });
+        expect(out.input.workspaceRetry).toEqual({ step: 1, failures: { workerNodeId: "worker-a", count: 1 } });
+        expect(events(h, "session.workspace_available")).toHaveLength(0);
+
+        // The retry gets past the check: the held prompt runs once, and the workspace is back.
+        const next = createHarness({ turnResults: [ran({ type: "completed", content: "fixed" })] });
+        drive(handler(next.ctx, out.input), next);
+        expect(next.turns[0].opts.stashedPrompts).toEqual(["fix the bug"]);
+        expect(next.turns[0].opts.workspaceNotice).toBe("The working directory changed from A to B.");
+        expect(events(next, "session.workspace_available")).toHaveLength(1);
+        expect(events(next, "user.message")).toHaveLength(0);
+    });
+
+    it("a child's question to its parent keeps the attach mark, so the held prompt counts as delivered (F1)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [refusal(), ran({ type: "completed", content: "QUESTION FOR PARENT: which branch?" })],
+            queue: [prompt("pick a branch")],
+            fireTimers: 1,
+        });
+        drive(handler(h.ctx, INPUT({ parentSessionId: "parent-1", nestingLevel: 1 })), h);
+        expect(h.turns[1].opts.stashedPrompts).toEqual(["pick a branch"]);
+        expect(events(h, "session.workspace_available")).toHaveLength(1);
+    });
+
+    it("a hold survives a continue-as-new, and the held prompt runs exactly once after it (M7)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [refusal()],
+            queue: [prompt("first", { clientMessageIds: ["cm-7"] }), { afterTurns: 1, msg: modelCmd("m-7") }],
+        });
+        const out = drive(handler(h.ctx, INPUT()), h);
+        expect(out.kind).toBe("continueAsNew");
+
+        const next = createHarness({ turnResults: [ran({ type: "completed", content: "done" })] });
+        drive(handler(next.ctx, out.input), next);
+        expect(next.turns).toHaveLength(1);
+        expect(next.turns[0].opts.stashedPrompts).toEqual(["first"]);
+        expect(events(next, "session.workspace_available")).toEqual([expect.objectContaining({ data: { revision: 1 } })]);
+        expect(events(h, "user.message").length + events(next, "user.message").length).toBe(1);
+    });
+
+    it("a child update folded into a refused prompt reaches the next turn that runs, once (F2)", async () => {
+        const handler = await latestHandler();
+        const now = 1_750_000_000_000;
+        const h = createHarness({
+            turnResults: [refusal(), refusal(), ran({ type: "completed", content: "ok" }), ran({ type: "completed", content: "later" })],
+            queue: [prompt("status?"), { afterTurns: 3, msg: prompt("anything else?") }],
+            fireTimers: 2,
+        });
+        drive(handler(h.ctx, INPUT({
+            subAgents: [{ orchId: "session-child-1", sessionId: "child-1", task: "run tests", status: "completed", result: "all 42 tests pass" }],
+            pendingChildDigest: { startedAtMs: now, ready: false, updates: [{ sessionId: "child-1", updateType: "completed", content: "all 42 tests pass", observedAtMs: now }] },
+        })), h);
+        expect(h.turns[0].prompt).toMatch(/all 42 tests pass/);
+        // Two refusals: the second, a retry wake, adds nothing of its own.
+        const recovery = h.turns[2];
+        expect(recovery.opts.stashedPrompts).toEqual(["status?"]);
+        expect(recovery.opts.workspaceNotice).toMatch(/^Buffered child updates[\s\S]*all 42 tests pass[\s\S]*continue your task\.$/);
+        expect(recovery.opts.workspaceNotice).not.toMatch(/Retrying the workspace/);
+        expect(h.turns[3].prompt).toBe("anything else?");
+        expect(h.turns[3].opts.workspaceNotice).toBeUndefined();
+    });
+
+    it("a final cron_at occurrence and a finished wait, refused by the check, reach the model with the retry (F5)", async () => {
+        const handler = await latestHandler();
+        const now = 1_750_000_000_000;
+        const cron = createHarness({ turnResults: [refusal(), ran({ type: "completed", content: "deployed" })], fireTimers: 2 });
+        drive(handler(cron.ctx, INPUT({
+            cronAtSchedule: { reason: "deploy release 42", tz: "UTC", minute: 0, hour: 9, maxFires: 1, firesCompleted: 0, nextFireAtMs: now + 60_000, nextOccurrenceKey: "2026-09-27T09:00Z" },
+            activeTimerState: { type: "cron_at", remainingMs: 60_000, originalDurationMs: 60_000, reason: "deploy release 42" },
+        })), cron);
+        expect(events(cron, "session.cron_at_completed")).toHaveLength(1);
+        expect(cron.turns).toHaveLength(2);
+        expect(cron.turns[1].opts.workspaceNotice).toMatch(/Scheduled wall-clock cron wake-up for "deploy release 42"/);
+
+        const wait = createHarness({ turnResults: [refusal(), ran({ type: "completed", content: "built" })], fireTimers: 1 });
+        drive(handler(wait.ctx, INPUT({
+            activeTimerState: { type: "wait", remainingMs: 0, originalDurationMs: 120_000, reason: "wait for the build" },
+        })), wait);
+        expect(wait.turns[0].prompt).toMatch(/^The 120 second wait is now complete\./);
+        expect(wait.turns[1].opts.workspaceNotice).toMatch(/^The 120 second wait is now complete\. Continue with your task\./);
+        expect(wait.turns[1].opts.workspaceNotice).toMatch(/Wait reason: "wait for the build"/);
+        // Machinery, never held as a user message.
+        expect(events(wait, "user.message")).toHaveLength(0);
+    });
+
+    it("a refused retry keeps its retry count and does not record the retried prompt again (F4)", async () => {
+        const handler = await latestHandler();
+        // The first attempt ran, recorded the prompt, and failed.
+        const first = createHarness({
+            turnResults: [ran({ type: "error", message: "Copilot was taking too long to process and was killed." })],
+            queue: [prompt("refactor the parser", { clientMessageIds: ["cm-9"] })],
+        });
+        const out = drive(handler(first.ctx, INPUT()), first);
+        expect(out.kind).toBe("continueAsNew");
+        expect(out.input.retryCount).toBe(1);
+
+        const retry = createHarness({ turnResults: [refusal({ worker: "worker-b" }), ran({ type: "completed", content: "done" })], fireTimers: 1 });
+        drive(handler(retry.ctx, out.input), retry);
+        expect(retry.turns.map((t) => t.opts.retryCount)).toEqual([1, 1]);
+        expect(retry.turns[1].opts.stashedPrompts).toEqual(["refactor the parser"]);
+        expect(events(retry, "user.message")).toHaveLength(0);
+    });
+
+    it("after a clear, the release is owed across continue-as-new and runs at the next affinity release, once (F6)", async () => {
+        const handler = await latestHandler();
+        const cleared = createHarness({
+            turnResults: [ran({ type: "completed", content: "started" })],
+            queue: [prompt("start a build in the background"), { afterTurns: 1, msg: setCmd("clear-1", 1, null) }, { afterTurns: 1, msg: modelCmd("m-6a") }],
+        });
+        const carried = drive(handler(cleared.ctx, INPUT({ blobEnabled: true, idleTimeout: 60 })), cleared);
+        expect(carried.kind).toBe("continueAsNew");
+        expect(carried.input.workspaceReleasePending).toBe(true);
+        expect(cleared.releases).toEqual([]);
+
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "started" })],
+            queue: [
+                prompt("start a build in the background"),
+                { afterTurns: 1, msg: setCmd("clear-2", 1, null) },
+                // Held back until the idle release ran, to read the state after it.
+                { afterTurns: 1, afterReleases: 1, msg: modelCmd("m-6b") },
+            ],
+            fireTimers: 1,
+        });
+        const out = drive(handler(h.ctx, INPUT({ blobEnabled: true, idleTimeout: 60 })), h);
+        expect(h.releases.map((r) => [r.args.reason, r.args.revision])).toEqual([["idle", 2]]);
+        expect(out.kind).toBe("continueAsNew");
+        expect("workspaceReleasePending" in out.input).toBe(false);
+
+        // The agent's own clear owes the release the same way.
+        const agent = createHarness({
+            turnResults: [ran({ type: "set_workspace", workspace: null, path: null }), { type: "completed", content: "continued" }],
+            queue: [prompt("leave the checkout")],
+            fireTimers: 1,
+        });
+        drive(handler(agent.ctx, INPUT({ blobEnabled: true, idleTimeout: 60 })), agent);
+        expect(agent.releases.map((r) => [r.args.reason, r.args.revision])).toEqual([["idle", 2]]);
+    });
+
+    it("a hold keeps the retry count across a continue-as-new (F4)", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [refusal()],
+            queue: [{ afterTurns: 1, msg: modelCmd("m-4") }],
+        });
+        const out = drive(handler(h.ctx, INPUT({ prompt: "refactor the parser", retryCount: 1 })), h);
+        expect(h.turns[0].opts.retryCount).toBe(1);
+        expect(out.kind).toBe("continueAsNew");
+        expect(out.input.retryCount).toBe(1);
+    });
+
+    it("the agent's own wait, interrupted by a refused message, resumes after the turn that runs", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [{ type: "wait", seconds: 600, reason: "wait for the build" }, refusal(), ran({ type: "completed", content: "answered" })],
+            queue: [prompt("start the build"), { afterTurns: 1, msg: prompt("status?") }],
+            fireTimers: 1,
+        });
+        drive(handler(h.ctx, INPUT({ idleTimeout: 1800 })), h);
+        expect(h.turns).toHaveLength(3);
+        expect(h.turns[2].opts.workspaceNotice).toMatch(/The timer will be automatically resumed after your reply/);
+        // The wait, the retry, then the wait again with the time it still had.
+        expect(h.timers).toEqual([600_000, 30_000, 600_000]);
+    });
+
+    it("a check activity that fails answers the command and leaves the session running", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "first" }), ran({ type: "completed", content: "second" })],
+            queue: [prompt("first"), { afterTurns: 1, msg: setCmd("broken", 1, { root: "a", folder: "b" }) }, { afterTurns: 1, msg: prompt("second") }],
+            checkWorkspace: () => new Error("activity checkWorkspace is not registered on this worker"),
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        const response = responseOf(h, "broken");
+        expect(response.error).toMatch(/^WORKSPACE_ATTACH_FAILED: the workspace check did not run: activity checkWorkspace is not registered/);
+        expect(response.result).toEqual({ code: "WORKSPACE_ATTACH_FAILED", revision: 1 });
+        expect(h.turns).toHaveLength(2);
+        expect(h.turns[1].opts.workspaceRevision).toBe(1);
     });
 });

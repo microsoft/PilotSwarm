@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createSessionManagerProxy, createSessionProxy } from "../../dist/session-proxy.js";
-import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY } from "../../dist/activity-routing.js";
+import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
 const context = () => new OrchestrationContext({ instanceId: "parent", executionId: "1", orchestrationName: "test", orchestrationVersion: "1.0.74" });
@@ -150,3 +150,27 @@ for (const [name, hash] of Object.entries(provenanceFreezeHashes)) {
         assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
     });
 }
+
+test("a workspace session's turns and workspace activities go only to workers that know workspaces", () => {
+    const ctx = context();
+    const workspace = { schema: 1, root: "a", folder: "repo-x" };
+    const proxy = createSessionProxy(ctx, "child", "affinity", { workspace }, "agent-handoff-v2");
+    const turns = [proxy.runTurn("work", false, 1, { workspaceRevision: 1 }), proxy.runTurn("work", true, 0, { epochStart: true, workspaceRevision: 1 })];
+    assert.deepEqual(turns.map((t) => [t.name, t.tag, t.sessionId]), [
+        ["runTurnV3", WORKSPACE_CAPABILITY, "affinity"],
+        ["runTurnEpochV3", WORKSPACE_CAPABILITY, "affinity"],
+    ]);
+    // After a clear the revision still goes out, and so does the tag.
+    const cleared = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "agent-handoff-v2");
+    assert.equal(cleared.runTurn("work", false, 2, { workspaceRevision: 2 }).tag, WORKSPACE_CAPABILITY);
+    for (const task of [
+        proxy.checkWorkspace({ workspace, revision: 2, turnIndex: 1 }),
+        proxy.releaseWorkspace({ reason: "idle", revision: 1, turnIndex: 1 }),
+    ]) {
+        assert.equal(task.tag, WORKSPACE_CAPABILITY);
+        assert.equal(task.sessionId, "affinity");
+    }
+    // A session that never had a workspace keeps the handoff tag.
+    const plain = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "agent-handoff-v2");
+    assert.equal(plain.runTurn("work", false, 1).tag, AGENT_HANDOFF_CAPABILITY);
+});

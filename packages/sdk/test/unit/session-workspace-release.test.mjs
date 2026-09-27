@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice C3: SessionManager.releaseWorkspace, the worker
+ * Session workspaces: SessionManager.releaseWorkspace, the worker
  * side of "the session leaves this worker" (docs/proposals/session-workspaces.md,
  * section 4.5), with the Copilot transport stubbed.
  *
@@ -35,8 +35,7 @@ function fixture(t, { tasks = [], stubborn = false, release, cancelAnswer, liveS
         release: release ?? (async (req) => { order.push("release"); releases.push(req); }),
     }, "worker-own-id");
     const handles = [];
-    manager.ensureClient = async () => ({
-        createSession: async (config) => {
+    const openHandle = async (config) => {
             mkdirSync(join(home, config.sessionId), { recursive: true });
             const handle = {
                 disconnected: false,
@@ -58,8 +57,10 @@ function fixture(t, { tasks = [], stubborn = false, release, cancelAnswer, liveS
             };
             handles.push(handle);
             return handle;
-        },
-        resumeSession: async () => { throw new Error("not expected"); },
+    };
+    manager.ensureClient = async () => ({
+        createSession: openHandle,
+        resumeSession: async (_id, config) => openHandle(config),
         deleteSession: async () => {},
     });
     t.after(async () => {
@@ -183,4 +184,42 @@ test("a shell the CLI will not cancel (after an abort) is killed with every proc
     assert.equal(result.released, true);
     assert.equal(result.cancelled, 1);
     assert.equal(result.detail, undefined, `a dead pid counts as done although the CLI still says running: ${result.detail}`);
+});
+
+test("a pid that now belongs to another process is never killed; a dead one counts as done (review R4)", async (t) => {
+    // CLI 1.0.83 keeps a finished detached shell listed as running, with its
+    // pid. The host may give that pid to another process later: here, one
+    // that started a minute after the task did.
+    const other = spawn("sleep", ["30"], { stdio: "ignore" });
+    t.after(() => { try { process.kill(other.pid, "SIGKILL"); } catch {} });
+    const gone = spawn("true", [], { stdio: "ignore" });
+    await new Promise((resolve) => gone.once("exit", resolve));
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const h = fixture(t, {
+        tasks: [
+            { id: "sh-reused", type: "shell", status: "running", pid: other.pid, startedAt: new Date(Date.now() - 60_000).toISOString() },
+            { id: "sh-dead", type: "shell", status: "running", pid: gone.pid, startedAt: new Date(Date.now() - 1_000).toISOString() },
+        ],
+        cancelAnswer: { cancelled: false },
+    });
+    await open(h);
+    const result = await h.manager.releaseWorkspace("s1", { reason: "idle", workerNodeId: "worker-a" });
+    assert.equal(alive(other.pid), true, "the other process lives");
+    assert.deepEqual(h.order.filter((entry) => entry.startsWith("cancel:")), [], "neither task is running, so neither is cancelled");
+    assert.equal(result.released, true);
+    assert.equal(result.cancelled, 0);
+    assert.equal(result.detail, undefined);
+});
+
+test("a new root or a clear releases the old folder with the provider before the resume (review R2)", async (t) => {
+    for (const next of [
+        { workspace: { schema: 1, root: "b", folder: "repo-x" }, workspaceAttach: { ...ATTACH, root: "b", rootPath: "/ws/b", path: "/ws/b/repo-x", realPath: "/ws/b/repo-x" } },
+        { workspaceCleared: true },
+    ]) {
+        const h = fixture(t, { tasks: [{ id: "sh-1", type: "shell", status: "running" }] });
+        await open(h);
+        await h.manager.getOrCreate("s1", next, { turnIndex: 1 });
+        assert.deepEqual(h.order, ["list", "cancel:sh-1", "list", "disconnect", "release"]);
+        assert.deepEqual(h.releases.map((r) => r.workspace), [WORKSPACE], "the old folder, not the new one");
+    }
 });

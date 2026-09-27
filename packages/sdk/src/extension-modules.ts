@@ -4,7 +4,7 @@
  * point reads `PILOTSWARM_EXTENSION_MODULES`, a comma-separated list of
  * module paths or package names, and calls this before `worker.start()`.
  *
- *   PILOTSWARM_EXTENSION_MODULES=/app/examples/repo-workspaces/index.js
+ *   PILOTSWARM_EXTENSION_MODULES=/app/examples/repo-workspaces/index.mjs
  *
  * Each module exports `register(worker, context)`, as a named export or on
  * its default export. It may call `worker.setWorkspaceProvider(...)` and

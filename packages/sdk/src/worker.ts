@@ -1,5 +1,5 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { AGENT_HANDOFF_CAPABILITY } from "./activity-routing.js";
+import { AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
@@ -792,7 +792,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,

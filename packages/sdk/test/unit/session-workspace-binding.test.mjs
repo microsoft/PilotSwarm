@@ -1,5 +1,5 @@
 /**
- * Session workspaces, slice B: what SessionManager does with a workspace
+ * Session workspaces: what SessionManager does with a workspace
  * session's attach result, with the Copilot transport stubbed (the
  * session-agent-binding-lifecycle pattern). Covers the in-process half of
  * test C3 in docs/proposals/session-workspaces.md; the digest comparison
@@ -18,6 +18,7 @@ import {
     withWorkspaceChangeDeny,
 } from "../../dist/session-manager.js";
 import { ManagedSession } from "../../dist/managed-session.js";
+import { orchestrationSupportsWorkspaces } from "../../dist/workspace.js";
 
 const WORKSPACE = { schema: 1, root: "a", folder: "repo-x" };
 const attach = (folder = "repo-x", adopt) => ({
@@ -34,8 +35,31 @@ function fixture(t) {
         storeFact: async () => ({ stored: true }),
         deleteFact: async () => ({ deleted: true }),
     });
+    // One log for every handle: task calls and disconnects, in order.
+    const log = [];
     const open = (kind, config) => {
-        const handle = { disconnected: false, disconnect: async () => { handle.disconnected = true; } };
+        const tasks = new Map();
+        const handle = {
+            disconnected: false,
+            tasks,
+            // A test sets this to stand in for a CLI frozen by a hung mount.
+            hang: false,
+            disconnect: async () => { log.push(`disconnect:${config.sessionId}`); handle.disconnected = true; },
+            rpc: {
+                tasks: {
+                    list: async () => {
+                        if (handle.hang) return new Promise(() => {});
+                        log.push(`list:${config.sessionId}`);
+                        return { tasks: [...tasks.values()] };
+                    },
+                    cancel: async ({ id }) => {
+                        log.push(`cancel:${config.sessionId}:${id}`);
+                        tasks.delete(id);
+                        return { cancelled: true };
+                    },
+                },
+            },
+        };
         calls.push({ kind, config, handle });
         mkdirSync(join(home, config.sessionId), { recursive: true });
         return handle;
@@ -52,7 +76,7 @@ function fixture(t) {
         for (const id of [...manager.sessions.keys()]) await manager.dropWarmSession(id);
         rmSync(home, { recursive: true, force: true });
     });
-    return { manager, calls, clientArgs };
+    return { manager, calls, clientArgs, log };
 }
 
 test("a workspace session gets the attach path as its cwd, repo hooks off, and instructions per adopt", async (t) => {
@@ -115,17 +139,114 @@ test("a workspace without an attach result fails loudly instead of running in th
     assert.equal(h.calls.length, 0);
 });
 
-test("a cleared workspace does not survive in the stored config", async (t) => {
+test("a cleared workspace does not survive in the stored config; the folder stays explicit and hooks stay off (review R1)", async (t) => {
     const h = fixture(t);
     h.manager.setConfig("s1", { workspace: WORKSPACE });
     await h.manager.getOrCreate("s1", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
-    const cleared = await h.manager.getOrCreate("s1", { workingDirectory: "/home/app" }, { turnIndex: 1 });
+    // The runTurn activity marks a turn after a clear: its revision is above 0.
+    const cleared = await h.manager.getOrCreate("s1", { workspaceCleared: true }, { turnIndex: 1 });
     const sdk = h.calls.at(-1).config;
-    assert.equal(sdk.workingDirectory, "/home/app", "back to config.workingDirectory");
-    assert.equal("enableFileHooks" in sdk, false);
+    assert.equal(sdk.workingDirectory, process.cwd(), "explicit: a resume without a folder falls back to the checkout");
+    assert.equal(sdk.enableFileHooks, false);
     assert.equal(cleared.config.workspace, undefined);
     assert.equal(cleared.config.workspaceAttach, undefined);
     assert.equal(h.clientArgs.at(-1)[2], undefined);
+
+    const own = fixture(t);
+    await own.manager.getOrCreate("s2", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
+    await own.manager.getOrCreate("s2", { workingDirectory: "/home/app", workspaceCleared: true }, { turnIndex: 1 });
+    assert.equal(own.calls.at(-1).config.workingDirectory, "/home/app", "a configured folder still wins");
+});
+
+test("a turn of an orchestration before 1.0.80 gets no workspace tools; the next turn gets them back (review F3)", async (t) => {
+    assert.equal(orchestrationSupportsWorkspaces("1.0.79"), false);
+    assert.equal(orchestrationSupportsWorkspaces("1.0.8"), false);
+    assert.equal(orchestrationSupportsWorkspaces("0.9.99"), false);
+    for (const version of ["1.0.80", "1.0.100", "1.1.0", "2.0.0", undefined, "", "next"]) {
+        assert.equal(orchestrationSupportsWorkspaces(version), true, String(version));
+    }
+    const names = (tools) => tools.map((tool) => tool.name);
+    const spawnProps = (tools) => Object.keys(tools.find((tool) => tool.name === "spawn_agent").parameters.properties);
+    const h = fixture(t);
+    await h.manager.getOrCreate("asks", { toolNames: ["set_session_workspace"], workspaceToolsBlocked: true }, { turnIndex: 0 });
+    assert.equal(names(h.calls.at(-1).config.tools).some((n) => n.includes("session_workspace")), false);
+    assert.equal(spawnProps(h.calls.at(-1).config.tools).includes("workspace"), false);
+    // The mark is per turn: after the continue-as-new into 1.0.80 the tools come back.
+    await h.manager.getOrCreate("asks", { toolNames: ["set_session_workspace"] }, { turnIndex: 1 });
+    assert.ok(names(h.calls.at(-1).config.tools).includes("set_session_workspace"));
+    assert.equal(spawnProps(h.calls.at(-1).config.tools).includes("workspace"), true);
+});
+
+test("every drop of a warm workspace session stops its background tasks before the disconnect (review R2)", async (t) => {
+    const h = fixture(t);
+    const warm = async (id, config = {}) => {
+        await h.manager.getOrCreate(id, { workspace: WORKSPACE, workspaceAttach: attach(), ...config }, { turnIndex: 0 });
+        h.calls.at(-1).handle.tasks.set("t1", { id: "t1", type: "agent", status: "running" });
+    };
+    const sequence = (id) => h.log.filter((entry) => entry.includes(`:${id}`)).map((entry) => entry.split(":")[0]);
+
+    await warm("drop");
+    await h.manager.dropWarmSession("drop");
+    assert.deepEqual(sequence("drop"), ["list", "cancel", "list", "disconnect"]);
+
+    await warm("invalidate");
+    await h.manager.invalidateWarmSession("invalidate");
+    assert.deepEqual(sequence("invalidate"), ["list", "cancel", "list", "disconnect"]);
+
+    await warm("epoch");
+    await h.manager.getOrCreate("epoch", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 1, epochStart: true, transcriptEpoch: 1 });
+    assert.deepEqual(sequence("epoch").slice(0, 4), ["list", "cancel", "list", "disconnect"]);
+
+    // Another root and a clear change the CLI process too; the release runs first.
+    await warm("root");
+    await h.manager.getOrCreate("root", { workspace: { schema: 1, root: "b", folder: "repo-x" }, workspaceAttach: { ...attach(), root: "b", rootPath: "/ws/b", path: "/ws/b/repo-x", realPath: "/ws/b/repo-x" } }, { turnIndex: 1 });
+    assert.deepEqual(sequence("root"), ["list", "cancel", "list", "disconnect"]);
+
+    await warm("clear");
+    await h.manager.getOrCreate("clear", { workspaceCleared: true }, { turnIndex: 1 });
+    assert.deepEqual(sequence("clear"), ["list", "cancel", "list", "disconnect"]);
+
+    // A session without a workspace is dropped as before.
+    await h.manager.getOrCreate("plain", {}, { turnIndex: 0 });
+    await h.manager.dropWarmSession("plain");
+    assert.deepEqual(sequence("plain"), ["disconnect"]);
+});
+
+test("a release that arrives after a newer turn attached under a new affinity key leaves that attach alone (review F7)", async (t) => {
+    const h = fixture(t);
+    const newer = { ...attach(), turnIndex: 5, affinityKey: "key-B" };
+    await h.manager.getOrCreate("s1", { workspace: WORKSPACE, workspaceAttach: newer }, { turnIndex: 0 });
+    const late = await h.manager.releaseWorkspace("s1", { reason: "idle", workerNodeId: "w", turnIndex: 5, affinityKey: "key-A" });
+    assert.deepEqual(late, { released: false, cancelled: 0, detail: "a newer turn (5) holds the workspace here" });
+    assert.equal(h.calls.at(-1).handle.disconnected, false);
+
+    // Under the same key (a turn that threw), or for an older attach, the release runs.
+    const same = await h.manager.releaseWorkspace("s1", { reason: "error", workerNodeId: "w", turnIndex: 5, affinityKey: "key-B" });
+    assert.equal(same.released, true);
+    await h.manager.getOrCreate("s2", { workspace: WORKSPACE, workspaceAttach: { ...attach(), turnIndex: 4, affinityKey: "key-A" } }, { turnIndex: 0 });
+    const older = await h.manager.releaseWorkspace("s2", { reason: "idle", workerNodeId: "w", turnIndex: 5, affinityKey: "key-B" });
+    assert.equal(older.released, true);
+});
+
+test("a release gives up on a frozen CLI at its deadline, and shutdown releases run side by side (review R9)", { timeout: 10_000 }, async (t) => {
+    const h = fixture(t);
+    for (const id of ["f1", "f2"]) {
+        await h.manager.getOrCreate(id, { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
+        h.calls.at(-1).handle.hang = true;
+    }
+    const started = Date.now();
+    const one = await h.manager.releaseWorkspace("f1", { reason: "idle", workerNodeId: "w", deadlineMs: 200 });
+    assert.equal(one.released, true);
+    assert.match(one.detail, /did not finish within 200 ms/);
+    assert.equal(h.manager.sessions.has("f1"), false, "the handle is dropped anyway");
+
+    await h.manager.getOrCreate("f3", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 0 });
+    h.calls.at(-1).handle.hang = true;
+    const before = Date.now();
+    const released = await h.manager.releaseIdleWorkspaces({ reason: "shutdown", workerNodeId: "w", deadlineMs: 300 });
+    assert.equal(released, 2);
+    assert.ok(Date.now() - before < 550, `side by side, not one after the other (${Date.now() - before} ms)`);
+    assert.ok(Date.now() - started < 2_000);
 });
 
 test("the fingerprint input has a workspace key only when a workspace is set (C3)", () => {
@@ -187,14 +308,30 @@ test("the workspace tools are declared only for workspace sessions and agents th
         "the other parameters are unchanged");
 });
 
-test("the deny hook refuses every tool while a workspace change is pending, and is absent otherwise", async () => {
+test("the deny hook refuses every tool once a workspace change is requested or pending, and is absent otherwise (review R3)", async () => {
     const inner = { onPreToolUse: async () => ({ modifiedArgs: { x: 1 } }) };
     assert.equal(withWorkspaceChangeDeny(inner, null), inner, "no hook without workspace tools");
-    let pending = false;
-    const wrapped = withWorkspaceChangeDeny(inner, () => pending);
+    let state = "none";
+    let requested = 0;
+    const change = { state: () => state, noteRequested: () => { requested += 1; state = "requested"; } };
+    const wrapped = withWorkspaceChangeDeny(inner, change);
     assert.deepEqual(await wrapped.onPreToolUse({ toolName: "bash" }, {}), { modifiedArgs: { x: 1 } });
-    pending = true;
+    // The CLI runs every pre-tool hook of a message before any handler, so
+    // the set call itself marks the change and the call after it is refused.
+    assert.deepEqual(await wrapped.onPreToolUse({ toolName: "set_session_workspace" }, {}), { modifiedArgs: { x: 1 } });
+    assert.equal(requested, 1);
+    const waiting = await wrapped.onPreToolUse({ toolName: "bash" }, {});
+    assert.equal(waiting.permissionDecision, "deny");
+    assert.match(waiting.permissionDecisionReason, /has not answered yet/);
+    state = "accepted";
     const denied = await wrapped.onPreToolUse({ toolName: "bash" }, {});
     assert.equal(denied.permissionDecision, "deny");
     assert.match(denied.permissionDecisionReason, /working directory is changing/);
+
+    // A set call another hook refuses marks nothing.
+    state = "none";
+    requested = 0;
+    const refusing = withWorkspaceChangeDeny({ onPreToolUse: async () => ({ permissionDecision: "deny", permissionDecisionReason: "no" }) }, change);
+    await refusing.onPreToolUse({ toolName: "set_session_workspace" }, {});
+    assert.equal(requested, 0);
 });
