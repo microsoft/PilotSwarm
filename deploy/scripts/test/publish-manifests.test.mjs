@@ -45,6 +45,9 @@ function installMock(t, { listOutput = "", failureMap = {} } = {}) {
         return { stdout: "", stderr: "", status: 0 };
       },
       REPO_ROOT: process.cwd(),
+      // publish-manifests refreshes the Azure login through push-image.mjs,
+      // which imports this; outside GitHub Actions the refresh does nothing.
+      resolveCli: (name) => name,
     },
   });
   return calls;

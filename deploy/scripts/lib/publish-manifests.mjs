@@ -45,6 +45,7 @@
 // reconciling against a missing-required file aborts the apply.
 
 import { run, log } from "./common.mjs";
+import { refreshAzureOidcLogin } from "./push-image.mjs";
 
 // Sleep helper for retry backoff. Exposed for test injection.
 async function sleep(ms) {
@@ -111,6 +112,15 @@ export async function publishManifests({ service, envName, env, stagedServiceRoo
   // cert-manager-issuers-manifests, worker-manifests, portal-manifests), so we
   // can compute it locally and stay decoupled from cache state.
   const container = `${service}-manifests`;
+
+  // Blob uploads with `--auth-mode login` ask Azure CLI for a storage token,
+  // which needs a GitHub OIDC assertion that is still valid. The workflow's
+  // first login can be minutes old by now: an infra service such as
+  // cert-manager publishes right after its Bicep, with no image push (and no
+  // refresh) in between, and a base-infra run that changes AKS takes long
+  // enough for the assertion to expire. Log in again first; a local deploy
+  // keeps its own login.
+  await refreshAzureOidcLogin(env);
 
   // Enumerate the local source tree (blob keys are POSIX-relative paths).
   const { readdirSync, statSync } = await import("node:fs");

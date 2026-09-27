@@ -357,3 +357,40 @@ test("repo-cache on its own does nothing until WORKSPACES_ENABLED=true", (t) => 
   assert.match(result.stdout, /WORKSPACES_ENABLED=false — 'repo-cache' is not deployed/);
   assert.ok(!f.calls().some(({ args }) => args[0] === "deployment"), "no Bicep deployment ran");
 });
+
+// A GitHub Actions run signs in to Azure once, with an OIDC assertion that
+// expires within minutes. Uploads need a storage token, so every manifest
+// publish signs in again first; an infra service like cert-manager has no
+// image push (whose refresh would otherwise cover it). Found on the stamp:
+// a base-infra run that changed AKS took long enough for the upload to fail.
+test("a GitHub Actions run signs in to Azure again right before each manifest upload", async (t) => {
+  const { spawn } = await import("node:child_process");
+  // The token endpoint runs in its own process: the harness blocks this one.
+  const server = spawn(process.execPath, ["-e", `
+    const http = require("node:http");
+    const s = http.createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ value: "fixture-oidc-assertion" }));
+    });
+    s.listen(0, "127.0.0.1", () => console.log(s.address().port));
+  `], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => server.kill());
+  const port = await new Promise((resolve, reject) => {
+    server.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    server.once("error", reject);
+  });
+  const f = fixture(t);
+  const result = f.run("cert-manager", "manifests", {
+    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${port}/token`,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-request-token",
+    AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
+    AZURE_TENANT_ID: "22222222-2222-2222-2222-222222222222",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().filter(({ tool }) => tool === "az");
+  const upload = calls.findIndex(({ args }) => args.includes("upload-batch"));
+  assert.ok(upload > 0, "the manifests were uploaded");
+  const login = calls.slice(0, upload).findLastIndex(({ args }) => args[0] === "login");
+  assert.ok(login >= 0, "a login came before the upload");
+  assert.ok(calls[login].args.includes("--federated-token") && calls[login].args.includes("fixture-oidc-assertion"));
+});
