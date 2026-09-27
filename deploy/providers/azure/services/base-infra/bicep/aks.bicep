@@ -294,9 +294,15 @@ resource assignMiOperatorToCluster 'Microsoft.Authorization/roleAssignments@2022
 // matching the approach in the reference deployment (the Flux Azure Blob
 // source controller does not yet support workload identity).
 // ---------------------------------------------------------------------------
+// After the repocache pool: writing the extension makes AKS update its
+// add-ons, and an agent pool write that overlaps it fails ("Another operation
+// is in progress"). Both used to start together once the cluster was written.
 resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {
   scope: aks
   name: 'flux'
+  dependsOn: [
+    repoCachePool
+  ]
   properties: {
     extensionType: 'microsoft.flux'
     autoUpgradeMinorVersion: true

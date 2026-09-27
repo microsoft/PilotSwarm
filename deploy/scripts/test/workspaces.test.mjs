@@ -262,6 +262,11 @@ test("aks.bicep adds the repocache pool as its own agent pool resource, never in
   const profiles = bicep.slice(bicep.indexOf("agentPoolProfiles:"), bicep.indexOf("addonProfiles:"));
   assert.ok(profiles.length > 0 && !profiles.includes("repocache"), "the cluster's pool list does not name repocache");
   assert.match(bicep, /resource \w+ 'Microsoft\.ContainerService\/managedClusters\/agentPools@[^']+' = if \(repoCachePoolEnabled\) \{\s*parent: aks\s*name: 'repocache'/);
+  // The Flux extension waits for the pool: its write starts an AKS add-on
+  // update, and a pool write that overlaps it failed on the stamp
+  // ("EtagMismatch ... Another operation is in progress").
+  const extension = bicep.slice(bicep.indexOf("resource fluxExtension"));
+  assert.match(extension.slice(0, extension.indexOf("\n}")), /dependsOn: \[\s*repoCachePool\s*\]/);
 });
 
 test("the pieces agree: roots, exports, paths, service address and sample files", (t) => {
