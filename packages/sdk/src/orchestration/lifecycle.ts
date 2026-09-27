@@ -962,7 +962,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
         publishStatus(runtime, state.pendingInputQuestion ? "input_required"
             : state.activeTimer && state.activeTimer.type !== "idle" ? "waiting" : "idle");
     };
-    const args = (cmdMsg.args ?? {}) as { expectedRevision?: unknown; workspace?: unknown; source?: unknown };
+    const args = (cmdMsg.args ?? {}) as { expectedRevision?: unknown; workspace?: unknown; source?: unknown; extraMode?: unknown };
     const expected = Number(args.expectedRevision);
     if (!Number.isInteger(expected) || expected !== state.workspaceRevision) {
         yield* reply({
@@ -972,6 +972,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
         return;
     }
     let next: NonNullable<typeof state.config.workspace> | null = null;
+    const previous = state.config.workspace ?? null;
     if (args.workspace !== null && args.workspace !== undefined) {
         const checked = validateWorkspaceText(args.workspace);
         if (!checked.ok) {
@@ -979,8 +980,20 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
             return;
         }
         next = checked.workspace;
+        // Extra folders (section 4.10): a set whose record has no `extra`
+        // keeps the ones the session has, so a caller that only knows
+        // { root, folder } drops none. `replace` (the record named `extra`,
+        // even as {}) sets exactly what it names.
+        if (args.extraMode !== "replace" && previous?.extra && Object.keys(previous.extra).length > 0) {
+            const kept = validateWorkspaceText({ ...workingFolderOf(next), extra: previous.extra });
+            if (!kept.ok) {
+                const message = `${kept.message}; the session's extra folders are kept by a set that does not name extra; pass extra to replace them`;
+                yield* reply({ error: `${kept.code}: ${message}`, result: { code: kept.code, revision: state.workspaceRevision } });
+                return;
+            }
+            next = kept.workspace;
+        }
     }
-    const previous = state.config.workspace ?? null;
     if (sameWorkspace(previous, next)) {
         yield* reply({ result: { ok: true, changed: false, revision: state.workspaceRevision, workspace: previous } });
         return;
@@ -996,7 +1009,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
         // rolling deploy) answers the command; it must not fail the session.
         let outcome: any;
         try {
-            const raw: any = yield runtime.session.checkWorkspace({ workspace: next, revision, turnIndex: state.iteration });
+            const raw: any = yield runtime.session.checkWorkspace({ workspace: next, revision, turnIndex: state.iteration, previous });
             outcome = typeof raw === "string" ? JSON.parse(raw) : raw;
         } catch (err: any) {
             outcome = { ok: false, code: "WORKSPACE_ATTACH_FAILED", message: `the workspace check did not run: ${err?.message ?? err}` };
@@ -1023,11 +1036,13 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
-    // directory, so its note names the extra folders alone.
-    state.workspaceNotice = [
+    // directory, so its note names the extra folders alone. A note not yet
+    // delivered stays: this one is added to it.
+    const note = [
         sameWorkingFolder(previous, next) ? undefined : workspaceChangedNote(previous, next, path),
         next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined,
-    ].filter(Boolean).join(" ") || undefined;
+    ].filter(Boolean).join(" ");
+    if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
     state.workspaceRetry = null;
     if (!next) state.workspaceStatus = null;
     if (!next && previous) state.workspaceReleasePending = true;

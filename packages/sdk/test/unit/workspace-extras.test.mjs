@@ -12,7 +12,9 @@ import path from "node:path";
 import {
     MAX_WORKSPACE_EXTRAS,
     callChangesWorkingFolder,
+    changedExtraNames,
     mergeWorkspaceChange,
+    sameFolder,
     sameWorkingFolder,
     sameWorkspace,
     validateWorkspaceText,
@@ -28,6 +30,7 @@ import { extraFoldersChangedNote } from "../../dist/orchestration/state.js";
 import { WORKSPACE_ERROR_CODES as CODES } from "../../dist/types.js";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { createWorkspaceProvider } from "../../examples/repo-workspaces/index.mjs";
+import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 
 const REQ = { sessionId: "s1", rootSessionId: "s1", revision: 1, workerNodeId: "worker-a", turnIndex: 1 };
 const ok = (input) => {
@@ -71,6 +74,20 @@ describe("extra folders: the record", () => {
         bad({ root: "a", extra: { logs: {} } }, /extra folder "logs" root must be a non-empty string/);
     });
 
+    it("refuses names every object already has, so no lookup finds a folder that is not there", () => {
+        for (const name of ["constructor", "tostring", "valueof", "hasownproperty", "isprototypeof"]) {
+            // Lower case passes the pattern; only the real property names are reserved.
+            if (Object.prototype.hasOwnProperty.call(Object.prototype, name)) bad({ root: "a", extra: { [name]: { root: "l" } } }, /reserved/);
+            else ok({ root: "a", extra: { [name]: { root: "l" } } });
+        }
+        bad({ root: "a", extra: { constructor: { root: "l" } } }, /reserved/);
+        const merged = mergeWorkspaceChange({ schema: 1, root: "a" }, { extra: { constructor: { root: "l" } } });
+        assert.equal(merged.ok, false);
+        assert.match(merged.message, /reserved/);
+        const removed = mergeWorkspaceChange({ schema: 1, root: "a" }, { extra: { constructor: null } });
+        assert.equal(removed.ok, false, "removing a name that is not there is refused, even one on the prototype");
+    });
+
     it("refuses folders that overlap the working folder or each other in one root; other roots and siblings are fine", () => {
         bad({ root: "a", folder: "w", extra: { x: { root: "a", folder: "w" } } }, /overlaps the working folder/);
         bad({ root: "a", folder: "w", extra: { x: { root: "a", folder: "w/sub" } } }, /overlaps the working folder/);
@@ -99,6 +116,16 @@ describe("extra folders: the record", () => {
 });
 
 describe("extra folders: which call ends the turn", () => {
+    it("null means not given, in the hook and in the merge alike", () => {
+        assert.equal(callChangesWorkingFolder({ extra: { logs: null }, root: null, folder: null, clear: null }), false);
+        const current = ok({ root: "a", folder: "w" });
+        const merged = mergeWorkspaceChange(current, { extra: { logs: { root: "l" } }, root: null, folder: null, clear: null });
+        assert.equal(merged.ok, true, JSON.stringify(merged));
+        assert.equal(merged.changesWorkingFolder, false);
+        assert.deepEqual(merged.next, { schema: 1, root: "a", folder: "w", extra: { logs: { root: "l" } } });
+        assert.equal(mergeWorkspaceChange(current, { root: "a", folder: "v", clear: null }).ok, true, "clear: null is not a refusal");
+    });
+
     it("only a call with extra and nothing else keeps the turn going", () => {
         assert.equal(callChangesWorkingFolder({ extra: { logs: { root: "l" } } }), false);
         assert.equal(callChangesWorkingFolder({ extra: { logs: null } }), false);
@@ -166,6 +193,19 @@ describe("extra folders: the agent tool's merge", () => {
         refused({ extra: { inside: { root: "a", folder: "w/sub" } } }, /overlaps the working folder/);
         refused({ root: "l", folder: "x/deeper" }, /overlaps the working folder/);
         refused({ extra: { Bad: { root: "l" } } }, /name/);
+    });
+});
+
+describe("extra folders: what a change must check", () => {
+    it("names the added and moved folders only; a kept folder or a changed required flag needs no check", () => {
+        const previous = ok({ root: "a", folder: "w", extra: { logs: { root: "l", folder: "x" }, keep: { root: "k" }, flag: { root: "f" } } });
+        const next = ok({ root: "a", folder: "w", extra: { logs: { root: "l", folder: "y" }, keep: { root: "k" }, flag: { root: "f", required: false }, fresh: { root: "n" } } });
+        assert.deepEqual(changedExtraNames(previous, next), ["fresh", "logs"]);
+        assert.deepEqual(changedExtraNames(null, next), ["flag", "fresh", "keep", "logs"]);
+        assert.deepEqual(changedExtraNames(next, null), []);
+        assert.equal(sameFolder({ root: "l", folder: "x" }, { root: "l", folder: "x" }), true);
+        assert.equal(sameFolder({ root: "l" }, { root: "l", folder: "" }), true);
+        assert.equal(sameFolder({ root: "l", folder: "x" }, { root: "m", folder: "x" }), false);
     });
 });
 
@@ -285,6 +325,16 @@ describe("combineWorkspaceProviders", () => {
         assert.throws(() => createWorkspaceProvider({
             roots: [{ name: "a", path: "/ws/a" }], serviceUrls: {}, plainRoots: [{ name: "a", path: "/ws/other" }],
         }), /also a repo root/);
+        // A plain root has no leases: one that holds, is, or sits inside a
+        // repo root would reach other trees' clones.
+        for (const plain of ["/ws", "/ws/a", "/ws/a/sessions", "/ws/a/"]) {
+            assert.throws(() => createWorkspaceProvider({
+                roots: [{ name: "a", path: "/ws/a" }], serviceUrls: {}, plainRoots: [{ name: "all", path: plain }],
+            }), /overlaps repo root "a"/, plain);
+        }
+        assert.doesNotThrow(() => createWorkspaceProvider({
+            roots: [{ name: "a", path: "/ws/a" }], serviceUrls: {}, plainRoots: [{ name: "ab", path: "/ws/ab" }],
+        }), "a sibling whose name starts the same is fine");
     });
 });
 
@@ -298,5 +348,41 @@ describe("extraFoldersChangedNote", () => {
         );
         assert.equal(extraFoldersChangedNote(from, from), undefined);
         assert.equal(extraFoldersChangedNote({ extra: { a: { root: "r", required: false } } }, { extra: { a: { root: "r" } } }), undefined);
+    });
+});
+
+describe("the workspace view's paths", () => {
+    const client = (events) => {
+        const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused.invalid/db" });
+        mgmt._started = true;
+        mgmt._catalog = { getSessionEventsBefore: async (_id, _before, _limit, types) => events.filter((e) => types.includes(e.eventType)) };
+        return mgmt;
+    };
+    const changed = (seq, data) => ({ seq, eventType: "session.workspace_changed", data });
+    const W = { schema: 1, root: "a", folder: "w" };
+
+    it("a path holds while its folder stays: the working folder's survives a change of extra folders only; a moved extra folder loses its old one", async () => {
+        const view = await client([
+            changed(1, { workspace: W, revision: 1, path: "/ws/a/w" }),
+            changed(2, { workspace: { ...W, extra: { logs: { root: "l", folder: "x" }, keep: { root: "k" } } }, revision: 2, path: null, extraPaths: { logs: "/ws/l/x", keep: "/ws/k" } }),
+            changed(3, { workspace: { ...W, extra: { logs: { root: "l", folder: "y" }, keep: { root: "k" } } }, revision: 3, path: null }),
+        ]).getSessionWorkspace("s");
+        assert.equal(view.path, "/ws/a/w", "the working folder did not change");
+        assert.deepEqual(view.extraPaths, { keep: "/ws/k" }, "logs moved without a new path, so it has none; keep stayed");
+
+        const moved = await client([
+            changed(1, { workspace: W, revision: 1, path: "/ws/a/w" }),
+            changed(2, { workspace: { schema: 1, root: "a", folder: "v" }, revision: 2, path: null }),
+        ]).getSessionWorkspace("s");
+        assert.equal(moved.path, null, "a new working folder without a reported path has none");
+    });
+
+    it("a removed extra folder's path goes, and a later folder with the same name starts fresh", async () => {
+        const view = await client([
+            changed(1, { workspace: { ...W, extra: { logs: { root: "l", folder: "x" } } }, revision: 1, path: "/ws/a/w", extraPaths: { logs: "/ws/l/x" } }),
+            changed(2, { workspace: W, revision: 2, path: "/ws/a/w" }),
+            changed(3, { workspace: { ...W, extra: { logs: { root: "l", folder: "x" } } }, revision: 3, path: "/ws/a/w" }),
+        ]).getSessionWorkspace("s");
+        assert.equal(view.extraPaths, undefined, "no path was reported after the folder came back");
     });
 });

@@ -1674,11 +1674,17 @@ export class PilotSwarmManagementClient {
             if (!checked.ok) throw Object.assign(new Error(`${checked.code}: ${checked.message}`), { code: checked.code, status: 400 });
             workspace = checked.workspace;
         }
+        // Extra folders (section 4.10): a record that names `extra` (even as
+        // {} or null) sets exactly those; one that does not keeps the
+        // session's extra folders. Decided on the caller's record, before the
+        // check drops an empty map.
+        const extraMode = input.workspace && typeof input.workspace === "object"
+            && Object.prototype.hasOwnProperty.call(input.workspace, "extra") ? "replace" : "keep";
         const id = buildLifecycleCommandId("set-workspace");
         await this.sendCommand(sessionId, {
             cmd: "set_workspace",
             id,
-            args: { expectedRevision: input.expectedRevision, workspace, source: "external" },
+            args: { expectedRevision: input.expectedRevision, workspace, extraMode, source: "external" },
         });
         const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 120_000));
         if (!resp) return { status: "pending", commandId: id };
@@ -1725,21 +1731,44 @@ export class PilotSwarmManagementClient {
             heldPrompts = users.filter((e: any) => Number(e.seq) > boundary && e.data?.workspaceQueued === true).length;
         }
         const adopted = latest("session.workspace_adopted");
-        // Extra folders' paths: the latest path each change reported, for the
-        // folders the current record still names.
+        // Paths, from the changes in order. A path holds while its folder
+        // stays the same: the working folder's path survives a change of
+        // extra folders only, and an extra folder that moved without a
+        // reported path has none (section 4.10).
+        const folderKey = (folder: any) => (folder && typeof folder === "object" ? `${folder.root}\0${folder.folder ?? ""}` : "");
+        const own = (map: any, name: string) => (map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name) ? map[name] : undefined);
+        let path: string | null = null;
+        let pathFolder = "";
         const extraPaths: Record<string, string> = {};
+        const extraFolders: Record<string, string> = {};
         for (const event of events) {
             if ((event as any).eventType !== "session.workspace_changed") continue;
-            const paths = (event as any).data?.extraPaths;
-            if (paths && typeof paths === "object") {
-                for (const [name, value] of Object.entries(paths)) if (typeof value === "string") extraPaths[name] = value;
+            const data = (event as any).data ?? {};
+            const record = data.workspace && typeof data.workspace === "object" ? data.workspace : null;
+            const key = folderKey(record);
+            if (key !== pathFolder) {
+                path = null;
+                pathFolder = key;
+            }
+            if (typeof data.path === "string") path = data.path;
+            for (const name of Object.keys(extraPaths)) {
+                if (folderKey(own(record?.extra, name)) !== extraFolders[name]) {
+                    delete extraPaths[name];
+                    delete extraFolders[name];
+                }
+            }
+            if (data.extraPaths && typeof data.extraPaths === "object") {
+                for (const [name, value] of Object.entries(data.extraPaths)) {
+                    if (typeof value !== "string" || !own(record?.extra, name)) continue;
+                    extraPaths[name] = value;
+                    extraFolders[name] = folderKey(own(record?.extra, name));
+                }
             }
         }
-        for (const name of Object.keys(extraPaths)) if (!workspace?.extra?.[name]) delete extraPaths[name];
         return {
             workspace,
             revision,
-            path: typeof changed?.data?.path === "string" ? changed.data.path : null,
+            path: workspace ? path : null,
             ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
             status: !workspace ? "none" : held ? "unavailable" : "ready",
             lastError: held

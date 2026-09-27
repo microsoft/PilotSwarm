@@ -199,6 +199,18 @@ describe("extra folders", () => {
                     await catalog.close?.();
                 }
                 assertEqual(model.sessionRequests("required logs").length, 0, "a held prompt calls no model");
+                // The held turn attached the working folder before the extra
+                // folder failed; ending the session releases it, though no
+                // turn ever ran (review M2).
+                const mgmt = await createManagementClient(env);
+                try {
+                    await mgmt.completeSession(requiredId, "done");
+                } finally {
+                    await mgmt.stop();
+                }
+                const released = await eventually(() => provider.callsFor("release", { sessionId: requiredId }).find((call) => !call.req.attachment && call.req.reason === "ended"),
+                    "the held turn's working folder released at the end");
+                assertEqual(released.req.workspace.folder, "repo-x");
             });
         } finally {
             r.cleanup();
@@ -268,6 +280,190 @@ describe("extra folders", () => {
                 const byName = Object.fromEntries(released.map((call) => [call.req.attachment ?? "(working folder)", call.req.workspace]));
                 assertEqual(JSON.stringify(byName.logs), JSON.stringify({ schema: 1, root: "logs", folder: "svc" }));
                 assertEqual(JSON.stringify(byName["(working folder)"]), JSON.stringify({ schema: 1, root: "a", folder: "repo-x" }));
+            });
+        } finally {
+            r.cleanup();
+        }
+    });
+});
+
+describe("extra folders: fixes from the adversarial review", () => {
+    it("the tools see the record on a warm handle in later turns: get shows the folder, a removal finds it (review M1)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const r = makeRoots();
+        try {
+            const respond = scriptTurns([
+                [{ tools: [{ name: "set_session_workspace", args: { extra: { logs: { root: "logs", folder: "svc" } } } }] }, { content: "added" }],
+                [{ tools: [{ name: "get_session_workspace", args: {} }] }, (_body, position) => ({ content: `ws:${position.toolResults.join("")}` })],
+                [{ tools: [{ name: "set_session_workspace", args: { extra: { logs: null } } }] }, (_body, position) => ({ content: `rm:${firstLine(position.toolResults)}` })],
+            ]);
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: r.roots } }, async ({ client, qualifiedModel }) => {
+                const session = await client.createSession({ sessionId: randomUUID(), model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("warm handle", TIMEOUT), "added");
+                const view = JSON.parse((await session.sendAndWait("show it", TIMEOUT)).slice("ws:".length));
+                assertEqual(view.workspace.extra?.logs?.folder, "svc", "the second turn's tool sees the folder added in the first");
+                assertEqual(view.extra?.[0]?.status, "attached");
+                assertEqual(await session.sendAndWait("remove it", TIMEOUT), "rm:Extra folders changed.", "the third turn removes it");
+            });
+        } finally {
+            r.cleanup();
+        }
+    });
+
+    it("what a check attached, refused or kept, is released with the session's folders when the session ends (review M2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const r = makeRoots();
+        const provider = createFakeWorkspaceProvider({ roots: r.roots });
+        provider.script({ type: "fail", code: "WORKSPACE_FOLDER_MISSING", message: "no such notes" }, { attachment: "shared" });
+        try {
+            const respond = scriptTurns([[
+                { tools: [{ name: "set_session_workspace", args: { extra: { logs: { root: "logs", folder: "svc" }, shared: { root: "shared", folder: "notes" } } } }] },
+                { tools: [{ name: "set_session_workspace", args: { extra: { logs: { root: "logs", folder: "svc" } } } }] },
+                (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+            ]]);
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("two folders, one missing", TIMEOUT), "out:Extra folders changed.");
+                // The session is on this worker, so nothing is released at once:
+                // a release now could drop a lease entry the working folder shares.
+                assertEqual(provider.callsFor("release", { sessionId }).length, 0, "no release during the turn");
+
+                const mgmt = await createManagementClient(env);
+                try {
+                    await mgmt.completeSession(sessionId, "done");
+                } finally {
+                    await mgmt.stop();
+                }
+                const ended = await eventually(() => {
+                    const calls = provider.callsFor("release", { sessionId }).filter((call) => call.req.reason === "ended");
+                    return calls.length >= 3 ? calls : null;
+                }, "the end's releases");
+                assertEqual(JSON.stringify(ended.map((call) => call.req.attachment ?? "(working folder)").sort()), JSON.stringify(["(working folder)", "logs", "shared"]),
+                    "the folders the tool attached in the last turn, kept or refused, go with the working folder");
+            });
+        } finally {
+            r.cleanup();
+        }
+    });
+
+    it("a turn that fails after the change was accepted still stores it (review F8, session.error)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const r = makeRoots();
+        let failed = false;
+        try {
+            const respond = (body, position) => {
+                if (position.step === 0 && position.turn === 1) {
+                    return { tools: [{ name: "set_session_workspace", args: { extra: { logs: { root: "logs", folder: "svc" } } } }] };
+                }
+                if (!failed) {
+                    failed = true;
+                    return { httpStatus: 400, message: "scripted model failure after the change" };
+                }
+                return { content: "recovered" };
+            };
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: r.roots } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                await session.send("add, then fail");
+                const catalog = await createCatalog(env);
+                try {
+                    const changed = await waitForEventCount(catalog, sessionId, "session.workspace_changed", 2, 90_000);
+                    deepStrictEqual(changed.at(-1).data.workspace.extra, { logs: { root: "logs", folder: "svc" } });
+                } finally {
+                    await catalog.close?.();
+                }
+                assert(failed, "the model call after the change failed");
+            });
+        } finally {
+            r.cleanup();
+        }
+    });
+
+    it("a child spawned after an extra-folder change in the same turn gets the folder (review m2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const r = makeRoots();
+        const provider = createFakeWorkspaceProvider({ roots: r.roots });
+        try {
+            const parent = scriptTurns([[
+                { tools: [{ name: "set_session_workspace", args: { extra: { logs: { root: "logs", folder: "svc" } } } }] },
+                { tools: [{ name: "spawn_agent", args: { task: "SAME-TURN-CHILD: say hi" } }] },
+                { content: "spawned" },
+            ]]);
+            const child = scriptTurns([[{ content: "hi" }]]);
+            const respond = (body, position) => (position.firstUserText.includes("SAME-TURN-CHILD") ? child : parent)(body, position);
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("add, then spawn", TIMEOUT), "spawned");
+                await eventually(() => model.sessionRequests("SAME-TURN-CHILD").length > 0, "the child's turn");
+                const childAttach = await eventually(() => provider.callsFor("ensureAttached")
+                    .find((call) => call.req.rootSessionId === sessionId && call.req.sessionId !== sessionId && call.req.attachment === "logs" && call.req.turnIndex >= 0), "the child's attach of logs");
+                assertEqual(childAttach.req.workspace.folder, "svc");
+            });
+        } finally {
+            r.cleanup();
+        }
+    });
+
+    it("an optional folder that comes back is announced with its path (review m4)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const r = makeRoots();
+        const provider = createFakeWorkspaceProvider({ roots: r.roots });
+        provider.script({ type: "fail", code: "WORKSPACE_NOT_MOUNTED", message: "not yet", times: 1 }, { attachment: "logs" });
+        try {
+            const respond = scriptTurns([[{ content: "one" }], [{ content: "two" }]]);
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, model, qualifiedModel }) => {
+                const session = await client.createSession({
+                    sessionId: randomUUID(), model: qualifiedModel,
+                    workspace: { root: "a", folder: "repo-x", extra: { logs: { root: "logs", folder: "svc", required: false } } },
+                });
+                assertEqual(await session.sendAndWait("comes back", TIMEOUT), "one");
+                assertEqual(await session.sendAndWait("second turn", TIMEOUT), "two");
+                const second = model.sessionRequests("comes back").find((req) => req.position.turn === 2);
+                assert(second.position.lastUserText.includes(`Extra folder "logs" is available again at ${r.svc}.`), second.position.lastUserText);
+            });
+        } finally {
+            r.cleanup();
+        }
+    });
+
+    it("a change from outside checks only what it adds or moves, and keeps the extra folders a { root, folder } set leaves out (review m5, API M2)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const r = makeRoots();
+        const provider = createFakeWorkspaceProvider({ roots: r.roots });
+        try {
+            await withScriptedModel(env, { respond: scriptTurns([[{ content: "one" }], [{ content: "two" }]]), worker: { workspaceProvider: provider } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({
+                    sessionId, model: qualifiedModel,
+                    workspace: { root: "a", folder: "repo-x", extra: { logs: { root: "logs", folder: "svc" } } },
+                });
+                assertEqual(await session.sendAndWait("outside", TIMEOUT), "one");
+                const mgmt = await createManagementClient(env);
+                try {
+                    const before = provider.calls.length;
+                    // Add "shared": only it is checked, and the check keeps nothing.
+                    const added = await mgmt.setSessionWorkspace(sessionId, {
+                        expectedRevision: 1,
+                        workspace: { root: "a", folder: "repo-x", extra: { logs: { root: "logs", folder: "svc" }, shared: { root: "shared", folder: "notes" } } },
+                    });
+                    assertEqual(added.revision, 2);
+                    const during = provider.calls.slice(before);
+                    const attaches = during.filter((call) => call.method === "ensureAttached");
+                    assertEqual(JSON.stringify(attaches.map((call) => call.req.attachment ?? "(working folder)")), JSON.stringify(["shared"]), "only the added folder was checked");
+                    // The session is on this worker: the check's attach is held,
+                    // not released at once.
+                    assertEqual(during.filter((call) => call.method === "release").length, 0, "nothing released by the check");
+                    // A caller that knows only { root, folder } keeps the extra folders.
+                    const moved = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 2, workspace: { root: "a", folder: "repo-y" } });
+                    assertEqual(moved.revision, 3);
+                    assertEqual(JSON.stringify(Object.keys(moved.workspace.extra ?? {}).sort()), JSON.stringify(["logs", "shared"]));
+                    const view = await mgmt.getSessionWorkspace(sessionId);
+                    assertEqual(view.path, path.join(r.base, "a", "repo-y"), "the view has the new working folder's path");
+                } finally {
+                    await mgmt.stop();
+                }
             });
         } finally {
             r.cleanup();

@@ -209,7 +209,7 @@ Accepted, and stated here so nobody expects otherwise:
 | Workspace provider | Application code that PilotSwarm calls to make a workspace ready on a worker: `listRoots`, `ensureAttached`, `release`. Called "the provider" below. |
 | Turn | One model run: prompt in, tool calls, answer out. It ends when the model stops calling tools and the CLI reports `session.idle`. |
 | System-only turn | A turn PilotSwarm starts itself, with a `[SYSTEM: ...]` prompt instead of a user message. |
-| `<system_context>` note | Text PilotSwarm appends to a prompt to tell the model what changed. It is not in the system message, so the prompt cache is kept. This document names three: the changed-cwd note (4.3), the partial-changes note (4.7) and the agents-changed note (4.6). |
+| `<system_context>` note | Text PilotSwarm appends to a prompt to tell the model what changed. It is not in the system message, so the prompt cache is kept. This document names five: the changed-cwd note (4.3), the partial-changes note (4.7), the agents-changed note (4.6), the extra-folders-changed note and the extra-folder availability note (4.10). |
 | Native tasks | The CLI's `task` tool, which runs custom agents inside the CLI process. Gated per user by the `copilot.native_tasks` feature flag. |
 | Folder-text check | The text rules in 4.1. Every caller runs them in process. |
 | Attach | The `provider.ensureAttached` call, with a 30 s deadline. It includes the provider's own steps in 5.3. |
@@ -386,7 +386,7 @@ type WorkspaceAttachResult =
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 
 interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
-    reason: "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check";
+    reason: "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check" | "set_check";
 }
 ```
 
@@ -401,6 +401,7 @@ that only left the worker:
 | `evicted` | This worker dropped the idle session from memory; the session stays open |
 | `shutdown` | This worker is shutting down; the session stays open |
 | `spawn_check` | The quick check before `spawn_agent` creates a child; the child attaches for real at its first turn |
+| `set_check` | The check behind a change from outside the session, run on a worker the session is not on; the session attaches for real at its next turn (4.10) |
 
 Rules for provider implementations:
 
@@ -878,8 +879,16 @@ and TUI. A method missing from `HttpApiTransport` shows in the portal as
 | At creation, or for a child | `createSession({ workspace })` | `spawn_agent({ workspace })` |
 
 `getSessionWorkspace` returns the workspace, revision, path, status, last
-error, held-prompt count, and the adopted agents and skills. It reads them
-from the latest workspace events, so no CMS migration is needed in v1.
+error, held-prompt count, the adopted agents and skills, and `extraPaths`
+(each extra folder's path, section 4.10). It reads them from the latest
+workspace events, so no CMS migration is needed in v1. A path holds while its
+folder stays the same: the working folder's path survives a change of extra
+folders only.
+
+`setSessionWorkspace` replaces the record, with one exception for extra
+folders: a record that does not name `extra` keeps the session's extra
+folders, so a caller that only knows `{ root, folder }` drops none. A record
+that names `extra`, even as `{}` or `null`, sets exactly those.
 
 Set and retry wait for the orchestration's answer: 120 s and 60 s by
 default. The caller may pass another wait, from 1 s to 5 minutes; the Web
@@ -890,8 +899,8 @@ caller's request.
 
 | Event | Payload |
 |---|---|
-| `session.workspace_changed` | `{ workspace \| null, revision, path \| null, source: "create" \| "agent" \| "external" }`. Emitted with revision 1 on the first turn of a session created with a workspace, and on every set and clear. |
-| `session.workspace_unavailable` | `{ revision, code, message, workerNodeId }` |
+| `session.workspace_changed` | `{ workspace \| null, revision, path \| null, extraPaths?, source: "create" \| "agent" \| "external" }`. Emitted with revision 1 on the first turn of a session created with a workspace, and on every set and clear. `extraPaths` names the paths of extra folders the change attached. |
+| `session.workspace_unavailable` | `{ revision, code, message, workerNodeId, attachment? }`. `attachment` names a required extra folder that held the prompt. |
 | `session.workspace_available` | `{ revision }` |
 | `session.workspace_adopted` | `{ revision, agents, skills, skipped }` |
 | `session.workspace_released` | `{ reason, cancelled, workerNodeId, detail? }`. Written by the worker that ran the release (4.5): `cancelled` counts the tasks it stopped, `detail` names what did not finish. |
@@ -945,10 +954,12 @@ Rules on the record, checked by every caller with the folder-text check:
 - At most four extra folders (`MAX_WORKSPACE_EXTRAS`).
 - Each folder follows the working folder's text rules.
 - No two folders of one record overlap in a root: equal, or one inside the
-  other. A provider may lease a folder once per session. The reference
-  provider leases the clone that holds a folder, so an extra folder inside
-  the working clone would share its lease entry, and its release would
-  delete the working folder's entry. The text check does not follow links.
+  other. The text check does not follow links. It does not stop two sibling
+  folders of one clone, which share the reference provider's lease entry
+  for that clone. That is safe because a release carries the turn index the
+  folder was attached in, and the repo service keeps an entry that a newer
+  turn refreshed (5.3), and because PilotSwarm never releases a check's
+  attaches at once while the session is on the worker (below).
 
 **What differs from the working folder**
 
@@ -957,11 +968,24 @@ Rules on the record, checked by every caller with the folder-text check:
 | The CLI gets it as | `workingDirectory` | `additionalDirectories` |
 | A change applies | After the turn ends (4.3) | In the same turn |
 | The change ends the turn | Yes: later calls are denied | No |
-| Busy check (a running shell or task) | Refuses any change | Refuses a removal or a move; adding is allowed |
+| Busy check (a running shell or task) | Refuses any change | Refuses a removal or a move; adding is allowed. A removed or moved folder is released only at a turn with no shell or task running |
 | Attach fails before a turn | Prompt held (4.7) | `required`: held, and the notice names the folder. Optional: the turn runs without it, and the model gets a note |
 | Adopted content | Per `adopt` (4.6) | Nothing, whatever `adopt` says |
 | Fingerprint (4.4) | Path, adopt, repo hash | Not included: a new CLI handle would stop the session's running shells (4.5) |
-| Release (4.5) | Its own call | One call per folder, same reason, `attachment` = its name |
+| Release (4.5) | Its own call | One call per folder, same reason, `attachment` = its name. Every folder attached on the worker is released, whoever attached it |
+
+**What the worker holds.** The session manager keeps, per session, every
+folder attached on this worker and not released yet: by a turn's preamble,
+by the agent's tool, by a turn that was then held, or by a check for a
+change from outside. It keeps this list itself, not on the CLI handle, so a
+dropped or rebuilt handle loses nothing. A release on leave (4.5) covers the
+whole list. At the next turn, a held folder that the turn no longer uses (by
+root and folder, whatever its role or name) is released with reason
+`changed`, unless a shell or task runs. A check's attaches (the agent's tool,
+or a change from outside) are held too while the session is on this worker,
+refused or not: releasing at once could drop a lease entry the working folder
+shares. On a worker the session is not on, they are released at once, with
+reason `set_check`.
 
 **The provider** sees one folder per call. The working folder's request has
 no `attachment`; an extra folder's names it. `req.workspace` is always one
@@ -996,23 +1020,43 @@ A change of extra folders only:
    revision + 1, the event with the folders' paths, and a note for the next turn:
      "Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc)."
    There is no continuation turn. A turn that fails after the answer still carries
-   the change (review F8).
+   the change: the wall-clock cap, the inactivity watchdog, a failed model call
+   (session.error), a send that throws, and a tool call written as text (review F8).
+   A turn the user stops drops it, like a working-folder change.
 6. The next turn on this worker releases the removed or moved folders (reason
-   "changed"). The CLI handle and its shells stay. A folder the next turn keeps is
-   not released, also when the working folder changes.
+   "changed"), unless a shell or task runs. The CLI handle and its shells stay. A
+   folder the next turn keeps is not released, also when the working folder
+   changes or the folder changes role or name.
 ```
 
-**The external set** (`setSessionWorkspace`) still replaces the whole
-record, and its check covers the working folder and every extra folder. The
-portal's dialog edits the working folder only and sends the extra folders
-along, so a set from the portal drops none. The MCP tool
-`set_session_workspace` follows the agent tool's merge rules: it reads the
-record, merges, and sends the whole record with the expected revision.
+The tool's calls in one turn run one at a time, in order, each on the record
+the one before it left, even if the CLI runs the handlers of one model
+message side by side.
+
+**The external set** (`setSessionWorkspace`, 4.8) replaces the record, but a
+record that does not name `extra` keeps the session's extra folders. Its
+check covers only what the change adds or moves: a new working folder, and
+new or moved extra folders. A kept folder is attached by every turn, and one
+that is down must not block an unrelated change. The portal's dialog edits
+the working folder only; its Clear says the extra folders go too. The MCP
+tool `set_session_workspace` follows the agent tool's merge rules: it reads
+the record, merges, and sends the whole record, `extra` included, with the
+expected revision. A note not yet delivered is kept; a new one is added.
 
 **Children.** `spawn_agent` without `workspace`: the child inherits the
-working folder and the extra folders. A record: the child gets exactly that
-record, and the spawn check attaches and releases every folder in it.
+working folder and the extra folders as they are at that moment, including
+changes accepted earlier in the same turn. A record: the child gets exactly
+that record, and the spawn check attaches and releases every folder in it.
 `null`: none.
+
+**Notes about availability.** An optional folder that cannot attach gets a
+note for that turn. When it is back, the next turn on the same CLI handle
+gets "Extra folder "logs" is available again at <path>.", because a warm CLI
+lists only the folders it started with.
+
+**Read-only.** When the provider answers `readOnly: true`, PilotSwarm says so
+in `get_session_workspace` and in the answer that adds an extra folder. The
+mount enforces it.
 
 **What the CLI does with them** (verified, CLI 1.0.83, section 10):
 
@@ -1233,8 +1277,9 @@ share or a folder every session may write, is a plain root. The reference
 module serves plain roots from `PS_PLAIN_ROOTS` (`name=path`, a comma list)
 through PilotSwarm's built-in provider, combined with the repo provider by
 `combineWorkspaceProviders`: no leases and nothing adopted. Sessions use them
-as extra folders (section 4.10). A plain root name that is also a repo root
-stops the worker at start.
+as extra folders (section 4.10). A plain root that has a repo root's name,
+or whose path is, holds or sits inside a repo root's path, stops the worker
+at start: it would reach session clones around the lease rules.
 
 ### 5.4 Git credentials and protections
 
@@ -1632,6 +1677,23 @@ The existing kill harness covers crashes mid-turn (M3).
 | X8 | L | Reference example: a git clone as the working folder and a log share as an extra folder. The agent reads the logs, commits in the clone, drops the logs in the middle of a turn, and the end releases the clone's lease |
 | X9 | U, L | Clients: the portal keeps extra folders on a set; MCP merges; the view reports the folders' paths |
 
+### Fixes from the adversarial review of extra folders (2026-09-27)
+
+Three reviewers read the extra-folder change: orchestration, worker and CLI,
+and API, security and docs. Each fix has a test that fails with it removed.
+
+| Finding | Fix | Test |
+|---|---|---|
+| A warm CLI handle kept its old record, so the tools in later turns missed extra folders and could drop them | The handle takes the turn's record | binding test (M1), local test "warm handle" |
+| Folders attached by the agent's tool, by a refused check, or by a turn that was held were never released | The manager holds every attached folder per session; releases cover them | release tests, local test "released with the session's folders" |
+| An accepted extra-folder change was lost when the model call failed or a send threw | Those failed results carry the change (F8) | local test "fails after the change" |
+| A child spawned after a change in the same turn got the old folders | The child inherits the record as of now | local test "same turn" |
+| A `{ root, folder }` set from outside dropped the extra folders | Such a set keeps them; naming `extra` replaces | gate test "external set without extra", local test "change from outside" |
+| An extra folder that was down blocked any set from outside | The check covers only added or moved folders | local test "change from outside" |
+| A removed folder was released while a shell could still write in it | The release waits for a turn with nothing running | release test "while a shell runs" |
+| A check's release could drop a lease entry the working folder shares | A check's attaches are held while the session is on the worker | release test "held while the session is on this worker" |
+| An external set overwrote an undelivered note; the view lost or kept stale paths; names like `constructor` matched prototype properties; `null` meant different things to the hook and the merge; MCP dropped unknown fields; a plain root could hold a repo root | Notes are added; paths follow their folder; reserved names are refused; `null` is "not given"; MCP is strict; overlapping plain roots stop the worker | gate, unit, MCP and example tests |
+
 ### Fixes from the adversarial reviews (2026-09-27)
 
 Four reviewers read phase 2: orchestration, worker and CLI, security, and
@@ -1688,6 +1750,9 @@ removed.
 | Extra folders left out of the fingerprint | A new CLI handle on every change, which stops running shells |
 | A change of extra folders stored when its turn ends | At the orchestration's next wake-up |
 | No two folders of a record overlap in a root | Leases per attachment in every provider |
+| The session manager holds every folder attached on a worker, per session, and releases by root and folder | Releasing only what the last turn's attach listed |
+| A check's attaches are held while the session is on the worker | Releasing them at once, which can drop a shared lease entry |
+| A set from outside without `extra` keeps the extra folders | Whole-record replacement, which silently dropped them for older callers |
 
 **Verified with the real CLI 1.0.83 and a fake model endpoint**
 

@@ -187,6 +187,8 @@ describe("session workspaces over the Web API", () => {
             const moved = (await directMgmt.getSessionWorkspace(session.sessionId)).workspace;
             assertEqual(moved.folder, "repo-x");
             deepStrictEqual(moved.extra, { notes: { root: "a", folder: "notes", required: false } }, "the extra folder stayed");
+            const unknownField = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 4, extra: { notes: { root: "a", folder: "notes", readOnly: true } } });
+            assert(unknownField.isError, `an unknown field in an extra folder is refused, not dropped: ${JSON.stringify(unknownField.value)}`);
             const unknownName = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 4, extra: { nope: null } });
             assert(unknownName.isError && JSON.stringify(unknownName.value).includes('no extra folder is named \\"nope\\"'), JSON.stringify(unknownName.value));
             const dropExtra = await mcpJson("set_session_workspace", { session_id: session.sessionId, expected_revision: 4, extra: { notes: null } });

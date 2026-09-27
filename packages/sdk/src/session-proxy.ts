@@ -15,6 +15,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 import { checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
@@ -787,7 +788,7 @@ export function createSessionProxy(
             );
         },
         /** Session workspaces (1.0.80): the attach and the path check, on the worker that holds the session. */
-        checkWorkspace(args: { workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number }) {
+        checkWorkspace(args: { workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number; previous?: import("./types.js").SessionWorkspace | null }) {
             return routeWorkspaceActivity(ctx.scheduleActivityOnSession(
                 "checkWorkspace",
                 { sessionId, ...args },
@@ -1213,6 +1214,10 @@ export function registerActivities(
      * (unless skipped) and the named extra folders (by default all). At set
      * time any failure refuses the change, whether or not the extra folder
      * is required; only later turns treat an optional folder softly.
+     *
+     * What the check attached, refused or not, goes to the manager
+     * (settleCheckAttaches): held while the session is on this worker, and
+     * released later with the turn's own folders; released at once otherwise.
      */
     const checkWorkspaceHere = async (
         req: import("./types.js").WorkspaceAttachRequest,
@@ -1222,24 +1227,37 @@ export function registerActivities(
         | { ok: false; code: string; message: string }
     > => {
         const provider = sessionManager.getWorkspaceProvider();
+        const sent: import("./types.js").WorkspaceAttachRequest[] = [];
+        const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => { sent.push(request); };
+        const finish = async <T extends { ok: boolean }>(result: T): Promise<T> => {
+            await sessionManager.settleCheckAttaches(req.sessionId, sent.map((request) => ({
+                root: request.workspace.root,
+                ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                ...(request.attachment ? { attachment: request.attachment } : {}),
+                rootSessionId: request.rootSessionId,
+                revision: request.revision,
+                turnIndex: request.turnIndex,
+            })), { workerNodeId: req.workerNodeId }).catch(() => undefined);
+            return result;
+        };
         let path: string | null = null;
         if (!opts.skipWorkingFolder) {
-            const prepared = await prepareWorkspace(provider, req);
-            if (!prepared.ok) return { ok: false, code: prepared.code, message: prepared.message };
+            const prepared = await prepareWorkspace(provider, req, { onAttach });
+            if (!prepared.ok) return finish({ ok: false as const, code: prepared.code, message: prepared.message });
             path = prepared.path;
         }
         const extras = req.workspace.extra && Object.keys(req.workspace.extra).length > 0
-            ? await prepareWorkspaceExtras(provider, req, opts.extras ? { names: opts.extras } : {})
+            ? await prepareWorkspaceExtras(provider, req, { onAttach, ...(opts.extras ? { names: opts.extras } : {}) })
             : [];
         const bad = extras.find((extra) => !extra.ok);
-        if (bad && !bad.ok) return { ok: false, code: bad.code, message: `extra folder "${bad.name}": ${bad.message}` };
-        return {
-            ok: true,
+        if (bad && !bad.ok) return finish({ ok: false as const, code: bad.code, message: `extra folder "${bad.name}": ${bad.message}` });
+        return finish({
+            ok: true as const,
             path,
             extras: extras.flatMap((extra) => (extra.ok
                 ? [{ name: extra.name, path: extra.attach.path, ...(extra.attach.readOnly ? { readOnly: true } : {}) }]
                 : [])),
-        };
+        });
     };
 
     /**
@@ -1717,16 +1735,33 @@ export function registerActivities(
                     ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
                 } as TurnResult;
             };
-            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), attachRequest);
-            if (!prepared.ok) return await holdForWorkspace(prepared);
+            // Every attach request this preamble sends. A turn that is held
+            // after some of them succeeded leaves those folders held on this
+            // worker, so the next release covers them (section 4.10).
+            const sentAttaches: import("./types.js").WorkspaceAttachRequest[] = [];
+            const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => { sentAttaches.push(request); };
+            const holdSent = () => sessionManager.holdWorkspaceFolders(input.sessionId, sentAttaches.map((request) => ({
+                root: request.workspace.root,
+                ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                ...(request.attachment ? { attachment: request.attachment } : {}),
+                rootSessionId: request.rootSessionId,
+                revision: request.revision,
+                turnIndex: request.turnIndex,
+            })));
+            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), attachRequest, { onAttach });
+            if (!prepared.ok) {
+                holdSent();
+                return await holdForWorkspace(prepared);
+            }
             // Extra folders (section 4.10): a required one that fails holds
             // the prompt like the working folder; an optional one is left
             // out of this turn and the model is told.
             const extras = runConfig.workspace.extra && Object.keys(runConfig.workspace.extra).length > 0
-                ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest)
+                ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest, { onAttach })
                 : [];
             const heldBy = extras.find((extra) => !extra.ok && extra.required);
             if (heldBy && !heldBy.ok) {
+                holdSent();
                 return await holdForWorkspace({
                     code: heldBy.code,
                     message: `extra folder "${heldBy.name}": ${heldBy.message}`,
@@ -3888,9 +3923,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Session workspaces (section 4.10): an optional extra folder that
             // could not be attached is left out of this turn; say so.
             const extrasUnavailable = (runConfig as ManagedSessionConfig).workspaceAttach?.extrasUnavailable ?? [];
-            if (extrasUnavailable.length > 0) {
-                const note = extrasUnavailable.map((missing) => `Extra folder "${missing.name}" (root ${missing.root}${missing.folder ? `, folder ${missing.folder}` : ""}) is not available this turn: `
-                    + `${missing.code}: ${missing.message}. Do not use its path in this turn.`).join("\n");
+            const extrasAttached = (runConfig as ManagedSessionConfig).workspaceAttach?.extras ?? [];
+            // One that was missing in this handle's last turn and is back now:
+            // a warm CLI still lists the folders it started with.
+            const extrasBack = typeof session?.noteExtraAvailability === "function"
+                ? session.noteExtraAvailability(extrasUnavailable.map((missing) => missing.name), extrasAttached.map((extra) => extra.name))
+                : [];
+            const availabilityNotes = [
+                ...extrasUnavailable.map((missing) => `Extra folder "${missing.name}" (root ${missing.root}${missing.folder ? `, folder ${missing.folder}` : ""}) is not available this turn: `
+                    + `${missing.code}: ${missing.message}. Do not use its path in this turn.`),
+                ...extrasAttached.filter((extra) => extrasBack.includes(extra.name))
+                    .map((extra) => `Extra folder "${extra.name}" is available again at ${extra.path}.`),
+            ];
+            if (availabilityNotes.length > 0) {
+                const note = availabilityNotes.join("\n");
                 const split = splitSystemContextBlock(effectivePrompt);
                 effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${note}` : note);
             }
@@ -4628,12 +4674,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // the same code as the turn preamble, on the worker that holds the session.
     runtime.registerActivity("checkWorkspace", async (
         activityCtx: any,
-        input: { sessionId: string; workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number },
+        input: { sessionId: string; workspace: import("./types.js").SessionWorkspace; revision: number; turnIndex: number; previous?: import("./types.js").SessionWorkspace | null },
     ): Promise<{ ok: true; path: string | null; extras: Array<{ name: string; path: string; readOnly?: boolean }> } | { ok: false; code: string; message: string }> => {
         const row = catalog
             ? await cmsRetryBestEffort(`checkWorkspace.getSession session=${input.sessionId}`, () => catalog!.getSession(input.sessionId), (msg) => activityCtx.traceInfo?.(msg))
             : null;
-        // The working folder and every extra folder of the record.
+        // Only what the change adds or moves: a kept folder is attached by
+        // every turn, and one that is down must not block an unrelated change
+        // (section 4.10).
+        const sameFolderKept = Boolean(input.previous) && sameWorkingFolder(input.previous, input.workspace);
         const checked = await checkWorkspaceHere({
             sessionId: input.sessionId,
             rootSessionId: (row as any)?.rootSessionId ?? input.sessionId,
@@ -4641,7 +4690,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             revision: input.revision,
             workerNodeId: workerNodeId ?? os.hostname(),
             turnIndex: input.turnIndex,
+        }, {
+            extras: changedExtraNames(input.previous ?? null, input.workspace),
+            skipWorkingFolder: sameFolderKept,
         });
+        // A kept working folder was not checked; report the path this worker
+        // attached it at, when the session is here.
+        if (checked.ok && checked.path === null && sameFolderKept) {
+            (checked as { path: string | null }).path = sessionManager.getWorkspaceAttachPath(input.sessionId) ?? null;
+        }
         activityCtx.traceInfo?.(`[checkWorkspace] session=${input.sessionId} ok=${checked.ok}${checked.ok ? ` path=${checked.path} extras=${checked.extras.length}` : ` code=${checked.code}`}`);
         return checked;
     });

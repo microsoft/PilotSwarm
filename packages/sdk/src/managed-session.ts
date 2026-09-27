@@ -41,6 +41,8 @@ interface TurnState {
     workspaceDraft?: import("./types.js").SessionWorkspace | null;
     /** Session workspaces: paths of the extra folders attached by a change in this turn. */
     workspaceDraftPaths?: Record<string, string>;
+    /** Session workspaces: set_session_workspace calls of one turn run one at a time, in order. */
+    workspaceQueue?: Promise<unknown>;
 }
 
 const DEFAULT_WAIT_TOOL_DESCRIPTION ="The ONLY way to wait, pause, delay, or pause-before-retry inside a turn: a durable timer that survives " +
@@ -2317,6 +2319,10 @@ export class ManagedSession {
                         if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
                         childWorkspace = checked.workspace;
                     }
+                } else if (turnState.workspaceDraft !== undefined) {
+                    // Inherit the record as it is now: an extra folder added
+                    // or removed earlier in this turn counts (section 4.10).
+                    childWorkspace = turnState.workspaceDraft;
                 }
                 if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                     return "Error: required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.";
@@ -2791,90 +2797,103 @@ export class ManagedSession {
 
         // Session workspaces: set_session_workspace and get_session_workspace,
         // only where session-manager declared them.
+        // One set_session_workspace call: merge, check, and accept or refuse.
+        const setSessionWorkspaceOnce = async (args: { root?: string; folder?: string; clear?: boolean; extra?: Record<string, unknown> }): Promise<string> => {
+            // Any answer but "accepted" lets the model work on, so the
+            // mark the deny hook set for this call is dropped.
+            const refuse = (message: string) => {
+                turnState.workspaceChangeRequested = false;
+                return message;
+            };
+            if (hasTerminalTurnBoundary(turnState)) return refuse(blockedAfterTurnBoundary("set_session_workspace"));
+            if (!controlBridge?.checkWorkspace) return refuse("Error: set_session_workspace is unavailable in this session.");
+            // The record with any change accepted earlier in this turn.
+            const current = turnState.workspaceDraft !== undefined ? turnState.workspaceDraft : (this.config.workspace ?? null);
+            const merged = mergeWorkspaceChange(current, args ?? {});
+            if (!merged.ok) return refuse(`Error: ${merged.code}: ${merged.message}`);
+            const next = merged.next;
+            if (sameWorkspace(current, next)) {
+                return refuse(`No change: the workspace is already ${describeWorkspaceForModel(current)}. Continue your task.`);
+            }
+            // A running shell may be using a folder this call takes
+            // away; adding extra folders takes nothing away.
+            if (merged.changesWorkingFolder || merged.removed.length > 0 || merged.replaced.length > 0) {
+                const busy = await this.activeBackgroundTasks().catch(() => []);
+                if (busy.length > 0) {
+                    return refuse(`Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
+                        + "Stop them first, then call set_session_workspace again.");
+                }
+            }
+            const changedExtras = [...merged.added, ...merged.replaced];
+            if (merged.changesWorkingFolder) {
+                let path: string | null = null;
+                let extraPaths: Record<string, string> = {};
+                if (next) {
+                    // The new working folder, and the extra folders this
+                    // turn has not attached yet.
+                    const checked = await controlBridge.checkWorkspace({ workspace: next, extras: changedExtras })
+                        .catch((error: unknown) => ({ ok: false as const, code: "WORKSPACE_ATTACH_FAILED", message: String((error as Error)?.message ?? error) }));
+                    if (!checked.ok) return refuse(`Error: ${checked.code}: ${checked.message}`);
+                    path = checked.path;
+                    // Folders attached earlier in this turn keep their paths.
+                    extraPaths = {
+                        ...Object.fromEntries(Object.entries(turnState.workspaceDraftPaths ?? {}).filter(([name]) => Boolean(next.extra?.[name]))),
+                        ...Object.fromEntries(checked.extras.map((extra) => [extra.name, extra.path])),
+                    };
+                }
+                // The record already holds the extra-folder changes
+                // accepted earlier in this turn.
+                turnState.queuedActions = turnState.queuedActions.filter((action) => action.type !== "set_workspace_extra");
+                turnState.workspaceDraft = next;
+                turnState.pendingActions.push({
+                    type: "set_workspace", workspace: next, path,
+                    ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
+                });
+                const oldPath = this.config.workspaceAttach?.path ?? this.config.workingDirectory ?? "the current working directory";
+                return `Workspace change accepted: ${describeWorkspaceForModel(next)}.\n`
+                    + `[SYSTEM: set_session_workspace acknowledged. You are still in ${oldPath}. `
+                    + `The working directory becomes ${path ?? "the default working directory"} only after this turn ends. `
+                    + "Do not edit or run anything now. Stop and end your turn.]";
+            }
+            // Extra folders only (section 4.10): the new ones are
+            // attached now and the turn goes on. The orchestration
+            // stores the change when the turn ends.
+            let attached: Array<{ name: string; path: string; readOnly?: boolean }> = [];
+            if (changedExtras.length > 0 && next) {
+                const checked = await controlBridge.checkWorkspace({ workspace: next, extras: changedExtras, skipWorkingFolder: true })
+                    .catch((error: unknown) => ({ ok: false as const, code: "WORKSPACE_ATTACH_FAILED", message: String((error as Error)?.message ?? error) }));
+                if (!checked.ok) return refuse(`Error: ${checked.code}: ${checked.message}`);
+                attached = checked.extras;
+            }
+            turnState.workspaceChangeRequested = false;
+            turnState.workspaceDraft = next;
+            turnState.workspaceDraftPaths = {
+                ...Object.fromEntries(Object.entries(turnState.workspaceDraftPaths ?? {}).filter(([name]) => !merged.removed.includes(name))),
+                ...Object.fromEntries(attached.map((extra) => [extra.name, extra.path])),
+            };
+            turnState.queuedActions.push({
+                type: "set_workspace_extra",
+                extra: merged.extraPatch,
+                path: this.config.workspaceAttach?.path ?? null,
+                ...(attached.length > 0 ? { extraPaths: Object.fromEntries(attached.map((extra) => [extra.name, extra.path])) } : {}),
+            });
+            const lines = [
+                ...attached.map((extra) => `${merged.added.includes(extra.name) ? "Added" : "Replaced"}: ${extra.name} at ${extra.path}${extra.readOnly ? " (read-only)" : ""}`),
+                ...merged.removed.map((name) => `Removed: ${name} (released after this turn)`),
+            ];
+            return `Extra folders changed.\n${lines.join("\n")}\n`
+                + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
+        };
         const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
             defineTool("set_session_workspace", {
                 ...SET_SESSION_WORKSPACE_TOOL_SPEC,
-                handler: async (args: { root?: string; folder?: string; clear?: boolean; extra?: Record<string, unknown> }) => {
-                    // Any answer but "accepted" lets the model work on, so the
-                    // mark the deny hook set for this call is dropped.
-                    const refuse = (message: string) => {
-                        turnState.workspaceChangeRequested = false;
-                        return message;
-                    };
-                    if (hasTerminalTurnBoundary(turnState)) return refuse(blockedAfterTurnBoundary("set_session_workspace"));
-                    if (!controlBridge?.checkWorkspace) return refuse("Error: set_session_workspace is unavailable in this session.");
-                    // The record with any change accepted earlier in this turn.
-                    const current = turnState.workspaceDraft !== undefined ? turnState.workspaceDraft : (this.config.workspace ?? null);
-                    const merged = mergeWorkspaceChange(current, args ?? {});
-                    if (!merged.ok) return refuse(`Error: ${merged.code}: ${merged.message}`);
-                    const next = merged.next;
-                    if (sameWorkspace(current, next)) {
-                        return refuse(`No change: the workspace is already ${describeWorkspaceForModel(current)}. Continue your task.`);
-                    }
-                    // A running shell may be using a folder this call takes
-                    // away; adding extra folders takes nothing away.
-                    if (merged.changesWorkingFolder || merged.removed.length > 0 || merged.replaced.length > 0) {
-                        const busy = await this.activeBackgroundTasks().catch(() => []);
-                        if (busy.length > 0) {
-                            return refuse(`Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
-                                + "Stop them first, then call set_session_workspace again.");
-                        }
-                    }
-                    const changedExtras = [...merged.added, ...merged.replaced];
-                    if (merged.changesWorkingFolder) {
-                        let path: string | null = null;
-                        let extraPaths: Record<string, string> = {};
-                        if (next) {
-                            // The new working folder, and the extra folders this
-                            // turn has not attached yet.
-                            const checked = await controlBridge.checkWorkspace({ workspace: next, extras: changedExtras })
-                                .catch((error: unknown) => ({ ok: false as const, code: "WORKSPACE_ATTACH_FAILED", message: String((error as Error)?.message ?? error) }));
-                            if (!checked.ok) return refuse(`Error: ${checked.code}: ${checked.message}`);
-                            path = checked.path;
-                            extraPaths = Object.fromEntries(checked.extras.map((extra) => [extra.name, extra.path]));
-                        }
-                        // The record already holds the extra-folder changes
-                        // accepted earlier in this turn.
-                        turnState.queuedActions = turnState.queuedActions.filter((action) => action.type !== "set_workspace_extra");
-                        turnState.workspaceDraft = next;
-                        turnState.pendingActions.push({
-                            type: "set_workspace", workspace: next, path,
-                            ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
-                        });
-                        const oldPath = this.config.workspaceAttach?.path ?? this.config.workingDirectory ?? "the current working directory";
-                        return `Workspace change accepted: ${describeWorkspaceForModel(next)}.\n`
-                            + `[SYSTEM: set_session_workspace acknowledged. You are still in ${oldPath}. `
-                            + `The working directory becomes ${path ?? "the default working directory"} only after this turn ends. `
-                            + "Do not edit or run anything now. Stop and end your turn.]";
-                    }
-                    // Extra folders only (section 4.10): the new ones are
-                    // attached now and the turn goes on. The orchestration
-                    // stores the change when the turn ends.
-                    let attached: Array<{ name: string; path: string; readOnly?: boolean }> = [];
-                    if (changedExtras.length > 0 && next) {
-                        const checked = await controlBridge.checkWorkspace({ workspace: next, extras: changedExtras, skipWorkingFolder: true })
-                            .catch((error: unknown) => ({ ok: false as const, code: "WORKSPACE_ATTACH_FAILED", message: String((error as Error)?.message ?? error) }));
-                        if (!checked.ok) return refuse(`Error: ${checked.code}: ${checked.message}`);
-                        attached = checked.extras;
-                    }
-                    turnState.workspaceChangeRequested = false;
-                    turnState.workspaceDraft = next;
-                    turnState.workspaceDraftPaths = {
-                        ...Object.fromEntries(Object.entries(turnState.workspaceDraftPaths ?? {}).filter(([name]) => !merged.removed.includes(name))),
-                        ...Object.fromEntries(attached.map((extra) => [extra.name, extra.path])),
-                    };
-                    turnState.queuedActions.push({
-                        type: "set_workspace_extra",
-                        extra: merged.extraPatch,
-                        path: this.config.workspaceAttach?.path ?? null,
-                        ...(attached.length > 0 ? { extraPaths: Object.fromEntries(attached.map((extra) => [extra.name, extra.path])) } : {}),
-                    });
-                    const lines = [
-                        ...attached.map((extra) => `${merged.added.includes(extra.name) ? "Added" : "Replaced"}: ${extra.name} at ${extra.path}${extra.readOnly ? " (read-only)" : ""}`),
-                        ...merged.removed.map((name) => `Removed: ${name} (released after this turn)`),
-                    ];
-                    return `Extra folders changed.\n${lines.join("\n")}\n`
-                        + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
+                // One call at a time, in order: each merges into the record the
+                // call before it left (the draft), even if the CLI runs the
+                // handlers of one model message side by side.
+                handler: (args: { root?: string; folder?: string; clear?: boolean; extra?: Record<string, unknown> }) => {
+                    const run = (turnState.workspaceQueue ?? Promise.resolve()).then(() => setSessionWorkspaceOnce(args));
+                    turnState.workspaceQueue = run.catch(() => undefined);
+                    return run;
                 },
             }),
             defineTool("get_session_workspace", {
@@ -2899,6 +2918,7 @@ export class ManagedSession {
                     return JSON.stringify({
                         workspace: this.config.workspace ?? null,
                         path: this.config.workspace ? attach?.path ?? null : null,
+                        ...(this.config.workspace && attach?.readOnly ? { readOnly: true } : {}),
                         revision: this.config.workspace ? attach?.revision ?? null : null,
                         ...(extras.length > 0 ? { extra: extras } : {}),
                         // A change accepted in this turn and stored when it ends.
@@ -3453,10 +3473,12 @@ export class ManagedSession {
                 collectedEvents.push(diagnostic);
                 if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
                 const message = buildTextEmittedToolCallCorrection(textEmittedToolCallRef.current.toolName);
+                const accepted = acceptedWorkspaceChanges(turnState);
                 return {
                     type: "error",
                     message,
                     events: collectedEvents,
+                    ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
                 } as any;
             }
 
@@ -3547,7 +3569,7 @@ export class ManagedSession {
             }
             // Other send() errors — check if any handler aborted first
             if (turnState.pendingActions.length === 0) {
-                return { type: "error", message: errMsg };
+                return { type: "error", message: errMsg, ...acceptedChange } as any;
             }
         } finally {
             // Clear guard timers so a settled turn leaves nothing armed.
@@ -3608,10 +3630,14 @@ export class ManagedSession {
         if (sessionError && !finalContent) {
             const errData: any = sessionError.data ?? {};
             const errMsg = errData.message ?? errData.stack ?? "Unknown session error";
+            // An extra-folder change accepted before the error still counts
+            // (review F8, section 4.10).
+            const accepted = acceptedWorkspaceChanges(turnState);
             return {
                 type: "error",
                 message: `Execution failed: ${errMsg}`,
                 events: collectedEvents,
+                ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
             } as any;
         }
 
@@ -3666,7 +3692,7 @@ export class ManagedSession {
     }
 
     /** Running or idle background shells and agent tasks (the WORKSPACE_BUSY check). */
-    private async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
+    async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
         const tasks = (await this.copilotSession.rpc.tasks.list()).tasks ?? [];
         return tasks
             .filter(backgroundTaskRuns)
@@ -3688,6 +3714,19 @@ export class ManagedSession {
      * not known here yet (read the event); null: nothing was ever adopted.
      */
     private recordedAdoption: import("./types.js").WorkspaceAdoptionReport | null | undefined;
+
+    /** Session workspaces (section 4.10): optional extra folders this handle ran without in its last turn. */
+    private extrasMissingLastTurn = new Set<string>();
+
+    /**
+     * Record which optional extra folders this turn runs without, and return
+     * the attached ones that were missing in this handle's last turn.
+     */
+    noteExtraAvailability(missing: string[], attached: string[]): string[] {
+        const back = attached.filter((name) => this.extrasMissingLastTurn.has(name));
+        this.extrasMissingLastTurn = new Set(missing);
+        return back;
+    }
 
     getRecordedAdoption(): import("./types.js").WorkspaceAdoptionReport | null | undefined {
         return this.recordedAdoption;
@@ -3756,6 +3795,10 @@ export class ManagedSession {
         // for a reused handle; the revision and turn a later release reports
         // move on.
         if (config.workspaceAttach !== undefined) this.config.workspaceAttach = config.workspaceAttach;
+        // The record too: extra folders are not in the fingerprint, so a
+        // handle outlives changes of them, and its tools must see the record
+        // this turn runs with (section 4.10).
+        this.config.workspace = config.workspace;
         if (config.workspaceAdoption !== undefined) this.config.workspaceAdoption = config.workspaceAdoption;
         if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
         if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;

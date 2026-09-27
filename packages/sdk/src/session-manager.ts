@@ -12,7 +12,7 @@ import { CopilotClient, type CopilotSession, type SectionOverride, type SessionC
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
-import { callChangesWorkingFolder, extraFolderRecord, sameWorkingFolder, workingFolderOf } from "./workspace-check.js";
+import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
@@ -472,6 +472,55 @@ export function withWorkspaceChangeDeny(
             }
             return result;
         },
+    };
+}
+
+/**
+ * Session workspaces (section 4.10): one folder attached on this worker for a
+ * session and not released yet. The working folder has no `attachment`.
+ */
+export interface HeldWorkspaceFolder {
+    root: string;
+    folder?: string;
+    attachment?: string;
+    rootSessionId: string;
+    revision: number;
+    turnIndex: number;
+}
+
+const heldKey = (folder: { root: string; folder?: string }) => `${folder.root}\0${folder.folder ?? ""}`;
+
+/** The folders a turn's attach holds on this worker: the working folder and each extra folder attached. */
+export function attachedWorkspaceFolders(config: Pick<ManagedSessionConfig, "workspace" | "workspaceAttach">): HeldWorkspaceFolder[] {
+    const attach = config.workspaceAttach;
+    const workspace = config.workspace;
+    if (!attach || !workspace) return [];
+    const base = { rootSessionId: attach.rootSessionId ?? "", revision: attach.revision ?? 1, turnIndex: attach.turnIndex ?? 0 };
+    return [
+        { root: workspace.root, ...(workspace.folder ? { folder: workspace.folder } : {}), ...base },
+        ...(attach.extras ?? []).map((extra) => ({
+            root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), attachment: extra.name, ...base,
+        })),
+    ];
+}
+
+/** A held folder as the provider's release request. */
+function folderReleaseRequest(
+    sessionId: string,
+    folder: HeldWorkspaceFolder,
+    opts: { reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string },
+): import("./types.js").WorkspaceReleaseRequest {
+    return {
+        sessionId,
+        rootSessionId: opts.rootSessionId ?? (folder.rootSessionId || sessionId),
+        workspace: { schema: 1, root: folder.root, ...(folder.folder ? { folder: folder.folder } : {}) },
+        ...(folder.attachment ? { attachment: folder.attachment } : {}),
+        revision: opts.revision ?? folder.revision,
+        workerNodeId: opts.workerNodeId,
+        turnIndex: opts.turnIndex ?? folder.turnIndex,
+        // Why, so the provider can tell a session that ended from one that
+        // only left this worker.
+        reason: workspaceReleaseReason(opts.reason),
     };
 }
 
@@ -1462,7 +1511,7 @@ export class SessionManager {
                     const dirExists = fs.existsSync(sessionDir);
                     const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
                     const existing = this.sessions.get(sessionId);
-                    if (existing?.getWorkspaceState().workspace) {
+                    if (existing?.getWorkspaceState().workspace || this.workspaceHeld.has(sessionId)) {
                         // Session workspaces: the eviction clock is the backstop
                         // for a release that never ran (section 4.5).
                         await this.releaseWorkspace(sessionId, { reason: "eviction", workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(), lockHeld: true });
@@ -1738,30 +1787,37 @@ export class SessionManager {
         {
             const warm = this.sessions.get(sessionId);
             const previousWorkspace = warm?.getWorkspaceState().workspace;
-            // Extra folders this turn keeps as they were: the preamble just
-            // attached them again, so they are not released (section 4.10).
-            const previousExtras = warm?.getWorkspaceState().attach?.extras ?? [];
-            const keptExtras = previousExtras
-                .filter((extra) => {
-                    const next = config.workspace?.extra?.[extra.name];
-                    return Boolean(next) && next!.root === extra.root && (next!.folder ?? "") === (extra.folder ?? "");
-                })
-                .map((extra) => extra.name);
+            // What this turn attached. A held folder in it stays: the preamble
+            // just attached it again, whatever its role or name now.
+            const current = attachedWorkspaceFolders(config);
+            const inUse = (folder: { root: string; folder?: string }) => current.some((one) => sameFolder(one, folder));
             if (warm && previousWorkspace && !sameWorkingFolder(previousWorkspace, config.workspace)) {
                 await this.releaseWorkspace(sessionId, {
                     reason: "workspace_changed",
                     workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
                     lockHeld: true,
-                    keepExtras: keptExtras,
+                    keep: current,
                 });
-            } else if (warm && previousExtras.length > keptExtras.length) {
-                // Only extra folders changed: release the ones removed or
-                // moved. The handle and its shells stay.
-                await this.releaseWorkspaceExtras(sessionId, previousExtras.filter((extra) => !keptExtras.includes(extra.name)), {
-                    reason: "workspace_changed",
-                    workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
-                });
+            } else {
+                // The working folder stays (or there is no warm handle): release
+                // what is held here and no longer in use, such as a removed or
+                // moved extra folder (section 4.10). The handle and its shells
+                // stay, so while a shell or task runs the release waits: the
+                // shell may be using the folder.
+                const stale = this._heldWithHandle(sessionId, warm).filter((folder) => !inUse(folder));
+                if (stale.length > 0) {
+                    const busy = warm ? await warm.activeBackgroundTasks().catch(() => []) : [];
+                    if (busy.length === 0) {
+                        await this.releaseWorkspaceFolders(sessionId, stale, {
+                            reason: "workspace_changed",
+                            workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
+                        });
+                    } else {
+                        emitSessionManagerTrace(sessionId, `release of ${stale.length} folder(s) waits: ${busy.length} task(s) running`);
+                    }
+                }
             }
+            this.holdWorkspaceFolders(sessionId, current);
         }
 
         // ── Catalog model is the source of truth ─────────────────────────
@@ -2897,8 +2953,8 @@ export class SessionManager {
             releaseTimeoutMs?: number; affinityKey?: string;
             /** How long the task cancel and the disconnect may take together. Default WORKSPACE_RELEASE_DEADLINE_MS. */
             deadlineMs?: number;
-            /** Extra folders not to release: the next turn keeps them attached. */
-            keepExtras?: string[];
+            /** Folders not to release: the next turn keeps them attached (section 4.10). */
+            keep?: Array<{ root: string; folder?: string }>;
         },
     ): Promise<{ released: boolean; cancelled: number; detail?: string }> {
         if (!opts.lockHeld) {
@@ -2906,116 +2962,163 @@ export class SessionManager {
         }
         const managed = this.sessions.get(sessionId);
         const workspace = managed?.getWorkspaceState().workspace;
-        if (!managed || !workspace) {
+        // Everything attached here: what the manager holds, and the handle's
+        // own attach. A dropped handle's folders are still held.
+        const held = this._heldWithHandle(sessionId, managed);
+        if (held.length === 0 && (!managed || !workspace)) {
             return { released: false, cancelled: 0, detail: managed ? "no workspace" : "not in memory on this worker" };
         }
-        const attach = managed.getWorkspaceState().attach;
+        const attach = managed?.getWorkspaceState().attach;
         // The orchestration stops waiting for a release after 10 s and moves
         // the session on. If the next turn then ran here, under the new
         // affinity key, a release that arrives late must not undo that
         // turn's attach: its shells and its lease (review F7).
-        if (opts.affinityKey && attach?.affinityKey && attach.affinityKey !== opts.affinityKey
+        if (managed && opts.affinityKey && attach?.affinityKey && attach.affinityKey !== opts.affinityKey
             && typeof opts.turnIndex === "number" && typeof attach.turnIndex === "number"
             && attach.turnIndex >= opts.turnIndex) {
             return { released: false, cancelled: 0, detail: `a newer turn (${attach.turnIndex}) holds the workspace here` };
         }
         let cancelled = 0;
         let detail: string | undefined;
-        // One deadline over the cancel and the disconnect: a CLI frozen by a
-        // hung mount never answers, and the caller holds the session lock
-        // (review R9). The handle is dropped either way.
-        try {
-            await withWorkspaceDeadline((async () => {
-                try {
-                    cancelled = await managed.cancelBackgroundTasks();
-                } catch (error: unknown) {
-                    detail = `task cancel: ${normalizeError(error).message}`;
-                }
-                try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
-            })(), "task cancel and disconnect", opts.deadlineMs);
-        } catch (error: unknown) {
-            detail = [detail, normalizeError(error).message].filter(Boolean).join("; ");
+        if (managed) {
+            // One deadline over the cancel and the disconnect: a CLI frozen by a
+            // hung mount never answers, and the caller holds the session lock
+            // (review R9). The handle is dropped either way.
+            try {
+                await withWorkspaceDeadline((async () => {
+                    try {
+                        cancelled = await managed.cancelBackgroundTasks();
+                    } catch (error: unknown) {
+                        detail = `task cancel: ${normalizeError(error).message}`;
+                    }
+                    try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
+                })(), "task cancel and disconnect", opts.deadlineMs);
+            } catch (error: unknown) {
+                detail = [detail, normalizeError(error).message].filter(Boolean).join("; ");
+            }
+            this._forgetWarmSession(sessionId);
         }
-        this._forgetWarmSession(sessionId);
-        const provider = this.workspaceProvider;
-        if (provider?.release) {
-            const request: import("./types.js").WorkspaceReleaseRequest = {
-                sessionId,
-                rootSessionId: opts.rootSessionId ?? attach?.rootSessionId ?? sessionId,
-                // The provider gets one folder per call: the working folder
-                // here, each extra folder below.
-                workspace: workingFolderOf(workspace),
-                revision: opts.revision ?? attach?.revision ?? 1,
-                workerNodeId: opts.workerNodeId,
-                turnIndex: opts.turnIndex ?? attach?.turnIndex ?? 0,
-                // Why, so the provider can tell a session that ended from one
-                // that only left this worker.
-                reason: workspaceReleaseReason(opts.reason),
-            };
-            const keep = new Set(opts.keepExtras ?? []);
-            const requests = [request, ...(attach?.extras ?? [])
-                .filter((extra) => !keep.has(extra.name))
-                .map((extra) => ({ ...request, workspace: extraFolderRecord(extra), attachment: extra.name }))];
-            const failures = await Promise.all(requests.map(async (one) => {
-                try {
-                    await Promise.race([
-                        Promise.resolve().then(() => provider.release!(one)),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error("provider release timed out")), opts.releaseTimeoutMs ?? 5_000).unref?.()),
-                    ]);
-                    return undefined;
-                } catch (error: unknown) {
-                    return `provider release${one.attachment ? ` of extra folder ${one.attachment}` : ""}: ${normalizeError(error).message}`;
-                }
-            }));
-            detail = [detail, ...failures].filter(Boolean).join("; ") || undefined;
-        }
-        emitSessionManagerTrace(sessionId, `workspace released (${opts.reason}): cancelled ${cancelled} task(s)${detail ? `; ${detail}` : ""}`);
+        // The provider gets one folder per call: the working folder and each
+        // extra folder held here, except those the next turn keeps.
+        const keep = opts.keep ?? [];
+        const release = held.filter((folder) => !keep.some((one) => sameFolder(one, folder)));
+        const failures = await this._releaseFolders(sessionId, release, opts);
+        detail = [detail, ...failures].filter(Boolean).join("; ") || undefined;
+        emitSessionManagerTrace(sessionId, `workspace released (${opts.reason}): cancelled ${cancelled} task(s), ${release.length} folder(s)${detail ? `; ${detail}` : ""}`);
         return { released: true, cancelled, ...(detail ? { detail } : {}) };
     }
 
     /**
-     * Session workspaces (section 4.10): release some extra folders only,
-     * when a session removed or moved them and keeps its working folder. The
-     * CLI handle and its shells stay. Best effort, like every release.
+     * Session workspaces (section 4.10): release some held folders only, such
+     * as extra folders a session removed or moved while it keeps its working
+     * folder. The CLI handle and its shells stay. Best effort.
      */
-    async releaseWorkspaceExtras(
+    async releaseWorkspaceFolders(
         sessionId: string,
-        extras: Array<{ name: string; root: string; folder?: string }>,
+        folders: HeldWorkspaceFolder[],
         opts: { reason: string; workerNodeId: string; releaseTimeoutMs?: number },
     ): Promise<void> {
+        if (folders.length === 0) return;
+        const failures = await this._releaseFolders(sessionId, folders, opts);
+        emitSessionManagerTrace(sessionId, `folders released (${opts.reason}): ${folders.map((folder) => folder.attachment ?? "working folder").join(", ")}${failures.length ? `; ${failures.join("; ")}` : ""}`);
+    }
+
+    /** Session workspaces: tell the provider, one call per folder, and stop holding them. Returns the failures. */
+    private async _releaseFolders(
+        sessionId: string,
+        folders: HeldWorkspaceFolder[],
+        opts: { reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string; releaseTimeoutMs?: number },
+    ): Promise<string[]> {
+        this._unholdWorkspaceFolders(sessionId, folders);
         const provider = this.workspaceProvider;
-        const attach = this.sessions.get(sessionId)?.getWorkspaceState().attach;
-        if (!provider?.release || extras.length === 0) return;
-        await Promise.all(extras.map(async (extra) => {
-            const request = {
-                sessionId,
-                rootSessionId: attach?.rootSessionId ?? sessionId,
-                workspace: extraFolderRecord(extra),
-                attachment: extra.name,
-                revision: attach?.revision ?? 1,
-                workerNodeId: opts.workerNodeId,
-                turnIndex: attach?.turnIndex ?? 0,
-                reason: workspaceReleaseReason(opts.reason),
-            };
+        if (!provider?.release || folders.length === 0) return [];
+        const failures = await Promise.all(folders.map(async (folder) => {
+            const request = folderReleaseRequest(sessionId, folder, opts);
             try {
                 await Promise.race([
                     Promise.resolve().then(() => provider.release!(request)),
                     new Promise((_, reject) => setTimeout(() => reject(new Error("provider release timed out")), opts.releaseTimeoutMs ?? 5_000).unref?.()),
                 ]);
+                return undefined;
             } catch (error: unknown) {
-                emitSessionManagerTrace(sessionId, `extra folder ${extra.name} release failed: ${normalizeError(error).message}`);
+                return `provider release${folder.attachment ? ` of extra folder ${folder.attachment}` : ""}: ${normalizeError(error).message}`;
             }
         }));
-        emitSessionManagerTrace(sessionId, `extra folders released (${opts.reason}): ${extras.map((extra) => extra.name).join(", ")}`);
+        return failures.filter((failure): failure is string => Boolean(failure));
+    }
+
+    /**
+     * Session workspaces (section 4.10): the folders attached on this worker
+     * for a session and not released yet. Kept here, not on the CLI handle,
+     * so a dropped or rebuilt handle does not lose them.
+     */
+    private workspaceHeld = new Map<string, Map<string, HeldWorkspaceFolder>>();
+
+    /** Session workspaces: note folders attached on this worker (by a turn, the agent's tool, or a held turn). */
+    holdWorkspaceFolders(sessionId: string, folders: HeldWorkspaceFolder[]): void {
+        if (folders.length === 0) return;
+        let held = this.workspaceHeld.get(sessionId);
+        if (!held) {
+            held = new Map();
+            this.workspaceHeld.set(sessionId, held);
+        }
+        for (const folder of folders) held.set(heldKey(folder), { ...folder });
+    }
+
+    /**
+     * Session workspaces: folders a workspace check attached (the agent's
+     * tool, or a change from outside the session). When the session is on
+     * this worker (a handle or held folders here), they are held and released
+     * later, like the turn's own. A release at once could drop a live lease
+     * entry: the reference provider leases per clone, so a folder beside the
+     * working folder shares its entry. Otherwise nothing of this session is
+     * attached here, so they are released at once (reason set_check).
+     */
+    async settleCheckAttaches(sessionId: string, folders: HeldWorkspaceFolder[], opts: { workerNodeId: string }): Promise<"held" | "released"> {
+        if (this.sessions.has(sessionId) || this.workspaceHeld.has(sessionId)) {
+            this.holdWorkspaceFolders(sessionId, folders);
+            return "held";
+        }
+        await this.releaseWorkspaceFolders(sessionId, folders, { reason: "set_check", workerNodeId: opts.workerNodeId });
+        return "released";
+    }
+
+    /** Session workspaces: the working folder's path the session's warm handle on this worker attached, if any. */
+    getWorkspaceAttachPath(sessionId: string): string | undefined {
+        return this.sessions.get(sessionId)?.getWorkspaceState().attach?.path;
+    }
+
+    /** Session workspaces: the folders held on this worker for a session. */
+    heldWorkspaceFolders(sessionId: string): HeldWorkspaceFolder[] {
+        return [...(this.workspaceHeld.get(sessionId)?.values() ?? [])].map((folder) => ({ ...folder }));
+    }
+
+    private _unholdWorkspaceFolders(sessionId: string, folders: Array<{ root: string; folder?: string }>): void {
+        const held = this.workspaceHeld.get(sessionId);
+        if (!held) return;
+        for (const folder of folders) held.delete(heldKey(folder));
+        if (held.size === 0) this.workspaceHeld.delete(sessionId);
+    }
+
+    /** What is held for a session plus the handle's own attach, each folder once. */
+    private _heldWithHandle(sessionId: string, managed: ManagedSession | undefined): HeldWorkspaceFolder[] {
+        const all = new Map<string, HeldWorkspaceFolder>();
+        for (const folder of managed ? attachedWorkspaceFolders(managed.getWorkspaceState()) : []) all.set(heldKey(folder), folder);
+        for (const folder of this.heldWorkspaceFolders(sessionId)) all.set(heldKey(folder), folder);
+        return [...all.values()];
     }
 
     /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped. */
     async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string; deadlineMs?: number }): Promise<number> {
         // In parallel: one frozen CLI must not stop the others (review R9).
         // Each release has its own deadline, so this ends within about one.
-        const results = await Promise.all([...this.sessions]
-            .filter(([sessionId, managed]) => Boolean(managed.getWorkspaceState().workspace) && !this.sessionLocks.has(sessionId))
-            .map(([sessionId]) => this.releaseWorkspace(sessionId, opts).catch(() => null)));
+        const ids = new Set<string>([
+            ...[...this.sessions].filter(([, managed]) => Boolean(managed.getWorkspaceState().workspace)).map(([sessionId]) => sessionId),
+            ...this.workspaceHeld.keys(),
+        ]);
+        const results = await Promise.all([...ids]
+            .filter((sessionId) => !this.sessionLocks.has(sessionId))
+            .map((sessionId) => this.releaseWorkspace(sessionId, opts).catch(() => null)));
         return results.filter((result) => result?.released).length;
     }
 

@@ -6875,7 +6875,9 @@ export class PilotSwarmUiController {
                 modal: {
                     type: "confirm",
                     title: "Clear Workspace",
-                    message: "Clear this session's workspace? The next turn runs in the default working directory. No files are deleted.",
+                    message: target.view?.workspace?.extra && Object.keys(target.view.workspace.extra).length > 0
+                        ? "Clear this session's workspace, its extra folders too? The next turn runs in the default working directory. No files are deleted."
+                        : "Clear this session's workspace? The next turn runs in the default working directory. No files are deleted.",
                     confirmLabel: "Clear",
                     action: "clearSessionWorkspace",
                     sessionId: target.sessionId,

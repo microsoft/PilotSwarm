@@ -284,7 +284,11 @@ export type WorkspaceAttachResult =
         path: string;
         /** Ignored for an extra folder: nothing is adopted from it. */
         adopt?: WorkspaceAdopt;
-        /** The folder is mounted read-only. PilotSwarm only tells the model; the mount enforces it. */
+        /**
+         * The folder is mounted read-only. PilotSwarm reports it in
+         * get_session_workspace and in the answer that adds an extra folder;
+         * the mount enforces it.
+         */
         readOnly?: boolean;
     }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
@@ -333,8 +337,11 @@ export interface WorkspaceProvider {
  *   shutdown     this worker is shutting down; the session stays open
  *   spawn_check  the quick check before spawn_agent creates a child; the
  *                child attaches for real at its first turn
+ *   set_check    the check behind a change from outside the session, run
+ *                on a worker the session is not on; the session attaches
+ *                for real at its next turn
  */
-export type WorkspaceReleaseReason = "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check";
+export type WorkspaceReleaseReason = "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check" | "set_check";
 
 /** What WorkspaceProvider.release gets: the attach request, and why. */
 export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {

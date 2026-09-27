@@ -14,6 +14,7 @@
  * register(worker) sets the workspace provider and adds the clone tools.
  * The repo service itself runs on the repo pod: repo-service.mjs.
  */
+import path from "node:path";
 import { combineWorkspaceProviders, createBuiltInWorkspaceProvider } from "pilotswarm-sdk";
 import { createRepoWorkspaceProvider } from "./provider.mjs";
 import { createRepoTools } from "./tools.mjs";
@@ -35,9 +36,20 @@ export function createWorkspaceProvider({ roots, serviceUrls, plainRoots = [] })
     const repoProvider = createRepoWorkspaceProvider({ roots, serviceUrls });
     if (plainRoots.length === 0) return repoProvider;
     const names = new Set(roots.map((root) => root.name));
+    // A plain root has no leases. One that is, holds or sits inside a repo
+    // root would reach session clones around the lease rules
+    // (WORKSPACE_IN_USE), so it stops the worker at start.
+    const inside = (a, b) => a === b || a.startsWith(b.endsWith(path.sep) ? b : `${b}${path.sep}`);
     for (const root of plainRoots) {
         if (names.has(root.name)) throw new Error(`PS_PLAIN_ROOTS: root "${root.name}" is also a repo root`);
         names.add(root.name);
+        const plain = path.resolve(root.path);
+        for (const repo of roots) {
+            const repoPath = path.resolve(repo.path);
+            if (inside(plain, repoPath) || inside(repoPath, plain)) {
+                throw new Error(`PS_PLAIN_ROOTS: root "${root.name}" (${root.path}) overlaps repo root "${repo.name}" (${repo.path})`);
+            }
+        }
     }
     return combineWorkspaceProviders([repoProvider, createBuiltInWorkspaceProvider(plainRoots)]);
 }

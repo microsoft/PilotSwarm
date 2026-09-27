@@ -292,21 +292,96 @@ test("a release tells the provider about the working folder and each extra folde
     }
 });
 
-test("changing extra folders only releases the removed or moved ones at the next turn, and keeps the handle and its shells", async (t) => {
-    const h = fixture(t, { tasks: [{ id: "sh-1", type: "shell", status: "running" }] });
-    const first = await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+test("changing extra folders only releases the removed or moved ones at the next turn and keeps the handle; while a shell runs, the release waits", async (t) => {
     const next = {
         workspace: { ...WORKSPACE, extra: { logs: { root: "logs", folder: "other" } } },
         workspaceAttach: { ...ATTACH, extras: [extraAttach("logs", "logs", "other")] },
     };
-    const again = await h.manager.getOrCreate("s1", next, { turnIndex: 1 });
+    // No task running: released at once, and the handle stays.
+    const idle = fixture(t);
+    const first = await open(idle, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    const again = await idle.manager.getOrCreate("s1", next, { turnIndex: 1 });
     assert.equal(again, first, "the warm session stays: extra folders are not in the fingerprint");
-    assert.equal(h.handles.length, 1, "no new CLI handle");
-    assert.deepEqual(h.order, ["release", "release"], "no task cancel, no disconnect");
-    assert.deepEqual(byAttachment(h.releases), [
+    assert.equal(idle.handles.length, 1, "no new CLI handle");
+    assert.deepEqual(idle.order, ["list", "release", "release"], "the busy check, then two releases; no cancel, no disconnect");
+    assert.deepEqual(byAttachment(idle.releases), [
         ["logs", { schema: 1, root: "logs", folder: "svc" }, "changed"],
         ["shared", { schema: 1, root: "shared", folder: "notes" }, "changed"],
     ], "the moved one at its old folder, and the removed one");
+
+    // A shell is running: it may use the folder, so the release waits for a
+    // turn with nothing running.
+    const busy = fixture(t, { tasks: [{ id: "sh-1", type: "shell", status: "running" }] });
+    await open(busy, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    await busy.manager.getOrCreate("s1", next, { turnIndex: 1 });
+    assert.deepEqual(busy.order, ["list"], "nothing released while the shell runs");
+    assert.deepEqual(busy.releases, []);
+    assert.equal(busy.manager.heldWorkspaceFolders("s1").length, 4, "the old two are still held, with the working folder and the new one");
+    // On leave everything held goes: the shell is stopped first.
+    await busy.manager.releaseWorkspace("s1", { reason: "timer", workerNodeId: "worker-a" });
+    assert.deepEqual(byAttachment(busy.releases).map(([name, folder, reason]) => [name, folder.folder, reason]).sort(), [
+        ["(working folder)", "repo-x", "moved"],
+        ["logs", "other", "moved"],
+        ["logs", "svc", "moved"],
+        ["shared", "notes", "moved"],
+    ]);
+    assert.deepEqual(busy.manager.heldWorkspaceFolders("s1"), [], "nothing is held after a release");
+});
+
+test("folders attached outside a turn's preamble are released too: the agent's tool, a held turn, a dropped handle", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1", { workspace: WORKSPACE, workspaceAttach: ATTACH });
+    // The agent's tool attached "logs" in this turn; the change is not stored yet.
+    h.manager.holdWorkspaceFolders("s1", [{ root: "logs", folder: "svc", attachment: "logs", rootSessionId: "root-1", revision: 3, turnIndex: 7 }]);
+    await h.manager.releaseWorkspace("s1", { reason: "destroy", workerNodeId: "worker-a" });
+    assert.deepEqual(byAttachment(h.releases).map(([name, folder, reason]) => [name, folder.root, reason]), [
+        ["(working folder)", "a", "ended"],
+        ["logs", "logs", "ended"],
+    ], "the tool's attach is released with the working folder");
+
+    // A turn was held after some attaches succeeded: no handle here, the folders are held.
+    const held = fixture(t);
+    held.manager.holdWorkspaceFolders("s2", [
+        { root: "a", folder: "repo-x", rootSessionId: "s2", revision: 1, turnIndex: 0 },
+        { root: "logs", folder: "svc", attachment: "logs", rootSessionId: "s2", revision: 1, turnIndex: 0 },
+    ]);
+    const result = await held.manager.releaseWorkspace("s2", { reason: "timer", workerNodeId: "worker-a" });
+    assert.equal(result.released, true);
+    assert.deepEqual(held.releases.map((r) => [r.sessionId, r.attachment ?? null, r.reason]).sort(), [["s2", null, "moved"], ["s2", "logs", "moved"]].sort());
+    const idle = await held.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" });
+    assert.equal(idle, 0, "nothing left to release");
+
+    // Shutdown also covers a session that holds folders but has no handle.
+    const shut = fixture(t);
+    shut.manager.holdWorkspaceFolders("s3", [{ root: "logs", folder: "svc", attachment: "logs", rootSessionId: "s3", revision: 1, turnIndex: 0 }]);
+    assert.equal(await shut.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" }), 1);
+    assert.deepEqual(shut.releases.map((r) => [r.sessionId, r.attachment, r.reason]), [["s3", "logs", "shutdown"]]);
+});
+
+test("a folder the next turn still uses is not released, whatever its role or name now", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    // The old working folder becomes an extra folder, and "logs" is renamed "app-logs".
+    const swapped = {
+        workspace: { schema: 1, root: "a", folder: "repo-y", extra: { old: { root: "a", folder: "repo-x" }, "app-logs": { root: "logs", folder: "svc" } } },
+        workspaceAttach: {
+            ...ATTACH, path: "/ws/a/repo-y", realPath: "/ws/a/repo-y",
+            extras: [extraAttach("app-logs", "logs", "svc"), { ...extraAttach("old", "a", "repo-x"), rootPath: "/ws/a", path: "/ws/a/repo-x", realPath: "/ws/a/repo-x" }],
+        },
+    };
+    await h.manager.getOrCreate("s1", swapped, { turnIndex: 1 });
+    assert.deepEqual(byAttachment(h.releases).map(([name, folder]) => [name, folder.root, folder.folder]), [["shared", "shared", "notes"]],
+        "only the folder no longer in use; the old working folder and the renamed one stay attached");
+
+    // The same with the working folder kept: only an extra folder is renamed.
+    const kept = fixture(t);
+    await open(kept, "s2", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    const renamed = {
+        workspace: { ...WORKSPACE, extra: { "app-logs": { root: "logs", folder: "svc" }, shared: { root: "shared", folder: "notes", required: false } } },
+        workspaceAttach: { ...ATTACH, extras: [extraAttach("app-logs", "logs", "svc"), extraAttach("shared", "shared", "notes")] },
+    };
+    await kept.manager.getOrCreate("s2", renamed, { turnIndex: 1 });
+    assert.deepEqual(kept.releases, [], "a renamed folder that is still attached is not released");
 });
 
 test("a new working folder releases the old one but not an extra folder the next turn keeps", async (t) => {
@@ -321,4 +396,31 @@ test("a new working folder releases the old one but not an extra folder the next
         ["(working folder)", WORKSPACE, "changed"],
         ["shared", { schema: 1, root: "shared", folder: "notes" }, "changed"],
     ], "logs stays attached: the preamble of this turn attached it again");
+});
+
+test("a check's attaches are held while the session is on this worker, and released at once when it is not", async (t) => {
+    const h = fixture(t);
+    await open(h, "here", { workspace: WORKSPACE, workspaceAttach: ATTACH });
+    const logs = { root: "logs", folder: "svc", attachment: "logs", rootSessionId: "root-1", revision: 3, turnIndex: 7 };
+    assert.equal(await h.manager.settleCheckAttaches("here", [logs], { workerNodeId: "worker-a" }), "held");
+    assert.deepEqual(h.releases, [], "no release while the session's own folders are attached here");
+    assert.ok(h.manager.heldWorkspaceFolders("here").some((folder) => folder.attachment === "logs"));
+
+    assert.equal(await h.manager.settleCheckAttaches("elsewhere", [{ ...logs, rootSessionId: "elsewhere" }], { workerNodeId: "worker-a" }), "released");
+    assert.deepEqual(h.releases.map((r) => [r.sessionId, r.attachment, r.reason]), [["elsewhere", "logs", "set_check"]]);
+    assert.deepEqual(h.manager.heldWorkspaceFolders("elsewhere"), []);
+});
+
+test("a dropped CLI handle's folders are still released: the manager holds them, not the handle", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    await h.manager.invalidateWarmSession("s1");
+    assert.equal(h.manager.sessions.has("s1"), false, "the handle is gone");
+    const result = await h.manager.releaseWorkspace("s1", { reason: "timer", workerNodeId: "worker-a" });
+    assert.equal(result.released, true);
+    assert.deepEqual(byAttachment(h.releases).map(([name, folder, reason]) => [name, folder.folder, reason]), [
+        ["(working folder)", "repo-x", "moved"],
+        ["logs", "svc", "moved"],
+        ["shared", "notes", "moved"],
+    ]);
 });

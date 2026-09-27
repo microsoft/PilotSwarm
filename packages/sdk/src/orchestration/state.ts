@@ -302,16 +302,18 @@ export function extraFoldersChangedNote(
 ): string | undefined {
     const before = from?.extra ?? {};
     const after = to?.extra ?? {};
+    const own = (map: Record<string, { root: string; folder?: string }>, name: string) =>
+        (Object.prototype.hasOwnProperty.call(map, name) ? map[name] : undefined);
     const parts: string[] = [];
     for (const name of Object.keys(after).sort()) {
         const next = after[name];
-        const old = before[name];
+        const old = own(before, name);
         if (old && old.root === next.root && (old.folder ?? "") === (next.folder ?? "")) continue;
         const at = paths?.[name] ? `, at ${paths[name]}` : "";
         parts.push(`${old ? "moved" : "added"} "${name}" (${describeWorkspace(next)}${at})`);
     }
     for (const name of Object.keys(before).sort()) {
-        if (!after[name]) parts.push(`removed "${name}"`);
+        if (!own(after, name)) parts.push(`removed "${name}"`);
     }
     return parts.length > 0 ? `Your extra folders changed: ${parts.join("; ")}.` : undefined;
 }

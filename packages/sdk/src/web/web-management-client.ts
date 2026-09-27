@@ -332,7 +332,7 @@ export class WebPilotSwarmManagementClient {
     /** Session workspaces: set or clear the workspace (external flow). */
     async setSessionWorkspace(
         sessionId: string,
-        input: { expectedRevision: number; workspace: { root: string; folder?: string; schema?: 1 } | null },
+        input: { expectedRevision: number; workspace: { root: string; folder?: string; schema?: 1; extra?: Record<string, { root: string; folder?: string; required?: boolean }> | null } | null },
         opts: { timeoutMs?: number } = {},
     ): Promise<any> {
         return this._api.call("setSessionWorkspace", { sessionId, expectedRevision: input?.expectedRevision, workspace: input?.workspace ?? null, options: opts });

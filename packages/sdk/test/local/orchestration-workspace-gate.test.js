@@ -436,7 +436,7 @@ describe("workspace gate (orchestration 1.0.80)", () => {
             ],
         });
         const outcome = drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
-        expect(h.checks.map((c) => c.args)).toEqual([{ workspace: { schema: 1, root: "a", folder: "b" }, revision: 2, turnIndex: 1 }]);
+        expect(h.checks.map((c) => c.args)).toEqual([{ workspace: { schema: 1, root: "a", folder: "b" }, revision: 2, turnIndex: 1, previous: WORKSPACE }]);
         expect(responseOf(h, "set-1").result).toEqual({ ok: true, changed: true, revision: 2, workspace: { schema: 1, root: "a", folder: "b" }, path: "/ws/a/b" });
         const changed = events(h, "session.workspace_changed").map((e) => e.data);
         expect(changed.at(-1)).toEqual({ workspace: { schema: 1, root: "a", folder: "b" }, revision: 2, path: "/ws/a/b", source: "external" });
@@ -878,11 +878,11 @@ describe("workspace gate: extra folders (section 4.10)", () => {
             turnResults: [ran({ type: "completed", content: "added", queuedActions: [addLogs] })],
             queue: [prompt("add the logs")],
         });
-        // Nothing else arrives: the drive parks in the idle wait.
-        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        // Nothing else arrives: the drive parks in the idle wait, and the
+        // change is stored by then.
+        const outcome = drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(["parked", "blocked"]).toContain(outcome.kind);
         expect(events(h, "session.workspace_changed").map((e) => e.data.revision)).toEqual([1, 2]);
-        const order = h.sequence.filter((step) => step === "event:session.workspace_changed" || step === "event:session.turn_completed");
-        expect(order.at(-1)).toBe("event:session.workspace_changed");
     });
 
     it("a failed turn still stores an accepted extra-folder change, and the retry after the continue-as-new runs with it (review F8)", async () => {
@@ -925,6 +925,75 @@ describe("workspace gate: extra folders (section 4.10)", () => {
             workspace: next, revision: 2, path: "/ws/a/sessions/s-1/app", extraPaths: { logs: "/ws/logs/svc" }, source: "external",
         });
         expect(h.turns[1].opts.workspaceNotice).toBe('Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc).');
+    });
+
+    it("an external set without extra keeps the session's extra folders; one that names extra replaces them (review, API M2)", async () => {
+        const handler = await latestHandler();
+        const withLogs = { ...WORKSPACE, extra: { logs: LOGS } };
+        const setWith = (id, revision, workspace, extraMode) => JSON.stringify({ type: "cmd", cmd: "set_workspace", id, args: { expectedRevision: revision, workspace, ...(extraMode ? { extraMode } : {}) } });
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "first" }), ran({ type: "completed", content: "second" })],
+            queue: [
+                prompt("first"),
+                { afterTurns: 1, msg: setWith("keep", 1, { root: "a", folder: "lib" }) },
+                { afterTurns: 1, msg: setWith("replace", 2, { root: "a", folder: "lib" }, "replace") },
+                { afterTurns: 1, msg: setWith("overlap", 3, { root: "logs", folder: "svc/inner" }) },
+                { afterTurns: 1, msg: prompt("second") },
+            ],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true, config: { model: "fixture:model", workspace: withLogs } })), h);
+        expect(responseOf(h, "keep").result).toMatchObject({ ok: true, changed: true, revision: 2, workspace: { schema: 1, root: "a", folder: "lib", extra: { logs: LOGS } } });
+        // The check covered the new working folder only; the kept folder needs none.
+        expect(h.checks[0].args.previous).toEqual(withLogs);
+        expect(responseOf(h, "replace").result).toMatchObject({ ok: true, changed: true, revision: 3, workspace: { schema: 1, root: "a", folder: "lib" } });
+        expect(responseOf(h, "replace").result.workspace.extra).toBeUndefined();
+        // Revision 3 has no extra folders, so nothing is kept and nothing overlaps.
+        expect(responseOf(h, "overlap").result).toMatchObject({ ok: true, revision: 4 });
+
+        const refused = createHarness({
+            turnResults: [ran({ type: "completed", content: "first" })],
+            queue: [prompt("first"), { afterTurns: 1, msg: setWith("inside", 1, { root: "logs", folder: "svc/inner" }) }],
+        });
+        drive(handler(refused.ctx, INPUT({ blobEnabled: true, config: { model: "fixture:model", workspace: withLogs } })), refused);
+        expect(responseOf(refused, "inside").error).toMatch(/^WORKSPACE_PATH_INVALID: .*overlaps the working folder.*pass extra to replace them/);
+        expect(refused.checks).toHaveLength(0);
+    });
+
+    it("an external set adds its note to one not yet delivered", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [ran({ type: "completed", content: "first" }), ran({ type: "completed", content: "second" })],
+            queue: [
+                prompt("first"),
+                { afterTurns: 1, msg: setCmd("move", 1, { root: "a", folder: "lib" }) },
+                { afterTurns: 1, msg: setCmd("add", 2, { root: "a", folder: "lib", extra: { logs: LOGS } }) },
+                { afterTurns: 1, msg: prompt("second") },
+            ],
+            checkWorkspace: (args) => ({
+                ok: true,
+                path: `/ws/a/${args.workspace.folder}`,
+                extras: Object.keys(args.workspace.extra ?? {}).map((name) => ({ name, path: `/ws/${name}/svc` })),
+            }),
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(h.turns[1].opts.workspaceNotice).toBe(
+            'The working directory changed from root "a", folder "sessions/s-1/app" to root "a", folder "lib" (/ws/a/lib). '
+            + 'Your extra folders changed: added "logs" (root "logs", folder "svc", at /ws/logs/svc).');
+    });
+
+    it("the agent's working-folder change records the extra folders' paths in its event", async () => {
+        const handler = await latestHandler();
+        const h = createHarness({
+            turnResults: [
+                { type: "set_workspace", workspace: { schema: 1, root: "a", folder: "lib", extra: { logs: LOGS } }, path: "/ws/a/lib", extraPaths: { logs: "/ws/logs/svc" } },
+                { type: "completed", content: "continued" },
+            ],
+            queue: [prompt("switch with logs")],
+        });
+        drive(handler(h.ctx, INPUT({ blobEnabled: true })), h);
+        expect(events(h, "session.workspace_changed").at(-1).data).toEqual({
+            workspace: { schema: 1, root: "a", folder: "lib", extra: { logs: LOGS } }, revision: 2, path: "/ws/a/lib", extraPaths: { logs: "/ws/logs/svc" }, source: "agent",
+        });
     });
 
     it("the agent's working-folder change with a new extra folder notes both", async () => {

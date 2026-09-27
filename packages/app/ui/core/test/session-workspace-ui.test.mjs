@@ -188,7 +188,7 @@ const WITH_EXTRAS = {
     extraPaths: { logs: "/ws/logs/svc", gone: "/ws/old" },
 };
 
-test("the selector and the stats tab show extra folders, with their paths when known", async () => {
+test("the selector reports extra folders with their paths when known; the stats tab lists them", async () => {
     const h = await seeded(WITH_EXTRAS);
     const view = selectSessionWorkspace(h.state());
     assert.deepEqual(view.extras, [
@@ -216,4 +216,8 @@ test("setting the working folder from the dialog keeps the extra folders; the di
     await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
     h.controller.setSetWorkspaceValue("");
     assert.match(selectSessionWorkspaceModal(h.state()).detailsLines.map(lineText).join("\n"), /Extra folders: logs, shared \(cleared too\)/);
+    // The Clear confirm says the extra folders go too.
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(h.state().ui.modal?.type, "confirm");
+    assert.match(h.state().ui.modal.message, /its extra folders too/);
 });

@@ -48,7 +48,7 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
                     root: z.string(),
                     folder: z.string().optional(),
                     required: z.boolean().optional(),
-                }).nullable()).optional().describe("Extra folders by name: { root, folder, required } adds or replaces, null removes"),
+                }).strict().nullable()).optional().describe("Extra folders by name: { root, folder, required } adds or replaces, null removes"),
                 clear: z.boolean().optional().describe("Clear the working folder and every extra folder"),
                 timeout_ms: z.number().int().min(1_000).max(300_000).optional().describe("Max time to wait for the answer, 1000 to 300000 ms"),
             },
@@ -60,9 +60,12 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
             const current = await ctx.mgmt.getSessionWorkspace(session_id);
             const merged = mergeWorkspaceChange(current.workspace, { root, folder, extra, clear });
             if (!merged.ok) return errorResult(`${merged.code}: ${merged.message}`, { session_id });
+            // The merged record names `extra`, even when empty, so the session
+            // sets exactly these folders.
+            const workspace = merged.next ? { ...merged.next, extra: merged.next.extra ?? {} } : null;
             const result = await ctx.mgmt.setSessionWorkspace(
                 session_id,
-                { expectedRevision: expected_revision, workspace: merged.next },
+                { expectedRevision: expected_revision, workspace },
                 { ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) },
             );
             return jsonResult(result);

@@ -1140,7 +1140,7 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     if (!next && previous) state.workspaceReleasePending = true;
     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
         eventType: "session.workspace_changed",
-        data: { workspace: next, revision, path, source: "agent" },
+        data: { workspace: next, revision, path, ...(extraPaths && Object.keys(extraPaths).length > 0 ? { extraPaths } : {}), source: "agent" },
     }]);
     state.pendingPrompt = mergePrompt(state.pendingPrompt, WORKSPACE_CHANGED_CONTINUE_PROMPT);
     state.bootstrapPrompt = true;

@@ -27,6 +27,21 @@ export const MAX_WORKSPACE_EXTRAS = 4;
 /** An extra folder's name: what the model and the provider call it. */
 const EXTRA_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
+/** A name that is also a property every object has ("constructor", ...), which a plain lookup would find. */
+function reservedName(name: string): boolean {
+    return Object.prototype.hasOwnProperty.call(Object.prototype, name);
+}
+
+/** The value of an own key only; never a property from the prototype. */
+function own<T>(map: Record<string, T> | undefined | null, name: string): T | undefined {
+    return map && Object.prototype.hasOwnProperty.call(map, name) ? map[name] : undefined;
+}
+
+/** Present: neither undefined nor null. A caller may send null for "not given". */
+function present(value: unknown): boolean {
+    return value !== undefined && value !== null;
+}
+
 function fail(code: string, message: string): WorkspaceCheckFailure {
     return { ok: false, code, message };
 }
@@ -67,6 +82,7 @@ function checkExtraMap(input: unknown, allowNull: boolean): { ok: true; extra: R
         if (!EXTRA_NAME.test(name)) {
             return invalid(`extra folder name "${name}" must be 1-32 lowercase letters, digits, "-" or "_", starting with a letter or digit`);
         }
+        if (reservedName(name)) return invalid(`extra folder name "${name}" is reserved; pick another name`);
         const value = (input as Record<string, unknown>)[name];
         if (value === null && allowNull) {
             extra[name] = null;
@@ -168,15 +184,30 @@ function sameExtra(a: SessionWorkspaceExtra | undefined, b: SessionWorkspaceExtr
     return a.root === b.root && (a.folder ?? "") === (b.folder ?? "") && (a.required !== false) === (b.required !== false);
 }
 
+/** The same folder: root and folder, whatever its role or name. */
+export function sameFolder(a: { root: string; folder?: string } | null | undefined, b: { root: string; folder?: string } | null | undefined): boolean {
+    if (!a || !b) return !a && !b;
+    return a.root === b.root && (a.folder ?? "") === (b.folder ?? "");
+}
+
 /** Two records name the same folders: the working folder and every extra folder. Both must already be normalized. */
 export function sameWorkspace(a: SessionWorkspace | null | undefined, b: SessionWorkspace | null | undefined): boolean {
     if (!sameWorkingFolder(a, b)) return false;
     if (!a || !b) return true;
     const names = new Set([...Object.keys(a.extra ?? {}), ...Object.keys(b.extra ?? {})]);
     for (const name of names) {
-        if (!sameExtra(a.extra?.[name], b.extra?.[name])) return false;
+        if (!sameExtra(own(a.extra, name), own(b.extra, name))) return false;
     }
     return true;
+}
+
+/**
+ * The extra folders of `next` to check before a change is stored: the ones
+ * that are new or whose folder moved. Kept folders and a changed `required`
+ * need no check; the session attaches them every turn.
+ */
+export function changedExtraNames(previous: SessionWorkspace | null | undefined, next: SessionWorkspace | null | undefined): string[] {
+    return Object.keys(next?.extra ?? {}).filter((name) => !sameFolder(own(previous?.extra, name), own(next?.extra, name))).sort();
 }
 
 /**
@@ -193,9 +224,9 @@ export function callChangesWorkingFolder(args: unknown): boolean {
     const raw = value as Record<string, unknown>;
     // Anything but a plain extra-only call is treated as a change of the
     // working folder, so a malformed call still gets the stricter handling.
-    // The handler drops the mark again if it accepts extras only.
-    const extraOnly = raw.extra !== undefined && raw.extra !== null
-        && raw.root === undefined && raw.folder === undefined && raw.clear !== true;
+    // The handler drops the mark again if it accepts extras only. null is
+    // "not given", as in the merge.
+    const extraOnly = present(raw.extra) && !present(raw.root) && !present(raw.folder) && raw.clear !== true;
     return !extraOnly;
 }
 
@@ -233,10 +264,10 @@ export type WorkspaceMerge =
  * it keeps.
  */
 export function mergeWorkspaceChange(current: SessionWorkspace | null | undefined, change: WorkspaceChangeInput): WorkspaceMerge {
-    const hasRoot = change.root !== undefined && change.root !== null;
-    const hasFolder = change.folder !== undefined && change.folder !== null;
-    const hasExtra = change.extra !== undefined && change.extra !== null;
-    if (change.clear !== undefined && change.clear !== true && change.clear !== false) return invalid("clear must be true or false");
+    const hasRoot = present(change.root);
+    const hasFolder = present(change.folder);
+    const hasExtra = present(change.extra);
+    if (present(change.clear) && change.clear !== true && change.clear !== false) return invalid("clear must be true or false");
     if (change.clear === true) {
         if (hasRoot || hasFolder || hasExtra) return invalid("pass either clear=true or a change, not both");
         const removed = Object.keys(current?.extra ?? {});
@@ -259,13 +290,14 @@ export function mergeWorkspaceChange(current: SessionWorkspace | null | undefine
     const replaced: string[] = [];
     const removed: string[] = [];
     for (const [name, value] of Object.entries(patch)) {
+        const existing = own(extra, name);
         if (value === null) {
-            if (!extra[name]) return invalid(`no extra folder is named "${name}"`);
+            if (!existing) return invalid(`no extra folder is named "${name}"`);
             delete extra[name];
             removed.push(name);
         } else {
-            if (!extra[name]) added.push(name);
-            else if (!sameExtra(extra[name], value)) replaced.push(name);
+            if (!existing) added.push(name);
+            else if (!sameFolder(existing, value)) replaced.push(name);
             extra[name] = value;
         }
     }

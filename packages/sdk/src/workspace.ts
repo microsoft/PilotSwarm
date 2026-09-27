@@ -347,6 +347,7 @@ export function workspaceReleaseReason(trigger: string): WorkspaceReleaseReason 
         case "eviction": return "evicted";
         case "worker_shutdown": return "shutdown";
         case "spawn_check": return "spawn_check";
+        case "set_check": return "set_check";
         default: return "moved";
     }
 }

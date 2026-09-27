@@ -1539,7 +1539,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Set ({ root, folder }) or clear (null) the session's workspace. expectedRevision must match the current revision. Applied between turns; answers with the new revision or a WORKSPACE_* error code.
+     * Set ({ root, folder, extra }) or clear (null) the session's workspace. A record without extra keeps the session's extra folders; extra (even {} or null) sets exactly those. expectedRevision must match the current revision. Applied between turns; answers with the new revision or a WORKSPACE_* error code.
      * @remarks `PUT /management/sessions/:sessionId/workspace` — access: `session:manage`
      */
     setSessionWorkspace(params: {

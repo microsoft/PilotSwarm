@@ -378,12 +378,10 @@ test("a change of extra folders keeps the warm session: they are not part of the
     const same = await h.manager.getOrCreate("s1", withLogs, { turnIndex: 1 });
     assert.equal(same, first, "adding an extra folder keeps the handle, so running shells keep running");
     assert.equal(h.calls.length, 1);
-    const digest = (extras) => bindingFingerprintDigest(buildBindingFingerprintInput({
-        capabilityFingerprint: "c", baseAgentPolicy: undefined, sdkSkillDirectories: [], boundAgentName: undefined,
-        boundAgentSource: undefined, boundAgentCopy: undefined, mcpServers: {}, excludedTools: [], tools: [],
-        workspace: { path: "/ws/a/repo-x", adopt: null, ...(extras ? { extras } : {}) },
-    }));
-    assert.equal(digest(undefined), digest(["/ws/logs/svc"]), "the fingerprint input ignores anything but path, adopt and the repo hash");
+    // The kept handle takes the turn's record: its tools read it (review M1).
+    assert.deepEqual(same.getWorkspaceState().workspace, withLogs.workspace);
+    await h.manager.getOrCreate("s1", { workspace: WORKSPACE, workspaceAttach: attach() }, { turnIndex: 2 });
+    assert.deepEqual(same.getWorkspaceState().workspace, WORKSPACE, "and again when the extra folder is removed");
 });
 
 test("an extra-folder-only set call marks no change, so the calls after it in the same message run", async () => {
