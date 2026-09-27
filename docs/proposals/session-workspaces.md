@@ -2053,8 +2053,12 @@ How it is deployed and tested:
   `USER_POOL_MIN_COUNT=2` in the environment settings raises the minimum.
   The repo pod gets its own node pool, `repocache`, so it never competes
   with workers for memory (section 5.5).
-- **Switching it on:** `WORKSPACES_ENABLED=true` in the environment settings
-  (for the release environment, a line in its `AZURE_DEPLOY_ENV` secret).
+- **Switching it on:** `WORKSPACES_ENABLED=true` in the environment settings.
+  For the release environment, two GitHub environment variables on
+  `azure-deploy`, `WORKSPACES_ENABLED=true` and `USER_POOL_MIN_COUNT=2`,
+  which both deploy workflows pass to the deploy; a set variable wins over
+  the same key in the `AZURE_DEPLOY_ENV` secret. They are not secrets, so
+  they stay readable and editable.
   One function, `workspacesEnabled()` in `deploy/scripts/lib/workspaces.mjs`,
   decides both effects: whether repo-cache deploys, and whether the staged
   worker and portal overlays get the component. A value other than `true` or

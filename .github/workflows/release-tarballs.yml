@@ -82,3 +82,9 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          # Plain switches, from the environment's variables rather than the
+          # secret. A set variable wins over the same key in AZURE_DEPLOY_ENV;
+          # an unset one is empty and changes nothing (loadEnv in
+          # deploy/scripts/lib/common.mjs).
+          WORKSPACES_ENABLED: ${{ vars.WORKSPACES_ENABLED }}
+          USER_POOL_MIN_COUNT: ${{ vars.USER_POOL_MIN_COUNT }}

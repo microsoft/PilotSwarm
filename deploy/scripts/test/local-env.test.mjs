@@ -164,6 +164,33 @@ test("an old local env without the node-pool and workspaces keys gets their defa
   }
 });
 
+test("a process variable sets the workspaces and node-pool keys over the file (how the deploy workflows pass GitHub variables)", () => {
+  cleanup();
+  const keys = ["WORKSPACES_ENABLED", "USER_POOL_MIN_COUNT"];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nWORKSPACES_ENABLED=false\n");
+    process.env.WORKSPACES_ENABLED = "true";
+    process.env.USER_POOL_MIN_COUNT = "2";
+    const { env } = loadEnv(TEST_NAME);
+    assert.equal(env.WORKSPACES_ENABLED, "true");
+    assert.equal(env.USER_POOL_MIN_COUNT, "2");
+    // An unset GitHub variable arrives empty and changes nothing.
+    process.env.WORKSPACES_ENABLED = "";
+    process.env.USER_POOL_MIN_COUNT = "";
+    const unset = loadEnv(TEST_NAME).env;
+    assert.equal(unset.WORKSPACES_ENABLED, "false");
+    assert.equal(unset.USER_POOL_MIN_COUNT, "1");
+  } finally {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
+    cleanup();
+  }
+});
+
 test("loadEnv() throws helpful message when local env is missing", () => {
   cleanup();
   assert.throws(
