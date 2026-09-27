@@ -1,8 +1,10 @@
 # Session workspaces
 
-**Status:** Proposal, reviewed, not implemented. **Date:** 2026-09-26, revision 3.
-Revision 3 folds in review feedback and live checks against the real Copilot
-CLI. It replaces the earlier drafts.
+**Status:** Phases 1 and 2 implemented on a feature branch; phase 3 (the
+reference deployment in the release environment) not started. **Date:**
+2026-09-27, revision 4. Revision 3 folded in review feedback and live checks
+against the real Copilot CLI. Revision 4 records the fixes from the
+adversarial reviews of phase 2.
 
 An agent works in a real git checkout that lives on a separate repo pod. It
 uses its native tools and native git as if it were on a developer's machine.
@@ -84,8 +86,9 @@ on one worker, the retry may go to another worker.
 **A move to another worker, and back**
 
 ```text
-The session is pinned to worker 1. The pin ends, for example, after 30
-minutes with no turn, or when a long wait starts.
+The session is pinned to worker 1: its turns run there while it stays warm.
+PilotSwarm pins a session with an affinity key (section 2). The pin ends,
+for example, after 30 minutes with no turn, or when a long wait starts.
 1. Worker 1 stops the session's background shells and tasks, drops the
    session from memory, and tells the provider it left (release).
 2. PilotSwarm removes the pin. Any worker may run the next turn.
@@ -346,6 +349,13 @@ workspace, or when its agent definition lists `set_session_workspace` in
 `tools`. Every other session keeps its current tool list and prompt, byte for
 byte. Test C1 uses a session whose agent lists no workspace tool.
 
+The orchestration that runs the turn must also be 1.0.80 or later. An older
+one has no case for the tool's result, so it would drop a change the model
+was told was accepted. The worker reads the version from the activity
+context (`activityCtx.orchestrationVersion`) and declares no workspace tools
+for an older one. The next turn after the session continues as new on 1.0.80
+gets them.
+
 **Agent tool flow**
 
 ```text
@@ -354,7 +364,9 @@ byte. Test C1 uses a session whose agent lists no workspace tool.
      invalid folder or root            -> error text; the turn goes on
      same workspace as now             -> "no change" text; the turn goes on
      a task or shell is running        -> WORKSPACE_BUSY text; the turn goes on
-        (rpc.tasks.list(): any row of type agent or shell, status running or idle)
+        (rpc.tasks.list(): any row of type agent or shell, status running or idle,
+         with the same liveness test as the release in 4.5: a finished shell
+         whose pid is dead, or now runs another process, does not count)
 2. Otherwise the handler records the change as a pending action of type
    set_workspace and returns the acknowledgement:
      Workspace change accepted: root "a", folder "sessions/s-1/lib".
@@ -371,12 +383,25 @@ byte. Test C1 uses a session whose agent lists no workspace tool.
                           (set_workspace joins TERMINAL_TURN_BOUNDARY_ACTIONS)
    The hook is installed for every session that has the workspace tools, also
    when native tasks are off.
+   The CLI runs the pre-tool hooks of every call in one model message before
+   any handler. So the hook itself notes a set_session_workspace call when it
+   sees one, and refuses the calls after it in the same message with
+     "set_session_workspace, called earlier in this message, has not answered
+      yet. Wait for its answer; if it refuses the change, call this tool again."
+   If the handler refuses the change, the note is dropped and the turn goes on.
+   A call listed before set_session_workspace runs, in the old folder, as the
+   model asked.
 4. The model stops. The CLI fires session.idle. The turn result carries the action.
+   If the turn fails after the acknowledgement instead (the wall-clock cap, the
+   inactivity watchdog), the failed result still carries the accepted change.
+   The orchestration applies it, and the retry runs in the new folder.
 5. Orchestration stores the workspace, revision + 1, emits session.workspace_changed,
    and starts one system-only turn at once. That turn resumes the same conversation
    in the new folder, with the changed-cwd note in <system_context>:
-     "Working directory changed from <old> to <new>. Repo agents adopted: <names or none>.
-      Repo skills adopted: <names or none>. Continue your task."
+     "The working directory changed from root "a", folder "x" to root "a",
+      folder "y" (/ws/a/y)."
+   Repo agents and skills get their own note, only when the adopted set is new
+   or changed (section 4.6).
 ```
 
 Why step 3 exists: the turn ends only when the model yields. PilotSwarm never
@@ -396,6 +421,9 @@ fixed one model; the deny fixes the rest.
    runtime.session, the affinity-pinned proxy, so it lands on the worker that
    holds the session. It uses the same code as the turn preamble.
      fails -> the command is rejected; the old workspace stays
+     the activity itself fails (a worker without it, during a rolling deploy)
+           -> the command is rejected with WORKSPACE_ATTACH_FAILED; the session
+              keeps running
 4. It stores the new workspace and revision + 1, emits the event, and stores the
    changed-cwd note for the next turn (workspaceNotice, section 4.7).
 5. It does NOT continue-as-new with a bootstrap prompt and does NOT clear the idle
@@ -404,6 +432,10 @@ fixed one model; the deny fixes the rest.
 7. The external path runs no busy check. If a background shell is still running
    at that boundary, releaseWorkspace (section 4.5) cancels it before the new
    resume. The old folder gets no further writes.
+8. A clear leaves the old folder attached on the worker that holds the session.
+   The orchestration notes that a release is owed (workspaceReleasePending). The
+   next affinity release runs releaseWorkspace there once, even though the
+   session now has no workspace. A turn on that worker releases it first anyway.
 ```
 
 ### 4.4 Every turn of a workspace session
@@ -412,7 +444,8 @@ fixed one model; the deny fixes the rest.
 1. Store-wins preamble (as today)
 2. Attach: provider.ensureAttached, with a 30 s deadline
 3. Path check, out of process, 5 s: inside the root, a directory
-4. If adopted: read the repo's agents and skills (section 4.6)
+4. If adopted: read the repo's agents and skills, and stamp its instruction
+   files, all from the clone root (section 4.6)
 5. Create or resume the Copilot session with:
      workingDirectory       = attach path
      customAgents           = PilotSwarm agents + repo agents
@@ -421,14 +454,30 @@ fixed one model; the deny fixes the rest.
      custom_instructions    = PilotSwarm's base prepended, not replaced,
                               when instructions are adopted (see 4.6)
      enableFileHooks        = false     (repo hooks never run)
-   The path, the three adopt flags and the repo-agent hash join the session
-   fingerprint. A change to any of them drops the warm session and resumes the
-   same conversation from disk.
+   The path, the three adopt flags and the repo hash join the session
+   fingerprint. The repo hash covers the adopted agents and skills, and the
+   size and time of each instruction file when instructions are adopted. A
+   change to any of them drops the warm session and resumes the same
+   conversation from disk.
 6. Run the turn
 ```
 
-- **The clone root** is the nearest ancestor of the attach path, including
-  the path itself, that contains `.git`. If there is none, nothing is adopted.
+- **The clone root** is the nearest folder at or above the attach path, and
+  inside the root, that contains `.git`. Agents, skills and the skills folder
+  all come from it, so a workspace that is a subfolder of a clone adopts the
+  clone's agents. If there is none, nothing is adopted, and the adoption
+  report says why.
+- **After a clear.** A session whose workspace was cleared still sends its
+  revision with each turn. The worker then passes an explicit
+  `workingDirectory` (its own folder) and `enableFileHooks: false`. A resume
+  with no folder would fall back to the checkout the CLI session was created
+  in, and run that repo's hooks.
+- **Only workers that know workspaces run these turns.** The turn of a session
+  that has, or had, a workspace, and the `checkWorkspace` and
+  `releaseWorkspace` activities, carry the activity tag
+  `pilotswarm.workspaces.v1`. A worker declares the tag next to the handoff
+  tag. During a rolling deploy an older worker never takes this work; it would
+  run the turn in its own folder, and it lacks the two activities.
 - **One CLI process per credential and root.** One CLI process serves every
   workspace session that shares a credential and a root. Sessions on
   different roots get different processes, so a hung mount freezes only its
@@ -467,6 +516,16 @@ the session:
 4. provider.release(req)
 ```
 
+- **Which pid is the shell.** CLI 1.0.83 keeps a finished detached shell
+  listed as running, with its pid. The host may give that pid to another
+  process later. A pid counts as the shell only if its process did not start
+  after the task did (`/proc/<pid>/stat` on Linux, `ps -o lstart=`
+  elsewhere, with 2 s of slack). Any other process with that pid is never
+  killed.
+- **One deadline.** Steps 1 to 3 run under one 20 s deadline on the worker. A
+  CLI frozen by a hung mount never answers; the handle is dropped anyway, and
+  step 4 still runs.
+
 Step 1 is required. Live check on CLI 1.0.83: `disconnect()`, `client.stop()`,
 `abort()`, `forceStop()` and `rpc.shutdown()` all left a background shell
 running. Only `rpc.tasks.cancel` killed it, within 2 s, for attached and
@@ -479,21 +538,26 @@ When it runs:
 
 | Trigger | How |
 |---|---|
-| Every affinity release: the hold window ends, a wait or cron longer than the hold window is armed, a turn error, a lossy handoff, two failed attempts on one worker (4.7) | One call inside `releaseAffinity()`, taken only when `config.workspace` is set, so every present and future release site gets it. Sessions without a workspace schedule nothing new. |
-| Complete, cancel, delete | The existing session-pinned `destroySession` activity, extended to run steps 1–4 when the session has a workspace. No new yield. |
-| The workspace changes or is cleared | Steps 1–4 for the old folder, on the worker, before the new resume |
-| Graceful worker shutdown | Worker-side, after the drain, for idle workspace sessions still in memory |
+| Every affinity release: the hold window ends, a wait or cron longer than the hold window is armed, a turn error, a lossy handoff, two failed attempts on one worker (4.7) | One call inside `releaseAffinity()`, taken only when `config.workspace` is set or a cleared workspace is still owed a release, so every present and future release site gets it. Sessions that never had a workspace schedule nothing new. |
+| Complete, cancel, delete | The existing session-pinned `destroySession` activity, extended to run steps 1–4 when the session has a workspace. No new yield, and no race: the orchestration waits for `destroySession` as before. |
+| The workspace changes or is cleared | Steps 1–4 for the old folder, on the worker, before the new resume. This runs before the worker picks the CLI process for the turn, so a new root or a clear releases too. |
+| Any other drop of the in-memory copy: a model or agent change, a new epoch, a forced stop, a store-wins hydrate | Step 1, then disconnect. A resumed handle does not see the old handle's shells (CLI 1.0.83: `tasks.list()` is empty after a disconnect and resume), so no later release could stop them. |
+| Graceful worker shutdown | Worker-side, after the drain, for idle workspace sessions still in memory. The releases run side by side, each under its own deadline. |
 
 Rules:
 
-- The orchestration always races the activity against a timer
-  (`ctx.race(activity, ctx.scheduleTimer(cap))`), at every site. The cap is
-  10 s, under the 15 s retry floor. A session-pinned activity has no timeout
-  of its own, so this race is the only bound.
+- At every affinity release, the orchestration races the activity against a
+  timer (`ctx.race(activity, ctx.scheduleTimer(cap))`). The cap is 10 s,
+  under the 15 s retry floor. A session-pinned activity has no timeout of its
+  own, so this race is the only bound.
 - When the timer wins, the orchestration releases affinity anyway. The old
   worker still runs the activity when it recovers. Until then its copy can
   live, and its shells can write. That is why the provider must handle a
   stale holder (section 5.3).
+- A release that runs late must not undo a newer attach on the same worker.
+  The activity carries the affinity key it was sent under. The worker skips
+  an attach recorded under another key by a turn at or after the release's
+  turn index.
 - If the worker is dead, another worker may run the activity after the 30 s
   lock expires. It has no in-memory copy, so steps 1–3 do nothing and it
   skips step 4. The provider learns about the dead holder at the next
@@ -516,10 +580,20 @@ keep writing.
 | `.github/hooks/*` | Never. `enableFileHooks: false` on every create and resume. Verified: without it the CLI runs repo hook commands on every prompt. |
 
 The out-of-process path check reads these files, inside its deadline, only
-when `adopt` asks for agents or skills (`workspace-check.ts`). A file or
-folder whose real path leaves the workspace is never read and is reported
-as skipped. The CLI reads the skills folder itself, so one skill that
-leaves the workspace skips every repo skill.
+when `adopt` asks for them (`workspace-check.ts`). It reads from the clone
+root (section 4.4). For instructions it reads only a stamp: each known
+file's size and time. A file or folder whose real path leaves the clone root
+is never read and is reported as skipped. The CLI reads the skills folder
+itself, so one skill that leaves the clone skips every repo skill.
+
+Limits past the table, so a huge folder cannot use up the deadline:
+
+- At most 20 agent files past the 30th are looked at. The rest are counted in
+  one skipped entry and never opened.
+- Each agent file is read with a bounded read, so a file that grew after its
+  size check is still refused.
+- A skills folder with more than 200 entries adopts no skill. The CLI would
+  read every entry, and the check could not look at each one.
 
 Filters on each repo agent (`workspace-repo-agents.ts`):
 
@@ -530,13 +604,18 @@ Filters on each repo agent (`workspace-repo-agents.ts`):
   with no tools is skipped, because the CLI reads `[]` as "no tools". A file
   with no `tools` key passes none, and the CLI gives the agent every tool.
 - **MCP servers:** dropped.
-- **Model:** the agent runs on the session's model. The child guard pins the
-  model on every `task` call anyway. A different model in the file is
-  reported.
+- **Model:** the agent runs on the session's model. The native child guard
+  (the `onPreToolUse` hook in `native-subagents.ts` that checks every `task`
+  call, and every tool a native child calls) pins the model on every `task`
+  call anyway. A different model in the file is reported.
 - **Name collision:** a PilotSwarm agent with the same name wins (the two
   native profiles, the CLI's built-in agents, and the worker's loaded
   agents), and so does an earlier repo file with the same name. The skipped
   file is reported.
+- **Frontmatter:** a byte-order mark and spaces after `---` are allowed. A
+  file whose first line opens a frontmatter block that does not parse is
+  skipped and reported. It is never read as all prompt: its `tools:` line
+  would be lost, and the agent would get every tool.
 - Every drop is listed in `session.workspace_adopted.skipped`, with the
   agent's name when it was still adopted.
 
@@ -579,7 +658,10 @@ How agents are used:
   A change is a branch switch that edits the agent files, a flip of an
   `adopt` flag, or a new folder. The fingerprint carries a hash of the
   adopted content (`repoAgentHash`), so a changed set resumes the session
-  even when the path and `adopt` stay the same.
+  even when the path and `adopt` stay the same. When instructions are
+  adopted, the hash also covers each instruction file's size and time: the
+  CLI reads those files only when it creates or resumes the session, so an
+  edited `AGENTS.md` must resume it.
 - The CLI's on-demand instruction discovery stays off (its default).
 
 ### 4.7 Failures and held prompts
@@ -619,6 +701,30 @@ recovery the held references ride the turn input as `attachments`, so images
 reach the model. Attachment blobs must stay until the held prompt runs. That
 can be hours or days, not the 30-minute hold window.
 
+**Only a turn past the check counts.** The worker marks every result of a
+turn that got past the workspace check with `workspaceAttached: true`. That
+includes the result of a committed turn that a redelivered activity returns
+again. For a session with a workspace, the orchestration clears the held
+prompts and notes, and emits `session.workspace_available`, only on a marked
+result. An error the worker returns before the check (a failed budget query,
+a lock timeout) keeps the hold, the status and the retry step.
+
+**Held notes.** A refused turn may carry a note in its system-context block:
+a child update folded into the prompt, a cron or wait wake-up, a model
+notice. Each was taken from state when the turn was built, so dropping the
+note would lose it. The orchestration holds it (`workspaceHeldNote`) and
+sends it with the next turn that gets past the check, next to the pending
+workspace note. The retry and budget wake-ups' own sentences are left out:
+they describe the attempt, not the task. If the refused prompt interrupted
+the agent's own wait, that wait is kept and resumes after the turn that
+runs, as the held note tells the model.
+
+**Retry count.** A refusal by the workspace check does not reset the retry
+count, and the count is carried through continue-as-new while the session is
+held. So a retried turn that is held still gets the partial-changes note
+when it runs. Its prompt, which the first attempt recorded, is not recorded
+again when it is held.
+
 **Retry wake.** The retry timer has its own type, `workspace_retry`. When it
 fires, the worker runs only the attach and the path check. If they pass, the
 held prompts run as one normal turn. If they fail, no model call happens.
@@ -641,7 +747,9 @@ continue-as-new only when set and normalized from absent:
 |---|---|
 | `workspaceRevision` | The revision |
 | `workspaceStatus` | `ready` or `unavailable`, with the last code |
-| `workspaceNotice` | The pending changed-cwd or agents-changed note. Consumed by the next turn of any kind, including a system-only turn such as the retry wake or a cron turn. Never stored in `pendingSystemPrompt`, which would force a model turn. |
+| `workspaceNotice` | The pending changed-cwd note. Consumed by the next turn of any kind that gets past the check, including a system-only turn such as the retry wake or a cron turn. Never stored in `pendingSystemPrompt`, which would force a model turn. |
+| `workspaceHeldNote` | The notes of refused turns, sent with `workspaceNotice` and consumed with it |
+| `workspaceReleasePending` | A cleared workspace is still owed a release on the worker that held it (4.3, 4.5) |
 | `workspaceRetry` | `{ step, failures: { workerNodeId, count } }`. Reset on `workspace_available`. Task progress never resets it early. |
 
 **Two failures on one worker.** Two attempts in a row on one worker where
@@ -689,6 +797,11 @@ and TUI. A method missing from `HttpApiTransport` shows in the portal as
 error, held-prompt count, and the adopted agents and skills. It reads them
 from the latest workspace events, so no CMS migration is needed in v1.
 
+Set and retry wait for the orchestration's answer: 120 s and 60 s by
+default. The caller may pass another wait, from 1 s to 5 minutes; the Web
+API, MCP and the management client all clamp it, since the wait holds the
+caller's request.
+
 **Events**
 
 | Event | Payload |
@@ -697,30 +810,34 @@ from the latest workspace events, so no CMS migration is needed in v1.
 | `session.workspace_unavailable` | `{ revision, code, message, workerNodeId }` |
 | `session.workspace_available` | `{ revision }` |
 | `session.workspace_adopted` | `{ revision, agents, skills, skipped }` |
+| `session.workspace_released` | `{ reason, cancelled, workerNodeId, detail? }`. Written by the worker that ran the release (4.5): `cancelled` counts the tasks it stopped, `detail` names what did not finish. |
 
 **Errors:** `WORKSPACE_ROOT_UNKNOWN`, `WORKSPACE_PATH_INVALID` (also a
 symlink that leaves the root, and a folder that fails the text check),
 `WORKSPACE_FOLDER_MISSING` (also a file, a FIFO or a symlink to a file),
 `WORKSPACE_CHECK_TIMEOUT`, `WORKSPACE_ATTACH_TIMEOUT` (the 30 s attach
 deadline passed), `WORKSPACE_ATTACH_FAILED` (the provider threw or returned
-no path), `WORKSPACE_REVISION_CONFLICT`, `WORKSPACE_BUSY`. Provider codes,
+no path, or the check activity did not run), `WORKSPACE_REVISION_CONFLICT`,
+`WORKSPACE_BUSY`. Provider codes,
 such as `WORKSPACE_IN_USE`, pass through unchanged.
 
 ### 4.9 Compatibility: additive by construction
 
-There is no feature flag. Every change is triggered by "this session has a
-workspace", or, for the tool declarations only, by the agent definition
-listing `set_session_workspace` (section 4.3). Tests C1–C6 prove that nothing
-else changes.
+There is no feature flag. Every change is triggered by "this session has, or
+had, a workspace", or, for the tool declarations and the deny hook only, by
+the agent definition listing `set_session_workspace` (section 4.3). Tests
+C1–C6 prove that nothing else changes.
 
 | Shared place | Rule |
 |---|---|
-| Tool declarations | New tools and the `spawn_agent` parameter appear only under the rule in section 4.3 |
+| Tool declarations | New tools and the `spawn_agent` parameter appear only under the rule in section 4.3, and only when the orchestration running the turn is 1.0.80 or later |
 | Session fingerprint (`session-manager.ts`) | Add keys only when a workspace is set |
 | `workingDirectory` | Passed for every session today. A workspace session overrides the value for that turn (section 4.1). |
 | Child config (`session-proxy.ts`, `orchestration/agents.ts`), `projectSerializableSessionConfig` | Add `workspace` only when it is set |
-| CLI client pool, `skipCustomInstructions`, `enableFileHooks`, `customAgents`, the native deny hook | Change only for workspace sessions |
-| Orchestration | 1.0.80; freeze 1.0.79. Sessions without a workspace schedule the same activities and timers. The orchestration reacts to `config.workspace`, which is recorded data. Frozen 1.0.79 imports the live `session-proxy.ts`, `wait-affinity.ts` and `provider-budgets.ts`, so any change to a shared type must stay backward compatible: new fields on the runTurn input (`turnMeta`), on `TurnResult` and on the `spawn_agent` action are optional and omitted when unset. The new activities (`releaseWorkspace`, `checkWorkspace`) are scheduled only from the 1.0.80 folder. C4 checks this. |
+| CLI client pool, `skipCustomInstructions`, `enableFileHooks`, `customAgents` | Change only for workspace sessions. After a clear, the session keeps an explicit `workingDirectory` and `enableFileHooks: false` (4.4). |
+| The workspace deny hook | Installed for every session that has the workspace tools (4.3), with or without a workspace |
+| Activity routing | The workspace tag goes only on the turns of a session that has, or had, a workspace, and on the two new activities (4.4). Every other activity keeps its tag. |
+| Orchestration | 1.0.80; freeze 1.0.79. Sessions without a workspace schedule the same activities and timers. The orchestration reacts to `config.workspace`, which is recorded data. Frozen 1.0.79 imports the live `session-proxy.ts`, `wait-affinity.ts` and `provider-budgets.ts`, so any change to a shared type must stay backward compatible: new fields on the runTurn input (`turnMeta`), on `TurnResult` (`workspaceAttached`) and on the `spawn_agent` action are optional and omitted when unset. The new activities (`releaseWorkspace`, `checkWorkspace`) are scheduled only from the 1.0.80 folder. C4 checks this. |
 | CMS | No migration in v1. The Web API, MCP and the portal read the current workspace from the latest `session.workspace_changed` event. The orchestration reads `config.workspace`. `sessions.creation_config` holds the creation-time workspace only and is never read as current. Session lists do not show or filter by workspace in v1. |
 
 ## 5. Reference deployment
@@ -763,13 +880,25 @@ Who runs as what:
   out `main`, and one can pop another's stash. The same holds for a parent
   and a child that share one clone (K15).
 - **Mirror maintenance.** Only the repo service runs git on a mirror. Set
-  `gc.auto=0`, `maintenance.auto=false`, `gc.pruneExpire=never`. Allowed:
-  `git gc`, `git maintenance run`, `git repack -A -d`, `git repack --cruft -d`,
-  `git repack -a -d -k`. Forbidden, because each one drops unreachable
-  objects that a clone may still borrow: `git prune`, `git gc --prune=<time>`,
-  `git repack -a -d` without `-A` or `-k`. Verified: each forbidden command
-  broke a clone (`fsck`: invalid sha1 pointer); each allowed one left it
-  clean. To reclaim space, first run `git repack -a -d` (no `-l`; `git gc`
+  `gc.auto=0`, `maintenance.auto=false`, `gc.pruneExpire=never`. A caller
+  names an operation and never passes git arguments. Each operation is one
+  fixed argument list, with `-c gc.pruneExpire=never` pinned:
+
+  ```text
+  gc                        git gc
+  maintenance-run           git maintenance run
+  repack-keep-unreachable   git repack -a -d -k
+  repack-cruft              git repack --cruft --cruft-expiration=never -d
+  ```
+
+  Everything else is refused, because many forms drop unreachable objects
+  that a clone may still borrow: `git prune`, `git gc --prune=<time>` (and
+  the abbreviation `--prun=`), `git repack -a -d` without `-k`,
+  `--cruft-expiration=now`, `--unpack-unreachable=now`,
+  `--no-keep-unreachable`. Verified: each such command broke a clone
+  (`fsck`: invalid sha1 pointer); each named operation left it clean, loose
+  or packed. The maintenance and mirror-fetch endpoints need an admin token
+  that workers never get, because an agent's shell can reach the service. To reclaim space, first run `git repack -a -d` (no `-l`; `git gc`
   inside a clone passes `-l` and copies nothing) inside every live clone and
   remove its alternates file, then prune the mirror. This copies the whole
   object store into each clone. Or prune only when the mirror has no live
@@ -849,7 +978,11 @@ Who runs as what:
 ensureAttached(req):
   1. root not in /proc/self/mountinfo -> ask the attacher over the socket (20 s limit)
   2. child process: stat <root>/.pilotswarm-export      (ESTALE -> remount, below)
-  3. child process: stat <root>/<folder>                (must be a directory)
+  3. child process: stat <root>/<folder>                (must be a directory), and resolve
+                                                         its real path inside the root
+     the real path's first three parts name the checkout, sessions/<rootSessionId>/<repo>,
+     so a folder inside a clone leases that clone. A folder that is not in a session
+     clone (the root, sessions, or sessions/<tree>) -> WORKSPACE_PATH_INVALID
   4. POST <repo service>/v1/leases
        { checkout: "sessions/<rootSessionId>/<repo>", sessionId, rootSessionId, workerNodeId, turnIndex }
        the checkout's clone record names another tree -> { ok: false, code: "WORKSPACE_IN_USE" },
@@ -860,7 +993,10 @@ ensureAttached(req):
        otherwise                                       -> the service adds or refreshes this
                                                          session's entry
   5. return { ok: true, path, adopt }                   (adopt comes from per-repo config)
-release(req): DELETE the caller's entry. The clone stays owned by its tree until it is deleted.
+release(req): DELETE the caller's entry, with its workerNodeId and turnIndex. The service
+  deletes it only if the entry names that worker and is not from a newer turn: a release
+  that arrives late must not delete the entry of the worker that took over. The clone
+  stays owned by its tree until it is deleted.
 ```
 
 The reference provider's own error codes, which PilotSwarm passes through:
@@ -880,6 +1016,10 @@ Lease rules, kept by the repo service and not on the export:
   its time is older than the hold window plus the eviction margin (about 40
   minutes, or longer if the deployment raises `PILOTSWARM_SESSION_EVICT_MS`).
   Git lock files are removed only when no live entry remains.
+- The service acts as a more privileged uid than sessions, and a session can
+  plant links in its own clone. So the service refuses to delete a clone, or
+  remove lock files, through a folder or a `.git` that is a link. It creates
+  the tree folder and runs the clone as the session uid.
 - "Released" means "not on a worker". It does not free the checkout for
   another tree. Only cleanup, after the tree ends, does that.
 - The lease is metadata for cleanup and stale-lock removal. PilotSwarm does
@@ -1113,11 +1253,10 @@ tests that drive `SessionManager` directly. These helpers close that gap:
 | `createGitFixture()` | Builds a small git setup in a temp folder. Details below. | `test/helpers/git-fixture.mjs` |
 | Token-protected git server | A small Node HTTP server in front of `git http-backend`. It answers 401 with `WWW-Authenticate: Basic` and accepts only the fake minter's token as the password. | `test/helpers/git-token-server.mjs` |
 | Fake `WorkspaceProvider` | Records every call with its order. Plays back scripted outcomes: ok, fail N times, hang, or a given error code. | `test/helpers/fake-workspace-provider.mjs` |
-| Hung-check hook | A test-only switch that makes PilotSwarm's path-check process sleep. A local `stat` never hangs, so this is the only way to test F3 and F5. | Phase 2, in `workspace-check.ts` |
-| Schedule override | A test-only orchestration input that shortens the retry schedule, so F2 and F4 run in seconds. | Phase 2, in orchestration 1.0.80 |
+| Hung-check hook | A test-only switch that makes PilotSwarm's path-check process sleep. A local `stat` never hangs, so this is the only way to test F3 and F5. The hook runs when a check starts, so a test can wait for that start instead of sleeping. | `setWorkspaceCheckTestHook` in `workspace-check.ts` |
+| Schedule override | A test-only orchestration input that shortens the retry schedule, so F2 and F4 run in seconds. | `workspaceRetryScheduleMs` in orchestration 1.0.80 |
 
-The last two switch code that does not exist yet, so they are built in phase 2
-with that code.
+The last two were built in phase 2, with the code they switch.
 
 **Scripted-model harness**
 
@@ -1195,7 +1334,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | B9 | L | Clearing returns to `config.workingDirectory`, else the process cwd, and deletes no files |
 | B10 | L | `spawn_agent` workspace: omitted inherits, a record is used, `null` gives none and the child lands in the default cwd, a bad folder fails at spawn |
 | B11 | L | The client, Web API, `HttpApiTransport` and MCP give the same results |
-| B12 | U, L | U: build a store and `PilotSwarmUiController` (`packages/app/ui/core`) with a fake transport whose `getSessionWorkspace` returns a held workspace, and assert the shared selector (`selectSessionWorkspace`) reports root, folder, status, revision, adopted agents and which actions apply; that set, clear and retry send the revision the view was read at; that the portal's Manage dialog (`web-app.js`) and the TUI keys (`tui/src/app.js`: `W` set or clear, `Y` retry) reach the same three commands; and that the stats tab's Workspace block and the set dialog render in `app-render-smoke.test.mjs`. L: the portal reads the workspace through `HttpApiTransport.getSessionWorkspace`, which B11 checks against the other clients. |
+| B12 | U, L | U: a store and a `PilotSwarmUiController` (`packages/app/ui/core`) run with a fake transport whose `getSessionWorkspace` returns a held workspace. The shared selector (`selectSessionWorkspace`) reports root, folder, status, revision, adopted agents, and which actions apply. Set, clear and retry send the revision the view was read at. The portal's Manage dialog (`web-app.js`) and the TUI keys (`tui/src/app.js`: `W` set or clear, `Y` retry) reach the same three commands. The stats tab's Workspace block and the set dialog render in `app-render-smoke.test.mjs`. L: the portal reads the workspace through `HttpApiTransport.getSessionWorkspace`, which B11 checks against the other clients. |
 | B13 | L | A session created with a workspace emits `workspace_changed` with revision 1 on its first turn; `getSessionWorkspace` returns it |
 | B14 | L | `setSessionWorkspace` sent during a running turn: that turn's `pwd` stays the old folder until it ends; `session.workspace_changed` is emitted after `turn.complete`; a detached shell started in that turn is cancelled; the next turn runs in the new folder with the changed-cwd note |
 
@@ -1233,7 +1372,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | ID | Level | Required result |
 |---|---|---|
 | A1 | L | A repo agent appears in the agent list and the `task` tool only when `adopt.agents` is set and native tasks are on |
-| A2 | L | Names pass through; a `read`/`search` agent ends up with `view`; MCP-qualified and PilotSwarm names are dropped; a different `model` is reported and the session model is used; an agent with no usable tools is skipped, never passed `[]`; a name collision is reported. A `task` call with an adopted agent's name is allowed by the child guard, and that child can use a listed tool that swarm children may not (`create`); a non-adopted name is still denied. |
+| A2 | L | Names pass through, and a `read`/`search` agent ends up with `view`. MCP-qualified and PilotSwarm names are dropped. A different `model` is reported, and the session model is used. An agent with no usable tools is skipped, never passed `[]`. A name collision is reported. The native child guard allows a `task` call with an adopted agent's name. That child can use a listed tool that PilotSwarm's own children (`swarm-explore`, `swarm-task`) may not use (`create`). A name that was not adopted is still denied. |
 | A3 | L | Repo skills load through `skillDirectories`. Instructions load only when `adopt.instructions` is set. |
 | A4 | L | A branch switch, or a flip of any `adopt` flag between turns (the fake provider returns all three true, then all false), gives the next turn one resume with the new set: repo agents gone from the `task` tool list, no repo skills, `AGENTS.md` not loaded, and the agents-changed note. A third turn with the same adopt causes no resume. |
 | A5 | L | Neither the repo MCP config nor a repo hook starts a process: no marker files after a full turn |
@@ -1243,7 +1382,7 @@ The existing kill harness covers crashes mid-turn (M3).
 
 | ID | Level | Required result |
 |---|---|---|
-| R1 | L | A second tree calling `ensureAttached` on tree A's checkout gets `WORKSPACE_IN_USE` while A holds a live entry and after A's idle release removed every entry; a child of tree A attaches; cleanup (`DELETE /v1/clones`) is refused while any entry is live; after it runs, the second tree is no longer refused as "in use" (the checkout is gone: `WORKSPACE_FOLDER_MISSING`) and makes its own clone |
+| R1 | L | A second tree that calls `ensureAttached` on tree A's checkout gets `WORKSPACE_IN_USE`: while A holds a live entry, and also after A's idle release removed every entry. A child of tree A attaches. Cleanup (`DELETE /v1/clones`) is refused while any entry is live. After cleanup runs, the checkout is gone: the second tree gets `WORKSPACE_FOLDER_MISSING` instead, and makes its own clone. |
 | R2 | L | Deleting the bound folder makes the next turn fail its path check with `WORKSPACE_FOLDER_MISSING`: no model call, the prompt is held, `session.workspace_unavailable` is emitted. Recreating the folder and calling `retrySessionWorkspace` runs the held prompt exactly once. Cleanup refuses a checkout with a live lease entry. |
 | R3 | L | Two external setters racing on one `expectedRevision`: one wins, one gets `WORKSPACE_REVISION_CONFLICT`. The revision rises by exactly one. |
 | R4 | L | The fake provider drops root B after start-up: `set_session_workspace` and `spawn_agent` reject B with `WORKSPACE_ROOT_UNKNOWN`; a session created with root B is held with `WORKSPACE_ROOT_UNKNOWN` on its first turn; a session already on B is held with `WORKSPACE_ROOT_UNKNOWN` and its held prompt runs once when B returns. A root C added after start-up is usable without a worker restart. |
@@ -1254,7 +1393,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | ID | Level | Required result |
 |---|---|---|
 | G1 | L | Two session clones of one mirror can both check out `main`, stash, and create same-named branches without interfering (fixture check) |
-| G2 | L | After an upstream force push and a mirror `fetch --prune`, with the mirror built twice (unreachable objects loose, then packed), each allowed maintenance command leaves the clones `fsck`-clean in both layouts, and each forbidden command is refused by the repo service. Run with the refusal removed, `git prune` breaks the loose layout and `git repack -a -d` breaks the packed one. |
+| G2 | L | After an upstream force push and a mirror `fetch --prune`, with the mirror built twice (unreachable objects loose, then packed), each named maintenance operation leaves the clones `fsck`-clean in both layouts. A body that tries to pass git arguments, an unknown operation, and a call without the admin token are refused. Each operation's fixed arguments pin `gc.pruneExpire=never` or keep unreachable objects; a test checks the table itself, so a pruning form cannot be added unnoticed. |
 | G3 | Q | A commit made on the agent pod shows the same bytes and commit ID on the repo pod |
 | G4 | Q | A push from the agent pod through the credential helper works; a push to a protected branch is rejected by the server; a credential fill request for an unknown host returns no token |
 | G5 | L | After the mirror has fetched new upstream commits, a fetch in a session clone downloads zero objects; a clone without alternates downloads them all (fixture check) |
@@ -1283,6 +1422,35 @@ The existing kill harness covers crashes mid-turn (M3).
 | P3 | P | 100 sessions running search, edit, status and commit: repo pod CPU, disk and NFS latency within budget, with no turn stalls |
 | P4 | P | 20 session clones created at once |
 
+### Fixes from the adversarial reviews (2026-09-27)
+
+Four reviewers read phase 2: orchestration, worker and CLI, security, and
+tests and docs. Each confirmed finding has a test that fails with the fix
+removed.
+
+| Finding | Fix | Test |
+|---|---|---|
+| An error returned before the workspace check dropped held prompts and marked the workspace available | Results past the check are marked `workspaceAttached`; only those clear the hold (4.7) | gate test "an error returned before the workspace check" |
+| A child update folded into a refused prompt was lost; a refused cron, cron_at or wait wake-up was not delivered | The refused turn's note is held and sent with the next turn that runs (4.7) | gate tests F2 and F5 |
+| A session on 1.0.79 could get `set_session_workspace` and drop its result | Workspace tools only for orchestration 1.0.80 or later (4.3) | binding test "before 1.0.80" |
+| A refused retry lost the partial-changes note and recorded its prompt twice | The retry count survives a refusal and a continue-as-new while held (4.7) | gate test F4 |
+| After a clear, the old checkout's shells ran until eviction | A release is owed after a clear (4.3, 4.5) | gate test F6 |
+| A late release could undo a newer attach on the same worker | The release carries its affinity key; a newer attach is skipped (4.5) | binding test F7 |
+| A turn cut by the wall-clock cap dropped an accepted change | The failed result carries the change (4.3) | local test "review F8" |
+| During a rolling deploy, an older worker could run a workspace turn or fail the new activities | The workspace activity tag (4.4); a failed check activity answers the command | routing tests, gate test "a check activity that fails" |
+| After a clear, turns ran in the old checkout with its hooks | An explicit folder and hooks off after a clear (4.4) | local test "review R1, R2" |
+| Most drops of the in-memory session orphaned its shells | Every drop stops the shells first; the release runs before the CLI process is picked (4.5) | binding and release tests R2 |
+| A call sent after `set_session_workspace` in the same message ran in the old folder | The hook marks the change when it sees the call (4.3) | local test "review R3" |
+| A finished shell's reused pid could get another process killed; a finished shell made the session look busy | The pid must belong to a process that did not start after the task (4.5) | process-tree and release tests R4 |
+| A late release from the old worker deleted the new worker's lease entry | The service deletes only the holder's own entry (12.1) | example test "review R5" |
+| A subfolder workspace adopted nothing, and a folder outside any clone adopted | The clone-root rule (4.4) | repo agents test R6 |
+| An edited `AGENTS.md` did not reach a warm session | The instruction stamp joins the repo hash (4.6) | repo agents test R7 |
+| A byte-order mark or spaces after `---` gave a restricted agent every tool | The parser allows both and refuses what it cannot read (4.6) | repo agents test R8 |
+| A frozen CLI held the release, and the shutdown released one session at a time | One deadline per release; shutdown releases side by side (4.5) | binding test R9 |
+| A huge agents or skills folder could use up the check's deadline | Caps on what the check looks at (4.6) | repo agents test S-W4 |
+| A caller could make the Web API wait without limit | The wait is clamped (4.8) | web runtime test |
+| The reference provider leased no subfolder; maintenance let pruning commands through; the service followed links a session can plant | Lease the containing clone; named operations with an admin token; links refused (5.x, 12.1) | example tests |
+
 ## 10. Decisions, verified facts and open items
 
 **Decided on 2026-09-26**
@@ -1305,6 +1473,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | A reference deployment in the release environment, using the public PilotSwarm repo | Each downstream deployment designing its own |
 | C1 is a differential test against the merge-base | A checked-in golden |
 | Local tests use a scripted model and simulated git | Real models and real git servers |
+| Workspace turns and activities routed by an activity tag, `pilotswarm.workspaces.v1` (added 2026-09-27) | Relying on activity names during a rolling deploy |
 
 **Verified with the real CLI 1.0.83 and a fake model endpoint**
 
@@ -1327,10 +1496,21 @@ The existing kill harness covers crashes mid-turn (M3).
 | `rpc.tasks.cancel` on a shell task | Killed within 2 s, attached or detached, if the session was not aborted |
 | `rpc.tasks.cancel` on a detached shell after `abort()` | Answers `{ cancelled: false }`; the shell keeps running (test F10) |
 | The pid the CLI reports for a detached shell | Not a process-group leader, so a group kill misses its children; PilotSwarm kills the process tree instead |
-| A shell task after its process dies | Still listed as running |
+| A shell task after its process dies | Still listed as running, with its pid. `tasks.cancel` on it answers `{ cancelled: false }`, and after that the CLI marks it completed. The host may give the pid to another process later, so PilotSwarm checks the process start time before it kills. |
+| `disconnect()`, then a resume of the same session | `tasks.list()` on the new handle is empty; the old handle's shells keep running, and no later call can find them |
+| Several tool calls in one model message | The pre-tool hook runs for every call, in message order, before any handler. A mark set in a handler comes too late for the calls after it. |
+| Instruction files such as `AGENTS.md` | Read when the CLI session is created or resumed; a warm session keeps the old text after the file changes |
 | An attached async shell | Keeps the turn open until it exits |
 | A stop while a shell is blocked | Returns to PilotSwarm in about 10 ms |
 | Two captures of one fixed session | Differ only in the CLI-owned cwd, git root, tools and session-folder lines |
+
+**Verified with Duroxide (the durable-execution runtime)**
+
+| Check | Result |
+|---|---|
+| `activityCtx.orchestrationVersion` | The version of the execution that scheduled the activity: 1.0.79 before a continue-as-new into 1.0.80, 1.0.80 after it |
+| `activityCtx.sessionId` for a session-scheduled activity | The affinity key it was scheduled under |
+| A worker whose tag filter lacks an activity's tag | Never dequeues it; the work waits for a worker that declares the tag |
 
 **Verified with real models: what happens after the acknowledgement**
 
@@ -1450,7 +1630,7 @@ examples/repo-workspaces/                        maintained sample (built in pha
     provider.mjs           marker check, leases through the repo service, adopt from the repo config;
                            phase 3 adds the attacher socket (the attach option)
     tools.mjs              create, list and remove session clones through the repo service
-    repo-service.mjs       the repo service: clones, leases, stale locks, maintenance allowlist, tokens
+    repo-service.mjs       the repo service: clones, leases, stale locks, named maintenance, tokens
     credential-helper.mjs  the per-clone git credential helper
     agents/                repo-coder.agent.md, loaded through PLUGIN_DIRS (phase 3)
     README.md   how to copy the pattern
@@ -1463,13 +1643,14 @@ The repo service, inside the repo pod:
 
 | Part | What it does |
 |---|---|
-| Start-up | Mirrors the public PilotSwarm repo at `/ws/a/repos/pilotswarm.git` if it isn't there yet. Fetches every few minutes, following the mirror rules in section 5.1. |
-| `POST /v1/clones` | `{ repo, ref, rootSessionId }` creates a session clone as uid 1000 and returns `{ root, folder }` |
-| `GET /v1/clones` | Lists the clones of a session tree, with their lease entries |
-| `DELETE /v1/clones/{rootSessionId}/{repo}` | Removes a clone after its tree ends and no live lease entry remains |
-| `POST` / `DELETE /v1/leases` | Lease entries, section 5.3 |
+| Start-up | Phase 3: mirrors the public PilotSwarm repo at `/ws/a/repos/pilotswarm.git` if it isn't there yet, and fetches every few minutes, following the mirror rules in section 5.1. The phase 2 version makes a mirror on the first clone of a repo and fetches only when asked. |
+| `POST /v1/clones` | `{ rootSessionId, repo }` creates a session clone as uid 1000 from the mirror's default branch, and returns `{ workspace: { root, folder }, path, created }`. Again for the same tree and repo: the same clone, `created: false`. |
+| `GET /v1/clones?rootSessionId=` | Lists the clones of a session tree |
+| `DELETE /v1/clones` | `{ rootSessionId, repo }`: removes a clone after its tree ends and no live lease entry remains. Refused when a folder on the way is a link. |
+| `POST` / `DELETE /v1/leases` | Lease entries, section 5.3. A delete removes only the caller's own entry: the entry must name the caller's worker, and must not come from a newer turn, so a late release cannot remove the entry of the worker that took over. |
+| `POST /v1/mirrors/fetch`, `POST /v1/maintenance` | `{ repo }` and `{ repo, operation }`, with the admin token (`REPO_SERVICE_ADMIN_TOKEN`). Without a configured token both are off. |
 | Sandbox remote | A bare repo at `/ws/a/remotes/pilotswarm-sandbox.git`, owned by uid 2000 with mode 0755 like a mirror, so a session cannot edit its refs or hooks through the mount. Served over HTTP with Basic auth. It has the same `pre-receive` rules as the test fixture and no bypass of any kind. Session clones push here, never to GitHub. |
-| `POST /v1/token` | Mints short-lived sandbox tokens for the credential helper. It stands in for a real identity. Any session can call it; that is the accepted model (S7). |
+| `POST /v1/token` | `{ protocol, host, path }`: mints a short-lived sandbox token for the credential helper, for the remote of any repo the service serves, and for nothing else. It stands in for a real identity. Any session can call it, also for another served repo's remote; that is the accepted model (S7). |
 
 How it is deployed and tested:
 
