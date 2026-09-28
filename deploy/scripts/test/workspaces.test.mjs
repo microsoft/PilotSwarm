@@ -336,4 +336,7 @@ test("the pieces agree: roots, exports, paths, service address and sample files"
   assert.equal(repos.tfenv.upstream, "https://github.com/tfutils/tfenv.git");
   assert.equal(repos.tfenv.sandbox, true);
   assert.equal(repos.tfenv.adopt.agents, true);
+  // The test stamp removes idle clones after 6 hours, not the service's
+  // default 7 days; the service refuses a value that is not a number.
+  assert.equal(serviceEnv.REPO_SERVICE_IDLE_CLONE_HOURS, "6");
 });

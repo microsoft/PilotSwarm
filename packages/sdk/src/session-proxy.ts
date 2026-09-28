@@ -1240,14 +1240,17 @@ export function registerActivities(
             })), { workerNodeId: req.workerNodeId }).catch(() => undefined);
             return result;
         };
+        // A check runs no turn: the provider leaves one-time work, such as a
+        // notice, to the attach of the turn that follows.
+        const checkReq: import("./types.js").WorkspaceAttachRequest = { ...req, purpose: "check" };
         let path: string | null = null;
         if (!opts.skipWorkingFolder) {
-            const prepared = await prepareWorkspace(provider, req, { onAttach });
+            const prepared = await prepareWorkspace(provider, checkReq, { onAttach });
             if (!prepared.ok) return finish({ ok: false as const, code: prepared.code, message: prepared.message });
             path = prepared.path;
         }
         const extras = req.workspace.extra && Object.keys(req.workspace.extra).length > 0
-            ? await prepareWorkspaceExtras(provider, req, { onAttach, ...(opts.extras ? { names: opts.extras } : {}) })
+            ? await prepareWorkspaceExtras(provider, checkReq, { onAttach, ...(opts.extras ? { names: opts.extras } : {}) })
             : [];
         const bad = extras.find((extra) => !extra.ok);
         if (bad && !bad.ok) return finish({ ok: false as const, code: bad.code, message: `extra folder "${bad.name}": ${bad.message}` });
@@ -1694,6 +1697,10 @@ export function registerActivities(
         // the path. A failure calls no model. It returns the same `wait`
         // result the budget gate uses, with `gate: "workspace"`; the
         // orchestration holds the prompt and owns the retry schedule.
+        // Notes the provider gave with this turn's attaches (for example: the
+        // clone was made again). They ride this turn's prompt, like the
+        // changed-cwd note below.
+        const providerWorkspaceNotices: string[] = [];
         if (runConfig.workspace) {
             const workspaceRevision = input.workspaceRevision ?? 1;
             const attachWorker = workerNodeId ?? os.hostname();
@@ -1704,6 +1711,7 @@ export function registerActivities(
                 revision: workspaceRevision,
                 workerNodeId: attachWorker,
                 turnIndex: input.turnIndex ?? 0,
+                purpose: "turn" as const,
             };
             const holdForWorkspace = async (failure: { code: string; message: string; retryAfterMs?: number }, attachment?: string): Promise<TurnResult> => {
                 activityCtx.traceInfo(
@@ -1768,6 +1776,8 @@ export function registerActivities(
                     ...(heldBy.retryAfterMs !== undefined ? { retryAfterMs: heldBy.retryAfterMs } : {}),
                 }, heldBy.name);
             }
+            if (prepared.notice) providerWorkspaceNotices.push(prepared.notice);
+            for (const extra of extras) if (extra.ok && extra.notice) providerWorkspaceNotices.push(extra.notice);
             const extrasAttached = extras.flatMap((extra) => (extra.ok ? [extra.attach] : []));
             const extrasUnavailable = extras.flatMap((extra) => (extra.ok ? [] : [{
                 name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), code: extra.code, message: extra.message,
@@ -1823,20 +1833,23 @@ export function registerActivities(
         }
         // Session workspaces (1.0.80): the pending changed-cwd note rides the
         // prompt the model finally gets, after any held prompts are folded
-        // in, inside the trailing system-context block. It is recorded once
-        // as system.message so the transcript shows what the model was told.
+        // in, inside the trailing system-context block. The provider's notes
+        // from this turn's attaches follow it. Each is recorded once as
+        // system.message so the transcript shows what the model was told.
         {
             const notice = typeof input.workspaceNotice === "string" ? input.workspaceNotice.trim() : "";
-            if (notice) {
+            const notes = [...(notice ? [notice] : []), ...providerWorkspaceNotices];
+            if (notes.length > 0) {
+                const added = notes.join("\n\n");
                 const split = splitSystemContextBlock(effectivePrompt);
-                effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${notice}` : notice);
+                effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${added}` : added);
                 if (catalog && (input.retryCount ?? 0) === 0) {
                     await cmsRetryBestEffort(
                         `runTurn.recordEvent workspace-notice session=${input.sessionId}`,
-                        () => catalog!.recordEvents(input.sessionId, [{
+                        () => catalog!.recordEvents(input.sessionId, notes.map((content, index) => ({
                             eventType: "system.message",
-                            data: { content: notice, workspaceNotice: true },
-                        }], workerNodeId),
+                            data: { content, workspaceNotice: true, ...(index >= (notice ? 1 : 0) ? { source: "provider" } : {}) },
+                        })), workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
                     );
                 }

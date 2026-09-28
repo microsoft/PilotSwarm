@@ -392,6 +392,67 @@ describe("workspace turn", () => {
         }
     });
 
+    it("each attach says why (turn or check), and a provider's notice rides the next turn and is recorded once (B7b)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b7b-")));
+        fs.mkdirSync(path.join(root, "repo-x"));
+        fs.mkdirSync(path.join(root, "repo-y"));
+        const fake = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        // The provider gives a notice once, on the first turn attach of repo-y.
+        let told = false;
+        const provider = {
+            listRoots: () => fake.listRoots(),
+            release: (req) => fake.release(req),
+            async ensureAttached(req) {
+                const result = await fake.ensureAttached(req);
+                if (!result.ok || req.purpose !== "turn" || req.workspace.folder !== "repo-y" || told) return result;
+                told = true;
+                return { ...result, notice: "NOTICE-Y: this folder was made again; earlier changes are gone." };
+            },
+        };
+        const respond = scriptTurns([
+            [
+                { tools: [{ name: "set_session_workspace", args: { root: "a", folder: "repo-y" } }] },
+                { content: "stopping" },
+            ],
+            [
+                { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+                (_body, position) => ({ content: `out:${firstLine(position.toolResults)}` }),
+            ],
+            [{ content: "third" }],
+        ]);
+        try {
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, model, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
+                assertEqual(await session.sendAndWait("move to repo-y", TIMEOUT), `out:${path.join(root, "repo-y")}`);
+                assertEqual(await session.sendAndWait("and again", TIMEOUT), "third");
+
+                const attaches = fake.callsFor("ensureAttached", { sessionId }).map((call) => [call.req.workspace.folder, call.req.purpose]);
+                assertEqual(JSON.stringify(attaches), JSON.stringify([["repo-x", "turn"], ["repo-y", "check"], ["repo-y", "turn"], ["repo-y", "turn"]]),
+                    "turn attaches say turn; the check behind set_session_workspace says check");
+
+                const requests = model.sessionRequests("move to repo-y");
+                const continuation = requests.find((r) => r.position.turn === 2 && r.position.step === 0).position.lastUserText;
+                assert(continuation.indexOf("The working directory changed") >= 0 && continuation.indexOf("NOTICE-Y") > continuation.indexOf("The working directory changed"),
+                    `the continuation carries the changed-cwd note, then the provider's notice: ${continuation}`);
+                const third = requests.find((r) => r.position.turn === 3 && r.position.step === 0).position.lastUserText;
+                assertEqual(third.includes("NOTICE-Y"), false, "a notice the provider gave once is not repeated");
+
+                const catalog = await createCatalog(env);
+                try {
+                    const notes = (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "system.message" && e.data?.workspaceNotice);
+                    assertEqual(JSON.stringify(notes.map((e) => [e.data.source ?? "pilotswarm", e.data.content.startsWith("NOTICE-Y")])),
+                        JSON.stringify([["pilotswarm", false], ["provider", true]]), "both notes are in the history, the provider's marked as such");
+                } finally {
+                    await catalog.close?.();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it("the agent's change is refused with WORKSPACE_BUSY while a background shell runs, and 'no change' lets the turn go on (B8, B4)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b8-")));

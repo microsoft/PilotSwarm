@@ -58,6 +58,10 @@ remote has no issues or pull requests.
   token. Pushes to `main`, `master` and `release/*`, deletions and force
   pushes are refused there.
 - `git fetch origin` brings in the latest default branch from upstream.
+- Push before you stop. A clone that no session uses for a while is removed
+  (`list_session_clones` says after how many hours), and uncommitted or
+  unpushed work goes with it. If that happens, your next turn starts in a
+  fresh clone and you are told what was lost and where your pushed branch is.
 
 ## Care
 

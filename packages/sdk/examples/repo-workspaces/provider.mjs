@@ -5,9 +5,13 @@
  *   1. the root is not mounted here -> attach(root)          (a deployment's attacher; optional)
  *   2. child process: stat <root>/.pilotswarm-export         (an empty mount point is not a mount)
  *      and resolve the folder's real path under the root     (symlinks cannot pick the checkout)
+ *      The folder is missing, the attach is for a turn, and the folder names
+ *      this tree's clone -> POST <service>/v1/clones/restore, then look again
+ *      (only a clone that idle cleanup removed comes back)
  *   3. the real path must be sessions/<tree>/<repo>[/...]; its first three
  *      segments name the checkout -> POST <service>/v1/leases
- *   4. { ok: true, path, adopt }                             (adopt comes from the service's repo config)
+ *   4. { ok: true, path, adopt, notice? }                    (adopt comes from the service's repo config;
+ *                                                             notice, once, when the clone was made again)
  * release(req): DELETE the caller's lease entry for the checkout it attached,
  *   if this worker still holds it. Best effort.
  *
@@ -50,6 +54,34 @@ export function checkoutOf(relativeRealPath) {
     return parseCheckout(parts.slice(0, 3).join("/")) ? parts.slice(0, 3).join("/") : null;
 }
 
+/**
+ * What the model is told, once, when its clone was removed and made again:
+ * the old files are gone, and where pushed work still is.
+ */
+export function recreatedNotice(checkout, removal) {
+    const why = removal.reason === "idle"
+        ? `because no session had used it for ${removal.idleHours ?? "many"} hours`
+        : "because a session removed it";
+    const lines = [
+        `Your clone "${checkout}" was removed on ${removal.removedAt} ${why}. It has been made again as a fresh clone of ${removal.repo}.`,
+    ];
+    const lost = [];
+    if (removal.dirty === true) lost.push("uncommitted changes");
+    if (Number.isInteger(removal.unpushedCommits) && removal.unpushedCommits > 0) {
+        lost.push(`${removal.unpushedCommits} commit${removal.unpushedCommits === 1 ? "" : "s"} that no remote had`);
+    }
+    lines.push(lost.length > 0
+        ? `The old clone had ${lost.join(" and ")}. Those are gone.`
+        : "Uncommitted changes and unpushed commits in the old clone are gone.");
+    if (removal.branch) {
+        lines.push(`The old clone was on branch "${removal.branch}"${removal.head ? ` at ${String(removal.head).slice(0, 12)}` : ""}. `
+            + `If that branch was pushed, get it back with: git fetch origin && git switch ${removal.branch}`);
+    } else if (removal.head) {
+        lines.push(`The old clone was at commit ${String(removal.head).slice(0, 12)}, on no branch.`);
+    }
+    return lines.join("\n");
+}
+
 async function callService(fetchImpl, baseUrl, method, pathname, body, timeoutMs) {
     const response = await fetchImpl(new URL(pathname, baseUrl), {
         method,
@@ -72,16 +104,41 @@ async function callService(fetchImpl, baseUrl, method, pathname, body, timeoutMs
  * @param {(root: { name: string, path: string }) => Promise<void>} [options.attach]
  * @param {number} [options.statTimeoutMs]
  * @param {number} [options.serviceTimeoutMs]
+ * @param {number} [options.restoreTimeoutMs]  a restore clones the repo again; under PilotSwarm's 30 s attach deadline
  */
 export function createRepoWorkspaceProvider(options) {
     const roots = options.roots.map((root) => ({ name: root.name, path: root.path }));
     const statTimeoutMs = options.statTimeoutMs ?? 5_000;
     const serviceTimeoutMs = options.serviceTimeoutMs ?? 10_000;
+    const restoreTimeoutMs = options.restoreTimeoutMs ?? 20_000;
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     const fail = (code, message) => ({ ok: false, code, message });
     // What each session leased here, per workspace record, so a release names the same checkout.
     const leased = new Map();
     const leaseKey = (sessionId, workspace) => `${sessionId}\0${workspace?.root ?? ""}\0${workspace?.folder ?? ""}`;
+
+    /**
+     * A missing folder that names this tree's clone: ask the service to make
+     * it again. "restored" when it did (or another session just did);
+     * "no" when the service has nothing to bring back; or a failure to
+     * return. Checks never restore: only the turn that needs the folder does.
+     */
+    const restoreRemoved = async (root, folder, req) => {
+        if (req.purpose === "check") return "no";
+        const checkout = checkoutOf(path.posix.normalize(String(folder)));
+        const clone = checkout ? parseCheckout(checkout) : null;
+        const serviceUrl = options.serviceUrls[root.name];
+        if (!clone || clone.rootSessionId !== req.rootSessionId || !serviceUrl) return "no";
+        try {
+            await callService(fetchImpl, serviceUrl, "POST", "/v1/clones/restore", {
+                rootSessionId: clone.rootSessionId, repo: clone.repo, sessionId: req.sessionId,
+            }, restoreTimeoutMs);
+            return "restored";
+        } catch (error) {
+            if (error?.code === "NOT_RESTORABLE" || error?.code === "REPO_UNKNOWN") return "no";
+            return { ...fail("WORKSPACE_ATTACH_FAILED", `restoring ${checkout}: ${error?.message ?? error}`), retryAfterMs: 30_000 };
+        }
+    };
 
     return {
         async listRoots() {
@@ -97,7 +154,7 @@ export function createRepoWorkspaceProvider(options) {
                 }
             }
             const folder = req.workspace.folder ?? "";
-            const probe = await probeOutOfProcess(root.path, folder, statTimeoutMs);
+            let probe = await probeOutOfProcess(root.path, folder, statTimeoutMs);
             const marker = probe.marker;
             if (marker === "TIMEOUT") return { ...fail("WORKSPACE_ATTACH_TIMEOUT", `root "${root.name}" did not answer within ${statTimeoutMs} ms`), retryAfterMs: 30_000 };
             if (marker === "ESTALE") {
@@ -106,7 +163,15 @@ export function createRepoWorkspaceProvider(options) {
                 return { ...fail("WORKSPACE_STALE_MOUNT", `root "${root.name}" has a stale file handle; it needs a remount`), retryAfterMs: 30_000 };
             }
             if (marker !== "ok") return { ...fail("WORKSPACE_NOT_MOUNTED", `root "${root.name}" has no ${MARKER_FILE} marker (${marker})`), retryAfterMs: 30_000 };
-            if (probe.folderError) return fail("WORKSPACE_FOLDER_MISSING", `folder "${folder}" is not available (${probe.folderError})`);
+            if (probe.folderError) {
+                // Idle cleanup may have removed the clone while no session used it.
+                const restored = await restoreRemoved(root, folder, req);
+                if (restored !== "restored" && restored !== "no") return restored;
+                if (restored === "restored") probe = await probeOutOfProcess(root.path, folder, statTimeoutMs);
+                if (probe.marker !== "ok" || probe.folderError) {
+                    return fail("WORKSPACE_FOLDER_MISSING", `folder "${folder}" is not available (${probe.folderError ?? probe.marker})`);
+                }
+            }
 
             const attachPath = folder ? path.join(root.path, folder) : root.path;
             const checkout = checkoutOf(probe.rel);
@@ -123,13 +188,24 @@ export function createRepoWorkspaceProvider(options) {
                     rootSessionId: req.rootSessionId,
                     workerNodeId: req.workerNodeId,
                     turnIndex: req.turnIndex,
+                    ...(req.purpose ? { purpose: req.purpose } : {}),
                 }, serviceTimeoutMs);
             } catch (error) {
                 return { ...fail("WORKSPACE_ATTACH_FAILED", `repo service: ${error?.message ?? error}`), retryAfterMs: 30_000 };
             }
-            if (!lease.ok) return fail(lease.code || "WORKSPACE_ATTACH_FAILED", lease.message || "the repo service refused the lease");
+            if (!lease.ok) {
+                return {
+                    ...fail(lease.code || "WORKSPACE_ATTACH_FAILED", lease.message || "the repo service refused the lease"),
+                    ...(Number.isFinite(lease.retryAfterMs) && lease.retryAfterMs > 0 ? { retryAfterMs: lease.retryAfterMs } : {}),
+                };
+            }
             leased.set(leaseKey(req.sessionId, req.workspace), { root: root.name, checkout });
-            return { ok: true, path: attachPath, ...(lease.adopt ? { adopt: lease.adopt } : {}) };
+            return {
+                ok: true,
+                path: attachPath,
+                ...(lease.adopt ? { adopt: lease.adopt } : {}),
+                ...(lease.recreated ? { notice: recreatedNotice(checkout, lease.recreated) } : {}),
+            };
         },
 
         async release(req) {

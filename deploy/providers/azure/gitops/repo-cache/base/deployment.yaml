@@ -15,7 +15,7 @@
 #   /ws/shared                root 1777   a folder every session can read and
 #     .pilotswarm-export      root 0644   write, exported (fsid=2); the sticky
 #                                         bit keeps the marker
-#   /ws/.repo-service/        root        clone records and leases (not exported)
+#   /ws/.repo-service/        root        clone records, leases and removal records (not exported)
 #   /ws/.nfsdcld/             root        the NFS server's client list (not exported)
 apiVersion: apps/v1
 kind: Deployment
@@ -108,6 +108,13 @@ spec:
               value: http://repo-cache.pilotswarm.svc.cluster.local:8080
             - name: REPO_SERVICE_REFRESH_S
               value: "300"
+            # Idle cleanup: a clone no session has used for this many hours is
+            # removed (the service's default is 168, 7 days). Short here, on a
+            # test stamp, so the removal and the fresh clone after it are seen
+            # the same day. Every removal is one JSON log line (event
+            # "clone.removed") and a removal record in the state file.
+            - name: REPO_SERVICE_IDLE_CLONE_HOURS
+              value: "6"
             - name: REPO_SERVICE_STATE_FILE
               value: /ws/.repo-service/state.json
             - name: REPO_SERVICE_CLONE_UID

@@ -1,15 +1,18 @@
 # Session workspaces
 
 **Status:** Phases 1 and 2 implemented on a feature branch; phase 3 (the
-reference deployment in the release environment) built and tested locally,
-not yet deployed. **Date:** 2026-09-27, revision 6. Revision 3 folded in
+reference deployment in the release environment) built and deployed to the
+release test stamp from the branch. **Date:** 2026-09-28, revision 7. Revision 3 folded in
 review feedback and live checks against the real Copilot CLI. Revision 4
 records the fixes from the adversarial reviews of phase 2. Revision 5 adds
 extra folders: folders a session can use next to its working folder
 (section 4.10). Revision 6 records phase 3 as built: the sample repo is
 github.com/microsoft/duroxide, the sample plain root is a folder all sessions
 share, and a run on a real kernel with two uids changed five details
-(sections 5.1, 5.2, 5.3 and 12.1).
+(sections 5.1, 5.2, 5.3 and 12.1). Revision 7 adds idle cleanup to the
+reference deployment: a clone no session used for a set time is removed and
+made again when its session comes back, and the provider hook gains
+`purpose` and `notice` (sections 4.2 and 5.3).
 
 An agent works in a real git checkout that lives on a separate repo pod. It
 uses its native tools and native git as if it were on a developer's machine.
@@ -274,7 +277,7 @@ provider, its agent tools and its repo service, which
 | Choosing a session's workspace | The record and its revision; set at creation, by the agent (`set_session_workspace`), from outside (client, Web API, MCP, portal, TUI) and for children (`spawn_agent`); the acknowledgement and the refusals after it | Which folder to use (its tools return the record), and which agents list `set_session_workspace` | The `{ root, folder }` record |
 | Repo agents, skills and instructions | The clone root found, the files read and filtered, merged into the session, the model told, changes tracked in the fingerprint | Per-repo `adopt` flags | The `adopt` field of the `ensureAttached` result |
 | Git credentials and branch rules | Nothing | The credential helper, token minting, the rules on the git servers | None |
-| Cleanup | Never deletes files; releases only | Deletes clones (the remove tool today; a cleanup pass is still to be built) and maintains the mirrors | Session status, from the management API |
+| Cleanup | Never deletes files; releases only. Delivers a provider's `notice` with a turn | Deletes clones: the remove tool, and idle cleanup (a clone no session used for a set time; section 5.3); makes a removed clone again when its session comes back; maintains the mirrors | The lease activity the service already has; `purpose` and `notice` on the attach |
 | Loading the deployment's code | `worker.setWorkspaceProvider()`, `worker.registerTools()`, `PILOTSWARM_EXTENSION_MODULES` | A module that exports `register(worker)` | The module hook |
 | Worker liveness | The worker registry | The lease rules read it (`isWorkerAlive`) | The registry lookup |
 
@@ -309,8 +312,9 @@ Moves and changes
                   run once when the folder is back.
 End
 10. [core -> deployment]  The session ends: release. The files stay.
-11. [deployment]  Cleanup deletes the clone once every session in its tree
-                  has ended.
+11. [deployment]  Idle cleanup deletes the clone once no session has used it
+                  for a set time (7 days by default). A session that comes
+                  back gets a fresh clone and one note about what was lost.
 ```
 
 What `examples/repo-workspaces/` already supplies: the provider, the three
@@ -381,12 +385,14 @@ interface WorkspaceAttachRequest {
     workerNodeId: string;       // the worker's own ID (its pod name), not the Kubernetes node
     turnIndex: number;          // rises every turn
     attachment?: string;        // an extra folder's name (section 4.10); absent for the working folder
+    purpose?: "turn" | "check"; // turn: a turn runs next; check: a change or a spawn is checked
 }
 
 type WorkspaceAttachResult =
     | { ok: true; path: string;
         adopt?: { agents: boolean; skills: boolean; instructions: boolean };  // ignored for an extra folder
-        readOnly?: boolean }    // the model is told; the mount enforces it
+        readOnly?: boolean;     // the model is told; the mount enforces it
+        notice?: string }       // a note for the model; delivered with a turn attach only
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 
 interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
@@ -418,6 +424,19 @@ Rules for provider implementations:
 - **An empty mount point is not proof of a mount.** Check the real mount,
   for example with a marker file on the export.
 - **`adopt` omitted means adopt nothing.**
+- **`purpose` says why PilotSwarm attaches.** `turn`: the turn preamble
+  (section 4.4); a turn runs in the folder next. `check`: the check behind
+  `set_session_workspace`, a change from outside, or `spawn_agent`; the
+  folder may be released right after, and no turn follows yet. Leave
+  one-time work to `turn`. The reference provider restores a removed clone
+  only for a turn (section 5.3).
+- **`notice` is a note for the model about the folder,** for example that the
+  folder was made again and earlier changes are gone. PilotSwarm delivers it
+  only from a `turn` attach: it is added to that turn's prompt, after the
+  changed-cwd note, and recorded once as `system.message` with
+  `source: "provider"`. PilotSwarm keeps no memory of it: give it once, and
+  again only when the same turn is retried (same `turnIndex`). Trimmed, and
+  cut at 4,000 characters.
 
 ### 4.3 Setting a workspace
 
@@ -1269,16 +1288,21 @@ ensureAttached(req):
      the real path's first three parts name the checkout, sessions/<rootSessionId>/<repo>,
      so a folder inside a clone leases that clone. A folder that is not in a session
      clone (the root, sessions, or sessions/<tree>) -> WORKSPACE_PATH_INVALID
+     missing, purpose "turn", and the folder names this tree's clone
+       -> POST <repo service>/v1/clones/restore; the service makes it again only if
+          idle cleanup removed it (below); then stat again
   4. POST <repo service>/v1/leases
-       { checkout: "sessions/<rootSessionId>/<repo>", sessionId, rootSessionId, workerNodeId, turnIndex }
+       { checkout: "sessions/<rootSessionId>/<repo>", sessionId, rootSessionId, workerNodeId, turnIndex, purpose }
        the checkout's clone record names another tree -> { ok: false, code: "WORKSPACE_IN_USE" },
                                                          whether or not any entry is live
        a dead entry of the same tree, no live entry    -> the service removes stale git lock files,
                                                          then continues
        a dead entry of the same tree, a live entry     -> the service continues; lock files stay
+       the checkout is being removed or made           -> WORKSPACE_ATTACH_FAILED, retryAfterMs 30 s
        otherwise                                       -> the service adds or refreshes this
-                                                         session's entry
-  5. return { ok: true, path, adopt }                   (adopt comes from per-repo config)
+                                                         session's entry, and records the use
+  5. return { ok: true, path, adopt, notice? }          (adopt comes from per-repo config; notice
+                                                         when the clone was made again, below)
 release(req): DELETE the caller's entry, with its workerNodeId and turnIndex. The service
   deletes it only if the entry names that worker and is not from a newer turn: a release
   that arrives late must not delete the entry of the worker that took over. The clone
@@ -1307,10 +1331,61 @@ Lease rules, kept by the repo service and not on the export:
   remove lock files, through a folder or a `.git` that is a link. It creates
   the tree folder and runs the clone as the session uid.
 - "Released" means "not on a worker". It does not free the checkout for
-  another tree. Only cleanup, after the tree ends, does that.
+  another tree. Only cleanup does that.
 - The lease is metadata for cleanup and stale-lock removal. PilotSwarm does
   not serialize the sessions of one tree in one checkout; git's `index.lock`
   prevents file corruption only (K15).
+
+**Idle cleanup (revision 7).** The repo service removes a clone that no
+session has used for a set time: `REPO_SERVICE_IDLE_CLONE_HOURS`, 168 (7
+days) by default, 6 on the test stamp, 0 for never. The service does not read
+PilotSwarm's session database; the rule needs only what the service has.
+
+```text
+A use:       a lease taken (every turn) or released (the session left the worker)
+Idle pass:   every 1 to 15 minutes (a twelfth of the idle time)
+  for each clone idle longer than the limit, with no live lease entry:
+  1. look inside it, as the session uid (its config is session-written, so
+     never as root): branch, commit, uncommitted changes, commits no remote has
+  2. delete it; its tree folder too, when it was the last clone there
+  3. keep a removal record (tree, repo, reason, times, the facts from step 1)
+     and log one JSON line: event "clone.removed"
+While a clone is removed or made, a lease for it gets WORKSPACE_ATTACH_FAILED
+with retryAfterMs, and a second removal or make gets CLONE_BUSY.
+```
+
+Why no session status: an idle session releases its lease when its worker
+drops it from memory, and takes a new one on its next message. So "no lease"
+cannot tell "idle" from "gone". The idle time decides instead. Work that
+matters is expected to be pushed; pushed branches live in the remote and
+outlast the clone.
+
+A session that comes back after the removal is not stuck:
+
+```text
+1. Its next turn attaches with purpose "turn"; the folder is missing
+2. The provider asks POST /v1/clones/restore. The service makes a fresh
+   clone at the same path, only when the last removal was an idle one
+   ("clone.restored"). A clone removed on request (DELETE /v1/clones)
+   stays removed: WORKSPACE_FOLDER_MISSING, as before.
+3. Every session that took a lease on the old clone is told once, on its
+   next turn attach, and again only on a retry of that same turn: the
+   provider turns the removal record into the attach result's `notice`
+   (when, why, what was lost, the last branch and commit, and
+   `git fetch origin && git switch <branch>`). A check tells no one.
+```
+
+Checks never restore. A check that finds the folder missing refuses the
+change with `WORKSPACE_FOLDER_MISSING`, and the agent can call
+`create_session_clone`: its answer carries the old removal as `previous`,
+and the service tells only the other sessions.
+
+Where the history is: `GET /v1/clones` lists the tree's clones (last use,
+`removeAfter`) and its removal records (kept one year);
+`list_session_clones` shows the same to the agent; the JSON log lines
+(`clone.created`, `clone.removed`, `clone.restored`, `clone.remove_failed`)
+go to the cluster's log collector; the note the model got is in the
+session's history.
 
 Remount of root `a` on one node:
 
@@ -1497,7 +1572,7 @@ Repo pod back -> NFS 4 grace period (~90 s), clients reconnect by themselves
 | K8 | Zombie turn: a worker cut off from the database but still reaching NFS | PilotSwarm aborts the turn when it sees the Duroxide work-item lock was taken. A fully cut-off worker can write until it is killed. Accepted in v1. |
 | K9 | A task or shell is running when the agent changes the workspace | `WORKSPACE_BUSY`, from `rpc.tasks.list()` |
 | K10 | Another session tree sets its workspace to the same checkout | `WORKSPACE_IN_USE` from the repo service lease |
-| K11 | Checkout deleted while the session exists | `WORKSPACE_FOLDER_MISSING` and held. Cleanup must refuse a checkout with a live lease entry. |
+| K11 | Checkout deleted while the session exists | `WORKSPACE_FOLDER_MISSING` and held. Cleanup must refuse a checkout with a live lease entry. Revision 7: after an idle removal (section 5.3) the reference provider makes the clone again on the next turn and the model gets one note; a checkout deleted any other way is still held. |
 | K12 | Many clones created at once | Per-repo fetch lock on the repo pod; sparse checkout for big repos |
 | K13 | Branch switch changes the repo agents | The next turn resumes with the new set and gets the agents-changed note |
 | K14 | A command walks the whole root, such as `find /` | Pulls a lot of data over NFS. Advise against it in the agent prompt. A live run showed a model doing exactly this. |
@@ -1798,6 +1873,28 @@ removed.
 | A caller could make the Web API wait without limit | The wait is clamped (4.8) | web runtime test |
 | The reference provider leased no subfolder; maintenance let pruning commands through; the service followed links a session can plant | Lease the containing clone; named operations with an admin token; links refused (5.x, 12.1) | example tests |
 
+### Idle cleanup (revision 7, 2026-09-28)
+
+U = unit (`test/unit/repo-workspaces-idle-cleanup.test.mjs`,
+`test/unit/workspace-provider-notice.test.mjs`), L = a real worker with the
+scripted model. Each test turned red when its rule was broken on purpose
+(27 mutations, 27 red).
+
+| ID | Kind | What it checks |
+|---|---|---|
+| I1 | U | A clone records its last use: made, a lease taken, a lease released; the list shows `lastUsedAt`, `inUse` and `removeAfter` |
+| I2 | U | The idle pass removes only clones unused for the idle time (not one millisecond early), never one with a live lease entry, and logs no failure for skipping it |
+| I3 | U | A removal leaves a record and a `clone.removed` log line with the reason, the idle hours, the branch, the commit, uncommitted changes and the count of commits no remote has; the pushed branch is still in the remote |
+| I4 | U | Restore makes a fresh clone on the default branch; each session that used the old clone is told once, again on a retry of the same turn, never by a check, and a session that never used it is not told |
+| I5 | U | Only an idle removal is restored; a clone removed on request stays removed; a session that makes it again sees the removal in the answer, and only the other sessions are told |
+| I6, I6b, I6c | U | One operation per clone: two restores make one clone; during a removal or a make a lease gets `WORKSPACE_ATTACH_FAILED` with `retryAfterMs` and a make gets `CLONE_BUSY`; a failed clone step leaves no half-made folder; a removal that starts while an attach waits on the worker registry makes that attach retry |
+| I7 | U | The state survives a restart; a clone recorded before idle cleanup starts its idle time at the restart |
+| I8 | U | The provider restores on a turn, not on a check, never another tree's clone, not a clone removed on request, and turns the removal into one `notice` |
+| I9 | L | A clone left idle is removed; the next turn runs in a fresh clone, the model's prompt carries the note, the note is in the session's history once, and the service logged the removal and the restore |
+| N1, N2 | U | `prepareWorkspace` passes a provider's notice through (trimmed, cut at 4,000 characters, dropped unless a non-empty string), for an extra folder too |
+| N3 | U | The checks behind `spawn_agent` attach with `purpose: "check"` |
+| B7b | L | Turn attaches say `turn`, the check behind `set_session_workspace` says `check`; a provider's notice rides the next turn after the changed-cwd note, is not repeated, and is recorded with `source: "provider"` |
+
 ## 10. Decisions, verified facts and open items
 
 **Decided on 2026-09-26**
@@ -2055,9 +2152,11 @@ The repo service, inside the repo pod:
 | Part | What it does |
 |---|---|
 | Start-up | Mirrors each configured repo at `/ws/a/repos/<repo>.git` if it isn't there yet (duroxide and tfenv: tfenv ships 11 agents in `.github/agents`, the sample for adopted repo agents), points the mirror's HEAD at the upstream's default branch, makes the sandbox remote, and then listens. Fetches every 5 minutes (`REPO_SERVICE_REFRESH_S`), following the mirror rules in section 5.1. |
-| `POST /v1/clones` | `{ rootSessionId, repo }` creates a session clone as uid 1000 from the mirror's default branch, and returns `{ workspace: { root, folder }, path, created }`. Again for the same tree and repo: the same clone, `created: false`. |
-| `GET /v1/clones?rootSessionId=` | Lists the clones of a session tree |
-| `DELETE /v1/clones` | `{ rootSessionId, repo }`: removes a clone after its tree ends and no live lease entry remains. Refused when a folder on the way is a link. |
+| `POST /v1/clones` | `{ rootSessionId, repo, sessionId? }` creates a session clone as uid 1000 from the mirror's default branch, and returns `{ workspace: { root, folder }, path, created, removedAfterIdleHours }`. Again for the same tree and repo: the same clone, `created: false`. After a removal, the answer carries it as `previous`, and the service tells the other sessions that used the old clone (5.3). |
+| `GET /v1/clones?rootSessionId=` | Lists the clones of a session tree (`lastUsedAt`, `inUse`, `removeAfter`), its removal records (`removed`), and `removedAfterIdleHours` |
+| `DELETE /v1/clones` | `{ rootSessionId, repo }`: removes a clone when no live lease entry remains, with reason `request`, and returns the removal record. Refused when a folder on the way is a link. |
+| `POST /v1/clones/restore` | `{ rootSessionId, repo, sessionId }`: the provider asks for a clone that idle cleanup removed; the service makes a fresh one at the same path. `NOT_RESTORABLE` for anything else (5.3). |
+| Idle cleanup | Removes a clone no session used for `REPO_SERVICE_IDLE_CLONE_HOURS` (default 168; the stamp sets 6), keeps a removal record for a year, and logs one JSON line per clone event (5.3). |
 | `POST` / `DELETE /v1/leases` | Lease entries, section 5.3. A delete removes only the caller's own entry: the entry must name the caller's worker, and must not come from a newer turn, so a late release cannot remove the entry of the worker that took over. |
 | `POST /v1/mirrors/fetch`, `POST /v1/maintenance` | `{ repo }` and `{ repo, operation }`, with the admin token (`REPO_SERVICE_ADMIN_TOKEN`). Without a configured token both are off. The reference sets none. |
 | Sandbox remote | A bare repo at `/ws/a/remotes/<repo>.git`, owned by the service with mode 0755 like a mirror, so a session cannot edit its refs or hooks through the mount. Served over HTTP with Basic auth at `<REPO_SERVICE_PUBLIC_URL>/git/<repo>.git`, which is the clones' `origin`. Its `pre-receive` hook refuses deletions, pushes to `main`, `master` and `release/*`, and non-fast-forward updates, with no bypass of any kind; the service rewrites the hook at every start. `main`, `master`, `release/*` and the tags follow the mirror on each fetch. Session clones push here, never to GitHub. |

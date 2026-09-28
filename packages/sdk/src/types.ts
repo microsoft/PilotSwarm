@@ -276,6 +276,13 @@ export interface WorkspaceAttachRequest {
     turnIndex: number;
     /** The extra folder's name. Absent for the working folder. */
     attachment?: string;
+    /**
+     * Why PilotSwarm attaches. `turn`: a turn runs in the folder next.
+     * `check`: a workspace change or a sub-agent's workspace is being
+     * checked; the folder may be released right after, and no turn follows
+     * yet. A provider can leave one-time work, such as a notice, to `turn`.
+     */
+    purpose?: "turn" | "check";
 }
 
 export type WorkspaceAttachResult =
@@ -290,6 +297,14 @@ export type WorkspaceAttachResult =
          * the mount enforces it.
          */
         readOnly?: boolean;
+        /**
+         * A note for the model about this folder, for example that it was
+         * made again and earlier changes are gone. Only a `turn` attach
+         * delivers it: PilotSwarm adds it to that turn's prompt and records it
+         * in the session's history. Give it once; PilotSwarm keeps no memory
+         * of it.
+         */
+        notice?: string;
     }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 

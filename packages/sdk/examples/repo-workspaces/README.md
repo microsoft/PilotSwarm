@@ -19,11 +19,11 @@ that all sessions read and write:
 
 | File | Runs on | What it does |
 |---|---|---|
-| `repo-service.mjs` | the repo pod | Owns the mirrors (`repos/<repo>.git`) and the session clones (`sessions/<rootSessionId>/<repo>`). Mirrors each repo at start and fetches every few minutes. Keeps the leases, removes stale git lock files, runs named mirror maintenance only, and mints tokens for the remotes of the repos it serves. Mirror fetch and maintenance need the admin token (`REPO_SERVICE_ADMIN_TOKEN`), which workers never get. `node repo-service.mjs` starts it; see `main()` for the environment. |
+| `repo-service.mjs` | the repo pod | Owns the mirrors (`repos/<repo>.git`) and the session clones (`sessions/<rootSessionId>/<repo>`). Mirrors each repo at start and fetches every few minutes. Keeps the leases, removes stale git lock files, removes clones no session has used for a while (idle cleanup, below), runs named mirror maintenance only, and mints tokens for the remotes of the repos it serves. Mirror fetch and maintenance need the admin token (`REPO_SERVICE_ADMIN_TOKEN`), which workers never get. `node repo-service.mjs` starts it; see `main()` for the environment. |
 | `sandbox-remote.mjs` | the repo pod | A sandbox remote per repo (`remotes/<repo>.git`), served over git smart HTTP by the repo service. Session clones push there, never to the real upstream. Its `pre-receive` hook refuses deletions, pushes to `main`, `master` and `release/*`, and non-fast-forward updates. |
 | `nfs-server.sh` | the repo pod | Starts the node kernel's NFS server for the repo pod's exports (NFS 4.1 and 4.2 only). Needs a privileged container. |
 | `attacher.mjs` | each worker node | The node attacher: mounts each root's NFS export at `/mnt/ps/<root>` on the node, at start and when asked over a unix socket. A root it cannot mount at start (the repo pod may come up later) is retried every 30 s. Worker pods see `/mnt/ps` at `/ws`. It never unmounts. |
-| `provider.mjs` | each worker | The `WorkspaceProvider`s. The repo provider checks the root's `.pilotswarm-export` marker in a child process, then takes a lease on the session clone that holds the folder; it serves session clones and folders inside them only. The plain-root provider checks the marker and nothing else: no leases. Both ask the attacher to mount a root that is not mounted, and to remount one that answers `ESTALE`. |
+| `provider.mjs` | each worker | The `WorkspaceProvider`s. The repo provider checks the root's `.pilotswarm-export` marker in a child process, then takes a lease on the session clone that holds the folder; it serves session clones and folders inside them only. For a turn, it asks the service to restore a clone that idle cleanup removed, and passes the service's note to PilotSwarm once. The plain-root provider checks the marker and nothing else: no leases. Both ask the attacher to mount a root that is not mounted, and to remount one that answers `ESTALE`. |
 | `tools.mjs` | each worker | Agent tools: `create_session_clone`, `list_session_clones`, `remove_session_clone`. |
 | `credential-helper.mjs` | each worker | The git credential helper each clone sets after an empty one. It sends the repo service the protocol, host and path git asks about. The service answers only for the remote of a repo it serves; it does not check that the remote is the calling clone's own. |
 | `index.mjs` | each worker | `register(worker)`: the providers (repo roots, plus plain roots from `PS_PLAIN_ROOTS`) and the tools, loaded through `PILOTSWARM_EXTENSION_MODULES`. |
@@ -39,7 +39,7 @@ that all sessions read and write:
   sessions/               1000 0755   session clones, made as uid 1000 (the worker's uid)
 /ws/shared                root 1777   a plain root, exported over NFS: every session may
   .pilotswarm-export      root 0644   read and write; the sticky bit keeps the marker
-/ws/.repo-service/        root        clone records and leases (not exported)
+/ws/.repo-service/        root        clone records, leases and removal records (not exported)
 /ws/.nfsdcld/             root        the NFS server's client list (not exported)
 ```
 
@@ -77,6 +77,8 @@ REPO_SERVICE_REPOS={"duroxide": {"upstream": "https://github.com/microsoft/durox
 REPO_SERVICE_PUBLIC_URL=http://repo-cache:8080   how workers reach this service; a sandbox
                                             repo's remote is <this URL>/git/<repo>.git
 REPO_SERVICE_CREDENTIAL_HELPER=!node /app/packages/sdk/examples/repo-workspaces/credential-helper.mjs
+REPO_SERVICE_IDLE_CLONE_HOURS=168           remove a clone no session has used for this long
+                                            (default 168 = 7 days; 0 = never; the test stamp uses 6)
 ```
 
 A repo with `remote` instead of `sandbox` uses its real remote, and the
@@ -133,6 +135,57 @@ with the repo provider (`combineWorkspaceProviders`). A plain root that has a
 repo root's name, or whose path overlaps a repo root's path, stops the worker
 at start.
 
+## Idle cleanup
+
+A clone that no session has used for `REPO_SERVICE_IDLE_CLONE_HOURS` is
+removed. "Used" means a session took or released a lease on it: every turn
+takes one, and a session releases it when it leaves the worker. A clone with
+a live lease entry is never removed. Pushed branches live in the remote, so
+they outlast the clone; uncommitted and unpushed work does not.
+
+```text
+Every 1 to 15 minutes (a twelfth of the idle time):
+1. For each clone idle longer than the limit, with no live lease entry:
+   a. look inside it, as the session uid: branch, commit, uncommitted
+      changes, commits no remote has
+   b. delete it (and its tree folder, when it was the last clone there)
+   c. keep a removal record, and log one JSON line: event "clone.removed"
+
+When a session of that tree next runs a turn in the clone:
+2. The provider finds the folder missing -> POST /v1/clones/restore
+3. The service makes a fresh clone at the same path (only after an idle
+   removal; a clone removed on request stays removed) -> "clone.restored"
+4. The turn runs. Each session that used the old clone gets one note in
+   its prompt: when and why it was removed, what was lost, the last branch
+   and commit, and how to get a pushed branch back. The note is also in
+   the session's history.
+```
+
+Checks never restore: the check behind `set_session_workspace` or
+`spawn_agent` attaches with `purpose: "check"` and gets `WORKSPACE_FOLDER_MISSING`.
+The agent can then call `create_session_clone`, whose answer shows the old
+removal.
+
+Where to look afterwards:
+
+```text
+list_session_clones()          this tree's clones (last use, when each goes) and removed clones
+GET /v1/clones?rootSessionId=  the same, from the repo service
+the repo pod's log             one JSON line per clone.created, clone.removed, clone.restored,
+                               clone.remove_failed; kept by the cluster's log collector
+```
+
+On the Azure stamp, the log lines are in Log Analytics, table `ContainerLogV2`
+(kept 30 days by default):
+
+```kusto
+ContainerLogV2
+| where ContainerName == "repo-service" and LogMessage has "clone."
+| project TimeGenerated, LogMessage
+```
+
+The removal records stay in the service's state file for a year.
+
 ## Deploying it
 
 The Azure deployment ships this example when `WORKSPACES_ENABLED=true` is in
@@ -176,7 +229,10 @@ an entry's age decides. Proposal section 12.2 has the list.
 - `test/unit/repo-workspaces-example.test.mjs`: the service rules.
 - `test/unit/repo-workspaces-phase3.test.mjs`: the sandbox remote, clones made
   as another uid than the mirror's owner, the attacher, the plain-root provider.
+- `test/unit/repo-workspaces-idle-cleanup.test.mjs`: idle cleanup, removal
+  records, restore and the one-time note (I1 to I8).
 - `test/local/repo-workspaces.test.js`: a real worker, including a git clone
-  and a log share mounted at once.
+  and a log share mounted at once, and a clone removed while idle and made
+  again on the next turn (I9).
 - `deploy/scripts/test/workspaces.test.mjs`: the switch and the rendered
   Kubernetes objects.

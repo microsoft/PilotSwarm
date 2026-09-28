@@ -292,6 +292,76 @@ describe("reference repo workspaces: a git clone and a log share in one session 
     });
 });
 
+describe("reference repo workspaces: idle cleanup (section 5.3)", () => {
+    it("a clone left idle is removed; the session's next turn runs in a fresh clone and the model is told what was lost (I9)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        // The service's clock runs ahead on demand, so "7 hours later" takes no time.
+        let ahead = 0;
+        const events = [];
+        const d = await deployment({ now: () => Date.now() + ahead, idleCloneMs: 6 * 60 * 60 * 1000, log: (entry) => events.push(entry) });
+        try {
+            const respond = scriptTurns([
+                [
+                    { tools: [{ name: "create_session_clone", args: { repo: "app" } }] },
+                    (_body, position) => ({ tools: [{ name: "set_session_workspace", args: JSON.parse(position.toolResults.join("")).workspace }] }),
+                    { content: "moving" },
+                ],
+                [
+                    { tools: [{ name: "bash", args: {
+                        command: "git switch -q -c agent/fix && git -c user.name=agent -c user.email=agent@example.invalid commit -q --allow-empty -m 'work' "
+                            + "&& echo draft > notes.txt && echo worked",
+                        description: "work in the clone",
+                    } }] },
+                    { content: "worked" },
+                ],
+                [
+                    { tools: [{ name: "bash", args: { command: "git status --short --branch | head -1; ls notes.txt 2>&1 | head -1", description: "look again" } }] },
+                    (_body, position) => ({ content: `out:${position.toolResults.join("").trim().split("\n").slice(0, 2).join("|")}` }),
+                ],
+            ]);
+            await withScriptedModel(env, { respond, tools: d.tools, worker: { workspaceProvider: d.provider } }, async ({ client, worker, model, qualifiedModel }) => {
+                d.bind(worker);
+                const sessionId = randomUUID();
+                const checkout = `sessions/${sessionId}/app`;
+                const session = await client.createSession({
+                    sessionId, model: qualifiedModel,
+                    toolNames: ["create_session_clone", "list_session_clones", "remove_session_clone", "set_session_workspace"],
+                });
+                assertEqual(await session.sendAndWait("make a clone of app and work in it", TIMEOUT), "worked");
+                const head = await git(["-C", path.join(d.fixture.root, checkout), "rev-parse", "HEAD"]);
+
+                ahead = 7 * 60 * 60 * 1000;
+                const removed = await d.service.removeIdleClones();
+                assertEqual(JSON.stringify(removed.map((r) => [r.checkout, r.reason, r.branch, r.dirty, r.unpushedCommits])),
+                    JSON.stringify([[checkout, "idle", "agent/fix", true, 1]]), "the idle clone is removed, with what it held");
+                assertEqual(fs.existsSync(path.join(d.fixture.root, checkout)), false);
+
+                const answer = await session.sendAndWait("carry on with the fix", TIMEOUT);
+                assertEqual(answer, "out:## main...origin/main|ls: notes.txt: No such file or directory".replace("ls: notes.txt", process.platform === "darwin" ? "ls: notes.txt" : "ls: cannot access 'notes.txt'"),
+                    "the turn runs in a fresh clone, on the default branch, without the old files");
+                const told = model.sessionRequests("make a clone of app").find((r) => r.position.turn === 3);
+                const text = told.position.lastUserText;
+                assert(text.includes(`Your clone "${checkout}" was removed on`) && text.includes("because no session had used it for 7 hours"), `the model is told: ${text}`);
+                assert(text.includes(`branch "agent/fix" at ${head.slice(0, 12)}`) && text.includes("uncommitted changes and 1 commit that no remote had"), text);
+
+                const catalog = await createCatalog(env);
+                try {
+                    const notes = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 50, ["system.message"]);
+                    const recorded = notes.filter((e) => e.data?.source === "provider");
+                    assertEqual(recorded.length, 1, "the note is in the session's history once");
+                    assert(recorded[0].data.content.includes("was removed"), JSON.stringify(recorded[0].data));
+                } finally {
+                    await catalog.close?.();
+                }
+                assert(events.some((e) => e.event === "clone.removed" && e.checkout === checkout) && events.some((e) => e.event === "clone.restored" && e.sessionId === sessionId),
+                    `the service logged the removal and the restore: ${events.map((e) => e.event).join(",")}`);
+            });
+        } finally {
+            await d.close();
+        }
+    });
+});
+
 describe("reference repo workspaces on two workers", () => {
     it("a parent and its child on two workers share a checkout; the child's attach keeps the parent's lock until both entries are dead (R5)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();

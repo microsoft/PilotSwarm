@@ -103,6 +103,8 @@ export type WorkspacePreparation =
         repo?: RepoScan;
         /** The provider says the folder is mounted read-only. */
         readOnly?: boolean;
+        /** The provider's note for the model (WorkspaceAttachResult.notice), trimmed. */
+        notice?: string;
     }
     | { ok: false; code: string; message: string; retryAfterMs?: number };
 
@@ -242,11 +244,23 @@ export async function prepareWorkspace(
         ...(adopt ? { adopt } : {}),
         ...(checked.repo ? { repo: checked.repo } : {}),
         ...(attached.readOnly === true ? { readOnly: true } : {}),
+        ...(providerNotice(attached.notice) ? { notice: providerNotice(attached.notice) } : {}),
     };
 }
 
+/** The longest provider notice a turn carries; the rest is cut. */
+export const MAX_WORKSPACE_NOTICE_CHARS = 4_000;
+
+/** A provider's notice as the model gets it: a trimmed string, or nothing. */
+function providerNotice(value: unknown): string | undefined {
+    if (typeof value !== "string") return undefined;
+    const text = value.trim();
+    if (!text) return undefined;
+    return text.length > MAX_WORKSPACE_NOTICE_CHARS ? `${text.slice(0, MAX_WORKSPACE_NOTICE_CHARS)}…` : text;
+}
+
 export type WorkspaceExtraPreparation =
-    | { name: string; required: boolean; ok: true; attach: WorkspaceExtraAttach }
+    | { name: string; required: boolean; ok: true; attach: WorkspaceExtraAttach; notice?: string }
     | { name: string; required: boolean; root: string; folder?: string; ok: false; code: string; message: string; retryAfterMs?: number };
 
 /**
@@ -285,6 +299,7 @@ export async function prepareWorkspaceExtras(
                 required,
                 ...(prepared.readOnly ? { readOnly: true } : {}),
             },
+            ...(prepared.notice ? { notice: prepared.notice } : {}),
         };
     }));
 }
@@ -368,9 +383,10 @@ export async function checkWorkspaceForSpawn(
 ): Promise<WorkspacePreparation> {
     const sent: WorkspaceAttachRequest[] = [];
     const onAttach = (request: WorkspaceAttachRequest) => { sent.push(request); };
-    let result: WorkspacePreparation = await prepareWorkspace(provider, req, { ...opts, onAttach });
+    const checkReq: WorkspaceAttachRequest = { ...req, purpose: "check" };
+    let result: WorkspacePreparation = await prepareWorkspace(provider, checkReq, { ...opts, onAttach });
     if (result.ok && req.workspace?.extra && Object.keys(req.workspace.extra).length > 0) {
-        const extras = await prepareWorkspaceExtras(provider, req, { ...opts, onAttach });
+        const extras = await prepareWorkspaceExtras(provider, checkReq, { ...opts, onAttach });
         const bad = extras.find((extra) => !extra.ok);
         if (bad && !bad.ok) result = failure(bad.code, `extra folder "${bad.name}": ${bad.message}`, bad.retryAfterMs);
     }
