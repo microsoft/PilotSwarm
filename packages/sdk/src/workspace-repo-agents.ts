@@ -16,6 +16,7 @@
  * (native-subagents.ts) which children belong to adopted agents.
  */
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import type { CustomAgentConfig } from "@github/copilot-sdk";
 import type { RepoScan } from "./workspace-check.js";
@@ -235,33 +236,48 @@ export function resolveRepoAdoption(input: RepoAdoptionInput): RepoAdoption {
     };
 }
 
-/** Two reports name the same agents, skills and skips. */
+/** Two reports name the same agents, skills and skips, from every source. */
 export function sameAdoption(a: WorkspaceAdoptionReport, b: WorkspaceAdoptionReport): boolean {
-    return JSON.stringify([a.agents, a.skills, a.skipped]) === JSON.stringify([b.agents, b.skills, b.skipped]);
+    const key = (r: WorkspaceAdoptionReport) => JSON.stringify([r.agents, r.skills, r.skipped, r.personal ?? null, r.loaded ?? null]);
+    return key(a) === key(b);
+}
+
+/** Each source's names, with how the note calls it. */
+function adoptedGroups(report: WorkspaceAdoptionReport): Array<{ label: string; agents: string[]; skills: string[] }> {
+    return [
+        { label: "Repo", agents: report.agents, skills: report.skills },
+        { label: "Your own", agents: report.personal?.agents ?? [], skills: report.personal?.skills ?? [] },
+        { label: "Loaded", agents: report.loaded?.agents ?? [], skills: report.loaded?.skills ?? [] },
+    ];
 }
 
 /**
  * The note a turn gets when its adopted set is new or changed. `previous`
- * null means nothing was adopted before (the first adoption).
+ * null means nothing was adopted before (the first adoption). "Your own"
+ * are the person's folder's (section 4.11); "Loaded" were loaded by path (4.12).
  */
 export function adoptionNote(previous: WorkspaceAdoptionReport | null, next: WorkspaceAdoptionReport): string | undefined {
     const list = (names: string[]) => names.join(", ");
     if (!previous) {
-        const parts = [
-            next.agents.length ? `Repo agents available through the task tool: ${list(next.agents)}.` : "",
-            next.skills.length ? `Repo skills available: ${list(next.skills)}.` : "",
-        ].filter(Boolean);
+        const parts = adoptedGroups(next).flatMap((group) => [
+            group.agents.length ? `${group.label} agents available through the task tool: ${list(group.agents)}.` : "",
+            group.skills.length ? `${group.label} skills available: ${list(group.skills)}.` : "",
+        ]).filter(Boolean);
         return parts.length ? parts.join(" ") : undefined;
     }
     const diff = (before: string[], after: string[]) => ({
         added: after.filter((n) => !before.includes(n)),
         removed: before.filter((n) => !after.includes(n)),
     });
-    const describe = (kind: string, d: { added: string[]; removed: string[] }) =>
+    const describe = (label: string, kind: string, d: { added: string[]; removed: string[] }) =>
         d.added.length || d.removed.length
-            ? `Repo ${kind} changed: added ${list(d.added) || "none"}, removed ${list(d.removed) || "none"}.`
+            ? `${label} ${kind} changed: added ${list(d.added) || "none"}, removed ${list(d.removed) || "none"}.`
             : "";
-    const parts = [describe("agents", diff(previous.agents, next.agents)), describe("skills", diff(previous.skills, next.skills))].filter(Boolean);
+    const before = adoptedGroups(previous);
+    const parts = adoptedGroups(next).flatMap((group, i) => [
+        describe(group.label, "agents", diff(before[i].agents, group.agents)),
+        describe(group.label, "skills", diff(before[i].skills, group.skills)),
+    ]).filter(Boolean);
     return parts.length ? parts.join(" ") : undefined;
 }
 
@@ -301,4 +317,151 @@ export class RepoAgentAccess {
 
     /** Never persist runtime identity maps with session config. */
     toJSON(): undefined { return undefined; }
+}
+
+// ─── Several sources: loaded files, the repo, the person's folder ──────
+
+/** Where adopted content comes from, winner first on a name clash (sections 4.11, 4.12). */
+export type AdoptionSourceKind = "loaded" | "repo" | "personal";
+
+export interface AdoptionSource {
+    kind: AdoptionSourceKind;
+    scan: RepoScan | undefined;
+    adopt: WorkspaceAdopt | undefined;
+    /** The folder the scan ran on; skills sit under <attachPath>/<cloneRoot>/.github/skills. */
+    attachPath: string;
+    /** Skills given as folders of their own (loaded by path), instead of the scan's .github/skills names. */
+    skillFolders?: Array<{ name: string; path: string }>;
+}
+
+export interface WorkspaceAdoptionInput extends Omit<RepoAdoptionInput, "scan" | "adopt" | "attachPath"> {
+    /** In precedence order: on a name clash the earlier source wins. */
+    sources: AdoptionSource[];
+}
+
+export interface WorkspaceAdoption extends RepoAdoption {
+    /** Every adopted skill: its name, folder and source, winner first. */
+    skills: Array<{ name: string; path: string; kind: AdoptionSourceKind }>;
+    /**
+     * The skills cannot be given to the CLI as one source's skills folder
+     * (several sources, or a folder with a skill that lost a clash): the
+     * caller links each adopted skill into a folder of its own
+     * (linkSkillFolders) and gives the CLI that folder.
+     */
+    linkSkills: boolean;
+}
+
+const SOURCE_LABEL: Record<AdoptionSourceKind, string> = { loaded: "a loaded", repo: "the repo's", personal: "your own" };
+
+/**
+ * Adoption from several sources (sections 4.6, 4.11, 4.12): files loaded by
+ * path first, then the repo's, then the person's own folder. A name taken by
+ * an earlier source is skipped in a later one, with the reason. With the
+ * repo as the only source, the result is resolveRepoAdoption's.
+ */
+export function resolveWorkspaceAdoption(input: WorkspaceAdoptionInput): WorkspaceAdoption {
+    const { sources, ...rest } = input;
+    const live = sources.filter((source) => source.adopt || (source.skillFolders?.length ?? 0) > 0);
+    if (live.length <= 1 && (live[0]?.kind ?? "repo") === "repo" && !(live[0]?.skillFolders?.length)) {
+        const only = live[0];
+        const single = resolveRepoAdoption({ ...rest, scan: only?.scan, adopt: only?.adopt, attachPath: only?.attachPath ?? "" });
+        const skillPath = single.skillDirectories[0];
+        return {
+            ...single,
+            skills: single.report.skills.map((name) => ({ name, path: path.join(skillPath ?? "", name), kind: "repo" as const })),
+            linkSkills: false,
+        };
+    }
+    const customAgents: CustomAgentConfig[] = [];
+    const skills: WorkspaceAdoption["skills"] = [];
+    const skipped: WorkspaceAdoptionReport["skipped"] = [];
+    const winner = new Map<string, AdoptionSourceKind>();
+    const skillWinner = new Map<string, AdoptionSourceKind>();
+    const lists: Record<AdoptionSourceKind, { agents: string[]; skills: string[] }> = {
+        loaded: { agents: [], skills: [] }, repo: { agents: [], skills: [] }, personal: { agents: [], skills: [] },
+    };
+    let repoName: string | undefined;
+    let lostSkill = false;
+    let skillSourceCount = 0;
+    const hashParts: unknown[] = [];
+    for (const source of live) {
+        const tag = source.kind === "repo" ? {} : { source: source.kind as "personal" | "loaded" };
+        const one = resolveRepoAdoption({ ...rest, scan: source.scan, adopt: source.adopt, attachPath: source.attachPath });
+        for (const skip of one.report.skipped) skipped.push({ ...skip, ...tag });
+        if (source.kind === "repo" && one.report.repo) repoName = one.report.repo;
+        for (const agent of one.customAgents) {
+            const taken = winner.get(agent.name);
+            if (taken) {
+                skipped.push({ kind: "agent", file: agent.name, name: agent.name, reason: `${SOURCE_LABEL[taken]} agent has this name`, ...tag });
+                continue;
+            }
+            winner.set(agent.name, source.kind);
+            customAgents.push(agent);
+            lists[source.kind].agents.push(agent.name);
+        }
+        const folders = source.skillFolders
+            ?? one.report.skills.map((name) => ({ name, path: path.join(one.skillDirectories[0] ?? "", name) }));
+        if (folders.length > 0) skillSourceCount += 1;
+        for (const folder of folders) {
+            const taken = skillWinner.get(folder.name);
+            if (taken) {
+                lostSkill = true;
+                skipped.push({ kind: "skill", file: folder.name, name: folder.name, reason: `${SOURCE_LABEL[taken]} skill has this name`, ...tag });
+                continue;
+            }
+            skillWinner.set(folder.name, source.kind);
+            skills.push({ ...folder, kind: source.kind });
+            lists[source.kind].skills.push(folder.name);
+        }
+        hashParts.push([source.kind, one.hash ?? null, folders.map((f) => [f.name, f.path])]);
+    }
+    const linkSkills = skillSourceCount > 1 || lostSkill || live.some((source) => (source.skillFolders?.length ?? 0) > 0);
+    const skillDirectories = linkSkills || skills.length === 0
+        ? []
+        : [path.dirname(skills[0].path)];
+    const sorted = (names: string[]) => [...names].sort();
+    const report: WorkspaceAdoptionReport = {
+        ...(repoName ? { repo: repoName } : {}),
+        agents: sorted(lists.repo.agents),
+        skills: sorted(lists.repo.skills),
+        skipped,
+        ...(lists.personal.agents.length || lists.personal.skills.length
+            ? { personal: { agents: sorted(lists.personal.agents), skills: sorted(lists.personal.skills) } } : {}),
+        ...(lists.loaded.agents.length || lists.loaded.skills.length
+            ? { loaded: { agents: sorted(lists.loaded.agents), skills: sorted(lists.loaded.skills) } } : {}),
+    };
+    return {
+        customAgents,
+        skills,
+        skillDirectories,
+        linkSkills,
+        report,
+        hash: createHash("sha256").update(JSON.stringify(hashParts)).digest("hex"),
+    };
+}
+
+/**
+ * The folder of links for adopted skills from several sources: one link per
+ * skill, named by the skill, to its folder. Local to this worker; rebuilt
+ * whenever the set changes. Returns the folder.
+ */
+export function linkSkillFolders(dir: string, skills: Array<{ name: string; path: string }>): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const wanted = new Map(skills.map((skill) => [skill.name, skill.path]));
+    for (const entry of fs.readdirSync(dir)) {
+        const target = wanted.get(entry);
+        const full = path.join(dir, entry);
+        let current: string | null = null;
+        try { current = fs.readlinkSync(full); } catch { current = null; }
+        if (target === undefined || current !== target) fs.rmSync(full, { force: true, recursive: true });
+    }
+    for (const [name, target] of wanted) {
+        const full = path.join(dir, name);
+        if (!fs.existsSync(full) && !isLink(full)) fs.symlinkSync(target, full, "dir");
+    }
+    return dir;
+}
+
+function isLink(full: string): boolean {
+    try { return fs.lstatSync(full).isSymbolicLink(); } catch { return false; }
 }

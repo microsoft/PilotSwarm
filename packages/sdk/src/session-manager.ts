@@ -2,7 +2,7 @@ import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, c
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
-import { resolveRepoAdoption, RepoAgentAccess } from "./workspace-repo-agents.js";
+import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
@@ -425,6 +425,36 @@ export function keepAdoptedRepoInstructions(
         ...(message as any),
         sections: { ...sections, custom_instructions: { ...custom, action: "prepend" } },
     } as SystemMessageConfig;
+}
+
+/**
+ * Section 4.11: the person's own instruction files, read from their folder
+ * when it is an extra folder, go after PilotSwarm's base instructions. In
+ * prepend mode the repo's instructions (read by the CLI) follow them.
+ */
+export function withPersonalInstructions(
+    message: SystemMessageConfig | undefined,
+    texts: Array<{ file: string; content: string }>,
+    folder: string | undefined,
+): SystemMessageConfig | undefined {
+    const usable = texts.filter((text) => text.content.trim());
+    if (usable.length === 0 || !message || typeof message !== "object") return message;
+    const body = [
+        `# Your own instructions`,
+        `From your folder ${folder ?? ""}. Follow them unless the task or the repo's instructions say otherwise.`,
+        ...usable.map((text) => `## ${text.file}\n\n${text.content.trim()}`),
+    ].join("\n\n");
+    if ((message as any).mode === "customize") {
+        const sections = (message as any).sections ?? {};
+        const custom = sections.custom_instructions;
+        if (!custom) return message;
+        return {
+            ...(message as any),
+            sections: { ...sections, custom_instructions: { ...custom, content: `${custom.content ?? ""}\n\n${body}` } },
+        } as SystemMessageConfig;
+    }
+    if (typeof (message as any).content === "string") return { ...(message as any), content: `${(message as any).content}\n\n${body}` } as SystemMessageConfig;
+    return message;
 }
 
 /**
@@ -1769,7 +1799,9 @@ export class SessionManager {
         for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared"] as const) {
             if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
         }
-        const workspaceAttach = config.workspace ? config.workspaceAttach : undefined;
+        // Section 4.11: with no record, a turn still attaches the deployment's
+        // default home folder as its working folder.
+        const workspaceAttach = config.workspace || config.workspaceAttach?.homeIsWorkingFolder ? config.workspaceAttach : undefined;
         if (config.workspace && !workspaceAttach) {
             throw new Error(
                 `Session ${sessionId} has a workspace but reached getOrCreate without an attach result; `
@@ -1994,6 +2026,8 @@ export class SessionManager {
         // session that has a workspace, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
         const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
+            // Section 4.11: a session that has only the deployment's default folders has folders too.
+            || Boolean(config.workspaceAttach)
             || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
             || (boundAgentCopy?.toolNames ?? []).includes("set_session_workspace"));
         if (workspaceTools) config.workspaceTools = true;
@@ -2218,14 +2252,20 @@ export class SessionManager {
                 // in the catalog. Matching ones come first: they are this
                 // session's own (session workspaces, section 4.6).
                 const report = config.workspaceAdoption;
-                if (!report || (report.agents.length === 0 && report.skills.length === 0)) return result;
+                const groups = report ? [
+                    { origin: "loaded" as const, agents: report.loaded?.agents ?? [], skills: report.loaded?.skills ?? [] },
+                    { origin: "repo" as const, agents: report.agents, skills: report.skills },
+                    { origin: "personal" as const, agents: report.personal?.agents ?? [], skills: report.personal?.skills ?? [] },
+                ].filter((group) => group.agents.length > 0 || group.skills.length > 0) : [];
+                if (groups.length === 0) return result;
                 const descriptions = new Map((repoAdoption?.customAgents ?? []).map((agent) => [agent.name, agent.description]));
                 const limit = Math.max(1, Math.min(30, Math.trunc(args?.limit ?? 8)));
-                const hits = workspaceCapabilityHits({
-                    repo: report.repo,
-                    agents: report.agents.map((name) => ({ name, description: descriptions.get(name) })),
-                    skills: report.skills,
-                }, args, limit);
+                const hits = groups.flatMap((group) => workspaceCapabilityHits({
+                    repo: report!.repo,
+                    origin: group.origin,
+                    agents: group.agents.map((name) => ({ name, description: descriptions.get(name) })),
+                    skills: group.skills,
+                }, args, limit)).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
                 if (hits.length === 0) return result;
                 return { ...result, capabilities: [...hits, ...result.capabilities].slice(0, limit), coverage: { ...result.coverage, workspace: "available" } };
             },
@@ -2296,11 +2336,14 @@ export class SessionManager {
             ? ownedAndStaticCapabilityInventory(getSources(), v2Owner) : undefined;
         config.baseV2CapabilityIndex = v2Inventory ? this._baseV2CapabilityIndexSection(v2Inventory) : undefined;
 
-        // Build system message: worker base + client override
-        const systemMessage = keepAdoptedRepoInstructions(
+        // Build system message: worker base + client override. Section 4.11:
+        // the person's own instructions, when their folder is an extra folder
+        // (the CLI reads instruction files only from its working folder),
+        // follow PilotSwarm's base and come before the repo's.
+        const systemMessage = withPersonalInstructions(keepAdoptedRepoInstructions(
             this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null),
             workspaceAttach?.adopt?.instructions === true,
-        );
+        ), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path);
 
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include
@@ -2318,10 +2361,20 @@ export class SessionManager {
         // provider's adopt allows, filtered for this session. Agents need
         // native tasks; they run as native task children.
         const pilotswarmToolNames = new Set<string>([...allTools.map((t: any) => t.name), ...NATIVE_SYNCHRONOUS_TOOLS]);
-        const repoAdoption = workspaceAttach ? resolveRepoAdoption({
-            scan: workspaceAttach.repo,
-            adopt: workspaceAttach.adopt,
-            attachPath: workspaceAttach.path,
+        // Sources, winner first on a name clash: the working folder (the
+        // repo, or the person's own folder when that is the working folder),
+        // then the person's folder as an extra folder (section 4.11).
+        const adoptionSources: AdoptionSource[] = workspaceAttach ? [
+            {
+                kind: workspaceAttach.homeIsWorkingFolder ? "personal" : "repo",
+                scan: workspaceAttach.repo, adopt: workspaceAttach.adopt, attachPath: workspaceAttach.path,
+            },
+            ...(workspaceAttach.home ? [{
+                kind: "personal" as const, scan: workspaceAttach.home.repo, adopt: workspaceAttach.home.adopt, attachPath: workspaceAttach.home.path,
+            }] : []),
+        ] : [];
+        const repoAdoption = workspaceAttach ? resolveWorkspaceAdoption({
+            sources: adoptionSources,
             nativeTasks: nativeEnabled,
             sessionModel: sdkModelName,
             pilotswarmToolNames,
@@ -2335,7 +2388,12 @@ export class SessionManager {
         const repoAgentAccess = repoAdoption && repoAdoption.customAgents.length > 0
             ? new RepoAgentAccess(new Set(repoAdoption.customAgents.map((agent) => agent.name)), pilotswarmToolNames)
             : undefined;
-        const sessionSkillDirectories = [...sdkSkillDirectories, ...(repoAdoption?.skillDirectories ?? [])];
+        // Skills from several sources, or a folder with a skill that lost a
+        // clash, reach the CLI as one folder of links, one per adopted skill.
+        const adoptedSkillDirectories = repoAdoption?.linkSkills && repoAdoption.skills.length > 0
+            ? [linkSkillFolders(path.join(os.tmpdir(), "pilotswarm-skills", sessionId), repoAdoption.skills)]
+            : repoAdoption?.skillDirectories ?? [];
+        const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,

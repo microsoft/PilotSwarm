@@ -2929,6 +2929,27 @@ export class ManagedSession {
                         ...(this.config.workspace && this.config.workspaceAdoption
                             ? { adopted: { agents: this.config.workspaceAdoption.agents, skills: this.config.workspaceAdoption.skills } }
                             : {}),
+                        // Section 4.11: the deployment's default folders, as attached for
+                        // this turn. They are not part of the record above.
+                        ...(attach && (attach.homeIsWorkingFolder || attach.defaultExtras?.length) ? {
+                            defaults: {
+                                ...(attach.homeIsWorkingFolder ? { workingFolder: { root: attach.root, path: attach.path } } : {}),
+                                extra: (attach.defaultExtras ?? []).map((name) => {
+                                    const attached = attach.extras?.find((one) => one.name === name);
+                                    const missing = attach.extrasUnavailable?.find((one) => one.name === name);
+                                    return {
+                                        name,
+                                        root: attached?.root ?? missing?.root ?? null,
+                                        path: attached?.path ?? null,
+                                        status: attached ? "attached" : missing ? "unavailable" : "not attached",
+                                        ...(attached?.readOnly ? { readOnly: true } : {}),
+                                    };
+                                }),
+                                note: "Folders the deployment gives every session. Your own folder is the working folder when none is set, else extra folder \"home\".",
+                            },
+                        } : {}),
+                        ...(this.config.workspaceAdoption?.personal ? { adoptedFromYourFolder: this.config.workspaceAdoption.personal } : {}),
+                        ...(this.config.workspaceAdoption?.loaded ? { loaded: this.config.workspaceAdoption.loaded } : {}),
                     });
                 },
             }),

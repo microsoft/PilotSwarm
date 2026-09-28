@@ -14,7 +14,8 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { applyWorkspaceDefaults, checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, resolveWorkspaceDefaults, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
@@ -1701,13 +1702,30 @@ export function registerActivities(
         // clone was made again). They ride this turn's prompt, like the
         // changed-cwd note below.
         const providerWorkspaceNotices: string[] = [];
-        if (runConfig.workspace) {
+        // The deployment's default folders (section 4.11): the person's own
+        // folder as the working folder when the record has none, otherwise as
+        // an extra folder; plus folders every session gets. Applied for this
+        // turn only, never saved. Not for an orchestration older than 1.0.80,
+        // which cannot hold a turn for a folder.
+        const workspaceDefaults = (runConfig as ManagedSessionConfig).workspaceToolsBlocked ? null
+            : await resolveWorkspaceDefaults(sessionManager.getWorkspaceProvider(), {
+                sessionId: input.sessionId,
+                rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                owner: catalogSessionRow?.owner ?? null,
+                isSystem: Boolean(catalogSessionRow?.isSystem),
+            }, { onError: (message) => activityCtx.traceInfo(`[runTurn] workspace defaults for ${input.sessionId}: ${message}`) });
+        const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, workspaceDefaults);
+        for (const skip of withDefaults.skipped) {
+            activityCtx.traceInfo(`[runTurn] default folder "${skip.name}" left out for ${input.sessionId}: ${skip.reason}`);
+        }
+        const turnWorkspace = withDefaults.workspace;
+        if (turnWorkspace) {
             const workspaceRevision = input.workspaceRevision ?? 1;
             const attachWorker = workerNodeId ?? os.hostname();
             const attachRequest = {
                 sessionId: input.sessionId,
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
-                workspace: runConfig.workspace,
+                workspace: turnWorkspace,
                 revision: workspaceRevision,
                 workerNodeId: attachWorker,
                 turnIndex: input.turnIndex ?? 0,
@@ -1756,16 +1774,21 @@ export function registerActivities(
                 revision: request.revision,
                 turnIndex: request.turnIndex,
             })));
-            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(), attachRequest, { onAttach });
+            // The working folder alone: default extra folders do not count
+            // against the record's limit, so the whole record is not re-checked here.
+            const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(),
+                { ...attachRequest, workspace: workingFolderOf(turnWorkspace) }, { onAttach });
             if (!prepared.ok) {
                 holdSent();
                 return await holdForWorkspace(prepared);
             }
             // Extra folders (section 4.10): a required one that fails holds
             // the prompt like the working folder; an optional one is left
-            // out of this turn and the model is told.
-            const extras = runConfig.workspace.extra && Object.keys(runConfig.workspace.extra).length > 0
-                ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest, { onAttach })
+            // out of this turn and the model is told. The default home folder
+            // is the one extra folder that may adopt (4.11).
+            const extras = turnWorkspace.extra && Object.keys(turnWorkspace.extra).length > 0
+                ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest,
+                    { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) })
                 : [];
             const heldBy = extras.find((extra) => !extra.ok && extra.required);
             if (heldBy && !heldBy.ok) {
@@ -1785,6 +1808,9 @@ export function registerActivities(
             for (const missing of extrasUnavailable) {
                 activityCtx.traceInfo(`[runTurn] optional extra folder ${missing.name} unavailable for ${input.sessionId}: ${missing.code} ${missing.message}`);
             }
+            const homeExtra = withDefaults.homeExtra
+                ? extras.find((extra) => extra.ok && extra.name === withDefaults.homeExtra)
+                : undefined;
             (runConfig as ManagedSessionConfig).workspaceAttach = {
                 root: prepared.root.name,
                 rootPath: prepared.root.path,
@@ -1792,6 +1818,14 @@ export function registerActivities(
                 realPath: prepared.realPath,
                 ...(prepared.adopt ? { adopt: prepared.adopt } : {}),
                 ...(prepared.repo ? { repo: prepared.repo } : {}),
+                // Section 4.11: which folders came from the deployment's
+                // defaults, and what the default home folder adopts when it
+                // is an extra folder (the working folder's adoption is above).
+                ...(withDefaults.homeIsWorkingFolder && workspaceDefaults?.home ? { homeIsWorkingFolder: true } : {}),
+                ...(withDefaults.defaultNames.length > 0 ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                ...(homeExtra && homeExtra.ok && homeExtra.adopt ? {
+                    home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
+                } : {}),
                 revision: workspaceRevision,
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
                 turnIndex: input.turnIndex ?? 0,

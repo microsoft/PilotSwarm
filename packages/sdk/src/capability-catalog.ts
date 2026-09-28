@@ -111,6 +111,8 @@ export interface WorkspaceCapabilities {
     repo?: string;
     agents: Array<{ name: string; description?: string }>;
     skills: string[];
+    /** Where they came from: the repo (default), the person's own folder (4.11), or loaded by path (4.12). */
+    origin?: "repo" | "personal" | "loaded";
 }
 /**
  * Search hits for the working folder's adopted repo agents and skills. The
@@ -122,24 +124,28 @@ export interface WorkspaceCapabilities {
 export function workspaceCapabilityHits(workspace: WorkspaceCapabilities | undefined, args: { query: string; kinds?: CapabilityKind[] }, limit: number) {
     if (!workspace) return [];
     const kinds = args.kinds ?? ["skill", "agent", "tool", "mcp"];
+    const origin = workspace.origin ?? "repo";
     const repo = workspace.repo ?? "the working folder's repo";
+    // Where it came from, as the model reads it (sections 4.6, 4.11, 4.12).
+    const from = origin === "personal" ? "From your own folder" : origin === "loaded" ? "Loaded by path in this session" : `Adopted from ${repo}`;
+    const words = origin === "personal" ? "my own personal folder" : origin === "loaded" ? "loaded file" : `${workspace.repo ?? ""} repo repository`;
     const hits: any[] = [];
     if (kinds.includes("agent")) {
         for (const agent of workspace.agents) {
-            const score = lexicalScore(args.query, agent.name, `${workspace.repo ?? ""} repo repository ${agent.description ?? ""}`);
+            const score = lexicalScore(args.query, agent.name, `${words} ${agent.description ?? ""}`);
             if (!score) continue;
             hits.push({ kind: "agent", name: agent.name, description: String(agent.description ?? "").slice(0, 600),
-                source: "workspace", ownership: "repo", scope: "session", repo: workspace.repo,
-                how_to_use: `Adopted from ${repo}. Call the task tool with agent_type "${agent.name}"; it runs as a native task in this session's working folder, on the session's model.`,
+                source: "workspace", ownership: origin, scope: "session", ...(origin === "repo" ? { repo: workspace.repo } : {}),
+                how_to_use: `${from}. Call the task tool with agent_type "${agent.name}"; it runs as a native task in this session's working folder, on the session's model.`,
                 score });
         }
     }
     if (kinds.includes("skill")) {
         for (const skill of workspace.skills) {
-            const score = lexicalScore(args.query, skill, `${workspace.repo ?? ""} repo repository skill`);
+            const score = lexicalScore(args.query, skill, `${words} skill`);
             if (!score) continue;
-            hits.push({ kind: "skill", name: skill, description: "", source: "workspace", ownership: "repo", scope: "session",
-                repo: workspace.repo, how_to_use: `Adopted from ${repo}. Invoke it with the skill tool: skill "${skill}".`, score });
+            hits.push({ kind: "skill", name: skill, description: "", source: "workspace", ownership: origin, scope: "session",
+                ...(origin === "repo" ? { repo: workspace.repo } : {}), how_to_use: `${from}. Invoke it with the skill tool: skill "${skill}".`, score });
         }
     }
     return hits.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);

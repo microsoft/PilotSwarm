@@ -13,9 +13,12 @@ import path from "node:path";
 import {
     WORKSPACE_ERROR_CODES,
     type SessionWorkspace,
+    type SessionWorkspaceExtra,
     type WorkspaceAdopt,
     type WorkspaceAttachRequest,
     type WorkspaceAttachResult,
+    type WorkspaceDefaults,
+    type WorkspaceDefaultsContext,
     type WorkspaceExtraAttach,
     type WorkspaceProvider,
     type WorkspaceReleaseReason,
@@ -23,8 +26,10 @@ import {
     type WorkspaceRoot,
 } from "./types.js";
 import {
+    checkDefaultFolder,
     checkWorkspacePath,
     extraFolderRecord,
+    foldersOverlap,
     validateWorkspaceText,
     workingFolderOf,
     DEFAULT_PATH_CHECK_TIMEOUT_MS,
@@ -119,7 +124,10 @@ function failure(code: string, message: string, retryAfterMs?: number): Failure 
 function normalizeAdopt(adopt: unknown): WorkspaceAdopt | undefined {
     if (!adopt || typeof adopt !== "object") return undefined;
     const raw = adopt as Record<string, unknown>;
-    return { agents: raw.agents === true, skills: raw.skills === true, instructions: raw.instructions === true };
+    return {
+        agents: raw.agents === true, skills: raw.skills === true, instructions: raw.instructions === true,
+        ...(raw.folder === true ? { folder: true } : {}),
+    };
 }
 
 /** Resolves to the value, or to `onTimeout()` when the deadline passes first. */
@@ -181,7 +189,11 @@ export async function checkWorkspaceRoot(
 export async function prepareWorkspace(
     provider: WorkspaceProvider | null | undefined,
     req: WorkspaceAttachRequest,
-    opts: { attachTimeoutMs?: number; checkTimeoutMs?: number; onAttach?: (req: WorkspaceAttachRequest) => void } = {},
+    opts: {
+        attachTimeoutMs?: number; checkTimeoutMs?: number; onAttach?: (req: WorkspaceAttachRequest) => void;
+        /** An extra folder that may adopt: the deployment's default home folder (section 4.11). */
+        adoptExtra?: boolean;
+    } = {},
 ): Promise<WorkspacePreparation> {
     const attachTimeoutMs = opts.attachTimeoutMs ?? DEFAULT_ATTACH_TIMEOUT_MS;
     const text = validateWorkspaceText(req.workspace);
@@ -223,10 +235,16 @@ export async function prepareWorkspace(
         return failure(WORKSPACE_ERROR_CODES.ATTACH_FAILED, "ensureAttached returned ok without an absolute path");
     }
 
-    // Nothing is adopted from an extra folder (section 4.10).
-    const adopt = isExtra ? undefined : normalizeAdopt(attached.adopt);
+    // Nothing is adopted from an extra folder (section 4.10), except the
+    // deployment's default home folder (4.11). The CLI reads instruction
+    // files only from its working folder, so an extra folder's are read here.
+    const adopt = isExtra && !opts.adoptExtra ? undefined : normalizeAdopt(attached.adopt);
     const collect = adopt && (adopt.agents || adopt.skills || adopt.instructions)
-        ? { agents: adopt.agents, skills: adopt.skills, instructions: adopt.instructions }
+        ? {
+            agents: adopt.agents, skills: adopt.skills, instructions: adopt.instructions,
+            ...(adopt.folder ? { folder: true } : {}),
+            ...(isExtra && adopt.instructions ? { instructionText: true } : {}),
+        }
         : undefined;
     const checked = await checkWorkspacePath({
         rootName: rootCheck.root.name,
@@ -260,7 +278,11 @@ function providerNotice(value: unknown): string | undefined {
 }
 
 export type WorkspaceExtraPreparation =
-    | { name: string; required: boolean; ok: true; attach: WorkspaceExtraAttach; notice?: string }
+    | {
+        name: string; required: boolean; ok: true; attach: WorkspaceExtraAttach; notice?: string;
+        /** Only for the folder named by opts.adoptFrom: what it adopts, and what the check read. */
+        adopt?: WorkspaceAdopt; repo?: RepoScan;
+    }
     | { name: string; required: boolean; root: string; folder?: string; ok: false; code: string; message: string; retryAfterMs?: number };
 
 /**
@@ -272,14 +294,20 @@ export type WorkspaceExtraPreparation =
 export async function prepareWorkspaceExtras(
     provider: WorkspaceProvider | null | undefined,
     req: WorkspaceAttachRequest,
-    opts: { attachTimeoutMs?: number; checkTimeoutMs?: number; onAttach?: (req: WorkspaceAttachRequest) => void; names?: string[] } = {},
+    opts: {
+        attachTimeoutMs?: number; checkTimeoutMs?: number; onAttach?: (req: WorkspaceAttachRequest) => void; names?: string[];
+        /** The one extra folder that may adopt: the deployment's default home folder (section 4.11). */
+        adoptFrom?: string;
+    } = {},
 ): Promise<WorkspaceExtraPreparation[]> {
     const extras = req.workspace.extra ?? {};
     const names = (opts.names ?? Object.keys(extras)).filter((name) => extras[name]).sort();
     return Promise.all(names.map(async (name): Promise<WorkspaceExtraPreparation> => {
         const extra = extras[name];
         const required = extra.required !== false;
-        const prepared = await prepareWorkspace(provider, { ...req, workspace: extraFolderRecord(extra), attachment: name }, opts);
+        const { adoptFrom: _adoptFrom, names: _names, ...attachOpts } = opts;
+        const prepared = await prepareWorkspace(provider, { ...req, workspace: extraFolderRecord(extra), attachment: name },
+            { ...attachOpts, ...(opts.adoptFrom === name ? { adoptExtra: true } : {}) });
         if (!prepared.ok) {
             return {
                 name, required, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
@@ -300,6 +328,8 @@ export async function prepareWorkspaceExtras(
                 ...(prepared.readOnly ? { readOnly: true } : {}),
             },
             ...(prepared.notice ? { notice: prepared.notice } : {}),
+            ...(opts.adoptFrom === name && prepared.adopt ? { adopt: prepared.adopt } : {}),
+            ...(opts.adoptFrom === name && prepared.repo ? { repo: prepared.repo } : {}),
         };
     }));
 }
@@ -345,7 +375,157 @@ export function combineWorkspaceProviders(providers: WorkspaceProvider[]): Works
             const provider = await route(req.workspace.root);
             await provider?.release?.(req);
         },
+        // The first provider's home wins; extra folders merge by name, the
+        // first provider's winning.
+        ...(list.some((provider) => provider.defaultFolders) ? {
+            async defaultFolders(ctx: WorkspaceDefaultsContext) {
+                let home: WorkspaceDefaults["home"];
+                const extra: NonNullable<WorkspaceDefaults["extra"]> = {};
+                for (const provider of list) {
+                    const defaults = provider.defaultFolders ? await provider.defaultFolders(ctx) : null;
+                    if (!defaults) continue;
+                    if (!home && defaults.home) home = defaults.home;
+                    for (const [name, value] of Object.entries(defaults.extra ?? {})) {
+                        if (!Object.prototype.hasOwnProperty.call(extra, name)) extra[name] = value;
+                    }
+                }
+                if (!home && Object.keys(extra).length === 0) return null;
+                return { ...(home ? { home } : {}), ...(Object.keys(extra).length > 0 ? { extra } : {}) };
+            },
+        } : {}),
     };
+}
+
+/** How long PilotSwarm waits for a provider's defaultFolders. */
+export const DEFAULT_FOLDERS_TIMEOUT_MS = 5_000;
+
+/**
+ * The provider's default folders for one session (section 4.11), within a
+ * deadline. A provider without the hook, one that throws, or one that is too
+ * slow gives no defaults: the session runs as it would without them.
+ */
+export async function resolveWorkspaceDefaults(
+    provider: WorkspaceProvider | null | undefined,
+    ctx: WorkspaceDefaultsContext,
+    opts: { timeoutMs?: number; onError?: (message: string) => void } = {},
+): Promise<WorkspaceDefaults | null> {
+    if (!provider?.defaultFolders) return null;
+    const timedOut: unique symbol = Symbol("timeout");
+    try {
+        const result = await withDeadline<WorkspaceDefaults | null | typeof timedOut>(
+            Promise.resolve().then(() => provider.defaultFolders!(ctx)),
+            opts.timeoutMs ?? DEFAULT_FOLDERS_TIMEOUT_MS,
+            () => timedOut,
+        );
+        if (result === timedOut) {
+            opts.onError?.(`defaultFolders gave no answer within ${opts.timeoutMs ?? DEFAULT_FOLDERS_TIMEOUT_MS} ms`);
+            return null;
+        }
+        return result && typeof result === "object" ? result : null;
+    } catch (error: any) {
+        opts.onError?.(`defaultFolders failed: ${error?.message ?? error}`);
+        return null;
+    }
+}
+
+/** A session's record with the deployment's default folders applied (section 4.11). */
+export interface WorkspaceWithDefaults {
+    /** What this turn attaches. Null: no working folder at all (the worker's own folder is used). */
+    workspace: SessionWorkspace | null;
+    /** The extra folders that came from the defaults, not from the record. */
+    defaultNames: string[];
+    /** The default home folder's name when it was added as an extra folder. */
+    homeExtra?: string;
+    /** The working folder is the default home folder: the record had none, or named the same folder. */
+    homeIsWorkingFolder: boolean;
+    /** Defaults left out, and why. */
+    skipped: Array<{ name: string; reason: string }>;
+}
+
+/**
+ * Apply a provider's default folders to a session's record. Nothing here is
+ * saved; the record keeps only what the session, its creator or its agent
+ * set. The rules:
+ *
+ *   1. Working folder: the record's. With none, the default home folder.
+ *      With neither, none (and the default extra folders are left out: an
+ *      extra folder needs a working folder).
+ *   2. The default home folder, when it is not the working folder, becomes
+ *      an extra folder under its name. The same folder as the working
+ *      folder: it is the working folder, not added again.
+ *   3. Default extra folders are added under their names.
+ *   4. A default is left out when the record uses its name, or when it
+ *      overlaps a folder already in the result (the same folder, or one
+ *      inside the other, in one root).
+ *   5. Defaults never count against MAX_WORKSPACE_EXTRAS. They are optional
+ *      unless the provider marks one required.
+ */
+export function applyWorkspaceDefaults(
+    stored: SessionWorkspace | null | undefined,
+    defaults: WorkspaceDefaults | null | undefined,
+): WorkspaceWithDefaults {
+    const skipped: Array<{ name: string; reason: string }> = [];
+    const base: WorkspaceWithDefaults = { workspace: stored ?? null, defaultNames: [], homeIsWorkingFolder: false, skipped };
+    if (!defaults) return base;
+    let home: { name: string; folder: SessionWorkspaceExtra } | null = null;
+    if (defaults.home) {
+        const checked = checkDefaultFolder(defaults.home.name, defaults.home);
+        if (checked.ok) home = checked;
+        else skipped.push({ name: String(defaults.home.name ?? "home"), reason: checked.message });
+    }
+    const extras: Array<{ name: string; folder: SessionWorkspaceExtra }> = [];
+    for (const [name, value] of Object.entries(defaults.extra ?? {})) {
+        const checked = checkDefaultFolder(name, value);
+        if (checked.ok) extras.push(checked);
+        else skipped.push({ name, reason: checked.message });
+    }
+
+    let working: SessionWorkspace;
+    let homeIsWorkingFolder = false;
+    if (stored) {
+        working = stored;
+        if (home && home.folder.root === stored.root && (home.folder.folder ?? "") === (stored.folder ?? "")) {
+            homeIsWorkingFolder = true;
+        }
+    } else if (home) {
+        working = { schema: 1, root: home.folder.root, ...(home.folder.folder ? { folder: home.folder.folder } : {}) };
+        homeIsWorkingFolder = true;
+    } else {
+        for (const extra of extras) skipped.push({ name: extra.name, reason: "the session has no working folder" });
+        return { ...base, skipped };
+    }
+
+    const extra: Record<string, SessionWorkspaceExtra> = { ...(stored?.extra ?? {}) };
+    const taken: Array<{ name: string; root: string; folder?: string }> = [
+        { name: "the working folder", root: working.root, ...(working.folder ? { folder: working.folder } : {}) },
+        ...Object.entries(extra).map(([name, value]) => ({ name: `extra folder "${name}"`, root: value.root, ...(value.folder ? { folder: value.folder } : {}) })),
+    ];
+    const defaultNames: string[] = [];
+    let homeExtra: string | undefined;
+    const add = (candidate: { name: string; folder: SessionWorkspaceExtra }, isHome: boolean) => {
+        if (Object.prototype.hasOwnProperty.call(extra, candidate.name)) {
+            skipped.push({ name: candidate.name, reason: "the session's record uses this name" });
+            return;
+        }
+        const clash = taken.find((folder) => foldersOverlap(candidate.folder, folder));
+        if (clash) {
+            skipped.push({ name: candidate.name, reason: `it overlaps ${clash.name}` });
+            return;
+        }
+        extra[candidate.name] = candidate.folder;
+        taken.push({ name: `extra folder "${candidate.name}"`, root: candidate.folder.root, ...(candidate.folder.folder ? { folder: candidate.folder.folder } : {}) });
+        defaultNames.push(candidate.name);
+        if (isHome) homeExtra = candidate.name;
+    };
+    if (home && !homeIsWorkingFolder) add(home, true);
+    for (const candidate of extras) add(candidate, false);
+    const workspace: SessionWorkspace = {
+        schema: 1,
+        root: working.root,
+        ...(working.folder ? { folder: working.folder } : {}),
+        ...(Object.keys(extra).length > 0 ? { extra } : {}),
+    };
+    return { workspace, defaultNames, ...(homeExtra ? { homeExtra } : {}), homeIsWorkingFolder, skipped };
 }
 
 /**

@@ -255,6 +255,52 @@ export interface WorkspaceAdopt {
     agents: boolean;
     skills: boolean;
     instructions: boolean;
+    /**
+     * Also adopt from the attached folder itself when it is not inside a git
+     * clone (a person's own folder, section 4.11). Without it, agents and
+     * skills come only from a clone root.
+     */
+    folder?: boolean;
+}
+
+/** Who a session belongs to, for a provider's default folders (section 4.11). */
+export interface WorkspaceDefaultsContext {
+    sessionId: string;
+    /** The session tree. */
+    rootSessionId: string;
+    /**
+     * The session's owner. Null for a system session. A portal without
+     * sign-in stamps { provider: "anonymous", subject: "anonymous" }; the
+     * sub-agents of a system session run as { provider: "system", subject: "system" }.
+     */
+    owner: { provider: string; subject: string; email?: string | null; displayName?: string | null } | null;
+    /** A platform-managed system session. */
+    isSystem: boolean;
+}
+
+/** One default folder: a folder of a root, and whether a turn waits for it. */
+export interface WorkspaceDefaultFolder {
+    root: string;
+    folder?: string;
+    /** Default false: a default folder that cannot attach is left out of the turn, and the model is told. */
+    required?: boolean;
+}
+
+/**
+ * The folders a deployment gives every session (section 4.11). PilotSwarm
+ * applies them before each turn; they are never saved in the session's
+ * record, and they do not count against MAX_WORKSPACE_EXTRAS.
+ */
+export interface WorkspaceDefaults {
+    /**
+     * The session's own folder. It is the working folder when the session's
+     * record has none; otherwise an extra folder under `name`, unless the
+     * record uses that name or the folder overlaps a folder of the record.
+     * It is the one extra folder that may adopt (its attach result's adopt).
+     */
+    home?: WorkspaceDefaultFolder & { name: string };
+    /** Extra folders every session gets, unless its record uses the name or a folder overlaps. */
+    extra?: Record<string, WorkspaceDefaultFolder>;
 }
 
 /** One exported directory, mounted at the same path on every worker. */
@@ -336,6 +382,12 @@ export interface WorkspaceProvider {
     ensureAttached(req: WorkspaceAttachRequest): Promise<WorkspaceAttachResult>;
     /** Best effort. */
     release?(req: WorkspaceReleaseRequest): Promise<void>;
+    /**
+     * The folders every session of this deployment gets (section 4.11).
+     * Called before each turn with the session's owner; must be quick and
+     * must not touch the mount. Null or omitted: no default folders.
+     */
+    defaultFolders?(ctx: WorkspaceDefaultsContext): WorkspaceDefaults | null | Promise<WorkspaceDefaults | null>;
 }
 
 /**
@@ -371,8 +423,12 @@ export interface WorkspaceAdoptionReport {
     agents: string[];
     /** Adopted repo skill names, sorted. */
     skills: string[];
-    /** Repo content left out, and why. */
-    skipped: Array<{ kind: "agent" | "skill"; file: string; name?: string; reason: string }>;
+    /** Repo content left out, and why. `source` names where it came from when that is not the repo. */
+    skipped: Array<{ kind: "agent" | "skill"; file: string; name?: string; reason: string; source?: "personal" | "loaded" }>;
+    /** Section 4.11: agents and skills adopted from the person's own folder, sorted. */
+    personal?: { agents: string[]; skills: string[] };
+    /** Section 4.12: agents and skills loaded by path (load_agent, load_skill), sorted. */
+    loaded?: { agents: string[]; skills: string[] };
 }
 
 /** What getSessionWorkspace reports, read from the session's latest workspace events. */
@@ -540,6 +596,12 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         extras?: WorkspaceExtraAttach[];
         /** Optional extra folders that could not be attached; the turn runs without them. */
         extrasUnavailable?: Array<{ name: string; root: string; folder?: string; code: string; message: string }>;
+        /** Section 4.11: the working folder is the deployment's default home folder (a person's own folder). */
+        homeIsWorkingFolder?: boolean;
+        /** Section 4.11: the names of the extra folders that came from the deployment's defaults. */
+        defaultExtras?: string[];
+        /** Section 4.11: the default home folder as an extra folder, and what it adopts. */
+        home?: { name: string; path: string; adopt: WorkspaceAdopt; repo?: import("./workspace-check.js").RepoScan };
     };
     /**
      * Session workspaces: what this handle adopted from the checkout, set by

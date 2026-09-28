@@ -171,6 +171,9 @@ export type {
     WorkspaceAttachRequest,
     WorkspaceAttachResult,
     WorkspaceProvider,
+    WorkspaceDefaults,
+    WorkspaceDefaultFolder,
+    WorkspaceDefaultsContext,
     WorkspaceReleaseReason,
     WorkspaceReleaseRequest,
 } from "./types.js";
@@ -184,7 +187,7 @@ export {
 } from "./types.js";
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
-export { createBuiltInWorkspaceProvider, combineWorkspaceProviders } from "./workspace.js";
+export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
 export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader

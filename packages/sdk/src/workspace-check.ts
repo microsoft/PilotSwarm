@@ -107,8 +107,29 @@ function checkExtraMap(input: unknown, allowNull: boolean): { ok: true; extra: R
     return { ok: true, extra };
 }
 
+/**
+ * One default folder from a provider's defaultFolders (section 4.11): a valid
+ * extra-folder name and the folder-text rules. Normalized like a record's
+ * extra folder; `required` is kept only when true (defaults are optional).
+ */
+export function checkDefaultFolder(name: unknown, value: unknown): { ok: true; name: string; folder: SessionWorkspaceExtra } | WorkspaceCheckFailure {
+    if (typeof name !== "string" || !EXTRA_NAME.test(name)) {
+        return invalid(`default folder name "${String(name)}" must be 1-32 lowercase letters, digits, "-" or "_", starting with a letter or digit`);
+    }
+    if (reservedName(name)) return invalid(`default folder name "${name}" is reserved`);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return invalid(`default folder "${name}" must be an object with a root`);
+    const raw = value as Record<string, unknown>;
+    const checked = checkRootAndFolder(raw.root, raw.folder, `default folder "${name}"`);
+    if (!checked.ok) return checked;
+    return {
+        ok: true,
+        name,
+        folder: { root: checked.root, ...(checked.folder ? { folder: checked.folder } : {}), ...(raw.required === true ? { required: true } : { required: false }) },
+    };
+}
+
 /** One folder is the other, or holds it, in the same root. The text only; links are not followed. */
-function foldersOverlap(a: { root: string; folder?: string }, b: { root: string; folder?: string }): boolean {
+export function foldersOverlap(a: { root: string; folder?: string }, b: { root: string; folder?: string }): boolean {
     if (a.root !== b.root) return false;
     const x = a.folder ?? "";
     const y = b.folder ?? "";
@@ -322,9 +343,12 @@ export interface WorkspacePathCheckRequest {
     timeoutMs?: number;
     /**
      * Also read the repo's agents and skills, and stamp its instruction
-     * files (section 4.6), inside the same deadline.
+     * files (section 4.6), inside the same deadline. `folder`: with no clone
+     * root, adopt from the attach path itself (a person's folder, 4.11).
+     * `instructionText`: also read the instruction files' text, for a folder
+     * the CLI does not read them from (an extra folder).
      */
-    collect?: { agents?: boolean; skills?: boolean; instructions?: boolean };
+    collect?: { agents?: boolean; skills?: boolean; instructions?: boolean; folder?: boolean; instructionText?: boolean };
 }
 
 /** Repo limits from section 4.6. */
@@ -356,7 +380,14 @@ export interface RepoScan {
      * fingerprint, so an edited AGENTS.md resumes the session.
      */
     instructions?: Array<[string, number, number]>;
+    /** The instruction files' text, when collect.instructionText asked for it (at most MAX_INSTRUCTION_TEXT_BYTES in all). */
+    instructionText?: Array<{ file: string; content: string }>;
+    /** The adoption root is the attached folder itself, not a git clone (collect.folder). */
+    folderRoot?: boolean;
 }
+
+/** The most instruction text read from one extra folder (all files together). */
+export const MAX_INSTRUCTION_TEXT_BYTES = 32 * 1024;
 
 export type WorkspacePathCheckResult = { ok: true; realPath: string; repo?: RepoScan } | WorkspaceCheckFailure;
 
@@ -419,6 +450,9 @@ for (let dir = real; ; dir = path.dirname(dir)) {
   if (path.relative(rootReal, dir) === "" || dir === path.dirname(dir)) break;
 }
 const repo = { agents: [], skills: [], skipped: [] };
+// A person's folder (section 4.11): with no clone, the provider may let the
+// attached folder itself be the adoption root.
+if (!clone && req.collect.folder) { clone = real; repo.folderRoot = true; }
 if (req.collect.instructions) {
   // Only a stamp: the CLI reads these itself. It joins the fingerprint.
   const stamp = [];
@@ -436,6 +470,29 @@ if (req.collect.instructions) {
     }
   } catch (e) {}
   repo.instructions = stamp;
+  if (req.collect.instructionText) {
+    // The text, for a folder the CLI does not read instructions from.
+    const texts = [];
+    let used = 0;
+    for (const [file] of stamp) {
+      const full = file.startsWith(".github/instructions/") ? path.join(clone || real, file) : path.join(real, file);
+      try {
+        const r = fs.realpathSync(full);
+        const rel3 = path.relative(clone || real, r);
+        if (rel3 === ".." || rel3.startsWith(".." + path.sep) || path.isAbsolute(rel3)) continue;
+        const left = req.maxInstructionText - used;
+        if (left <= 0) break;
+        const fd = fs.openSync(full, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+        try {
+          const buf = Buffer.alloc(Math.min(left, 256 * 1024));
+          const n = fs.readSync(fd, buf, 0, buf.length, 0);
+          used += n;
+          texts.push({ file, content: buf.subarray(0, n).toString("utf8") });
+        } finally { fs.closeSync(fd); }
+      } catch (e) {}
+    }
+    repo.instructionText = texts;
+  }
 }
 if (!clone) {
   if (req.collect.agents && exists(path.join(real, ".github", "agents"))) repo.skipped.push({ kind: "agent", file: ".github/agents", reason: "the folder is not inside a git clone, so nothing is adopted" });
@@ -625,6 +682,7 @@ function runCheck(state: RootCheckState, req: WorkspacePathCheckRequest, timeout
                             maxAgentBytes: MAX_REPO_AGENT_BYTES,
                             maxAgentOverflow: MAX_REPO_AGENT_OVERFLOW,
                             maxSkillEntries: MAX_REPO_SKILL_ENTRIES,
+                            maxInstructionText: MAX_INSTRUCTION_TEXT_BYTES,
                         } : {}),
                     }),
                 },
