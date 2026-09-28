@@ -1702,6 +1702,8 @@ export function registerActivities(
         // clone was made again). They ride this turn's prompt, like the
         // changed-cwd note below.
         const providerWorkspaceNotices: string[] = [];
+        // PilotSwarm's own notes about the default folders (section 4.11).
+        const defaultFolderNotices: string[] = [];
         // The deployment's default folders (section 4.11): the person's own
         // folder as the working folder when the record has none, otherwise as
         // an extra folder; plus folders every session gets. Applied for this
@@ -1778,62 +1780,80 @@ export function registerActivities(
             // against the record's limit, so the whole record is not re-checked here.
             const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(),
                 { ...attachRequest, workspace: workingFolderOf(turnWorkspace) }, { onAttach });
-            if (!prepared.ok) {
+            // Section 4.11: the person's own folder is the working folder only
+            // because the record has none. Unless the provider marked it
+            // required, it is optional like any default folder: the turn runs
+            // without folders, and the model is told. A plain chat must not
+            // wait for a file server.
+            const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && workspaceDefaults?.home?.required !== true;
+            if (!prepared.ok && !optionalHome) {
                 holdSent();
                 return await holdForWorkspace(prepared);
             }
-            // Extra folders (section 4.10): a required one that fails holds
-            // the prompt like the working folder; an optional one is left
-            // out of this turn and the model is told. The default home folder
-            // is the one extra folder that may adopt (4.11).
-            const extras = turnWorkspace.extra && Object.keys(turnWorkspace.extra).length > 0
-                ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest,
-                    { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) })
-                : [];
-            const heldBy = extras.find((extra) => !extra.ok && extra.required);
-            if (heldBy && !heldBy.ok) {
+            if (!prepared.ok) {
                 holdSent();
-                return await holdForWorkspace({
-                    code: heldBy.code,
-                    message: `extra folder "${heldBy.name}": ${heldBy.message}`,
-                    ...(heldBy.retryAfterMs !== undefined ? { retryAfterMs: heldBy.retryAfterMs } : {}),
-                }, heldBy.name);
+                activityCtx.traceInfo(`[runTurn] default home folder unavailable for ${input.sessionId}; the turn runs without folders: ${prepared.code} ${prepared.message}`);
+                const home = workingFolderOf(turnWorkspace);
+                defaultFolderNotices.push(
+                    `Your own folder (root "${home.root}"${home.folder ? `, folder "${home.folder}"` : ""}) is not available in this turn `
+                    + `(${prepared.code}: ${prepared.message}). This turn runs in a temporary folder on this worker, with no extra folders: `
+                    + "files written there are not kept. Tell the user if the task needs their folder.",
+                );
             }
-            if (prepared.notice) providerWorkspaceNotices.push(prepared.notice);
-            for (const extra of extras) if (extra.ok && extra.notice) providerWorkspaceNotices.push(extra.notice);
-            const extrasAttached = extras.flatMap((extra) => (extra.ok ? [extra.attach] : []));
-            const extrasUnavailable = extras.flatMap((extra) => (extra.ok ? [] : [{
-                name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), code: extra.code, message: extra.message,
-            }]));
-            for (const missing of extrasUnavailable) {
-                activityCtx.traceInfo(`[runTurn] optional extra folder ${missing.name} unavailable for ${input.sessionId}: ${missing.code} ${missing.message}`);
+            if (prepared.ok) {
+                // Extra folders (section 4.10): a required one that fails holds
+                // the prompt like the working folder; an optional one is left
+                // out of this turn and the model is told. The default home folder
+                // is the one extra folder that may adopt (4.11).
+                const extras = turnWorkspace.extra && Object.keys(turnWorkspace.extra).length > 0
+                    ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest,
+                        { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) })
+                    : [];
+                const heldBy = extras.find((extra) => !extra.ok && extra.required);
+                if (heldBy && !heldBy.ok) {
+                    holdSent();
+                    return await holdForWorkspace({
+                        code: heldBy.code,
+                        message: `extra folder "${heldBy.name}": ${heldBy.message}`,
+                        ...(heldBy.retryAfterMs !== undefined ? { retryAfterMs: heldBy.retryAfterMs } : {}),
+                    }, heldBy.name);
+                }
+                if (prepared.notice) providerWorkspaceNotices.push(prepared.notice);
+                for (const extra of extras) if (extra.ok && extra.notice) providerWorkspaceNotices.push(extra.notice);
+                const extrasAttached = extras.flatMap((extra) => (extra.ok ? [extra.attach] : []));
+                const extrasUnavailable = extras.flatMap((extra) => (extra.ok ? [] : [{
+                    name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), code: extra.code, message: extra.message,
+                }]));
+                for (const missing of extrasUnavailable) {
+                    activityCtx.traceInfo(`[runTurn] optional extra folder ${missing.name} unavailable for ${input.sessionId}: ${missing.code} ${missing.message}`);
+                }
+                const homeExtra = withDefaults.homeExtra
+                    ? extras.find((extra) => extra.ok && extra.name === withDefaults.homeExtra)
+                    : undefined;
+                (runConfig as ManagedSessionConfig).workspaceAttach = {
+                    root: prepared.root.name,
+                    rootPath: prepared.root.path,
+                    path: prepared.path,
+                    realPath: prepared.realPath,
+                    ...(prepared.adopt ? { adopt: prepared.adopt } : {}),
+                    ...(prepared.repo ? { repo: prepared.repo } : {}),
+                    // Section 4.11: which folders came from the deployment's
+                    // defaults, and what the default home folder adopts when it
+                    // is an extra folder (the working folder's adoption is above).
+                    ...(withDefaults.homeIsWorkingFolder && workspaceDefaults?.home ? { homeIsWorkingFolder: true } : {}),
+                    ...(withDefaults.defaultNames.length > 0 ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                    ...(homeExtra && homeExtra.ok && homeExtra.adopt ? {
+                        home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
+                    } : {}),
+                    revision: workspaceRevision,
+                    rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
+                    turnIndex: input.turnIndex ?? 0,
+                    ...(typeof activityCtx?.sessionId === "string" && activityCtx.sessionId ? { affinityKey: activityCtx.sessionId } : {}),
+                    ...(prepared.readOnly ? { readOnly: true } : {}),
+                    ...(extrasAttached.length > 0 ? { extras: extrasAttached } : {}),
+                    ...(extrasUnavailable.length > 0 ? { extrasUnavailable } : {}),
+                };
             }
-            const homeExtra = withDefaults.homeExtra
-                ? extras.find((extra) => extra.ok && extra.name === withDefaults.homeExtra)
-                : undefined;
-            (runConfig as ManagedSessionConfig).workspaceAttach = {
-                root: prepared.root.name,
-                rootPath: prepared.root.path,
-                path: prepared.path,
-                realPath: prepared.realPath,
-                ...(prepared.adopt ? { adopt: prepared.adopt } : {}),
-                ...(prepared.repo ? { repo: prepared.repo } : {}),
-                // Section 4.11: which folders came from the deployment's
-                // defaults, and what the default home folder adopts when it
-                // is an extra folder (the working folder's adoption is above).
-                ...(withDefaults.homeIsWorkingFolder && workspaceDefaults?.home ? { homeIsWorkingFolder: true } : {}),
-                ...(withDefaults.defaultNames.length > 0 ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
-                ...(homeExtra && homeExtra.ok && homeExtra.adopt ? {
-                    home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
-                } : {}),
-                revision: workspaceRevision,
-                rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
-                turnIndex: input.turnIndex ?? 0,
-                ...(typeof activityCtx?.sessionId === "string" && activityCtx.sessionId ? { affinityKey: activityCtx.sessionId } : {}),
-                ...(prepared.readOnly ? { readOnly: true } : {}),
-                ...(extrasAttached.length > 0 ? { extras: extrasAttached } : {}),
-                ...(extrasUnavailable.length > 0 ? { extrasUnavailable } : {}),
-            };
         }
 
         const executeTurnBody = async (): Promise<TurnResult> => {
@@ -1872,17 +1892,21 @@ export function registerActivities(
         // system.message so the transcript shows what the model was told.
         {
             const notice = typeof input.workspaceNotice === "string" ? input.workspaceNotice.trim() : "";
-            const notes = [...(notice ? [notice] : []), ...providerWorkspaceNotices];
+            const notes: Array<{ content: string; source?: "provider" }> = [
+                ...(notice ? [{ content: notice }] : []),
+                ...defaultFolderNotices.map((content) => ({ content })),
+                ...providerWorkspaceNotices.map((content) => ({ content, source: "provider" as const })),
+            ];
             if (notes.length > 0) {
-                const added = notes.join("\n\n");
+                const added = notes.map((note) => note.content).join("\n\n");
                 const split = splitSystemContextBlock(effectivePrompt);
                 effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${added}` : added);
                 if (catalog && (input.retryCount ?? 0) === 0) {
                     await cmsRetryBestEffort(
                         `runTurn.recordEvent workspace-notice session=${input.sessionId}`,
-                        () => catalog!.recordEvents(input.sessionId, notes.map((content, index) => ({
+                        () => catalog!.recordEvents(input.sessionId, notes.map((note) => ({
                             eventType: "system.message",
-                            data: { content, workspaceNotice: true, ...(index >= (notice ? 1 : 0) ? { source: "provider" } : {}) },
+                            data: { content: note.content, workspaceNotice: true, ...(note.source ? { source: note.source } : {}) },
                         })), workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
                     );

@@ -8,6 +8,10 @@
  *   D10  after the agent moves into a repo, the person's folder is extra
  *        folder "home": its instructions still reach the model, before the
  *        repo's; on a skill name clash the repo's skill wins
+ *   D11  a session with only default folders gets the workspace tools
+ *   D12  the person's folder cannot attach: when it is optional the turn
+ *        runs without folders and the model is told; when the provider
+ *        marks it required the turn is held
  *
  * Run: npx vitest run test/local/workspace-defaults.test.js
  */
@@ -22,6 +26,7 @@ import { assert, assertEqual } from "../helpers/assertions.js";
 import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createBuiltInWorkspaceProvider } from "../../src/index.ts";
+import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -43,21 +48,66 @@ function fixture() {
     const roots = ["home", "shared", "repo"].map((name) => ({ name, path: path.join(base, name) }));
     const inner = createBuiltInWorkspaceProvider(roots);
     const adopt = { home: { agents: true, skills: true, instructions: true, folder: true }, repo: { agents: true, skills: true, instructions: true } };
+    // D12: the home root can "go down", and the home default can be required.
+    const state = { homeDown: false, homeRequired: false };
     const provider = {
         listRoots: () => inner.listRoots(),
         async ensureAttached(req) {
+            if (state.homeDown && req.workspace.root === "home") {
+                return { ok: false, code: "WORKSPACE_NOT_MOUNTED", message: "root \"home\" is not mounted (test)", retryAfterMs: 30_000 };
+            }
             const result = await inner.ensureAttached(req);
             return result.ok && adopt[req.workspace.root] ? { ...result, adopt: adopt[req.workspace.root] } : result;
         },
         defaultFolders: (ctx) => ({
-            home: { name: "home", root: "home", folder: `users/${ctx.owner?.subject && ctx.owner.provider !== "anonymous" ? ctx.owner.subject : "_anon"}` },
+            home: {
+                name: "home", root: "home", folder: `users/${ctx.owner?.subject && ctx.owner.provider !== "anonymous" ? ctx.owner.subject : "_anon"}`,
+                ...(state.homeRequired ? { required: true } : {}),
+            },
             extra: { shared: { root: "shared" } },
         }),
     };
-    return { base, me, repo, provider, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+    return { base, me, repo, provider, state, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 describe("default folders (section 4.11)", () => {
+    it("the person's folder cannot attach: optional runs without folders and says so; required holds (D12)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const fx = fixture();
+        const catalog = await createCatalog(env);
+        try {
+            const respond = scriptTurns([[
+                { tools: [{ name: "bash", args: { command: "pwd", description: "where" } }] },
+                (_body, position) => ({ content: `d12:${firstLine(position.toolResults)}` }),
+            ]]);
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: fx.provider } }, async ({ client, model, qualifiedModel }) => {
+                fx.state.homeDown = true;
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel });
+                const answer = await session.sendAndWait("d12 home is down", TIMEOUT);
+                assert(answer.startsWith("d12:/") && answer !== `d12:${fx.me}`, `the turn ran, not in the person's folder: ${answer}`);
+                const prompt = JSON.stringify(model.sessionRequests("d12 home is down")[0].body.messages);
+                assert(prompt.includes("Your own folder (root") && prompt.includes("WORKSPACE_NOT_MOUNTED") && prompt.includes("files written there are not kept"),
+                    `the model is told: ${prompt.slice(-1500)}`);
+                const notes = (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "system.message" && /Your own folder/.test(e.data?.content ?? ""));
+                assertEqual(notes.length, 1, "the note is recorded once");
+                assertEqual(notes[0].data.source, undefined, "as PilotSwarm's note, not the provider's");
+                assertEqual((await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "session.workspace_unavailable").length, 0, "nothing was held");
+
+                fx.state.homeRequired = true;
+                const heldId = randomUUID();
+                const held = await client.createSession({ sessionId: heldId, model: qualifiedModel });
+                await held.send("d12 home is required");
+                const [unavailable] = await waitForEventCount(catalog, heldId, "session.workspace_unavailable", 1, 60_000);
+                assertEqual(unavailable.data.code, "WORKSPACE_NOT_MOUNTED", "a required home folder holds the turn");
+                assertEqual(model.sessionRequests("d12 home is required").length, 0, "and calls no model");
+            });
+        } finally {
+            await catalog.close?.();
+            fx.cleanup();
+        }
+    });
+
     it("a session with only default folders gets the workspace tools, with no tool list of its own (D11)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const fx = fixture();
