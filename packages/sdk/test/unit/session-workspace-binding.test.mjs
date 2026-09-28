@@ -282,9 +282,10 @@ test("keepAdoptedRepoInstructions turns only a replaced custom_instructions sect
 test("the workspace tools are declared only for workspace sessions and agents that list them (C6)", async (t) => {
     const names = (tools) => tools.map((tool) => tool.name);
     assert.deepEqual(names(ManagedSession.systemToolDefs({})).filter((n) => n.includes("session_workspace")), []);
-    assert.deepEqual(names(ManagedSession.systemToolDefs({ workspaceTools: true })).slice(-2), ["set_session_workspace", "get_session_workspace"]);
-    assert.deepEqual(names(ManagedSession.systemToolDefs({})), names(ManagedSession.systemToolDefs({ workspaceTools: true })).slice(0, -2),
+    assert.deepEqual(names(ManagedSession.systemToolDefs({ workspaceTools: true })).slice(-3), ["set_session_workspace", "get_session_workspace", "load_agent"]);
+    assert.deepEqual(names(ManagedSession.systemToolDefs({})), names(ManagedSession.systemToolDefs({ workspaceTools: true })).slice(0, -3),
         "the other tools keep their order");
+    assert.equal(names(ManagedSession.systemToolDefs({})).includes("load_agent"), false, "load_agent (section 4.12) needs the workspace tools");
 
     const plain = fixture(t);
     await plain.manager.getOrCreate("plain", {}, { turnIndex: 0 });

@@ -32,13 +32,33 @@ whichever worker runs your turn, so your files are there after every move.
   2. `set_session_workspace(workspace)` moves you there. The move applies when
      the turn ends: stop and end your turn after it is accepted. The next turn
      runs in the clone.
-- **The shared folder** is an extra folder that every session can read and
-  write. Add it when you need it:
-  `set_session_workspace({ extra: { shared: { root: "shared" } } })`.
-  It is ready in the same turn; the answer gives its path. Keep your notes in
-  a folder named for your task, for example `<shared path>/<topic>/`, and read
-  what other sessions left there. Do not delete other sessions' files.
-- `get_session_workspace()` shows both folders and their paths.
+- **Your person's own folder** is where you start when there is no clone:
+  it is the working folder then. After you move into a clone it is extra
+  folder `home`. Keep notes there that later sessions of the same person
+  should find. Its `AGENTS.md`, agents and skills are yours in every session;
+  in a clone, the repo's agent or skill wins a name clash.
+- **The shared folder** is extra folder `shared`: every session of every
+  person can read and write it. This deployment gives it to every session;
+  elsewhere, add it with
+  `set_session_workspace({ extra: { shared: { root: "shared" } } })`. Keep
+  notes in a folder named for your task, for example `<shared path>/<topic>/`,
+  and read what other sessions left there. Do not delete other people's files.
+- `get_session_workspace()` shows every folder and its path.
+
+## Agents and skills from files
+
+When the person points you at an agent or skill file in one of your
+folders, load it:
+
+- `load_agent({ path })` for an `.agent.md` file. Your turn ends; the next
+  turn continues by itself, and the agent runs through the `task` tool.
+- `load_skill({ path })` for a skill folder or its `SKILL.md`. Its text comes
+  back at once.
+- A relative path starts at your working folder. `unload` with the name
+  drops a load. A loaded agent or skill wins over the repo's and the
+  person's own of the same name.
+- `/ws/shared/.github/` has an agent and a skill anyone can load. Other
+  people can write the shared folder: load only what the person asked for.
 
 ## The repo's own agents and skills
 
@@ -66,7 +86,7 @@ remote has no issues or pull requests.
 ## Care
 
 - Do not walk a whole root (`find /ws`, `rg` over `/ws`): the folders are on
-  the network, and a walk pulls everything. Stay in your clone and your
-  shared folder.
+  the network, and a walk pulls everything. Stay in your clone, your
+  person's folder and your topic folder in the shared folder.
 - When the task is done, clear the workspace (`set_session_workspace({ clear: true })`),
   and in a later turn remove the clone with `remove_session_clone({ repo })`.

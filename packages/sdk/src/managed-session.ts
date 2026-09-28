@@ -15,6 +15,9 @@ import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionCo
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 import { mergeWorkspaceChange, sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
+import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
+import { parseRepoAgentFile } from "./workspace-repo-agents.js";
+import path from "node:path";
 import { NativeTaskObserver } from "./native-task-observer.js";
 
 /**
@@ -343,6 +346,44 @@ const LOAD_SKILL_TOOL_SPEC = {
             name: { type: "string", description: "Skill name exactly as listed in the system prompt's skills index, or an exact skill ref returned by search_capabilities." },
         },
         required: ["name"],
+    },
+    handler: async () => "stub",
+} as const;
+
+/**
+ * Section 4.12: load_skill with `path`, for sessions that have the workspace
+ * tools. Every other session keeps LOAD_SKILL_TOOL_SPEC byte for byte (C1).
+ */
+const LOAD_SKILL_WITH_PATH_TOOL_SPEC = {
+    description: LOAD_SKILL_TOOL_SPEC.description
+        + " Or load a skill from a file: `path` names a skill folder (holding SKILL.md), or that SKILL.md, inside your working "
+        + "folder or an extra folder (absolute, or relative to the working folder). Its body comes back now, and it stays loaded in "
+        + "this session, winning over a repo or personal skill of the same name. `unload` drops a skill loaded by path. "
+        + "Shared folders can be written by others: load only what you trust.",
+    parameters: {
+        type: "object",
+        properties: {
+            name: LOAD_SKILL_TOOL_SPEC.parameters.properties.name,
+            path: { type: "string", description: "A skill folder, or its SKILL.md, inside your working folder or an extra folder." },
+            unload: { type: "string", description: "The name of a skill loaded by path, to drop from this session." },
+        },
+    },
+    handler: async () => "stub",
+} as const;
+
+const LOAD_AGENT_TOOL_SPEC = {
+    description:
+        "Load an agent from an .agent.md file inside your working folder or an extra folder (absolute path, or relative to the "
+        + "working folder). It runs as a native task through the task tool, on the session's model. This turn ends after the load, "
+        + "and the next turn continues your task with the agent available. It stays loaded in this session, winning over a repo or "
+        + "personal agent of the same name. `unload` drops an agent loaded this way. Shared folders can be written by others: load "
+        + "only what you trust.",
+    parameters: {
+        type: "object",
+        properties: {
+            path: { type: "string", description: "The .agent.md file, inside your working folder or an extra folder." },
+            unload: { type: "string", description: "The name of an agent loaded by path, to drop from this session." },
+        },
     },
     handler: async () => "stub",
 } as const;
@@ -775,6 +816,79 @@ export class ManagedSession {
     setSkillCatalog(list: Array<{ name: string; description: string; prompt: string }>): void {
         this.skillCatalog = Array.isArray(list) ? list : [];
     }
+
+    /** Section 4.12: the skills this session loaded by path, read again this turn. load_skill by name serves them first. */
+    private loadedSkillCatalog: Array<{ name: string; description: string; prompt: string }> = [];
+    setLoadedSkillCatalog(list: Array<{ name: string; description: string; prompt: string }>): void {
+        this.loadedSkillCatalog = Array.isArray(list) ? list : [];
+    }
+
+    /**
+     * Section 4.12: check, read and save one agent or skill file the model
+     * named. It must sit in a folder attached for this turn; it is saved
+     * relative to its root, so it survives moves.
+     */
+    private async loadByPath(kind: "agent" | "skill", input: unknown): Promise<
+        | { ok: true; name: string; absolute: string; description: string; body: string }
+        | { ok: false; error: string }> {
+        const services = this.config.capabilityServices;
+        if (!services?.saveWorkspaceLoad) return { ok: false, error: "this session cannot save loaded agents or skills" };
+        const busy = await this.busyForLoad();
+        if (busy) return { ok: false, error: busy };
+        const where = resolveLoadPath(input, attachedFoldersOf(this.config.workspaceAttach));
+        if (!where.ok) return { ok: false, error: where.reason };
+        const [read] = await readLoadFiles([{ kind, absolute: where.absolute, folder: where.folder }]);
+        if (!read?.ok) return { ok: false, error: `cannot load ${where.absolute}: ${read?.reason ?? "unreadable"}` };
+        let name: string;
+        let description = "";
+        let body = "";
+        let stored = where.rootRelative;
+        if (kind === "agent") {
+            const parsed = parseRepoAgentFile(path.basename(where.absolute), read.content);
+            if (!parsed.ok) return { ok: false, error: `cannot load ${where.absolute}: ${parsed.reason}` };
+            name = parsed.agent.name;
+            description = parsed.agent.description;
+        } else {
+            const parsed = parseSkillFile(path.basename(read.folder ?? ""), read.content);
+            if (!parsed.ok) return { ok: false, error: `cannot load ${where.absolute}: ${parsed.reason}` };
+            ({ name, description, body } = parsed);
+            // A skill is kept as its folder, also when the model named its SKILL.md.
+            if (path.posix.basename(stored) === "SKILL.md") stored = path.posix.dirname(stored);
+        }
+        try {
+            await services.saveWorkspaceLoad({ add: { kind, name, root: where.folder.root, path: stored } });
+        } catch (error: any) {
+            return { ok: false, error: `could not save the load: ${error?.message ?? error}` };
+        }
+        return { ok: true, name, absolute: where.absolute, description, body };
+    }
+
+    /** Section 4.12: drop a loaded agent or skill by name. */
+    private async unloadByPath(kind: "agent" | "skill", name: unknown): Promise<{ ok: true } | { ok: false; error: string }> {
+        const services = this.config.capabilityServices;
+        if (!services?.saveWorkspaceLoad) return { ok: false, error: "this session cannot change loaded agents or skills" };
+        if (typeof name !== "string" || !name.trim()) return { ok: false, error: "unload needs the name" };
+        const busy = await this.busyForLoad();
+        if (busy) return { ok: false, error: busy };
+        try {
+            await services.saveWorkspaceLoad({ remove: { kind, name: name.trim() } });
+            return { ok: true };
+        } catch (error: any) {
+            return { ok: false, error: String(error?.message ?? error) };
+        }
+    }
+
+    /**
+     * A load or unload changes the agents and skills the CLI is given, so the
+     * next turn starts a fresh CLI handle, which stops background tasks.
+     * Refused while one runs, as set_session_workspace is (WORKSPACE_BUSY).
+     */
+    private async busyForLoad(): Promise<string | null> {
+        const busy = await this.activeBackgroundTasks().catch(() => []);
+        if (busy.length === 0) return null;
+        return `WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
+            + "Loading or unloading restarts the session's tools at the next turn, which would stop them. Wait for them or stop them first.";
+    }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
     private nativeFeatureRevoked = false;
@@ -1097,7 +1211,7 @@ export class ManagedSession {
         const canvasKvTool = defineTool("canvas_kv", CANVAS_KV_TOOL_SPEC);
         const publishCanvasAppTool = defineTool("publish_canvas_app", PUBLISH_CANVAS_APP_TOOL_SPEC);
         const findCanvasAppTool = defineTool("find_canvas_app", FIND_CANVAS_APP_TOOL_SPEC);
-        const loadSkillTool = defineTool("load_skill", LOAD_SKILL_TOOL_SPEC);
+        const loadSkillTool = defineTool("load_skill", opts?.workspaceTools ? LOAD_SKILL_WITH_PATH_TOOL_SPEC : LOAD_SKILL_TOOL_SPEC);
 
         return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool, ...capabilityToolDeclarations(),
             ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : []),
@@ -1107,6 +1221,7 @@ export class ManagedSession {
             ...(opts?.workspaceTools ? [
                 defineTool("set_session_workspace", { ...SET_SESSION_WORKSPACE_TOOL_SPEC, handler: async () => "stub" }),
                 defineTool("get_session_workspace", { ...GET_SESSION_WORKSPACE_TOOL_SPEC, handler: async () => "stub" }),
+                defineTool("load_agent", { ...LOAD_AGENT_TOOL_SPEC, handler: async () => "stub" }),
             ] : [])];
     }
 
@@ -2027,8 +2142,19 @@ export class ManagedSession {
             },
         });
         const loadSkillTool = defineTool("load_skill", {
-            ...LOAD_SKILL_TOOL_SPEC,
-            handler: async (args: { name?: string }) => {
+            ...(this.config.workspaceTools ? LOAD_SKILL_WITH_PATH_TOOL_SPEC : LOAD_SKILL_TOOL_SPEC),
+            handler: async (args: { name?: string; path?: string; unload?: string }) => {
+                // Section 4.12: a skill from a file, or dropping one.
+                if (this.config.workspaceTools && (args?.path !== undefined || args?.unload !== undefined)) {
+                    if (args.unload !== undefined) {
+                        const dropped = await this.unloadByPath("skill", args.unload);
+                        return dropped.ok ? `Unloaded skill "${args.unload}". It is no longer offered from the next turn.` : `Error: ${dropped.error}`;
+                    }
+                    const loaded = await this.loadByPath("skill", args.path);
+                    if (!loaded.ok) return `Error: ${loaded.error}`;
+                    return `[SKILL: ${loaded.name}]\n${loaded.description ? `${loaded.description}\n\n` : ""}${loaded.body}\n\n`
+                        + `(Loaded from ${loaded.absolute}. It stays loaded in this session and wins over a repo or personal skill of the same name.)`;
+                }
                 const name = String(args?.name ?? "").trim();
                 if (name.startsWith("cap1.")) {
                     if (!this.config.capabilityServices) return "Error: capability service unavailable.";
@@ -2039,7 +2165,8 @@ export class ManagedSession {
                     }
                 }
                 if (!name) return "Error: name is required.";
-                const catalog = this.skillCatalog;
+                // Skills loaded by path come first (section 4.12).
+                const catalog = [...this.loadedSkillCatalog, ...this.skillCatalog];
                 const skill = catalog.find((s) => s.name === name)
                     ?? catalog.find((s) => s.name.toLowerCase() === name.toLowerCase());
                 if (!skill) {
@@ -2601,7 +2728,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2648,7 +2775,7 @@ export class ManagedSession {
         // the schema. Gate both halves on the same list so there is no tool
         // that exists-but-is-hidden in an ordinary session.
         const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
@@ -2885,6 +3012,32 @@ export class ManagedSession {
                 + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
         };
         const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
+            // Section 4.12: an agent from a file. The CLI takes its agents when
+            // a session starts or resumes, so the turn ends and the next one
+            // has it.
+            defineTool("load_agent", {
+                ...LOAD_AGENT_TOOL_SPEC,
+                handler: async (args: { path?: string; unload?: string }) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("load_agent");
+                    if (args?.unload !== undefined) {
+                        const dropped = await this.unloadByPath("agent", args.unload);
+                        if (!dropped.ok) return `Error: ${dropped.error}`;
+                        turnState.pendingActions.push({ type: "completed", content: `Unloaded agent ${args.unload}.`,
+                            forceContinuePrompt: `The agent "${args.unload}" was unloaded; the task tool no longer offers it. Continue the user's task.` });
+                        return `Unloaded agent "${args.unload}".\n${acknowledgeTurnBoundary("load_agent")}`;
+                    }
+                    const loaded = await this.loadByPath("agent", args?.path);
+                    if (!loaded.ok) return `Error: ${loaded.error}`;
+                    const native = this.canAdmitNativeTask();
+                    turnState.pendingActions.push({ type: "completed", content: `Loaded agent ${loaded.name}.`,
+                        forceContinuePrompt: `The agent "${loaded.name}" was loaded from ${loaded.absolute}. `
+                            + (native ? `Run it through the task tool (agent_type "${loaded.name}"). If the task tool does not offer it, get_session_workspace says why. ` : "")
+                            + "Continue the user's task." });
+                    return `Loaded agent "${loaded.name}" from ${loaded.absolute}.`
+                        + (native ? "" : " Agents run as native tasks, which are off for this session, so the task tool cannot run it here.")
+                        + `\n${acknowledgeTurnBoundary("load_agent")}`;
+                },
+            }),
             defineTool("set_session_workspace", {
                 ...SET_SESSION_WORKSPACE_TOOL_SPEC,
                 // One call at a time, in order: each merges into the record the
@@ -2950,6 +3103,9 @@ export class ManagedSession {
                         } : {}),
                         ...(this.config.workspaceAdoption?.personal ? { adoptedFromYourFolder: this.config.workspaceAdoption.personal } : {}),
                         ...(this.config.workspaceAdoption?.loaded ? { loaded: this.config.workspaceAdoption.loaded } : {}),
+                        // Agents and skills left out this turn, and why (a name clash, a
+                        // file that is gone, a folder that is not attached).
+                        ...(this.config.workspaceAdoption?.skipped?.length ? { skipped: this.config.workspaceAdoption.skipped.slice(0, 20) } : {}),
                     });
                 },
             }),

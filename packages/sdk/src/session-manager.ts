@@ -3,6 +3,8 @@ import { bindCapabilities, nextCapabilityState, validatePackageRequest } from ".
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
+import { attachedFoldersOf, resolveWorkspaceLoads } from "./workspace-loads.js";
+import { withWorkspaceLoad } from "./capability-catalog.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
@@ -2008,7 +2010,7 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
@@ -2022,8 +2024,9 @@ export class SessionManager {
         // per-turn handler still refuses with a clear message.
         // Canvas tools are declared for EVERY session now — sub-agents draw
         // their own canvases (slots 1-5), independent of the parent's.
-        // Session workspaces: the two workspace tools are declared only for a
-        // session that has a workspace, or whose agent lists
+        // Session workspaces: the workspace tools (set_session_workspace,
+        // get_session_workspace, load_agent) are declared only for a session
+        // that has a workspace or default folders, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
         const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
             // Section 4.11: a session that has only the deployment's default folders has folders too.
@@ -2274,7 +2277,19 @@ export class SessionManager {
                 const state = await readState();
                 const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent);
                 return { revision: state.revision, selections: state.selections, unavailable: result.unavailable,
+                    ...(state.loads?.length ? { loaded: state.loads } : {}),
                     note: "Selections are for this durable session only. Original agent/base tools are unchanged." };
+            },
+            // Section 4.12: agents and skills loaded by path, saved with the session.
+            saveWorkspaceLoad: async (change) => {
+                if (isServiceSession || isTunerSession) throw new Error("Loading agents and skills is unavailable in this restricted session");
+                if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    const state = await readState();
+                    const next = withWorkspaceLoad(state, change);
+                    if (await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next)) return { loads: next.loads ?? [] };
+                }
+                throw new Error("Capability revision conflict; try again");
             },
             use: async args => {
                 if (isServiceSession || isTunerSession) throw new Error("Package activation is unavailable in this restricted session");
@@ -2361,10 +2376,16 @@ export class SessionManager {
         // provider's adopt allows, filtered for this session. Agents need
         // native tasks; they run as native task children.
         const pilotswarmToolNames = new Set<string>([...allTools.map((t: any) => t.name), ...NATIVE_SYNCHRONOUS_TOOLS]);
-        // Sources, winner first on a name clash: the working folder (the
-        // repo, or the person's own folder when that is the working folder),
-        // then the person's folder as an extra folder (section 4.11).
+        // Section 4.12: agents and skills this session loaded by path, read
+        // again this turn from its attached folders. They win every clash.
+        const resolvedLoads = workspaceAttach && desiredCapabilities.loads?.length
+            ? await resolveWorkspaceLoads(desiredCapabilities.loads, attachedFoldersOf(workspaceAttach))
+            : { skipped: [], skillCatalog: [] as Array<{ name: string; description: string; prompt: string }> };
+        // Sources, winner first on a name clash: loaded files, the working
+        // folder (the repo, or the person's own folder when that is the
+        // working folder), then the person's folder as an extra folder (4.11).
         const adoptionSources: AdoptionSource[] = workspaceAttach ? [
+            ...("source" in resolvedLoads && resolvedLoads.source ? [resolvedLoads.source] : []),
             {
                 kind: workspaceAttach.homeIsWorkingFolder ? "personal" : "repo",
                 scan: workspaceAttach.repo, adopt: workspaceAttach.adopt, attachPath: workspaceAttach.path,
@@ -2384,6 +2405,7 @@ export class SessionManager {
                 ...(this.workerDefaults.customAgents ?? []).map((agent) => agent.name),
             ]),
         }) : null;
+        if (repoAdoption && resolvedLoads.skipped.length > 0) repoAdoption.report.skipped.push(...resolvedLoads.skipped);
         config.workspaceAdoption = repoAdoption?.report;
         const repoAgentAccess = repoAdoption && repoAdoption.customAgents.length > 0
             ? new RepoAgentAccess(new Set(repoAdoption.customAgents.map((agent) => agent.name)), pilotswarmToolNames)
@@ -2544,6 +2566,7 @@ export class SessionManager {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
                 if (config.baseAgentPolicy?.version === "v2") {
                     existing.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
                 }
@@ -2662,6 +2685,7 @@ export class SessionManager {
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
         managed.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
+        managed.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
         // The facts accessor a worker-registered tool sees as
         // `invocation.facts`. Built HERE, next to the fact tools, because the
         // store lives on this manager; the session config is serialisable

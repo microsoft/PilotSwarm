@@ -723,3 +723,108 @@ function runCheck(state: RootCheckState, req: WorkspacePathCheckRequest, timeout
         });
     });
 }
+
+// ─── Files loaded by path (section 4.12) ──────────────────────────
+
+/** The largest agent or SKILL.md file a session may load. */
+export const MAX_LOAD_FILE_BYTES = 64 * 1024;
+export const DEFAULT_LOAD_READ_TIMEOUT_MS = 5_000;
+
+export interface WorkspaceFileRequest {
+    kind: "agent" | "skill";
+    /** Absolute path: an agent file; for a skill, its folder or its SKILL.md. */
+    path: string;
+    /** The attached folder it must stay inside, links included. */
+    within: string;
+}
+
+export type WorkspaceFileResult =
+    | { ok: true; realPath: string; content: string; /** A skill's folder. */ folder?: string }
+    | { ok: false; reason: string };
+
+const READ_SCRIPT = `
+const fs = require("fs"), path = require("path");
+const reqs = JSON.parse(process.env.PS_WORKSPACE_READ || "[]");
+const max = Number(process.env.PS_WORKSPACE_READ_MAX || 65536);
+const inside = (child, parent) => { const r = path.relative(parent, child); return r === "" || !(r === ".." || r.startsWith(".." + path.sep) || path.isAbsolute(r)); };
+const tooBig = () => ({ ok: false, reason: "larger than " + (max / 1024) + " KB" });
+const out = reqs.map((q) => {
+  try {
+    const within = fs.realpathSync(q.within);
+    let real = fs.realpathSync(q.path);
+    if (!inside(real, within)) return { ok: false, reason: "it resolves outside the folder it is in" };
+    let folder;
+    let st = fs.statSync(real);
+    if (q.kind === "skill") {
+      if (st.isDirectory()) { folder = real; real = path.join(real, "SKILL.md"); }
+      else if (path.basename(real) === "SKILL.md") folder = path.dirname(real);
+      else return { ok: false, reason: "a skill is a folder with a SKILL.md, or that SKILL.md file" };
+      real = fs.realpathSync(real);
+      if (!inside(real, within)) return { ok: false, reason: "its SKILL.md resolves outside the folder it is in" };
+      st = fs.statSync(real);
+    }
+    if (!st.isFile()) return { ok: false, reason: "not a regular file" };
+    if (st.size > max) return tooBig();
+    const fd = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+    try {
+      const buf = Buffer.alloc(max + 1);
+      const n = fs.readSync(fd, buf, 0, max + 1, 0);
+      if (n > max) return tooBig();
+      return Object.assign({ ok: true, realPath: real, content: buf.subarray(0, n).toString("utf8") }, folder ? { folder } : {});
+    } finally { fs.closeSync(fd); }
+  } catch (e) {
+    return { ok: false, reason: e.code === "ENOENT" ? "no such file or folder" : "unreadable (" + (e.code || e.message) + ")" };
+  }
+});
+process.stdout.write(JSON.stringify(out));
+`;
+
+/**
+ * Read agent and skill files for loading, in one child process with a
+ * deadline (the files are on the mount). A file whose real path leaves its
+ * attached folder is refused. Results come back in request order.
+ */
+export async function readWorkspaceFiles(requests: WorkspaceFileRequest[], opts: { timeoutMs?: number } = {}): Promise<WorkspaceFileResult[]> {
+    if (requests.length === 0) return [];
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_LOAD_READ_TIMEOUT_MS;
+    return new Promise((resolve) => {
+        const all = (reason: string) => resolve(requests.map(() => ({ ok: false as const, reason })));
+        let child: ReturnType<typeof spawn>;
+        try {
+            child = spawn(process.execPath, ["-e", READ_SCRIPT], {
+                stdio: ["ignore", "pipe", "ignore"],
+                env: { PATH: process.env.PATH ?? "", PS_WORKSPACE_READ: JSON.stringify(requests), PS_WORKSPACE_READ_MAX: String(MAX_LOAD_FILE_BYTES) },
+            });
+        } catch (error: any) {
+            all(`could not start the read (${error?.message ?? error})`);
+            return;
+        }
+        let stdout = "";
+        let done = false;
+        child.stdout?.setEncoding("utf8");
+        child.stdout?.on("data", (chunk: string) => { stdout += chunk; });
+        const timer = setTimeout(() => {
+            if (done) return;
+            done = true;
+            child.kill("SIGKILL");
+            all(`the folder did not answer within ${timeoutMs} ms`);
+        }, timeoutMs);
+        child.on("error", (error) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            all(`the read failed (${error?.message ?? error})`);
+        });
+        child.on("close", () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            try {
+                const parsed = JSON.parse(stdout);
+                resolve(Array.isArray(parsed) && parsed.length === requests.length ? parsed : requests.map(() => ({ ok: false as const, reason: "unreadable answer" })));
+            } catch {
+                all("unreadable answer");
+            }
+        });
+    });
+}

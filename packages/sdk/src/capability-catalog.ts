@@ -20,6 +20,34 @@ export interface CapabilitySelection { sourceId: string; sourceRef?: string; too
 export interface CapabilityState {
     revision: number; selections: CapabilitySelection[];
     requests?: Array<{ id: string; hash: string }>;
+    /** Agents and skills this session loaded by path (load_agent, load_skill; section 4.12). */
+    loads?: WorkspaceLoad[];
+}
+/**
+ * One agent or skill file a session loaded by path. `path` is relative to
+ * the root: every worker mounts a root at the same path, so the load
+ * survives moves. The file is read again every turn.
+ */
+export interface WorkspaceLoad { kind: "agent" | "skill"; name: string; root: string; path: string }
+/** The most files one session may load. */
+export const MAX_WORKSPACE_LOADS = 32;
+const LOAD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function normalizeLoads(value: unknown): WorkspaceLoad[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || value.length > MAX_WORKSPACE_LOADS) throw new Error("Invalid durable workspace loads");
+    const seen = new Set<string>();
+    return value.map((raw) => {
+        const load = raw as WorkspaceLoad;
+        const folder = typeof load?.path === "string" ? load.path : "";
+        if (!load || (load.kind !== "agent" && load.kind !== "skill") || typeof load.name !== "string" || !LOAD_NAME.test(load.name)
+            || typeof load.root !== "string" || !load.root || load.root.length > 128 || load.root.includes("/")
+            || !folder || folder.length > 1024 || folder.startsWith("/") || folder.includes("\0")
+            || folder.split("/").includes("..") || seen.has(`${load.kind}:${load.name}`)) {
+            throw new Error("Invalid durable workspace load");
+        }
+        seen.add(`${load.kind}:${load.name}`);
+        return { kind: load.kind, name: load.name, root: load.root, path: folder };
+    });
 }
 export const EMPTY_CAPABILITY_STATE: CapabilityState = { revision: 0, selections: [] };
 export function normalizeCapabilityState(value: unknown): CapabilityState {
@@ -53,7 +81,22 @@ export function normalizeCapabilityState(value: unknown): CapabilityState {
         }
         return { id: receipt.id, hash: receipt.hash };
     });
-    return { revision: state.revision, selections, ...(requests ? { requests } : {}) };
+    const loads = normalizeLoads(state.loads);
+    return { revision: state.revision, selections, ...(requests ? { requests } : {}), ...(loads && loads.length > 0 ? { loads } : {}) };
+}
+
+/**
+ * The next state with one load added (or replaced: same kind and name) or
+ * removed. The revision advances by one; package selections are kept.
+ */
+export function withWorkspaceLoad(state: CapabilityState, change: { add: WorkspaceLoad } | { remove: { kind: WorkspaceLoad["kind"]; name: string } }): CapabilityState {
+    const current = state.loads ?? [];
+    const key = "add" in change ? change.add : change.remove;
+    const rest = current.filter((load) => !(load.kind === key.kind && load.name === key.name));
+    if (!("add" in change) && rest.length === current.length) throw new Error(`no ${key.kind} named "${key.name}" is loaded by path in this session`);
+    const loads = "add" in change ? [...rest, change.add] : rest;
+    if (loads.length > MAX_WORKSPACE_LOADS) throw new Error(`At most ${MAX_WORKSPACE_LOADS} agents and skills may be loaded in one session`);
+    return normalizeCapabilityState({ ...state, revision: state.revision + 1, loads });
 }
 export function capabilityHash(value: unknown): string {
     return createHash("sha256").update(JSON.stringify(value)).digest("hex");
