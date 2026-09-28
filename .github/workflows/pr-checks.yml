@@ -33,5 +33,7 @@ jobs:
         run: |
           npm run test:api --workspace=pilotswarm-sdk
           npm run test:unit --workspace=pilotswarm-sdk
+      - name: Install Chromium for offline browser tests
+        run: npm exec -- playwright install --with-deps chromium
       - name: Application unit tests
         run: npm test --workspace=pilotswarm

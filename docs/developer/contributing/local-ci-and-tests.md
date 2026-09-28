@@ -29,8 +29,13 @@ npm run test:deploy-scripts
 node --test .github/scripts/test/*.test.mjs .github/scripts/integration/*.test.mjs
 npm run test:api --workspace=pilotswarm-sdk
 npm run test:unit --workspace=pilotswarm-sdk
+npm exec -- playwright install --with-deps chromium
 npm test --workspace=pilotswarm
 ```
+
+Application tests include offline browser interactions. Install the Chromium
+revision matching the lockfile's Playwright package before running them;
+`--with-deps` also installs the required Linux system libraries.
 
 The Actions check installs the public example catalog in its disposable checkout.
 For a fresh local checkout, copy `.model_providers.example.json` to
