@@ -394,3 +394,37 @@ test("a GitHub Actions run signs in to Azure again right before each manifest up
   assert.ok(login >= 0, "a login came before the upload");
   assert.ok(calls[login].args.includes("--federated-token") && calls[login].args.includes("fixture-oidc-assertion"));
 });
+
+// The same expiry hit seed-secrets on the stamp (2026-09-28): the base-infra
+// bicep step took 10 minutes, and the first Key Vault write after it failed.
+test("a GitHub Actions run signs in to Azure again right before seed-secrets writes to Key Vault", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const server = spawn(process.execPath, ["-e", `
+    const http = require("node:http");
+    const s = http.createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ value: "fixture-oidc-assertion" }));
+    });
+    s.listen(0, "127.0.0.1", () => console.log(s.address().port));
+  `], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => server.kill());
+  const port = await new Promise((resolve, reject) => {
+    server.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    server.once("error", reject);
+  });
+  const f = fixture(t);
+  const result = f.run("base-infra", "seed-secrets", {
+    DATABASE_URL: passwordUrl, PILOTSWARM_CMS_FACTS_DATABASE_URL: passwordUrl,
+    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${port}/token`,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-request-token",
+    AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
+    AZURE_TENANT_ID: "22222222-2222-2222-2222-222222222222",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().filter(({ tool }) => tool === "az");
+  const firstWrite = calls.findIndex(({ args }) => args[0] === "keyvault" && args[1] === "secret" && args[2] === "set");
+  assert.ok(firstWrite > 0, "seed-secrets wrote to Key Vault");
+  const login = calls.slice(0, firstWrite).findLastIndex(({ args }) => args[0] === "login");
+  assert.ok(login >= 0, "a login came before the first Key Vault write");
+  assert.ok(calls[login].args.includes("--federated-token") && calls[login].args.includes("fixture-oidc-assertion"));
+});

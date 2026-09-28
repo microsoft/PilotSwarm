@@ -120,7 +120,7 @@ export async function publishManifests({ service, envName, env, stagedServiceRoo
   // refresh) in between, and a base-infra run that changes AKS takes long
   // enough for the assertion to expire. Log in again first; a local deploy
   // keeps its own login.
-  await refreshAzureOidcLogin(env);
+  await refreshAzureOidcLogin(env, "manifest upload");
 
   // Enumerate the local source tree (blob keys are POSIX-relative paths).
   const { readdirSync, statSync } = await import("node:fs");

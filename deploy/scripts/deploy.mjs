@@ -22,7 +22,7 @@ import {
 } from "./lib/common.mjs";
 import { resolveSteps, defaultPipelineFor } from "./lib/stages.mjs";
 import { buildImage } from "./lib/build-image.mjs";
-import { pushImage } from "./lib/push-image.mjs";
+import { pushImage, refreshAzureOidcLogin } from "./lib/push-image.mjs";
 import { deployBicep } from "./lib/deploy-bicep.mjs";
 import { loadCache as loadBicepOutputsCache } from "./lib/bicep-outputs-cache.mjs";
 import { composeDerivedEnv } from "./lib/compose-env.mjs";
@@ -149,7 +149,16 @@ function printHelp() {
 
 // ───────────────────────── Stage runner ─────────────────────────
 
+// A GitHub Actions run signs in to Azure once, with an OIDC assertion that
+// expires within minutes. The first call to another Azure service (Key
+// Vault, storage, AKS) after a long step then fails: on the stamp, a 10-minute
+// base-infra bicep step made the next seed-secrets step fail. These steps sign
+// in again first; push and manifests do it themselves, right before their
+// uploads. A local run keeps its own login (no OIDC request URL).
+const STAGES_THAT_SIGN_IN_AGAIN = new Set(["bicep", "seed-secrets", "rollout"]);
+
 async function runStage(name, ctx) {
+  if (STAGES_THAT_SIGN_IN_AGAIN.has(name)) await refreshAzureOidcLogin(ctx.env, `the ${name} step`);
   switch (name) {
     case "noop":
       // Phase 1 sentinel: env load + preflight already done before we got here.
