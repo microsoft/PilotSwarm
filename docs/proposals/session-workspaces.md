@@ -2,7 +2,7 @@
 
 **Status:** Phases 1 and 2 implemented on a feature branch; phase 3 (the
 reference deployment in the release environment) built and deployed to the
-release test stamp from the branch. **Date:** 2026-09-28, revision 7. Revision 3 folded in
+release test stamp from the branch. **Date:** 2026-09-29, revision 8. Revision 3 folded in
 review feedback and live checks against the real Copilot CLI. Revision 4
 records the fixes from the adversarial reviews of phase 2. Revision 5 adds
 extra folders: folders a session can use next to its working folder
@@ -12,7 +12,9 @@ share, and a run on a real kernel with two uids changed five details
 (sections 5.1, 5.2, 5.3 and 12.1). Revision 7 adds idle cleanup to the
 reference deployment: a clone no session used for a set time is removed and
 made again when its session comes back, and the provider hook gains
-`purpose` and `notice` (sections 4.2 and 5.3).
+`purpose` and `notice` (sections 4.2 and 5.3). Revision 8 adds default
+folders: each person's own folder and folders every session gets (section
+4.11), and loading an agent or a skill by path (section 4.12).
 
 An agent works in a real git checkout that lives on a separate repo pod. It
 uses its native tools and native git as if it were on a developer's machine.
@@ -375,6 +377,7 @@ interface WorkspaceProvider {
     listRoots(): Promise<Array<{ name: string; path: string }>>;
     ensureAttached(req: WorkspaceAttachRequest): Promise<WorkspaceAttachResult>;
     release?(req: WorkspaceReleaseRequest): Promise<void>;         // best effort
+    defaultFolders?(ctx: WorkspaceDefaultsContext): WorkspaceDefaults | null | Promise<WorkspaceDefaults | null>;  // 4.11
 }
 
 interface WorkspaceAttachRequest {
@@ -390,7 +393,8 @@ interface WorkspaceAttachRequest {
 
 type WorkspaceAttachResult =
     | { ok: true; path: string;
-        adopt?: { agents: boolean; skills: boolean; instructions: boolean };  // ignored for an extra folder
+        adopt?: { agents: boolean; skills: boolean; instructions: boolean;
+                  folder?: boolean };  // ignored for an extra folder, except the person's own (4.11)
         readOnly?: boolean;     // the model is told; the mount enforces it
         notice?: string }       // a note for the model; delivered with a turn attach only
     | { ok: false; code: string; message: string; retryAfterMs?: number };
@@ -979,7 +983,8 @@ A session has one working folder, its cwd. It may also use up to four extra
 folders next to it: a log share, a shared notes folder, or a clone of a
 second repo on another repo pod. Each extra folder is attached before every
 turn like the working folder, and the CLI gets it as an additional
-directory. Nothing is adopted from an extra folder.
+directory. Nothing is adopted from an extra folder, except from the
+person's own folder when it is the default extra folder `home` (4.11).
 
 ```ts
 extra?: Record<string, {         // name: 1-32 of a-z 0-9 - _, starting with a letter or digit
@@ -1111,6 +1116,216 @@ mount enforces it.
 **Cost.** One more attach and path check per extra folder per turn, run side
 by side. A session without extra folders gets no `additionalDirectories` key
 and no new calls.
+
+### 4.11 Default folders: the person's own folder, and shared folders
+
+A deployment can give every session folders without the session asking for
+them. Two kinds:
+
+- **The person's own folder ("home").** One folder per person, for their
+  files, notes, agents, skills and instructions.
+- **Default extra folders.** Folders every session gets, for example a
+  folder all people share.
+
+The provider names them in an optional hook. PilotSwarm decides nothing
+about names, owners or layout; the provider does.
+
+```ts
+interface WorkspaceProvider {
+    // ...listRoots, ensureAttached, release (4.2)
+    defaultFolders?(ctx: WorkspaceDefaultsContext): WorkspaceDefaults | null | Promise<WorkspaceDefaults | null>;
+}
+
+interface WorkspaceDefaultsContext {
+    sessionId: string;
+    rootSessionId: string;
+    // null for a system session. A portal without sign-in stamps
+    // { provider: "anonymous", subject: "anonymous" }; a system session's
+    // sub-agents run as { provider: "system", subject: "system" }.
+    owner: { provider: string; subject: string; email?: string | null; displayName?: string | null } | null;
+    isSystem: boolean;
+}
+
+interface WorkspaceDefaults {
+    home?: { name: string; root: string; folder?: string; required?: boolean };
+    extra?: Record<string, { root: string; folder?: string; required?: boolean }>;
+}
+```
+
+**Where the working folder is.** The person's folder is the working folder
+only when the session has none of its own:
+
+| The session's record | Working folder (cwd) | Extra folders |
+|---|---|---|
+| No workspace | The person's folder | `shared` (each default extra folder) |
+| A repo clone | The clone | `home` (the person's folder), `shared` |
+
+```
+Before every turn (the turn preamble, 4.4):
+1. PilotSwarm calls defaultFolders(ctx). Deadline 5 s. A throw or a
+   timeout means no defaults for this turn; the turn runs.
+2. It merges the answer with the session's record:
+   - the record has no working folder -> home is the working folder
+   - the record has a working folder   -> home is extra folder "home"
+   - each default extra folder is added under its own name
+3. It leaves out a default whose name the record uses, or whose folder
+   overlaps a folder of the record (equal, or one inside the other).
+4. It attaches the working folder, then the extra folders, as for any
+   record (4.4, 4.10).
+```
+
+Rules:
+
+- **Never saved.** Defaults are not written into the session's record. A
+  change to the deployment's defaults reaches every session at its next
+  turn.
+- **No limit.** Defaults do not count against the four extra folders of a
+  record (`MAX_WORKSPACE_EXTRAS`). The limit exists to bound what one
+  session can ask for; the deployment's own list is bounded by the
+  deployment.
+- **Optional by default.** A default folder that cannot attach is left out
+  of that turn, and the model is told. `required: true` makes the turn wait
+  for it, like a required extra folder. This holds also when the person's
+  folder is the working folder because the record has none: an optional one
+  that cannot attach leaves the turn with no folders at all (the default
+  extra folders need a working folder), in a temporary folder on the
+  worker, and the model is told that files written there are not kept. A
+  plain chat does not wait for a file server. A record's own working folder
+  is always required.
+- **Old orchestrations get none.** A session whose orchestration is older
+  than 1.0.80 gets no defaults, the same rule as the workspace tools (4.9).
+- **Workspace tools.** A session that has only default folders still gets
+  `set_session_workspace`, `get_session_workspace` and `load_agent` (4.12).
+  `get_session_workspace` lists the defaults under `defaults`, apart from
+  the record.
+
+**What is adopted from the person's folder.** The person's folder is the one
+extra folder that may adopt: its attach result's `adopt` is used, also when
+it is extra folder `home`. `adopt.folder: true` lets a folder that is not a
+git repo adopt; without it, agents and skills come only from a clone root.
+
+| The person's folder is | Agents and skills | Instructions (`AGENTS.md`, `.github/copilot-instructions.md`) |
+|---|---|---|
+| The working folder | From its `.github/agents` and `.github/skills` | The CLI reads them from its working folder |
+| Extra folder `home` | The same, after the repo's | PilotSwarm reads them (at most 32 KB) and adds them to the system message as "Your own instructions": after PilotSwarm's base, before the repo's |
+
+**Which one wins a name.** On a name clash, the earlier source wins:
+
+```
+1. loaded by path (4.12)
+2. the working folder (the repo, or the person's folder when it is the working folder)
+3. the person's folder as extra folder "home"
+```
+
+A name that lost is left out with the reason, for example "the repo's skill
+has this name". `get_session_workspace` lists what was left out under
+`skipped`; the `session.workspace_adopted` event records it too.
+
+**How several skill sources reach the CLI.** The CLI takes whole skills
+folders, so it cannot take "the repo's skills except one". When skills come
+from more than one source, or a skill lost a clash, PilotSwarm makes a
+folder with one link per adopted skill, named by the skill, and gives the
+CLI that folder. The folder is local to the worker:
+`<os.tmpdir()>/pilotswarm-skills/<sessionId>`. It is rebuilt whenever the
+set of skills changes.
+
+**Cost.**
+
+| Deployment | Extra work per turn |
+|---|---|
+| No workspace provider | None |
+| A provider without `defaultFolders` | None |
+| A provider with defaults | One `defaultFolders` call, and one attach per default folder, run side by side (a plain folder attach took 72 ms on the release stamp, over NFS). When the person's folder is extra folder `home`, one read of its instruction files in the same child process as its path check |
+
+### 4.12 Loading an agent or a skill by path
+
+A person can point the session at an agent or skill file anywhere in its
+folders and load it, without moving the session there. For example:
+"load the agent in `notes/tools/finder.agent.md`".
+
+```
+load_agent({ path })      an .agent.md file. The turn ends; the next turn
+                          continues by itself, and the agent runs as a native
+                          task (the task tool, agent_type = its name).
+load_agent({ unload })    drop an agent loaded by path. The turn ends.
+load_skill({ path })      a skill folder, or its SKILL.md. The body comes back
+                          at once; the turn goes on. From the next turn the
+                          CLI offers the skill too.
+load_skill({ unload })    drop a skill loaded by path.
+load_skill({ name })      unchanged: a skill of the deployment's catalog, or a
+                          skill loaded by path (these are served first).
+```
+
+`load_agent`, and `path` and `unload` on `load_skill`, are declared only
+for sessions that have the workspace tools. Every other session sees
+`load_skill` exactly as before.
+
+**What a load does.**
+
+```
+load_agent({ path: "notes/tools/finder.agent.md" })
+1. The path must be inside the working folder or an extra folder, defaults
+   included. A relative path starts at the working folder. When folders
+   nest, the deepest folder that holds the path is used.
+2. PilotSwarm reads the file in a child process (deadline 5 s, at most
+   64 KB). Its real path must stay inside that folder: a link out of it is
+   refused.
+3. It parses the file like a repo agent (4.6): name, description, tools.
+4. It saves { kind: "agent", name, root, path } with the session. The path
+   is relative to the root, so the load works on every worker: every worker
+   mounts a root at the same path.
+5. The turn ends. The next turn starts a fresh CLI handle that has the
+   agent, and continues the task by itself.
+```
+
+`load_skill` does steps 1 to 4 the same way. It saves the skill's folder,
+also when the model named the SKILL.md.
+
+**Every turn.** Each load is read again, inside this turn's attached
+folders, so edits take effect at the next turn. A load is left out of a
+turn, with the reason in `skipped` (4.11), when:
+
+- its folder is not attached in this turn;
+- the file is gone or cannot be read;
+- the file now names another agent or skill ("load it again").
+
+A load is not dropped when it is left out. It comes back when its file or
+folder does.
+
+**Which one wins a name.** A load wins over the repo's and the person's own
+agent or skill of the same name (4.11). Loading a second file with the same
+name replaces the first load.
+
+**Moves.** A load stays valid when the session changes its working folder,
+as long as its file is in a folder attached for the turn. Example: a skill
+loaded from the person's folder while it was the working folder still works
+after the session moves into a repo, because the person's folder is then
+extra folder `home`.
+
+**Refused:**
+
+| Case | Answer |
+|---|---|
+| The path is outside every attached folder | `Error: <path> is not inside the working folder or an extra folder (...)` |
+| A background shell or agent task runs | `Error: WORKSPACE_BUSY: ...`. The next turn starts a fresh CLI handle, which would stop the task |
+| A service or tuner session | Loading is not available there |
+| More than 32 loads | `At most 32 agents and skills may be loaded in one session` |
+| Unload of a name that is not loaded | `no skill named "x" is loaded by path in this session` |
+
+**Trust.** Shared folders can be written by other people. A loaded agent
+runs with the tools its file names, under the same rules as a repo agent
+(4.6): PilotSwarm tools are dropped, and it runs on the session's model. The
+tool descriptions tell the model to load only what it trusts. The deployment
+decides who can write where (section 5.3).
+
+**Storage.** The loads are part of the session's capability state (the
+`session_capabilities` JSON of the session catalog), next to the package
+selections of `use_package`: `loads: [{ kind, name, root, path }]`. No
+schema change. A change advances the state's revision, with the same
+compare-and-set. `list_session_capabilities` shows them under `loaded`.
+
+**Cost.** None for a session without loads. With loads: one child process
+per turn reads every load file.
 
 ## 5. Reference deployment
 
@@ -1410,6 +1625,58 @@ through PilotSwarm's built-in provider, combined with the repo provider by
 as extra folders (section 4.10). A plain root that has a repo root's name,
 or whose path is, holds or sits inside a repo root's path, stops the worker
 at start: it would reach session clones around the lease rules.
+
+**The home root (revision 8).** The reference module serves each person's
+own folder (section 4.11) from one root, `PS_HOME_ROOT` (`name=path`, for
+example `home=/ws/home`), and adds the plain roots named in
+`PS_DEFAULT_EXTRAS` (a comma list, for example `shared`) as default extra
+folders. The code is `examples/repo-workspaces/home-provider.mjs`.
+
+```
+/ws/home/users/<person>/          the person's folder
+  AGENTS.md                       their instructions for every session
+  .github/agents/*.agent.md       their agents
+  .github/skills/<name>/SKILL.md  their skills
+```
+
+Folder names, chosen by the provider:
+
+| The session's owner | Folder |
+|---|---|
+| A signed-in person | Their email, lowercased, with every character other than `a-z 0-9 . _ -` as `_`: `Ada@Example.com` -> `ada_example.com` |
+| A signed-in person with no email | `<provider>-<subject>`, the same way |
+| A portal without sign-in | `_anon`: one folder for everyone |
+| A system session, and its sub-agents | `_system` |
+
+A name starting with `_` or `.` is never a person's: such a name gets a `u`
+in front. A person whose email changes gets a new, empty folder.
+
+```
+ensureAttached for the home root:
+1. The folder must be the session owner's own folder, or inside it. The
+   owner comes from the session catalog (read once per session). Any other
+   folder is refused: WORKSPACE_PATH_INVALID.
+2. First use: the person's folder does not exist yet. The provider makes it
+   and copies the starter files into it (seed/home), without replacing
+   anything. A later attach never copies again, so a deleted starter file
+   stays deleted.
+3. The real path must stay inside the person's folder: a link out of it is
+   refused.
+4. The answer adopts everything from the folder, with no git needed:
+   { agents, skills, instructions, folder: true }.
+```
+
+This is a path rule against mistakes, not a security wall. Every session
+runs as the same uid (1000), so a session could still reach another
+person's folder with its shell. A wall needs one uid per person on the NFS
+disk; that is an open item (section 10).
+
+The shared folder is a plain root (`/ws/shared`, mode 1777). Every session
+can read it and add files. The starter files there (`README.md`, and an
+agent and a skill under `.github/`) are copied from the image at every start
+of the repo pod, owned by root, so sessions can read and load them but not
+change them. The shared folder adopts nothing by itself: a session loads
+what it wants from it with `load_agent` and `load_skill` (section 4.12).
 
 ### 5.4 Git credentials and protections
 
@@ -1895,6 +2162,46 @@ scripted model. Each test turned red when its rule was broken on purpose
 | N3 | U | The checks behind `spawn_agent` attach with `purpose: "check"` |
 | B7b | L | Turn attaches say `turn`, the check behind `set_session_workspace` says `check`; a provider's notice rides the next turn after the changed-cwd note, is not repeated, and is recorded with `source: "provider"` |
 
+### Default folders and loads by path (revision 8, 2026-09-29)
+
+U = unit (`test/unit/workspace-defaults.test.mjs`,
+`test/unit/repo-workspaces-home.test.mjs`,
+`test/unit/workspace-loads.test.mjs`), L = a real worker with the real
+Copilot CLI and the scripted model (`test/local/workspace-defaults.test.js`,
+`test/local/workspace-loads.test.js`). Each test turned red when its rule
+was broken on purpose (default folders: 19 mutations, 19 red; loads:
+24 mutations, 24 red).
+
+| ID | Kind | What it checks |
+|---|---|---|
+| D1 | U | The record wins; the person's folder is the working folder when the record has none, else extra folder `home`; a default whose name the record uses, or whose folder overlaps, is left out; defaults do not count against the limit of four |
+| D2 | U | No hook, a hook that throws, and a hook slower than 5 s all give no defaults, and the turn runs |
+| D3 | U | Combined providers: the first provider's home folder wins; extra folders are merged |
+| D4 | U | The path check adopts from a folder without git only with `adopt.folder`, and reads the instruction files' text within 32 KB |
+| D5 | U | Only the person's folder adopts among the extra folders |
+| D6 | U | Loaded, then the repo's, then the person's own: a name taken earlier is left out with the reason; skills from several sources are linked |
+| D7 | U | The folder of skill links keeps exactly one link per adopted skill, and replaces a stale one |
+| D8 | U | The adoption note names each source; the person's instructions come after PilotSwarm's base and before the repo's |
+| D9 | L | A session with no workspace runs in the person's folder: its instructions and skills reach the model; the default `shared` folder is listed |
+| D10 | L | After a move into a repo, the person's folder is extra folder `home`: its instructions still reach the model, before the repo's; on a skill name clash the repo's wins |
+| D11 | L | A session with only default folders gets the workspace tools |
+| D12 | L | The person's folder cannot attach: when optional, the turn runs without folders, the model is told, and the note is recorded once as PilotSwarm's; when required, the turn is held and calls no model |
+| H1 | U | Folder names: email, `_anon`, `_system`, no email, and names that start with `_` or `.` |
+| H2 | U | `defaultFolders` gives the person's folder as `home`, plus the default extra folders |
+| H3 | U | First use makes the folder and copies the starter files; a later attach never copies again, so the person's changes and deletions stay |
+| H4 | U | Only the session owner's folder: another person's folder, the root itself, a missing subfolder and a link out are refused; an unknown owner is retried |
+| H5 | U | `PS_HOME_ROOT` and `PS_DEFAULT_EXTRAS`: a default extra folder must be a plain root, roots must not overlap, and `register` wires them |
+| L1 | U | The capability state keeps valid loads and refuses bad ones (kind, name, root, absolute path, `..`, NUL, a duplicate, more than 32); add, replace and remove advance the revision; unloading a name that is not loaded is an error; a `use_package` change keeps the loads |
+| L2 | U | A path must be inside an attached folder; a relative path starts at the working folder; the deepest folder wins; `/r/sharedX` is not inside `/r/shared` |
+| L3 | U | A SKILL.md: the name from its frontmatter or its folder; a broken file is refused with the reason |
+| L4 | U | The file reader: agents and skills in request order; a link out of the folder, a SKILL.md link out, a file over 64 KB, the wrong kind and a missing file are refused; a folder that does not answer in time fails every request |
+| L5 | U | Every turn each load is read again inside this turn's folders; a load whose folder is not attached, whose file is gone or whose file now names another agent is left out with the reason |
+| L6 | U | `load_agent`, and `path` and `unload` on `load_skill`, only with the workspace tools; `load_agent` is a reserved tool name |
+| L7 | U | A load deep in a folder is saved relative to its root; a skill named by its SKILL.md is saved as its folder; outside the folders, a broken file, a running background task and a session without storage save nothing |
+| L8 | L | `load_agent`: the turn ends, the next turn continues by itself, the task tool offers the loaded agent over the person's own of that name, and it runs; when the file is gone, `get_session_workspace` says why and the person's own agent is back |
+| L9 | L | `load_skill` by path: the body at once, without ending the turn; from the next turn the loaded skill wins over the person's and, after a move, the repo's; `load_skill` by name serves it, and an edit shows in the next turn; unload gives the name back |
+| L10 | L | A path outside the folders is an error in the same turn, and nothing is saved |
+
 ## 10. Decisions, verified facts and open items
 
 **Decided on 2026-09-26**
@@ -2029,6 +2336,29 @@ calls after the acknowledgement, in the same turn.
 | V4 | The credential helper works end to end against real servers (G4) |
 | V5 | Memory cost of one CLI process per credential and root |
 
+**Decided on 2026-09-28 (revision 8)**
+
+| Decision | Instead of |
+|---|---|
+| The provider names the default folders (`defaultFolders`); PilotSwarm applies them every turn and never saves them | Default folders in PilotSwarm's own config, or written into each record |
+| The person's folder is the working folder only when the record has none; otherwise it is extra folder `home` | Always the working folder |
+| Default folders do not count against the four extra folders | Counting them |
+| The person's agents and skills are adopted also while the session works in a clone | Only when their folder is the working folder |
+| On a name clash: loaded by path, then the repo's, then the person's own | The person's own over the repo's |
+| Agents and skills load from a folder that is not a git repo (`adopt.folder`) | Only from a clone root |
+| Folder names are the provider's choice; the example uses the email, `_anon` without sign-in, `_system` for system sessions | Names chosen by PilotSwarm |
+| A load is saved with the session, relative to its root, and read again every turn | A copy taken at load time |
+| `load_agent` ends the turn, and the next turn continues by itself | Adding the agent inside the turn: the CLI takes its agents only when a session starts or resumes |
+
+**Open items (revision 8)**
+
+| Item | State |
+|---|---|
+| A canvas app that shows a folder and its files | To do (asked for; not started) |
+| One uid per person on the NFS disk, so a person's folder is a real wall (today every session is uid 1000, and the owner rule is a path rule against mistakes) | Designed, not built: the person-to-uid map lives on the NFS disk so every worker agrees; the worker starts each owner's CLI process as that uid; port 2049 open only to the nodes |
+| An NFS export served by Windows Server | Needs a Windows VM: AKS cannot run Server for NFS in a container. Waiting for a go-ahead |
+| Folder names by email or by an ID that never changes | Email for now; a person whose email changes gets a new, empty folder |
+
 **Open decisions**
 
 1. The default `adopt` policy in the application's per-repo config. Proposed:
@@ -2059,6 +2389,9 @@ Paths are relative to `packages/sdk/src` unless stated; `test/helpers/` is
 | `packages/sdk/examples/worker.js`, `deploy/Dockerfile.worker` | `PILOTSWARM_EXTENSION_MODULES`; git, nfs-common (without the setuid bit), `COPY packages/sdk/examples/repo-workspaces/` |
 | `deploy/providers/azure/...`, `deploy/scripts/...` | Section 12.1 |
 | Docs and builder templates | Canonical docs once shipped |
+| `workspace.ts`, `workspace-check.ts`, `workspace-repo-agents.ts` (revision 8) | `resolveWorkspaceDefaults` and `applyWorkspaceDefaults`; `adopt.folder` and the instruction text in the path check; `resolveWorkspaceAdoption` (loaded, repo, personal) and `linkSkillFolders` |
+| New `workspace-loads.ts`, `capability-catalog.ts`, `capability-runtime.ts` (revision 8) | Loads by path: the path rules, the out-of-process reader, the per-turn read; `loads` in the capability state and `withWorkspaceLoad`; `saveWorkspaceLoad` |
+| `examples/repo-workspaces/home-provider.mjs`, `seed/home`, `seed/shared` (revision 8) | The example's home root: folder names, the owner rule, first-use folder and starter files; `PS_HOME_ROOT`, `PS_DEFAULT_EXTRAS` |
 | `test/helpers/` | The test infrastructure in section 9 |
 
 ## 12. Delivery plan
