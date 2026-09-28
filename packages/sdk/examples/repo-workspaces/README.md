@@ -176,12 +176,15 @@ the repo pod's log             one JSON line per clone.created, clone.removed, c
 ```
 
 On the Azure stamp, the log lines are in Log Analytics, table `ContainerLogV2`
-(kept 30 days by default):
+(kept 30 days by default). Each line is stored as parsed JSON, so its fields
+can be queried directly:
 
 ```kusto
 ContainerLogV2
-| where ContainerName == "repo-service" and LogMessage has "clone."
-| project TimeGenerated, LogMessage
+| where ContainerName == "repo-service" and tostring(LogMessage.event) startswith "clone."
+| project TimeGenerated, Event = tostring(LogMessage.event), Checkout = tostring(LogMessage.checkout),
+          Reason = tostring(LogMessage.reason), Branch = tostring(LogMessage.branch),
+          Unpushed = toint(LogMessage.unpushedCommits), Dirty = tobool(LogMessage.dirty)
 ```
 
 The removal records stay in the service's state file for a year.
