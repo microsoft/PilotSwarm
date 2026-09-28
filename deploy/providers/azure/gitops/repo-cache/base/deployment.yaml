@@ -15,6 +15,11 @@
 #   /ws/shared                root 1777   a folder every session can read and
 #     .pilotswarm-export      root 0644   write, exported (fsid=2); the sticky
 #                                         bit keeps the marker
+#     README.md, .github/     root        starter agents and skills anyone can load
+#                                         (read-only: copied from the image at every start)
+#   /ws/home                  root 0755   each person's folder, exported (fsid=3)
+#     .pilotswarm-export      root 0644
+#     users/                  1000 0755   users/<person>, made by workers on first use
 #   /ws/.repo-service/        root        clone records, leases and removal records (not exported)
 #   /ws/.nfsdcld/             root        the NFS server's client list (not exported)
 apiVersion: apps/v1
@@ -64,16 +69,24 @@ spec:
             - sh
             - -ec
             - |
-              mkdir -p /ws/a/sessions /ws/shared /ws/.repo-service /ws/.nfsdcld
-              chown 0:0 /ws/a /ws/shared /ws/.repo-service /ws/.nfsdcld
-              chmod 0755 /ws/a
+              mkdir -p /ws/a/sessions /ws/shared /ws/home/users /ws/.repo-service /ws/.nfsdcld
+              chown 0:0 /ws/a /ws/shared /ws/home /ws/.repo-service /ws/.nfsdcld
+              chmod 0755 /ws/a /ws/home
               chmod 0700 /ws/.repo-service /ws/.nfsdcld
-              chown 1000:1000 /ws/a/sessions
-              chmod 0755 /ws/a/sessions
+              chown 1000:1000 /ws/a/sessions /ws/home/users
+              chmod 0755 /ws/a/sessions /ws/home/users
               chmod 1777 /ws/shared
               : > /ws/a/.pilotswarm-export
               : > /ws/shared/.pilotswarm-export
-              chmod 0644 /ws/a/.pilotswarm-export /ws/shared/.pilotswarm-export
+              : > /ws/home/.pilotswarm-export
+              chmod 0644 /ws/a/.pilotswarm-export /ws/shared/.pilotswarm-export /ws/home/.pilotswarm-export
+              # The shared starter agents and skills, root-owned so sessions
+              # can load them but not change them. Replaced at every start, so
+              # they follow the image.
+              cp -R seed/shared/. /ws/shared/
+              chown -R 0:0 /ws/shared/.github /ws/shared/README.md
+              find /ws/shared/.github -type d -exec chmod 0755 {} +
+              find /ws/shared/.github /ws/shared/README.md -type f -exec chmod 0644 {} +
           volumeMounts:
             - name: data
               mountPath: /ws

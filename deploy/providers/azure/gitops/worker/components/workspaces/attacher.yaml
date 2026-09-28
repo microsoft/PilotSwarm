@@ -53,7 +53,7 @@ spec:
             runAsGroup: 0
           env:
             - name: ATTACHER_ROOTS
-              value: a=repo-cache.pilotswarm.svc.cluster.local:/ws/a,shared=repo-cache.pilotswarm.svc.cluster.local:/ws/shared
+              value: a=repo-cache.pilotswarm.svc.cluster.local:/ws/a,shared=repo-cache.pilotswarm.svc.cluster.local:/ws/shared,home=repo-cache.pilotswarm.svc.cluster.local:/ws/home
             - name: ATTACHER_MOUNT_BASE
               value: /mnt/ps
             - name: ATTACHER_SOCKET

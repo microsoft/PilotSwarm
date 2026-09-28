@@ -5,3 +5,4 @@
 # can be changed over NFS.
 /ws/a       *(rw,sync,no_subtree_check,root_squash,fsid=1)
 /ws/shared  *(rw,sync,no_subtree_check,root_squash,fsid=2)
+/ws/home    *(rw,sync,no_subtree_check,root_squash,fsid=3)

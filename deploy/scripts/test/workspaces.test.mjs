@@ -289,9 +289,14 @@ test("the pieces agree: roots, exports, paths, service address and sample files"
     const [host, exportPath] = target.split(":");
     return [name, { host, exportPath }];
   }));
-  const workerRoots = [...workerEnv.PS_WORKSPACE_ROOTS.split(","), ...workerEnv.PS_PLAIN_ROOTS.split(",")]
+  const workerRoots = [...workerEnv.PS_WORKSPACE_ROOTS.split(","), ...workerEnv.PS_PLAIN_ROOTS.split(","), ...workerEnv.PS_HOME_ROOT.split(",")]
     .map((entry) => entry.split("="));
   assert.deepEqual(workerRoots.map(([name]) => name).sort(), Object.keys(attacherRoots).sort());
+  // Each person's folder (section 4.11): one home root, and the default extra
+  // folders every session gets are plain roots the workers serve.
+  assert.equal(workerEnv.PS_HOME_ROOT, "home=/ws/home");
+  const plainNames = workerEnv.PS_PLAIN_ROOTS.split(",").map((entry) => entry.split("=")[0]);
+  for (const name of workerEnv.PS_DEFAULT_EXTRAS.split(",")) assert.ok(plainNames.includes(name), `default extra folder ${name} is a plain root`);
   const exportsText = r[hashed(r, "ConfigMap", "repo-cache-exports")].data["pilotswarm.exports"];
   const exported = exportsText.split("\n").filter((line) => line.trim() && !line.startsWith("#")).map((line) => line.split(/\s+/)[0]);
   for (const [name, path] of workerRoots) {

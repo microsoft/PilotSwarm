@@ -21,6 +21,14 @@ spec:
               value: a=/ws/a
             - name: PS_PLAIN_ROOTS
               value: shared=/ws/shared
+            # Each person's own folder (section 4.11): users/<person> under the
+            # home root is every session's default working folder, or extra
+            # folder "home" when the session works in a clone. Every session
+            # also gets the shared folder as extra folder "shared".
+            - name: PS_HOME_ROOT
+              value: home=/ws/home
+            - name: PS_DEFAULT_EXTRAS
+              value: shared
             # The repo service. Git's credential helper, run by agents' shells
             # in session clones, reads it too.
             - name: REPO_SERVICE_URL
