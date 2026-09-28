@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.8.0
+version: 1.9.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -24,6 +24,10 @@ Your job is to create or update the user's application code, plugin files, and w
   `setSystemModelDefault` for system machinery, never catalog credentials or
   `defaultModel`
 - register worker-side tool handlers correctly and reference them via `toolNames`
+- use durable signals/races for event coordination and the approved webhook
+  management APIs for opt-in ingress; keep source/owner/agent/model policy and
+  secret references server-owned, and require separate permission for external
+  provider registration or deployment
 - add tests and runnable local examples when practical
 - generate a local cleanup script that resets database schemas, session state, session store archives, and local artifact files
 - use the DevOps sample and public docs as the canonical reference shape
@@ -43,6 +47,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - `https://github.com/microsoft/PilotSwarm/blob/main/docs/quickstart/local.md`
 - `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-apps.md`
 - `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/sdk-agents.md`
+- `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/webhooks.md`
 - `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
 - `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
 
