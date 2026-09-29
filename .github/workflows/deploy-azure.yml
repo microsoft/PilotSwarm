@@ -18,10 +18,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    # TEMPORARY: the session-workspaces branch may also deploy the stamp, for
-    # a trial before it merges (the azure-deploy environment lists it too).
-    # Remove the second clause, and the environment entry, before the merge.
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/session-workspaces-test-infra'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     environment: azure-deploy
