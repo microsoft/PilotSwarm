@@ -18,8 +18,8 @@ for (const browserName of ['chromium', 'webkit']) for (const themeId of ['winamp
                 });
                 await page.goto(base);
                 if (context === 'full') {
-                    await page.getByRole('button', { name: 'Main — sessions and chat (tap for chat only)' }).click();
-                    await page.getByRole('button', { name: 'Main — chat only (tap for sessions only)' }).click();
+                    await page.getByRole('button', { name: 'Sessions — list and chat (tap for chat only)' }).click();
+                    await page.getByRole('button', { name: 'Sessions — chat only (tap for list only)' }).click();
                 } else if (context === 'moa') {
                     await page.getByRole('button', { name: 'Master of Agents', exact: true }).click();
                     await page.getByRole('button', { name: 'Add first MoA panel' }).click();

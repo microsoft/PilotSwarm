@@ -8393,7 +8393,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 type: "button",
                 className: "ps-artifact-pane-btn ps-toolbar-canvas-restore",
                 onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: false }),
-                title: "Back to the workspace",
+                title: "Back to the sessions view",
                 "aria-label": "Restore canvas",
             }, React.createElement(RestoreGlyph))), toolbarSlot) : null)
         : React.createElement("header", { className: "ps-artifact-pane-bar" },
@@ -9981,7 +9981,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         ...(mobile ? [] : [{
             key: "workspace",
             icon: React.createElement(MainLayoutGlyph),
-            label: "Workspace — sessions, chat and panels",
+            label: "Sessions — session list, chat and panels",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {}),
             active: !moa?.active && !adminVisible && !budgetOpen,
         }]),
@@ -10035,9 +10035,9 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         // layout/panes mark) — a shape-shifting icon reads as three different
         // buttons; only the tooltip names what the next tap gives you.
         const mainLabels = {
-            split: "Main — sessions and chat (tap for chat only)",
-            chat: "Main — chat only (tap for sessions only)",
-            sessions: "Main — sessions only (tap for both)",
+            split: "Sessions — list and chat (tap for chat only)",
+            chat: "Sessions — chat only (tap for list only)",
+            sessions: "Sessions — list only (tap for both)",
         };
         // Two tabs, not three: the row was out of space, and Inspector +
         // Activity are one idea on the desktop already (Diagnostics, the

@@ -21,7 +21,7 @@ for (const browserName of ['chromium', 'webkit']) {
  expect(Math.abs(label.y+label.height/2-input.y-input.height/2)).toBeLessThan(2);
  const status=await page.locator('.ps-chat-panel .ps-panel-title-right').boundingBox();
  expect((await maximize.boundingBox()).x).toBeGreaterThanOrEqual(status.x+status.width);
- const main=page.getByRole('button',{name:'Main — sessions and chat (tap for chat only)',exact:true});
+ const main=page.getByRole('button',{name:'Sessions — list and chat (tap for chat only)',exact:true});
  await main.dispatchEvent('pointerdown',{pointerType:'touch',clientX:330,clientY:100});
  const tip=page.getByRole('tooltip'); await expect(tip).toBeVisible();
  const box=await tip.boundingBox(); expect(box.x).toBeGreaterThanOrEqual(0);expect(box.y).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);expect(box.y+box.height).toBeLessThanOrEqual(844);
