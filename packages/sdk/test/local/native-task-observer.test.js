@@ -34,6 +34,33 @@ describe("native task observation", () => {
         expect(h.summaries().filter((s) => s.toolCallId === "repo").at(-1)).toMatchObject({ profile: "architect", repo: "tfenv", status: "completed" });
     });
 
+    it("marks a task that runs a loaded agent: one from the person's folder, one loaded by path; repo agents keep the repo (4.11, 4.12)", async () => {
+        vi.useFakeTimers();
+        const h = harness({}, {
+            repoAgents: { repo: "tfenv", names: ["architect"] },
+            loadedAgents: { personal: ["summarizer"], path: ["reviewer"] },
+        });
+        const run = (id, agent) => {
+            h.emit("tool.execution_start", { toolName: "task", toolCallId: id, arguments: { description: `run ${agent}`, agent_type: agent } });
+            h.emit("subagent.started", { toolCallId: id, agentName: agent }, `a-${id}`);
+        };
+        run("own", "summarizer");
+        run("path", "reviewer");
+        run("repo", "architect");
+        run("builtin", "swarm-explore");
+        await vi.advanceTimersByTimeAsync(600);
+        const byId = (id) => h.tick().tasks.find((t) => t.toolCallId === id);
+        expect(byId("own")).toMatchObject({ profile: "summarizer", loaded: "personal" });
+        expect(byId("path")).toMatchObject({ profile: "reviewer", loaded: "path" });
+        expect(byId("repo")).toMatchObject({ profile: "architect", repo: "tfenv" });
+        expect(byId("repo").loaded).toBeUndefined();
+        expect(byId("own").repo).toBeUndefined();
+        expect(byId("builtin").loaded).toBeUndefined();
+        h.emit("tool.execution_complete", { toolName: "task", toolCallId: "path", success: true, result: { content: "done" } });
+        h.observer.finish();
+        expect(h.summaries().filter((s) => s.toolCallId === "path").at(-1)).toMatchObject({ profile: "reviewer", loaded: "path", status: "completed" });
+    });
+
     it("names no repo without adopted agents", async () => {
         vi.useFakeTimers();
         const h = harness();

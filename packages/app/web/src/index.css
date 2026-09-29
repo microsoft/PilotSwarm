@@ -101,7 +101,8 @@
 .ps-native-task-result { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ps-native-task-profile { display: inline-block; margin-right: 8px; padding: 1px 6px; border: 1px solid var(--ps-border); border-radius: 4px; color: var(--ps-chat-card-muted); font-size: var(--ps-font-size-dense); font-weight: 400; }
 /* A repo agent stands out: the user sees which adopted agent ran. The highlight pair is defined per theme. */
-.ps-native-task-profile--repo { border-color: var(--ps-highlight-background); background: var(--ps-highlight-background); color: var(--ps-highlight-foreground); font-weight: 600; }
+.ps-native-task-profile--repo,
+.ps-native-task-profile--loaded { border-color: var(--ps-highlight-background); background: var(--ps-highlight-background); color: var(--ps-highlight-foreground); font-weight: 600; }
 .ps-native-task-calls { border-left: 2px solid var(--ps-native-task-accent); padding-left: 8px; max-height: 320px; overflow: auto; overscroll-behavior: contain auto; min-width: 0; }
 .ps-native-task-calls .ps-chat-call { margin: 0; border-radius: 0; }
 .ps-native-task-calls .ps-chat-call-summary { min-width: 0; }

@@ -16,7 +16,8 @@ import {
     checkWorkspacePath, MAX_REPO_AGENTS, MAX_REPO_AGENT_BYTES, MAX_REPO_AGENT_OVERFLOW, MAX_REPO_SKILL_ENTRIES,
 } from "../../dist/workspace-check.js";
 import { prepareWorkspace } from "../../dist/workspace.js";
-import { parseRepoAgentFile, resolveRepoAdoption, adoptionNote, sameAdoption, RepoAgentAccess } from "../../dist/workspace-repo-agents.js";
+import { parseRepoAgentFile, resolveRepoAdoption, adoptionNote, sameAdoption, RepoAgentAccess, groupSkipped } from "../../dist/workspace-repo-agents.js";
+import { nativeTaskAgentMarks } from "../../dist/native-task-observer.js";
 import { nativeSubagentHooks } from "../../dist/native-subagents.js";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 
@@ -355,5 +356,36 @@ describe("the native child guard with adopted repo agents", () => {
         assert.equal((await call(hooks, { sessionId: child, toolName: "edit" })).permissionDecision, "deny", "a finished child is forgotten");
         access.observe({ type: "subagent.started", agentId: "other", data: { agentName: "swarm-task" } });
         assert.equal((await call(hooks, { sessionId: "other", toolName: "edit" })).permissionDecision, "deny", "a swarm child keeps its own rules");
+    });
+});
+
+describe("the views of an adoption (v0.7.1)", () => {
+    it("groupSkipped: entries with the same kind, source and reason become one with their names; single entries are unchanged", () => {
+        const pinned = (name) => ({ kind: "agent", file: `.github/agents/${name}.agent.md`, name, reason: "adopted without: model Claude Opus 4.6 (runs on the session model)" });
+        const lone = { kind: "skill", file: "big", name: "big", reason: "larger than 64 KB" };
+        const loaded = { kind: "agent", file: "home:users/me/x.agent.md", name: "x", reason: "no such file or folder", source: "loaded" };
+        const loadedToo = { ...loaded, file: "home:users/me/y.agent.md", name: "y" };
+        const grouped = groupSkipped([pinned("architect"), lone, pinned("bug-finder"), loaded, pinned("reviewer"), loadedToo]);
+        assert.deepEqual(grouped, [
+            { kind: "agent", reason: "adopted without: model Claude Opus 4.6 (runs on the session model)", names: ["architect", "bug-finder", "reviewer"] },
+            lone,
+            { kind: "agent", reason: "no such file or folder", source: "loaded", names: ["x", "y"] },
+        ]);
+        assert.deepEqual(groupSkipped([lone]), [lone], "one entry: unchanged, with its file");
+        assert.deepEqual(groupSkipped([]), []);
+        assert.deepEqual(groupSkipped([{ ...lone, source: "personal" }, lone]).length, 2, "a different source is a different group");
+    });
+
+    it("nativeTaskAgentMarks: repo agents with the repo; the person's and loaded-by-path agents as loaded", () => {
+        assert.deepEqual(nativeTaskAgentMarks({ repo: "tfenv", agents: ["architect"], skipped: [], personal: { agents: ["summarizer"], skills: [] }, loaded: { agents: ["reviewer"], skills: [] } }), {
+            repoAgents: { repo: "tfenv", names: ["architect"] },
+            loadedAgents: { personal: ["summarizer"], path: ["reviewer"] },
+        });
+        assert.deepEqual(nativeTaskAgentMarks({ agents: [], skipped: [], personal: { agents: ["summarizer"], skills: [] } }), {
+            loadedAgents: { personal: ["summarizer"] },
+        }, "the person's folder as the working folder: no repo");
+        assert.deepEqual(nativeTaskAgentMarks({ agents: ["a"], skipped: [] }), { repoAgents: { names: ["a"] } });
+        assert.deepEqual(nativeTaskAgentMarks(undefined), {});
+        assert.deepEqual(nativeTaskAgentMarks({ agents: [], skipped: [], personal: { agents: [], skills: ["notes"] } }), {}, "skills only: nothing to mark");
     });
 });

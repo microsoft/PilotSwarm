@@ -1717,7 +1717,9 @@ The shared folder is a plain root (`/ws/shared`, mode 1777). Every session
 can read it and add files. The starter files there (`README.md`, and an
 agent and a skill under `.github/`) are copied from the image at every start
 of the repo pod, owned by root, so sessions can read and load them but not
-change them. The shared folder adopts nothing by itself: a session loads
+change them. Files the sessions add are not protected from each other: the
+sticky bit protects only another uid's files, and every session is uid 1000.
+(Found by the functional test on the release stamp, 2026-09-29.) The shared folder adopts nothing by itself: a session loads
 what it wants from it with `load_agent` and `load_skill` (section 4.12).
 
 ### 5.4 Git credentials and protections
@@ -2249,6 +2251,8 @@ was broken on purpose (default folders: 19 mutations, 19 red; loads:
 | S2, S3 | L | A provider without defaults: a session with no workspace is exactly S1 and the provider is never called; a session in a repo works there, with the workspace tools, the section once, no extra folders and no defaults record |
 | S4, S5 | L | Defaults that name only `shared`: a session with no workspace gets no folders (rule A); a session in a repo gets `shared` as an extra folder and the section, and one defaults record for two turns |
 | B12 (4.11) | U | The UI: the stats tab and the portal's Workspace row show "<folder> (your folder)" for a session with no record, and the default extra folders; nothing without defaults |
+| A8 (v0.7.1) | L | `get_session_workspace` groups agents left out for the same reason (three agents pinning one model → one entry with three names); the recorded event keeps one entry per agent |
+| T-loaded (v0.7.1) | U, L | The task observer marks a task that runs the person's own agent (`loaded: "personal"`) or one loaded by path (`"path"`); repo agents keep `repo`; L8 sees the mark on a real worker; the portal names it "Loaded agent · <name>" and keeps it through the history |
 
 Each of these was broken on purpose and a test failed: 14 mutations, 14 red.
 

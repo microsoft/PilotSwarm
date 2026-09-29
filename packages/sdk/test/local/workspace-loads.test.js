@@ -7,7 +7,7 @@
  *        the next turn continues by itself, and the task tool runs the
  *        loaded agent; it wins over the person's own agent of that name;
  *        when the file is gone, get_session_workspace says so and the
- *        person's own agent is back
+ *        person's own agent is back; its task is marked loaded by path (v0.7.1)
  *   L9   load_skill by path: the body comes back at once; from the next turn
  *        the loaded skill wins over the person's and the repo's skill of that
  *        name, also after a move into a repo (the load's folder is then the
@@ -47,6 +47,15 @@ const taskTool = (body) => JSON.stringify((body.tools ?? []).find((t) => t.funct
  */
 const offered = (body) => `${JSON.stringify(body.tools ?? [])}\n${systemText(body)}`;
 const requestAt = (model, prompt, turn, step = 0) => model.sessionRequests(prompt).find((r) => r.position.turn === turn && r.position.step === step);
+
+async function catalogEvents(env, sessionId) {
+    const catalog = await createCatalog(env);
+    try {
+        return await catalog.getSessionEvents(sessionId);
+    } finally {
+        await catalog.close?.();
+    }
+}
 
 async function savedLoads(env, sessionId) {
     const catalog = await createCatalog(env);
@@ -128,6 +137,10 @@ describe("agents and skills loaded by path (section 4.12)", () => {
                 const after = taskTool(next.body);
                 assert(after.includes("LOADED-FINDER-DESC") && !after.includes("PERSONAL-FINDER-DESC"), `after the load, the loaded finder wins: ${after.slice(0, 800)}`);
                 assert(answer.includes("L8-FOUND"), `the loaded agent ran as a native task: ${answer.slice(0, 600)}`);
+                // v0.7.1: the task is marked, so the portal names it "Loaded agent · finder".
+                const taskEvents = (await catalogEvents(env, sessionId)).filter((e) => e.eventType === "native.task_updated" && e.data?.profile === "finder");
+                assert(taskEvents.length > 0 && taskEvents.every((e) => e.data.loaded === "path" && e.data.repo === undefined),
+                    `the finder task is marked as loaded by path: ${JSON.stringify(taskEvents.map((e) => e.data)).slice(0, 600)}`);
                 assertEqual(JSON.stringify(await savedLoads(env, sessionId)),
                     JSON.stringify([{ kind: "agent", name: "finder", root: "home", path: `users/${OWNER.subject}/deep/a/b/c/finder.agent.md` }]),
                     "the load is saved with the session, relative to its root");
