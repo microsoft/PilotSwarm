@@ -110,12 +110,15 @@ keep secrets there.
 
 ## The shared folder
 
-Every session of every person can read and write `shared` (in the reference
-deployment, `/ws/shared`). Use it to hand files to other people.
+Every session of every person can read `shared` and add files to it (in the
+reference deployment, `/ws/shared`). Use it to hand files to other people.
 
 - Put files in a topic folder, with a line in its `README.md`: the file, who
   you are, the date.
-- Do not change or delete other people's files.
+- Do not change or delete other people's files. Nothing stops it: in the
+  reference deployment every session runs as the same system user, so any
+  session can change a file another session added. Do not keep anything
+  there you cannot lose.
 - `.github/` there holds agents and skills anyone can load (next section).
   They are read-only; copy one into your own folder to change it.
 

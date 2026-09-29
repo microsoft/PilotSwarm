@@ -67,7 +67,8 @@ function NativeTask({ task, colors, now }) {
             React.createElement("span", { className: "ps-native-task-main" },
                 React.createElement("span", { className: "ps-native-task-title" },
                     React.createElement("span", {
-                        className: profile.kind === "repo" ? "ps-native-task-profile ps-native-task-profile--repo" : "ps-native-task-profile",
+                        className: profile.kind === "repo" ? "ps-native-task-profile ps-native-task-profile--repo"
+                            : profile.kind === "loaded" ? "ps-native-task-profile ps-native-task-profile--loaded" : "ps-native-task-profile",
                         ...(profile.title ? { title: profile.title } : {}),
                     }, profile.label),
                     task.title === "Native task" ? "Working on delegated request" : task.title),
@@ -78,7 +79,9 @@ function NativeTask({ task, colors, now }) {
             React.createElement("span", { className: "ps-native-task-chevron", "aria-hidden": true }, "›")),
         React.createElement("div", { className: "ps-native-task-detail", onClick: () => { inspected.current = true; } },
             React.createElement("div", { className: "ps-native-task-scope" },
-                [profile.kind === "repo" ? `${task.profile} agent from ${profile.repo}` : null, task.model, task.reasoningEffort, "Same worker"].filter(Boolean).join(" · ")),
+                [profile.kind === "repo" ? `${task.profile} agent from ${profile.repo}`
+                    : profile.kind === "loaded" ? `${task.profile} agent from ${profile.from}` : null,
+                task.model, task.reasoningEffort, "Same worker"].filter(Boolean).join(" · ")),
             calls.length ? React.createElement("div", {
                 ref: viewport, className: "ps-native-task-calls", role: "region", "aria-label": `Tool calls for ${task.title}`, tabIndex: 0,
                 onScroll: event => { const node = event.currentTarget; follow.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 24; },

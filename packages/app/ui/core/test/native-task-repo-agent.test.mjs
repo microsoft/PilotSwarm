@@ -50,3 +50,32 @@ test("the card shows which repo agent ran", () => {
     assert.match(plain, /class="ps-native-task-profile">Explore</);
     assert.doesNotMatch(plain, /Repo agent/);
 });
+
+// ── Loaded agents: the person's own, and loaded by path (v0.7.1) ─────────
+
+const loadedTask = { ...repoTask, id: "call-2", toolCallId: "call-2", title: "Summarize AGENTS.md", profile: "summarizer", repo: undefined, loaded: "personal" };
+
+test("nativeTaskProfile names a loaded agent: from the person's folder, or loaded by path", () => {
+    const own = nativeTaskProfile(loadedTask);
+    assert.equal(own.kind, "loaded");
+    assert.equal(own.label, "Loaded agent · summarizer");
+    assert.match(own.title, /summarizer agent from your own folder/);
+    const byPath = nativeTaskProfile({ ...loadedTask, profile: "reviewer", loaded: "path" });
+    assert.equal(byPath.label, "Loaded agent · reviewer");
+    assert.match(byPath.title, /reviewer agent from a file loaded by path/);
+    assert.deepEqual(nativeTaskProfile({ ...loadedTask, loaded: "elsewhere" }), { kind: "generic", label: "Native task" }, "an unknown mark is ignored");
+    assert.equal(nativeTaskProfile({ ...loadedTask, repo: "tfenv", loaded: "path" }).kind, "repo", "a repo mark wins");
+});
+
+test("the loaded mark survives in the history, and the card shows it", () => {
+    let history = applyNativeTaskSnapshot(null, { version: 1, ownerId: "o1", ownerStartedAt: 1, revision: 1, phase: "live", tasks: [loadedTask] }, { sessionId: "s1" });
+    const chat = [...history.chat];
+    appendNativeTaskEvent(chat, { sessionId: "s1", eventType: "subagent.completed", createdAt: "2026-09-29T10:01:00.000Z",
+        data: { toolCallId: "call-2", durationMs: 2_000, totalToolCalls: 1 } });
+    const task = chat.find((group) => group.kind === "native-task-group").tasks[0];
+    assert.equal(task.loaded, "personal");
+    const html = renderToStaticMarkup(React.createElement(NativeTaskCard, { group: { id: "g3", tasks: [task] }, colors: COLORS }));
+    assert.match(html, /class="ps-native-task-profile ps-native-task-profile--loaded"/);
+    assert.match(html, /Loaded agent · summarizer/);
+    assert.match(html, /summarizer agent from your own folder · gpt-5\.6-sol · Same worker/);
+});

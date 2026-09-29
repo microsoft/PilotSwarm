@@ -123,14 +123,19 @@ when each happens.
 A folder on a file server that sessions read and write. No git, no leases.
 
 ```
-The file server exports /ws/shared (mode 1777: everyone writes; the
-sticky bit stops people deleting each other's files, and the marker).
-Every worker mounts it at /ws/shared.
+The file server exports /ws/shared (mode 1777: every session can add
+files; the sticky bit keeps root's files, such as the marker, from being
+deleted). Every worker mounts it at /ws/shared.
 The provider answers ensureAttached:
 1. The marker /ws/shared/.pilotswarm-export exists (checked in a child
    process). If not: WORKSPACE_NOT_MOUNTED, retryAfterMs 30000.
 2. { ok: true, path: "/ws/shared/<folder>" }, no adopt.
 ```
+
+The sticky bit protects only files of another uid. When every session runs
+as the same uid (the reference does), any session can change or delete any
+file a session added; only root's files are safe. A wall between people
+needs one uid per person (below).
 
 The reference module does this for every root in `PS_PLAIN_ROOTS`. Sessions
 add the folder as an extra folder:

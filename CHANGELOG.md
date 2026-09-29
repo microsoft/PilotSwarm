@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.1 — 2026-09-29
+
+- Portal: a native task that runs an agent from the person's own folder, or
+  one loaded by path, is named "Loaded agent · <name>", the way repo agents
+  are named "Repo agent · <name>". The worker marks such tasks.
+- `get_session_workspace`: agents or skills left out for the same reason are
+  grouped into one entry with their names. A repo whose agents all pin a
+  model showed one line per agent. The recorded event keeps every entry.
+- Docs: files that sessions add to a shared folder are not protected from
+  each other when every session runs as one user; the sticky bit protects
+  only another user's files. The user guide, the provider guide, the
+  example's shared README and the Repo Coder's instructions now say so.
+- Validation (local): SDK unit 1,296 passed (1 skip), UI 838, deployment
+  scripts 357, the affected workspace suites 28 on a real worker; each new
+  rule was broken on purpose and a test failed (9 of 9). The all-provider
+  run for the release candidate runs in GitHub Actions.
+
 ## 0.7.0 — 2026-09-29
 
 - Session workspaces: a session can work in a real folder — a git clone on a

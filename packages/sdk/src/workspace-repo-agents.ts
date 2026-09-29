@@ -354,6 +354,30 @@ export interface WorkspaceAdoption extends RepoAdoption {
 const SOURCE_LABEL: Record<AdoptionSourceKind, string> = { loaded: "a loaded", repo: "the repo's", personal: "your own" };
 
 /**
+ * Skipped entries for a view: entries of the same kind, source and reason
+ * become one, with their names. A repo whose agents all pin a model then shows
+ * one line, not one per agent. Single entries are unchanged. The recorded
+ * event keeps every entry.
+ */
+export function groupSkipped<T extends { kind: string; name?: string; file?: string; reason: string; source?: string }>(
+    skipped: readonly T[],
+): Array<T | { kind: string; reason: string; source?: string; names: string[] }> {
+    const groups = new Map<string, T[]>();
+    for (const entry of skipped) {
+        const key = JSON.stringify([entry.kind, entry.source ?? "", entry.reason]);
+        const group = groups.get(key);
+        if (group) group.push(entry);
+        else groups.set(key, [entry]);
+    }
+    return [...groups.values()].map((group) => (group.length === 1 ? group[0] : {
+        kind: group[0].kind,
+        reason: group[0].reason,
+        ...(group[0].source ? { source: group[0].source } : {}),
+        names: group.map((entry) => entry.name ?? entry.file ?? "").filter(Boolean),
+    }));
+}
+
+/**
  * Adoption from several sources (sections 4.6, 4.11, 4.12): files loaded by
  * path first, then the repo's, then the person's own folder. A name taken by
  * an earlier source is skipped in a later one, with the reason. With the

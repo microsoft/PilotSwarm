@@ -13,6 +13,12 @@ export interface NativeTaskSummary {
      * show which repo agent was triggered.
      */
     repo?: string;
+    /**
+     * Set when the task runs an agent that was not the repo's (sections 4.11,
+     * 4.12): "personal" for one from the person's own folder, "path" for one
+     * loaded by path. A viewer names it a loaded agent.
+     */
+    loaded?: "personal" | "path";
     model?: string;
     status: "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
     startedAt: string;
@@ -43,6 +49,8 @@ interface Options {
     emit: (event: { eventType: string; data: any }) => void;
     /** The agents adopted from the working folder's repo, and the repo's name. */
     repoAgents?: { repo?: string; names: readonly string[] };
+    /** The agents from the person's own folder, and those loaded by path (sections 4.11, 4.12). */
+    loadedAgents?: { personal?: readonly string[]; path?: readonly string[] };
 }
 
 const terminal = (status: string) => !["running", "waiting"].includes(status);
@@ -169,11 +177,20 @@ export class NativeTaskObserver {
         this.publish();
     }
 
-    /** A task whose agent was adopted from the workspace's repo carries the repo's name. */
+    /**
+     * A task whose agent was adopted from the workspace's repo carries the
+     * repo's name; one whose agent came from the person's folder or was loaded
+     * by path carries where it came from. An adopted name has one source.
+     */
     private markRepoAgent(task: NativeTaskSummary): void {
         const repoAgents = this.options.repoAgents;
-        if (task.profile && repoAgents?.names.includes(task.profile)) task.repo = repoAgents.repo ?? "repo";
-        else delete task.repo;
+        const loadedAgents = this.options.loadedAgents;
+        delete task.repo;
+        delete task.loaded;
+        if (!task.profile) return;
+        if (loadedAgents?.path?.includes(task.profile)) task.loaded = "path";
+        else if (repoAgents?.names.includes(task.profile)) task.repo = repoAgents.repo ?? "repo";
+        else if (loadedAgents?.personal?.includes(task.profile)) task.loaded = "personal";
     }
 
     private setTerminal(task: NativeTaskSummary, status: NativeTaskSummary["status"], timestamp?: string): void {
@@ -278,4 +295,24 @@ export class NativeTaskObserver {
             if (this.dirty && active()) this.invalidate();
         }
     }
+}
+
+/**
+ * The observer's marks for adopted agents, from a session's adoption report
+ * (sections 4.6, 4.11, 4.12): repo agents with the repo's name, and agents
+ * from the person's folder or loaded by path. Nothing when nothing was adopted.
+ */
+export function nativeTaskAgentMarks(adoption: {
+    repo?: string;
+    agents: readonly string[];
+    personal?: { agents: readonly string[] };
+    loaded?: { agents: readonly string[] };
+} | null | undefined): Pick<Options, "repoAgents" | "loadedAgents"> {
+    if (!adoption) return {};
+    const personal = adoption.personal?.agents ?? [];
+    const path = adoption.loaded?.agents ?? [];
+    return {
+        ...(adoption.agents.length > 0 ? { repoAgents: { ...(adoption.repo ? { repo: adoption.repo } : {}), names: adoption.agents } } : {}),
+        ...(personal.length > 0 || path.length > 0 ? { loadedAgents: { ...(personal.length > 0 ? { personal } : {}), ...(path.length > 0 ? { path } : {}) } } : {}),
+    };
 }

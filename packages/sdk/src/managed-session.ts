@@ -16,9 +16,9 @@ import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 import { mergeWorkspaceChange, sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
 import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
-import { parseRepoAgentFile } from "./workspace-repo-agents.js";
+import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
-import { NativeTaskObserver } from "./native-task-observer.js";
+import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -3105,7 +3105,9 @@ export class ManagedSession {
                         ...(this.config.workspaceAdoption?.loaded ? { loaded: this.config.workspaceAdoption.loaded } : {}),
                         // Agents and skills left out this turn, and why (a name clash, a
                         // file that is gone, a folder that is not attached).
-                        ...(this.config.workspaceAdoption?.skipped?.length ? { skipped: this.config.workspaceAdoption.skipped.slice(0, 20) } : {}),
+                        // Entries with the same reason are grouped, so a repo whose
+                        // agents all pin a model shows one line, not one per agent.
+                        ...(this.config.workspaceAdoption?.skipped?.length ? { skipped: groupSkipped(this.config.workspaceAdoption.skipped).slice(0, 20) } : {}),
                     });
                 },
             }),
@@ -3174,9 +3176,9 @@ export class ManagedSession {
         const nativeTasks = this.config.nativeSubagents === "sync"
             ? new NativeTaskObserver(this.copilotSession, {
                 turnIndex: opts?.turnIndex,
-                ...(this.config.workspaceAdoption?.agents.length
-                    ? { repoAgents: { repo: this.config.workspaceAdoption.repo, names: this.config.workspaceAdoption.agents } }
-                    : {}),
+                // Which agent a task runs: a repo agent, or a loaded one (the
+                // person's own, or loaded by path), so a viewer can name it.
+                ...nativeTaskAgentMarks(this.config.workspaceAdoption),
                 emit: (event) => {
                     if (event.eventType !== "session.native_tasks_tick") collectedEvents.push(event);
                     try { opts?.onEvent?.(event); } catch {}

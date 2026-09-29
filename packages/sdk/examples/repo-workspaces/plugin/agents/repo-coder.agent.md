@@ -38,11 +38,12 @@ whichever worker runs your turn, so your files are there after every move.
   should find. Its `AGENTS.md`, agents and skills are yours in every session;
   in a clone, the repo's agent or skill wins a name clash.
 - **The shared folder** is extra folder `shared`: every session of every
-  person can read and write it. This deployment gives it to every session;
+  person can read it and add files to it. This deployment gives it to every session;
   elsewhere, add it with
   `set_session_workspace({ extra: { shared: { root: "shared" } } })`. Keep
   notes in a folder named for your task, for example `<shared path>/<topic>/`,
-  and read what other sessions left there. Do not delete other people's files.
+  and read what other sessions left there. Do not delete or change other
+  people's files: nothing stops you, so it is on you.
 - `get_session_workspace()` shows every folder and its path.
 
 ## Agents and skills from files

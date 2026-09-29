@@ -200,6 +200,39 @@ describe("workspace repo agents and skills", () => {
         }
     });
 
+    it("get_session_workspace groups agents left out for the same reason; the recorded event keeps each (A8, v0.7.1)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await nativeTasksOn(env);
+        const fixture = await createGitFixture();
+        try {
+            const clone = await fixture.cloneSession({ rootSessionId: "a8" });
+            const agents = path.join(clone, ".github", "agents");
+            for (const name of ["alpha", "beta", "gamma"]) {
+                fs.writeFileSync(path.join(agents, `${name}.agent.md`),
+                    `---\nname: ${name}\ndescription: The ${name} agent.\ntools: ["read"]\nmodel: some-pinned-model\n---\nDo the ${name} work.\n`);
+            }
+            const provider = createFakeWorkspaceProvider({ roots: [{ name: "fx", path: fixture.root }] });
+            provider.setAdopt({ agents: true, skills: false, instructions: false });
+            let view = null;
+            const respond = scriptTurns([[
+                { tools: [{ name: "get_session_workspace", args: {} }] },
+                (_body, position) => { view = JSON.parse(position.toolResults.join("")); return { content: "a8 done" }; },
+            ]]);
+            await withScriptedModel(env, { respond, worker: { workspaceProvider: provider, nativeSubagents: "sync" } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel, owner: OWNER, workspace: { root: "fx", folder: path.relative(fixture.root, clone) } });
+                assertEqual(await session.sendAndWait("a8 look", TIMEOUT), "a8 done");
+                const pinned = (view.skipped ?? []).filter((entry) => /adopted without: model some-pinned-model/.test(entry.reason));
+                assertEqual(pinned.length, 1, `one grouped entry in the view: ${JSON.stringify(view.skipped)}`);
+                assertEqual(JSON.stringify([...pinned[0].names].sort()), JSON.stringify(["alpha", "beta", "gamma"]));
+                const [adopted] = await events(env, sessionId, "session.workspace_adopted");
+                assertEqual(adopted.data.skipped.filter((entry) => /some-pinned-model/.test(entry.reason)).length, 3, "the event keeps one entry per agent");
+            });
+        } finally {
+            await fixture.cleanup();
+        }
+    });
+
     it("an adopt flip gives the next turn the new set and the agents-changed note; the same adopt again changes nothing (A4)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         await nativeTasksOn(env);
