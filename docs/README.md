@@ -16,6 +16,7 @@ multi-hour multi-agent workflows.
 
 - [Terminal UI track](./user-guide/tui.md) · [Browser portal track](./user-guide/portal.md)
 - [Keybindings](./user-guide/keybindings.md) — TUI controls and slash commands
+- [Working in folders and repos](./user-guide/workspaces.md) — session workspaces: repo clones, your own folder, the shared folder
 
 ## 3. [Architecture](./architecture/README.md)
 

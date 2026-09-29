@@ -11,6 +11,23 @@ const timeMs = value => {
 const resultText = value => typeof value === "string" ? value
     : value?.detailedContent || value?.content || value?.textResultForLlm || value?.message || value?.error?.message || "";
 
+/**
+ * How a native task names its agent. An agent adopted from the session
+ * workspace's repo is named, with its repo, so the user sees which agent ran;
+ * the worker marks such a task with `repo` (session workspaces, section 4.6).
+ */
+export function nativeTaskProfile(task) {
+    const profile = typeof task?.profile === "string" ? task.profile.trim() : "";
+    const repo = typeof task?.repo === "string" ? task.repo.trim() : "";
+    if (repo && profile) {
+        return { kind: "repo", label: `Repo agent · ${profile}`, repo,
+            title: `The ${profile} agent from the ${repo} repo (.github/agents), running as a native task` };
+    }
+    if (profile === "swarm-explore") return { kind: "builtin", label: "Explore" };
+    if (profile === "swarm-task") return { kind: "builtin", label: "Task" };
+    return { kind: "generic", label: "Native task" };
+}
+
 export const NATIVE_TASK_LABELS = {
     starting: "Starting", running: "Running", waiting: "Waiting", completed: "Done",
     failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted",

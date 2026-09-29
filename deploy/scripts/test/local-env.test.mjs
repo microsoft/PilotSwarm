@@ -139,6 +139,81 @@ test("old local env accepts a process override for newly introduced database key
   }
 });
 
+test("an old local env without the node-pool and workspaces keys gets their defaults", () => {
+  cleanup();
+  const keys = ["WORKSPACES_ENABLED", "USER_POOL_MIN_COUNT"];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    const { env } = loadEnv(TEST_NAME);
+    assert.equal(env.WORKSPACES_ENABLED, "false");
+    assert.equal(env.USER_POOL_MIN_COUNT, "1");
+    // A value in the file wins over the default.
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nWORKSPACES_ENABLED=true\nUSER_POOL_MIN_COUNT=2\n");
+    const loaded = loadEnv(TEST_NAME).env;
+    assert.equal(loaded.WORKSPACES_ENABLED, "true");
+    assert.equal(loaded.USER_POOL_MIN_COUNT, "2");
+  } finally {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
+    cleanup();
+  }
+});
+
+test("a process variable sets the workspaces and node-pool keys over the file (how the deploy workflows pass GitHub variables)", () => {
+  cleanup();
+  const keys = ["WORKSPACES_ENABLED", "USER_POOL_MIN_COUNT"];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nWORKSPACES_ENABLED=false\n");
+    process.env.WORKSPACES_ENABLED = "true";
+    process.env.USER_POOL_MIN_COUNT = "2";
+    const { env } = loadEnv(TEST_NAME);
+    assert.equal(env.WORKSPACES_ENABLED, "true");
+    assert.equal(env.USER_POOL_MIN_COUNT, "2");
+    // An unset GitHub variable arrives empty and changes nothing.
+    process.env.WORKSPACES_ENABLED = "";
+    process.env.USER_POOL_MIN_COUNT = "";
+    const unset = loadEnv(TEST_NAME).env;
+    assert.equal(unset.WORKSPACES_ENABLED, "false");
+    assert.equal(unset.USER_POOL_MIN_COUNT, "1");
+  } finally {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
+    cleanup();
+  }
+});
+
+test("PILOTSWARM_NATIVE_SUBAGENTS: off by default, sync from the file or a process variable, anything else refused", () => {
+  cleanup();
+  const before = process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+  try {
+    delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "off");
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nPILOTSWARM_NATIVE_SUBAGENTS= SYNC \n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    process.env.PILOTSWARM_NATIVE_SUBAGENTS = "sync";
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
+    // A bad value would crash every worker at start; the deploy refuses it first.
+    process.env.PILOTSWARM_NATIVE_SUBAGENTS = "on";
+    assert.throws(() => loadEnv(TEST_NAME), /PILOTSWARM_NATIVE_SUBAGENTS must be off or sync/);
+  } finally {
+    if (before === undefined) delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+    else process.env.PILOTSWARM_NATIVE_SUBAGENTS = before;
+    cleanup();
+  }
+});
+
 test("loadEnv() throws helpful message when local env is missing", () => {
   cleanup();
   assert.throws(

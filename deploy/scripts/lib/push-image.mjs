@@ -115,7 +115,7 @@ export async function pushImage({ service, envName, imageTag, env, stagingDir: s
   log("ok", `Pushed ${dest}`);
 }
 
-export async function refreshAzureOidcLogin(env) {
+export async function refreshAzureOidcLogin(env, reason = "registry push") {
   const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   if (!requestUrl) return; // Interactive/local deploy keeps its existing az login.
   const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
@@ -149,7 +149,7 @@ export async function refreshAzureOidcLogin(env) {
   if (login.error || login.status !== 0) {
     throw new Error("Fresh Azure OIDC login failed.");
   }
-  log("info", "Refreshed Azure OIDC login before registry push.");
+  log("info", `Refreshed Azure OIDC login before ${reason}.`);
 }
 
 // In-process gunzip: avoids any host `gunzip` CLI (matches CodeResearch §7).

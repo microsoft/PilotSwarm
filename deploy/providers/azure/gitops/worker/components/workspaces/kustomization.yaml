@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Session workspaces on the worker side (docs/proposals/session-workspaces.md,
+# sections 5.2 and 12.1). The deploy tool adds this component to the staged
+# worker overlay when WORKSPACES_ENABLED=true (deploy/scripts/lib/workspaces.mjs);
+# the repo-cache service is the other half.
+#
+#   attacher.yaml       a DaemonSet that mounts the repo pod's exports on
+#                       every worker node, at /mnt/ps/<root>
+#   worker-patch.yaml   worker pods see /mnt/ps at /ws, reach the attacher's
+#                       socket, and load the sample: the provider, the clone
+#                       tools and the repo-coder agent
+
+resources:
+  - attacher.yaml
+
+patches:
+  - path: worker-patch.yaml
+
+# The attacher runs from the worker image, which has node, mount.nfs4 and the
+# sample. `worker-env` comes from the overlay's configMapGenerator.
+replacements:
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: DaemonSet
+          name: pilotswarm-attacher
+        fieldPaths:
+          - spec.template.spec.containers.[name=attacher].image

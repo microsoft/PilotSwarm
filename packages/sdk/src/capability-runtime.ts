@@ -14,6 +14,8 @@ export interface CapabilityServices {
     load(ref: string, kind: "skill" | "agent"): Promise<unknown>;
     list(): Promise<unknown>;
     use(args: PackageRequest): Promise<{ changed: boolean; revision: number }>;
+    /** Section 4.12: save or drop an agent or skill loaded by path. */
+    saveWorkspaceLoad?(change: { add: import("./capability-catalog.js").WorkspaceLoad } | { remove: { kind: "agent" | "skill"; name: string } }): Promise<{ loads: import("./capability-catalog.js").WorkspaceLoad[] }>;
 }
 export const CAPABILITY_TOOL_SPECS = {
     search_capabilities: {
@@ -81,7 +83,9 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
     selections.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
     const changed = capabilityHash(selections) !== capabilityHash(state.selections);
     return { changed, state: { revision: state.revision + 1, selections,
-        requests: [...(state.requests ?? []), { id: args.request_id, hash }].slice(-64) } };
+        requests: [...(state.requests ?? []), { id: args.request_id, hash }].slice(-64),
+        // Agents and skills loaded by path stay (section 4.12).
+        ...(state.loads?.length ? { loads: state.loads } : {}) } };
 }
 /** Resolve exact exports. Never fall back to a same-named package or the legacy flat registry. */
 export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwner | null, selections: CapabilitySelection[],

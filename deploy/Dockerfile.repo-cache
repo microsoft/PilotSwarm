@@ -1,0 +1,28 @@
+# The repo pod image for session workspaces
+# (docs/proposals/session-workspaces.md, sections 5 and 12.1).
+#
+# One image, two containers in the repo pod:
+#   repo-service  node repo-service.mjs: mirrors, sandbox remotes, session
+#                 clones, leases, tokens (port 8080)
+#   nfs           nfs-server.sh: the node kernel's NFS server, NFS 4.1 only
+#                 (port 2049; the container must be privileged)
+#
+# The sample needs no npm packages: the repo service uses Node built-ins only.
+# trixie (Debian 13) ships git 2.47. Section 5.5 asks for 2.40 or later here,
+# so that clones with feature.manyFiles pass `git fsck`.
+FROM node:24-trixie-slim
+
+# nfs-kernel-server: exportfs, rpc.mountd, rpc.nfsd, nfsdcld.
+# setpriv (util-linux, in the base image) runs clone creation as the session uid.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git nfs-kernel-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Same path as in the worker image, so the paths in the docs match both.
+WORKDIR /app/packages/sdk/examples/repo-workspaces
+COPY packages/sdk/examples/repo-workspaces/ ./
+
+# The repo service runs as root: it makes session clones as the session uid
+# (1000) through setpriv, and mirrors and sandboxes it owns stay out of a
+# session's reach (root-owned, mode 0755, and root is squashed on the export).
+CMD ["node", "repo-service.mjs"]

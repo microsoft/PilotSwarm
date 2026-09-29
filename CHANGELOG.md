@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-09-29
+
+- Session workspaces: a session can work in a real folder — a git clone on a
+  repo server, the person's own folder, or a folder shared with others —
+  mounted on every worker, and keeps its files when it moves between workers.
+  Set it at creation (`workspace`), from the agent (`set_session_workspace`,
+  `get_session_workspace`), for a child (`spawn_agent({ workspace })`), or
+  from outside (`getSessionWorkspace`, `setSessionWorkspace`,
+  `retrySessionWorkspace` on the clients, Web API and MCP; a Workspace
+  section in the portal and TUI). A turn whose folder cannot be reached holds
+  its prompt and retries; no model call runs in the wrong folder.
+  Orchestration 1.0.80; sessions without a workspace are unchanged.
+- Workspace providers: a hook (`listRoots`, `ensureAttached`, `release` with
+  a reason, `defaultFolders`) with a built-in provider for plain folders. Up
+  to four extra folders next to the working folder. Repo agents, skills and
+  instructions are adopted when the provider allows it. Default folders give
+  each person their own folder and every session a shared folder;
+  `load_agent` and `load_skill` load an agent or skill from a file by path.
+- Prompt: the base prompt no longer tells a session its working directory may
+  vanish; a session with folders is told they are durable.
+- Reference deployment (`packages/sdk/examples/repo-workspaces`; the release
+  test stamp with `WORKSPACES_ENABLED=true`): a repo pod with mirrors,
+  per-session-tree clones, sandbox remotes and idle clone cleanup (7 days by
+  default, 6 hours on the stamp), a node attacher, and shared and per-person
+  folders with starter agents and skills. Deployments sign in to Azure again
+  before long steps.
+- Docs: [working in folders and repos](docs/user-guide/workspaces.md),
+  [writing a workspace provider](docs/developer/building/workspace-providers.md),
+  and the design in `docs/proposals/session-workspaces.md` (revision 8).
+- Validation (local): SDK unit 1,294 passed (1 skip), UI 836, deployment
+  scripts 357; the complete PostgreSQL suite 2,179 passed with 16 existing
+  skips, after two test doubles gained the session manager's workspace-provider
+  method; HorizonDB storage contracts 149 passed. Every new workspace rule was
+  broken on purpose and a test failed. The all-provider run for the release
+  candidate runs in GitHub Actions.
 
 - Fix the `/test all` resolver's PR-comment permission and identify failed
   GitHub operations without exposing response bodies. A failed acknowledgement

@@ -1,0 +1,25 @@
+# One address for both ports. The attacher on each node (host network) mounts
+# repo-cache.pilotswarm.svc.cluster.local:/ws/a; kube-proxy on the node sends
+# it to the repo pod. The ClusterIP stays the same when the pod restarts or
+# moves, so the mounts reconnect by themselves (section 6.4).
+apiVersion: v1
+kind: Service
+metadata:
+  name: repo-cache
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: repo-cache
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: repo-cache
+  ports:
+    - name: nfs
+      protocol: TCP
+      port: 2049
+      targetPort: 2049
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080

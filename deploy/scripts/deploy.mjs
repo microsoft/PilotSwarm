@@ -22,7 +22,7 @@ import {
 } from "./lib/common.mjs";
 import { resolveSteps, defaultPipelineFor } from "./lib/stages.mjs";
 import { buildImage } from "./lib/build-image.mjs";
-import { pushImage } from "./lib/push-image.mjs";
+import { pushImage, refreshAzureOidcLogin } from "./lib/push-image.mjs";
 import { deployBicep } from "./lib/deploy-bicep.mjs";
 import { loadCache as loadBicepOutputsCache } from "./lib/bicep-outputs-cache.mjs";
 import { composeDerivedEnv } from "./lib/compose-env.mjs";
@@ -33,6 +33,7 @@ import { seedSecrets } from "./lib/seed-secrets.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
+import { WORKSPACES_SERVICE, workspacesEnabled } from "./lib/workspaces.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -89,7 +90,7 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | repo-cache | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
         "Flags: --steps, --region, --image-tag, --clean, --force, --help",
     );
@@ -109,12 +110,13 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | repo-cache | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
-      "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
+      "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → repo-cache → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
       "            on the EDGE_MODE=private path; cert-manager services are skipped",
-      "            on the akv (enterprise) TLS_SOURCE path.)",
+      "            on the akv (enterprise) TLS_SOURCE path; repo-cache is skipped",
+      "            unless WORKSPACES_ENABLED=true.)",
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
       "Flags:",
@@ -147,7 +149,16 @@ function printHelp() {
 
 // ───────────────────────── Stage runner ─────────────────────────
 
+// A GitHub Actions run signs in to Azure once, with an OIDC assertion that
+// expires within minutes. The first call to another Azure service (Key
+// Vault, storage, AKS) after a long step then fails: on the stamp, a 10-minute
+// base-infra bicep step made the next seed-secrets step fail. These steps sign
+// in again first; push and manifests do it themselves, right before their
+// uploads. A local run keeps its own login (no OIDC request URL).
+const STAGES_THAT_SIGN_IN_AGAIN = new Set(["bicep", "seed-secrets", "rollout"]);
+
 async function runStage(name, ctx) {
+  if (STAGES_THAT_SIGN_IN_AGAIN.has(name)) await refreshAzureOidcLogin(ctx.env, `the ${name} step`);
   switch (name) {
     case "noop":
       // Phase 1 sentinel: env load + preflight already done before we got here.
@@ -392,6 +403,12 @@ async function main() {
     return;
   }
 
+  // The repo pod exists only for session workspaces (lib/workspaces.mjs).
+  if (service === WORKSPACES_SERVICE && !workspacesEnabled(env)) {
+    log("ok", `WORKSPACES_ENABLED=false — '${WORKSPACES_SERVICE}' is not deployed for this stamp.`);
+    return;
+  }
+
   // cert-manager + cert-manager-issuers ship the OSS Let's Encrypt path.
   // Skip them entirely when TLS_SOURCE != letsencrypt (enterprise / akv path).
   if (
@@ -585,6 +602,8 @@ async function runAll({ envName, env, steps, imageTag, clean, force, forceModule
     (svc) => !(svc === "pls-anchor" && edgeMode !== "afd"),
   ).filter(
     (svc) => !(svc === "horizondb" && String(env.HORIZONDB_ENABLED).toLowerCase() !== "true"),
+  ).filter(
+    (svc) => !(svc === WORKSPACES_SERVICE && !workspacesEnabled(env)),
   ).filter(
     (svc) =>
       !((svc === "cert-manager" || svc === "cert-manager-issuers") && tlsSource !== "letsencrypt"),

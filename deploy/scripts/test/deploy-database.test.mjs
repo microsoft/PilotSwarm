@@ -11,6 +11,12 @@ import { ALL_SEQUENCE } from "../lib/service-info.mjs";
 import { renderLocalEnv } from "../new-env.mjs";
 import { DATABASE_INPUT_KEYS } from "../lib/database-env.mjs";
 
+// The release runner signs in to Azure with GitHub's OIDC, so its job has
+// these settings. A fixture deploy must not use them: the sign-in refresh
+// before the bicep, seed-secrets and rollout steps would reach the real
+// token service. Tests of the refresh pass their own through `ambient`.
+const OIDC_KEYS = ["ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "AZURE_CLIENT_ID", "AZURE_TENANT_ID"];
+
 const passwordUrl = "postgresql://u:cli-fixture-password@shared.invalid/testenv?sslmode=require";
 let sequence = 0;
 
@@ -124,7 +130,7 @@ if (args[0] === "keyvault") {
       // Keep fixture configuration independent of that shell; tests exercising
       // supported process overrides provide them explicitly via `ambient`.
       const childEnv = { ...process.env };
-      for (const key of new Set([...Object.keys(env), ...DATABASE_INPUT_KEYS])) delete childEnv[key];
+      for (const key of new Set([...Object.keys(env), ...DATABASE_INPUT_KEYS, ...OIDC_KEYS])) delete childEnv[key];
       return spawnSync(process.execPath, [
         join(REPO_ROOT, "deploy/scripts/deploy.mjs"), service, name,
         "--steps", steps, "--image-tag", "fixture",
@@ -320,3 +326,111 @@ for (const service of ["worker", "portal"]) {
     });
   }
 }
+
+// Session workspaces (lib/workspaces.mjs), through the same harness: the
+// switch decides whether the repo-cache service runs and whether the staged
+// worker and portal overlays get the workspaces component.
+for (const enabled of [false, true]) {
+  test(`all path with WORKSPACES_ENABLED=${enabled}: repo-cache ${enabled ? "runs after worker" : "is skipped"}, and the component follows the switch`, (t) => {
+    const f = fixture(t, {
+      DATABASE_URL: passwordUrl, PILOTSWARM_CMS_FACTS_DATABASE_URL: passwordUrl,
+      ...(enabled ? { WORKSPACES_ENABLED: "true" } : {}),
+    });
+    const result = f.run("all", "bicep,seed-secrets,manifests");
+    assert.equal(result.status, 0, result.stderr);
+    const sequence = result.stdout.split("\n").find((line) => line.includes("Bring-up sequence")) ?? "";
+    assert.equal(sequence.includes("worker → repo-cache → portal"), enabled, sequence);
+    assert.equal(sequence.includes("repo-cache"), enabled, sequence);
+    const uploads = f.calls().filter(({ args }) => args.includes("upload-batch"));
+    assert.equal(uploads.some(({ args }) => args.includes("repo-cache-manifests")), enabled);
+    for (const [service, overlay] of [["worker", "default"], ["portal", "afd-letsencrypt"]]) {
+      const kustomization = readFileSync(join(f.stage(service), "gitops", service, "overlays", overlay, "kustomization.yaml"), "utf8");
+      assert.equal(kustomization.includes("  - ../../components/workspaces"), enabled, service);
+    }
+    const repoCacheEnv = join(f.stage("repo-cache"), "gitops/repo-cache/overlays/default/.env");
+    if (enabled) {
+      assert.match(readFileSync(repoCacheEnv, "utf8"), /^IMAGE=test\.azurecr\.io\/pilotswarm-repo-cache:fixture$/m);
+    } else {
+      assert.equal(existsSync(repoCacheEnv), false);
+    }
+  });
+}
+
+test("repo-cache on its own does nothing until WORKSPACES_ENABLED=true", (t) => {
+  const f = fixture(t);
+  const result = f.run("repo-cache", "bicep");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /WORKSPACES_ENABLED=false — 'repo-cache' is not deployed/);
+  assert.ok(!f.calls().some(({ args }) => args[0] === "deployment"), "no Bicep deployment ran");
+});
+
+// A GitHub Actions run signs in to Azure once, with an OIDC assertion that
+// expires within minutes. Uploads need a storage token, so every manifest
+// publish signs in again first; an infra service like cert-manager has no
+// image push (whose refresh would otherwise cover it). Found on the stamp:
+// a base-infra run that changed AKS took long enough for the upload to fail.
+test("a GitHub Actions run signs in to Azure again right before each manifest upload", async (t) => {
+  const { spawn } = await import("node:child_process");
+  // The token endpoint runs in its own process: the harness blocks this one.
+  const server = spawn(process.execPath, ["-e", `
+    const http = require("node:http");
+    const s = http.createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ value: "fixture-oidc-assertion" }));
+    });
+    s.listen(0, "127.0.0.1", () => console.log(s.address().port));
+  `], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => server.kill());
+  const port = await new Promise((resolve, reject) => {
+    server.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    server.once("error", reject);
+  });
+  const f = fixture(t);
+  const result = f.run("cert-manager", "manifests", {
+    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${port}/token`,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-request-token",
+    AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
+    AZURE_TENANT_ID: "22222222-2222-2222-2222-222222222222",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().filter(({ tool }) => tool === "az");
+  const upload = calls.findIndex(({ args }) => args.includes("upload-batch"));
+  assert.ok(upload > 0, "the manifests were uploaded");
+  const login = calls.slice(0, upload).findLastIndex(({ args }) => args[0] === "login");
+  assert.ok(login >= 0, "a login came before the upload");
+  assert.ok(calls[login].args.includes("--federated-token") && calls[login].args.includes("fixture-oidc-assertion"));
+});
+
+// The same expiry hit seed-secrets on the stamp (2026-09-28): the base-infra
+// bicep step took 10 minutes, and the first Key Vault write after it failed.
+test("a GitHub Actions run signs in to Azure again right before seed-secrets writes to Key Vault", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const server = spawn(process.execPath, ["-e", `
+    const http = require("node:http");
+    const s = http.createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ value: "fixture-oidc-assertion" }));
+    });
+    s.listen(0, "127.0.0.1", () => console.log(s.address().port));
+  `], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => server.kill());
+  const port = await new Promise((resolve, reject) => {
+    server.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    server.once("error", reject);
+  });
+  const f = fixture(t);
+  const result = f.run("base-infra", "seed-secrets", {
+    DATABASE_URL: passwordUrl, PILOTSWARM_CMS_FACTS_DATABASE_URL: passwordUrl,
+    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${port}/token`,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-request-token",
+    AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
+    AZURE_TENANT_ID: "22222222-2222-2222-2222-222222222222",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().filter(({ tool }) => tool === "az");
+  const firstWrite = calls.findIndex(({ args }) => args[0] === "keyvault" && args[1] === "secret" && args[2] === "set");
+  assert.ok(firstWrite > 0, "seed-secrets wrote to Key Vault");
+  const login = calls.slice(0, firstWrite).findLastIndex(({ args }) => args[0] === "login");
+  assert.ok(login >= 0, "a login came before the first Key Vault write");
+  assert.ok(calls[login].args.includes("--federated-token") && calls[login].args.includes("fixture-oidc-assertion"));
+});

@@ -37,9 +37,11 @@ test("real manifest loads and matches the canonical service shape", () => {
     "cert-manager",
     "cert-manager-issuers",
     "worker",
+    "repo-cache",
     "portal",
   ]);
   assert.equal(m.services.worker.kind, "app");
+  assert.equal(m.services["repo-cache"].kind, "app");
   assert.equal(m.services["base-infra"].kind, "infra");
   assert.equal(m.services.horizondb.kind, "infra");
   assert.equal(m.services["pls-anchor"].kind, "infra");
@@ -58,17 +60,21 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
     "cert-manager",
     "cert-manager-issuers",
     "worker",
+    "repo-cache",
     "portal",
   ]);
 
   // SERVICE_IMAGE_INFO: only app services.
-  assert.deepEqual(Object.keys(SERVICE_IMAGE_INFO).sort(), ["portal", "worker"]);
+  assert.deepEqual(Object.keys(SERVICE_IMAGE_INFO).sort(), ["portal", "repo-cache", "worker"]);
   assert.equal(SERVICE_IMAGE_INFO.worker.dockerImageRepo, "pilotswarm-worker");
   assert.equal(SERVICE_IMAGE_INFO.portal.dockerfile, "deploy/Dockerfile.portal");
+  assert.equal(SERVICE_IMAGE_INFO["repo-cache"].dockerImageRepo, "pilotswarm-repo-cache");
+  assert.equal(SERVICE_IMAGE_INFO["repo-cache"].dockerfile, "deploy/Dockerfile.repo-cache");
 
   // SERVICE_TO_MODULES: dependency-inclusive single-service deploy.
   assert.deepEqual(SERVICE_TO_MODULES.worker, ["base-infra", "worker"]);
   assert.deepEqual(SERVICE_TO_MODULES.portal, ["base-infra", "portal"]);
+  assert.deepEqual(SERVICE_TO_MODULES["repo-cache"], ["base-infra", "repo-cache"]);
   assert.deepEqual(SERVICE_TO_MODULES["base-infra"], ["base-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES.horizondb, ["horizondb"]);
   assert.deepEqual(SERVICE_TO_MODULES["global-infra"], ["global-infra"]);
@@ -82,6 +88,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.equal(MODULE_SCOPE.horizondb, "group");
   assert.equal(MODULE_SCOPE.worker, "group");
   assert.equal(MODULE_SCOPE.portal, "group");
+  assert.equal(MODULE_SCOPE["repo-cache"], "group");
   assert.equal(MODULE_SCOPE["pls-anchor"], "group");
   assert.equal(MODULE_SCOPE["cert-manager"], "group");
   assert.equal(MODULE_SCOPE["cert-manager-issuers"], "group");
@@ -92,6 +99,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   }
   assert.deepEqual(ALL_MODE_MODULES.worker, ["worker"]);
   assert.deepEqual(ALL_MODE_MODULES.portal, ["portal"]);
+  assert.deepEqual(ALL_MODE_MODULES["repo-cache"], ["repo-cache"]);
 });
 
 test("pipelineForService respects defaults by kind", () => {
@@ -108,7 +116,7 @@ test("default app pipeline orders push before manifests (FR-014 regression)", ()
   // pushed to ACR. The canonical app pipeline must therefore place `push`
   // strictly before `manifests`.
   const m = loadDeployManifest();
-  for (const svc of ["worker", "portal"]) {
+  for (const svc of ["worker", "repo-cache", "portal"]) {
     const pipeline = pipelineForService(m.services[svc], m.root);
     const pushIdx = pipeline.indexOf("push");
     const manifestsIdx = pipeline.indexOf("manifests");

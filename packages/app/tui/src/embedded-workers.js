@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
-import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 
 export async function startEmbeddedWorkers({ count, store }) {
@@ -64,6 +64,8 @@ export async function startEmbeddedWorkers({ count, store }) {
             if (workerTools?.length) {
                 worker.registerTools(workerTools);
             }
+            // Same extension hook as the headless worker (examples/worker.js).
+            await loadExtensionModules(worker, parseExtensionModules(process.env.PILOTSWARM_EXTENSION_MODULES));
 
             await worker.start();
             workers.push(worker);

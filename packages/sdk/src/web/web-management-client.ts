@@ -324,6 +324,25 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionFootprint", { sessionId });
     }
 
+    /** Session workspaces: the session's workspace view. */
+    async getSessionWorkspace(sessionId: string): Promise<any> {
+        return this._api.call("getSessionWorkspace", { sessionId });
+    }
+
+    /** Session workspaces: set or clear the workspace (external flow). */
+    async setSessionWorkspace(
+        sessionId: string,
+        input: { expectedRevision: number; workspace: { root: string; folder?: string; schema?: 1; extra?: Record<string, { root: string; folder?: string; required?: boolean }> | null } | null },
+        opts: { timeoutMs?: number } = {},
+    ): Promise<any> {
+        return this._api.call("setSessionWorkspace", { sessionId, expectedRevision: input?.expectedRevision, workspace: input?.workspace ?? null, options: opts });
+    }
+
+    /** Session workspaces: "retry now" for a session held by its workspace. */
+    async retrySessionWorkspace(sessionId: string, opts: { timeoutMs?: number } = {}): Promise<any> {
+        return this._api.call("retrySessionWorkspace", { sessionId, options: opts });
+    }
+
     async regenerateSession(sessionId: string, options: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string; model?: string; force?: boolean } = {}): Promise<any> {
         return this._api.call("regenerateSession", { sessionId, options });
     }

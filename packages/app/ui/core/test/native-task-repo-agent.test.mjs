@@ -1,0 +1,52 @@
+/**
+ * A native task that runs an agent adopted from the session workspace's repo
+ * is named, with its repo (session workspaces, section 4.6). The worker marks
+ * such a task with `repo`; the card used to label every such task "Native
+ * task", so the user could not tell which agent was triggered.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { applyNativeTaskSnapshot, appendNativeTaskEvent, nativeTaskProfile } from "../src/native-tasks.js";
+import { NativeTaskCard } from "../../react/src/native-task-card.js";
+
+const COLORS = { running: "#0af", completed: "#0a0", failed: "#a00" };
+const repoTask = { id: "call-1", toolCallId: "call-1", title: "Survey tfenv architecture", profile: "architect", repo: "tfenv",
+    model: "gpt-5.6-sol", status: "running", startedAt: "2026-09-27T21:00:00.000Z", toolCalls: 3 };
+
+test("nativeTaskProfile names a repo agent with its repo; the built-in profiles keep their labels", () => {
+    const repo = nativeTaskProfile(repoTask);
+    assert.equal(repo.kind, "repo");
+    assert.equal(repo.label, "Repo agent · architect");
+    assert.equal(repo.repo, "tfenv");
+    assert.match(repo.title, /architect agent from the tfenv repo/);
+    assert.deepEqual(nativeTaskProfile({ profile: "swarm-explore" }), { kind: "builtin", label: "Explore" });
+    assert.deepEqual(nativeTaskProfile({ profile: "swarm-task" }), { kind: "builtin", label: "Task" });
+    assert.deepEqual(nativeTaskProfile({ profile: "architect" }), { kind: "generic", label: "Native task" }, "no repo: not a repo agent");
+    assert.deepEqual(nativeTaskProfile({}), { kind: "generic", label: "Native task" });
+});
+
+test("the repo survives in the history: from the snapshot, through later raw events", () => {
+    let history = applyNativeTaskSnapshot(null, { version: 1, ownerId: "o1", ownerStartedAt: 1, revision: 1, phase: "live", tasks: [repoTask] },
+        { sessionId: "s1" });
+    const chat = [...history.chat];
+    appendNativeTaskEvent(chat, { sessionId: "s1", eventType: "subagent.completed", createdAt: "2026-09-27T21:01:00.000Z",
+        data: { toolCallId: "call-1", durationMs: 60_000, totalToolCalls: 9 } });
+    const task = chat.find((group) => group.kind === "native-task-group").tasks[0];
+    assert.equal(task.status, "completed");
+    assert.equal(task.repo, "tfenv");
+    assert.equal(task.profile, "architect");
+});
+
+test("the card shows which repo agent ran", () => {
+    const html = renderToStaticMarkup(React.createElement(NativeTaskCard, { group: { id: "g1", tasks: [repoTask] }, colors: COLORS }));
+    assert.match(html, /class="ps-native-task-profile ps-native-task-profile--repo"/);
+    assert.match(html, /Repo agent · architect/);
+    assert.match(html, /title="The architect agent from the tfenv repo/);
+    assert.match(html, /architect agent from tfenv · gpt-5\.6-sol · Same worker/);
+
+    const plain = renderToStaticMarkup(React.createElement(NativeTaskCard, { group: { id: "g2", tasks: [{ ...repoTask, repo: undefined, profile: "swarm-explore" }] }, colors: COLORS }));
+    assert.match(plain, /class="ps-native-task-profile">Explore</);
+    assert.doesNotMatch(plain, /Repo agent/);
+});

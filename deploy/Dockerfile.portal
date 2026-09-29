@@ -43,6 +43,10 @@ RUN npm ci --force
 COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+# The session-workspaces sample agent (repo-coder). The portal lists and starts
+# only agents it loads itself, so the workspaces component adds this folder to
+# PLUGIN_DIRS; see deploy/providers/azure/gitops/portal/components/workspaces.
+COPY packages/sdk/examples/repo-workspaces/plugin/ ./packages/sdk/examples/repo-workspaces/plugin/
 
 # horizon-store built output + runtime-read migrations (sibling layout: the
 # migrator resolves ../../migrations from dist/src/).

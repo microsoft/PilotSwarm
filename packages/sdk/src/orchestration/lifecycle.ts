@@ -17,6 +17,7 @@ import {
     commandResponseKey,
 } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
+import { sameWorkingFolder, sameWorkspace, validateWorkspaceText, workingFolderOf } from "../workspace-check.js";
 import {
     beginGracefulShutdown,
     cancelInFlightDistiller,
@@ -27,6 +28,11 @@ import {
     FIRST_SUMMARIZE_DELAY,
     INTERNAL_SYSTEM_TURN_PROMPT,
     REPEAT_SUMMARIZE_DELAY,
+    WORKSPACE_RELEASE_CAP_MS,
+    WORKSPACE_RETRY_WAKE_PROMPT,
+    timerGate,
+    workspaceChangedNote,
+    extraFoldersChangedNote,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -170,6 +176,33 @@ export function* releaseAffinity(
     const { ctx, state } = runtime;
     ctx.traceInfo(`[orch] releasing worker affinity (reason=${reason})`);
     state.activeTimer = null;
+    // Session workspaces (1.0.80): before the session can move, the worker
+    // that holds it cancels its shells, disconnects and tells the provider,
+    // so no process there keeps writing to the shared checkout. Raced against
+    // a cap: a session-pinned activity has no timeout of its own, and a dead
+    // or hung worker must not hold the session. Only workspace sessions yield
+    // here, so every present and future release site gets it for free.
+    // After a clear, the worker may still hold the old folder: the release
+    // is owed once (review F6). The worker releases what it has in memory.
+    if (state.config.workspace || state.workspaceReleasePending) {
+        state.workspaceReleasePending = false;
+        try {
+            const raced: any = yield ctx.race(
+                // After a clear, the folder released is the old one.
+                runtime.session.releaseWorkspace({
+                    reason: state.config.workspace ? reason : "workspace_changed",
+                    revision: Math.max(1, state.workspaceRevision),
+                    turnIndex: state.iteration,
+                }),
+                ctx.scheduleTimer(WORKSPACE_RELEASE_CAP_MS),
+            );
+            if (raced?.index === 1) {
+                ctx.traceInfo(`[orch] releaseWorkspace did not finish within ${WORKSPACE_RELEASE_CAP_MS}ms; releasing affinity anyway`);
+            }
+        } catch (err: any) {
+            ctx.traceInfo(`[orch] releaseWorkspace failed (${err?.message ?? err}); releasing affinity anyway`);
+        }
+    }
     state.affinityKey = yield ctx.newGuid();
     runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
     try {
@@ -276,13 +309,69 @@ export function* applyCronAtAction(
     }]);
 }
 
+/**
+ * Session workspaces (1.0.80): set_session_workspace changed extra folders
+ * only (section 4.10). The turn went on, so there is no continuation turn:
+ * the change is merged into the stored record, the revision rises by one,
+ * and the event is emitted, as soon as the turn ends (it is drained with
+ * the queued schedule actions, not left for the next wake-up). The next
+ * turn gets a short note, because the CLI lists extra folders only when it
+ * next resumes from disk.
+ */
+export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime, result: Extract<TurnAction, { type: "set_workspace_extra" }>): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const action = result as any;
+    const previous = state.config.workspace ?? null;
+    if (!previous) {
+        ctx.traceInfo("[orch] ignoring an extra-folder change: the session has no workspace now");
+        return;
+    }
+    const extra: Record<string, unknown> = { ...(previous.extra ?? {}) };
+    for (const [name, value] of Object.entries(action.extra && typeof action.extra === "object" ? action.extra : {})) {
+        if (value === null) delete extra[name];
+        else extra[name] = value;
+    }
+    const checked = validateWorkspaceText({ ...workingFolderOf(previous), ...(Object.keys(extra).length > 0 ? { extra } : {}) });
+    if (!checked.ok) {
+        ctx.traceInfo(`[orch] ignoring an extra-folder change with an invalid result: ${checked.message}`);
+        return;
+    }
+    const next = checked.workspace;
+    if (sameWorkspace(previous, next)) return;
+    const revision = state.workspaceRevision + 1;
+    const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
+    state.config.workspace = next;
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    state.workspaceRevision = revision;
+    const note = extraFoldersChangedNote(previous, next, extraPaths);
+    if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: {
+            workspace: next, revision,
+            path: typeof action.path === "string" ? action.path : null,
+            ...(extraPaths ? { extraPaths } : {}),
+            source: "agent",
+        },
+    }]);
+    ctx.traceInfo(`[orch] agent changed extra folders: revision ${revision}`);
+}
+
+/**
+ * What a turn queued that applies as soon as it ends: schedule changes, and
+ * (1.0.80) extra-folder changes. Only the leading run of them; anything
+ * after waits for its turn in decide().
+ */
 export function* drainLeadingQueuedScheduleActions(runtime: DurableSessionRuntime, sourcePrompt?: string): Generator<any, void, any> {
-    while (runtime.state.pendingToolActions[0]?.type === "cron" || runtime.state.pendingToolActions[0]?.type === "cron_at") {
+    const drains = new Set(["cron", "cron_at", "set_workspace_extra"]);
+    while (drains.has(runtime.state.pendingToolActions[0]?.type as string)) {
         const action = runtime.state.pendingToolActions.shift()!;
         if (action.type === "cron") {
             applyCronAction(runtime, action as Extract<TurnAction, { type: "cron" }>, sourcePrompt);
-        } else {
+        } else if (action.type === "cron_at") {
             yield* applyCronAtAction(runtime, action as Extract<TurnAction, { type: "cron_at" }>, sourcePrompt);
+        } else {
+            yield* applyAgentWorkspaceExtrasChange(runtime, action as Extract<TurnAction, { type: "set_workspace_extra" }>);
         }
     }
 }
@@ -490,13 +579,24 @@ export function buildContinueInput(
         nestingLevel: options.nestingLevel,
         ...(options.isSystem ? { isSystem: true } : {}),
         ...(input.agentId ? { agentId: input.agentId } : {}),
-        retryCount: 0,
+        // Session workspaces: a turn held by the workspace check keeps its
+        // retry count, so the retry still gets the partial-changes note.
+        retryCount: state.workspaceStatus?.state === "unavailable" ? state.retryCount : 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
         // A queued-while-blocked prompt must survive the epoch boundary too,
         // or continue-as-new becomes one more way to destroy it.
         ...(state.budgetStash && state.budgetStash.length > 0 ? { budgetStash: state.budgetStash } : {}),
+        // Session workspaces (1.0.80): each field only when set, so a session
+        // without a workspace continues-as-new with the same input as before.
+        ...(state.workspaceRevision > 0 ? { workspaceRevision: state.workspaceRevision } : {}),
+        ...(state.workspaceStatus ? { workspaceStatus: { ...state.workspaceStatus } } : {}),
+        ...(state.workspaceNotice ? { workspaceNotice: state.workspaceNotice } : {}),
+        ...(state.workspaceHeldNote ? { workspaceHeldNote: state.workspaceHeldNote } : {}),
+        ...(state.workspaceReleasePending ? { workspaceReleasePending: true } : {}),
+        ...(state.workspaceRetry ? { workspaceRetry: { step: state.workspaceRetry.step, failures: { ...state.workspaceRetry.failures } } } : {}),
+        ...(state.workspaceRetryScheduleMs?.length ? { workspaceRetryScheduleMs: [...state.workspaceRetryScheduleMs] } : {}),
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
         ...(state.pendingChildDigest ? { pendingChildDigest: state.pendingChildDigest } : {}),
         ...(state.pendingShutdown ? { pendingShutdown: state.pendingShutdown } : {}),
@@ -548,6 +648,9 @@ export function* versionedContinueAsNew(
             ...(state.activeTimer.choices ? { choices: state.activeTimer.choices } : {}),
             ...(state.activeTimer.allowFreeform !== undefined ? { allowFreeform: state.activeTimer.allowFreeform } : {}),
             ...(state.activeTimer.agentIds ? { agentIds: state.activeTimer.agentIds } : {}),
+            // 1.0.80: before this, a budget timer lost its flag at every
+            // continue-as-new, so a message after the boundary re-armed it.
+            ...(timerGate(state.activeTimer) ? { gate: timerGate(state.activeTimer) } : {}),
         };
     }
     // Lifecycle protocol: no checkpoint before a warm CAN — every turn
@@ -759,6 +862,27 @@ export function* handleCommand(
             publishStatus(runtime, "idle");
             return;
         }
+        case "set_workspace": {
+            yield* handleSetWorkspaceCommand(runtime, cmdMsg);
+            return;
+        }
+        case "retry_workspace": {
+            // Session workspaces: "retry now". Interrupts a workspace wait the
+            // way a message would; the retry turn runs the held prompts, or
+            // is held again with no model call.
+            const waiting = runtime.state.activeTimer?.type === "workspace_retry";
+            if (waiting) {
+                runtime.state.activeTimer = null;
+                runtime.state.pendingPrompt = mergePrompt(runtime.state.pendingPrompt, WORKSPACE_RETRY_WAKE_PROMPT);
+                runtime.state.bootstrapPrompt = true;
+            }
+            yield* writeCommandResponse(runtime, {
+                id: cmdMsg.id,
+                cmd: cmdMsg.cmd,
+                result: { ok: true, retried: waiting },
+            });
+            return;
+        }
         case "list_models": {
             publishStatus(runtime, "idle", { cmdProcessing: cmdMsg.id });
             let models: unknown;
@@ -824,6 +948,119 @@ export function* handleCommand(
     }
 }
 
+/**
+ * Session workspaces (1.0.80): set or clear the workspace from outside the
+ * session (docs/proposals/session-workspaces.md 4.3, external flow). It
+ * runs between turns, so a busy session answers after its turn ends. No
+ * model turn is forced and the idle timer stays armed: the changed-cwd note
+ * waits for the next turn of any kind.
+ */
+function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: CommandMessage): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const reply = function* (response: { result?: unknown; error?: string }): Generator<any, void, any> {
+        yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, ...response });
+        publishStatus(runtime, state.pendingInputQuestion ? "input_required"
+            : state.activeTimer && state.activeTimer.type !== "idle" ? "waiting" : "idle");
+    };
+    const args = (cmdMsg.args ?? {}) as { expectedRevision?: unknown; workspace?: unknown; source?: unknown; extraMode?: unknown };
+    const expected = Number(args.expectedRevision);
+    if (!Number.isInteger(expected) || expected !== state.workspaceRevision) {
+        yield* reply({
+            error: `WORKSPACE_REVISION_CONFLICT: expected revision ${String(args.expectedRevision)}, current revision ${state.workspaceRevision}`,
+            result: { code: "WORKSPACE_REVISION_CONFLICT", revision: state.workspaceRevision },
+        });
+        return;
+    }
+    let next: NonNullable<typeof state.config.workspace> | null = null;
+    const previous = state.config.workspace ?? null;
+    if (args.workspace !== null && args.workspace !== undefined) {
+        const checked = validateWorkspaceText(args.workspace);
+        if (!checked.ok) {
+            yield* reply({ error: `${checked.code}: ${checked.message}`, result: { code: checked.code, revision: state.workspaceRevision } });
+            return;
+        }
+        next = checked.workspace;
+        // Extra folders (section 4.10): a set whose record has no `extra`
+        // keeps the ones the session has, so a caller that only knows
+        // { root, folder } drops none. `replace` (the record named `extra`,
+        // even as {}) sets exactly what it names.
+        if (args.extraMode !== "replace" && previous?.extra && Object.keys(previous.extra).length > 0) {
+            const kept = validateWorkspaceText({ ...workingFolderOf(next), extra: previous.extra });
+            if (!kept.ok) {
+                const message = `${kept.message}; the session's extra folders are kept by a set that does not name extra; pass extra to replace them`;
+                yield* reply({ error: `${kept.code}: ${message}`, result: { code: kept.code, revision: state.workspaceRevision } });
+                return;
+            }
+            next = kept.workspace;
+        }
+    }
+    if (sameWorkspace(previous, next)) {
+        yield* reply({ result: { ok: true, changed: false, revision: state.workspaceRevision, workspace: previous } });
+        return;
+    }
+    const revision = state.workspaceRevision + 1;
+    let path: string | null = null;
+    let extraPaths: Record<string, string> | null = null;
+    if (next) {
+        // The attach and the path check, on the worker that holds the
+        // session, with the same code as the turn preamble: the working
+        // folder and every extra folder.
+        // A failed activity (a worker that does not know it, say, during a
+        // rolling deploy) answers the command; it must not fail the session.
+        let outcome: any;
+        try {
+            const raw: any = yield runtime.session.checkWorkspace({ workspace: next, revision, turnIndex: state.iteration, previous });
+            outcome = typeof raw === "string" ? JSON.parse(raw) : raw;
+        } catch (err: any) {
+            outcome = { ok: false, code: "WORKSPACE_ATTACH_FAILED", message: `the workspace check did not run: ${err?.message ?? err}` };
+        }
+        if (!outcome?.ok) {
+            const code = typeof outcome?.code === "string" ? outcome.code : "WORKSPACE_ATTACH_FAILED";
+            yield* reply({
+                error: `${code}: ${String(outcome?.message ?? "the workspace check failed")}`,
+                result: { code, revision: state.workspaceRevision },
+            });
+            return;
+        }
+        path = typeof outcome.path === "string" ? outcome.path : null;
+        if (Array.isArray(outcome.extras) && outcome.extras.length > 0) {
+            extraPaths = Object.fromEntries(outcome.extras
+                .filter((extra: any) => typeof extra?.name === "string" && typeof extra?.path === "string")
+                .map((extra: any) => [extra.name, extra.path]));
+        }
+    }
+    if (next) state.config.workspace = next;
+    else delete state.config.workspace;
+    // The proxy carries the config into every turn; rebuild it from the
+    // changed config rather than rely on sharing one object.
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    state.workspaceRevision = revision;
+    // A change of extra folders only (section 4.10) keeps the working
+    // directory, so its note names the extra folders alone. A note not yet
+    // delivered stays: this one is added to it.
+    const note = [
+        sameWorkingFolder(previous, next) ? undefined : workspaceChangedNote(previous, next, path),
+        next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined,
+    ].filter(Boolean).join(" ");
+    if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
+    state.workspaceRetry = null;
+    if (!next) state.workspaceStatus = null;
+    if (!next && previous) state.workspaceReleasePending = true;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: { workspace: next, revision, path, ...(extraPaths ? { extraPaths } : {}), source: args.source === "agent" ? "agent" : "external" },
+    }]);
+    // Prompts held by a workspace wait now run: in the new folder, or with
+    // no workspace at all after a clear.
+    if (state.activeTimer?.type === "workspace_retry") {
+        state.activeTimer = null;
+        state.pendingPrompt = mergePrompt(state.pendingPrompt, WORKSPACE_RETRY_WAKE_PROMPT);
+        state.bootstrapPrompt = true;
+    }
+    ctx.traceInfo(`[orch-cmd] workspace ${next ? "set" : "cleared"}: revision ${revision}${path ? ` path=${path}` : ""}`);
+    yield* reply({ result: { ok: true, changed: true, revision, workspace: next, path } });
+}
+
 function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, newModelLabel: string): Generator<any, void, any> {
     const timer: ActiveTimer | null = runtime.state.activeTimer;
     if (!timer) return;
@@ -837,6 +1074,8 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
                 reason: timer.reason,
                 shouldRehydrate: timer.shouldRehydrate ?? false,
                 ...(timer.waitPlan ? { waitPlan: timer.waitPlan } : {}),
+                // A gate wait is dropped after the turn, never re-armed.
+                ...(timerGate(timer) ? { gate: timerGate(timer), ...(timerGate(timer) === "budget" ? { budget: true } : {}) } : {}),
             };
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; will auto-resume interrupted wait (${runtime.state.interruptedWaitTimer.remainingSec}s remain)`);
             runtime.state.activeTimer = null;
@@ -858,6 +1097,7 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
         case "idle":
         case "agent-poll":
         case "input-grace":
+        case "workspace_retry":
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
             runtime.state.activeTimer = null;
             return;

@@ -1,17 +1,22 @@
-import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
-import { NativeTaskAccess, type NativeTaskTools } from "./native-task-policy.js";
+import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
+import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
+import { attachedFoldersOf, resolveWorkspaceLoads } from "./workspace-loads.js";
+import { withWorkspaceLoad } from "./capability-catalog.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
-import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
+import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
-import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
+import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
+import { workspaceReleaseReason } from "./workspace.js";
+import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
@@ -347,6 +352,268 @@ function toolDeclarationForFingerprint(tool: Tool<any>): Record<string, unknown>
     };
 }
 
+/** A workspace session's part of the binding fingerprint. */
+export interface WorkspaceFingerprintPart {
+    /** The attach path, which is the CLI's working directory. */
+    path: string;
+    adopt: WorkspaceAdopt | null;
+    /** Hash of the adopted repo agents and skills; absent when none are adopted. */
+    repoAgentHash?: string;
+}
+
+/**
+ * The input to the binding fingerprint: what, when it changes, needs a fresh
+ * CLI handle at the next turn boundary. Pure, so tests can check it (test C3
+ * in docs/proposals/session-workspaces.md). The key order is part of the
+ * digest. A session without a workspace gets no workspace key at all, so its
+ * digest is the same as before workspaces existed.
+ */
+export function buildBindingFingerprintInput(parts: {
+    capabilityFingerprint: unknown;
+    baseAgentPolicy: unknown;
+    v2InventoryFingerprint?: string;
+    sdkSkillDirectories: unknown;
+    boundAgentName: unknown;
+    boundAgentSource: unknown;
+    boundAgentCopy: unknown;
+    mcpServers: unknown;
+    excludedTools: unknown;
+    tools: unknown;
+    workspace?: WorkspaceFingerprintPart;
+}): Record<string, unknown> {
+    return {
+        capabilityFingerprint: parts.capabilityFingerprint,
+        baseAgentPolicy: parts.baseAgentPolicy,
+        ...(parts.v2InventoryFingerprint ? { v2InventoryFingerprint: parts.v2InventoryFingerprint, sdkSkillDirectories: parts.sdkSkillDirectories } : {}),
+        boundAgentName: parts.boundAgentName,
+        boundAgentSource: parts.boundAgentSource,
+        boundAgentCopy: parts.boundAgentCopy,
+        mcpServers: parts.mcpServers,
+        excludedTools: parts.excludedTools,
+        tools: parts.tools,
+        ...(parts.workspace ? {
+            workspace: {
+                path: parts.workspace.path,
+                adopt: parts.workspace.adopt,
+                ...(parts.workspace.repoAgentHash ? { repoAgentHash: parts.workspace.repoAgentHash } : {}),
+            },
+        } : {}),
+    };
+}
+
+export function bindingFingerprintDigest(input: Record<string, unknown>): string {
+    return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
+/**
+ * Session workspaces: a session that adopts repo instructions keeps them.
+ *
+ * The CLI puts the instruction files it finds in the working directory
+ * (AGENTS.md, .github/copilot-instructions.md and the like) into its
+ * `custom_instructions` section. PilotSwarm replaces that section with its
+ * framework base, so those files never reach the model. For a workspace
+ * session whose provider adopts instructions, the base is prepended instead,
+ * and the repo's instructions follow it. Every other session is unchanged.
+ */
+export function keepAdoptedRepoInstructions(
+    message: SystemMessageConfig | undefined,
+    adoptInstructions: boolean,
+): SystemMessageConfig | undefined {
+    if (!adoptInstructions || !message || typeof message !== "object" || (message as any).mode !== "customize") return message;
+    const sections = (message as any).sections;
+    const custom = sections?.custom_instructions;
+    if (!custom || custom.action !== "replace") return message;
+    return {
+        ...(message as any),
+        sections: { ...sections, custom_instructions: { ...custom, action: "prepend" } },
+    } as SystemMessageConfig;
+}
+
+/**
+ * Section 4.11: the person's own instruction files, read from their folder
+ * when it is an extra folder, go after PilotSwarm's base instructions. In
+ * prepend mode the repo's instructions (read by the CLI) follow them.
+ */
+/**
+ * Section 4.11: the base prompt's "Local Filesystem Is Ephemeral" is true for
+ * the worker's own disk, not for workspace folders, which are on durable
+ * storage every worker mounts. A session with folders in this turn gets this
+ * section after PilotSwarm's base instructions. The text never changes, so
+ * the prompt cache holds; the CLI's environment block lists the paths.
+ */
+export const DURABLE_FOLDERS_NOTE = [
+    "## Your folders are durable",
+    "This session works in folders on durable storage: the current working directory and the additional "
+        + "directories listed in the environment section. Files there survive turns, moves to other workers and "
+        + "restarts. For these folders this replaces \"Local Filesystem Is Ephemeral\": save work there when the user "
+        + "wants it kept, and say where you saved it. Every other path on this machine (/tmp, $HOME) is still scratch. "
+        + "Other people's sessions may be able to read these folders: never put secrets in them. "
+        + "get_session_workspace names each folder.",
+].join("\n\n");
+
+/** Section 4.11: add DURABLE_FOLDERS_NOTE when the turn has folders; otherwise the message is unchanged. */
+export function withDurableFoldersNote(message: SystemMessageConfig | undefined, hasFolders: boolean): SystemMessageConfig | undefined {
+    if (!hasFolders || !message || typeof message !== "object") return message;
+    if ((message as any).mode === "customize") {
+        const sections = (message as any).sections ?? {};
+        const custom = sections.custom_instructions;
+        if (!custom) return message;
+        return {
+            ...(message as any),
+            sections: { ...sections, custom_instructions: { ...custom, content: `${custom.content ?? ""}\n\n${DURABLE_FOLDERS_NOTE}` } },
+        } as SystemMessageConfig;
+    }
+    if (typeof (message as any).content === "string") return { ...(message as any), content: `${(message as any).content}\n\n${DURABLE_FOLDERS_NOTE}` } as SystemMessageConfig;
+    return message;
+}
+
+export function withPersonalInstructions(
+    message: SystemMessageConfig | undefined,
+    texts: Array<{ file: string; content: string }>,
+    folder: string | undefined,
+): SystemMessageConfig | undefined {
+    const usable = texts.filter((text) => text.content.trim());
+    if (usable.length === 0 || !message || typeof message !== "object") return message;
+    const body = [
+        `# Your own instructions`,
+        `From your folder ${folder ?? ""}. Follow them unless the task or the repo's instructions say otherwise.`,
+        ...usable.map((text) => `## ${text.file}\n\n${text.content.trim()}`),
+    ].join("\n\n");
+    if ((message as any).mode === "customize") {
+        const sections = (message as any).sections ?? {};
+        const custom = sections.custom_instructions;
+        if (!custom) return message;
+        return {
+            ...(message as any),
+            sections: { ...sections, custom_instructions: { ...custom, content: `${custom.content ?? ""}\n\n${body}` } },
+        } as SystemMessageConfig;
+    }
+    if (typeof (message as any).content === "string") return { ...(message as any), content: `${(message as any).content}\n\n${body}` } as SystemMessageConfig;
+    return message;
+}
+
+/**
+ * Session workspaces: once set_session_workspace is accepted, the turn is
+ * ending, but the turn ends only when the model yields. Some models keep
+ * calling tools; this hook refuses every further native tool call in that
+ * turn (docs/proposals/session-workspaces.md 4.3, step 3). Installed only
+ * for sessions that have the workspace tools.
+ *
+ * The CLI runs the pre-tool hooks of every call in a model message before
+ * any handler. So the hook itself notes a set_session_workspace call when
+ * it sees one, and refuses the calls after it in the same message; the
+ * handler drops the mark if it refuses the change (review R3). A call
+ * listed before set_session_workspace still runs, in the old folder, as
+ * the model asked.
+ */
+export function withWorkspaceChangeDeny(
+    hooks: SessionConfig["hooks"],
+    change: { state: () => "none" | "requested" | "accepted"; noteRequested: () => void } | null,
+): SessionConfig["hooks"] {
+    if (!change) return hooks;
+    return {
+        ...hooks,
+        onPreToolUse: async (input: any, invocation: any) => {
+            const state = change.state();
+            if (state === "accepted") {
+                return {
+                    permissionDecision: "deny" as const,
+                    permissionDecisionReason: "The working directory is changing. This turn is ending. Stop; continue in the next turn.",
+                };
+            }
+            if (state === "requested") {
+                return {
+                    permissionDecision: "deny" as const,
+                    permissionDecisionReason: "set_session_workspace, called earlier in this message, has not answered yet. "
+                        + "Wait for its answer; if it refuses the change, call this tool again.",
+                };
+            }
+            const result = await hooks?.onPreToolUse?.(input, invocation);
+            // Only a change of the working folder ends the turn. A call that
+            // changes extra folders only does not, so the calls after it run.
+            if (input?.toolName === "set_session_workspace" && (result as any)?.permissionDecision !== "deny"
+                && callChangesWorkingFolder(input?.toolArgs)) {
+                change.noteRequested();
+            }
+            return result;
+        },
+    };
+}
+
+/**
+ * Session workspaces (section 4.10): one folder attached on this worker for a
+ * session and not released yet. The working folder has no `attachment`.
+ */
+export interface HeldWorkspaceFolder {
+    root: string;
+    folder?: string;
+    attachment?: string;
+    rootSessionId: string;
+    revision: number;
+    turnIndex: number;
+}
+
+const heldKey = (folder: { root: string; folder?: string }) => `${folder.root}\0${folder.folder ?? ""}`;
+
+/** The folders a turn's attach holds on this worker: the working folder and each extra folder attached. */
+export function attachedWorkspaceFolders(config: Pick<ManagedSessionConfig, "workspace" | "workspaceAttach">): HeldWorkspaceFolder[] {
+    const attach = config.workspaceAttach;
+    const workspace = config.workspace;
+    if (!attach || !workspace) return [];
+    const base = { rootSessionId: attach.rootSessionId ?? "", revision: attach.revision ?? 1, turnIndex: attach.turnIndex ?? 0 };
+    return [
+        { root: workspace.root, ...(workspace.folder ? { folder: workspace.folder } : {}), ...base },
+        ...(attach.extras ?? []).map((extra) => ({
+            root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), attachment: extra.name, ...base,
+        })),
+    ];
+}
+
+/** A held folder as the provider's release request. */
+function folderReleaseRequest(
+    sessionId: string,
+    folder: HeldWorkspaceFolder,
+    opts: { reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string },
+): import("./types.js").WorkspaceReleaseRequest {
+    return {
+        sessionId,
+        rootSessionId: opts.rootSessionId ?? (folder.rootSessionId || sessionId),
+        workspace: { schema: 1, root: folder.root, ...(folder.folder ? { folder: folder.folder } : {}) },
+        ...(folder.attachment ? { attachment: folder.attachment } : {}),
+        revision: opts.revision ?? folder.revision,
+        workerNodeId: opts.workerNodeId,
+        turnIndex: opts.turnIndex ?? folder.turnIndex,
+        // Why, so the provider can tell a session that ended from one that
+        // only left this worker.
+        reason: workspaceReleaseReason(opts.reason),
+    };
+}
+
+/**
+ * Session workspaces: the CLI process pool key gains the root, so a hung
+ * mount freezes only the processes that serve that root. Tokens never hold
+ * a NUL, so the separator cannot occur inside one.
+ */
+const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
+
+/**
+ * Session workspaces: how long a release may spend cancelling tasks and
+ * disconnecting before the worker stops waiting for the CLI (review R9). A
+ * CLI frozen by a hung mount never answers. The orchestration stops waiting
+ * after 10 s; the worker keeps trying a little longer, since a slow cancel
+ * that finishes still stops the shells.
+ */
+const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
+
+function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms);
+        (timer as { unref?: () => void }).unref?.();
+    });
+    return Promise.race([work, deadline]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 function buildEffectivePromptLayers(
     workerDefaults: WorkerDefaults,
     config: SerializableSessionConfig,
@@ -507,6 +774,10 @@ export class SessionManager {
     }
     private sessions = new Map<string, ManagedSession>();
     private featureFlags: FeatureFlagCache | null = null;
+    /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
+    private workspaceProvider: WorkspaceProvider | null = null;
+    /** The worker's own ID, for releases this manager starts itself (eviction). */
+    private workspaceWorkerNodeId: string | undefined;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -886,6 +1157,15 @@ export class SessionManager {
         this.sessionCatalog = catalog;
     }
 
+    setWorkspaceProvider(provider: WorkspaceProvider | null, workerNodeId?: string): void {
+        this.workspaceProvider = provider;
+        if (workerNodeId) this.workspaceWorkerNodeId = workerNodeId;
+    }
+
+    getWorkspaceProvider(): WorkspaceProvider | null {
+        return this.workspaceProvider;
+    }
+
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
         this.unsubscribeFeatureFlags?.();
         this.featureFlags = cache;
@@ -981,7 +1261,7 @@ export class SessionManager {
     }
 
     /** Ensure the CopilotClient is started. */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -999,7 +1279,8 @@ export class SessionManager {
             }
         }
 
-        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "");
+        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
+            + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
 
@@ -1098,9 +1379,12 @@ export class SessionManager {
     private async ensureClientForKey(key: string): Promise<CopilotClient> {
         const cached = this.clients.get(key);
         if (cached) return cached;
-        return key.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(key.slice(BYOK_CLIENT_PREFIX.length) || undefined, true)
-            : this.ensureClient(key || undefined);
+        const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
+        const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
+        const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
+        return base.startsWith(BYOK_CLIENT_PREFIX)
+            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot)
+            : this.ensureClient(base || undefined, false, workspaceRoot);
     }
 
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
@@ -1119,6 +1403,7 @@ export class SessionManager {
     private async _resetSessionState(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this._cancelWorkspaceShells(sessionId, existing, "a state reset");
             try {
                 await existing.destroy();
             } catch {}
@@ -1157,6 +1442,7 @@ export class SessionManager {
     private async _resetSessionStateForEpoch(sessionId: string, epoch: number): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this._cancelWorkspaceShells(sessionId, existing, "an epoch reset");
             try {
                 await existing.destroy();
             } catch {}
@@ -1290,7 +1576,11 @@ export class SessionManager {
                     const dirExists = fs.existsSync(sessionDir);
                     const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
                     const existing = this.sessions.get(sessionId);
-                    if (existing) {
+                    if (existing?.getWorkspaceState().workspace || this.workspaceHeld.has(sessionId)) {
+                        // Session workspaces: the eviction clock is the backstop
+                        // for a release that never ran (section 4.5).
+                        await this.releaseWorkspace(sessionId, { reason: "eviction", workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(), lockHeld: true });
+                    } else if (existing) {
                         try { await existing.destroy(); } catch {}
                         this._forgetWarmSession(sessionId);
                     }
@@ -1537,7 +1827,65 @@ export class SessionManager {
             turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
             turnInactivityTimeoutMs: this.workerDefaults.turnInactivityTimeoutMs,
         };
+        // Session workspaces: this turn's config decides. A workspace or an
+        // attach result the stored config still holds from an earlier turn
+        // must not survive a clear.
+        if (!effectiveSerializableConfig.workspace) delete config.workspace;
+        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared"] as const) {
+            if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
+        }
+        // Section 4.11: with no record, a turn still attaches the deployment's
+        // default home folder as its working folder.
+        const workspaceAttach = config.workspace || config.workspaceAttach?.homeIsWorkingFolder ? config.workspaceAttach : undefined;
+        if (config.workspace && !workspaceAttach) {
+            throw new Error(
+                `Session ${sessionId} has a workspace but reached getOrCreate without an attach result; `
+                + "the runTurn activity attaches the workspace before the session is created or resumed.",
+            );
+        }
         this.sessionConfigs.set(sessionId, config);
+
+        // Session workspaces: a warm session still bound to another folder (a
+        // set or clear since it was created) releases that folder first: its
+        // shells are cancelled and the provider is told, before the new
+        // resume (docs/proposals/session-workspaces.md 4.5). This runs before
+        // the client check below, which drops the warm session when the root
+        // changes or the workspace is cleared (review R2).
+        {
+            const warm = this.sessions.get(sessionId);
+            const previousWorkspace = warm?.getWorkspaceState().workspace;
+            // What this turn attached. A held folder in it stays: the preamble
+            // just attached it again, whatever its role or name now.
+            const current = attachedWorkspaceFolders(config);
+            const inUse = (folder: { root: string; folder?: string }) => current.some((one) => sameFolder(one, folder));
+            if (warm && previousWorkspace && !sameWorkingFolder(previousWorkspace, config.workspace)) {
+                await this.releaseWorkspace(sessionId, {
+                    reason: "workspace_changed",
+                    workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
+                    lockHeld: true,
+                    keep: current,
+                });
+            } else {
+                // The working folder stays (or there is no warm handle): release
+                // what is held here and no longer in use, such as a removed or
+                // moved extra folder (section 4.10). The handle and its shells
+                // stay, so while a shell or task runs the release waits: the
+                // shell may be using the folder.
+                const stale = this._heldWithHandle(sessionId, warm).filter((folder) => !inUse(folder));
+                if (stale.length > 0) {
+                    const busy = warm ? await warm.activeBackgroundTasks().catch(() => []) : [];
+                    if (busy.length === 0) {
+                        await this.releaseWorkspaceFolders(sessionId, stale, {
+                            reason: "workspace_changed",
+                            workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
+                        });
+                    } else {
+                        emitSessionManagerTrace(sessionId, `release of ${stale.length} folder(s) waits: ${busy.length} task(s) running`);
+                    }
+                }
+            }
+            this.holdWorkspaceFolders(sessionId, current);
+        }
 
         // ── Catalog model is the source of truth ─────────────────────────
         // The CMS session row's `model` is what the user selected and what
@@ -1657,7 +2005,8 @@ export class SessionManager {
             );
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
-        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "");
+        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
+            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -1672,11 +2021,12 @@ export class SessionManager {
                     `copilot credential or provider transport changed; recycling warm session onto new client`,
                     { trace },
                 );
+                await this._cancelWorkspaceShells(sessionId, existingWarm, "a client change");
                 try { await existingWarm.destroy(); } catch {}
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -1693,7 +2043,7 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
@@ -1707,11 +2057,23 @@ export class SessionManager {
         // per-turn handler still refuses with a clear message.
         // Canvas tools are declared for EVERY session now — sub-agents draw
         // their own canvases (slots 1-5), independent of the parent's.
+        // Session workspaces: the workspace tools (set_session_workspace,
+        // get_session_workspace, load_agent) are declared only for a session
+        // that has a workspace or default folders, or whose agent lists
+        // set_session_workspace in its tools. Everything else is unchanged.
+        const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
+            // Section 4.11: a session that has only the deployment's default folders has folders too.
+            || Boolean(config.workspaceAttach)
+            || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
+            || (boundAgentCopy?.toolNames ?? []).includes("set_session_workspace"));
+        if (workspaceTools) config.workspaceTools = true;
+        else delete config.workspaceTools;
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        const subAgentTools = ManagedSession.subAgentToolDefs()
+        const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = createFactTools({
             factStore: this.factStore,
@@ -1920,13 +2282,47 @@ export class SessionManager {
         Object.assign(effectiveMcpServers, attached.mcpServers);
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
-            search: async args => capabilityCatalog.search(await getOwner(), sessionId, args),
+            search: async args => {
+                const result = await capabilityCatalog.search(await getOwner(), sessionId, args);
+                // The working folder's adopted repo agents and skills are not
+                // in the catalog. Matching ones come first: they are this
+                // session's own (session workspaces, section 4.6).
+                const report = config.workspaceAdoption;
+                const groups = report ? [
+                    { origin: "loaded" as const, agents: report.loaded?.agents ?? [], skills: report.loaded?.skills ?? [] },
+                    { origin: "repo" as const, agents: report.agents, skills: report.skills },
+                    { origin: "personal" as const, agents: report.personal?.agents ?? [], skills: report.personal?.skills ?? [] },
+                ].filter((group) => group.agents.length > 0 || group.skills.length > 0) : [];
+                if (groups.length === 0) return result;
+                const descriptions = new Map((repoAdoption?.customAgents ?? []).map((agent) => [agent.name, agent.description]));
+                const limit = Math.max(1, Math.min(30, Math.trunc(args?.limit ?? 8)));
+                const hits = groups.flatMap((group) => workspaceCapabilityHits({
+                    repo: report!.repo,
+                    origin: group.origin,
+                    agents: group.agents.map((name) => ({ name, description: descriptions.get(name) })),
+                    skills: group.skills,
+                }, args, limit)).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
+                if (hits.length === 0) return result;
+                return { ...result, capabilities: [...hits, ...result.capabilities].slice(0, limit), coverage: { ...result.coverage, workspace: "available" } };
+            },
             load: async (ref, kind) => capabilityCatalog.load(await getOwner(), sessionId, ref, kind),
             list: async () => {
                 const state = await readState();
                 const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent);
                 return { revision: state.revision, selections: state.selections, unavailable: result.unavailable,
+                    ...(state.loads?.length ? { loaded: state.loads } : {}),
                     note: "Selections are for this durable session only. Original agent/base tools are unchanged." };
+            },
+            // Section 4.12: agents and skills loaded by path, saved with the session.
+            saveWorkspaceLoad: async (change) => {
+                if (isServiceSession || isTunerSession) throw new Error("Loading agents and skills is unavailable in this restricted session");
+                if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    const state = await readState();
+                    const next = withWorkspaceLoad(state, change);
+                    if (await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next)) return { loads: next.loads ?? [] };
+                }
+                throw new Error("Capability revision conflict; try again");
             },
             use: async args => {
                 if (isServiceSession || isTunerSession) throw new Error("Package activation is unavailable in this restricted session");
@@ -1988,8 +2384,15 @@ export class SessionManager {
             ? ownedAndStaticCapabilityInventory(getSources(), v2Owner) : undefined;
         config.baseV2CapabilityIndex = v2Inventory ? this._baseV2CapabilityIndexSection(v2Inventory) : undefined;
 
-        // Build system message: worker base + client override
-        const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null);
+        // Build system message: worker base + client override. Section 4.11:
+        // a session with folders is told they are durable; the person's own
+        // instructions, when their folder is an extra folder (the CLI reads
+        // instruction files only from its working folder), follow PilotSwarm's
+        // base and come before the repo's.
+        const systemMessage = withPersonalInstructions(withDurableFoldersNote(keepAdoptedRepoInstructions(
+            this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null),
+            workspaceAttach?.adopt?.instructions === true,
+        ), Boolean(workspaceAttach)), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path);
 
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include
@@ -2003,18 +2406,68 @@ export class SessionManager {
         const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
             : this.workerDefaults.skillDirectories ?? [];
+        // Session workspaces (section 4.6): the repo agents and skills the
+        // provider's adopt allows, filtered for this session. Agents need
+        // native tasks; they run as native task children.
+        const pilotswarmToolNames = new Set<string>([...allTools.map((t: any) => t.name), ...NATIVE_SYNCHRONOUS_TOOLS]);
+        // Section 4.12: agents and skills this session loaded by path, read
+        // again this turn from its attached folders. They win every clash.
+        const resolvedLoads = workspaceAttach && desiredCapabilities.loads?.length
+            ? await resolveWorkspaceLoads(desiredCapabilities.loads, attachedFoldersOf(workspaceAttach))
+            : { skipped: [], skillCatalog: [] as Array<{ name: string; description: string; prompt: string }> };
+        // Sources, winner first on a name clash: loaded files, the working
+        // folder (the repo, or the person's own folder when that is the
+        // working folder), then the person's folder as an extra folder (4.11).
+        const adoptionSources: AdoptionSource[] = workspaceAttach ? [
+            ...("source" in resolvedLoads && resolvedLoads.source ? [resolvedLoads.source] : []),
+            {
+                kind: workspaceAttach.homeIsWorkingFolder ? "personal" : "repo",
+                scan: workspaceAttach.repo, adopt: workspaceAttach.adopt, attachPath: workspaceAttach.path,
+            },
+            ...(workspaceAttach.home ? [{
+                kind: "personal" as const, scan: workspaceAttach.home.repo, adopt: workspaceAttach.home.adopt, attachPath: workspaceAttach.home.path,
+            }] : []),
+        ] : [];
+        const repoAdoption = workspaceAttach ? resolveWorkspaceAdoption({
+            sources: adoptionSources,
+            nativeTasks: nativeEnabled,
+            sessionModel: sdkModelName,
+            pilotswarmToolNames,
+            reservedAgentNames: new Set<string>([
+                ...NATIVE_TASK_NAMES,
+                ...NATIVE_BUILTIN_AGENTS,
+                ...(this.workerDefaults.customAgents ?? []).map((agent) => agent.name),
+            ]),
+        }) : null;
+        if (repoAdoption && resolvedLoads.skipped.length > 0) repoAdoption.report.skipped.push(...resolvedLoads.skipped);
+        config.workspaceAdoption = repoAdoption?.report;
+        const repoAgentAccess = repoAdoption && repoAdoption.customAgents.length > 0
+            ? new RepoAgentAccess(new Set(repoAdoption.customAgents.map((agent) => agent.name)), pilotswarmToolNames)
+            : undefined;
+        // Skills from several sources, or a folder with a skill that lost a
+        // clash, reach the CLI as one folder of links, one per adopted skill.
+        const adoptedSkillDirectories = repoAdoption?.linkSkills && repoAdoption.skills.length > 0
+            ? [linkSkillFolders(path.join(os.tmpdir(), "pilotswarm-skills", sessionId), repoAdoption.skills)]
+            : repoAdoption?.skillDirectories ?? [];
+        const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
-        const bindingFingerprint = createHash("sha256").update(JSON.stringify({
+        const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
             baseAgentPolicy: config.baseAgentPolicy?.fingerprint,
-            ...(v2InventoryFingerprint ? { v2InventoryFingerprint, sdkSkillDirectories } : {}),
+            v2InventoryFingerprint,
+            sdkSkillDirectories,
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
             mcpServers: effectiveMcpServers,
             excludedTools,
             tools: allTools.map(toolDeclarationForFingerprint),
-        })).digest("hex");
+            ...(workspaceAttach ? { workspace: {
+                path: workspaceAttach.path,
+                adopt: workspaceAttach.adopt ?? null,
+                ...(repoAdoption?.hash ? { repoAgentHash: repoAdoption.hash } : {}),
+            } } : {}),
+        }));
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
 
@@ -2057,9 +2510,33 @@ export class SessionManager {
             // configDir is intentionally omitted: the Copilot CLI does not honor it for
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
-            workingDirectory: config.workingDirectory,
-            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
-                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess) : config.hooks,
+            // Session workspaces: after a clear the folder stays explicit, or
+            // the resume falls back to the checkout the CLI session was
+            // created in (review R1).
+            workingDirectory: workspaceAttach?.path ?? config.workingDirectory
+                ?? (config.workspaceCleared ? process.cwd() : undefined),
+            // Session workspaces (section 4.10): the extra folders attached
+            // for this turn. The CLI lists them to the model and keeps them
+            // only until a cold resume, so they are passed every time. Not in
+            // the fingerprint: a new handle would stop running shells.
+            ...(workspaceAttach?.extras?.length
+                ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
+                : {}),
+            // Session workspaces: repo hooks never run, and the repo's
+            // instruction files load only when the provider adopts them. A
+            // cleared session keeps hooks off.
+            ...(workspaceAttach ? {
+                enableFileHooks: false,
+                skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
+            } : config.workspaceCleared ? { enableFileHooks: false } : {}),
+            hooks: withWorkspaceChangeDeny(
+                nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
+                    () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess, repoAgentAccess) : config.hooks,
+                workspaceTools ? {
+                    state: () => this.sessions.get(sessionId)?.workspaceChangeState() ?? "none",
+                    noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
+                } : null,
+            ),
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -2076,7 +2553,9 @@ export class SessionManager {
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools,
             ...(nativeEnabled ? {
-                customAgents: nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
+                customAgents: repoAdoption?.customAgents.length
+                    ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
+                    : nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
                 customAgentsLocalOnly: true,
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
@@ -2084,7 +2563,7 @@ export class SessionManager {
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            ...(sdkSkillDirectories.length && { skillDirectories: sdkSkillDirectories }),
+            ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
             ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
@@ -2106,6 +2585,7 @@ export class SessionManager {
                     `[SessionManager] epoch-start for ${sessionId} (epoch ${transcriptEpoch}); ` +
                     `discarding the warm Copilot session of the previous epoch.`,
                 );
+                await this._cancelWorkspaceShells(sessionId, existing, "an epoch start");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else if (bindingChanged || existing.requiresModelRebind(config)) {
@@ -2113,12 +2593,14 @@ export class SessionManager {
                     `[SessionManager] model or agent configuration changed for ${sessionId}; ` +
                     `disconnecting warm Copilot session so it can resume with the updated configuration.`,
                 );
+                await this._cancelWorkspaceShells(sessionId, existing, "a rebind");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
                 if (config.baseAgentPolicy?.version === "v2") {
                     existing.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
                 }
@@ -2231,11 +2713,13 @@ export class SessionManager {
         }
 
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
+        if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
         managed.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
+        managed.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
         // The facts accessor a worker-registered tool sees as
         // `invocation.facts`. Built HERE, next to the fact tools, because the
         // store lives on this manager; the session config is serialisable
@@ -2285,9 +2769,30 @@ export class SessionManager {
     async dropWarmSession(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this._cancelWorkspaceShells(sessionId, existing, "a hydrate");
             try { await existing.destroy(); } catch {}
         }
         this._forgetWarmSession(sessionId);
+    }
+
+    /**
+     * Session workspaces: stop the background shells of a warm workspace
+     * session before its handle is dropped. A resumed handle does not see
+     * them (CLI 1.0.83: tasks.list() is empty after disconnect and resume),
+     * so no later release could find them, and they would keep writing into
+     * the checkout (review R2). One deadline covers the cancel: a CLI frozen
+     * by a hung mount must not hold the caller (review R9). Never throws.
+     */
+    private async _cancelWorkspaceShells(sessionId: string, managed: ManagedSession | undefined, reason: string): Promise<number> {
+        if (!managed?.getWorkspaceState().workspace) return 0;
+        try {
+            const cancelled = await withWorkspaceDeadline(managed.cancelBackgroundTasks(), "task cancel");
+            if (cancelled > 0) emitSessionManagerTrace(sessionId, `cancelled ${cancelled} background task(s) before ${reason}`);
+            return cancelled;
+        } catch (error: unknown) {
+            emitSessionManagerTrace(sessionId, `background tasks not cancelled before ${reason}: ${normalizeError(error).message}`, { level: "warn" });
+            return 0;
+        }
     }
 
     /**
@@ -2565,6 +3070,190 @@ export class SessionManager {
     /**
      * Destroy a session and remove from tracking.
      */
+    /**
+     * Session workspaces: the session leaves this worker (docs/proposals/
+     * session-workspaces.md, section 4.5). For a workspace session held in
+     * memory here: cancel its shells and agent tasks, disconnect, and tell
+     * the provider. Without an in-memory copy there is nothing to cancel,
+     * and the provider is not called; it learns about a dead holder at the
+     * next ensureAttached. Never throws.
+     */
+    async releaseWorkspace(
+        sessionId: string,
+        opts: {
+            reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string; lockHeld?: boolean;
+            releaseTimeoutMs?: number; affinityKey?: string;
+            /** How long the task cancel and the disconnect may take together. Default WORKSPACE_RELEASE_DEADLINE_MS. */
+            deadlineMs?: number;
+            /** Folders not to release: the next turn keeps them attached (section 4.10). */
+            keep?: Array<{ root: string; folder?: string }>;
+        },
+    ): Promise<{ released: boolean; cancelled: number; detail?: string }> {
+        if (!opts.lockHeld) {
+            return this._withSessionLock(sessionId, "releaseWorkspace", () => this.releaseWorkspace(sessionId, { ...opts, lockHeld: true }));
+        }
+        const managed = this.sessions.get(sessionId);
+        const workspace = managed?.getWorkspaceState().workspace;
+        // Everything attached here: what the manager holds, and the handle's
+        // own attach. A dropped handle's folders are still held.
+        const held = this._heldWithHandle(sessionId, managed);
+        if (held.length === 0 && (!managed || !workspace)) {
+            return { released: false, cancelled: 0, detail: managed ? "no workspace" : "not in memory on this worker" };
+        }
+        const attach = managed?.getWorkspaceState().attach;
+        // The orchestration stops waiting for a release after 10 s and moves
+        // the session on. If the next turn then ran here, under the new
+        // affinity key, a release that arrives late must not undo that
+        // turn's attach: its shells and its lease (review F7).
+        if (managed && opts.affinityKey && attach?.affinityKey && attach.affinityKey !== opts.affinityKey
+            && typeof opts.turnIndex === "number" && typeof attach.turnIndex === "number"
+            && attach.turnIndex >= opts.turnIndex) {
+            return { released: false, cancelled: 0, detail: `a newer turn (${attach.turnIndex}) holds the workspace here` };
+        }
+        let cancelled = 0;
+        let detail: string | undefined;
+        if (managed) {
+            // One deadline over the cancel and the disconnect: a CLI frozen by a
+            // hung mount never answers, and the caller holds the session lock
+            // (review R9). The handle is dropped either way.
+            try {
+                await withWorkspaceDeadline((async () => {
+                    try {
+                        cancelled = await managed.cancelBackgroundTasks();
+                    } catch (error: unknown) {
+                        detail = `task cancel: ${normalizeError(error).message}`;
+                    }
+                    try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
+                })(), "task cancel and disconnect", opts.deadlineMs);
+            } catch (error: unknown) {
+                detail = [detail, normalizeError(error).message].filter(Boolean).join("; ");
+            }
+            this._forgetWarmSession(sessionId);
+        }
+        // The provider gets one folder per call: the working folder and each
+        // extra folder held here, except those the next turn keeps.
+        const keep = opts.keep ?? [];
+        const release = held.filter((folder) => !keep.some((one) => sameFolder(one, folder)));
+        const failures = await this._releaseFolders(sessionId, release, opts);
+        detail = [detail, ...failures].filter(Boolean).join("; ") || undefined;
+        emitSessionManagerTrace(sessionId, `workspace released (${opts.reason}): cancelled ${cancelled} task(s), ${release.length} folder(s)${detail ? `; ${detail}` : ""}`);
+        return { released: true, cancelled, ...(detail ? { detail } : {}) };
+    }
+
+    /**
+     * Session workspaces (section 4.10): release some held folders only, such
+     * as extra folders a session removed or moved while it keeps its working
+     * folder. The CLI handle and its shells stay. Best effort.
+     */
+    async releaseWorkspaceFolders(
+        sessionId: string,
+        folders: HeldWorkspaceFolder[],
+        opts: { reason: string; workerNodeId: string; releaseTimeoutMs?: number },
+    ): Promise<void> {
+        if (folders.length === 0) return;
+        const failures = await this._releaseFolders(sessionId, folders, opts);
+        emitSessionManagerTrace(sessionId, `folders released (${opts.reason}): ${folders.map((folder) => folder.attachment ?? "working folder").join(", ")}${failures.length ? `; ${failures.join("; ")}` : ""}`);
+    }
+
+    /** Session workspaces: tell the provider, one call per folder, and stop holding them. Returns the failures. */
+    private async _releaseFolders(
+        sessionId: string,
+        folders: HeldWorkspaceFolder[],
+        opts: { reason: string; workerNodeId: string; revision?: number; turnIndex?: number; rootSessionId?: string; releaseTimeoutMs?: number },
+    ): Promise<string[]> {
+        this._unholdWorkspaceFolders(sessionId, folders);
+        const provider = this.workspaceProvider;
+        if (!provider?.release || folders.length === 0) return [];
+        const failures = await Promise.all(folders.map(async (folder) => {
+            const request = folderReleaseRequest(sessionId, folder, opts);
+            try {
+                await Promise.race([
+                    Promise.resolve().then(() => provider.release!(request)),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("provider release timed out")), opts.releaseTimeoutMs ?? 5_000).unref?.()),
+                ]);
+                return undefined;
+            } catch (error: unknown) {
+                return `provider release${folder.attachment ? ` of extra folder ${folder.attachment}` : ""}: ${normalizeError(error).message}`;
+            }
+        }));
+        return failures.filter((failure): failure is string => Boolean(failure));
+    }
+
+    /**
+     * Session workspaces (section 4.10): the folders attached on this worker
+     * for a session and not released yet. Kept here, not on the CLI handle,
+     * so a dropped or rebuilt handle does not lose them.
+     */
+    private workspaceHeld = new Map<string, Map<string, HeldWorkspaceFolder>>();
+
+    /** Session workspaces: note folders attached on this worker (by a turn, the agent's tool, or a held turn). */
+    holdWorkspaceFolders(sessionId: string, folders: HeldWorkspaceFolder[]): void {
+        if (folders.length === 0) return;
+        let held = this.workspaceHeld.get(sessionId);
+        if (!held) {
+            held = new Map();
+            this.workspaceHeld.set(sessionId, held);
+        }
+        for (const folder of folders) held.set(heldKey(folder), { ...folder });
+    }
+
+    /**
+     * Session workspaces: folders a workspace check attached (the agent's
+     * tool, or a change from outside the session). When the session is on
+     * this worker (a handle or held folders here), they are held and released
+     * later, like the turn's own. A release at once could drop a live lease
+     * entry: the reference provider leases per clone, so a folder beside the
+     * working folder shares its entry. Otherwise nothing of this session is
+     * attached here, so they are released at once (reason set_check).
+     */
+    async settleCheckAttaches(sessionId: string, folders: HeldWorkspaceFolder[], opts: { workerNodeId: string }): Promise<"held" | "released"> {
+        if (this.sessions.has(sessionId) || this.workspaceHeld.has(sessionId)) {
+            this.holdWorkspaceFolders(sessionId, folders);
+            return "held";
+        }
+        await this.releaseWorkspaceFolders(sessionId, folders, { reason: "set_check", workerNodeId: opts.workerNodeId });
+        return "released";
+    }
+
+    /** Session workspaces: the working folder's path the session's warm handle on this worker attached, if any. */
+    getWorkspaceAttachPath(sessionId: string): string | undefined {
+        return this.sessions.get(sessionId)?.getWorkspaceState().attach?.path;
+    }
+
+    /** Session workspaces: the folders held on this worker for a session. */
+    heldWorkspaceFolders(sessionId: string): HeldWorkspaceFolder[] {
+        return [...(this.workspaceHeld.get(sessionId)?.values() ?? [])].map((folder) => ({ ...folder }));
+    }
+
+    private _unholdWorkspaceFolders(sessionId: string, folders: Array<{ root: string; folder?: string }>): void {
+        const held = this.workspaceHeld.get(sessionId);
+        if (!held) return;
+        for (const folder of folders) held.delete(heldKey(folder));
+        if (held.size === 0) this.workspaceHeld.delete(sessionId);
+    }
+
+    /** What is held for a session plus the handle's own attach, each folder once. */
+    private _heldWithHandle(sessionId: string, managed: ManagedSession | undefined): HeldWorkspaceFolder[] {
+        const all = new Map<string, HeldWorkspaceFolder>();
+        for (const folder of managed ? attachedWorkspaceFolders(managed.getWorkspaceState()) : []) all.set(heldKey(folder), folder);
+        for (const folder of this.heldWorkspaceFolders(sessionId)) all.set(heldKey(folder), folder);
+        return [...all.values()];
+    }
+
+    /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped. */
+    async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string; deadlineMs?: number }): Promise<number> {
+        // In parallel: one frozen CLI must not stop the others (review R9).
+        // Each release has its own deadline, so this ends within about one.
+        const ids = new Set<string>([
+            ...[...this.sessions].filter(([, managed]) => Boolean(managed.getWorkspaceState().workspace)).map(([sessionId]) => sessionId),
+            ...this.workspaceHeld.keys(),
+        ]);
+        const results = await Promise.all([...ids]
+            .filter((sessionId) => !this.sessionLocks.has(sessionId))
+            .map((sessionId) => this.releaseWorkspace(sessionId, opts).catch(() => null)));
+        return results.filter((result) => result?.released).length;
+    }
+
     async destroySession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));
@@ -2587,6 +3276,7 @@ export class SessionManager {
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
+        await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
         try {
             await session.destroy();
         } catch {}

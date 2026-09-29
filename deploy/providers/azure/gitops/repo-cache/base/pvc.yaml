@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: repo-cache-data
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: repo-cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # Premium SSD (section 5.5). The sample repo is small; a copy that serves
+  # many sessions needs more IOPS, which Premium SSD ties to the disk size.
+  storageClassName: managed-csi-premium
+  resources:
+    requests:
+      storage: 64Gi

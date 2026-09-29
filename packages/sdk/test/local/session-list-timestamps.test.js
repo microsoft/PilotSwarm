@@ -30,6 +30,8 @@ function harness(rows) {
             withRunTurnLock: async (_id, _operation, fn) => fn(),
             getOrCreate: async () => session,
             getModelSummary: () => undefined,
+            // Every turn asks for the workspace provider (default folders, 4.11); none here.
+            getWorkspaceProvider: () => null,
             resetSessionState: async () => {},
         },
         null, undefined, undefined, undefined, "sqlite::memory:",

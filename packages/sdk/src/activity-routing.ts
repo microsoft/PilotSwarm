@@ -27,6 +27,23 @@ export function routeHandoffActivity(task: any, contract?: ActivityRoutingContra
     return task.withTag(AGENT_HANDOFF_CAPABILITY);
 }
 
+/**
+ * Session workspaces (1.0.80): the turns of a session that has, or had, a
+ * workspace, and the checkWorkspace and releaseWorkspace activities, go only
+ * to workers that declare this tag. During a rolling deploy, an older worker
+ * would run such a turn in its own folder, and it lacks the two activities.
+ * The tag stands for the handoff contract as well: every worker that
+ * declares it also declares AGENT_HANDOFF_CAPABILITY.
+ */
+export const WORKSPACE_CAPABILITY = "pilotswarm.workspaces.v1";
+
+export function routeWorkspaceActivity(task: any): any {
+    if (typeof task.withTag !== "function") {
+        throw new Error("Session workspaces require Duroxide activity tag routing support");
+    }
+    return task.withTag(WORKSPACE_CAPABILITY);
+}
+
 /** Retain legacy handlers for already-scheduled work while registering the new contract. */
 export function registerHandoffActivity(runtime: any, name: keyof typeof HANDOFF_ACTIVITY_NAMES, handler: any, versionedHandler = handler): void {
     runtime.registerActivity(name, handler);

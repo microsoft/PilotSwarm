@@ -62,6 +62,9 @@ import {
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
+    selectSessionWorkspaceModal,
+    normalizeSessionWorkspaceView,
+    describeSessionWorkspace,
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
@@ -6659,6 +6662,14 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     const [directory, setDirectory] = React.useState([]);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState(null);
+    // Session workspaces: the view loads with the session stats; the raw
+    // view keeps its identity until the next load, so selecting it is cheap.
+    const canWorkspace = typeof controller.transport?.setSessionWorkspace === "function";
+    const rawWorkspace = useControllerSelector(controller, (state) => state.sessionStats?.bySessionId?.[sessionId]?.workspace || null);
+    const workspace = normalizeSessionWorkspaceView(rawWorkspace, sessionId);
+    React.useEffect(() => {
+        if (canWorkspace) controller.ensureSessionStats?.().catch?.(() => {});
+    }, [controller, sessionId, canWorkspace]);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -6826,6 +6837,28 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                 React.createElement("div", { className: "ps-share-add-row" },
                     React.createElement("span", { className: "ps-manage-model-current" }, modelLabel),
                     React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: switchModel }, "Switch model…")),
+                canWorkspace ? React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "ps-share-section-label" }, "Workspace"),
+                    React.createElement("div", { className: "ps-share-section-sub" },
+                        "The folder this session works in. A running turn finishes first; the next turn runs in the new folder. No files are deleted."),
+                    React.createElement("div", { className: "ps-share-add-row" },
+                        React.createElement("span", { className: "ps-manage-model-current ps-manage-workspace-current" },
+                            describeSessionWorkspace(workspace).current),
+                        React.createElement("button", {
+                            className: "ps-mini-button", disabled: busy,
+                            onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE).catch(() => {}); },
+                        }, "Set…"),
+                        workspace?.actions.clear ? React.createElement("button", {
+                            className: "ps-mini-button", disabled: busy,
+                            onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.CLEAR_WORKSPACE).catch(() => {}); },
+                        }, "Clear") : null,
+                        workspace?.actions.retry ? React.createElement("button", {
+                            className: "ps-mini-button", disabled: busy,
+                            onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.RETRY_WORKSPACE).catch(() => {}); },
+                        }, "Retry now") : null),
+                    // Section 4.11: folders the deployment gives every session; not in the record.
+                    describeSessionWorkspace(workspace).defaults ? React.createElement("div", { className: "ps-share-section-sub ps-manage-workspace-defaults" },
+                        describeSessionWorkspace(workspace).defaults) : null) : null,
                 canRegenerate ? React.createElement(React.Fragment, null,
                     React.createElement("div", { className: "ps-share-section-label" }, "Context"),
                     React.createElement("div", { className: "ps-share-section-sub" },
@@ -12648,6 +12681,7 @@ function ModalLayer({ controller }) {
         sessionAgentPicker: selectSessionAgentPickerModal(state),
         sessionGroupPicker: selectSessionGroupPickerModal(state),
         sessionGroupName: selectSessionGroupNameModal(state),
+        sessionWorkspace: selectSessionWorkspaceModal(state),
         artifactPicker: selectArtifactPickerModal(state),
         logFilter: selectLogFilterModal(state),
         filesFilter: selectFilesFilterModal(state),
@@ -12663,6 +12697,7 @@ function ModalLayer({ controller }) {
     const modal = modalState.rawModal;
     const renameInputRef = React.useRef(null);
     const groupNameInputRef = React.useRef(null);
+    const workspaceInputRef = React.useRef(null);
     const listModalRef = React.useRef(null);
     // Full-text search for the people list in the session filter.
     const [ownerFilterQuery, setOwnerFilterQuery] = React.useState("");
@@ -12696,6 +12731,20 @@ function ModalLayer({ controller }) {
         }
         inputNode.setSelectionRange(modalState.sessionGroupName.cursorIndex, modalState.sessionGroupName.cursorIndex);
     }, [modal?.type, modalState.sessionGroupName?.cursorIndex, modalState.sessionGroupName?.value]);
+
+    React.useEffect(() => {
+        if (modal?.type !== "sessionWorkspace" || !modalState.sessionWorkspace) return;
+        const inputNode = workspaceInputRef.current;
+        if (!inputNode) return;
+        if (document.activeElement !== inputNode) {
+            try {
+                inputNode.focus({ preventScroll: true });
+            } catch {
+                inputNode.focus();
+            }
+        }
+        inputNode.setSelectionRange(modalState.sessionWorkspace.cursorIndex, modalState.sessionWorkspace.cursorIndex);
+    }, [modal?.type, modalState.sessionWorkspace?.cursorIndex, modalState.sessionWorkspace?.value]);
 
     React.useEffect(() => {
         if (!modal) return;
@@ -13082,6 +13131,40 @@ function ModalLayer({ controller }) {
                         className: "ps-modal-button is-primary",
                         onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
                     }, modalState.sessionGroupName.mode === "rename" ? "Rename" : "Create and Move")),
+            ));
+    }
+    if (modal.type === "sessionWorkspace" && modalState.sessionWorkspace) {
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modalState.sessionWorkspace.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
+                ),
+                React.createElement("input", {
+                    ref: workspaceInputRef,
+                    className: "ps-modal-input",
+                    value: modalState.sessionWorkspace.value,
+                    placeholder: modalState.sessionWorkspace.placeholder,
+                    onChange: (event) => controller.setSetWorkspaceValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
+                    onKeyDown: (event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                        }
+                    },
+                    autoFocus: true,
+                }),
+                React.createElement("div", { className: "ps-modal-details" },
+                    normalizeLines(modalState.sessionWorkspace.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                    normalizeLines(modalState.sessionWorkspace.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
+                    }, modalState.sessionWorkspace.confirmLabel)),
             ));
     }
     if (modal.type === "terminatePicker") {

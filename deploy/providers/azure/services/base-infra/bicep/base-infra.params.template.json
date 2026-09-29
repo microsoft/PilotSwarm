@@ -44,6 +44,12 @@
     "horizonDbEnabled": {
       "value": ${HORIZONDB_ENABLED}
     },
+    "userPoolMinCount": {
+      "value": ${USER_POOL_MIN_COUNT}
+    },
+    "repoCachePoolEnabled": {
+      "value": ${WORKSPACES_ENABLED}
+    },
     "foundryEnabled": {
       "value": ${FOUNDRY_ENABLED}
     },

@@ -163,6 +163,19 @@ export type {
     SessionPolicy,
     SendAttachmentInput,
     PromptAttachmentRef,
+    SessionWorkspace,
+    SessionWorkspaceExtra,
+    WorkspaceExtraAttach,
+    WorkspaceAdopt,
+    WorkspaceRoot,
+    WorkspaceAttachRequest,
+    WorkspaceAttachResult,
+    WorkspaceProvider,
+    WorkspaceDefaults,
+    WorkspaceDefaultFolder,
+    WorkspaceDefaultsContext,
+    WorkspaceReleaseReason,
+    WorkspaceReleaseRequest,
 } from "./types.js";
 export {
     IMAGE_ATTACHMENT_CONTENT_TYPES,
@@ -170,7 +183,12 @@ export {
     ATTACHMENTS_MAX_COUNT,
     ATTACHMENTS_MAX_TOTAL_BYTES,
     sanitizePromptAttachmentRefs,
+    WORKSPACE_ERROR_CODES,
 } from "./types.js";
+// Session workspaces
+export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
+export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
+export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";

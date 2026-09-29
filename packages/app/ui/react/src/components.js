@@ -28,6 +28,7 @@ import {
     selectSessionAgentPickerModal,
     selectShareSessionModal,
     selectSessionGroupNameModal,
+    selectSessionWorkspaceModal,
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectStatusBar,
@@ -1352,6 +1353,71 @@ function SessionGroupNameModalContainer({ controller }) {
     return React.createElement(SessionGroupNameModal, { state });
 }
 
+// Session workspaces: the one-field `root/folder` dialog (empty = clear).
+function SessionWorkspaceModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionWorkspaceModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 80, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(6, Math.min(7, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [[
+                    { text: "> ", color: "cyan", bold: true },
+                    { text: modal.value || modal.placeholder || "", color: modal.value ? "white" : "gray" },
+                ]],
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Preview",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionWorkspaceModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionWorkspaceModal, { state });
+}
+
 function SessionOwnerFilterModal({ state }) {
     const platform = useUiPlatform();
     const modal = selectSessionOwnerFilterModal(state);
@@ -2546,6 +2612,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(SessionAgentPickerModalContainer, { controller }),
         React.createElement(SessionGroupPickerModalContainer, { controller }),
         React.createElement(SessionGroupNameModalContainer, { controller }),
+        React.createElement(SessionWorkspaceModalContainer, { controller }),
         React.createElement(SessionOwnerFilterModalContainer, { controller }),
         React.createElement(LogFilterModalContainer, { controller }),
         React.createElement(FilesFilterModalContainer, { controller }),
