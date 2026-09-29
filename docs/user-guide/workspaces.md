@@ -34,7 +34,13 @@ Ask the agent "where are you working?" It answers from
 `get_session_workspace`, which lists every folder, its path and its state.
 
 In the portal: **Manage session** → **Workspace** shows the workspace, with
-**Set…**, **Clear** and **Retry now**.
+**Set…**, **Clear** and **Retry now**. A session with no workspace of its own
+shows "<folder> (your folder)", and a line lists the default extra folders.
+
+**What is kept.** Files in the working folder and the extra folders are on
+durable storage: they survive turns, moves to other workers, and restarts.
+The agent is told so. Everything else on the worker (`/tmp`, the home
+folder) is scratch and can be gone at the next turn.
 
 ## Working in a repo
 

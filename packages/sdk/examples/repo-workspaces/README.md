@@ -140,8 +140,8 @@ The session works in a repo clone ->  cwd = the clone
 
 Folder names: a signed-in person's email, lowercased, with other characters
 as `_` (`Ada@Example.com` -> `ada_example.com`); `_anon` for a portal without
-sign-in (everyone shares it); `_system` for system sessions and their
-sub-agents.
+sign-in (everyone shares it). System sessions and their sub-agents get no
+default folders: they run as before.
 
 What the person's folder gives the session, also while it works in a clone:
 

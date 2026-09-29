@@ -947,6 +947,7 @@ caller's request.
 | `session.workspace_unavailable` | `{ revision, code, message, workerNodeId, attachment? }`. `attachment` names a required extra folder that held the prompt. |
 | `session.workspace_available` | `{ revision }` |
 | `session.workspace_adopted` | `{ revision, agents, skills, skipped }` |
+| `session.workspace_defaults` | `{ revision, workingFolder: { root, folder? } \| null, extra: [{ name, root, folder?, home? }] }`: the deployment's default folders a turn used (4.11), recorded only when they change. `getSessionWorkspace` returns the latest as `defaults`. |
 | `session.workspace_released` | `{ reason, cancelled, workerNodeId, detail? }`. Written by the worker that ran the release (4.5): `cancelled` counts the tasks it stopped, `detail` names what did not finish. |
 
 **Errors:** `WORKSPACE_ROOT_UNKNOWN`, `WORKSPACE_PATH_INVALID` (also a
@@ -1194,6 +1195,20 @@ Rules:
   is always required.
 - **Old orchestrations get none.** A session whose orchestration is older
   than 1.0.80 gets no defaults, the same rule as the workspace tools (4.9).
+- **An extra folder needs a working folder.** A provider that names only
+  default extra folders (no `home`) gives them only to sessions that have a
+  working folder of their own. A session with no workspace then gets no
+  folders at all; a log line says why. To give every session `shared`, also
+  give each person a folder. (Decided 2026-09-29.)
+- **System sessions.** `ctx.isSystem` is true for PilotSwarm's own system
+  agents, and their sub-agents run as the `system` owner. A provider should
+  usually give them no defaults, so they run as before. The reference
+  provider gives them none.
+- **Shown in the portal.** Defaults are not in the record, so PilotSwarm
+  records the set a turn used as `session.workspace_defaults` when it
+  changes. `getSessionWorkspace` returns it as `defaults`, and the portal's
+  Workspace row shows "<folder> (your folder)" and the default extra
+  folders.
 - **Workspace tools.** A session that has only default folders still gets
   `set_session_workspace`, `get_session_workspace` and `load_agent` (4.12).
   `get_session_workspace` lists the defaults under `defaults`, apart from
@@ -1236,6 +1251,33 @@ set of skills changes.
 | No workspace provider | None |
 | A provider without `defaultFolders` | None |
 | A provider with defaults | One `defaultFolders` call, and one attach per default folder, run side by side (a plain folder attach took 72 ms on the release stamp, over NFS). When the person's folder is extra folder `home`, one read of its instruction files in the same child process as its path check |
+
+**Durable folders in the prompt.** PilotSwarm's base prompt says the
+worker's local disk is scratch ("Local Filesystem Is Ephemeral"). That is
+wrong for workspace folders, which are on storage every worker mounts. Two
+changes (revision 8):
+
+- The base prompt, for every session: "`/tmp`, `$HOME`, and the cwd may
+  simply be gone next turn" became "`/tmp`, `$HOME`, and a working directory
+  on the worker's own disk may simply be gone next turn". True for sessions
+  without folders; not claimed for a durable working folder.
+- A session with folders in a turn gets a fixed section after PilotSwarm's
+  base instructions (`DURABLE_FOLDERS_NOTE` in `session-manager.ts`):
+
+```
+## Your folders are durable
+This session works in folders on durable storage: the current working directory
+and the additional directories listed in the environment section. Files there
+survive turns, moves to other workers and restarts. For these folders this
+replaces "Local Filesystem Is Ephemeral": save work there when the user wants it
+kept, and say where you saved it. Every other path on this machine (/tmp, $HOME)
+is still scratch. Other people's sessions may be able to read these folders:
+never put secrets in them. get_session_workspace names each folder.
+```
+
+It names no paths (the CLI's environment block lists them, without names),
+so it never goes stale, and it is the same text every time, so the prompt
+cache holds. A session without folders does not get it.
 
 ### 4.12 Loading an agent or a skill by path
 
@@ -1646,7 +1688,7 @@ Folder names, chosen by the provider:
 | A signed-in person | Their email, lowercased, with every character other than `a-z 0-9 . _ -` as `_`: `Ada@Example.com` -> `ada_example.com` |
 | A signed-in person with no email | `<provider>-<subject>`, the same way |
 | A portal without sign-in | `_anon`: one folder for everyone |
-| A system session, and its sub-agents | `_system` |
+| A system session, and its sub-agents | No default folders. `_system` is the name only when such a session sets that folder itself |
 
 A name starting with `_` or `.` is never a person's: such a name gets a `u`
 in front. A person whose email changes gets a new, empty folder.
@@ -2201,6 +2243,14 @@ was broken on purpose (default folders: 19 mutations, 19 red; loads:
 | L8 | L | `load_agent`: the turn ends, the next turn continues by itself, the task tool offers the loaded agent over the person's own of that name, and it runs; when the file is gone, `get_session_workspace` says why and the person's own agent is back |
 | L9 | L | `load_skill` by path: the body at once, without ending the turn; from the next turn the loaded skill wins over the person's and, after a move, the repo's; `load_skill` by name serves it, and an edit shows in the next turn; unload gives the name back |
 | L10 | L | A path outside the folders is an error in the same turn, and nothing is saved |
+| D13 | U, L | U: the defaults record (the person's folder only when the record has none; `home` marked; read back in any key order; compared ignoring order). L: recorded at the first turn and at the move into a repo, not on every turn; `getSessionWorkspace` returns it |
+| D14 | U | "Your folders are durable" only with folders, after PilotSwarm's base, the same text for the same input, naming no path |
+| S1 | L | No provider: the worker's own folder, no workspace tools, no durable-folders section, no extra folders, no workspace events, and the base prompt's new sentence |
+| S2, S3 | L | A provider without defaults: a session with no workspace is exactly S1 and the provider is never called; a session in a repo works there, with the workspace tools, the section once, no extra folders and no defaults record |
+| S4, S5 | L | Defaults that name only `shared`: a session with no workspace gets no folders (rule A); a session in a repo gets `shared` as an extra folder and the section, and one defaults record for two turns |
+| B12 (4.11) | U | The UI: the stats tab and the portal's Workspace row show "<folder> (your folder)" for a session with no record, and the default extra folders; nothing without defaults |
+
+Each of these was broken on purpose and a test failed: 14 mutations, 14 red.
 
 ## 10. Decisions, verified facts and open items
 
@@ -2349,6 +2399,10 @@ calls after the acknowledgement, in the same turn.
 | Folder names are the provider's choice; the example uses the email, `_anon` without sign-in, `_system` for system sessions | Names chosen by PilotSwarm |
 | A load is saved with the session, relative to its root, and read again every turn | A copy taken at load time |
 | `load_agent` ends the turn, and the next turn continues by itself | Adding the agent inside the turn: the CLI takes its agents only when a session starts or resumes |
+| An extra folder needs a working folder: defaults that name only extra folders reach only sessions with a working folder (2026-09-29, option A) | Giving a session without a working folder its default extra folders |
+| The reference provider gives system sessions no default folders (2026-09-29) | A `_system` folder with the people's starter files |
+| The base prompt's sentence says "a working directory on the worker's own disk" may be gone; sessions with folders get "Your folders are durable" (2026-09-29) | Leaving the base prompt to tell a session its durable folders may vanish |
+| The portal shows default folders from a `session.workspace_defaults` event, recorded on change (2026-09-29) | Showing only the record |
 
 **Open items (revision 8)**
 

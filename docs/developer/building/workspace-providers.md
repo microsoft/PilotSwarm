@@ -205,6 +205,23 @@ Each extra entry                           -> an extra folder of that name
 A name the record uses, or a folder that overlaps one of the record's -> left out
 ```
 
+Rules to know:
+
+- **An extra folder needs a working folder.** Defaults that name only extra
+  folders (no `home`) reach only sessions that have a working folder of
+  their own. To give every session `shared`, also give each person a
+  folder.
+- **System sessions.** `ctx.isSystem` marks PilotSwarm's own system agents;
+  their sub-agents run as the `system` owner. Return no defaults for them,
+  so they run as before. The reference provider does.
+- **What the model is told.** A session with folders gets a fixed section
+  that says its folders are durable, and the base prompt no longer says a
+  durable working folder may vanish. Your roots must be durable storage
+  that every worker mounts at the same path.
+- **What the portal shows.** PilotSwarm records the defaults a turn used as
+  a `session.workspace_defaults` event, when they change, and the portal
+  shows them.
+
 Defaults are never saved in the record, and they do not count against the
 four extra folders a session may set. A default is optional unless you say
 `required: true`. When the person's folder is the working folder only
