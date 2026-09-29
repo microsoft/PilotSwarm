@@ -398,6 +398,7 @@ When you add or materially change a user-facing or builder-facing feature, updat
 - the Horizon Harvester sample in `examples/horizon-harvester/` (see its dedicated section below)
 - the builder templates in `templates/builder-agents/`
 - `.github/copilot-instructions.md` if the change affects contributor workflow or maintenance expectations
+- `scripts/local-pilotswarm.sh` if the change adds a setting, a service, a folder or a startup step (see [Local instance](#local-instance))
 - package names, install examples, and CI publish/release wiring if the npm surface changes
 
 Do not treat proposal docs as sufficient once behavior ships. If the product changed, the canonical docs, sample app, and builder templates should reflect it too.
@@ -497,6 +498,52 @@ When a bug is identified as originating in **duroxide** (the Rust-based durable 
 Duroxide is the foundational runtime — papering over its bugs at higher layers creates fragile, hard-to-maintain code.
 
 For live runtime forensics — tracing orchestration/activity logs, session-affined `runTurn` placement, hydration/dehydration evidence, or crash-vs-affinity investigations — use [`.github/skills/investigate-duroxide-runtime/SKILL.md`](./skills/investigate-duroxide-runtime/SKILL.md).
+
+## Local instance
+
+`scripts/local-pilotswarm.sh` runs the whole platform on one machine: the
+PostgreSQL container, the web portal with two workers inside the portal
+process, dev sign-in, and session workspaces on local folders.
+
+```bash
+scripts/local-pilotswarm.sh up        # start everything, then open http://localhost:3001
+scripts/local-pilotswarm.sh restart   # after a code change: build, then restart
+scripts/local-pilotswarm.sh down      # stop (PostgreSQL keeps running; the tests use it)
+scripts/local-pilotswarm.sh reset     # down, then delete the workspace folders
+scripts/local-pilotswarm.sh logs      # follow the portal and repo service logs
+```
+
+| Piece | What runs |
+|---|---|
+| PostgreSQL | The `pilotswarm-pg` container (`DATABASE_URL` in `.env`). `up` starts it when it is stopped. |
+| Portal | `http://localhost:3001` with dev sign-in (`PORTAL_AUTH_PROVIDER=dev`): pick Ada (admin), Alice, Bob, Carol or Dave. Ownership is enforced, as in the release environment. |
+| Workers | Two, inside the portal process (`WORKERS=2`). They load the workspaces example through `PILOTSWARM_EXTENSION_MODULES`. |
+| Workspaces | The reference setup in `packages/sdk/examples/repo-workspaces/`: its repo service on `127.0.0.1:8080`, and plain folders under `~/pilotswarm-local/ws` (`a`, `shared`, `home`) in place of the NFS exports. |
+| Models | `.model_providers.json` when it exists, else the GitHub Copilot catalog in `deploy/config/model_providers.local-docker.json`. `GITHUB_TOKEN` comes from `.env`. |
+
+It needs `.env` with `DATABASE_URL` and `GITHUB_TOKEN`, and git 2.46 or later.
+Everything runs as your own OS user. NFS itself (mounts, stale mounts, root
+squash, uid 1000) is not covered locally; the release environment covers it.
+
+### Every change must work in the local instance
+
+The local instance is where maintainers try changes by hand. Keep it working:
+
+- A change to the portal, the workers, the Web API, agents, plugins or
+  workspaces must also work in `scripts/local-pilotswarm.sh`. Try it there
+  before asking for review: run `up` (or `restart`), sign in, and walk the
+  changed flow.
+- When a change adds a required setting, a service, a folder or a startup
+  step, add it to `scripts/local-pilotswarm.sh` in the same change, with a
+  local default, and update the table above.
+- Do not make anything depend on Kubernetes, NFS, root, Linux-only tools or a
+  cloud service just to start. Where the release environment needs one, keep
+  a local path. Example: the repo service runs git through `setpriv` only when
+  it must switch users; locally it runs as your own user, and macOS has no
+  `setpriv`.
+- When a change touches ownership, sharing or per-person folders, try it with
+  at least two dev personas.
+- If a change cannot work locally, say so in the PR and explain why.
 
 ## Testing
 
