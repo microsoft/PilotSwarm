@@ -80,6 +80,18 @@ async function withStore(body) {
     }
 }
 
+/** Poll an orchestration's status until it is `status`, or fail with the last one seen. */
+async function waitForStatus(client, instanceId, status, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let last;
+    while (Date.now() < deadline) {
+        last = (await client.getStatus(instanceId)).status;
+        if (last === status) return;
+        await sleep(100);
+    }
+    throw new Error(`${instanceId} is ${last}, not ${status}, after ${timeoutMs} ms`);
+}
+
 function* routedHandoff(ctx) {
     const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", { childResultProvenance: true });
     const session = createSessionProxy(ctx, "child", `affinity-${ctx.instanceId}`, {}, "agent-handoff-v2");
@@ -112,8 +124,11 @@ describe("agent handoff capability routing", () => {
             // The release before: it knows the handoff contract, not workspaces.
             await worker("previous", true, "workspace", workspaceWork).start();
             await client.startOrchestration("ws-1", "workspace", {});
+            // A remote database can take longer than 400 ms to show a new
+            // orchestration; wait for it, then give the old worker time to
+            // poll. It must not take the workspace work.
+            await waitForStatus(client, "ws-1", "Running", 15_000);
             await sleep(400);
-            expect((await client.getStatus("ws-1")).status).toBe("Running");
             expect(events).toEqual([]);
 
             await worker("current", true, "workspace", workspaceWork, [], [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY]).start();
