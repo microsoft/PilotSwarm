@@ -3,6 +3,12 @@
 // node:test mock.module.
 
 import { test } from "node:test";
+
+// These tests are about the upload order, not the sign-in. The release
+// runner has GitHub's OIDC settings, which would make publishManifests'
+// sign-in refresh reach the real token service; outside GitHub Actions the
+// refresh does nothing. Each test file runs in its own process.
+for (const key of ["ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]) delete process.env[key];
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

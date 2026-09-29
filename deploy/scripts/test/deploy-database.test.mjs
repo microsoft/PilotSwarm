@@ -11,6 +11,12 @@ import { ALL_SEQUENCE } from "../lib/service-info.mjs";
 import { renderLocalEnv } from "../new-env.mjs";
 import { DATABASE_INPUT_KEYS } from "../lib/database-env.mjs";
 
+// The release runner signs in to Azure with GitHub's OIDC, so its job has
+// these settings. A fixture deploy must not use them: the sign-in refresh
+// before the bicep, seed-secrets and rollout steps would reach the real
+// token service. Tests of the refresh pass their own through `ambient`.
+const OIDC_KEYS = ["ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "AZURE_CLIENT_ID", "AZURE_TENANT_ID"];
+
 const passwordUrl = "postgresql://u:cli-fixture-password@shared.invalid/testenv?sslmode=require";
 let sequence = 0;
 
@@ -124,7 +130,7 @@ if (args[0] === "keyvault") {
       // Keep fixture configuration independent of that shell; tests exercising
       // supported process overrides provide them explicitly via `ambient`.
       const childEnv = { ...process.env };
-      for (const key of new Set([...Object.keys(env), ...DATABASE_INPUT_KEYS])) delete childEnv[key];
+      for (const key of new Set([...Object.keys(env), ...DATABASE_INPUT_KEYS, ...OIDC_KEYS])) delete childEnv[key];
       return spawnSync(process.execPath, [
         join(REPO_ROOT, "deploy/scripts/deploy.mjs"), service, name,
         "--steps", steps, "--image-tag", "fixture",
