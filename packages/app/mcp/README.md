@@ -389,7 +389,7 @@ with `get_capabilities` to see the shape of this server.
 | `raise_signal` | Queue `{ session_id, name, data?, payload_ref?, signal_id?, wake? }` through the management client in direct or web mode; returns `{ signalId, name, raisedAt, status: "queued" }` |
 | `send_session_event` | Deprecated direct/web compatibility wrapper: `event_name` becomes the signal name, `data` stays untrusted data, and `wake` defaults to false |
 
-Signals require a session execution on orchestration **1.0.80+**. Raising a
+Signals require a session execution on orchestration **1.0.81+**. Raising a
 signal starts a new pending session without inventing a chat prompt or model
 turn. First sends wait up to ten seconds for worker initialization and verify
 the actual execution version before enqueueing; a timeout queues no signal.
@@ -407,7 +407,7 @@ Use `get_session_signals` and `get_session_events` (`session.signal_*`) to
 inspect state and lifecycle outcomes. Unsupported/unknown older executions
 return `SIGNALS_UNSUPPORTED`; oversized payloads return `SIGNAL_TOO_LARGE`.
 The legacy event wrapper is not an escape hatch for prompts, answers, or
-commands: use their dedicated tools. On 1.0.80+, `get_session_signals` also
+commands: use their dedicated tools. On 1.0.81+, `get_session_signals` also
 reports an explicit `wait_for_any` race's mode and `lastRaceOutcome`.
 
 ### Webhook Management

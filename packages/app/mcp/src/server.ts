@@ -12,6 +12,7 @@ import { registerEnhancedFactTools } from "./tools/facts-enhanced.js";
 import { registerGraphTools } from "./tools/graph.js";
 import { registerTurnControlTools } from "./tools/turn-control.js";
 import { registerWebhookTools } from "./tools/webhooks.js";
+import { registerWorkspaceTools } from "./tools/workspaces.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerAgentPackageTools } from "./tools/agent-packages.js";
 import { registerGroupTools } from "./tools/groups.js";
@@ -90,6 +91,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerCapabilityTools(server, ctx);
     registerTurnControlTools(server, ctx);
     registerWebhookTools(server, ctx);
+    registerWorkspaceTools(server, ctx);
     registerGroupTools(server, ctx);
     registerObservabilityTools(server, ctx);
     registerDebugTools(server, ctx);

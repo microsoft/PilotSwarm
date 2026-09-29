@@ -5,7 +5,7 @@
  *
  * Two things must hold and are guarded here:
  *   1. VERSION CEREMONY — every version below the latest is frozen into its
- *      own directory and registered; latest is 1.0.80. Each bump updates this
+ *      own directory and registered; latest is 1.0.81. Each bump updates this
  *      block, which is the point: a freeze that forgets the ceremony is a
  *      freeze nobody checked.
  *   2. FREEZE BOUNDARY — the durable yield exists from 1.0.59 onward, never in
@@ -24,12 +24,12 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.80, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.80");
+    it("latest is 1.0.81, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.81");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_80");
-        expect(dispatcher.durableSessionOrchestration_1_0_80).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_81");
+        expect(dispatcher.durableSessionOrchestration_1_0_81).toBeTypeOf("function");
     });
 
     it("freezes 1.0.65 through 1.0.79 as distinct registered handlers", () => {

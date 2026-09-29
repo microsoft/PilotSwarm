@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_81 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration_1_0_80/index.ts";
 import { durableSessionOrchestration_1_0_79 } from "../../src/orchestration_1_0_79/index.ts";
 import { durableSessionOrchestration_1_0_78 } from "../../src/orchestration_1_0_78/index.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { commandResponseKey } from "../../src/types.ts";
-import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, WORKSPACE_CAPABILITY } from "../../src/activity-routing.ts";
 import { SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_MAX_INLINE_BYTES, SIGNAL_STATE_KEY, createSessionSignal } from "../../src/session-signals.ts";
 
 const { SqliteProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
@@ -36,6 +37,7 @@ async function withRuntimeTest(body) {
         const runtime = new Runtime(provider, {
             workerTagFilter: { defaultAnd: [
                 AGENT_HANDOFF_CAPABILITY,
+                WORKSPACE_CAPABILITY,
                 ...(supportsSignals ? [SIGNAL_ACTIVITY_CAPABILITY] : []),
             ] },
             workerNodeId: `${dir.split("/").at(-1)}-${label}`,
@@ -48,8 +50,9 @@ async function withRuntimeTest(body) {
         runtime.registerOrchestrationVersioned(NAME, "1.0.78", durableSessionOrchestration_1_0_78);
         runtime.registerOrchestrationVersioned(NAME, "1.0.79", durableSessionOrchestration_1_0_79);
         runtime.registerOrchestrationVersioned(NAME, "1.0.80", durableSessionOrchestration_1_0_80);
+        runtime.registerOrchestrationVersioned(NAME, "1.0.81", durableSessionOrchestration_1_0_81);
         for (const name of ["recordSessionEvent", "updateCmsState", "loadKnowledgeIndex", "getWorkerSessionPolicy",
-            "getOrchestrationStats", HANDOFF_ACTIVITY_NAMES.listChildSessions,
+            "getOrchestrationStats", "releaseWorkspace", "checkWorkspace", HANDOFF_ACTIVITY_NAMES.listChildSessions,
             HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn2,
             ...Object.values(SIGNAL_ACTIVITY_NAMES)]) {
             runtime.registerActivity(name, async (ctx, input) => {
@@ -61,6 +64,8 @@ async function withRuntimeTest(body) {
                     case "getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
                     case "getOrchestrationStats": return { historySizeBytes: forceCan ? 800 * 1024 : 0 };
                     case HANDOFF_ACTIVITY_NAMES.listChildSessions: return [];
+                    case "releaseWorkspace": return { released: true, cancelled: 0 };
+                    case "checkWorkspace": return { ok: true, path: "/fixture/workspace" };
                     case "updateCmsState":
                         if (input.state === "waiting" && waitingStateHook) await waitingStateHook(input);
                         return null;
@@ -75,7 +80,7 @@ async function withRuntimeTest(body) {
                             ...(waitTimeout !== undefined ? { timeoutSeconds: waitTimeout } : {}),
                             snapshotVersion: 1,
                         };
-                        return { ...completed, snapshotVersion: 2 };
+                        return { ...completed, snapshotVersion: 2, ...(input.config.workspace ? { workspaceAttached: true } : {}) };
                     default: return null;
                 }
             });
@@ -123,7 +128,7 @@ async function withRuntimeTest(body) {
         signal: createSessionSignal(name, options, { kind: "api", actorId: "fixture-operator" },
             { signalId: id, raisedAt: new Date().toISOString() }),
     });
-    const start = (client, input = {}, version = "1.0.80") => client.startOrchestrationVersioned(IID, NAME, {
+    const start = (client, input = {}, version = "1.0.81") => client.startOrchestrationVersioned(IID, NAME, {
         sessionId: SID, config: {}, isSystem: true, blobEnabled: true, idleTimeout: -1, prompt: "Wait for ready", ...input,
     }, version);
     try {
@@ -143,10 +148,11 @@ async function withRuntimeTest(body) {
 }
 
 describe.concurrent("durable signals on the native runtime", () => {
-    it("replays main's 1.0.79 unchanged, rejects signals there, then upgrades at CAN to 1.0.80", { timeout: 60_000 }, async () => {
+    it.each(["1.0.79", "1.0.80"])("replays upstream %s unchanged, rejects signals there, then upgrades at CAN to 1.0.81", { timeout: 60_000 }, async sourceVersion => {
         await withRuntimeTest(async ({ createWorker, stop, statusUntil, start, turns, forceCan, instanceId, sessionId }) => {
             const original = await createWorker("main", false);
-            await start(original.client, { prompt: "Ordinary request", blobEnabled: false }, "1.0.79");
+            const workspace = sourceVersion === "1.0.80" ? { schema: 1, root: "fixture", folder: "repo" } : undefined;
+            await start(original.client, { prompt: "Ordinary request", blobEnabled: false, config: workspace ? { workspace } : {} }, sourceVersion);
             await statusUntil(original.client, status => status?.status === "idle" && status.responseVersion >= 1);
             const api = PilotSwarmClient._fromRuntime({ waitThreshold: 30 }, {
                 getSession: async () => ({ sessionId, state: "idle", orchestrationId: instanceId }),
@@ -162,7 +168,7 @@ describe.concurrent("durable signals on the native runtime", () => {
             // This ordinary legacy turn kept its affinity: a different worker
             // must wait for the native ownership lease (about 30 seconds).
             await statusUntil(upgraded.client, async status => status?.status === "idle"
-                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.80", 45_000);
+                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.81", 45_000);
             expect(turns.map(turn => turn.name)).toEqual([HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn]);
             expect(turns.every(turn => !turn.config.durableSignals)).toBe(true);
             const receipt = await api._raiseSignal(sessionId, "ready", { signalId: "upgraded-wake", wake: true });
@@ -171,6 +177,11 @@ describe.concurrent("durable signals on the native runtime", () => {
             expect(turns).toHaveLength(3);
             expect(turns[2]).toMatchObject({ name: SIGNAL_ACTIVITY_NAMES.runTurn, tag: SIGNAL_ACTIVITY_CAPABILITY });
             expect(turns[2].prompt).toContain('"signalId": "upgraded-wake"');
+            if (workspace) {
+                expect(turns.every(turn => JSON.stringify(turn.config.workspace) === JSON.stringify(workspace))).toBe(true);
+                expect(turns.map(turn => turn.workspaceRevision)).toEqual([1, 1, 1]);
+                expect(turns.slice(0, 2).map(turn => turn.tag)).toEqual([WORKSPACE_CAPABILITY, WORKSPACE_CAPABILITY]);
+            }
         });
     });
 
@@ -372,7 +383,7 @@ describe.concurrent("durable signals on the native runtime", () => {
     it("preserves an ordinary signal wait across worker replacement without turning it into a race", { timeout: 45_000 }, async () => {
         await withRuntimeTest(async ({ createWorker, start, stop, statusUntil, enqueueSignal, turns }) => {
             const old = await createWorker("signal-first");
-            await start(old.client, {}, "1.0.80");
+            await start(old.client, {}, "1.0.81");
             const pending = await statusUntil(old.client, status => status?.signalWait && status.status === "waiting");
             expect(pending.signalWait.mode).toBeUndefined();
             expect(turns[0].name).toBe(SIGNAL_ACTIVITY_NAMES.runTurn);

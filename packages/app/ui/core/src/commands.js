@@ -75,6 +75,10 @@ export const UI_COMMANDS = {
     STOP_TURN: "stopTurn",
     DELETE_SESSION: "deleteSession",
     REGENERATE_SESSION: "regenerateSession",
+    // Session workspaces: the session's working folder (set, clear, retry).
+    OPEN_SET_WORKSPACE: "openSetWorkspace",
+    CLEAR_WORKSPACE: "clearWorkspace",
+    RETRY_WORKSPACE: "retryWorkspace",
     PIN_SESSION: "pinSession",
     CYCLE_SESSION_VISIBILITY: "cycleSessionVisibility",
     OPEN_SHARE_SESSION: "openShareSession",

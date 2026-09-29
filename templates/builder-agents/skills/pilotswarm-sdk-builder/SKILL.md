@@ -107,7 +107,7 @@ deduplication covers buffered IDs plus the last 128 accepted IDs.
 Keep inline JSON at or below 32 KiB; upload larger payloads as artifacts and
 pass `payloadRef`. Never use payload fields as privileged session configuration
 or interpolate raw external bodies into instructions. Signals, `wait_for_any`
-and approved webhook prompt dispatch all require orchestration 1.0.80+.
+and approved webhook prompt dispatch all require orchestration 1.0.81+.
 Reject an unsupported target rather than using raw queue writes.
 
 Use `wait_for_any` only when user input should end the race rather than

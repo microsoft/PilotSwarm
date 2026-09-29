@@ -3240,7 +3240,7 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "sessionStats/loading", sessionId });
         try {
-            const [summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats] = await Promise.all([
+            const [summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace] = await Promise.all([
                 this.transport.getSessionMetricSummary(sessionId),
                 typeof this.transport.getSessionTokensByModel === "function"
                     ? this.transport.getSessionTokensByModel(sessionId).catch(() => [])
@@ -3260,8 +3260,11 @@ export class PilotSwarmUiController {
                 typeof this.transport.getSessionTreeFactsStats === "function"
                     ? this.transport.getSessionTreeFactsStats(sessionId).catch(() => null)
                     : null,
+                typeof this.transport.getSessionWorkspace === "function"
+                    ? this.transport.getSessionWorkspace(sessionId).catch(() => null)
+                    : null,
             ]);
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace });
         } catch {
             this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, tokensByModel: [], treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
         }
@@ -6742,6 +6745,185 @@ export class PilotSwarmUiController {
         }
     }
 
+    // ── Session workspaces (docs/proposals/session-workspaces.md 4.8) ──
+    // The active session's workspace view comes from the session stats load
+    // (getSessionWorkspace). Every change passes the revision it was read
+    // at, so a stale view gets WORKSPACE_REVISION_CONFLICT, not a lost write.
+
+    _workspaceTarget(verb) {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        const session = sessionId ? state.sessions.byId[sessionId] : null;
+        if (!session || session.isGroup) {
+            this.dispatch({ type: "ui/status", text: `Select a session to ${verb} its workspace` });
+            return null;
+        }
+        const view = state.sessionStats?.bySessionId?.[sessionId]?.workspace || null;
+        return { sessionId, session, view, revision: Number.isInteger(view?.revision) ? view.revision : 0 };
+    }
+
+    async _afterWorkspaceChange(sessionId, text) {
+        this.dispatch({ type: "ui/status", text });
+        await this.ensureSessionStats({ force: true });
+        this.scheduleSessionDetailSync?.(sessionId, 100);
+    }
+
+    openSetWorkspaceModal() {
+        if (typeof this.transport.setSessionWorkspace !== "function") {
+            this.dispatch({ type: "ui/status", text: "Workspaces are not supported by this deployment" });
+            return;
+        }
+        const target = this._workspaceTarget("set");
+        if (!target) return;
+        const current = target.view?.workspace;
+        const value = current ? (current.folder ? `${current.root}/${current.folder}` : current.root) : "";
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "sessionWorkspace",
+                title: `Workspace (${shortSessionIdValue(target.sessionId)})`,
+                sessionId: target.sessionId,
+                previousFocus: this.getState().ui.focusRegion,
+                value,
+                cursorIndex: value.length,
+                expectedRevision: target.revision,
+                current: current || null,
+                maxLength: 1200,
+            },
+        });
+    }
+
+    updateSetWorkspaceModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setSetWorkspaceValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return;
+        const safeValue = clampRenameSessionValue(value, modal.maxLength || 1200);
+        this.updateSetWorkspaceModal({ value: safeValue, cursorIndex: clampPromptCursor(safeValue, cursorIndex) });
+    }
+
+    insertSetWorkspaceText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, modal.maxLength || 1200));
+        this.setSetWorkspaceValue(next.prompt, next.cursor);
+    }
+
+    deleteSetWorkspaceChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setSetWorkspaceValue(next.prompt, next.cursor);
+    }
+
+    moveSetWorkspaceCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return;
+        this.setSetWorkspaceValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveSetWorkspaceCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return;
+        this.setSetWorkspaceValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    /** `root/folder` or `root`; an empty value clears the workspace (after a confirm). */
+    async confirmSetWorkspaceModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionWorkspace") return;
+        const text = String(modal.value || "").trim();
+        const previousFocus = modal.previousFocus;
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+        if (!text) {
+            await this.clearActiveSessionWorkspace();
+            return;
+        }
+        const slash = text.indexOf("/");
+        // The dialog edits the working folder only. The extra folders go
+        // with the record, or the whole-record set would drop them.
+        const extra = modal.current?.extra && typeof modal.current.extra === "object" ? modal.current.extra : null;
+        const workspace = {
+            ...(slash < 0 ? { root: text } : { root: text.slice(0, slash), folder: text.slice(slash + 1) }),
+            ...(extra && Object.keys(extra).length > 0 ? { extra } : {}),
+        };
+        this.dispatch({ type: "ui/status", text: `Setting the workspace of ${shortSessionIdValue(modal.sessionId)}...` });
+        try {
+            const result = await this.transport.setSessionWorkspace(modal.sessionId, { expectedRevision: modal.expectedRevision ?? 0, workspace });
+            const done = result?.status === "pending"
+                ? "Workspace change queued: the session applies it after its turn"
+                : result?.status === "unchanged" ? "Workspace unchanged" : `Workspace set (revision ${result?.revision ?? "?"})`;
+            await this._afterWorkspaceChange(modal.sessionId, done);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Set workspace failed: ${error?.message || String(error)}` });
+        }
+    }
+
+    async clearActiveSessionWorkspace({ confirmed = false } = {}) {
+        if (typeof this.transport.setSessionWorkspace !== "function") {
+            this.dispatch({ type: "ui/status", text: "Workspaces are not supported by this deployment" });
+            return;
+        }
+        const target = this._workspaceTarget("clear");
+        if (!target) return;
+        if (!target.view?.workspace) {
+            this.dispatch({ type: "ui/status", text: "This session has no workspace" });
+            return;
+        }
+        if (!confirmed) {
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Clear Workspace",
+                    message: target.view?.workspace?.extra && Object.keys(target.view.workspace.extra).length > 0
+                        ? "Clear this session's workspace, its extra folders too? The next turn runs in the default working directory. No files are deleted."
+                        : "Clear this session's workspace? The next turn runs in the default working directory. No files are deleted.",
+                    confirmLabel: "Clear",
+                    action: "clearSessionWorkspace",
+                    sessionId: target.sessionId,
+                    previousFocus: this.getState().ui.focusRegion,
+                },
+            });
+            return;
+        }
+        try {
+            const result = await this.transport.setSessionWorkspace(target.sessionId, { expectedRevision: target.revision, workspace: null });
+            await this._afterWorkspaceChange(target.sessionId, result?.status === "pending"
+                ? "Workspace clear queued: the session applies it after its turn"
+                : `Workspace cleared (revision ${result?.revision ?? "?"})`);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Clear workspace failed: ${error?.message || String(error)}` });
+        }
+    }
+
+    async retryActiveSessionWorkspace() {
+        if (typeof this.transport.retrySessionWorkspace !== "function") {
+            this.dispatch({ type: "ui/status", text: "Workspaces are not supported by this deployment" });
+            return;
+        }
+        const target = this._workspaceTarget("retry");
+        if (!target) return;
+        if (target.view?.status !== "unavailable") {
+            this.dispatch({ type: "ui/status", text: "The workspace is not held; nothing to retry" });
+            return;
+        }
+        try {
+            await this.transport.retrySessionWorkspace(target.sessionId);
+            await this._afterWorkspaceChange(target.sessionId, "Workspace retry requested: held prompts run if it is back");
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Retry workspace failed: ${error?.message || String(error)}` });
+        }
+    }
+
     updateSessionGroupNameModal(updater) {
         const modal = this.getState().ui.modal;
         if (!modal || modal.type !== "sessionGroupName") return null;
@@ -8735,6 +8917,8 @@ export class PilotSwarmUiController {
                 await this.deleteActiveSession({ confirmed: true });
             } else if (modal.action === "regenerateSession") {
                 await this.regenerateActiveSession({ confirmed: true, ...(modal.extras || {}) });
+            } else if (modal.action === "clearSessionWorkspace") {
+                await this.clearActiveSessionWorkspace({ confirmed: true });
             } else if (modal.action === "deleteArtifact") {
                 await this.deleteSelectedArtifact({ confirmed: true });
             } else if (modal.action === "deleteMarkedArtifacts") {
@@ -8762,6 +8946,10 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "sessionGroupName") {
             await this.confirmSessionGroupNameModal();
+            return;
+        }
+        if (modal.type === "sessionWorkspace") {
+            await this.confirmSetWorkspaceModal();
             return;
         }
         if (modal.type === "sessionOwnerFilter") {
@@ -11072,6 +11260,15 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.REGENERATE_SESSION:
                 await this.regenerateActiveSession();
+                return;
+            case UI_COMMANDS.OPEN_SET_WORKSPACE:
+                this.openSetWorkspaceModal();
+                return;
+            case UI_COMMANDS.CLEAR_WORKSPACE:
+                await this.clearActiveSessionWorkspace();
+                return;
+            case UI_COMMANDS.RETRY_WORKSPACE:
+                await this.retryActiveSessionWorkspace();
                 return;
             case UI_COMMANDS.PIN_SESSION:
                 this.togglePinActiveSession();

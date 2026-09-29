@@ -121,8 +121,14 @@ export function nativeSubagentDefinitions(model: string, access?: NativeTaskAcce
                 : agent.prompt) + " You may also use the explicitly listed external tools, under the parent's existing permissions. Repository-cache paths are remote; use the supplied repository tools. Return findings to the parent; do not create sessions, schedule work or launch detached processes." } : {}), infer: true }));
 }
 
+/** Session workspaces: the adopted repo agents of one session (workspace-repo-agents.ts RepoAgentAccess). */
+export interface NativeRepoAgents {
+    has(name: string): boolean;
+    allowsHook(sessionId: string, toolName: string): boolean;
+}
+
 /** Native execution remains in the CLI. Compose policy around the native tool. */
-export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, access?: NativeTaskAccess): SessionHooks {
+export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, access?: NativeTaskAccess, repoAgents?: NativeRepoAgents): SessionHooks {
     return {
         ...hooks,
         onPreMcpToolCall: async (input, invocation) => {
@@ -136,7 +142,8 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmi
             if (previous?.permissionDecision === "deny") return previous;
             const deny = (reason: string) => ({ ...previous, permissionDecision: "deny" as const, permissionDecisionReason: reason });
             const isChild = Boolean(input.sessionId && input.sessionId !== invocation.sessionId);
-            if (isChild && !childTools.has(input.toolName) && !access?.allowsHook(input.sessionId, input.toolName)) {
+            if (isChild && !childTools.has(input.toolName) && !access?.allowsHook(input.sessionId, input.toolName)
+                && !repoAgents?.allowsHook(input.sessionId, input.toolName)) {
                 return deny("Native workers can use only local CLI tools. Return this request to your PilotSwarm parent.");
             }
             if (NATIVE_EXCLUDED_TOOLS.includes(input.toolName)) {
@@ -153,7 +160,11 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmi
             if (!canAdmit()) return deny("Native tasks are disabled by current feature policy for this turn. Use a durable spawn_agent if needed.");
             if (!args || typeof args !== "object" || Array.isArray(args)) return deny("task arguments must be an object");
             const task = args as Record<string, unknown>;
-            if (!names.has(String(task.agent_type))) return deny("Use the native swarm-explore or swarm-task agent.");
+            if (!names.has(String(task.agent_type)) && !repoAgents?.has(String(task.agent_type))) {
+                return deny(repoAgents
+                    ? "Use the native swarm-explore or swarm-task agent, or an adopted repo agent."
+                    : "Use the native swarm-explore or swarm-task agent.");
+            }
             if (task.mode !== undefined && task.mode !== "sync") return deny("Use task(mode=sync). Background native tasks are unavailable on this worker.");
             if (task.model !== undefined && task.model !== model) return deny("Native workers must use the parent session model; omit the model override.");
             if (task.reasoning_effort !== undefined || task.context_tier !== undefined) {

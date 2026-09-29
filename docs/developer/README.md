@@ -13,6 +13,7 @@ apps). Both paths share the same plugin model —
 - [Facts & graph from the SDK](./building/facts-and-graph.md)
 - [Durable signals](./building/durable-signals.md) — external-event waits and authenticated signal delivery
 - [Webhook ingress](./building/webhooks.md) — capability endpoints, GitHub/ADO bindings, approved templates and delivery receipts
+- [Writing a workspace provider](./building/workspace-providers.md) — give sessions git clones, shared folders and a folder per person
 - [Builder agent templates](./building/builder-agents.md) — reusable Copilot agents that scaffold PilotSwarm apps
 - [Examples](./building/examples.md) — runnable samples, including the DevOps Command Center
 

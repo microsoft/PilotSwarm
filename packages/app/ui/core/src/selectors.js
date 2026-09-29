@@ -6005,6 +6005,12 @@ export function selectStatusBar(state) {
             right: "type name · left/right move · enter create · esc cancel",
         };
     }
+    if (state.ui.modal?.type === "sessionWorkspace") {
+        return {
+            left: "Set the session's workspace",
+            right: "type root/folder · empty clears · enter apply · esc cancel",
+        };
+    }
     if (state.ui.modal?.type === "logFilter") {
         return {
             left: "Adjust log filters",
@@ -7665,6 +7671,183 @@ export function selectShareSessionModal(state, maxWidth = 76) {
     };
 }
 
+// ── Session workspaces (docs/proposals/session-workspaces.md 4.8) ──
+
+/** How the UI names a workspace: `root/folder`, or the root alone. */
+export function formatSessionWorkspace(workspace) {
+    if (!workspace?.root) return "";
+    return workspace.folder ? `${workspace.root}/${workspace.folder}` : workspace.root;
+}
+
+/**
+ * The session's workspace, from the getSessionWorkspace view loaded with the
+ * session stats, plus which actions apply. null until the view has loaded,
+ * or when the deployment has no workspace support.
+ *
+ *   set    always (a session without a workspace can get one)
+ *   clear  when a workspace is set
+ *   retry  while prompts are held because the workspace is unavailable
+ */
+export function selectSessionWorkspace(state, sessionId = state.sessions?.activeSessionId) {
+    if (!sessionId) return null;
+    return normalizeSessionWorkspaceView(state.sessionStats?.bySessionId?.[sessionId]?.workspace, sessionId);
+}
+
+/** selectSessionWorkspace for a raw getSessionWorkspace view (null when there is none). */
+export function normalizeSessionWorkspaceView(view, sessionId = null) {
+    if (!view || typeof view !== "object") return null;
+    const workspace = view.workspace && typeof view.workspace === "object" ? view.workspace : null;
+    const status = ["none", "ready", "unavailable"].includes(view.status) ? view.status : (workspace ? "ready" : "none");
+    const adopted = view.adopted && typeof view.adopted === "object" ? view.adopted : null;
+    // Extra folders (section 4.10): the session can use them next to its
+    // working folder. Paths are known once a change has reported them.
+    const extraPaths = view.extraPaths && typeof view.extraPaths === "object" ? view.extraPaths : {};
+    const extras = Object.entries(workspace?.extra && typeof workspace.extra === "object" ? workspace.extra : {})
+        .filter(([, extra]) => extra && typeof extra === "object")
+        .map(([name, extra]) => ({
+            name,
+            label: formatSessionWorkspace(extra),
+            required: extra.required !== false,
+            path: typeof extraPaths[name] === "string" ? extraPaths[name] : null,
+        }));
+    return {
+        sessionId,
+        workspace,
+        label: formatSessionWorkspace(workspace),
+        extras,
+        root: workspace?.root ?? null,
+        folder: workspace?.folder ?? null,
+        status,
+        revision: Number.isInteger(view.revision) ? view.revision : 0,
+        path: typeof view.path === "string" && view.path ? view.path : null,
+        lastError: view.lastError && typeof view.lastError === "object" ? view.lastError : null,
+        heldPrompts: Number.isInteger(view.heldPrompts) ? view.heldPrompts : 0,
+        adoptedAgents: Array.isArray(adopted?.agents) ? adopted.agents : [],
+        adoptedSkills: Array.isArray(adopted?.skills) ? adopted.skills : [],
+        defaults: normalizeWorkspaceDefaults(view.defaults),
+        actions: { set: true, clear: Boolean(workspace), retry: status === "unavailable" },
+    };
+}
+
+/**
+ * The portal's Workspace row (Manage session): the current folder, and a
+ * line for the deployment's default extra folders (section 4.11).
+ */
+export function describeSessionWorkspace(view) {
+    if (!view) return { current: "none", defaults: null };
+    const current = view.label
+        ? `${view.label}${view.status === "unavailable" ? ` · unavailable${view.lastError?.code ? ` (${view.lastError.code})` : ""}` : ""}`
+        : view.defaults?.workingFolder ? `${view.defaults.workingFolder.label} (your folder)` : "none";
+    const defaults = view.defaults?.extras?.length
+        ? `Default extra folders: ${view.defaults.extras.map((extra) => `${extra.name} (${extra.label})`).join(", ")}`
+        : null;
+    return { current, defaults };
+}
+
+/**
+ * The deployment's default folders (section 4.11), which are not in the
+ * record: the person's own folder as the working folder when the session
+ * has none, and default extra folders. Null when there are none.
+ */
+function normalizeWorkspaceDefaults(defaults) {
+    if (!defaults || typeof defaults !== "object") return null;
+    const folder = (value) => (value && typeof value === "object" && typeof value.root === "string" && value.root
+        ? { root: value.root, ...(typeof value.folder === "string" && value.folder ? { folder: value.folder } : {}) }
+        : null);
+    const working = folder(defaults.workingFolder);
+    const extras = (Array.isArray(defaults.extra) ? defaults.extra : []).flatMap((extra) => {
+        const where = folder(extra);
+        return where && typeof extra.name === "string" && extra.name
+            ? [{ name: extra.name, label: formatSessionWorkspace(where), home: extra.home === true }]
+            : [];
+    });
+    if (!working && extras.length === 0) return null;
+    return { workingFolder: working ? { label: formatSessionWorkspace(working) } : null, extras };
+}
+
+/** The Workspace block of the session stats view; nothing for a session without one. */
+function buildSessionWorkspaceLines(state, sessionId, w) {
+    const view = selectSessionWorkspace(state, sessionId);
+    if (!view || (view.status === "none" && !view.defaults)) return [];
+    // The label column is 9 wide, as in the identity rows above.
+    const row = (label, text, color = "white") => fitRuns([
+        { text: label.padEnd(9), color: "cyan", bold: true },
+        { text, color },
+    ], w);
+    const lines = [fitRuns([{ text: "Workspace", color: "cyan", bold: true }], w)];
+    // A session with no record works in the person's own folder (4.11).
+    if (view.status === "none") {
+        if (view.defaults?.workingFolder) lines.push(row("Folder", `${view.defaults.workingFolder.label} (your folder)`));
+        for (const extra of view.defaults?.extras ?? []) lines.push(row("Extra", `${extra.name}: ${extra.label} (default)`, "gray"));
+        lines.push(plainInspectorLine("W set or clear", "gray"));
+        lines.push(plainInspectorLine(""));
+        return lines;
+    }
+    lines.push(row("Folder", view.label));
+    // Short rows: the inspector column is narrow, and a long line is cut.
+    lines.push(row("Status", view.status, view.status === "unavailable" ? "yellow" : "green"));
+    if (view.status === "unavailable") {
+        if (view.heldPrompts) lines.push(row("Held", `${view.heldPrompts} prompt${view.heldPrompts === 1 ? "" : "s"}`, "yellow"));
+        if (view.lastError?.code) lines.push(row("Code", view.lastError.code, "yellow"));
+        if (view.lastError?.message) lines.push(row("Error", view.lastError.message, "yellow"));
+    }
+    lines.push(row("Revision", String(view.revision), "gray"));
+    if (view.path) lines.push(row("Path", view.path, "gray"));
+    for (const extra of view.extras) {
+        lines.push(row("Extra", `${extra.name}: ${extra.label}${extra.required ? "" : " (optional)"}`));
+    }
+    for (const extra of view.defaults?.extras ?? []) {
+        lines.push(row("Extra", `${extra.name}: ${extra.label} (default)`, "gray"));
+    }
+    if (view.adoptedAgents.length) lines.push(row("Agents", view.adoptedAgents.join(", ")));
+    if (view.adoptedSkills.length) lines.push(row("Skills", view.adoptedSkills.join(", ")));
+    lines.push(plainInspectorLine(`W set or clear${view.actions.retry ? " · Y retry now" : ""}`, "gray"));
+    lines.push(plainInspectorLine(""));
+    return lines;
+}
+
+export function selectSessionWorkspaceModal(state, maxWidth = 80) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "sessionWorkspace") return null;
+    const value = String(modal.value || "");
+    const trimmed = value.trim();
+    const slash = trimmed.indexOf("/");
+    const root = slash < 0 ? trimmed : trimmed.slice(0, slash);
+    const folder = slash < 0 ? "" : trimmed.slice(slash + 1);
+    const current = formatSessionWorkspace(modal.current);
+    const extras = Object.keys(modal.current?.extra && typeof modal.current.extra === "object" ? modal.current.extra : {});
+    return {
+        title: modal.title || "Workspace",
+        value,
+        cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
+        placeholder: "root/folder, for example a/sessions/s-1/app",
+        helpTitle: "Workspace",
+        confirmLabel: trimmed ? "Set" : "Clear",
+        helpLines: [
+            [
+                { text: "Enter", color: "cyan", bold: true },
+                { text: trimmed ? " set  " : " clear  ", color: "gray" },
+                { text: "Esc", color: "cyan", bold: true },
+                { text: " cancel", color: "gray" },
+            ],
+            [{ text: "", color: "gray" }],
+            [{ text: "The first part is a root the deployment serves; the rest is a folder in it.", color: "gray" }],
+            [{ text: "Leave it empty to clear the workspace. No files are deleted.", color: "gray" }],
+        ],
+        detailsLines: [
+            [{ text: "Now:  ", color: "gray" }, { text: current || "no workspace", color: current ? "white" : "gray" }],
+            trimmed
+                ? [{ text: "Next: ", color: "gray" }, { text: `root "${root}"${folder ? `, folder "${folder}"` : ""}`, color: "white", bold: true }]
+                : [{ text: "Next: ", color: "gray" }, { text: "no workspace (clear)", color: "white", bold: true }],
+            ...(extras.length > 0
+                ? [[{ text: "Extra folders: ", color: "gray" }, { text: `${extras.join(", ")} (${trimmed ? "kept" : "cleared too"})`, color: "white" }]]
+                : []),
+            [{ text: "A running turn finishes first; the next turn runs in the new folder.", color: "gray" }],
+        ],
+        idealWidth: Math.min(Math.max(64, displayLength(value) + 18), maxWidth),
+    };
+}
+
 export function selectSessionGroupNameModal(state, maxWidth = 76) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "sessionGroupName") return null;
@@ -8245,6 +8428,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
         ], w));
     }
     lines.push(plainInspectorLine(""));
+    lines.push(...buildSessionWorkspaceLines(state, session.sessionId, w));
 
     const tokensByModel = Array.isArray(entry.tokensByModel) ? entry.tokensByModel : [];
     if (tokensByModel.length > 1) {
@@ -9235,6 +9419,7 @@ const KEYBINDING_HELP = [
         ["P", "pin / unpin"],
         ["v", "cycle visibility (private / shared read / shared write)"],
         ["S", "share — grant / revoke individual access"],
+        ["W / Y", "workspace — set or clear / retry now"],
         ["V / space", "select mode / toggle selection"],
         ["f", "filter"],
     ] },

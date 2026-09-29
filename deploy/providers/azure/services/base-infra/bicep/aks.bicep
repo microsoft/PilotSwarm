@@ -72,6 +72,17 @@ param userPoolVmSize string = 'Standard_D4ds_v5'
 @description('User node pool initial node count.')
 param userPoolCount int = 2
 
+@description('User node pool autoscaler minimum.')
+@minValue(1)
+@maxValue(10)
+param userPoolMinCount int = 1
+
+@description('Add the `repocache` node pool for the session-workspaces repo pod: one always-on node, tainted so nothing else lands there. The repo-cache Deployment (deploy/providers/azure/gitops/repo-cache) selects it by label and tolerates the taint.')
+param repoCachePoolEnabled bool = false
+
+@description('VM size of the repocache pool. The NFS server caches files in the node\'s memory (docs/proposals/session-workspaces.md, section 5.5).')
+param repoCachePoolVmSize string = 'Standard_D4ds_v5'
+
 @description('Availability zones. Empty array disables zone placement (useful for dev in zone-limited regions).')
 param availabilityZones array = []
 
@@ -124,8 +135,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       union({
         name: 'userpool'
         mode: 'User'
-        count: userPoolCount
-        minCount: 1
+        count: max(userPoolCount, userPoolMinCount)
+        minCount: userPoolMinCount
         maxCount: 10
         enableAutoScaling: true
         vmSize: userPoolVmSize
@@ -227,6 +238,38 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
 // ---------------------------------------------------------------------------
 var managedIdentityOperatorRoleId = 'f1a07417-d97a-45cb-824c-7a7467783830'
 
+// Session workspaces: the repo pod's own node. A separate agent pool
+// resource, not an entry in agentPoolProfiles: AKS refuses to add a pool to
+// an existing cluster through the managed cluster API ("Adding agent pools to
+// an existing cluster is not allowed through managed cluster operations"). A
+// later cluster update that does not list this pool leaves it alone. No
+// autoscaling, so the node is always there; the taint keeps workers and
+// everything else off it. Turning the switch off does not delete the pool.
+resource repoCachePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-05-01' = if (repoCachePoolEnabled) {
+  parent: aks
+  name: 'repocache'
+  properties: union({
+    mode: 'User'
+    count: 1
+    enableAutoScaling: false
+    vmSize: repoCachePoolVmSize
+    osType: 'Linux'
+    osSKU: 'AzureLinux'
+    osDiskSizeGB: 128
+    osDiskType: 'Ephemeral'
+    type: 'VirtualMachineScaleSets'
+    availabilityZones: availabilityZones
+    nodeLabels: {
+      'pilotswarm.dev/pool': 'repo-cache'
+    }
+    nodeTaints: [
+      'pilotswarm.dev/repo-cache=true:NoSchedule'
+    ]
+  }, edgeMode == 'public' ? {} : {
+    vnetSubnetID: aksSubnetId
+  })
+}
+
 resource kubeletIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: last(split(kubeletIdentityResourceId, '/'))
 }
@@ -251,9 +294,15 @@ resource assignMiOperatorToCluster 'Microsoft.Authorization/roleAssignments@2022
 // matching the approach in the reference deployment (the Flux Azure Blob
 // source controller does not yet support workload identity).
 // ---------------------------------------------------------------------------
+// After the repocache pool: writing the extension makes AKS update its
+// add-ons, and an agent pool write that overlaps it fails ("Another operation
+// is in progress"). Both used to start together once the cluster was written.
 resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {
   scope: aks
   name: 'flux'
+  dependsOn: [
+    repoCachePool
+  ]
   properties: {
     extensionType: 'microsoft.flux'
     autoUpgradeMinorVersion: true

@@ -31,6 +31,7 @@ import {
     NON_BLOCKING_TIMER_MS,
     PREDISPATCH_CANCEL_SWEEP_MS,
     touchRecentClientMessageIds,
+    timerGate,
     type ActiveTimer,
     type DurableSessionRuntime,
     type PendingChildDigest,
@@ -473,6 +474,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     waitPlan: state.activeTimer.waitPlan,
                     interruptKind: "user",
                     budget: state.activeTimer.budget === true,
+                    ...(timerGate(state.activeTimer) ? { gate: timerGate(state.activeTimer) } : {}),
                 };
 
                 if (state.activeTimer.shouldRehydrate && userPrompt) {
@@ -538,6 +540,12 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             } else if (state.activeTimer?.type === "agent-poll") {
                 ctx.traceInfo(`[drain] user prompt interrupted agent wait`);
                 state.waitingForAgentIds = null;
+                state.activeTimer = null;
+            } else if (state.activeTimer?.type === "workspace_retry") {
+                // Session workspaces: the message's own turn is the next
+                // attempt. A gate wait is never re-armed (test F9); if the
+                // workspace is still unavailable, that turn holds again.
+                ctx.traceInfo(`[drain] user prompt interrupted a workspace wait; the next turn attempts the workspace`);
                 state.activeTimer = null;
             }
 
@@ -896,7 +904,11 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     }
 
     // Priority 4: buffered child digest — only after user/FIFO work is drained.
-    if (state.pendingChildDigest?.ready && state.pendingChildDigest.updates.length > 0 && !state.waitingForAgentIds) {
+    // Session workspaces: not while a workspace retry is pending. A digest is
+    // [SYSTEM:] traffic, which a refused turn does not hold, so it would be
+    // lost; it runs after the workspace is back.
+    if (state.pendingChildDigest?.ready && state.pendingChildDigest.updates.length > 0 && !state.waitingForAgentIds
+        && state.activeTimer?.type !== "workspace_retry") {
         yield* processPendingChildDigest(runtime);
         return true;
     }
@@ -995,6 +1007,7 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
             shouldRehydrate: state.activeTimer.shouldRehydrate ?? false,
             waitPlan: state.activeTimer.waitPlan,
             interruptKind: "child",
+            ...(timerGate(state.activeTimer) ? { gate: timerGate(state.activeTimer), budget: timerGate(state.activeTimer) === "budget" } : {}),
         };
         state.activeTimer = null;
         clearPendingChildDigest(runtime);

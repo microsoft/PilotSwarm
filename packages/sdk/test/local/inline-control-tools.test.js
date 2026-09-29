@@ -82,6 +82,20 @@ class FakeCopilotSession {
 }
 
 describe("inline control tool execution", () => {
+    it("keeps workspace and signal declarations aligned with their combined turn handlers", async () => {
+        const fake = new FakeCopilotSession();
+        const flags = { workspaceTools: true, durableSignals: true, webhookEndpoints: true };
+        const declarations = ManagedSession.systemToolDefs(flags);
+        await new ManagedSession("workspace-signals", fake, { workspaceTools: true }).runTurn("Inspect available tools", flags);
+        for (const name of ["wait_for_signal", "wait_for_any", "create_signal_webhook", "set_session_workspace", "get_session_workspace", "load_agent"]) {
+            const declaration = declarations.find(tool => tool.name === name);
+            const handler = fake.registeredTools.find(tool => tool.name === name);
+            expect(declaration, name).toBeDefined();
+            expect(handler, name).toBeDefined();
+            expect(handler.parameters, name).toEqual(declaration.parameters);
+        }
+    });
+
     it("mints an own-session webhook through the trusted bridge and redacts its capability from durable output", async () => {
         const token = `pswh_${"x".repeat(43)}`;
         const endpoint = { endpointId: "fixture-endpoint", token, url: `https://hooks.example.invalid/hooks/s/${token}` };

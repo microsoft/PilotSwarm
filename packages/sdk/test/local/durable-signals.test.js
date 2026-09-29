@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_81 } from "../../src/orchestration/index.ts";
 import { computeCronAtNextFire } from "../../src/cron-at.ts";
 import { MAX_DRAIN_PER_TURN, MAX_ITERATIONS_PER_EXECUTION } from "../../src/orchestration/state.ts";
 import { createSessionProxy } from "../../src/session-proxy.ts";
@@ -72,7 +72,7 @@ class Driver {
             continueAsNewVersioned: (nextInput, version) => ({ kind: "continue", input: nextInput, version }),
         };
         this.input = { sessionId: "signal-session", config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, ...input };
-        this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.input);
+        this.gen = durableSessionOrchestration_1_0_81(this.ctx, this.input);
     }
 
     enqueue(value, queue = "messages") {
@@ -123,6 +123,8 @@ class Driver {
                     case "computeCronAtNextFire":
                         return computeCronAtNextFire(effect.input.schedule, effect.input.afterUtcMs, effect.input.lastOccurrenceKey);
                     case "abortTurn": return { outcome: "stopped" };
+                    case "checkWorkspace": return { ok: true, path: "/fixture/workspace" };
+                    case "releaseWorkspace": return { released: true, cancelled: 0 };
                     case "updateCmsState":
                     case "loadKnowledgeIndex":
                     case "summarizeSession":
@@ -140,8 +142,8 @@ class Driver {
             if (this.pending) {
                 if (this.pending.kind === "continue") {
                     this.continues.push(structuredClone(this.pending.input));
-                    expect(this.pending.version).toBe("1.0.80");
-                    this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.pending.input);
+                    expect(this.pending.version).toBe("1.0.81");
+                    this.gen = durableSessionOrchestration_1_0_81(this.ctx, this.pending.input);
                     this.pending = null;
                     continue;
                 }
@@ -379,7 +381,8 @@ describe.concurrent("durable signal envelopes", () => {
         expect(supportsSignalOrchestration("1.0.78")).toBe(false);
         expect(supportsSignalOrchestration(undefined)).toBe(false);
         expect(supportsSignalOrchestration("1.0.79")).toBe(false);
-        expect(supportsSignalOrchestration("1.0.80")).toBe(true);
+        expect(supportsSignalOrchestration("1.0.80")).toBe(false);
+        expect(supportsSignalOrchestration("1.0.81")).toBe(true);
     });
 
     it("frames data without allowing payload delimiters to become system context", () => {
@@ -409,6 +412,85 @@ describe.concurrent("durable signal envelopes", () => {
 });
 
 describe.concurrent("durable signal orchestration", () => {
+    it("preserves an interrupted signal deadline and accepted input through workspace recovery", () => {
+        const workspace = { schema: 1, root: "fixture", folder: "repo" };
+        const driver = new Driver({
+            input: { prompt: "Wait", config: { workspace } },
+            turns: [
+                { ...waiting(["ready"], 120), workspaceAttached: true },
+                { type: "wait", gate: "workspace", seconds: 30, reason: "Workspace unavailable", code: "WORKSPACE_FOLDER_MISSING", workerNodeId: "worker-a" },
+                { ...completed, workspaceAttached: true },
+            ],
+        });
+        driver.run();
+        const wait = driver.signals.pendingWait;
+        driver.enqueue({ prompt: "Accepted while the workspace is unavailable", clientMessageIds: ["workspace-input"] });
+        driver.run();
+        expect(driver.signals).toMatchObject({ pendingWait: wait, interrupted: true });
+        expect(driver.status.gate).toBe("workspace");
+        driver.now += driver.status.waitSeconds * 1000;
+        driver.run();
+        expect(driver.turns).toHaveLength(3);
+        expect(driver.turns[2].stashedPrompts).toEqual(["Accepted while the workspace is unavailable"]);
+        expect(driver.turns[2].config).toMatchObject({ workspace, durableSignals: true });
+        expect(driver.signals).toMatchObject({ pendingWait: wait, interrupted: false });
+        expect(driver.events.filter(event => event.eventType === "session.signal_wait_cancelled")).toEqual([]);
+    });
+
+    it("keeps the typed signal race winner through a refused workspace turn", () => {
+        const workspace = { schema: 1, root: "fixture", folder: "repo" };
+        const driver = new Driver({
+            input: { prompt: "Race", config: { workspace } },
+            turns: [
+                { ...waiting(["ready"], 120), waitMode: "any", workspaceAttached: true },
+                { type: "wait", gate: "workspace", seconds: 30, reason: "Workspace unavailable", workerNodeId: "worker-a" },
+                { ...completed, workspaceAttached: true },
+            ],
+        });
+        driver.run();
+        driver.enqueue({ signal: signal("workspace-winner") });
+        driver.run();
+        const outcome = driver.signals.lastRaceOutcome;
+        expect(outcome.winner).toMatchObject({ kind: "signal", signalId: "workspace-winner" });
+        expect(driver.signals.pendingWait).toBeUndefined();
+        driver.now += driver.status.waitSeconds * 1000;
+        driver.run();
+        expect(driver.turns).toHaveLength(3);
+        expect(driver.turns[2].stashedPrompts.join("\n")).toContain('"signalId": "workspace-winner"');
+        expect(driver.turns[2].stashedPrompts.join("\n")).toContain("[WAIT_FOR_ANY RESULT]");
+        expect(driver.signals.lastRaceOutcome).toEqual(outcome);
+        expect(driver.events.filter(event => event.eventType === "session.signal_race_completed")).toHaveLength(1);
+    });
+
+    it("drains workspace-extra changes and signal cancellation together without another turn", () => {
+        const workspace = { schema: 1, root: "fixture", folder: "repo" };
+        const extra = { logs: { root: "fixture", folder: "logs", required: false } };
+        const driver = new Driver({
+            input: { prompt: "Wait", config: { workspace } },
+            turns: [
+                { ...waiting(), workspaceAttached: true },
+                { ...completed, workspaceAttached: true, queuedActions: [
+                    { type: "set_workspace_extra", extra },
+                    { type: "signal-wait", action: "cancel" },
+                ] },
+                { ...completed, workspaceAttached: true },
+            ],
+        });
+        driver.run();
+        driver.enqueue({ prompt: "Attach logs and cancel the wait" });
+        driver.run();
+        expect(driver.turns).toHaveLength(2);
+        expect(driver.signals.pendingWait).toBeUndefined();
+        expect(driver.events.filter(event => event.eventType === "session.workspace_changed"))
+            .toMatchObject([
+                { data: { workspace, revision: 1, source: "create" } },
+                { data: { workspace: { ...workspace, extra }, revision: 2, source: "agent" } },
+            ]);
+        driver.enqueue({ prompt: "Read the attached logs" });
+        driver.run();
+        expect(driver.turns[2]).toMatchObject({ config: { workspace: { ...workspace, extra }, durableSignals: true }, workspaceRevision: 2 });
+    });
+
     it.each([0, MAX_DRAIN_PER_TURN])("drains a pre-arrival match before an elapsed timeout behind %i unrelated messages", (preceding) => {
         const driver = new Driver({
             input: {

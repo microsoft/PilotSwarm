@@ -86,6 +86,14 @@ param deployPostgres bool = true
 @description('Provision HorizonDB after base infrastructure. Public mode reserves a stable AKS egress IP so the HorizonDB firewall can allow only this cluster.')
 param horizonDbEnabled bool = false
 
+@description('Autoscaler minimum of the user node pool. The session-workspaces tests need two agent nodes (docs/proposals/session-workspaces.md, section 12.1).')
+@minValue(1)
+@maxValue(10)
+param userPoolMinCount int = 1
+
+@description('Add the `repocache` node pool: one node, no autoscaling, tainted so only the session-workspaces repo pod (the repo-cache service) runs there. Follows WORKSPACES_ENABLED. Turning it off later does not delete the pool; delete it with `az aks nodepool delete`.')
+param repoCachePoolEnabled bool = false
+
 @description('Whether to provision an Azure AI Foundry (Cognitive Services AIServices) account in this stamp. When true, foundry.bicep + auto-secrets.bicep run; the Foundry primary key lands in KV as `azure-oai-key` and FOUNDRY_ENDPOINT is emitted as a deployment output. When false, no Foundry resource is provisioned and the worker catalog substitutes `__FOUNDRY_ENDPOINT__` to empty (Foundry providers in the catalog become non-loadable; non-Foundry providers — github-copilot, anthropic — keep working).')
 param foundryEnabled bool = false
 
@@ -417,6 +425,8 @@ module Aks './aks.bicep' = {
     outboundPublicIpId: (edgeMode == 'public' && horizonDbEnabled) ? horizonEgressIp!.id : ''
     availabilityZones: availabilityZones
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
+    userPoolMinCount: userPoolMinCount
+    repoCachePoolEnabled: repoCachePoolEnabled
   }
   dependsOn: edgeMode == 'public' ? (horizonDbEnabled ? [horizonEgressIpRole] : []) : [AksControlPlaneRbac]
 }

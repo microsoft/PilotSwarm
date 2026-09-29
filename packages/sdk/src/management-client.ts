@@ -27,7 +27,11 @@ import type {
     SessionSummaryState,
     StopTurnResult,
     PromptAttachmentRef,
+    SessionWorkspace,
+    SessionWorkspaceView,
 } from "./types.js";
+import { validateWorkspaceText } from "./workspace-check.js";
+import { readDefaultsRecord } from "./workspace.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -251,6 +255,16 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
     if (signal?.aborted) {
         throw createAbortError(message, signal.reason);
     }
+}
+
+/**
+ * Session workspaces: how long a workspace command waits for its answer,
+ * 1 s to 5 min. The wait may hold a Web API request, so it is bounded here
+ * too, not only at the edge.
+ */
+function commandWaitMs(value: unknown, fallback: number): number {
+    const numeric = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+    return Math.max(1_000, Math.min(numeric, 300_000));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1685,6 +1699,179 @@ export class PilotSwarmManagementClient {
                 source: opts?.source ?? "user",
             },
         });
+    }
+
+    /**
+     * Session workspaces: set or clear a session's workspace from outside
+     * the session (docs/proposals/session-workspaces.md 4.3, external flow).
+     * The folder-text check runs here; the worker that holds the session
+     * checks the root and the path. A busy session answers after its turn.
+     *
+     * Resolves with the orchestration's answer. Rejects with an error whose
+     * `code` names the reason (WORKSPACE_REVISION_CONFLICT, WORKSPACE_PATH_INVALID,
+     * WORKSPACE_ROOT_UNKNOWN, WORKSPACE_FOLDER_MISSING, a provider code ...).
+     * If no answer arrives in time, resolves with `{ status: "pending" }`.
+     */
+    async setSessionWorkspace(
+        sessionId: string,
+        input: { expectedRevision: number; workspace: SessionWorkspace | { root: string; folder?: string } | null },
+        opts?: { timeoutMs?: number },
+    ): Promise<
+        | { status: "changed" | "unchanged"; revision: number; workspace: SessionWorkspace | null; path?: string | null }
+        | { status: "pending"; commandId: string }
+    > {
+        this._ensureStarted();
+        if (!Number.isInteger(input?.expectedRevision) || input.expectedRevision < 0) {
+            throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { code: "WORKSPACE_PATH_INVALID", status: 400 });
+        }
+        let workspace: SessionWorkspace | null = null;
+        if (input.workspace !== null && input.workspace !== undefined) {
+            const checked = validateWorkspaceText(input.workspace);
+            if (!checked.ok) throw Object.assign(new Error(`${checked.code}: ${checked.message}`), { code: checked.code, status: 400 });
+            workspace = checked.workspace;
+        }
+        // Extra folders (section 4.10): a record that names `extra` (even as
+        // {} or null) sets exactly those; one that does not keeps the
+        // session's extra folders. Decided on the caller's record, before the
+        // check drops an empty map.
+        const extraMode = input.workspace && typeof input.workspace === "object"
+            && Object.prototype.hasOwnProperty.call(input.workspace, "extra") ? "replace" : "keep";
+        const id = buildLifecycleCommandId("set-workspace");
+        await this.sendCommand(sessionId, {
+            cmd: "set_workspace",
+            id,
+            args: { expectedRevision: input.expectedRevision, workspace, extraMode, source: "external" },
+        });
+        const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 120_000));
+        if (!resp) return { status: "pending", commandId: id };
+        const result = (resp.result ?? {}) as Record<string, any>;
+        if (resp.error) {
+            const code = typeof result.code === "string" ? result.code : String(resp.error).split(":")[0];
+            throw Object.assign(new Error(resp.error), {
+                code,
+                status: code === "WORKSPACE_REVISION_CONFLICT" ? 409 : code === "WORKSPACE_PATH_INVALID" ? 400 : 422,
+                revision: result.revision,
+            });
+        }
+        return {
+            status: result.changed ? "changed" : "unchanged",
+            revision: Number(result.revision),
+            workspace: (result.workspace ?? null) as SessionWorkspace | null,
+            ...(result.path !== undefined ? { path: result.path } : {}),
+        };
+    }
+
+    /**
+     * Session workspaces: the session's workspace, read from its latest
+     * workspace events (no CMS migration in v1): the record, revision and
+     * path of the last change, whether prompts are held and why, and the
+     * repo content adopted at the last resume.
+     */
+    async getSessionWorkspace(sessionId: string): Promise<SessionWorkspaceView> {
+        this._ensureStarted();
+        const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted", "session.workspace_defaults"];
+        const events = (await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, types))
+            .slice()
+            .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
+        const latest = (type: string) => [...events].reverse().find((e: any) => e.eventType === type) as any;
+        const changed = latest("session.workspace_changed");
+        const workspace = (changed?.data?.workspace ?? null) as SessionWorkspace | null;
+        const revision = Number(changed?.data?.revision ?? 0) || 0;
+        const unavailable = latest("session.workspace_unavailable");
+        const available = latest("session.workspace_available");
+        const boundary = Math.max(Number(available?.seq ?? 0), Number(changed?.seq ?? 0));
+        const held = Boolean(workspace && unavailable && Number(unavailable.seq) > boundary);
+        let heldPrompts = 0;
+        if (held) {
+            const users = await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, ["user.message"]);
+            heldPrompts = users.filter((e: any) => Number(e.seq) > boundary && e.data?.workspaceQueued === true).length;
+        }
+        const adopted = latest("session.workspace_adopted");
+        // Section 4.11: the default folders of the last turn that changed them.
+        const defaults = readDefaultsRecord(latest("session.workspace_defaults")?.data);
+        // Paths, from the changes in order. A path holds while its folder
+        // stays the same: the working folder's path survives a change of
+        // extra folders only, and an extra folder that moved without a
+        // reported path has none (section 4.10).
+        const folderKey = (folder: any) => (folder && typeof folder === "object" ? `${folder.root}\0${folder.folder ?? ""}` : "");
+        const own = (map: any, name: string) => (map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name) ? map[name] : undefined);
+        let path: string | null = null;
+        let pathFolder = "";
+        const extraPaths: Record<string, string> = {};
+        const extraFolders: Record<string, string> = {};
+        for (const event of events) {
+            if ((event as any).eventType !== "session.workspace_changed") continue;
+            const data = (event as any).data ?? {};
+            const record = data.workspace && typeof data.workspace === "object" ? data.workspace : null;
+            const key = folderKey(record);
+            if (key !== pathFolder) {
+                path = null;
+                pathFolder = key;
+            }
+            if (typeof data.path === "string") path = data.path;
+            for (const name of Object.keys(extraPaths)) {
+                if (folderKey(own(record?.extra, name)) !== extraFolders[name]) {
+                    delete extraPaths[name];
+                    delete extraFolders[name];
+                }
+            }
+            if (data.extraPaths && typeof data.extraPaths === "object") {
+                for (const [name, value] of Object.entries(data.extraPaths)) {
+                    if (typeof value !== "string" || !own(record?.extra, name)) continue;
+                    extraPaths[name] = value;
+                    extraFolders[name] = folderKey(own(record?.extra, name));
+                }
+            }
+        }
+        return {
+            workspace,
+            revision,
+            path: workspace ? path : null,
+            ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
+            status: !workspace ? "none" : held ? "unavailable" : "ready",
+            lastError: held
+                ? {
+                    code: String(unavailable.data?.code ?? "WORKSPACE_UNAVAILABLE"),
+                    message: String(unavailable.data?.message ?? ""),
+                    ...(unavailable.data?.workerNodeId ? { workerNodeId: String(unavailable.data.workerNodeId) } : {}),
+                    ...(unavailable.createdAt ? { at: new Date(unavailable.createdAt).toISOString() } : {}),
+                }
+                : null,
+            heldPrompts,
+            adopted: adopted?.data
+                ? {
+                    agents: Array.isArray(adopted.data.agents) ? adopted.data.agents : [],
+                    skills: Array.isArray(adopted.data.skills) ? adopted.data.skills : [],
+                    skipped: Array.isArray(adopted.data.skipped) ? adopted.data.skipped : [],
+                }
+                : null,
+            defaults,
+        };
+    }
+
+    /**
+     * Session workspaces: "retry now". Interrupts a workspace wait; the retry
+     * turn runs the held prompts, or holds them again with no model call.
+     * `retried` is false when the session was not waiting on its workspace.
+     */
+    async retrySessionWorkspace(sessionId: string, opts?: { timeoutMs?: number }): Promise<{ retried: boolean } | { status: "pending"; commandId: string }> {
+        this._ensureStarted();
+        const id = buildLifecycleCommandId("retry-workspace");
+        await this.sendCommand(sessionId, { cmd: "retry_workspace", id });
+        const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 60_000));
+        if (!resp) return { status: "pending", commandId: id };
+        if (resp.error) throw new Error(resp.error);
+        return { retried: Boolean((resp.result as any)?.retried) };
+    }
+
+    private async _awaitCommandResponse(sessionId: string, id: string, timeoutMs: number): Promise<SessionCommandResponse | null> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const resp = await this.getCommandResponse(sessionId, id).catch(() => null);
+            if (resp) return resp;
+            await sleep(300);
+        }
+        return null;
     }
 
     /**

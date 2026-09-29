@@ -79,6 +79,7 @@ export class WebPilotSwarmClient {
             reasoningEffort: config?.reasoningEffort,
             contextTier: config?.contextTier,
             groupId: config?.groupId,
+            ...(config?.workspace != null ? { workspace: config.workspace } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
     }
@@ -94,6 +95,8 @@ export class WebPilotSwarmClient {
         splashMobile?: string;
         initialPrompt?: string;
         groupId?: string | null;
+        /** Session workspaces: the working folder, { root, folder? }. */
+        workspace?: { root: string; folder?: string } | null;
         onUserInputRequest?: UserInputHandler;
     }): Promise<WebPilotSwarmSession> {
         if (opts?.sessionId !== undefined || opts?.idempotencyKey !== undefined) {
@@ -109,6 +112,7 @@ export class WebPilotSwarmClient {
             splashMobile: opts?.splashMobile,
             initialPrompt: opts?.initialPrompt,
             groupId: opts?.groupId,
+            ...(opts?.workspace != null ? { workspace: opts.workspace } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, opts?.onUserInputRequest);
     }

@@ -23,6 +23,8 @@ import { computeSpcKeysHash } from "./spc-keys-hash.mjs";
 import { DATABASE_ENV_DEFAULTS, validateDatabaseConfig } from "./database-env.mjs";
 import { databaseOverlayOmittedKeys } from "./overlay-contracts.mjs";
 import { stageDatabaseSecrets } from "./database-secrets.mjs";
+import { stageWorkspacesComponent } from "./workspaces.mjs";
+import { WORKER_ENV_DEFAULTS } from "./worker-env.mjs";
 
 // Files inside the staged GitOps tree that contain `__PLACEHOLDER__`-style
 // tokens which need substitution against the env map. Each entry maps a
@@ -290,12 +292,18 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       AUTHZ_ADMIN_SCOPE: "__PS_UNSET__",
       SESSIONS_DEFAULT_VISIBILITY: "__PS_UNSET__",
       SESSIONS_SYSTEM_VISIBILITY: "__PS_UNSET__",
+      ...WORKER_ENV_DEFAULTS,
       ...env,
     },
     omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
   });
   log("ok", `Substituted ${substituted.length} overlay .env keys → ${overlayDst}`);
   if (runtimeService) stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayName });
+  // WORKSPACES_ENABLED=true: the worker and portal overlays get the
+  // workspaces component (see workspaces.mjs).
+  if (stageWorkspacesComponent({ service, env, stagedServiceRoot, overlayName })) {
+    log("info", `[stage-manifests] WORKSPACES_ENABLED=true: added the workspaces component to ${service}/${overlayName}.`);
+  }
 
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).

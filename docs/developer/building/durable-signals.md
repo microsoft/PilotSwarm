@@ -2,7 +2,7 @@
 
 Durable signals let an authorized caller resume a session waiting for an
 external event, without polling or running model turns while it is parked.
-They require orchestration **1.0.80 or later** and a signal-capable worker.
+They require orchestration **1.0.81 or later** and a signal-capable worker.
 
 This is the durable-wait foundation of [#79](https://github.com/affandar/PilotSwarm/issues/79).
 [Webhook ingress](webhooks.md) adds opt-in public capability URLs,
@@ -60,7 +60,7 @@ behavior.
 
 ## Race signals against user input
 
-Orchestration **1.0.80+** includes `wait_for_any` on the same capability-routed
+Orchestration **1.0.81+** includes `wait_for_any` on the same capability-routed
 `pilotswarm.signals.v1` turns as `wait_for_signal`. It accepts the same 1-8 names, optional timeout,
 and reason as `wait_for_signal`, but the first winner ends the wait:
 
@@ -166,7 +166,7 @@ supported boundary. They are not injected into an in-flight call. At dispatch,
 queued interactive input precedes matching signals, and a matching signal is
 checked before a queued timeout. Timeout records are bound to wait IDs so stale
 timers cannot complete a replacement wait. The explicit typed race result and
-full loser-disposition contract are provided by `wait_for_any` on 1.0.80+.
+full loser-disposition contract are provided by `wait_for_any` on 1.0.81+.
 
 Payload fields never choose the owner, destination session, agent, model,
 provider, namespace, tools, or credentials. Signal turns are runtime-attributed,
@@ -204,30 +204,33 @@ the corresponding management/Web API/MCP reads.
 
 ## Rollout and coverage
 
-Main's non-signal 1.0.79 handler is frozen, alongside earlier versions. Older
-executions keep their prior scheduling
-behavior until their existing continue-as-new upgrade boundary; a raise to an
+Main's workspace-capable, non-signal 1.0.80 handler is frozen alongside earlier
+versions. Older executions keep their prior scheduling behavior until their
+existing continue-as-new upgrade boundary; a raise to an
 older decoder fails explicitly rather than disappearing into its queue.
 Signal-aware run-turn and epoch-start activities require
 `pilotswarm.signals.v1`, so an old worker cannot claim them. Older run-turn
 activities retain their original names, payloads, and tool declarations.
 All signals, explicit races and webhook prompt dispatch ship together in the
-single new 1.0.80 handler under `orchestration/`. The only new frozen directory
-is upstream's `orchestration_1_0_79/`; there is no intermediate signal-only
+single new 1.0.81 handler under `orchestration/`. The only new frozen directory
+is upstream's `orchestration_1_0_80/`; there is no intermediate signal-only
 snapshot or separate race release.
 
-Earlier unmerged drafts used 1.0.79 for signals, then signal-only 1.0.80 and a
-separate 1.0.81 race handler. Those draft-test histories are not supported by
-this consolidated release. Use a fresh isolated test database for the new
-build; do not reset an ordinary upstream deployment or reuse the old draft lab.
-Upstream's actual 1.0.79 histories remain supported by their unchanged freeze.
+Earlier unmerged drafts used version numbers that now belong to upstream
+releases, including 1.0.80 for signals and webhooks. Those draft-test histories
+are not supported by this release. Use fresh isolated state for draft testing;
+do not reset an ordinary upstream deployment or reuse the old draft lab.
+Upstream's actual 1.0.79 and 1.0.80 histories remain supported by their unchanged
+freezes. Workspace support still starts at 1.0.80; signals, races and webhook
+prompt dispatch require 1.0.81.
 
 `durable-signals.test.js` covers envelopes, limits, FIFO, deduplication,
 interrupt/re-arm, timeout and Stop/replacement semantics. The native-runtime
 suite additionally exercises real Duroxide queues, replay, continue-as-new,
 maximum-size buffered payloads, capability routing, and a replacement
 worker/provider. Review regressions cover delayed timeout dispatch,
-budget-interrupted wakes, recurring schedule restoration, first-turn tool
+budget-interrupted wakes, workspace recovery without losing signal deadlines
+or typed race winners, recurring schedule restoration, first-turn tool
 requirements, maximum-name inspection, and UI snapshot authority. These
 fixtures do not call a real model or replace the
 credentialed PostgreSQL/Copilot integration gate.

@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-sdk",
-    "version": "0.6.0",
+    "version": "0.7.1",
     "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
     "type": "module",
     "main": "./dist/index.js",
@@ -48,6 +48,9 @@
         "test:local:storage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/storage-config.test.js test/local/duroxide-schema-migration.test.js",
         "test:local:sdk-disk-format": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sdk-disk-format.test.js",
         "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
+        "test:local:scripted": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/scripted-harness.test.js test/local/request-capture.test.js",
+        "test:differential": "node scripts/differential-capture.mjs",
+        "test:differential:mutate": "node scripts/differential-capture.mjs --mutate",
         "test:local": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",
         "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
         "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
@@ -90,7 +93,7 @@
         "pg": "^8.18.0"
     },
     "peerDependencies": {
-        "pilotswarm-horizon-store": "0.6.0"
+        "pilotswarm-horizon-store": "0.7.1"
     },
     "peerDependenciesMeta": {
         "pilotswarm-horizon-store": {
@@ -100,7 +103,7 @@
     "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/pg": "^8.16.0",
-        "pilotswarm-horizon-store": "0.6.0",
+        "pilotswarm-horizon-store": "0.7.1",
         "typescript": "^5.0.0",
         "vitest": "^4.1.0"
     },

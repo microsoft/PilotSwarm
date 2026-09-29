@@ -162,7 +162,7 @@ object itself, not `{ options: ... }`.
   Inspect `session.signal_*` events through the existing event APIs for
   lifecycle outcomes.
 - Writes refuse deleted, terminal, and service sessions. An execution older
-  than **1.0.80**, or one whose version cannot be confirmed, is not a signal
+  than **1.0.81**, or one whose version cannot be confirmed, is not a signal
   target: `SIGNALS_UNSUPPORTED` (`409`). Create a new session on upgraded
   workers rather than attempting to feed the legacy decoder.
 - Validation failures are `INVALID_SIGNAL` (`400`) or `SIGNAL_TOO_LARGE`
@@ -186,7 +186,7 @@ data. A payload such as `{ prompt: "...", type: "cmd", answer: "yes" }` does
 not invoke any of those operations. Use `sendMessage`, `sendAnswer`, or
 the appropriate management method instead.
 
-On orchestration 1.0.80+, `wait_for_any` exposes `pendingWait.mode: "any"` and
+On orchestration 1.0.81+, `wait_for_any` exposes `pendingWait.mode: "any"` and
 `lastRaceOutcome`: one typed winner (`signal`, `user`, `timeout`, `stop`,
 `cancel`) plus durable loser dispositions. See
 [durable races](../developer/building/durable-signals.md#race-signals-against-user-input).
@@ -230,7 +230,7 @@ by capability/HMAC or provider credentials over trusted HTTPS. Their body is
 raw JSON, not the management wrapper above. A `202 {accepted:true}` response
 means durable receipt/outbox acceptance, not consumption or model success.
 Receipts expose redacted timelines, attempts, duplicate counts and correlation.
-Signal and approved prompt consumption both require 1.0.80+. Prompt consumption
+Signal and approved prompt consumption both require 1.0.81+. Prompt consumption
 means dispatch into a turn, not successful model completion.
 
 See [webhook ingress](../developer/building/webhooks.md) for source scopes,

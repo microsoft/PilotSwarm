@@ -1,0 +1,81 @@
+# The node attacher (docs/proposals/session-workspaces.md, section 5.2;
+# packages/sdk/examples/repo-workspaces/attacher.mjs).
+#
+# It mounts each root's NFS export at /mnt/ps/<root> on the node. Worker pods
+# see /mnt/ps at /ws with HostToContainer propagation, so a mount made later
+# shows up in pods that are already running.
+#
+#   host network   the kernel ties an NFS mount to the mounting process's
+#                  network namespace; a pod's would vanish with the pod and
+#                  leave the mount hung
+#   privileged     to mount, and Bidirectional propagation needs it
+#   never unmounts not on SIGTERM either; a new attacher pod finds the mounts
+#                  in place
+#
+# Worker pods ask it over a unix socket on a hostPath. Any process in a worker
+# pod can call it, so it serves only the roots listed here and has no unmount.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pilotswarm-attacher
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: attacher
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: attacher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: attacher
+    spec:
+      hostNetwork: true
+      # The host network, with cluster DNS for the repo pod's service name.
+      dnsPolicy: ClusterFirstWithHostNet
+      # Every node a worker pod can land on, spot nodes included.
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: attacher
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/app/packages/sdk/examples/repo-workspaces/attacher.mjs"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+          env:
+            - name: ATTACHER_ROOTS
+              value: a=repo-cache.pilotswarm.svc.cluster.local:/ws/a,shared=repo-cache.pilotswarm.svc.cluster.local:/ws/shared,home=repo-cache.pilotswarm.svc.cluster.local:/ws/home
+            - name: ATTACHER_MOUNT_BASE
+              value: /mnt/ps
+            - name: ATTACHER_SOCKET
+              value: /run/pilotswarm-attacher/sock
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: mounts
+              mountPath: /mnt/ps
+              mountPropagation: Bidirectional
+            - name: socket
+              mountPath: /run/pilotswarm-attacher
+      volumes:
+        - name: mounts
+          hostPath:
+            path: /mnt/ps
+            type: DirectoryOrCreate
+        - name: socket
+          hostPath:
+            path: /run/pilotswarm-attacher
+            type: DirectoryOrCreate

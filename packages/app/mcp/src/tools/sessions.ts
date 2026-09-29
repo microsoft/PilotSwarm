@@ -28,10 +28,18 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 context_tier: z.string().optional().describe("Context-window tier for the session's model: 'default' (smaller window) or 'long_context'"),
                 group_id: z.string().optional().describe("One of YOUR session groups to place the new session in (groups are private per-user organization; fails if the group is not yours)"),
                 splash: z.string().optional().describe("Splash text shown in the portal UI (agent-bound sessions only)"),
+                workspace_root: z.string().optional().describe("Session workspaces: a root name the deployment serves; the session works in that root"),
+                workspace_folder: z.string().optional().describe("Session workspaces: a folder relative to workspace_root (needs workspace_root)"),
             },
         },
-        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, group_id, splash }) => {
+        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, group_id, splash, workspace_root, workspace_folder }) => {
             try {
+                if (workspace_folder !== undefined && !workspace_root) {
+                    return errorResult("workspace_folder needs workspace_root", {});
+                }
+                const workspace = workspace_root
+                    ? { root: workspace_root, ...(workspace_folder !== undefined ? { folder: workspace_folder } : {}) }
+                    : undefined;
                 // system_message is a worker-side option with no Web API
                 // carrier: the web client silently DROPS it (it is not sent
                 // on the wire). Don't fail the creation — but never lie by
@@ -53,6 +61,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             model,
                             systemMessage: system_message,
                             owner: LOCAL_DEFAULT_USER_PRINCIPAL,
+                            ...(workspace ? { workspace } : {}),
                         });
                     } else {
                         session = await ctx.client.createSessionForAgent(agent, {
@@ -63,6 +72,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             groupId: group_id,
                             splash,
                             ...(!ctx.webMode ? { owner: LOCAL_DEFAULT_USER_PRINCIPAL } : {}),
+                            ...(workspace ? { workspace } : {}),
                         } as any);
                     }
                 } else {
@@ -73,6 +83,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         contextTier: context_tier,
                         groupId: group_id,
                         ...(!ctx.webMode ? { owner: LOCAL_DEFAULT_USER_PRINCIPAL } : {}),
+                        ...(workspace ? { workspace } : {}),
                     } as any);
                 }
 
@@ -118,6 +129,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                 }),
                                 model: model ?? "default",
                                 title: title ?? null,
+                                ...(workspace ? { workspace } : {}),
                                 ...(prompt !== undefined && {
                                     prompt_sent: promptSent,
                                     note: "Queued durably; monitor with get_session_detail (include: ['status']) or get_session_events (wait: true).",

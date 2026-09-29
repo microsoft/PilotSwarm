@@ -125,3 +125,38 @@ test("invalid DEPLOY_POSTGRES cannot render as a number or bypass validation", (
     }
   });
 });
+
+test("real base-infra template renders the node-pool settings: the repocache pool follows WORKSPACES_ENABLED", () => {
+  withTmp((dir) => {
+    const templatePath = join(REPO_ROOT, "deploy/providers/azure/services/base-infra/bicep/base-infra.params.template.json");
+    const base = {
+      ...parseEnvFile(templateEnvPath()),
+      FRONT_DOOR_ID: "fixture-front-door",
+      FRONT_DOOR_PROFILE_NAME: "fixture-profile",
+      FRONT_DOOR_PROFILE_RESOURCE_GROUP: "fixture-global-rg",
+    };
+    const render = (extra) => {
+      const envMap = { ...base, ...extra };
+      for (const [key, value] of Object.entries(extra)) if (value === undefined) delete envMap[key];
+      const { renderedPath } = renderParams({ module: "base-infra", templatePath, envMap, outDir: dir });
+      return JSON.parse(readFileSync(renderedPath, "utf8")).parameters;
+    };
+    // The template's defaults: no pool, minimum 1.
+    assert.equal(render({}).repoCachePoolEnabled.value, false);
+    assert.equal(render({}).userPoolMinCount.value, 1);
+    for (const [flag, expected] of [["true", true], [" TRUE ", true], ["false", false], ["", false], [undefined, false]]) {
+      const params = render({ WORKSPACES_ENABLED: flag });
+      assert.equal(params.repoCachePoolEnabled.value, expected, `WORKSPACES_ENABLED=${flag}`);
+    }
+    for (const [count, expected] of [["2", 2], [" 10 ", 10], ["", 1], [undefined, 1]]) {
+      const params = render({ USER_POOL_MIN_COUNT: count });
+      assert.equal(params.userPoolMinCount.value, expected, `USER_POOL_MIN_COUNT=${count}`);
+    }
+    for (const flag of ["yes", "1"]) {
+      assert.throws(() => render({ WORKSPACES_ENABLED: flag }), /WORKSPACES_ENABLED must be true or false/);
+    }
+    for (const count of ["0", "11", "2x", "-1"]) {
+      assert.throws(() => render({ USER_POOL_MIN_COUNT: count }), /USER_POOL_MIN_COUNT must be a whole number from 1 to 10/);
+    }
+  });
+});

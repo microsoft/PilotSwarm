@@ -23,6 +23,8 @@ function makeHarness(options = {}) {
             return session;
         }),
         getModelSummary: vi.fn(() => undefined),
+        // Every turn asks for the workspace provider (default folders, 4.11); none here.
+        getWorkspaceProvider: vi.fn(() => null),
         invalidateWarmSession: vi.fn(async () => {}),
         resetSessionState: vi.fn(async () => {}),
         dehydrate: vi.fn(async () => {}),

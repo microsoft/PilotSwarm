@@ -745,6 +745,21 @@ export class PortalRuntime {
                 return this.transport.getSessionMetricSummary(safeParams.sessionId);
             case "getSessionFootprint":
                 return this.transport.getSessionFootprint(safeParams.sessionId);
+            case "getSessionWorkspace":
+                return this.transport.getSessionWorkspace(safeParams.sessionId);
+            // Session workspaces: the wait for the answer holds this request,
+            // so the caller's timeout is bounded like the other long waits.
+            case "setSessionWorkspace":
+                return this.transport.setSessionWorkspace(
+                    safeParams.sessionId,
+                    { expectedRevision: safeParams.expectedRevision, workspace: safeParams.workspace ?? null },
+                    { ...(safeParams.options || {}), timeoutMs: clampInteger(safeParams.options?.timeoutMs, 120_000, 1_000, 300_000) },
+                );
+            case "retrySessionWorkspace":
+                return this.transport.retrySessionWorkspace(
+                    safeParams.sessionId,
+                    { ...(safeParams.options || {}), timeoutMs: clampInteger(safeParams.options?.timeoutMs, 60_000, 1_000, 300_000) },
+                );
             case "regenerateSession":
                 return this.transport.regenerateSession(safeParams.sessionId, safeParams.options || {});
             case "getSessionTokensByModel":
@@ -922,6 +937,7 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -939,6 +955,7 @@ export class PortalRuntime {
                     owner,
                     isAdmin: resourceAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

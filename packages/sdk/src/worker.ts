@@ -1,5 +1,5 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { AGENT_HANDOFF_CAPABILITY } from "./activity-routing.js";
+import { AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { SIGNAL_ACTIVITY_CAPABILITY } from "./session-signals.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -35,7 +35,8 @@ import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
 import type { Tool } from "@github/copilot-sdk";
-import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
+import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
+import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
@@ -377,6 +378,9 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+        this.sessionManager.setWorkspaceProvider(options.workspaceProvider
+            ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
+        this.config.workerNodeId ?? undefined);
     }
 
     private _startProviderPolling(): void {
@@ -492,6 +496,15 @@ export class PilotSwarmWorker {
             byPackage: this._agentPackageToolsByPackage,
             staticNames: new Set(this.toolRegistry.keys()),
         });
+    }
+
+    /**
+     * Session workspaces: set the application's provider. PilotSwarm calls it
+     * before every turn of a workspace session. Replaces `workspaceRoots` and
+     * any earlier provider; pass null to remove it.
+     */
+    setWorkspaceProvider(provider: WorkspaceProvider | null): void {
+        this.sessionManager.setWorkspaceProvider(provider, this.config.workerNodeId ?? undefined);
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -780,7 +793,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -835,6 +848,7 @@ export class PilotSwarmWorker {
                 enhancedFactsSchema: storage.runtime.provider === "horizondb" ? storage.runtime.factsSchema : undefined,
                 useManagedIdentity: storage.runtime.useManagedIdentity,
                 aadDbUser: storage.runtime.aadDbUser,
+                ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
@@ -1054,6 +1068,20 @@ export class PilotSwarmWorker {
             await this.runtime.shutdown(drainBudgetMs);
             this.runtime = null;
             this._runtimeStartup = null;
+        }
+
+        // Session workspaces: idle workspace sessions tell their provider
+        // they left before this worker goes (section 4.5). Sessions whose
+        // turn the drain cut are skipped; the provider sees the dead holder
+        // at the next attach.
+        try {
+            const released = await this.sessionManager.releaseIdleWorkspaces({
+                reason: "worker_shutdown",
+                workerNodeId: this.config.workerNodeId ?? os.hostname(),
+            });
+            if (released > 0) console.error(`[PilotSwarmWorker] drain released ${released} workspace session(s)`);
+        } catch (err: any) {
+            console.warn(`[PilotSwarmWorker] drain workspace release failed: ${err?.message ?? err}`);
         }
 
         // Release everything this worker served, via the same lock-aware

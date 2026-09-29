@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { createTestEnv } from "../helpers/local-env.js";
 import { createSessionManagerProxy, createSessionProxy } from "../../src/session-proxy.ts";
-import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, WORKSPACE_CAPABILITY } from "../../src/activity-routing.ts";
 import { handleSubAgentAction as frozenSpawn } from "../../src/orchestration_1_0_74/agents.ts";
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -41,7 +41,8 @@ async function withStore(body) {
     const client = new Client(provider);
     const runtimes = [];
     const events = [];
-    function worker(id, capable, orchestrationName, generator, customActivities = []) {
+    // `tags`: what a capable worker declares; by default the handoff contract only.
+    function worker(id, capable, orchestrationName, generator, customActivities = [], tags = [AGENT_HANDOFF_CAPABILITY]) {
         const runtime = new Runtime(provider, {
             orchestrationConcurrency: 1,
             workerConcurrency: capable ? 2 : 8,
@@ -54,12 +55,12 @@ async function withStore(body) {
             sessionIdleTimeoutMs: 3_600_000,
             workerNodeId: `${env.runId}-${id}`,
             logLevel: "error",
-            ...(capable ? { workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY] } } : {}),
+            ...(capable ? { workerTagFilter: { defaultAnd: tags } } : {}),
         });
         runtime.registerOrchestration(orchestrationName, generator);
         // Deliberately give the old worker every activity name as a trap. A
         // name is NOT a routing guard; only the provider's tag filter is.
-        for (const name of new Set([...Object.keys(HANDOFF_ACTIVITY_NAMES), ...Object.values(HANDOFF_ACTIVITY_NAMES), "legacyProbe"])) {
+        for (const name of new Set([...Object.keys(HANDOFF_ACTIVITY_NAMES), ...Object.values(HANDOFF_ACTIVITY_NAMES), "legacyProbe", "checkWorkspace", "releaseWorkspace"])) {
             if (customActivities.includes(name)) continue;
             runtime.registerActivity(name, async (ctx, input) => {
                 events.push({ worker: id, name, tag: ctx.tag(), sessionId: ctx.sessionId, input });
@@ -77,6 +78,18 @@ async function withStore(body) {
         }
         await env.cleanup();
     }
+}
+
+/** Poll an orchestration's status until it is `status`, or fail with the last one seen. */
+async function waitForStatus(client, instanceId, status, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let last;
+    while (Date.now() < deadline) {
+        last = (await client.getStatus(instanceId)).status;
+        if (last === status) return;
+        await sleep(100);
+    }
+    throw new Error(`${instanceId} is ${last}, not ${status}, after ${timeoutMs} ms`);
 }
 
 function* routedHandoff(ctx) {
@@ -97,6 +110,39 @@ function* routedHandoff(ctx) {
 // These exercise production proxy descriptors through the native SDK and
 // PostgreSQL's dequeue filters, not a simulated scheduler.
 describe("agent handoff capability routing", () => {
+    it("keeps a workspace session's work off workers that do not know workspaces (rolling deploy)", async () => {
+        await withStore(async ({ client, worker, events }) => {
+            const workspace = { schema: 1, root: "a", folder: "repo" };
+            function* workspaceWork(ctx) {
+                const session = createSessionProxy(ctx, "child", `affinity-${ctx.instanceId}`, { workspace }, "agent-handoff-v2");
+                return yield ctx.all([
+                    session.runTurn("work", false, 0, { workspaceRevision: 1 }),
+                    session.checkWorkspace({ workspace, revision: 2, turnIndex: 1 }),
+                    session.releaseWorkspace({ reason: "idle", revision: 1, turnIndex: 1 }),
+                ]);
+            }
+            // The release before: it knows the handoff contract, not workspaces.
+            await worker("previous", true, "workspace", workspaceWork).start();
+            await client.startOrchestration("ws-1", "workspace", {});
+            // A remote database can take longer than 400 ms to show a new
+            // orchestration; wait for it, then give the old worker time to
+            // poll. It must not take the workspace work.
+            await waitForStatus(client, "ws-1", "Running", 15_000);
+            await sleep(400);
+            expect(events).toEqual([]);
+
+            await worker("current", true, "workspace", workspaceWork, [], [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY]).start();
+            const result = await client.waitForOrchestration("ws-1", 10_000);
+            expect(result.status).toBe("Completed");
+            expect(events.map((e) => [e.worker, e.name, e.tag])).toEqual(expect.arrayContaining([
+                ["current", "runTurnV3", WORKSPACE_CAPABILITY],
+                ["current", "checkWorkspace", WORKSPACE_CAPABILITY],
+                ["current", "releaseWorkspace", WORKSPACE_CAPABILITY],
+            ]));
+            expect(events).toHaveLength(3);
+        });
+    });
+
     it("keeps protected work pending with no capable worker, even while old workers poll", async () => {
         await withStore(async ({ client, worker, events }) => {
             const old = worker("old", false, "handoff", routedHandoff);

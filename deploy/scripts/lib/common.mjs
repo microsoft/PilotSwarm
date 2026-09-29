@@ -9,6 +9,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
 import { DATABASE_ENV_DEFAULTS, DATABASE_INPUT_KEYS, DATABASE_URL_KEYS, deploysPostgres } from "./database-env.mjs";
+import { WORKSPACES_ENV_DEFAULTS } from "./workspaces.mjs";
+import { AKS_ENV_DEFAULTS } from "./aks-env.mjs";
+import { WORKER_ENV_DEFAULTS, nativeSubagentsSetting } from "./worker-env.mjs";
 
 // Repo root: this file lives at <repo>/deploy/scripts/lib/common.mjs
 const __filename = fileURLToPath(import.meta.url);
@@ -128,7 +131,7 @@ export function loadEnv(envName) {
 
   // Compatibility defaults for newly introduced switches, not a cascade
   // onto the mutable scaffolding template.
-  const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...parseEnvFile(envFile) };
+  const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...WORKSPACES_ENV_DEFAULTS, ...AKS_ENV_DEFAULTS, ...WORKER_ENV_DEFAULTS, ...parseEnvFile(envFile) };
 
   // Resolve provisioning intent before allowing any ambient database URL.
   for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {
@@ -142,6 +145,8 @@ export function loadEnv(envName) {
   }
   const deployPostgres = deploysPostgres(merged);
   merged.DEPLOY_POSTGRES = String(deployPostgres);
+  // A bad value would crash every worker at start; refuse it here instead.
+  merged.PILOTSWARM_NATIVE_SUBAGENTS = nativeSubagentsSetting(merged);
   for (const key of DATABASE_URL_KEYS) {
     if (process.env[key] === undefined || process.env[key] === "") continue;
     if (deployPostgres) {

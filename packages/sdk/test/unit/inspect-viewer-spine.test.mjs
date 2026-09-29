@@ -87,7 +87,7 @@ test("signal inspection is tuner-only, owner-scoped, redacted, and uses the mana
     const reads = [];
     const duroxideClient = {
         getStatus: async () => ({ status: "Running" }),
-        getInstanceInfo: async () => ({ orchestrationVersion: "1.0.80" }),
+        getInstanceInfo: async () => ({ orchestrationVersion: "1.0.81" }),
         getValue: async (id, key) => {
             reads.push([id, key]);
             return JSON.stringify({ version: 1, interrupted: false, buffered: [] });

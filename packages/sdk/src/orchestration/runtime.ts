@@ -59,6 +59,9 @@ function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, voi
         ...(t.choices ? { choices: t.choices } : {}),
         ...(t.allowFreeform !== undefined ? { allowFreeform: t.allowFreeform } : {}),
         ...(t.agentIds ? { agentIds: t.agentIds } : {}),
+        // 1.0.80: a gate wait keeps its gate across continue-as-new.
+        ...(t.gate === "workspace" ? { gate: "workspace" as const } : {}),
+        ...(t.gate === "budget" ? { gate: "budget" as const, budget: true } : {}),
     };
 }
 
@@ -199,7 +202,23 @@ export function* createRuntime(
     if (state.orchestrationResult !== null) return runtime;
 
     yield* resolveTopLevelAgentConfig(runtime);
+    yield* announceCreatedWorkspace(runtime);
     return runtime;
+}
+
+/**
+ * Session workspaces (1.0.80): a session created with a workspace starts at
+ * revision 1 and says so once. Only such sessions yield here, so a session
+ * without a workspace runs the same steps as before.
+ */
+function* announceCreatedWorkspace(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    const { state } = runtime;
+    if (!state.config.workspace || state.workspaceRevision > 0) return;
+    state.workspaceRevision = 1;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: { workspace: state.config.workspace, revision: 1, path: null, source: "create" },
+    }]);
 }
 
 /**

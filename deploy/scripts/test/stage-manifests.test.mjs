@@ -430,3 +430,21 @@ test("runtime manifests fail before staging when BYO settings or versions are mi
   }), /DATABASE_URL_SECRET_VERSION/);
   assert.equal(existsSync(join(stagingDir, "gitops")), false);
 });
+
+test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env config, off unless set", () => {
+  for (const [extra, expected] of [[{}, "off"], [{ PILOTSWARM_NATIVE_SUBAGENTS: "sync" }, "sync"]]) {
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-native-"));
+    try {
+      const root = stageManifests({
+        service: "worker",
+        envName: "testenv",
+        env: makePortalEnv({ AZURE_STORAGE_CONTAINER: "copilot-sessions", PILOTSWARM_TURN_TIMEOUT_MS: "1", PILOTSWARM_LIVE_TURN: "0", ...extra }),
+        stagingDir,
+      });
+      const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
+      assert.match(text, new RegExp(`^PILOTSWARM_NATIVE_SUBAGENTS=${expected}$`, "m"));
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
+    }
+  }
+});

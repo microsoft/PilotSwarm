@@ -20,6 +20,34 @@ export interface CapabilitySelection { sourceId: string; sourceRef?: string; too
 export interface CapabilityState {
     revision: number; selections: CapabilitySelection[];
     requests?: Array<{ id: string; hash: string }>;
+    /** Agents and skills this session loaded by path (load_agent, load_skill; section 4.12). */
+    loads?: WorkspaceLoad[];
+}
+/**
+ * One agent or skill file a session loaded by path. `path` is relative to
+ * the root: every worker mounts a root at the same path, so the load
+ * survives moves. The file is read again every turn.
+ */
+export interface WorkspaceLoad { kind: "agent" | "skill"; name: string; root: string; path: string }
+/** The most files one session may load. */
+export const MAX_WORKSPACE_LOADS = 32;
+const LOAD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function normalizeLoads(value: unknown): WorkspaceLoad[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || value.length > MAX_WORKSPACE_LOADS) throw new Error("Invalid durable workspace loads");
+    const seen = new Set<string>();
+    return value.map((raw) => {
+        const load = raw as WorkspaceLoad;
+        const folder = typeof load?.path === "string" ? load.path : "";
+        if (!load || (load.kind !== "agent" && load.kind !== "skill") || typeof load.name !== "string" || !LOAD_NAME.test(load.name)
+            || typeof load.root !== "string" || !load.root || load.root.length > 128 || load.root.includes("/")
+            || !folder || folder.length > 1024 || folder.startsWith("/") || folder.includes("\0")
+            || folder.split("/").includes("..") || seen.has(`${load.kind}:${load.name}`)) {
+            throw new Error("Invalid durable workspace load");
+        }
+        seen.add(`${load.kind}:${load.name}`);
+        return { kind: load.kind, name: load.name, root: load.root, path: folder };
+    });
 }
 export const EMPTY_CAPABILITY_STATE: CapabilityState = { revision: 0, selections: [] };
 export function normalizeCapabilityState(value: unknown): CapabilityState {
@@ -53,7 +81,22 @@ export function normalizeCapabilityState(value: unknown): CapabilityState {
         }
         return { id: receipt.id, hash: receipt.hash };
     });
-    return { revision: state.revision, selections, ...(requests ? { requests } : {}) };
+    const loads = normalizeLoads(state.loads);
+    return { revision: state.revision, selections, ...(requests ? { requests } : {}), ...(loads && loads.length > 0 ? { loads } : {}) };
+}
+
+/**
+ * The next state with one load added (or replaced: same kind and name) or
+ * removed. The revision advances by one; package selections are kept.
+ */
+export function withWorkspaceLoad(state: CapabilityState, change: { add: WorkspaceLoad } | { remove: { kind: WorkspaceLoad["kind"]; name: string } }): CapabilityState {
+    const current = state.loads ?? [];
+    const key = "add" in change ? change.add : change.remove;
+    const rest = current.filter((load) => !(load.kind === key.kind && load.name === key.name));
+    if (!("add" in change) && rest.length === current.length) throw new Error(`no ${key.kind} named "${key.name}" is loaded by path in this session`);
+    const loads = "add" in change ? [...rest, change.add] : rest;
+    if (loads.length > MAX_WORKSPACE_LOADS) throw new Error(`At most ${MAX_WORKSPACE_LOADS} agents and skills may be loaded in one session`);
+    return normalizeCapabilityState({ ...state, revision: state.revision + 1, loads });
 }
 export function capabilityHash(value: unknown): string {
     return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -106,6 +149,51 @@ function lexicalScore(query: string, name: string, description: string): number 
 function artifactId(artifact: CapabilityArtifact, index: number): string {
     return artifact.id ?? `${artifact.kind}:${index}:${artifact.name}`;
 }
+/** A session workspace's adopted repo agents and skills (session workspaces, section 4.6). */
+export interface WorkspaceCapabilities {
+    repo?: string;
+    agents: Array<{ name: string; description?: string }>;
+    skills: string[];
+    /** Where they came from: the repo (default), the person's own folder (4.11), or loaded by path (4.12). */
+    origin?: "repo" | "personal" | "loaded";
+}
+/**
+ * Search hits for the working folder's adopted repo agents and skills. The
+ * base instructions send the model to search_capabilities for any named
+ * capability, and these are not in the catalog, so without them it reported
+ * a repo agent as not found before using it. They carry no ref: nothing loads
+ * or activates them; the hit says how to use them.
+ */
+export function workspaceCapabilityHits(workspace: WorkspaceCapabilities | undefined, args: { query: string; kinds?: CapabilityKind[] }, limit: number) {
+    if (!workspace) return [];
+    const kinds = args.kinds ?? ["skill", "agent", "tool", "mcp"];
+    const origin = workspace.origin ?? "repo";
+    const repo = workspace.repo ?? "the working folder's repo";
+    // Where it came from, as the model reads it (sections 4.6, 4.11, 4.12).
+    const from = origin === "personal" ? "From your own folder" : origin === "loaded" ? "Loaded by path in this session" : `Adopted from ${repo}`;
+    const words = origin === "personal" ? "my own personal folder" : origin === "loaded" ? "loaded file" : `${workspace.repo ?? ""} repo repository`;
+    const hits: any[] = [];
+    if (kinds.includes("agent")) {
+        for (const agent of workspace.agents) {
+            const score = lexicalScore(args.query, agent.name, `${words} ${agent.description ?? ""}`);
+            if (!score) continue;
+            hits.push({ kind: "agent", name: agent.name, description: String(agent.description ?? "").slice(0, 600),
+                source: "workspace", ownership: origin, scope: "session", ...(origin === "repo" ? { repo: workspace.repo } : {}),
+                how_to_use: `${from}. Call the task tool with agent_type "${agent.name}"; it runs as a native task in this session's working folder, on the session's model.`,
+                score });
+        }
+    }
+    if (kinds.includes("skill")) {
+        for (const skill of workspace.skills) {
+            const score = lexicalScore(args.query, skill, `${words} skill`);
+            if (!score) continue;
+            hits.push({ kind: "skill", name: skill, description: "", source: "workspace", ownership: origin, scope: "session",
+                ...(origin === "repo" ? { repo: workspace.repo } : {}), how_to_use: `${from}. Invoke it with the skill tool: skill "${skill}".`, score });
+        }
+    }
+    return hits.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
+}
+
 /** Complete, body-free inventory trusted for automatic Base V2 discovery. */
 export function ownedAndStaticCapabilityInventory(sources: CapabilitySource[], owner: FeatureOwner | null) {
     const entries: Array<{ kind: "skill" | "agent"; name: string; description: string; package: string;

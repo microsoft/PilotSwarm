@@ -27,14 +27,22 @@ export type TurnAction =
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
     | { type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; query?: string; sessionId?: string; agentId?: string; state?: string; parentSessionId?: string; groupId?: string; includeChildren?: boolean; updatedSince?: string; limit?: number; events?: CapturedEvent[] }
     | { type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] }
-    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] };
+    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
+    // Session workspaces (1.0.80): the agent's set_session_workspace, applied by
+    // the orchestration after the turn. `workspace: null` clears.
+    | { type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] }
+    // Session workspaces (1.0.80): a change to the extra folders only. It does
+    // not end the turn; the orchestration merges `extra` into the stored
+    // record after the turn (a null entry removes that folder). `path` is the
+    // working folder's path, `extraPaths` the new folders' paths.
+    | { type: "set_workspace_extra"; extra: Record<string, SessionWorkspaceExtra | null>; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] };
 
 type QueuedTurnActionCarrier = {
     queuedActions?: TurnAction[];
@@ -49,7 +57,18 @@ type SnapshotCommitCarrier = {
     snapshotVersion?: number;
 };
 
-export type TurnResult = TurnResultVariant & SnapshotCommitCarrier;
+/**
+ * Session workspaces (1.0.80): set on every result of a turn that got past
+ * the workspace check. For a session with a workspace, the orchestration
+ * clears held prompts and marks the workspace available only on such a
+ * result. An error returned before the check (a failed budget query, a lock
+ * timeout) delivered nothing and says nothing about the folder.
+ */
+type WorkspaceAttachCarrier = {
+    workspaceAttached?: boolean;
+};
+
+export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
@@ -59,14 +78,19 @@ type TurnResultVariant =
     // it, but a budget pause must not be — that turn already re-asked the
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
-    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    // `gate` (1.0.80+) names the gate that created the wait. Budget waits
+    // keep `budget: true` as well, so frozen 1.0.79 still reads them. A
+    // workspace wait carries the failure `code`, the `workerNodeId` that
+    // failed, and the provider's `retryAfterMs`; the orchestration picks the
+    // wait length, and `seconds` is only a fallback for older handlers.
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "signal-wait"; waitMode?: "any"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -74,6 +98,8 @@ type TurnResultVariant =
     | ({ type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "set_workspace"; workspace: SessionWorkspace | null; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "set_workspace_extra"; extra: Record<string, SessionWorkspaceExtra | null>; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
     | { type: "error"; message: string; retryable?: boolean; events?: CapturedEvent[] };
@@ -152,6 +178,8 @@ export interface TurnOptions {
             tool_names?: string[];
             title?: string;
             contract?: Record<string, unknown>;
+            /** Session workspaces: omitted inherits, a record is used, null gives none. Text-checked by the tool handler. */
+            workspace?: SessionWorkspace | null;
         }): Promise<string>;
         setSessionModel(args: { model: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for THIS session (sender-stamped server-side). */
@@ -180,9 +208,287 @@ export interface TurnOptions {
         cancelAgent(args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
         sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
+        /** Session workspaces: the attach and path check for set_session_workspace, on this worker. */
+        /**
+         * Session workspaces: attach and check on this worker. `extras`
+         * names the extra folders to check; omitted, every extra folder in
+         * the record. `skipWorkingFolder` checks the extra folders only.
+         */
+        checkWorkspace?(args: { workspace: SessionWorkspace; extras?: string[]; skipWorkingFolder?: boolean }): Promise<
+            | { ok: true; path: string | null; extras: Array<{ name: string; path: string; readOnly?: boolean }> }
+            | { ok: false; code: string; message: string }>;
         replySessionMessage(args: { request_id: string; session_id: string; body: string; verdict?: string }): Promise<string>;
     };
 }
+
+// ─── Session Workspaces ──────────────────────────────────────────
+// See docs/proposals/session-workspaces.md. A workspace is the folder a
+// session uses as its working directory. The application's provider makes it
+// ready on whichever worker runs the next turn.
+
+/**
+ * A session's folders: the working folder (a root, one exported directory,
+ * plus a folder inside it), and optional extra folders the session can use
+ * next to it, by name.
+ */
+export interface SessionWorkspace {
+    /** Record version. */
+    schema: 1;
+    /** A root name from the provider's `listRoots()`. */
+    root: string;
+    /** Relative to the root. Omitted means the root itself. */
+    folder?: string;
+    /**
+     * Extra folders, by name (section 4.10). Each is attached before every
+     * turn like the working folder and passed to the CLI as an additional
+     * directory. Nothing is adopted from them. At most MAX_WORKSPACE_EXTRAS.
+     */
+    extra?: Record<string, SessionWorkspaceExtra>;
+}
+
+/** One extra folder of a session's workspace. */
+export interface SessionWorkspaceExtra {
+    /** A root name from the provider's `listRoots()`. */
+    root: string;
+    /** Relative to the root. Omitted means the root itself. */
+    folder?: string;
+    /**
+     * false: when the folder cannot be attached, the turn runs without it
+     * and the model is told. Omitted (the default) or true: the prompt is
+     * held, as for the working folder.
+     */
+    required?: boolean;
+}
+
+/** Which repo content a session adopts from its checkout. Omitted means none. */
+export interface WorkspaceAdopt {
+    agents: boolean;
+    skills: boolean;
+    instructions: boolean;
+    /**
+     * Also adopt from the attached folder itself when it is not inside a git
+     * clone (a person's own folder, section 4.11). Without it, agents and
+     * skills come only from a clone root.
+     */
+    folder?: boolean;
+}
+
+/** Who a session belongs to, for a provider's default folders (section 4.11). */
+export interface WorkspaceDefaultsContext {
+    sessionId: string;
+    /** The session tree. */
+    rootSessionId: string;
+    /**
+     * The session's owner. Null for a system session. A portal without
+     * sign-in stamps { provider: "anonymous", subject: "anonymous" }; the
+     * sub-agents of a system session run as { provider: "system", subject: "system" }.
+     */
+    owner: { provider: string; subject: string; email?: string | null; displayName?: string | null } | null;
+    /** A platform-managed system session. */
+    isSystem: boolean;
+}
+
+/** One default folder: a folder of a root, and whether a turn waits for it. */
+export interface WorkspaceDefaultFolder {
+    root: string;
+    folder?: string;
+    /** Default false: a default folder that cannot attach is left out of the turn, and the model is told. */
+    required?: boolean;
+}
+
+/**
+ * The folders a deployment gives every session (section 4.11). PilotSwarm
+ * applies them before each turn; they are never saved in the session's
+ * record, and they do not count against MAX_WORKSPACE_EXTRAS.
+ */
+export interface WorkspaceDefaults {
+    /**
+     * The session's own folder. It is the working folder when the session's
+     * record has none; otherwise an extra folder under `name`, unless the
+     * record uses that name or the folder overlaps a folder of the record.
+     * It is the one extra folder that may adopt (its attach result's adopt).
+     */
+    home?: WorkspaceDefaultFolder & { name: string };
+    /** Extra folders every session gets, unless its record uses the name or a folder overlaps. */
+    extra?: Record<string, WorkspaceDefaultFolder>;
+}
+
+/** One exported directory, mounted at the same path on every worker. */
+export interface WorkspaceRoot {
+    name: string;
+    path: string;
+}
+
+export interface WorkspaceAttachRequest {
+    sessionId: string;
+    /** The session tree, for leases. */
+    rootSessionId: string;
+    /** The one folder to attach: `{ schema, root, folder }`, never with `extra`. */
+    workspace: SessionWorkspace;
+    revision: number;
+    /** The worker's own ID (its pod name), not the Kubernetes node. */
+    workerNodeId: string;
+    /** Rises every turn. */
+    turnIndex: number;
+    /** The extra folder's name. Absent for the working folder. */
+    attachment?: string;
+    /**
+     * Why PilotSwarm attaches. `turn`: a turn runs in the folder next.
+     * `check`: a workspace change or a sub-agent's workspace is being
+     * checked; the folder may be released right after, and no turn follows
+     * yet. A provider can leave one-time work, such as a notice, to `turn`.
+     */
+    purpose?: "turn" | "check";
+}
+
+export type WorkspaceAttachResult =
+    | {
+        ok: true;
+        path: string;
+        /** Ignored for an extra folder: nothing is adopted from it. */
+        adopt?: WorkspaceAdopt;
+        /**
+         * The folder is mounted read-only. PilotSwarm reports it in
+         * get_session_workspace and in the answer that adds an extra folder;
+         * the mount enforces it.
+         */
+        readOnly?: boolean;
+        /**
+         * A note for the model about this folder, for example that it was
+         * made again and earlier changes are gone. Only a `turn` attach
+         * delivers it: PilotSwarm adds it to that turn's prompt and records it
+         * in the session's history. Give it once; PilotSwarm keeps no memory
+         * of it.
+         */
+        notice?: string;
+    }
+    | { ok: false; code: string; message: string; retryAfterMs?: number };
+
+/** An extra folder attached for one turn (section 4.10). */
+export interface WorkspaceExtraAttach {
+    name: string;
+    root: string;
+    folder?: string;
+    rootPath: string;
+    /** The provider's path: what the CLI gets as an additional directory. */
+    path: string;
+    /** The same folder with every symlink resolved. */
+    realPath: string;
+    required: boolean;
+    readOnly?: boolean;
+}
+
+/**
+ * Application code that makes a workspace ready on a worker. PilotSwarm
+ * calls `listRoots` and `ensureAttached` before every turn of a workspace
+ * session, and `release` when the session leaves the worker.
+ *
+ * Rules: give the same workspace the same path on every worker; never make
+ * synchronous file calls on the mount inside a method (use child processes);
+ * an empty mount point is not proof of a mount.
+ */
+export interface WorkspaceProvider {
+    listRoots(): Promise<WorkspaceRoot[]>;
+    ensureAttached(req: WorkspaceAttachRequest): Promise<WorkspaceAttachResult>;
+    /** Best effort. */
+    release?(req: WorkspaceReleaseRequest): Promise<void>;
+    /**
+     * The folders every session of this deployment gets (section 4.11).
+     * Called before each turn with the session's owner; must be quick and
+     * must not touch the mount. Null or omitted: no default folders.
+     */
+    defaultFolders?(ctx: WorkspaceDefaultsContext): WorkspaceDefaults | null | Promise<WorkspaceDefaults | null>;
+}
+
+/**
+ * Why PilotSwarm releases a workspace on a worker (WorkspaceProvider.release):
+ *
+ *   ended        the session completed, was cancelled or was deleted
+ *   moved        the session left this worker and stays open: its hold
+ *                window ended, a long wait or cron timer started, a failed
+ *                turn is retried, or the folder failed twice on this worker
+ *   changed      the session's workspace was changed or cleared; the request
+ *                names the old folder
+ *   evicted      this worker dropped the idle session from memory; the
+ *                session stays open
+ *   shutdown     this worker is shutting down; the session stays open
+ *   spawn_check  the quick check before spawn_agent creates a child; the
+ *                child attaches for real at its first turn
+ *   set_check    the check behind a change from outside the session, run
+ *                on a worker the session is not on; the session attaches
+ *                for real at its next turn
+ */
+export type WorkspaceReleaseReason = "ended" | "moved" | "changed" | "evicted" | "shutdown" | "spawn_check" | "set_check";
+
+/** What WorkspaceProvider.release gets: the attach request, and why. */
+export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
+    reason: WorkspaceReleaseReason;
+}
+
+/**
+ * The deployment's default folders a turn used (section 4.11): the
+ * `session.workspace_defaults` event data, less the revision. Recorded when
+ * it changes, so the portal can show folders that are not in the record.
+ */
+export interface WorkspaceDefaultsRecord {
+    /** The person's folder, when it is the working folder because the record has none. */
+    workingFolder: { root: string; folder?: string } | null;
+    /** Default extra folders; `home: true` marks the person's folder as an extra folder. */
+    extra: Array<{ name: string; root: string; folder?: string; home?: true }>;
+}
+
+/** What a session adopted from its checkout (section 4.6): the `session.workspace_adopted` event data, less the revision. */
+export interface WorkspaceAdoptionReport {
+    /** The repo's name: its clone folder's name, for example "tfenv". Absent outside a clone. */
+    repo?: string;
+    /** Adopted repo agent names, sorted. */
+    agents: string[];
+    /** Adopted repo skill names, sorted. */
+    skills: string[];
+    /** Repo content left out, and why. `source` names where it came from when that is not the repo. */
+    skipped: Array<{ kind: "agent" | "skill"; file: string; name?: string; reason: string; source?: "personal" | "loaded" }>;
+    /** Section 4.11: agents and skills adopted from the person's own folder, sorted. */
+    personal?: { agents: string[]; skills: string[] };
+    /** Section 4.12: agents and skills loaded by path (load_agent, load_skill), sorted. */
+    loaded?: { agents: string[]; skills: string[] };
+}
+
+/** What getSessionWorkspace reports, read from the session's latest workspace events. */
+export interface SessionWorkspaceView {
+    workspace: SessionWorkspace | null;
+    /** Rises by one on every set or clear. 0 = never set. */
+    revision: number;
+    /** The attach path the last change reported, when known. */
+    path: string | null;
+    /** Extra folders' paths, by name, as changes reported them (section 4.10). */
+    extraPaths?: Record<string, string>;
+    /** `none` without a workspace; `unavailable` while prompts are held. */
+    status: "none" | "ready" | "unavailable";
+    lastError: { code: string; message: string; workerNodeId?: string; at?: string } | null;
+    /** Prompts held since the workspace became unavailable. */
+    heldPrompts: number;
+    /** The repo content adopted at the last resume that changed it. */
+    adopted: { agents: string[]; skills: string[]; skipped: unknown[] } | null;
+    /**
+     * The deployment's default folders the session used at its last turn
+     * that changed them (section 4.11); null when it used none. They are not
+     * in `workspace`: when `workingFolder` is set, the session has no record
+     * and works in the person's own folder.
+     */
+    defaults?: WorkspaceDefaultsRecord | null;
+}
+
+/** Error codes PilotSwarm raises for workspaces. Provider codes pass through unchanged. */
+export const WORKSPACE_ERROR_CODES = {
+    ROOT_UNKNOWN: "WORKSPACE_ROOT_UNKNOWN",
+    PATH_INVALID: "WORKSPACE_PATH_INVALID",
+    FOLDER_MISSING: "WORKSPACE_FOLDER_MISSING",
+    CHECK_TIMEOUT: "WORKSPACE_CHECK_TIMEOUT",
+    ATTACH_TIMEOUT: "WORKSPACE_ATTACH_TIMEOUT",
+    ATTACH_FAILED: "WORKSPACE_ATTACH_FAILED",
+    REVISION_CONFLICT: "WORKSPACE_REVISION_CONFLICT",
+    BUSY: "WORKSPACE_BUSY",
+} as const;
 
 // ─── Session Config ──────────────────────────────────────────────
 
@@ -209,6 +515,12 @@ export interface SerializableSessionConfig {
      */
     systemContextInPrompt?: boolean;
     workingDirectory?: string;
+    /**
+     * The session's workspace (session workspaces, orchestration 1.0.80+).
+     * Present only when set; every workspace behavior keys on its presence.
+     * The attach path is per-turn data and is never written to config.
+     */
+    workspace?: SessionWorkspace;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
@@ -273,6 +585,62 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     providerFingerprint?: string;
     /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */
     admittedModel?: string;
+    /**
+     * Session workspaces: this session gets set_session_workspace and
+     * get_session_workspace (it has a workspace, or its agent lists the tool).
+     * Runtime-only.
+     */
+    workspaceTools?: boolean;
+    /**
+     * Session workspaces: the orchestration running this turn is older than
+     * 1.0.80 and would drop a workspace change, so the workspace tools are
+     * not declared. Set by the runTurn activity. Runtime-only.
+     */
+    workspaceToolsBlocked?: boolean;
+    /**
+     * Session workspaces: the session had a workspace and it was cleared.
+     * The CLI still gets an explicit working folder and no repo hooks: a
+     * resume without a folder falls back to the checkout the CLI session was
+     * created in. Set by the runTurn activity. Runtime-only.
+     */
+    workspaceCleared?: boolean;
+    /**
+     * Session workspaces: this turn's attach result, set by the runTurn
+     * activity after the attach and the path check pass. Runtime-only;
+     * never serialized, never stored across turns.
+     */
+    workspaceAttach?: {
+        root: string;
+        rootPath: string;
+        /** The provider's path: the CLI's working directory for this turn. */
+        path: string;
+        realPath: string;
+        adopt?: WorkspaceAdopt;
+        /** The repo agents and skills the path check read, when adopt asks for them. */
+        repo?: import("./workspace-check.js").RepoScan;
+        /** What a later release on this worker sends the provider. */
+        revision?: number;
+        rootSessionId?: string;
+        turnIndex?: number;
+        /** The affinity key the turn ran under; a release sent under an older key skips a newer attach. */
+        affinityKey?: string;
+        readOnly?: boolean;
+        /** The extra folders attached for this turn (section 4.10), sorted by name. */
+        extras?: WorkspaceExtraAttach[];
+        /** Optional extra folders that could not be attached; the turn runs without them. */
+        extrasUnavailable?: Array<{ name: string; root: string; folder?: string; code: string; message: string }>;
+        /** Section 4.11: the working folder is the deployment's default home folder (a person's own folder). */
+        homeIsWorkingFolder?: boolean;
+        /** Section 4.11: the names of the extra folders that came from the deployment's defaults. */
+        defaultExtras?: string[];
+        /** Section 4.11: the default home folder as an extra folder, and what it adopts. */
+        home?: { name: string; path: string; adopt: WorkspaceAdopt; repo?: import("./workspace-check.js").RepoScan };
+    };
+    /**
+     * Session workspaces: what this handle adopted from the checkout, set by
+     * SessionManager when it builds the CLI config. Runtime-only.
+     */
+    workspaceAdoption?: WorkspaceAdoptionReport;
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**
@@ -610,7 +978,7 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
-    /** Durable signal wait and deduplication window (1.0.80+). Payloads stay in KV slots. */
+    /** Durable signal wait and deduplication window (1.0.81+). Payloads stay in KV slots. */
     pendingSignalWait?: PendingSignalWait;
     signalWaitInterrupted?: boolean;
     recentSignalIds?: string[];
@@ -631,9 +999,13 @@ export interface OrchestrationInput {
     activeTimerState?: {
         remainingMs: number;
         reason: string;
+        // 1.0.80 also writes "workspace_retry" here (through a cast): the union
+        // stays as it was because frozen handlers type-check against it.
         type: "wait" | "cron" | "idle" | "agent-poll" | "input-grace";
         originalDurationMs?: number;
         shouldRehydrate?: boolean;
+        /** 1.0.80: the gate behind a wait timer, carried so it survives continue-as-new. */
+        gate?: "budget" | "workspace";
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
         content?: string;
         question?: string;
@@ -651,13 +1023,30 @@ export interface OrchestrationInput {
      * epoch boundary. Each was durably recorded as a user.message at stash
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
-    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string }>;
+    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string; attachments?: PromptAttachmentRef[]; sender?: import("./message-sender.js").MessageSender }>;
+    // ─── Session workspaces (1.0.80) ─────────────────────────
+    /** Rises by one on every workspace set or clear. Absent = 0. */
+    workspaceRevision?: number;
+    /** `unavailable` while a workspace wait holds prompts. */
+    workspaceStatus?: { state: "ready" | "unavailable"; code?: string };
+    /** The changed-cwd note for the next turn of any kind that gets past the workspace check. */
+    workspaceNotice?: string;
+    /** The notes of turns the workspace check refused, for the next turn that gets past it. */
+    workspaceHeldNote?: string;
+    /** A cleared workspace is still owed a release on the worker that holds the session. */
+    workspaceReleasePending?: boolean;
+    /** Retry state behind a held workspace wait. */
+    workspaceRetry?: { step: number; failures: { workerNodeId: string; count: number } };
+    /** Test only: the workspace retry schedule in milliseconds. */
+    workspaceRetryScheduleMs?: number[];
     /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
     interruptedWaitTimer?: {
         remainingSec: number;
         reason: string;
         shouldRehydrate: boolean;
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
+        budget?: boolean;
+        gate?: "budget" | "workspace";
     };
     /** Saved interrupted cron timer. The orchestration auto-resumes the remaining time unless cron is explicitly reset. */
     interruptedCronTimer?: {
@@ -873,6 +1262,17 @@ export interface PilotSwarmWorkerOptions {
     aadDbUser?: string;
     /** Experimental same-worker native Copilot delegation. Default: PILOTSWARM_NATIVE_SUBAGENTS or off. */
     nativeSubagents?: "off" | "sync";
+
+    /**
+     * Session workspaces: the application's provider. Takes precedence over
+     * `workspaceRoots`. Can also be set later with `setWorkspaceProvider()`.
+     */
+    workspaceProvider?: WorkspaceProvider;
+    /**
+     * Session workspaces without an application provider: fixed roots served
+     * by the built-in provider (`path` = root path + folder, adopts nothing).
+     */
+    workspaceRoots?: WorkspaceRoot[];
 
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;

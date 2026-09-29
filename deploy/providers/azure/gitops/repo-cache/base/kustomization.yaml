@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The repo pod for session workspaces: the reference deployment in
+# docs/proposals/session-workspaces.md, sections 5 and 12.1.
+#
+# One pod, one disk:
+#   repo-service  mirrors github.com/microsoft/duroxide, keeps a sandbox remote
+#                 that takes the sessions' pushes, makes session clones, and
+#                 keeps leases (port 8080)
+#   nfs           exports /ws/a (the repo root) and /ws/shared (a folder every
+#                 session can read and write) over NFS 4.1 (port 2049)
+#
+# Worker nodes mount the exports through the attacher DaemonSet in
+# gitops/worker/components/workspaces. The deploy tool ships this service only
+# when WORKSPACES_ENABLED=true.
+#
+# No Namespace here: the worker's kustomization owns `pilotswarm`, and two
+# Flux kustomizations that both own one Namespace can prune it.
+
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - network-policy.yaml
+
+# The NFS exports, read by exportfs from /etc/exports.d. Paths are relative to
+# the nfs container's NFS_ROOT (see packages/sdk/examples/repo-workspaces/nfs-server.sh).
+configMapGenerator:
+  - name: repo-cache-exports
+    files:
+      - pilotswarm.exports

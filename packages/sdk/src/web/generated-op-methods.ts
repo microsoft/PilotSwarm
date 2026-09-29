@@ -92,6 +92,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSessionTreeRetrievalUsage",
     "getSessionTreeSkillUsage",
     "getSessionTreeStats",
+    "getSessionWorkspace",
     "getSharedFactsStats",
     "getSystemGitHubCopilotKeyStatus",
     "getTopEventEmitters",
@@ -146,6 +147,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "resetCanvasShareLink",
     "resetClusterFeatureFlag",
     "restartSystemSession",
+    "retrySessionWorkspace",
     "revokeAgentPackageEditor",
     "revokeSessionShare",
     "revokeSignalEndpoint",
@@ -175,6 +177,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setProviderSystemUse",
     "setSessionModel",
     "setSessionVisibility",
+    "setSessionWorkspace",
     "setSystemGitHubCopilotKey",
     "setSystemModelDefault",
     "setSystemSessionModel",
@@ -324,7 +327,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default.
+     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder.
      * @remarks `POST /sessions` — access: `session:create`
      */
     createSession(params: {
@@ -333,10 +336,11 @@ export interface ManagementOps {
         contextTier?: any;
         groupId?: any;
         visibility?: any;
+        workspace?: any;
     }): Promise<any>;
 
     /**
-     * Create a session bound to a named agent.
+     * Create a session bound to a named agent. workspace { root, folder? } sets its working folder.
      * @remarks `POST /sessions/for-agent` — access: `session:create`
      */
     createSessionForAgent(params: {
@@ -350,6 +354,7 @@ export interface ManagementOps {
         initialPrompt?: any;
         groupId?: any;
         visibility?: any;
+        workspace?: any;
     }): Promise<any>;
 
     /**
@@ -956,6 +961,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * The session's workspace: record, revision, path, status, last error, held-prompt count, and adopted repo agents and skills.
+     * @remarks `GET /management/sessions/:sessionId/workspace` — access: `session:read`
+     */
+    getSessionWorkspace(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Shared facts stats.
      * @remarks `GET /management/facts/shared-stats` — access: `fleet:read`
      */
@@ -1406,6 +1419,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Retry now: interrupt a workspace wait so the held prompts run, or are held again with no model call.
+     * @remarks `POST /management/sessions/:sessionId/workspace/retry` — access: `session:write`
+     */
+    retrySessionWorkspace(params: {
+        sessionId: string;
+        options?: any;
+    }): Promise<any>;
+
+    /**
      * Revoke a user's editor grant on a shared package ({ user: { provider, subject } }). Owner or admin; idempotent.
      * @remarks `POST /agent-packages/:name/editors/revoke` — access: `authed`
      */
@@ -1681,6 +1703,17 @@ export interface ManagementOps {
     setSessionVisibility(params: {
         sessionId: string;
         visibility?: any;
+    }): Promise<any>;
+
+    /**
+     * Set ({ root, folder, extra }) or clear (null) the session's workspace. A record without extra keeps the session's extra folders; extra (even {} or null) sets exactly those. expectedRevision must match the current revision. Applied between turns; answers with the new revision or a WORKSPACE_* error code.
+     * @remarks `PUT /management/sessions/:sessionId/workspace` — access: `session:manage`
+     */
+    setSessionWorkspace(params: {
+        sessionId: string;
+        expectedRevision?: any;
+        workspace?: any;
+        options?: any;
     }): Promise<any>;
 
     /**
@@ -2022,6 +2055,7 @@ export function createManagementOps(
         getSessionTreeRetrievalUsage: (params: Record<string, unknown> = {}) => callOp("getSessionTreeRetrievalUsage", params),
         getSessionTreeSkillUsage: (params: Record<string, unknown> = {}) => callOp("getSessionTreeSkillUsage", params),
         getSessionTreeStats: (params: Record<string, unknown> = {}) => callOp("getSessionTreeStats", params),
+        getSessionWorkspace: (params: Record<string, unknown> = {}) => callOp("getSessionWorkspace", params),
         getSharedFactsStats: (params: Record<string, unknown> = {}) => callOp("getSharedFactsStats", params),
         getSystemGitHubCopilotKeyStatus: (params: Record<string, unknown> = {}) => callOp("getSystemGitHubCopilotKeyStatus", params),
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
@@ -2076,6 +2110,7 @@ export function createManagementOps(
         resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
         resetClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("resetClusterFeatureFlag", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
+        retrySessionWorkspace: (params: Record<string, unknown> = {}) => callOp("retrySessionWorkspace", params),
         revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
         revokeSignalEndpoint: (params: Record<string, unknown> = {}) => callOp("revokeSignalEndpoint", params),
@@ -2105,6 +2140,7 @@ export function createManagementOps(
         setProviderSystemUse: (params: Record<string, unknown> = {}) => callOp("setProviderSystemUse", params),
         setSessionModel: (params: Record<string, unknown> = {}) => callOp("setSessionModel", params),
         setSessionVisibility: (params: Record<string, unknown> = {}) => callOp("setSessionVisibility", params),
+        setSessionWorkspace: (params: Record<string, unknown> = {}) => callOp("setSessionWorkspace", params),
         setSystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setSystemGitHubCopilotKey", params),
         setSystemModelDefault: (params: Record<string, unknown> = {}) => callOp("setSystemModelDefault", params),
         setSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("setSystemSessionModel", params),

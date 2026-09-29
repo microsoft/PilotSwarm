@@ -3,10 +3,11 @@ import { PROVIDER_BUDGET_WAKE_PROMPT } from "../provider-budgets.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "../prompt-system-context.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
-import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
+import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName, sanitizePromptAttachmentRefs } from "../types.js";
 import { armSignalWait, cancelSignalWait, interruptSignalWait, startSignalWait, timeoutSignalWait } from "./signals.js";
 import { formatSignalRaceOutcome } from "../session-signals.js";
 import { createSessionProxy } from "../session-proxy.js";
+import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import {
     buildShutdownWaitReason,
@@ -19,6 +20,7 @@ import {
     refreshTrackedSubAgents,
 } from "./agents.js";
 import {
+    applyAgentWorkspaceExtrasChange,
     applyCronAtAction,
     applyCronAction,
     continueInput,
@@ -37,10 +39,17 @@ import {
 import { describeCronAt } from "../cron-at.js";
 import { shouldWakeParentForChildUpdate } from "../child-notifications.js";
 import {
+    BUDGET_TIMER_WAKE_PROMPT,
     INTERNAL_SYSTEM_TURN_PROMPT,
     MAX_RETRIES,
     SHUTDOWN_POLL_INTERVAL_MS,
     SHUTDOWN_TIMEOUT_MS,
+    WORKSPACE_CHANGED_CONTINUE_PROMPT,
+    WORKSPACE_RETRY_WAKE_PROMPT,
+    timerGate,
+    workspaceChangedNote,
+    extraFoldersChangedNote,
+    workspaceRetryDelayMs,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -445,6 +454,8 @@ export function* processPrompt(
         // worker self-validates against them (preamble) and commits the
         // post-turn snapshot inside the activity, returning the new version.
         const snapshotTurnKey: string = state.blobEnabled ? yield ctx.newGuid() : "";
+        const heldAttachments = sanitizePromptAttachmentRefs(
+            (state.budgetStash ?? []).flatMap((entry) => entry.attachments ?? []));
         const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
             ...(runtime.options.parentSessionId ? { parentSessionId: runtime.options.parentSessionId } : {}),
             nestingLevel: runtime.options.nestingLevel,
@@ -462,6 +473,21 @@ export function* processPrompt(
             // the model prompt and does NOT re-record them.
             ...(state.budgetStash && state.budgetStash.length > 0
                 ? { stashedPrompts: state.budgetStash.map((s) => s.prompt) }
+                : {}),
+            // 1.0.80: images held with those prompts reach the model too, kept
+            // apart so the new prompt's user.message is not credited with them.
+            ...(heldAttachments.length > 0 ? { stashedAttachments: heldAttachments } : {}),
+            // Session workspaces (1.0.80): the revision the provider leases
+            // under, and the pending notes, which the activity appends to
+            // whatever prompt it finally sends. The revision also goes out
+            // after a clear: the worker then still passes an explicit
+            // working folder, and the agent's next set checks under the
+            // right revision.
+            ...(state.config.workspace || state.workspaceRevision > 0
+                ? { workspaceRevision: Math.max(1, state.workspaceRevision) }
+                : {}),
+            ...(state.workspaceNotice || state.workspaceHeldNote
+                ? { workspaceNotice: mergePrompt(state.workspaceNotice, state.workspaceHeldNote) }
                 : {}),
             ...(sender ? { sender } : {}),
             ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -577,7 +603,14 @@ export function* processPrompt(
     // carried count, continued-as-new, and started over. An invalid
     // credential looped an execution every ~18 seconds for ever
     // (2026-08-24, found live by the regression workflow).
-    if ((result as any)?.type !== "error") state.retryCount = 0;
+    //
+    // Session workspaces: a refusal by the workspace check is not a success
+    // either. The retry turn keeps the count, so the worker adds the
+    // partial-changes note and does not record the prompt twice (review F4).
+    if ((result as any)?.type !== "error"
+        && !((result as any)?.type === "wait" && timerGate(result as any) === "workspace")) {
+        state.retryCount = 0;
+    }
     // Lifecycle protocol: adopt the version the activity committed. The
     // returned value is authoritative even when it disagrees with the
     // expectation (self-healing after a store restore). state.snapshotVersion
@@ -623,8 +656,17 @@ export function* processPrompt(
     // SESSION_STATE_MISSING, and the runtime then wrote a lossy_handoff
     // blaming "a worker restart" that never happened. Deterministic on any
     // session whose first turn was refused.
-    const budgetRefused = result.type === "wait" && (result as any).budget === true;
-    if (!budgetRefused) state.iteration++;
+    const gateRefused = result.type === "wait" && timerGate(result as any) !== undefined;
+    if (!gateRefused) state.iteration++;
+    // A turn that ran (any result but a gate refusal) delivered the pending
+    // workspace notes; a refused one did not, so they wait for the next. For
+    // a session with a workspace, only a turn that got past the workspace
+    // check delivered them (review F1).
+    if (!gateRefused && (state.workspaceNotice || state.workspaceHeldNote)
+        && (!state.config.workspace || (result as any).workspaceAttached === true)) {
+        state.workspaceNotice = undefined;
+        state.workspaceHeldNote = undefined;
+    }
     yield* maybeSummarize(runtime);
     yield* refreshTrackedSubAgents(runtime);
 
@@ -634,7 +676,7 @@ export function* processPrompt(
     }
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
-    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap, requiredTool);
+    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap, requiredTool, sender, attachments);
 }
 
 // ─── Stop-turn race support ─────────────────────────────────
@@ -771,8 +813,8 @@ export function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): G
     // THIS is the 1.0.69 schedule change: for a budget wait the yields below
     // (utcNow, and possibly releaseAffinity) do not happen at all. 1.0.68 is
     // frozen beside this file because of it.
-    if (state.interruptedWaitTimer?.budget) {
-        ctx.traceInfo(`[orch] dropping interrupted budget wait — the gate decides afresh each turn`);
+    if (timerGate(state.interruptedWaitTimer)) {
+        ctx.traceInfo(`[orch] dropping interrupted ${timerGate(state.interruptedWaitTimer)} wait — the gate decides afresh each turn`);
         state.interruptedWaitTimer = null;
     }
 
@@ -968,6 +1010,8 @@ function coerceChildQuestionToWait(
             reason: "waiting for parent answer",
             content: result.content.trim(),
             model: (result as any).model,
+            // Session workspaces: the turn got past the workspace check.
+            ...(result.workspaceAttached === true ? { workspaceAttached: true } : {}),
         } as TurnResult;
     }
     return result;
@@ -987,6 +1031,15 @@ function* stashBudgetRefusedPrompt(
     clientMessageIds?: string[],
     isBootstrap?: boolean,
     requiredTool?: string,
+    // 1.0.80: the stash holds prompts for either gate, with their images
+    // and their writer.
+    gate: "budget" | "workspace" = "budget",
+    sender?: MessageSender,
+    attachments?: PromptAttachmentRef[],
+    // Session workspaces: a retried prompt was recorded by its first
+    // attempt, and the worker does not record a retry again. Recording it
+    // here as well put it in the transcript twice (review F4).
+    alreadyRecorded = false,
 ): Generator<any, void, any> {
     const { state } = runtime;
     // 1.0.71: the turn's note rides in the prompt as a trailing block. It is
@@ -1004,6 +1057,10 @@ function* stashBudgetRefusedPrompt(
     // stashing it painted "Internal orchestration wake-up." into transcripts
     // as a queued USER message (caught by the resume tests).
     if (prompt === INTERNAL_SYSTEM_TURN_PROMPT) return;
+    // A wait's own timer text is machinery too. Before 1.0.80 a budget wait
+    // woke with it, and a still-refusing gate recorded it as a queued USER
+    // message (test F11). Old histories can still carry it.
+    if (/^The \d+ second wait is now complete\./.test(prompt)) return;
 
     const ids = Array.isArray(clientMessageIds)
         ? clientMessageIds.filter((id) => typeof id === "string" && id)
@@ -1034,25 +1091,181 @@ function* stashBudgetRefusedPrompt(
     // Stamped rather than skipped: the message stays visible (the portal
     // folds a system-sender one into a collapsed row), and the reader can
     // still see what the session was told to do while it sits paused.
-    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-        eventType: "user.message",
-        data: {
-            content: prompt,
-            ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
-            // Marked, so a reader of the raw events can tell a message that
-            // ran from one waiting for the budget to clear.
-            budgetQueued: true,
-            ...(isBootstrap ? { sender: { kind: "system", display: "agent kickoff" } } : {}),
-        },
-    }]);
+    const heldAttachments = sanitizePromptAttachmentRefs(attachments);
+    if (!alreadyRecorded) {
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "user.message",
+            data: {
+                content: prompt,
+                ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
+                // Marked, so a reader of the raw events can tell a message that
+                // ran from one waiting for the budget (or the workspace) to clear.
+                ...(gate === "workspace" ? { workspaceQueued: true } : { budgetQueued: true }),
+                ...(isBootstrap
+                    ? { sender: { kind: "system", display: "agent kickoff" } }
+                    : sender ? { sender } : {}),
+                ...(heldAttachments.length > 0 ? { attachments: heldAttachments } : {}),
+            },
+        }]);
+    }
     stash.push({
         prompt,
         ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
         ...(requiredTool ? { requiredTool } : {}),
+        ...(heldAttachments.length > 0 ? { attachments: heldAttachments } : {}),
+        ...(sender && !isBootstrap ? { sender } : {}),
     });
     state.budgetStash = stash;
     runtime.ctx.traceInfo(
-        `[orch] stashed prompt refused by the budget gate (${stash.length} waiting)`);
+        `[orch] stashed prompt refused by the ${gate} gate (${stash.length} waiting)`);
+}
+
+/**
+ * Session workspaces (1.0.80): the agent's set_session_workspace. The tool
+ * already checked the folder on the worker and ended the turn; here the
+ * change is stored, the revision rises by one, the event is emitted, and one
+ * system-only turn starts at once in the new folder with the changed-cwd
+ * note (docs/proposals/session-workspaces.md 4.3, agent flow).
+ */
+function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: TurnResult): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const action = result as any;
+    let next: NonNullable<typeof state.config.workspace> | null = null;
+    if (action.workspace !== null && action.workspace !== undefined) {
+        const checked = validateWorkspaceText(action.workspace);
+        if (!checked.ok) {
+            ctx.traceInfo(`[orch] ignoring set_workspace with an invalid record: ${checked.message}`);
+            return;
+        }
+        next = checked.workspace;
+    }
+    const previous = state.config.workspace ?? null;
+    if (sameWorkspace(previous, next)) return;
+    const revision = state.workspaceRevision + 1;
+    const path = typeof action.path === "string" ? action.path : null;
+    const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
+    if (next) state.config.workspace = next;
+    else delete state.config.workspace;
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    state.workspaceRevision = revision;
+    state.workspaceNotice = [workspaceChangedNote(previous, next, path), next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined]
+        .filter(Boolean).join(" ");
+    state.workspaceRetry = null;
+    if (!next) state.workspaceStatus = null;
+    if (!next && previous) state.workspaceReleasePending = true;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.workspace_changed",
+        data: { workspace: next, revision, path, ...(extraPaths && Object.keys(extraPaths).length > 0 ? { extraPaths } : {}), source: "agent" },
+    }]);
+    state.pendingPrompt = mergePrompt(state.pendingPrompt, WORKSPACE_CHANGED_CONTINUE_PROMPT);
+    state.bootstrapPrompt = true;
+    ctx.traceInfo(`[orch] agent ${next ? "set" : "cleared"} the workspace: revision ${revision}; continuing in the new folder`);
+}
+
+/**
+ * Session workspaces (1.0.80): the note a refused turn carried is held for
+ * the next turn that gets past the workspace check. The note can hold a
+ * child update, a cron or wait wake-up, or a model notice; each was taken
+ * from state when the turn was built, so dropping it lost it (review F2,
+ * F5). The retry and budget wake-ups' own sentences are left out: they
+ * describe the attempt, not the task.
+ */
+function holdRefusedTurnNote(runtime: DurableSessionRuntime, sourcePrompt: string): void {
+    const { state } = runtime;
+    const split = splitSystemContextBlock(typeof sourcePrompt === "string" ? sourcePrompt : "");
+    let note = split.note ?? "";
+    for (const wake of [WORKSPACE_RETRY_WAKE_PROMPT, BUDGET_TIMER_WAKE_PROMPT]) {
+        const body = extractPromptSystemContext(wake).systemPrompt;
+        if (body) note = note.split(body).join("");
+    }
+    // A finished wait wakes with its own sentence as the prompt, which the
+    // stash does not keep.
+    const body = split.prompt.trim();
+    const parts = [
+        /^The \d+ second wait is now complete\./.test(body) ? body : undefined,
+        note.replace(/\n{3,}/g, "\n\n").trim() || undefined,
+    ].filter((part): part is string => Boolean(part));
+    for (const part of parts) {
+        if (state.workspaceHeldNote?.includes(part)) continue;
+        state.workspaceHeldNote = mergePrompt(state.workspaceHeldNote, part);
+    }
+}
+
+/**
+ * Session workspaces (1.0.80): the attach or the path check failed, so the
+ * model was not called. Hold the prompt, pick the next attempt from the
+ * schedule, and let another worker try after two failures in a row on one
+ * worker (docs/proposals/session-workspaces.md, section 4.7).
+ */
+function* holdForWorkspace(
+    runtime: DurableSessionRuntime,
+    result: TurnResult,
+    sourcePrompt: string,
+    clientMessageIds?: string[],
+    isBootstrap?: boolean,
+    requiredTool?: string,
+    sender?: MessageSender,
+    attachments?: PromptAttachmentRef[],
+): Generator<any, void, any> {
+    const { ctx, state, options } = runtime;
+    const wait = result as any;
+    // The agent's own wait, interrupted by the refused message, is still
+    // owed: it resumes after the turn that finally runs, as the held note
+    // tells the model. A gate's wait is never re-armed.
+    if (timerGate(state.interruptedWaitTimer)) state.interruptedWaitTimer = null;
+    yield* stashBudgetRefusedPrompt(
+        runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool, "workspace", sender, attachments,
+        state.retryCount > 0,
+    );
+    holdRefusedTurnNote(runtime, sourcePrompt);
+
+    const failedOn = typeof wait.workerNodeId === "string" ? wait.workerNodeId : "";
+    const code = typeof wait.code === "string" ? wait.code : undefined;
+    const previous = state.workspaceRetry ?? { step: 0, failures: { workerNodeId: "", count: 0 } };
+    const failures = failedOn && previous.failures.workerNodeId === failedOn
+        ? { workerNodeId: failedOn, count: previous.failures.count + 1 }
+        : { workerNodeId: failedOn, count: 1 };
+    const delayMs = workspaceRetryDelayMs(previous.step, wait.retryAfterMs, state.workspaceRetryScheduleMs);
+    state.workspaceRetry = { step: previous.step + 1, failures };
+    state.workspaceStatus = { state: "unavailable", ...(code ? { code } : {}) };
+    ctx.traceInfo(
+        `[orch] workspace unavailable (${code ?? "unknown"}) on ${failedOn || "unknown worker"}: `
+        + `attempt ${state.workspaceRetry.step}, ${failures.count} in a row there; retry in ${delayMs}ms`,
+    );
+
+    // Two failures in a row on one worker: release affinity so the next
+    // attempt may land elsewhere. The count is not reset by the release, so
+    // every further failure there releases again, until a check passes.
+    if (failures.count >= 2 && state.blobEnabled) {
+        yield* releaseAffinity(runtime, "workspace_unavailable", {
+            ...(code ? { code } : {}),
+            workerNodeId: failedOn,
+            failures: failures.count,
+        });
+    } else {
+        const plan = planHoldRelease({
+            blobEnabled: state.blobEnabled,
+            seconds: Math.ceil(delayMs / 1000),
+            holdWindowSeconds: options.idleTimeout,
+        });
+        if (plan.shouldRelease) yield* releaseAffinity(runtime, "timer");
+    }
+
+    const startedAt: number = yield ctx.utcNow();
+    publishStatus(runtime, "waiting", {
+        waitSeconds: Math.ceil(delayMs / 1000),
+        waitReason: wait.reason,
+        waitStartedAt: startedAt,
+        gate: "workspace",
+        ...(code ? { workspaceCode: code } : {}),
+    });
+    state.activeTimer = {
+        deadlineMs: startedAt + delayMs,
+        originalDurationMs: delayMs,
+        reason: String(wait.reason ?? "workspace unavailable"),
+        type: "workspace_retry",
+        gate: "workspace",
+    };
 }
 
 function* synthesizeWaitInterruptReplyIfNeeded(
@@ -1091,10 +1304,14 @@ export function* handleTurnResult(
     // durable record it writes.
     isBootstrap?: boolean,
     requiredTool?: string,
+    // 1.0.80: who wrote the prompt and its images, so a gate can hold them.
+    sender?: MessageSender,
+    attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
-    const budgetRefusal = result.type === "wait" && (result as any).budget === true;
+    const gate = result.type === "wait" ? timerGate(result as any) : undefined;
+    const budgetRefusal = gate !== undefined;
     if (result.type === "stopped" || result.type === "cancelled") {
         yield* cancelSignalWait(runtime, "stopped");
     } else if (!budgetRefusal && (result.type === "wait" || result.type === "input_required" || result.type === "wait_for_agents")) {
@@ -1110,8 +1327,23 @@ export function* handleTurnResult(
     // Any result other than a gate refusal means the turn actually reached
     // the model, and the activity folded the stashed prompts into it. They
     // are delivered; holding them longer would replay them twice.
-    if (!budgetRefusal && state.budgetStash) {
+    //
+    // Session workspaces: for a session with a workspace, only a result the
+    // activity marked `workspaceAttached` got past the workspace check. An
+    // error returned before it (a failed budget query) delivered nothing and
+    // says nothing about the folder (review F1).
+    const pastGates = !budgetRefusal && (!state.config.workspace || result.workspaceAttached === true);
+    if (pastGates && state.budgetStash) {
         state.budgetStash = null;
+    }
+    // Session workspaces: a turn got past the gate, so the workspace is back.
+    if (pastGates && state.config.workspace && state.workspaceStatus?.state === "unavailable") {
+        state.workspaceStatus = { state: "ready" };
+        state.workspaceRetry = null;
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "session.workspace_available",
+            data: { revision: Math.max(1, state.workspaceRevision) },
+        }]);
     }
 
     switch (result.type) {
@@ -1207,6 +1439,10 @@ export function* handleTurnResult(
         }
 
         case "wait": {
+            if (gate === "workspace") {
+                yield* holdForWorkspace(runtime, result, sourcePrompt, clientMessageIds, isBootstrap, requiredTool, sender, attachments);
+                return;
+            }
             state.interruptedWaitTimer = null;
             ensureTaskContext(runtime, sourcePrompt);
 
@@ -1221,7 +1457,7 @@ export function* handleTurnResult(
             // So: record it durably NOW (the ✓ becomes true), stash it, and
             // let it ride into every retry until a turn actually runs.
             if (budgetRefusal) {
-                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool);
+                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool, "budget", sender, attachments);
             }
 
             if (options.parentSessionId) {
@@ -1304,7 +1540,8 @@ export function* handleTurnResult(
                 reason: result.reason,
                 type: "wait",
                 content: result.content,
-                budget: result.budget === true,
+                budget: gate === "budget",
+                ...(gate ? { gate } : {}),
             };
             return;
         }
@@ -1385,6 +1622,14 @@ export function* handleTurnResult(
             yield* schedulePostTurnContinuation(runtime);
             return;
         }
+
+        case "set_workspace":
+            yield* applyAgentWorkspaceChange(runtime, result);
+            return;
+
+        case "set_workspace_extra":
+            yield* applyAgentWorkspaceExtrasChange(runtime, result as Extract<TurnResult, { type: "set_workspace_extra" }>);
+            return;
 
         case "spawn_agent":
         case "message_agent":
@@ -1468,6 +1713,12 @@ export function* processTimer(
                 eventType: "session.wait_completed",
                 data: { seconds },
             }]);
+            // 1.0.80: a budget wait's timer is not the agent's own wait, so
+            // it does not wake with the agent's wait text (test F11).
+            if (timerGate(timer) === "budget") {
+                yield* processPrompt(runtime, flushPendingChildDigestIntoPrompt(runtime, BUDGET_TIMER_WAKE_PROMPT) ?? BUDGET_TIMER_WAKE_PROMPT, false);
+                return;
+            }
             const timerPrompt = `The ${seconds} second wait is now complete. Continue with your task.`;
             const resumeSystemPrompt = [
                 timer.reason ? `Wait reason: "${timer.reason}".` : undefined,
@@ -1576,6 +1827,14 @@ export function* processTimer(
             } else {
                 yield* processPrompt(runtime, flushPendingChildDigestIntoPrompt(runtime, cronAtPrompt) ?? cronAtPrompt, true, undefined, undefined, "cron_at");
             }
+            return;
+        }
+        case "workspace_retry": {
+            // Session workspaces: attach again. The worker runs the attach and
+            // the path check first; if they pass, the held prompts run as one
+            // normal turn, and if not, no model is called and the session is
+            // held again. The wake text is [SYSTEM:] traffic, never stashed.
+            yield* processPrompt(runtime, WORKSPACE_RETRY_WAKE_PROMPT, true);
             return;
         }
         case "idle": {

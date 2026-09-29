@@ -1166,6 +1166,18 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionFootprint(sessionId);
     }
 
+    async getSessionWorkspace(sessionId) {
+        return this.mgmt.getSessionWorkspace(sessionId);
+    }
+
+    async setSessionWorkspace(sessionId, input = {}, options = {}) {
+        return this.mgmt.setSessionWorkspace(sessionId, input, options);
+    }
+
+    async retrySessionWorkspace(sessionId, options = {}) {
+        return this.mgmt.retrySessionWorkspace(sessionId, options);
+    }
+
     async regenerateSession(sessionId, options = {}) {
         return this.mgmt.regenerateSession(sessionId, options);
     }
@@ -1400,7 +1412,7 @@ export class NodeSdkTransport {
         return model || null;
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, workspace } = {}) {
         const session = await this.client.createSession({
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1408,6 +1420,7 @@ export class NodeSdkTransport {
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
+            ...(workspace != null ? { workspace } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
@@ -1419,7 +1432,7 @@ export class NodeSdkTransport {
         };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
@@ -1436,6 +1449,7 @@ export class NodeSdkTransport {
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
+            ...(workspace != null ? { workspace } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         const created = await this.mgmt.getSession(session.sessionId).catch(() => null);

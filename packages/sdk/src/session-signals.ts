@@ -1,6 +1,6 @@
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
-export const SIGNAL_MIN_ORCHESTRATION_VERSION = "1.0.80";
+export const SIGNAL_MIN_ORCHESTRATION_VERSION = "1.0.81";
 export const SIGNAL_ACTIVITY_CAPABILITY = "pilotswarm.signals.v1";
 export const SIGNAL_MAX_INLINE_BYTES = 32 * 1024;
 export const SIGNAL_BUFFER_LIMIT = 32;

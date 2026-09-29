@@ -1,0 +1,13 @@
+# Keeps the app plugin and adds the sample's plugin (Dockerfile.portal copies it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilotswarm-portal
+spec:
+  template:
+    spec:
+      containers:
+        - name: portal
+          env:
+            - name: PLUGIN_DIRS
+              value: /app/packages/app/tui/plugins,/app/packages/sdk/examples/repo-workspaces/plugin
