@@ -31,6 +31,7 @@ import type {
     SessionWorkspaceView,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { readDefaultsRecord } from "./workspace.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -1713,7 +1714,7 @@ export class PilotSwarmManagementClient {
      */
     async getSessionWorkspace(sessionId: string): Promise<SessionWorkspaceView> {
         this._ensureStarted();
-        const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted"];
+        const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted", "session.workspace_defaults"];
         const events = (await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, types))
             .slice()
             .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
@@ -1731,6 +1732,8 @@ export class PilotSwarmManagementClient {
             heldPrompts = users.filter((e: any) => Number(e.seq) > boundary && e.data?.workspaceQueued === true).length;
         }
         const adopted = latest("session.workspace_adopted");
+        // Section 4.11: the default folders of the last turn that changed them.
+        const defaults = readDefaultsRecord(latest("session.workspace_defaults")?.data);
         // Paths, from the changes in order. A path holds while its folder
         // stays the same: the working folder's path survives a change of
         // extra folders only, and an extra folder that moved without a
@@ -1787,6 +1790,7 @@ export class PilotSwarmManagementClient {
                     skipped: Array.isArray(adopted.data.skipped) ? adopted.data.skipped : [],
                 }
                 : null,
+            defaults,
         };
     }
 

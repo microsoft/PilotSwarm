@@ -14,6 +14,11 @@
  *       from several sources are linked
  *   D7  linkSkillFolders keeps one link per adopted skill
  *   D8  notes and the personal instructions section
+ *   D13 the defaults record for session.workspace_defaults: built from the
+ *       applied defaults, read back from a stored event, compared
+ *   D14 the "Your folders are durable" section: only with folders, after
+ *       PilotSwarm's base, and the same text every time; the Base V2 prompt's
+ *       sentence about the worker's own disk
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -27,10 +32,14 @@ import {
     prepareWorkspace,
     prepareWorkspaceExtras,
     resolveWorkspaceDefaults,
+    defaultsRecordOf,
+    readDefaultsRecord,
+    sameDefaultsRecord,
 } from "../../dist/workspace.js";
 import { MAX_WORKSPACE_EXTRAS, checkWorkspacePath } from "../../dist/workspace-check.js";
 import { adoptionNote, linkSkillFolders, resolveRepoAdoption, resolveWorkspaceAdoption } from "../../dist/workspace-repo-agents.js";
-import { withPersonalInstructions } from "../../dist/session-manager.js";
+import { DURABLE_FOLDERS_NOTE, withDurableFoldersNote, withPersonalInstructions } from "../../dist/session-manager.js";
+import { baseAgentInstructions } from "../../dist/base-agent-policy.js";
 
 const clone = { schema: 1, root: "a", folder: "sessions/t/app" };
 const HOME = { name: "home", root: "home", folder: "users/me" };
@@ -268,5 +277,65 @@ describe("D8 notes and the personal instructions section", () => {
         assert.equal(out.sections.custom_instructions.action, "prepend");
         assert.equal(withPersonalInstructions(message, [{ file: "AGENTS.md", content: "  \n" }], "/x"), message);
         assert.equal(withPersonalInstructions(message, [], "/x"), message);
+    });
+});
+
+describe("D13 the defaults record", () => {
+    const HOME = { name: "home", root: "home", folder: "users/me" };
+    const SHARED = { shared: { root: "shared" } };
+    it("the person's folder as the working folder only when the record has none; default extra folders, home marked", () => {
+        assert.deepEqual(defaultsRecordOf(applyWorkspaceDefaults(null, { home: HOME, extra: SHARED }), false), {
+            workingFolder: { root: "home", folder: "users/me" },
+            extra: [{ name: "shared", root: "shared" }],
+        });
+        const clone = { schema: 1, root: "a", folder: "sessions/t/app" };
+        assert.deepEqual(defaultsRecordOf(applyWorkspaceDefaults(clone, { home: HOME, extra: SHARED }), true), {
+            workingFolder: null,
+            extra: [{ name: "home", root: "home", folder: "users/me", home: true }, { name: "shared", root: "shared" }],
+        });
+        const own = { schema: 1, root: "home", folder: "users/me" };
+        assert.equal(defaultsRecordOf(applyWorkspaceDefaults(own, { home: HOME }), true), null,
+            "the record names the person's folder itself: it is the record's, not a default");
+        assert.equal(defaultsRecordOf(applyWorkspaceDefaults(null, { extra: SHARED }), false), null,
+            "extra folders only, and no working folder: nothing applied (rule A)");
+        assert.equal(defaultsRecordOf(applyWorkspaceDefaults(clone, null), true), null, "no defaults");
+    });
+
+    it("a stored record reads back whatever its key order; empty or malformed reads as none; compare ignores order", () => {
+        const stored = { extra: [{ root: "shared", name: "shared" }, { home: true, folder: "users/me", root: "home", name: "home" }], revision: 3, workingFolder: null };
+        const read = readDefaultsRecord(stored);
+        assert.deepEqual(read, { workingFolder: null, extra: [{ name: "shared", root: "shared" }, { name: "home", root: "home", folder: "users/me", home: true }] });
+        assert.equal(sameDefaultsRecord(read, { workingFolder: null, extra: [{ name: "home", root: "home", folder: "users/me", home: true }, { name: "shared", root: "shared" }] }), true);
+        assert.equal(sameDefaultsRecord(read, { workingFolder: null, extra: [{ name: "shared", root: "shared" }] }), false);
+        assert.equal(sameDefaultsRecord(read, { workingFolder: { root: "home", folder: "users/me" }, extra: read.extra }), false);
+        assert.equal(readDefaultsRecord({ workingFolder: null, extra: [] }), null);
+        assert.equal(readDefaultsRecord({ extra: [{ name: 1, root: "x" }, { name: "x" }] }), null);
+        assert.equal(readDefaultsRecord(undefined), null);
+        assert.equal(sameDefaultsRecord(null, null), true);
+        assert.equal(sameDefaultsRecord(null, read), false);
+    });
+});
+
+describe("D14 the durable folders section", () => {
+    it("added after PilotSwarm's base only when the turn has folders; the text never changes", () => {
+        const message = { mode: "customize", sections: { custom_instructions: { action: "prepend", content: "BASE" } } };
+        const out = withDurableFoldersNote(message, true);
+        assert.equal(out.sections.custom_instructions.content, `BASE\n\n${DURABLE_FOLDERS_NOTE}`);
+        assert.deepEqual(withDurableFoldersNote(message, true), out, "the same input gives the same text: the prompt cache holds");
+        assert.equal(out.sections.custom_instructions.action, "prepend");
+        assert.equal(withDurableFoldersNote(message, false), message, "no folders: the same message");
+        assert.equal(withDurableFoldersNote({ content: "BASE" }, true).content, `BASE\n\n${DURABLE_FOLDERS_NOTE}`);
+        assert.equal(withDurableFoldersNote(undefined, true), undefined);
+        assert.match(DURABLE_FOLDERS_NOTE, /^## Your folders are durable\n\n/);
+        assert.match(DURABLE_FOLDERS_NOTE, /replaces "Local Filesystem Is Ephemeral"/);
+        assert.doesNotMatch(DURABLE_FOLDERS_NOTE, /\/ws\//, "it names no path, so it cannot go stale");
+    });
+
+    it("the Base V2 prompt says a working directory on the worker's own disk may be gone, not the cwd", () => {
+        // Base V1 is checked on a real worker (S1-S3); V2 sessions get exactly this text.
+        const v2 = baseAgentInstructions({ version: "v2", fingerprint: "x", revision: null }, "LEGACY");
+        assert.notEqual(v2, "LEGACY");
+        assert.match(v2, /`\/tmp`, `\$HOME`, and a working directory on the worker's own disk may simply be gone next turn\./);
+        assert.doesNotMatch(v2, /and the cwd may simply be gone/);
     });
 });

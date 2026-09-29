@@ -10,6 +10,9 @@
  *   - both hosts reach the same three commands: the TUI through W (set, or
  *     clear with an empty value) and Y (retry); the portal through its
  *     Manage dialog
+ *   - default folders (section 4.11), which are not in the record: the
+ *     person's own folder when the session has none, and default extra
+ *     folders, in the stats tab and in the portal's Workspace row
  *
  * Run: node --test test/session-workspace-ui.test.mjs
  */
@@ -24,6 +27,7 @@ import { PilotSwarmUiController } from "../src/controller.js";
 import { UI_COMMANDS } from "../src/commands.js";
 import {
     buildHelpModalRows,
+    describeSessionWorkspace,
     selectInspector,
     selectSessionWorkspace,
     selectSessionWorkspaceModal,
@@ -220,4 +224,51 @@ test("setting the working folder from the dialog keeps the extra folders; the di
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     assert.equal(h.state().ui.modal?.type, "confirm");
     assert.match(h.state().ui.modal.message, /its extra folders too/);
+});
+
+// ── Default folders (section 4.11) ───────────────────────────────
+
+const HOME_DEFAULTS = {
+    ...NONE,
+    defaults: { workingFolder: { root: "home", folder: "users/ada_example.com" }, extra: [{ name: "shared", root: "shared" }] },
+};
+const REPO_DEFAULTS = {
+    ...READY,
+    defaults: { workingFolder: null, extra: [{ name: "home", root: "home", folder: "users/ada_example.com", home: true }, { name: "shared", root: "shared" }] },
+};
+
+test("default folders: the person's folder when the session has none, and the default extra folders", async () => {
+    const none = selectSessionWorkspace((await seeded(HOME_DEFAULTS)).state());
+    assert.equal(none.status, "none", "the record is still empty");
+    assert.deepEqual(none.defaults, {
+        workingFolder: { label: "home/users/ada_example.com" },
+        extras: [{ name: "shared", label: "shared", home: false }],
+    });
+    const text = statsText((await seeded(HOME_DEFAULTS)).state());
+    assert.match(text, /\nWorkspace\nFolder\s+home\/users\/ada_example\.com \(your folder\)\n/);
+    assert.match(text, /Extra\s+shared: shared \(default\)\n/);
+    assert.doesNotMatch(text, /Status|Revision/, "no status rows: nothing is set");
+
+    const repoText = statsText((await seeded(REPO_DEFAULTS)).state());
+    assert.match(repoText, /Folder\s+a\/repo-x\n/);
+    assert.match(repoText, /Extra\s+home: home\/users\/ada_example\.com \(default\)\n[\s\S]*Extra\s+shared: shared \(default\)/);
+    assert.equal(selectSessionWorkspace((await seeded(NONE)).state()).defaults, null, "none reported: none shown");
+    assert.doesNotMatch(statsText((await seeded(NONE)).state()), /Workspace/);
+    assert.equal(selectSessionWorkspace((await seeded({ ...NONE, defaults: { workingFolder: null, extra: [{ name: 7 }] } })).state()).defaults, null,
+        "a malformed entry is dropped");
+});
+
+test("the portal's Workspace row names the person's folder and the default extra folders", async () => {
+    assert.deepEqual(describeSessionWorkspace(selectSessionWorkspace((await seeded(HOME_DEFAULTS)).state())), {
+        current: "home/users/ada_example.com (your folder)",
+        defaults: "Default extra folders: shared (shared)",
+    });
+    assert.deepEqual(describeSessionWorkspace(selectSessionWorkspace((await seeded(REPO_DEFAULTS)).state())), {
+        current: "a/repo-x",
+        defaults: "Default extra folders: home (home/users/ada_example.com), shared (shared)",
+    });
+    assert.deepEqual(describeSessionWorkspace(selectSessionWorkspace((await seeded(HELD)).state())),
+        { current: "a/repo-x · unavailable (WORKSPACE_FOLDER_MISSING)", defaults: null });
+    assert.deepEqual(describeSessionWorkspace(selectSessionWorkspace((await seeded(NONE)).state())), { current: "none", defaults: null });
+    assert.deepEqual(describeSessionWorkspace(null), { current: "none", defaults: null });
 });

@@ -7675,23 +7675,66 @@ export function normalizeSessionWorkspaceView(view, sessionId = null) {
         heldPrompts: Number.isInteger(view.heldPrompts) ? view.heldPrompts : 0,
         adoptedAgents: Array.isArray(adopted?.agents) ? adopted.agents : [],
         adoptedSkills: Array.isArray(adopted?.skills) ? adopted.skills : [],
+        defaults: normalizeWorkspaceDefaults(view.defaults),
         actions: { set: true, clear: Boolean(workspace), retry: status === "unavailable" },
     };
+}
+
+/**
+ * The portal's Workspace row (Manage session): the current folder, and a
+ * line for the deployment's default extra folders (section 4.11).
+ */
+export function describeSessionWorkspace(view) {
+    if (!view) return { current: "none", defaults: null };
+    const current = view.label
+        ? `${view.label}${view.status === "unavailable" ? ` · unavailable${view.lastError?.code ? ` (${view.lastError.code})` : ""}` : ""}`
+        : view.defaults?.workingFolder ? `${view.defaults.workingFolder.label} (your folder)` : "none";
+    const defaults = view.defaults?.extras?.length
+        ? `Default extra folders: ${view.defaults.extras.map((extra) => `${extra.name} (${extra.label})`).join(", ")}`
+        : null;
+    return { current, defaults };
+}
+
+/**
+ * The deployment's default folders (section 4.11), which are not in the
+ * record: the person's own folder as the working folder when the session
+ * has none, and default extra folders. Null when there are none.
+ */
+function normalizeWorkspaceDefaults(defaults) {
+    if (!defaults || typeof defaults !== "object") return null;
+    const folder = (value) => (value && typeof value === "object" && typeof value.root === "string" && value.root
+        ? { root: value.root, ...(typeof value.folder === "string" && value.folder ? { folder: value.folder } : {}) }
+        : null);
+    const working = folder(defaults.workingFolder);
+    const extras = (Array.isArray(defaults.extra) ? defaults.extra : []).flatMap((extra) => {
+        const where = folder(extra);
+        return where && typeof extra.name === "string" && extra.name
+            ? [{ name: extra.name, label: formatSessionWorkspace(where), home: extra.home === true }]
+            : [];
+    });
+    if (!working && extras.length === 0) return null;
+    return { workingFolder: working ? { label: formatSessionWorkspace(working) } : null, extras };
 }
 
 /** The Workspace block of the session stats view; nothing for a session without one. */
 function buildSessionWorkspaceLines(state, sessionId, w) {
     const view = selectSessionWorkspace(state, sessionId);
-    if (!view || view.status === "none") return [];
+    if (!view || (view.status === "none" && !view.defaults)) return [];
     // The label column is 9 wide, as in the identity rows above.
     const row = (label, text, color = "white") => fitRuns([
         { text: label.padEnd(9), color: "cyan", bold: true },
         { text, color },
     ], w);
-    const lines = [
-        fitRuns([{ text: "Workspace", color: "cyan", bold: true }], w),
-        row("Folder", view.label),
-    ];
+    const lines = [fitRuns([{ text: "Workspace", color: "cyan", bold: true }], w)];
+    // A session with no record works in the person's own folder (4.11).
+    if (view.status === "none") {
+        if (view.defaults?.workingFolder) lines.push(row("Folder", `${view.defaults.workingFolder.label} (your folder)`));
+        for (const extra of view.defaults?.extras ?? []) lines.push(row("Extra", `${extra.name}: ${extra.label} (default)`, "gray"));
+        lines.push(plainInspectorLine("W set or clear", "gray"));
+        lines.push(plainInspectorLine(""));
+        return lines;
+    }
+    lines.push(row("Folder", view.label));
     // Short rows: the inspector column is narrow, and a long line is cut.
     lines.push(row("Status", view.status, view.status === "unavailable" ? "yellow" : "green"));
     if (view.status === "unavailable") {
@@ -7703,6 +7746,9 @@ function buildSessionWorkspaceLines(state, sessionId, w) {
     if (view.path) lines.push(row("Path", view.path, "gray"));
     for (const extra of view.extras) {
         lines.push(row("Extra", `${extra.name}: ${extra.label}${extra.required ? "" : " (optional)"}`));
+    }
+    for (const extra of view.defaults?.extras ?? []) {
+        lines.push(row("Extra", `${extra.name}: ${extra.label} (default)`, "gray"));
     }
     if (view.adoptedAgents.length) lines.push(row("Agents", view.adoptedAgents.join(", ")));
     if (view.adoptedSkills.length) lines.push(row("Skills", view.adoptedSkills.join(", ")));

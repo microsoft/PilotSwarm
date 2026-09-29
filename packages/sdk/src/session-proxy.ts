@@ -14,7 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { applyWorkspaceDefaults, checkWorkspaceForSpawn, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, resolveWorkspaceDefaults, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
@@ -1305,6 +1305,43 @@ export function registerActivities(
         return adoptionNote(previous, report);
     };
 
+    /**
+     * Section 4.11: compare the default folders this turn used with the last
+     * session.workspace_defaults event, and record a new one when they
+     * changed. The portal shows them: they are never in the record.
+     */
+    const noteWorkspaceDefaults = async (
+        session: any,
+        sessionId: string,
+        revision: number,
+        current: import("./types.js").WorkspaceDefaultsRecord | null,
+        trace: (message: string) => void,
+    ): Promise<void> => {
+        let previous: import("./types.js").WorkspaceDefaultsRecord | null | undefined = session.getRecordedDefaults();
+        if (previous === undefined) {
+            previous = null;
+            if (catalog) {
+                const [latest] = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_defaults"]).catch(() => []);
+                previous = readDefaultsRecord(latest?.data);
+            }
+        }
+        if (sameDefaultsRecord(previous, current)) {
+            session.setRecordedDefaults(current);
+            return;
+        }
+        if (catalog) {
+            await cmsRetryBestEffort(
+                `runTurn.recordEvent workspace-defaults session=${sessionId}`,
+                () => catalog!.recordEvents(sessionId, [{
+                    eventType: "session.workspace_defaults",
+                    data: { revision, workingFolder: current?.workingFolder ?? null, extra: current?.extra ?? [] },
+                }], workerNodeId),
+                trace,
+            );
+        }
+        session.setRecordedDefaults(current);
+    };
+
     // ── runTurn ──────────────────────────────────────────────
     const runTurnHandler = async (
         activityCtx: any,
@@ -1721,6 +1758,8 @@ export function registerActivities(
             activityCtx.traceInfo(`[runTurn] default folder "${skip.name}" left out for ${input.sessionId}: ${skip.reason}`);
         }
         const turnWorkspace = withDefaults.workspace;
+        // Section 4.11: the defaults this turn used, once its folders attached.
+        let turnDefaults: import("./types.js").WorkspaceDefaultsRecord | null = null;
         if (turnWorkspace) {
             const workspaceRevision = input.workspaceRevision ?? 1;
             const attachWorker = workerNodeId ?? os.hostname();
@@ -1853,6 +1892,7 @@ export function registerActivities(
                     ...(extrasAttached.length > 0 ? { extras: extrasAttached } : {}),
                     ...(extrasUnavailable.length > 0 ? { extrasUnavailable } : {}),
                 };
+                turnDefaults = defaultsRecordOf(withDefaults, Boolean(runConfig.workspace));
             }
         }
 
@@ -4010,6 +4050,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const note = availabilityNotes.join("\n");
                 const split = splitSystemContextBlock(effectivePrompt);
                 effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${note}` : note);
+            }
+
+            // Section 4.11: the default folders this turn used, recorded when
+            // they change. Only where the provider has defaults at all, so a
+            // worker without them reads nothing more.
+            if (workspaceDefaults !== null || sessionManager.getWorkspaceProvider()?.defaultFolders) {
+                if (typeof session?.getRecordedDefaults === "function") {
+                    await noteWorkspaceDefaults(session, input.sessionId, input.workspaceRevision ?? 1, turnDefaults, (msg) => activityCtx.traceInfo(msg));
+                }
             }
 
             // Session workspaces (section 4.6): the repo agents and skills this

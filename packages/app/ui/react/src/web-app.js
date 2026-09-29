@@ -64,6 +64,7 @@ import {
     selectSessionGroupNameModal,
     selectSessionWorkspaceModal,
     normalizeSessionWorkspaceView,
+    describeSessionWorkspace,
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
@@ -6842,9 +6843,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                         "The folder this session works in. A running turn finishes first; the next turn runs in the new folder. No files are deleted."),
                     React.createElement("div", { className: "ps-share-add-row" },
                         React.createElement("span", { className: "ps-manage-model-current ps-manage-workspace-current" },
-                            workspace?.label
-                                ? `${workspace.label}${workspace.status === "unavailable" ? ` · unavailable${workspace.lastError?.code ? ` (${workspace.lastError.code})` : ""}` : ""}`
-                                : "none"),
+                            describeSessionWorkspace(workspace).current),
                         React.createElement("button", {
                             className: "ps-mini-button", disabled: busy,
                             onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE).catch(() => {}); },
@@ -6856,7 +6855,10 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                         workspace?.actions.retry ? React.createElement("button", {
                             className: "ps-mini-button", disabled: busy,
                             onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.RETRY_WORKSPACE).catch(() => {}); },
-                        }, "Retry now") : null)) : null,
+                        }, "Retry now") : null),
+                    // Section 4.11: folders the deployment gives every session; not in the record.
+                    describeSessionWorkspace(workspace).defaults ? React.createElement("div", { className: "ps-share-section-sub ps-manage-workspace-defaults" },
+                        describeSessionWorkspace(workspace).defaults) : null) : null,
                 canRegenerate ? React.createElement(React.Fragment, null,
                     React.createElement("div", { className: "ps-share-section-label" }, "Context"),
                     React.createElement("div", { className: "ps-share-section-sub" },

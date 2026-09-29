@@ -529,6 +529,62 @@ export function applyWorkspaceDefaults(
 }
 
 /**
+ * Section 4.11: the defaults a turn used, for the session.workspace_defaults
+ * event. `recordHasWorkingFolder`: the session's own record names a working
+ * folder, so the person's folder is not the working folder by default even
+ * when it is the same folder. Null when the turn used no defaults.
+ */
+export function defaultsRecordOf(
+    applied: WorkspaceWithDefaults,
+    recordHasWorkingFolder: boolean,
+): import("./types.js").WorkspaceDefaultsRecord | null {
+    const workspace = applied.workspace;
+    if (!workspace) return null;
+    const workingFolder = applied.homeIsWorkingFolder && !recordHasWorkingFolder
+        ? { root: workspace.root, ...(workspace.folder ? { folder: workspace.folder } : {}) }
+        : null;
+    const extra = applied.defaultNames.flatMap((name) => {
+        const folder = workspace.extra?.[name];
+        return folder ? [{
+            name,
+            root: folder.root,
+            ...(folder.folder ? { folder: folder.folder } : {}),
+            ...(name === applied.homeExtra ? { home: true as const } : {}),
+        }] : [];
+    });
+    return workingFolder || extra.length > 0 ? { workingFolder, extra } : null;
+}
+
+/** Section 4.11: a stored session.workspace_defaults payload, checked; null when it names nothing. */
+export function readDefaultsRecord(data: unknown): import("./types.js").WorkspaceDefaultsRecord | null {
+    const value = data as any;
+    if (!value || typeof value !== "object") return null;
+    const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    const working = value.workingFolder && typeof value.workingFolder === "object" && text(value.workingFolder.root)
+        ? { root: value.workingFolder.root as string, ...(text(value.workingFolder.folder) ? { folder: value.workingFolder.folder as string } : {}) }
+        : null;
+    const extra = (Array.isArray(value.extra) ? value.extra : []).flatMap((one: any) => (one && text(one.name) && text(one.root) ? [{
+        name: one.name as string,
+        root: one.root as string,
+        ...(text(one.folder) ? { folder: one.folder as string } : {}),
+        ...(one.home === true ? { home: true as const } : {}),
+    }] : []));
+    return working || extra.length > 0 ? { workingFolder: working, extra } : null;
+}
+
+/** Section 4.11: two defaults records name the same folders (key order and extra order do not matter). */
+export function sameDefaultsRecord(
+    a: import("./types.js").WorkspaceDefaultsRecord | null,
+    b: import("./types.js").WorkspaceDefaultsRecord | null,
+): boolean {
+    const canon = (r: import("./types.js").WorkspaceDefaultsRecord | null) => (r ? JSON.stringify([
+        r.workingFolder ? [r.workingFolder.root, r.workingFolder.folder ?? ""] : null,
+        r.extra.map((one) => [one.name, one.root, one.folder ?? "", one.home === true]).sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+    ]) : "null");
+    return canon(a) === canon(b);
+}
+
+/**
  * The release reason a provider sees, from the trigger PilotSwarm records in
  * session.workspace_released. The triggers are internal; the reasons are the
  * documented WorkspaceReleaseReason values. Every affinity release (the hold

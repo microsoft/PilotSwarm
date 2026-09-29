@@ -8,6 +8,9 @@
  *   D10  after the agent moves into a repo, the person's folder is extra
  *        folder "home": its instructions still reach the model, before the
  *        repo's; on a skill name clash the repo's skill wins
+ *   D13  the portal can show the defaults: session.workspace_defaults is
+ *        recorded when they change (not on every turn), and
+ *        getSessionWorkspace returns them
  *   D11  a session with only default folders gets the workspace tools
  *   D12  the person's folder cannot attach: when it is optional the turn
  *        runs without folders and the model is told; when the provider
@@ -27,6 +30,7 @@ import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createBuiltInWorkspaceProvider } from "../../src/index.ts";
 import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
+import { createManagementClient } from "../helpers/local-workers.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -157,6 +161,17 @@ describe("default folders (section 4.11)", () => {
                 assert(systemText(first.body).includes(path.join(path.dirname(fx.me), "..", "..", "shared").replace(/\/users\/\.\.\/\.\.\//, "/")) || firstBody.includes(path.join(fx.base, "shared")),
                     "the default shared folder is listed");
 
+                // D13: the defaults the first turn used, recorded once.
+                const mgmt = await createManagementClient(env);
+                try {
+                    const first = await mgmt.getSessionWorkspace(sessionId);
+                    assertEqual(first.workspace, null, "the record is still empty");
+                    assert(JSON.stringify(first.defaults) === JSON.stringify({ workingFolder: { root: "home", folder: "users/_anon" }, extra: [{ name: "shared", root: "shared" }] }),
+                        `the view reports the defaults: ${JSON.stringify(first.defaults)}`);
+                } finally {
+                    await mgmt.stop();
+                }
+
                 const answer = await session.sendAndWait("d10 move into the repo", TIMEOUT);
                 assert(answer.startsWith("three:"), answer);
                 const view = JSON.parse(answer.slice("three:".length));
@@ -176,6 +191,27 @@ describe("default folders (section 4.11)", () => {
                 assert(movedBody.includes("REPO-NOTES-DESC"), "the repo's notes skill is offered");
                 assert(!movedBody.includes("PERSONAL-NOTES-DESC"), "the person's notes skill lost the name clash to the repo's");
                 assert(movedBody.includes("PERSONAL-JOURNAL-DESC"), "the person's other skill is still offered");
+
+                // D13: three turns ran (the move continues by itself); the
+                // defaults changed once, at the move.
+                const catalog = await createCatalog(env);
+                try {
+                    const recorded = (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "session.workspace_defaults");
+                    assertEqual(recorded.length, 2, "recorded at the first turn and at the move, not on every turn");
+                    assertEqual(recorded[1].data.workingFolder, null, "in the repo, the person's folder is no longer the working folder");
+                    assertEqual(JSON.stringify(recorded[1].data.extra.map((e) => [e.name, e.root, e.folder ?? "", e.home === true])),
+                        JSON.stringify([["home", "home", "users/_anon", true], ["shared", "shared", "", false]]));
+                } finally {
+                    await catalog.close?.();
+                }
+                const mgmtAfter = await createManagementClient(env);
+                try {
+                    const after = await mgmtAfter.getSessionWorkspace(sessionId);
+                    assertEqual(after.workspace?.root, "repo");
+                    assertEqual(JSON.stringify(after.defaults?.extra.map((e) => e.name)), JSON.stringify(["home", "shared"]));
+                } finally {
+                    await mgmtAfter.stop();
+                }
             });
         } finally {
             fx.cleanup();

@@ -434,6 +434,39 @@ export function keepAdoptedRepoInstructions(
  * when it is an extra folder, go after PilotSwarm's base instructions. In
  * prepend mode the repo's instructions (read by the CLI) follow them.
  */
+/**
+ * Section 4.11: the base prompt's "Local Filesystem Is Ephemeral" is true for
+ * the worker's own disk, not for workspace folders, which are on durable
+ * storage every worker mounts. A session with folders in this turn gets this
+ * section after PilotSwarm's base instructions. The text never changes, so
+ * the prompt cache holds; the CLI's environment block lists the paths.
+ */
+export const DURABLE_FOLDERS_NOTE = [
+    "## Your folders are durable",
+    "This session works in folders on durable storage: the current working directory and the additional "
+        + "directories listed in the environment section. Files there survive turns, moves to other workers and "
+        + "restarts. For these folders this replaces \"Local Filesystem Is Ephemeral\": save work there when the user "
+        + "wants it kept, and say where you saved it. Every other path on this machine (/tmp, $HOME) is still scratch. "
+        + "Other people's sessions may be able to read these folders: never put secrets in them. "
+        + "get_session_workspace names each folder.",
+].join("\n\n");
+
+/** Section 4.11: add DURABLE_FOLDERS_NOTE when the turn has folders; otherwise the message is unchanged. */
+export function withDurableFoldersNote(message: SystemMessageConfig | undefined, hasFolders: boolean): SystemMessageConfig | undefined {
+    if (!hasFolders || !message || typeof message !== "object") return message;
+    if ((message as any).mode === "customize") {
+        const sections = (message as any).sections ?? {};
+        const custom = sections.custom_instructions;
+        if (!custom) return message;
+        return {
+            ...(message as any),
+            sections: { ...sections, custom_instructions: { ...custom, content: `${custom.content ?? ""}\n\n${DURABLE_FOLDERS_NOTE}` } },
+        } as SystemMessageConfig;
+    }
+    if (typeof (message as any).content === "string") return { ...(message as any), content: `${(message as any).content}\n\n${DURABLE_FOLDERS_NOTE}` } as SystemMessageConfig;
+    return message;
+}
+
 export function withPersonalInstructions(
     message: SystemMessageConfig | undefined,
     texts: Array<{ file: string; content: string }>,
@@ -2352,13 +2385,14 @@ export class SessionManager {
         config.baseV2CapabilityIndex = v2Inventory ? this._baseV2CapabilityIndexSection(v2Inventory) : undefined;
 
         // Build system message: worker base + client override. Section 4.11:
-        // the person's own instructions, when their folder is an extra folder
-        // (the CLI reads instruction files only from its working folder),
-        // follow PilotSwarm's base and come before the repo's.
-        const systemMessage = withPersonalInstructions(keepAdoptedRepoInstructions(
+        // a session with folders is told they are durable; the person's own
+        // instructions, when their folder is an extra folder (the CLI reads
+        // instruction files only from its working folder), follow PilotSwarm's
+        // base and come before the repo's.
+        const systemMessage = withPersonalInstructions(withDurableFoldersNote(keepAdoptedRepoInstructions(
             this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null),
             workspaceAttach?.adopt?.instructions === true,
-        ), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path);
+        ), Boolean(workspaceAttach)), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path);
 
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include

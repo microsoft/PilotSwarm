@@ -3917,6 +3917,21 @@ export class ManagedSession {
     }
 
     /**
+     * Section 4.11: the default folders last recorded as a
+     * session.workspace_defaults event, as known to this handle. undefined:
+     * not known here yet (read the event); null: none recorded.
+     */
+    private recordedDefaults: import("./types.js").WorkspaceDefaultsRecord | null | undefined;
+
+    getRecordedDefaults(): import("./types.js").WorkspaceDefaultsRecord | null | undefined {
+        return this.recordedDefaults;
+    }
+
+    setRecordedDefaults(record: import("./types.js").WorkspaceDefaultsRecord | null): void {
+        this.recordedDefaults = record;
+    }
+
+    /**
      * Session workspaces: cancel every background shell (attached or
      * detached) and agent task that is running or idle, then list again
      * until none remain. disconnect() leaves them running; only

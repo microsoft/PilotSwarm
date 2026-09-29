@@ -3,7 +3,8 @@
  * (examples/repo-workspaces/home-provider.mjs, docs/proposals/session-workspaces.md 4.11).
  *
  *   H1  folder names: email, _anon, _system, and the fallbacks
- *   H2  defaultFolders: the person's folder and the default extra folders
+ *   H2  defaultFolders: the person's folder and the default extra folders;
+ *       none for system sessions and their sub-agents
  *   H3  first use makes the folder and copies the starter files; later
  *       attaches never overwrite what the person changed
  *   H4  the owner rule: only this session's person's folder; a link out of
@@ -56,12 +57,15 @@ describe("H2-H4 the home provider", () => {
     });
     after(() => fs.rmSync(base, { recursive: true, force: true }));
 
-    it("H2 defaultFolders: the person's folder as \"home\", plus the default extra folders", () => {
+    it("H2 defaultFolders: the person's folder as \"home\", plus the default extra folders; none for system sessions", () => {
         assert.deepEqual(provider.defaultFolders({ sessionId: "s", rootSessionId: "s", owner: person("me@example.com"), isSystem: false }), {
             home: { name: "home", root: "home", folder: "users/me_example.com" },
             extra: { shared: { root: "shared" } },
         });
-        assert.equal(provider.defaultFolders({ owner: null, isSystem: true }).home.folder, "users/_system");
+        assert.equal(provider.defaultFolders({ owner: null, isSystem: true }), null, "a system session gets no default folders");
+        assert.equal(provider.defaultFolders({ owner: { provider: "system", subject: "system" }, isSystem: false }), null, "nor does its sub-agent");
+        assert.equal(provider.defaultFolders({ owner: person("x@y.z"), isSystem: true }), null, "nor a system session that names a person");
+        assert.equal(provider.defaultFolders({ owner: { provider: "anonymous", subject: "anonymous" }, isSystem: false }).home.folder, "users/_anon");
     });
 
     it("H3 first use makes the folder and copies the starter files; a later attach keeps the person's changes", async () => {

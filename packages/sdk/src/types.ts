@@ -415,6 +415,18 @@ export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
     reason: WorkspaceReleaseReason;
 }
 
+/**
+ * The deployment's default folders a turn used (section 4.11): the
+ * `session.workspace_defaults` event data, less the revision. Recorded when
+ * it changes, so the portal can show folders that are not in the record.
+ */
+export interface WorkspaceDefaultsRecord {
+    /** The person's folder, when it is the working folder because the record has none. */
+    workingFolder: { root: string; folder?: string } | null;
+    /** Default extra folders; `home: true` marks the person's folder as an extra folder. */
+    extra: Array<{ name: string; root: string; folder?: string; home?: true }>;
+}
+
 /** What a session adopted from its checkout (section 4.6): the `session.workspace_adopted` event data, less the revision. */
 export interface WorkspaceAdoptionReport {
     /** The repo's name: its clone folder's name, for example "tfenv". Absent outside a clone. */
@@ -447,6 +459,13 @@ export interface SessionWorkspaceView {
     heldPrompts: number;
     /** The repo content adopted at the last resume that changed it. */
     adopted: { agents: string[]; skills: string[]; skipped: unknown[] } | null;
+    /**
+     * The deployment's default folders the session used at its last turn
+     * that changed them (section 4.11); null when it used none. They are not
+     * in `workspace`: when `workingFolder` is set, the session has no record
+     * and works in the person's own folder.
+     */
+    defaults?: WorkspaceDefaultsRecord | null;
 }
 
 /** Error codes PilotSwarm raises for workspaces. Provider codes pass through unchanged. */

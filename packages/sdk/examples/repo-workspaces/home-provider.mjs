@@ -10,7 +10,8 @@
  * defaultFolders(ctx)   every session gets its person's folder: the working
  *                       folder when its record has none, else extra folder
  *                       "home"; plus the plain roots named in defaultExtras
- *                       (for example "shared"), as extra folders
+ *                       (for example "shared"), as extra folders. System
+ *                       sessions and their sub-agents get none
  * ensureAttached(req)   the root's marker; the folder must be the session
  *                       owner's own (level 1: a path rule against mistakes,
  *                       not a security wall; every session is uid 1000); a
@@ -21,8 +22,9 @@
  * Folder names (personFolderName): a signed-in person by email, lowercased,
  * with other characters as "_" (Ada@Example.com ->
  * ada_example.com); a portal without sign-in -> "_anon"; a system
- * session and its sub-agents -> "_system". A name starting with "_" is never
- * a person's. An email that changes gives a new, empty folder.
+ * session and its sub-agents -> "_system" (used only when such a session sets
+ * that folder itself). A name starting with "_" is never a person's. An email
+ * that changes gives a new, empty folder.
  *
  * File calls on the mount run in child processes with a deadline.
  */
@@ -115,7 +117,11 @@ export function createHomeProvider(options) {
         },
 
         defaultFolders(ctx) {
+            // PilotSwarm's own system agents, and their sub-agents, keep
+            // running as they did: no default folders. They can still set
+            // users/_system as their workspace themselves.
             const person = personFolderName(ctx.owner, ctx.isSystem);
+            if (person === "_system") return null;
             return {
                 home: { name: "home", root: root.name, folder: `users/${person}` },
                 ...(defaultExtras.length > 0 ? { extra: Object.fromEntries(defaultExtras.map((name) => [name, { root: name }])) } : {}),
