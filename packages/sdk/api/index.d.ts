@@ -36,7 +36,11 @@ export declare class ApiError extends Error {
     code: string;
     status: number;
     candidates?: string[];
-    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[] });
+    /** Workspace files: a conflict's current etag; null when the file is gone. */
+    etag?: string | null;
+    /** Workspace files: a too-large file's size in bytes. */
+    size?: number;
+    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number });
 }
 
 export interface NonManagementOperationOwner {

@@ -50,6 +50,10 @@ patches:
           nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
           nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
           nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+          # The Workspace tab and canvas apps send a whole file as base64 in
+          # one request (PORTAL_WORKSPACE_MAX_FILE_MB, default 20 MB, is about
+          # 27 MB on the wire). NGINX's default is 1 MB.
+          nginx.ingress.kubernetes.io/proxy-body-size: "32m"
       spec:
         ingressClassName: webapprouting.kubernetes.azure.com
         tls:

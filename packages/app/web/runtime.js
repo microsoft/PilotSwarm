@@ -370,7 +370,9 @@ export class PortalRuntime {
         // to preserve, so it is enforced even during the ownership dark-launch
         // — otherwise a user could pre-plant a durable grant that survives the
         // flip to enforce (adversarial review HIGH-2).
-        const effectiveEnforce = this.authz.enforce || accessClass === "session:share";
+        // session:files (the Workspace pane) is new as well: the session's
+        // owner only, whatever the ownership switch says.
+        const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files";
         const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
 
         // HIGH-1: a supplied-but-unresolvable id (missing OR soft-deleted —
@@ -731,6 +733,14 @@ export class PortalRuntime {
                     safeParams.sessionId,
                     { ...(safeParams.options || {}), timeoutMs: clampInteger(safeParams.options?.timeoutMs, 60_000, 1_000, 300_000) },
                 );
+            // Workspace files (the Workspace pane): the session's owner only
+            // (session:files); the files are on this portal's own mount.
+            case "listSessionWorkspaceFolders":
+                return this.transport.listSessionWorkspaceFolders(safeParams.sessionId);
+            case "sessionWorkspaceFiles":
+                return this.transport.sessionWorkspaceFiles(safeParams.sessionId, safeParams.call || {});
+            case "canvasWorkspace":
+                return this.transport.canvasWorkspace(safeParams.sessionId, safeParams.slot, safeParams.call || {});
             case "regenerateSession":
                 return this.transport.regenerateSession(safeParams.sessionId, safeParams.options || {});
             case "getSessionTokensByModel":

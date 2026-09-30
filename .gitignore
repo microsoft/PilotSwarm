@@ -230,6 +230,9 @@ PublishScripts/
 **/[Pp]ackages/*
 # except build/, which is used as an MSBuild target.
 !**/[Pp]ackages/build/
+# This repo's packages/ holds its own workspace packages (sdk, app, ...), not
+# NuGet packages: new files there must show up in git status.
+!/packages/*
 # Uncomment if necessary however generally it will be regenerated when needed
 #!**/[Pp]ackages/repositories.config
 # NuGet v3's project.json files produces more ignorable files

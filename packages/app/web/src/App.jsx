@@ -3,7 +3,7 @@ import { CompactViewNavigation } from "./navigation/CompactViewNavigation.jsx";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
-import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins } from "pilotswarm/ui-react";
+import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
 import { getTheme } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
@@ -154,6 +154,8 @@ function usePortalPublicConfig() {
         fetchPortalConfig()
             .then((config) => {
                 if (!active) return;
+                // Before the workspace renders: the side pane reads it on its first render.
+                setPortalWorkspaceFiles(config.portal?.workspaceFiles !== false);
                 setState({
                     loading: false,
                     error: null,

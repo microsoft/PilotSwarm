@@ -585,6 +585,21 @@ export function sameDefaultsRecord(
 }
 
 /**
+ * The folders of a session's record that a turn opened, as one comparable
+ * value: the revision, the working folder's path and the extra folders'
+ * paths (session.workspace_opened; the order of extra folders does not
+ * matter). A stored event gives the same value as the turn that wrote it.
+ */
+export function workspaceOpenedKey(revision: unknown, path: unknown, extraPaths: unknown): string {
+    const extras = extraPaths && typeof extraPaths === "object"
+        ? Object.entries(extraPaths as Record<string, unknown>)
+            .filter(([, value]) => typeof value === "string")
+            .sort(([x], [y]) => x.localeCompare(y))
+        : [];
+    return JSON.stringify([Number(revision) || 0, typeof path === "string" ? path : null, extras]);
+}
+
+/**
  * The release reason a provider sees, from the trigger PilotSwarm records in
  * session.workspace_released. The triggers are internal; the reasons are the
  * documented WorkspaceReleaseReason values. Every affinity release (the hold

@@ -8372,6 +8372,16 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   white-space: nowrap;
 }
 
+/* The header's left side is narrow. When the controls do not fit, the
+   canvas name gives way first (the picker names the canvas too), then the
+   picker's drop-down, down to 40px. Its arrows never shrink, so nothing
+   slides under the zoom control or out of the header's left side. */
+.ps-toolbar-canvas-slot .ps-toolbar-canvas-rev { flex: 0 1000 auto; }
+.ps-toolbar-canvas-slot .ps-canvas-slot-controls { flex: 0 1 auto; min-width: 96px; /* two arrows and a 40px drop-down */ }
+.ps-toolbar-canvas-slot .ps-canvas-slot-controls > button { flex-shrink: 0; }
+.ps-toolbar-canvas-slot .ps-canvas-slot-select { flex: 0 1 96px; min-width: 40px; max-width: 96px; }
+.ps-toolbar-canvas-slot .ps-side-pane-tab { padding: 0 7px; }
+
 /* The line between the canvas controls and the standing tools. */
 .ps-toolbar-divider {
   width: 1px;
@@ -9842,4 +9852,555 @@ textarea.ps-link-input {
 @media (max-width: 920px) {
   .ps-mobile-session-pane { max-height: min(22vh, 148px); }
   .ps-session-pane .ps-session-list { padding-bottom: calc(50px + var(--ps-list-tail)); }
+}
+
+/* ── Side pane: Canvas | Workspace ─────────────────────────────────────── */
+.ps-side-pane-tabs {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--ps-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.ps-side-pane-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ps-side-pane-tab + .ps-side-pane-tab { border-left: 1px solid var(--ps-border); }
+.ps-side-pane-tab:hover { color: var(--ps-foreground); }
+.ps-side-pane-tab.is-on {
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+  font-weight: 700;
+}
+.ps-side-pane-tab svg { width: 14px; height: 14px; }
+.ps-side-pane-body { position: relative; overflow: hidden; }
+.ps-side-pane-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ps-side-pane-layer > .ps-html-preview-host,
+.ps-side-pane-layer > .ps-canvas-blank { flex: 1; min-height: 0; }
+/* Parked, not hidden: moved out of the pane's box (which clips it). */
+.ps-side-pane-layer.is-parked { transform: translateX(-105%); pointer-events: none; }
+
+/* ── Workspace pane ─────────────────────────────────────────────────────── */
+.ps-ws-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: 12.5px;
+  color: var(--ps-foreground);
+  position: relative;
+}
+
+/* Full screen lays the side pane over the chat and the sessions. A canvas
+   page covers them; the Workspace tab needs a solid background to. */
+.ps-canvas-layer.is-maximized .ps-ws-pane,
+.ps-mobile-canvas-layer.is-maximized .ps-ws-pane {
+  background: var(--ps-surface);
+}
+.ps-ws-message {
+  margin: auto;
+  max-width: 420px;
+  padding: 24px;
+  text-align: center;
+  color: var(--ps-muted);
+  line-height: 1.5;
+}
+.ps-ws-message.is-error { color: var(--ps-code-invalid, var(--ps-foreground)); }
+.ps-ws-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-ws-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 13px;
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ps-ws-chip:hover:not(:disabled) { border-color: var(--ps-accent); }
+.ps-ws-chip.is-on {
+  border-color: var(--ps-accent);
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+  font-weight: 700;
+}
+.ps-ws-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.ps-ws-chip-note { color: var(--ps-muted); font-weight: 400; }
+.ps-ws-chip.is-on .ps-ws-chip-note { color: inherit; }
+.ps-ws-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--ps-border);
+  min-height: 32px;
+}
+.ps-ws-folder-path {
+  color: var(--ps-muted);
+  font-family: var(--ps-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.ps-ws-spacer { flex: 1; }
+.ps-ws-busy { color: var(--ps-muted); font-size: 11.5px; margin-right: 4px; }
+.ps-ws-pill {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--ps-border);
+  border-radius: 10px;
+  color: var(--ps-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ps-ws-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+.ps-ws-icon-btn:hover { color: var(--ps-foreground); background: color-mix(in srgb, var(--ps-foreground) 8%, transparent); }
+.ps-ws-main { flex: 1; min-height: 0; display: flex; }
+.ps-ws-side {
+  flex: 0 0 var(--ps-ws-tree-width, min(38%, 340px));
+  min-width: 120px;
+  max-width: calc(100% - 200px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ps-ws-tree,
+.ps-ws-found {
+  position: relative; /* rows measure their place from here (keeping one in view) */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 24px;
+}
+/* Several rows picked (Cmd/Ctrl-click, Shift-click, or Select). */
+.ps-ws-picked-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 8px 0;
+  padding: 4px 6px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ps-ws-picked-count { flex: 1; min-width: 0; font-weight: 700; }
+.ps-ws-icon-btn.is-on { background: var(--ps-highlight-background); color: var(--ps-highlight-foreground); }
+/* Finding files by name, above the tree. */
+.ps-ws-finder {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px 2px;
+  padding: 0 6px;
+  height: 26px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  background: var(--ps-surface);
+  color: var(--ps-muted);
+}
+.ps-ws-finder:focus-within { border-color: var(--ps-foreground); }
+.ps-ws-finder-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+}
+.ps-ws-finder-input::placeholder { color: var(--ps-muted); opacity: 1; }
+.ps-ws-finder-clear {
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font: inherit;
+}
+.ps-ws-finder-clear:hover { color: var(--ps-foreground); }
+.ps-ws-found-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+.ps-ws-row.is-selected .ps-ws-found-dir { color: inherit; }
+.ps-ws-splitter {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 7px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.ps-ws-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--ps-border);
+  transition: background-color 120ms, box-shadow 120ms;
+}
+.ps-ws-splitter:hover::after,
+.ps-ws-splitter:focus-visible::after,
+.ps-ws-splitter.is-dragging::after {
+  background: var(--ps-accent);
+  box-shadow: 0 0 0 1px var(--ps-accent);
+}
+.ps-ws-main:has(.ps-ws-splitter.is-dragging) { user-select: none; cursor: col-resize; }
+.ps-ws-tree.is-drop { box-shadow: inset 0 0 0 2px var(--ps-accent); }
+.ps-ws-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding-right: 6px;
+  color: var(--ps-foreground);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.ps-ws-row:hover { background: color-mix(in srgb, var(--ps-foreground) 6%, transparent); }
+.ps-ws-row:focus-visible { outline: 1px solid var(--ps-accent); outline-offset: -1px; }
+.ps-ws-row.is-selected {
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+  font-weight: 700;
+}
+.ps-ws-row.is-drop { box-shadow: inset 0 0 0 2px var(--ps-accent); }
+.ps-ws-row.is-dot .ps-ws-row-name { opacity: 0.8; }
+.ps-ws-row.is-muted { color: var(--ps-muted); cursor: default; }
+/* On the selected fill, every part of the row is in the fill's text colour. */
+.ps-ws-row.is-selected .ps-ws-twisty,
+.ps-ws-row.is-selected .ps-ws-row-icon,
+.ps-ws-row.is-selected .ps-ws-row-badge,
+.ps-ws-row.is-selected .ps-ws-row-lock,
+.ps-ws-row.is-selected .ps-ws-row-actions button,
+.ps-ws-row.is-picked .ps-ws-twisty,
+.ps-ws-row.is-picked .ps-ws-row-icon,
+.ps-ws-row.is-picked .ps-ws-row-badge,
+.ps-ws-row.is-picked .ps-ws-row-lock,
+.ps-ws-row.is-picked .ps-ws-row-actions button { color: inherit; }
+.ps-ws-row.is-picked {
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+}
+.ps-ws-row.is-error { color: var(--ps-code-invalid, var(--ps-foreground)); cursor: default; white-space: normal; height: auto; padding-top: 3px; padding-bottom: 3px; }
+.ps-ws-row.is-inline { cursor: default; }
+.ps-ws-twisty { flex: none; width: 10px; color: var(--ps-muted); font-size: 10px; }
+.ps-ws-row-icon { flex: none; display: grid; place-items: center; color: var(--ps-muted); }
+.ps-ws-row-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ps-ws-row-badge { color: var(--ps-muted); font-size: 11px; }
+.ps-ws-row-lock { display: grid; place-items: center; color: var(--ps-muted); margin-left: auto; }
+.ps-ws-draft-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ps-warning); }
+.ps-ws-row-actions {
+  display: none;
+  gap: 1px;
+  margin-left: auto;
+  padding-left: 4px;
+  background: inherit;
+}
+.ps-ws-row:hover .ps-ws-row-actions,
+.ps-ws-row:focus-within .ps-ws-row-actions { display: inline-flex; }
+.ps-ws-row:hover .ps-ws-row-lock { display: none; }
+.ps-ws-row-actions button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+.ps-ws-row-actions button:hover { color: var(--ps-foreground); background: color-mix(in srgb, var(--ps-foreground) 10%, transparent); }
+.ps-ws-inline-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--ps-accent);
+  border-radius: 4px;
+  background: var(--ps-background, transparent);
+  color: var(--ps-foreground);
+  font: inherit;
+}
+/* min-height 0: stacked on a phone, the viewer must stay in its space and
+   let the editor scroll, not grow to the file's full height. */
+.ps-ws-viewer { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.ps-ws-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 3px 8px 3px 12px;
+  border-bottom: 1px solid var(--ps-border);
+}
+/* The path gives way; the controls keep their size. */
+.ps-ws-viewer-bar > :not(.ps-ws-crumbs):not(.ps-ws-spacer) { flex-shrink: 0; }
+.ps-ws-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--ps-muted);
+  font-size: 12px;
+}
+/* Out of room, the folders give way first ("…"), the file name last. */
+.ps-ws-crumbs > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 100; }
+.ps-ws-crumbs > .ps-ws-crumb-sep { flex-shrink: 0; overflow: visible; }
+.ps-ws-crumbs > .ps-ws-crumb-leaf { flex-shrink: 1; }
+.ps-ws-crumb-sep { color: var(--ps-muted); }
+.ps-ws-crumb-leaf { color: var(--ps-foreground); font-weight: 700; }
+.ps-ws-dirty { color: var(--ps-warning); font-size: 11px; }
+.ps-ws-seg { display: inline-flex; border: 1px solid var(--ps-border); border-radius: 6px; overflow: hidden; }
+.ps-ws-seg button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ps-ws-seg button.is-on {
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+  font-weight: 700;
+}
+.ps-ws-btn {
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ps-ws-btn:hover:not(:disabled) { border-color: var(--ps-accent); }
+.ps-ws-btn:disabled { opacity: 0.45; cursor: default; }
+/* The highlight pair: readable in every theme (the accent is not, as text or under it). */
+.ps-ws-btn.is-primary { border-color: var(--ps-highlight-background); background: var(--ps-highlight-background); color: var(--ps-highlight-foreground); font-weight: 700; }
+.ps-ws-btn.is-danger { border-color: var(--ps-danger); color: var(--ps-code-invalid, var(--ps-foreground)); }
+.ps-ws-link-btn { border: 0; background: none; color: var(--ps-code-link, var(--ps-foreground)); font: inherit; text-decoration: underline; cursor: pointer; padding: 0; }
+.ps-ws-banner {
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--ps-warning) 14%, transparent);
+  color: var(--ps-foreground);
+  font-size: 12px;
+}
+.ps-ws-viewer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* The editor's find box (workspace-editor.js): find only, in the theme's colours. */
+.ps-ws-find {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  font-family: var(--ps-ui-font, inherit);
+  font-size: 12px;
+}
+.ps-ws-find-input {
+  flex: 1;
+  min-width: 80px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font: inherit;
+}
+.ps-ws-find-input:focus { border-color: var(--ps-foreground); }
+.ps-ws-find-input::placeholder { color: var(--ps-muted); opacity: 1; }
+.ps-ws-find-count { min-width: 64px; color: var(--ps-muted); white-space: nowrap; text-align: right; }
+.ps-ws-find-btn {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.ps-ws-find-btn:hover { border-color: var(--ps-border); }
+.ps-ws-find-btn[aria-pressed="true"] { background: var(--ps-highlight-background); border-color: var(--ps-highlight-background); color: var(--ps-highlight-foreground); }
+.ps-ws-editor, .ps-ws-compare { flex: 1; min-height: 0; overflow: hidden; }
+.ps-ws-editor > .cm-editor { height: 100%; }
+.ps-ws-compare > .cm-mergeView { height: 100%; overflow: auto; }
+.ps-ws-compare-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px 4px 12px; border-bottom: 1px solid var(--ps-border); }
+.ps-ws-compare-hint { flex: 1 1 200px; color: var(--ps-muted); font-size: 11.5px; }
+.ps-ws-image {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow: auto;
+  background: repeating-conic-gradient(color-mix(in srgb, var(--ps-foreground) 7%, transparent) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+}
+.ps-ws-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.ps-ws-md-preview { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 32px; line-height: 1.55; font-family: var(--ps-ui-font, inherit); font-size: 13.5px; }
+.ps-ws-frontmatter {
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  color: var(--ps-muted);
+  font-family: var(--ps-mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.ps-ws-md-body h1, .ps-ws-md-body h2 { border-bottom: 1px solid var(--ps-border); padding-bottom: 4px; }
+.ps-ws-md-body a { color: var(--ps-code-link, var(--ps-foreground)); }
+.ps-ws-md-body code { font-family: var(--ps-mono, ui-monospace, monospace); font-size: 0.92em; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--ps-foreground) 9%, transparent); }
+.ps-ws-md-body pre { padding: 10px 12px; border-radius: 6px; overflow: auto; background: color-mix(in srgb, var(--ps-foreground) 7%, transparent); }
+.ps-ws-md-body pre code { padding: 0; background: none; }
+.ps-ws-md-body blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--ps-border); color: var(--ps-muted); }
+.ps-ws-md-body table { border-collapse: collapse; }
+.ps-ws-md-body th, .ps-ws-md-body td { border: 1px solid var(--ps-border); padding: 4px 8px; }
+.ps-ws-md-body img { max-width: 100%; }
+.ps-ws-dialog {
+  position: absolute;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  width: min(520px, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid var(--ps-border-strong, var(--ps-border));
+  border-radius: 10px;
+  background: var(--ps-modal-background, var(--ps-surface));
+  color: var(--ps-modal-foreground, var(--ps-foreground));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  z-index: 5;
+}
+.ps-ws-dialog .ps-ws-btn:not(.is-primary) { color: inherit; }
+/* In a dialog the text is the dialog's own colour; the red border marks the danger. */
+.ps-ws-dialog .ps-ws-btn.is-danger { border-width: 2px; font-weight: 700; }
+.ps-ws-dialog p { margin: 6px 0 12px; color: inherit; line-height: 1.45; }
+.ps-ws-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.ps-ws-notice {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 7px 12px;
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  background: var(--ps-modal-background, var(--ps-surface));
+  color: var(--ps-modal-foreground, var(--ps-foreground));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 6;
+}
+.ps-ws-notice.is-error { border-color: var(--ps-danger); border-left-width: 4px; }
+@media (max-width: 720px) {
+  .ps-ws-find-btn { min-width: 34px; min-height: 34px; }
+  .ps-ws-main { flex-direction: column; }
+  .ps-ws-side { flex: 0 0 var(--ps-ws-tree-height, 40%); min-width: 0; max-width: none; min-height: 80px; max-height: calc(100% - 120px); }
+  .ps-ws-splitter { flex-basis: 13px; margin: -6px 0; cursor: row-resize; }
+  .ps-ws-splitter::after { top: 6px; bottom: auto; left: 0; right: 0; width: auto; height: 1px; }
+  .ps-ws-main:has(.ps-ws-splitter.is-dragging) { cursor: row-resize; }
+}
+.ps-ws-md-images {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  color: var(--ps-muted);
+  font-size: 12px;
+  font-family: var(--ps-mono, ui-monospace, monospace);
+}
+.ps-ws-md-images span { flex: 1; min-width: 0; }
+.ps-ws-img-blocked {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px dashed var(--ps-border);
+  border-radius: 4px;
+  color: var(--ps-muted);
+  font-size: 0.85em;
+}
+.ps-ws-agent-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ps-accent); opacity: 0.85; }
+.ps-ws-agent-dot.is-live { background: var(--ps-warning); animation: ps-ws-pulse 1.1s ease-in-out infinite; }
+@keyframes ps-ws-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
+.ps-ws-banner.is-agent { border-bottom-color: color-mix(in srgb, var(--ps-accent) 45%, transparent); background: color-mix(in srgb, var(--ps-accent) 12%, transparent); }
+
+/* Phone toolbar: all eight buttons on one row at any phone width. Each one
+   gives up a few pixels (never under 34px) instead of the last action sliding
+   under the view-mode group, where only a sideways swipe found it. */
+@media (max-width: 420px) {
+  .ps-toolbar.is-mobile .ps-toolbar-row { gap: 6px; }
+  .ps-toolbar.is-mobile .ps-toolbar-row-actions { gap: 4px; }
+  .ps-toolbar.is-mobile .ps-toolbar-row-actions.is-panes { padding-left: 6px; }
+  .ps-toolbar.is-mobile .ps-toolbar-row-actions .ps-icon-button {
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    width: clamp(34px, calc((100vw - 62px) / 8), 44px);
+    min-width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    justify-content: center;
+  }
 }

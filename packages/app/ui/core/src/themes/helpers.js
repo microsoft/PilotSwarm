@@ -53,6 +53,19 @@ function getRelativeLuminance(color) {
     return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
 }
 
+/**
+ * The WCAG contrast ratio of two #rgb / #rrggbb colours (1 to 21); null when
+ * either cannot be read (a named colour, rgba()).
+ */
+export function contrastRatio(a, b) {
+    const ca = normalizeHexColor(a);
+    const cb = normalizeHexColor(b);
+    if (!ca || !cb) return null;
+    const la = getRelativeLuminance(ca);
+    const lb = getRelativeLuminance(cb);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
 export function isThemeLight(theme) {
     const background = theme?.page?.background || theme?.tui?.background || theme?.terminal?.background;
     return getRelativeLuminance(background) >= 0.5;

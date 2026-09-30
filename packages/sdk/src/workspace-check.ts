@@ -27,9 +27,16 @@ export const MAX_WORKSPACE_EXTRAS = 4;
 /** An extra folder's name: what the model and the provider call it. */
 const EXTRA_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
-/** A name that is also a property every object has ("constructor", ...), which a plain lookup would find. */
+/** What canvas apps call the working folder (canvas-ws paths: "work/..."). */
+export const CANVAS_WORKING_FOLDER_NAME = "work";
+
+/**
+ * A name no extra or default folder may have: "work", which canvas apps use
+ * for the working folder, and a property every object has ("constructor",
+ * ...), which a plain lookup would find.
+ */
 function reservedName(name: string): boolean {
-    return Object.prototype.hasOwnProperty.call(Object.prototype, name);
+    return name === CANVAS_WORKING_FOLDER_NAME || Object.prototype.hasOwnProperty.call(Object.prototype, name);
 }
 
 /** The value of an own key only; never a property from the prototype. */
@@ -82,7 +89,7 @@ function checkExtraMap(input: unknown, allowNull: boolean): { ok: true; extra: R
         if (!EXTRA_NAME.test(name)) {
             return invalid(`extra folder name "${name}" must be 1-32 lowercase letters, digits, "-" or "_", starting with a letter or digit`);
         }
-        if (reservedName(name)) return invalid(`extra folder name "${name}" is reserved; pick another name`);
+        if (reservedName(name)) return invalid(`extra folder name "${name}" is reserved${name === CANVAS_WORKING_FOLDER_NAME ? " (canvas apps call the working folder that)" : ""}; pick another name`);
         const value = (input as Record<string, unknown>)[name];
         if (value === null && allowNull) {
             extra[name] = null;

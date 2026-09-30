@@ -29,6 +29,11 @@
 #   PS_MODEL_PROVIDERS_PATH  the model catalog (default: .model_providers.json when it exists,
 #                            else deploy/config/model_providers.local-docker.json, which has
 #                            GitHub Copilot models only and uses GITHUB_TOKEN)
+#   PS_LOCAL_WORKSPACES      the workspace setup, to test each case (default on):
+#                              on           repo clones, each person's home folder, the shared folder
+#                              no-defaults  repo clones only: a session started without a repo has no folders
+#                              no-portal    the workers have workspaces; the portal serves none of them
+#                              off          no workspaces at all
 
 set -euo pipefail
 
@@ -40,6 +45,11 @@ LOGS="$LOCAL_DIR/logs"
 REPO_PORT="${PS_LOCAL_REPO_PORT:-8080}"
 PORT="${PORT:-3001}"
 REPO_PID="$LOCAL_DIR/repo-service.pid"
+WORKSPACES="${PS_LOCAL_WORKSPACES:-on}"
+case "$WORKSPACES" in
+    on|no-defaults|no-portal|off) ;;
+    *) echo "[local] PS_LOCAL_WORKSPACES must be on, no-defaults, no-portal or off" >&2; exit 1 ;;
+esac
 # The same two repos as the release environment (deploy/providers/azure/gitops/repo-cache).
 REPOS='{"duroxide": {"upstream": "https://github.com/microsoft/duroxide.git", "sandbox": true, "adopt": {"agents": true, "skills": true, "instructions": true}},
         "tfenv": {"upstream": "https://github.com/tfutils/tfenv.git", "sandbox": true, "adopt": {"agents": true, "skills": true, "instructions": true}}}'
@@ -92,8 +102,17 @@ make_folders() {
     chmod -R a-w "$WS/shared/.github" "$WS/shared/README.md"
 }
 
+# The PID file outlives a reboot, and the PID may belong to another process
+# by then: trust it only while that process is the repo service.
 repo_service_running() {
-    [[ -f "$REPO_PID" ]] && kill -0 "$(cat "$REPO_PID")" 2>/dev/null
+    [[ -f "$REPO_PID" ]] || return 1
+    local pid
+    pid="$(cat "$REPO_PID")"
+    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q "repo-service.mjs"; then
+        return 0
+    fi
+    rm -f "$REPO_PID"
+    return 1
 }
 
 start_repo_service() {
@@ -114,7 +133,10 @@ start_repo_service() {
         nohup node "$EXAMPLE/repo-service.mjs" >>"$LOGS/repo-service.log" 2>&1 &
     echo $! >"$REPO_PID"
     for _ in $(seq 1 300); do
-        if curl -s -m 2 -o /dev/null "http://127.0.0.1:$REPO_PORT/v1/clones?rootSessionId=local-check"; then
+        # Ready when it answers AND it is the process that listens there: a
+        # different server on the port must not pass for it.
+        if curl -s -m 2 -o /dev/null "http://127.0.0.1:$REPO_PORT/v1/clones?rootSessionId=local-check" \
+            && lsof -ti tcp:"$REPO_PORT" -sTCP:LISTEN 2>/dev/null | grep -qx "$(cat "$REPO_PID")"; then
             echo "[local] The repo service is ready."
             return
         fi
@@ -133,6 +155,9 @@ start_repo_service() {
 start_portal() {
     export PORTAL_AUTH_PROVIDER=dev
     export PORTAL_AUTH_DEV_ALLOW=true
+    # This machine only: dev sign-in takes no password, and the agents run
+    # shell commands as you. Never on the network unless you set PORTAL_HOST.
+    export PORTAL_HOST="${PORTAL_HOST:-127.0.0.1}"
     # Each person sees only their own sessions, as in the release environment.
     export AUTHZ_ENFORCE_OWNERSHIP=true
     export WORKERS=2
@@ -142,13 +167,27 @@ start_portal() {
     if [[ -z "${PS_MODEL_PROVIDERS_PATH:-}" && ! -f "$REPO_ROOT/.model_providers.json" ]]; then
         export PS_MODEL_PROVIDERS_PATH="$REPO_ROOT/deploy/config/model_providers.local-docker.json"
     fi
-    export PLUGIN_DIRS="$REPO_ROOT/packages/app/tui/plugins,$EXAMPLE/plugin"
-    export PILOTSWARM_EXTENSION_MODULES="$EXAMPLE/index.mjs"
-    export PS_WORKSPACE_ROOTS="a=$WS/a"
-    export PS_PLAIN_ROOTS="shared=$WS/shared"
-    export PS_HOME_ROOT="home=$WS/home"
-    export PS_DEFAULT_EXTRAS=shared
-    export REPO_SERVICE_URL="http://127.0.0.1:$REPO_PORT"
+    unset PILOTSWARM_EXTENSION_MODULES PS_WORKSPACE_ROOTS PS_PLAIN_ROOTS PS_HOME_ROOT PS_DEFAULT_EXTRAS \
+        REPO_SERVICE_URL PORTAL_WORKSPACE_ROOTS PORTAL_CANVAS_COMMANDS_RUNNER
+    export PLUGIN_DIRS="$REPO_ROOT/packages/app/tui/plugins"
+    if [[ "$WORKSPACES" != off ]]; then
+        export PLUGIN_DIRS="$PLUGIN_DIRS,$EXAMPLE/plugin"
+        export PILOTSWARM_EXTENSION_MODULES="$EXAMPLE/index.mjs"
+        export PS_WORKSPACE_ROOTS="a=$WS/a"
+        export PS_PLAIN_ROOTS="shared=$WS/shared"
+        export REPO_SERVICE_URL="http://127.0.0.1:$REPO_PORT"
+    fi
+    if [[ "$WORKSPACES" == on || "$WORKSPACES" == no-portal ]]; then
+        export PS_HOME_ROOT="home=$WS/home"
+        export PS_DEFAULT_EXTRAS=shared
+    fi
+    if [[ "$WORKSPACES" == on || "$WORKSPACES" == no-defaults ]]; then
+        # The Workspace tab: the portal reads and writes the same folders.
+        export PORTAL_WORKSPACE_ROOTS="a=$WS/a,shared=$WS/shared,home=$WS/home"
+        # Canvas apps may run the git commands their agent declared, here and
+        # as you. Development only: a deployment needs a sandboxed runner.
+        export PORTAL_CANVAS_COMMANDS_RUNNER=local
+    fi
     export GIT_AUTHOR_NAME="PilotSwarm agent" GIT_AUTHOR_EMAIL=agent@pilotswarm.invalid
     export GIT_COMMITTER_NAME="PilotSwarm agent" GIT_COMMITTER_EMAIL=agent@pilotswarm.invalid
     PORT="$PORT" ./scripts/portal-start.sh local --port "$PORT"
@@ -166,6 +205,7 @@ stop_all() {
 summary() {
     echo "[local] Portal:  http://localhost:$PORT (sign in as Ada, Alice, Bob, Carol or Dave)"
     echo "[local] Folders: $WS"
+    if [[ "$WORKSPACES" != on ]]; then echo "[local] Workspaces: $WORKSPACES (PS_LOCAL_WORKSPACES)"; fi
     echo "[local] Logs:    scripts/local-pilotswarm.sh logs"
 }
 

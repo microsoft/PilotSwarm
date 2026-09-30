@@ -66,7 +66,7 @@ fi
 # Kill any previous instances. Runs even without a PID file: an instance
 # started outside this script still holds the port, and the readiness probe
 # below cannot tell that server apart from the one we are about to start.
-if [ -f "$PIDFILE" ] || lsof -ti:"$PORT" >/dev/null 2>&1; then
+if [ -f "$PIDFILE" ] || lsof -ti tcp:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "[portal] Stopping previous instance / clearing port $PORT..."
   PORT="$PORT" ./scripts/portal-stop.sh 2>/dev/null || true
 fi
@@ -102,7 +102,7 @@ for i in $(seq 1 30); do
   # Require the port to be held by the process WE started, so a stale server
   # can never be reported as ready.
   if curl -s "http://localhost:$PORT/api/health" >/dev/null 2>&1 \
-     && lsof -ti:"$PORT" 2>/dev/null | grep -qx "$SERVER_PID"; then
+     && lsof -ti tcp:"$PORT" -sTCP:LISTEN 2>/dev/null | grep -qx "$SERVER_PID"; then
     echo " ready"
     break
   fi

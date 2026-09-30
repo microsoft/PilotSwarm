@@ -14,10 +14,11 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE } from "./workspace.js";
+import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
+import { WORKSPACE_FILES_CHANGED_EVENT, WORKSPACE_FILES_NOTED_EVENT, workspaceFileChangesNote, workspaceFileChangesToTell } from "./workspace-files.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-system-context.js";
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
@@ -1342,6 +1343,48 @@ export function registerActivities(
         session.setRecordedDefaults(current);
     };
 
+    /**
+     * The folders of the session's record this turn opened (the working
+     * folder and the record's extra folders; not the default folders):
+     * compare with the last session.workspace_opened event, and record a new
+     * one when they changed. The portal serves a record's folder only once a
+     * worker opened it, and a folder the session was created with has its
+     * path nowhere else.
+     */
+    const noteWorkspaceOpened = async (
+        session: any,
+        sessionId: string,
+        revision: number,
+        opened: { path: string; extraPaths: Record<string, string> },
+        trace: (message: string) => void,
+    ): Promise<void> => {
+        const key = workspaceOpenedKey(revision, opened.path, opened.extraPaths);
+        let previous: string | null | undefined = session.getRecordedOpened();
+        if (previous === undefined) {
+            previous = null;
+            if (catalog) {
+                const [latest] = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_opened"]).catch(() => []);
+                const data: any = latest?.data;
+                if (data) previous = workspaceOpenedKey(data.revision, data.path, data.extraPaths);
+            }
+        }
+        if (previous === key) {
+            session.setRecordedOpened(key);
+            return;
+        }
+        if (catalog) {
+            await cmsRetryBestEffort(
+                `runTurn.recordEvent workspace-opened session=${sessionId}`,
+                () => catalog!.recordEvents(sessionId, [{
+                    eventType: "session.workspace_opened",
+                    data: { revision, path: opened.path, ...(Object.keys(opened.extraPaths).length > 0 ? { extraPaths: opened.extraPaths } : {}) },
+                }], workerNodeId),
+                trace,
+            );
+        }
+        session.setRecordedOpened(key);
+    };
+
     // ── runTurn ──────────────────────────────────────────────
     const runTurnHandler = async (
         activityCtx: any,
@@ -1932,9 +1975,34 @@ export function registerActivities(
         // system.message so the transcript shows what the model was told.
         {
             const notice = typeof input.workspaceNotice === "string" ? input.workspaceNotice.trim() : "";
+            // Files the session's owner changed in the portal's Workspace tab
+            // since the last turn that told the model about them: one line.
+            // The turn that tells it records how far it got; a new attempt at
+            // the same turn tells the same changes again.
+            let ownerFileNote: string | null = null;
+            if (catalog && turnWorkspace) {
+                try {
+                    const events = (await catalog.getSessionEventsBefore(input.sessionId, Number.MAX_SAFE_INTEGER, 200,
+                        [WORKSPACE_FILES_CHANGED_EVENT, WORKSPACE_FILES_NOTED_EVENT]))
+                        .slice()
+                        .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
+                    const turnIndex = input.turnIndex ?? 0;
+                    const { changed, from, again } = workspaceFileChangesToTell(events, turnIndex);
+                    ownerFileNote = workspaceFileChangesNote(changed.map((event: any) => event.data));
+                    if (ownerFileNote && !again) {
+                        await catalog.recordEvents(input.sessionId, [{
+                            eventType: WORKSPACE_FILES_NOTED_EVENT,
+                            data: { fromSeq: from, throughSeq: Number(changed[changed.length - 1].seq), turnIndex },
+                        }], workerNodeId);
+                    }
+                } catch (error: any) {
+                    activityCtx.traceInfo(`[runTurn] workspace file changes for ${input.sessionId}: ${error?.message ?? error}`);
+                }
+            }
             const notes: Array<{ content: string; source?: "provider" }> = [
                 ...(notice ? [{ content: notice }] : []),
                 ...defaultFolderNotices.map((content) => ({ content })),
+                ...(ownerFileNote ? [{ content: ownerFileNote }] : []),
                 ...providerWorkspaceNotices.map((content) => ({ content, source: "provider" as const })),
             ];
             if (notes.length > 0) {
@@ -3373,6 +3441,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 sizeBytes,
                                 ...(note ? { note } : {}),
                                 ...(effectiveContract ? { responseContract: effectiveContract } : {}),
+                                // canvas-ws: the page's declared access, checked
+                                // (null when it declares none). It rides the
+                                // event so the portal reads it with the rev it
+                                // belongs to, never an older page's.
+                                workspace: extraction.manifest?.workspace ?? null,
+                                ...(extraction.error ? { manifestError: String(extraction.error).slice(0, 300) } : {}),
                                 ...(source ? { source } : {}),
                                 // Attribution: who actually drew this revision.
                                 // Only present on cross-session draws, so the
@@ -4050,6 +4124,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const note = availabilityNotes.join("\n");
                 const split = splitSystemContextBlock(effectivePrompt);
                 effectivePrompt = appendSystemContextBlock(split.prompt, split.note ? `${split.note}\n\n${note}` : note);
+            }
+
+            // The record's folders this turn opened, recorded when they change
+            // and before the model runs, so the portal's Workspace tab can
+            // serve them during this turn.
+            const openedAttach = (runConfig as ManagedSessionConfig).workspaceAttach;
+            const openedRecord = runConfig.workspace;
+            if (openedRecord && openedAttach && typeof session?.getRecordedOpened === "function") {
+                const extraPaths = Object.fromEntries((openedAttach.extras ?? [])
+                    .filter((extra) => Object.prototype.hasOwnProperty.call(openedRecord.extra ?? {}, extra.name))
+                    .map((extra) => [extra.name, extra.path]));
+                await noteWorkspaceOpened(session, input.sessionId, input.workspaceRevision ?? 1, { path: openedAttach.path, extraPaths }, (msg) => activityCtx.traceInfo(msg));
             }
 
             // Section 4.11: the default folders this turn used, recorded when
