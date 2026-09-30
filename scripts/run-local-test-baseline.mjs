@@ -70,7 +70,6 @@ Options:
   --tags <expression>    Native Vitest tagsFilter expression
   --all                  Rerun current passes as well as non-passes
   --fresh                Create new state instead of continuing the manifest
-  --skip-build           Do not build SDK and MCP before testing
   --skip-cleanup         Do not run the one-time stale test cleanup
   --report-only          Read and print campaign summary without executing tests
   --help                 Show this help
@@ -184,7 +183,6 @@ export function parseArgs(args) {
         tagsFilter: null,
         all: false,
         fresh: false,
-        skipBuild: false,
         skipCleanup: false,
         reportOnly: false,
         help: false,
@@ -226,7 +224,9 @@ export function parseArgs(args) {
         } else if (arg === "--fresh") {
             options.fresh = true;
         } else if (arg === "--skip-build") {
-            options.skipBuild = true;
+            throw new Error(
+                "--skip-build is not supported because campaign evidence must be built from the tested commit",
+            );
         } else if (arg === "--skip-cleanup") {
             options.skipCleanup = true;
         } else if (arg === "--report-only") {
@@ -1158,7 +1158,17 @@ function runCommand(command, args, {
     });
 }
 
+export function cleanGeneratedBuildOutputs(repoRoot = REPO_ROOT) {
+    for (const relativePath of [
+        path.join("packages", "sdk", "dist"),
+        path.join("packages", "app", "mcp", "dist"),
+    ]) {
+        fs.rmSync(path.join(repoRoot, relativePath), { recursive: true, force: true });
+    }
+}
+
 async function buildOnce(env) {
+    cleanGeneratedBuildOutputs();
     const runNpm = (args) => process.platform === "win32"
         ? runCommand(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "npm", ...args], {
             env,
@@ -2786,7 +2796,7 @@ async function main() {
             if (!hasPlannedWork) {
                 console.log("No campaign files need execution.");
             } else {
-                if (!options.skipBuild) await buildOnce(env);
+                await buildOnce(env);
                 if (!abortReason && !options.skipCleanup) await cleanupOnce(env);
                 if (!abortReason) {
                     console.log(

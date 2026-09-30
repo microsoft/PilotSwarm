@@ -152,6 +152,11 @@ The runner:
 5. gives every selected file one initial attempt, and
 6. checkpoints the manifest after every attempt.
 
+The build step cannot be skipped and begins by deleting generated SDK and MCP
+output. Those directories are ignored by Git, so reusing an existing build
+could attribute artifacts from another commit or branch to the campaign's
+tested revision.
+
 Unknown and historically short files run before historically long files. A
 file that exceeds its process deadline is terminated and recorded as timed out.
 That timeout is a valid terminal observation and remains eligible for configured

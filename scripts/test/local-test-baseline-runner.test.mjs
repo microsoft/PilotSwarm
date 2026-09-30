@@ -13,6 +13,7 @@ import {
     campaignIdentitiesMatch,
     campaignIdentityHash,
     classifyAttemptEvidence,
+    cleanGeneratedBuildOutputs,
     createCampaignIdentity,
     createRoundState,
     createVitestListArgs,
@@ -97,7 +98,6 @@ test("parses user-facing runner controls, aliases, and default path", () => {
             tagsFilter: "live && !slow",
             all: true,
             fresh: true,
-            skipBuild: false,
             skipCleanup: false,
             reportOnly: false,
             help: false,
@@ -111,6 +111,10 @@ test("parses user-facing runner controls, aliases, and default path", () => {
     assert.equal(aliases.workers, 4);
     assert.equal(aliases.retries, 1);
     assert.equal(aliases.timeoutMs, 30_000);
+    assert.throws(
+        () => parseArgs(["--skip-build"]),
+        /campaign evidence must be built from the tested commit/,
+    );
 });
 
 test("normalizes Vitest file-list JSON to test/local-relative IDs", (t) => {
@@ -134,6 +138,23 @@ test("uses a relative Vitest JSON output argument on Windows-safe discovery", (t
     assert.match(jsonArg, /^--json=\.\.\/\.\.\/test-results\//);
     assert.doesNotMatch(jsonArg, /^[^=]*=[A-Za-z]:/);
     assert.equal(args.at(-1), "test/local/smoke-basic.test.js");
+});
+
+test("removes ignored generated output before campaign builds", (t) => {
+    const repoRoot = scratch(t);
+    const sdkDist = path.join(repoRoot, "packages", "sdk", "dist");
+    const mcpDist = path.join(repoRoot, "packages", "app", "mcp", "dist");
+    const unrelated = path.join(repoRoot, "packages", "app", "web", "dist");
+    for (const output of [sdkDist, mcpDist, unrelated]) {
+        fs.mkdirSync(output, { recursive: true });
+        fs.writeFileSync(path.join(output, "stale.js"), "stale");
+    }
+
+    cleanGeneratedBuildOutputs(repoRoot);
+
+    assert.equal(fs.existsSync(sdkDist), false);
+    assert.equal(fs.existsSync(mcpDist), false);
+    assert.equal(fs.existsSync(unrelated), true);
 });
 
 test("preserves exact explicit-file validation", () => {
