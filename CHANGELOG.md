@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-09-30
 
 **The Workspace tab.** The portal's side pane has two tabs: **Canvas** and
 **Workspace**. The Workspace tab shows the session's folders to the
@@ -142,6 +142,15 @@ checked it yet.
 - Skill descriptions fit the skills index whole (240 characters): the
   `canvas-apps` skill and three management skills were shortened. A test
   reads every bundled skill with the index's own loader.
+
+- Validation (local): SDK unit 1,383 passed (1 skip), SDK API 40, the
+  workspace suites on a real worker 112 (12 files), UI 842, web 156, TUI 22,
+  MCP, deployment scripts 361, CI policy 109, browser tests 555. Each fix
+  from the browser passes and the two adversarial reviews was broken on
+  purpose and a test failed. A live check on the local platform opened a
+  created-with folder during the first turn. The differential capture
+  against v0.7.1 differs only in the `canvas-apps` skill's description. The
+  all-provider run for the release candidate runs in GitHub Actions.
 
 ## 0.7.1 — 2026-09-29
 
