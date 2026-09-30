@@ -185,7 +185,7 @@ start_portal() {
         # The Workspace tab: the portal reads and writes the same folders.
         export PORTAL_WORKSPACE_ROOTS="a=$WS/a,shared=$WS/shared,home=$WS/home"
         # Canvas apps may run the git commands their agent declared, here and
-        # as you. Development only: a deployment needs a sandboxed runner.
+        # as you (docs/developer/building/workspace-providers.md, canvas-ws).
         export PORTAL_CANVAS_COMMANDS_RUNNER=local
     fi
     export GIT_AUTHOR_NAME="PilotSwarm agent" GIT_AUTHOR_EMAIL=agent@pilotswarm.invalid

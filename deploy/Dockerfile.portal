@@ -7,8 +7,10 @@
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
 FROM node:24-trixie-slim
 
+# git: canvas apps run the git commands their manifest declares through the
+# portal when PORTAL_CANVAS_COMMANDS_RUNNER=local (packages/sdk/src/canvas-workspace.ts).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates python3 make g++ \
+    ca-certificates python3 make g++ git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

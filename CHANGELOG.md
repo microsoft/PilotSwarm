@@ -40,6 +40,18 @@ is read-only, except for checkout.
   checkout, restore). `listSessionWorkspaceFolders` says whether git is on
   (`git`).
 
+**Canvas commands and git on the Azure deployment.** 0.8.0 left canvas
+commands off on deployments. The Azure GitOps deployment now turns them on
+when `WORKSPACES_ENABLED=true`, which also turns on git in the Workspace tab.
+
+- `deploy/Dockerfile.portal` installs git. Before, a command failed with
+  "git is not installed here".
+- The workspaces portal component sets `PORTAL_CANVAS_COMMANDS_RUNNER=local`.
+  Canvas apps run the git commands their manifest declares, for the
+  session's owner only. The program runs as the portal's own user, so turn
+  commands on only where you trust the people who sign in. To keep them
+  off, remove that entry from the component.
+
 **Workspaces (#103).**
 
 - `getSessionWorkspace` returns `turnRevision`: the revision the last turn

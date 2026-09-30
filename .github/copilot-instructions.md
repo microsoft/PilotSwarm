@@ -520,7 +520,7 @@ scripts/local-pilotswarm.sh logs      # follow the portal and repo service logs
 | Workers | Two, inside the portal process (`WORKERS=2`). They load the workspaces example through `PILOTSWARM_EXTENSION_MODULES`. |
 | Workspaces | The reference setup in `packages/sdk/examples/repo-workspaces/`: its repo service on `127.0.0.1:8080`, and plain folders under `~/pilotswarm-local/ws` (`a`, `shared`, `home`) in place of the NFS exports. |
 | Workspace tab | The side pane's Workspace tab reads and writes the same folders: the portal gets `PORTAL_WORKSPACE_ROOTS` for them. File limit: `PORTAL_WORKSPACE_MAX_FILE_MB` (default 20). |
-| Canvas apps (canvas-ws) | Canvas apps may run the git commands their agent declared: `PORTAL_CANVAS_COMMANDS_RUNNER=local` (development only; deployments leave it unset). |
+| Canvas apps (canvas-ws) | Canvas apps may run the git commands their agent declared: `PORTAL_CANVAS_COMMANDS_RUNNER=local`. The Azure GitOps deployment sets it too when `WORKSPACES_ENABLED=true`. The program runs as the portal's own user, so turn it on only where you trust the people who sign in. |
 | Workspace cases | `PS_LOCAL_WORKSPACES=on` (default), `no-defaults` (repo clones only: a session without a repo has no folders), `no-portal` (the workers have workspaces, the portal serves none, so no Workspace tab), `off` (no workspaces). For example `PS_LOCAL_WORKSPACES=off scripts/local-pilotswarm.sh restart`. |
 | Models | `.model_providers.json` when it exists, else the GitHub Copilot catalog in `deploy/config/model_providers.local-docker.json`. `GITHUB_TOKEN` comes from `.env`. |
 
