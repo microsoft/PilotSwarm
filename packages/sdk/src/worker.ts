@@ -157,6 +157,7 @@ export class PilotSwarmWorker {
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
     private _started = false;
+    private _startInvoked = false;
     private _runtimeStartup: Promise<void> | null = null;
     private _stopRequested = false;
     /** Worker-level tool registry — name → Tool. */
@@ -274,6 +275,12 @@ export class PilotSwarmWorker {
     private _agentPackagesRefreshError: string | null = null;
     private _featureFlags: FeatureFlagCache | null = null;
     private _registryReporting = false;
+    private _turnLifecycleProviders: Array<
+        import("./turn-lifecycle-hooks.js").TurnLifecycleProvider<
+            import("./types.js").SerializableSessionConfig,
+            import("./types.js").TurnResult
+        >
+    > = [];
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -281,6 +288,9 @@ export class PilotSwarmWorker {
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
         };
+        for (const provider of options.turnLifecycleProviders ?? []) {
+            this.registerTurnLifecycleProvider(provider);
+        }
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
         // Agent packages: resolve the cache dir up front; installation itself
@@ -484,6 +494,32 @@ export class PilotSwarmWorker {
     }
 
     /**
+     * Register process-local setup and cleanup around every real turn attempt.
+     * Extension modules must register providers before start().
+     */
+    registerTurnLifecycleProvider(
+        provider: import("./turn-lifecycle-hooks.js").TurnLifecycleProvider<
+            import("./types.js").SerializableSessionConfig,
+            import("./types.js").TurnResult
+        >,
+    ): void {
+        if (this._startInvoked) {
+            throw new Error(
+                "Turn lifecycle providers must be registered before worker start.",
+            );
+        }
+        if (
+            !provider
+            || (!provider.beforeTurn && !provider.afterTurn)
+        ) {
+            throw new TypeError(
+                "A turn lifecycle provider must define beforeTurn or afterTurn.",
+            );
+        }
+        this._turnLifecycleProviders.push(provider);
+    }
+
+    /**
      * SessionManager resolves tool names against one merged map: statically
      * registered tools win over package tools on a name collision (the
      * static registration is deployment code; a package must not shadow it).
@@ -602,6 +638,7 @@ export class PilotSwarmWorker {
 
     async start(): Promise<void> {
         if (this._started) return;
+        this._startInvoked = true;
         this._stopRequested = false;
 
         const trace = this.config.traceWriter ?? (() => {});
@@ -856,6 +893,7 @@ export class PilotSwarmWorker {
             this.factStore,
             this.config.workerNodeId,
             this.artifactStore,
+            this._turnLifecycleProviders,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {

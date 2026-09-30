@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add composable, process-local turn lifecycle providers to the generic worker.
+
 ## 0.8.0 — 2026-09-30
 
 **The Workspace tab.** The portal's side pane has two tabs: **Canvas** and
