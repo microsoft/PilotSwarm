@@ -20,6 +20,8 @@ import {
     listBundledAgentNames,
     listDeploymentMcpServerNames,
     normalizeAgentName,
+    workspaceFilesConfigFromEnv,
+    canvasCommandsConfigFromEnv,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -546,6 +548,11 @@ export class NodeSdkTransport {
             pluginDirs: this.pluginDirs,
             blobEnabled: Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING),
             artifactStore: this.artifactStore,
+            // The Workspace pane: this process's own mount of the workspace
+            // roots (PORTAL_WORKSPACE_ROOTS), and the file size limit.
+            workspaceFiles: workspaceFilesConfigFromEnv(),
+            // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
+            canvasCommands: canvasCommandsConfigFromEnv(),
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -1115,6 +1122,18 @@ export class NodeSdkTransport {
 
     async retrySessionWorkspace(sessionId, options = {}) {
         return this.mgmt.retrySessionWorkspace(sessionId, options);
+    }
+
+    async listSessionWorkspaceFolders(sessionId) {
+        return this.mgmt.listSessionWorkspaceFolders(sessionId);
+    }
+
+    async sessionWorkspaceFiles(sessionId, call = {}) {
+        return this.mgmt.sessionWorkspaceFiles(sessionId, call);
+    }
+
+    async canvasWorkspace(sessionId, slot, call = {}) {
+        return this.mgmt.canvasWorkspace(sessionId, slot, call);
     }
 
     async regenerateSession(sessionId, options = {}) {

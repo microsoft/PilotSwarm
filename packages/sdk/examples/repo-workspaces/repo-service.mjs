@@ -116,9 +116,13 @@ function segmentsAreReal(root, relative, { withGit = true } = {}) {
     return true;
 }
 
-/** Runs a command, as `uid` through setpriv when given (the deployment's session uid, 1000). */
+/**
+ * Runs a command, as `uid` through setpriv when given (the deployment's
+ * session uid, 1000). A service that already runs as that uid (a laptop run,
+ * where setpriv may not exist) runs the command directly.
+ */
 function runAs(command, args, { cwd, env, uid, timeoutMs } = {}) {
-    const [file, argv] = uid === undefined
+    const [file, argv] = uid === undefined || uid === process.getuid?.()
         ? [command, args]
         : ["setpriv", [`--reuid=${uid}`, `--regid=${uid}`, "--clear-groups", command, ...args]];
     return new Promise((resolve, reject) => {
@@ -839,6 +843,7 @@ export function createRepoService(options) {
  *   REPO_SERVICE_REFRESH_S   how often mirrors fetch and sandboxes follow them (default 300; 0 = never)
  *   REPO_SERVICE_STATE_FILE  service-private state (default /var/lib/repo-service/state.json)
  *   REPO_SERVICE_PORT        default 8080
+ *   REPO_SERVICE_HOST        the address to listen on (default 0.0.0.0; a laptop run uses 127.0.0.1)
  *   REPO_SERVICE_CLONE_UID   the session uid for clone creation (default 1000)
  *   REPO_SERVICE_CREDENTIAL_HELPER  the helper command clones set
  *   REPO_SERVICE_IDLE_CLONE_HOURS   remove a clone no session has used for this many hours
@@ -871,7 +876,7 @@ async function main() {
     // Mirror and sandbox every repo before taking requests: a first clone
     // then finds a ready mirror.
     await service.prepare();
-    const url = await service.listen(Number(env.REPO_SERVICE_PORT || 8080), "0.0.0.0");
+    const url = await service.listen(Number(env.REPO_SERVICE_PORT || 8080), env.REPO_SERVICE_HOST || "0.0.0.0");
     service.startRefresh(Number(env.REPO_SERVICE_REFRESH_S ?? 300) * 1000);
     service.startIdleCleanup();
     console.log(`[repo-service] listening at ${url}`);

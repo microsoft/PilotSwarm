@@ -36,7 +36,7 @@ for (const { id: themeId } of listThemes()) test(`${themeId}: filled cards remai
     for (const mode of ["chat", "MoA", "mobile"]) {
         if (mode === "MoA") await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
         if (mode === "mobile") {
-            await page.getByRole("button", { name: "Workspace — sessions, chat and panels", exact: true }).click();
+            await page.getByRole("button", { name: "Sessions — session list, chat and panels", exact: true }).click();
             await page.setViewportSize({ width: 390, height: 844 });
             await expect(page.locator(".ps-mobile-workspace")).toBeVisible();
         }

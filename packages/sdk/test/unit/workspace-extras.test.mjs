@@ -25,6 +25,7 @@ import {
     createBuiltInWorkspaceProvider,
     prepareWorkspace,
     prepareWorkspaceExtras,
+    workspaceOpenedKey,
 } from "../../dist/workspace.js";
 import { extraFoldersChangedNote } from "../../dist/orchestration/state.js";
 import { WORKSPACE_ERROR_CODES as CODES } from "../../dist/types.js";
@@ -81,6 +82,8 @@ describe("extra folders: the record", () => {
             else ok({ root: "a", extra: { [name]: { root: "l" } } });
         }
         bad({ root: "a", extra: { constructor: { root: "l" } } }, /reserved/);
+        // "work" is what canvas apps call the working folder: an extra folder by that name would hide it.
+        bad({ root: "a", extra: { work: { root: "l" } } }, /reserved \(canvas apps call the working folder that\)/);
         const merged = mergeWorkspaceChange({ schema: 1, root: "a" }, { extra: { constructor: { root: "l" } } });
         assert.equal(merged.ok, false);
         assert.match(merged.message, /reserved/);
@@ -379,6 +382,55 @@ describe("the workspace view's paths", () => {
             changed(2, { workspace: { schema: 1, root: "a", folder: "v" }, revision: 2, path: null }),
         ]).getSessionWorkspace("s");
         assert.equal(moved.path, null, "a new working folder without a reported path has none");
+    });
+
+    // A folder the session was created with: the create event has no path;
+    // the first turn that opened it records session.workspace_opened.
+    const opened = (seq, data) => ({ seq, eventType: "session.workspace_opened", data });
+    const WX = { ...W, extra: { logs: { root: "l", folder: "x" } } };
+
+    it("a folder the session was created with gets its paths from the turn that opened it", async () => {
+        const created = await client([
+            changed(1, { workspace: WX, revision: 1, path: null, source: "create" }),
+        ]).getSessionWorkspace("s");
+        assert.equal(created.path, null, "before a turn opened it, no path");
+        const view = await client([
+            changed(1, { workspace: WX, revision: 1, path: null, source: "create" }),
+            opened(2, { revision: 1, path: "/ws/a/w", extraPaths: { logs: "/ws/l/x", other: "/ws/o" } }),
+        ]).getSessionWorkspace("s");
+        assert.equal(view.path, "/ws/a/w");
+        assert.deepEqual(view.extraPaths, { logs: "/ws/l/x" }, "only folders the record names");
+    });
+
+    it("an opened event for another revision gives no path", async () => {
+        const moved = await client([
+            changed(1, { workspace: W, revision: 1, path: null, source: "create" }),
+            opened(2, { revision: 1, path: "/ws/a/w" }),
+            changed(3, { workspace: { schema: 1, root: "a", folder: "v" }, revision: 2, path: null }),
+        ]).getSessionWorkspace("s");
+        assert.equal(moved.path, null, "the working folder moved after the turn that opened the old one");
+        const late = await client([
+            changed(1, { workspace: W, revision: 1, path: null, source: "create" }),
+            changed(2, { workspace: { schema: 1, root: "a", folder: "v" }, revision: 2, path: null }),
+            opened(3, { revision: 1, path: "/ws/a/w" }),
+        ]).getSessionWorkspace("s");
+        assert.equal(late.path, null, "a turn under the old revision says nothing about the new folder");
+    });
+
+    it("an opened path holds across a change of extra folders only", async () => {
+        const view = await client([
+            changed(1, { workspace: W, revision: 1, path: null, source: "create" }),
+            opened(2, { revision: 1, path: "/ws/a/w" }),
+            changed(3, { workspace: WX, revision: 2, path: null, extraPaths: { logs: "/ws/l/x" } }),
+        ]).getSessionWorkspace("s");
+        assert.equal(view.path, "/ws/a/w");
+        assert.deepEqual(view.extraPaths, { logs: "/ws/l/x" });
+    });
+
+    it("the opened key ignores the order of extra folders, as Postgres returns them", () => {
+        assert.equal(workspaceOpenedKey(1, "/p", { b: "/b", a: "/a" }), workspaceOpenedKey("1", "/p", { a: "/a", b: "/b" }));
+        assert.notEqual(workspaceOpenedKey(1, "/p", {}), workspaceOpenedKey(2, "/p", {}), "a new revision is a new record");
+        assert.notEqual(workspaceOpenedKey(1, "/p", { a: "/a" }), workspaceOpenedKey(1, "/p", { a: "/b" }));
     });
 
     it("a removed extra folder's path goes, and a later folder with the same name starts fresh", async () => {

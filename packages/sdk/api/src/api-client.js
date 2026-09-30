@@ -21,6 +21,7 @@ async function readErrorEnvelope(response) {
     let message = response.statusText || `HTTP ${response.status}`;
     let code = response.status === 401 ? "UNAUTHORIZED" : response.status === 403 ? "FORBIDDEN" : "INTERNAL_ERROR";
     let candidates;
+    let extra = {};
     try {
         const payload = await response.json();
         const error = payload?.error;
@@ -29,11 +30,20 @@ async function readErrorEnvelope(response) {
             if (error.message) message = error.message;
             if (error.code) code = error.code;
             if (Array.isArray(error.candidates)) candidates = error.candidates;
+            extra = errorExtras(error);
         } else if (payload?.message) {
             message = payload.message;
         }
     } catch {}
-    return new ApiError(message, { code, status: response.status, candidates });
+    return new ApiError(message, { code, status: response.status, candidates, ...extra });
+}
+
+/** Workspace files: a conflict's current etag (null: the file is gone) and a too-large file's size. */
+function errorExtras(error) {
+    return {
+        ...(Object.prototype.hasOwnProperty.call(error, "etag") && (error.etag === null || typeof error.etag === "string") ? { etag: error.etag } : {}),
+        ...(Number.isFinite(error.size) ? { size: error.size } : {}),
+    };
 }
 
 /**
@@ -123,7 +133,11 @@ export class ApiClient {
             const error = payload.error;
             throw new ApiError(
                 (typeof error === "object" ? error?.message : error) || "Request failed",
-                { code: (typeof error === "object" && error?.code) || "INTERNAL_ERROR", status: response.status },
+                {
+                    code: (typeof error === "object" && error?.code) || "INTERNAL_ERROR",
+                    status: response.status,
+                    ...(error && typeof error === "object" ? errorExtras(error) : {}),
+                },
             );
         }
         return payload?.result !== undefined ? payload.result : payload;

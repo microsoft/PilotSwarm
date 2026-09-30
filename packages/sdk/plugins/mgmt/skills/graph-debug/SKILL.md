@@ -1,14 +1,10 @@
 ---
 name: graph-debug
 description: |
-  How to inspect, render, and reason about the shared knowledge GRAPH —
-  for the facts-manager (report graph size/health, render the graph as
-  Markdown/Mermaid, spot orphan or duplicate entities) and for the
-  agent-manager (forensics: what graph search a session ran and what it
-  returned). Read this before answering any question about graph
-  structure, graph contents, or a session's graph-search behaviour.
-  Only relevant when a knowledge graph is configured; if the graph tools
-  are absent, this deployment has no graph and the skill does not apply.
+  How to inspect and render the shared knowledge GRAPH (size, health,
+  Mermaid, orphans, duplicates) and see what graph search a session ran.
+  Read this before answering about the graph. Applies only when the
+  graph tools are present.
 ---
 
 # Graph Debug

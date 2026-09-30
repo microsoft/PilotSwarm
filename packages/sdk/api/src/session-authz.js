@@ -65,7 +65,7 @@ export function relationFor(snapshot, { isAdmin, adminScope = "unrestricted" } =
 /**
  * Evaluate one session-scoped access class against an access snapshot.
  *
- * @param {"session:read"|"session:write"|"session:manage"|"session:destroy"|"session:share"} accessClass
+ * @param {"session:read"|"session:write"|"session:manage"|"session:destroy"|"session:share"|"session:files"} accessClass
  * @param {SessionAccessSnapshot|null} snapshot  result of getSessionAccess (null = missing/deleted)
  * @param {{isAdmin?: boolean, systemReadable?: boolean}} [opts]
  * @returns {{allowed: boolean, notFound?: boolean, reason?: string, breakGlass?: boolean}}
@@ -75,6 +75,22 @@ export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, 
         // Missing/deleted session: let the underlying operation produce its
         // own not-found; nothing to protect.
         return { allowed: true };
+    }
+
+    // Workspace files (the portal's Workspace pane): the session's owner
+    // only. Admins get no special access, because a session's folders
+    // include its owner's own folder. System sessions have none to show.
+    if (accessClass === "session:files") {
+        if (snapshot.viewerIsOwner && !snapshot.isSystem) return { allowed: true };
+        const canSee = snapshot.viewerIsOwner
+            || isAdmin
+            || (snapshot.isSystem && systemReadable)
+            || snapshot.visibility === "shared_read"
+            || snapshot.visibility === "shared_write"
+            || Boolean(snapshot.viewerShareAccess);
+        return canSee
+            ? { allowed: false, reason: "Only the session's owner can see its folders." }
+            : { allowed: false, notFound: true };
     }
 
     if (adminCanAccessResource(isAdmin, adminScope, snapshot.isSystem)) {

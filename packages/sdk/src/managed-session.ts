@@ -3934,6 +3934,22 @@ export class ManagedSession {
     }
 
     /**
+     * Session workspaces: the record's folders last recorded as a
+     * session.workspace_opened event, as known to this handle
+     * (workspaceOpenedKey). undefined: not known here yet (read the event);
+     * null: none recorded.
+     */
+    private recordedOpened: string | null | undefined;
+
+    getRecordedOpened(): string | null | undefined {
+        return this.recordedOpened;
+    }
+
+    setRecordedOpened(key: string | null): void {
+        this.recordedOpened = key;
+    }
+
+    /**
      * Session workspaces: cancel every background shell (attached or
      * detached) and agent task that is running or idle, then list again
      * until none remain. disconnect() leaves them running; only

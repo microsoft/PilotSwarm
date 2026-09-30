@@ -244,6 +244,18 @@ export class HttpApiTransport {
         return this.api.call("setSessionWorkspace", { sessionId, expectedRevision: input.expectedRevision, workspace: input.workspace ?? null, options });
     }
 
+    async listSessionWorkspaceFolders(sessionId) {
+        return this.api.call("listSessionWorkspaceFolders", { sessionId });
+    }
+
+    async sessionWorkspaceFiles(sessionId, call = {}) {
+        return this.api.call("sessionWorkspaceFiles", { sessionId, call });
+    }
+
+    async canvasWorkspace(sessionId, slot, call = {}) {
+        return this.api.call("canvasWorkspace", { sessionId, slot, call });
+    }
+
     async retrySessionWorkspace(sessionId, options = {}) {
         return this.api.call("retrySessionWorkspace", { sessionId, options });
     }

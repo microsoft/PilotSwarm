@@ -10,6 +10,7 @@ import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
+import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
@@ -68,13 +69,29 @@ export function createJsonRpcError(error, fallbackStatus = 500) {
                     : status === 404 ? "NOT_FOUND"
                         : status === 409 ? "CONFLICT"
                             : status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL_ERROR");
-    const detail = {
-        code,
-        message: status >= 500 ? "Internal server error" : (error?.message || String(error)),
-    };
-    if (status < 500 && Array.isArray(error?.candidates)) detail.candidates = error.candidates;
-    if (status < 500 && Array.isArray(error?.validation?.errors)) detail.validation = error.validation;
-    return { status, body: { ok: false, error: detail } };
+    return { status, body: { ok: false, error: errorDetail(error, status, code) } };
+}
+
+/**
+ * The JSON body limits, per route: 2 MB unless a route carries more.
+ * Mounted before any other body parser: the path-scoped parser wins, and
+ * the general one skips a body already parsed.
+ */
+export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
+    // Artifact uploads carry base64 image bodies (image attachments: up to
+    // 4 MB decoded ≈ 5.4 MB base64) — give ONLY that route an 8 MB envelope.
+    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: "8mb" }));
+    // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
+    // the default 2 MB request cap, so reserve 4 MB for this route.
+    app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
+    // Workspace files (the Workspace pane) and canvas-ws writes carry a whole
+    // file as base64: the file limit (PORTAL_WORKSPACE_MAX_FILE_MB, default
+    // 20 MB) plus a third, plus room for the rest of the call.
+    const fileMb = Number(workspaceFileMb) > 0 ? Number(workspaceFileMb) : 20;
+    const workspaceBodyLimit = `${Math.ceil(fileMb * 1.4) + 1}mb`;
+    app.use("/api/v1/management/sessions/:sessionId/workspace/files", express.json({ limit: workspaceBodyLimit }));
+    app.use("/api/v1/management/sessions/:sessionId/canvas-workspace", express.json({ limit: workspaceBodyLimit }));
+    app.use(express.json({ limit: "2mb" }));
 }
 
 function sendSpaIndex(res) {
@@ -100,7 +117,12 @@ export async function startServer(opts = {}) {
     // Fail-loud at startup: a malformed PORTAL_LINK_ORIGINS should stop
     // the portal visibly, never silently hand out broken links.
     const linkOrigins = parsePortalLinkOrigins();
-    const portalConfig = { ...getPortalConfig(), ...(linkOrigins.length ? { linkOrigins } : {}) };
+    const portalConfig = {
+        ...getPortalConfig(),
+        ...(linkOrigins.length ? { linkOrigins } : {}),
+        // The side pane's Workspace tab: only when this portal serves the workspace roots.
+        workspaceFiles: Boolean(String(process.env.PORTAL_WORKSPACE_ROOTS || "").trim()),
+    };
     const mode = getPortalMode();
     const useManagedIdentity = ["1", "true", "yes", "on"].includes(
         String(process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").toLowerCase(),
@@ -115,15 +137,7 @@ export async function startServer(opts = {}) {
 
     const app = express();
     app.set("trust proxy", true);
-    // Artifact uploads carry base64 image bodies (image attachments: up to
-    // 4 MB decoded ≈ 5.4 MB base64) — give ONLY that route an 8 MB envelope.
-    // Everything else keeps the 2 MB cap. Mounted first so the path-scoped
-    // parser wins; the global parser skips already-parsed bodies.
-    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: "8mb" }));
-    // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
-    // the default 2 MB request cap, so reserve 4 MB for this route.
-    app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
-    app.use(express.json({ limit: "2mb" }));
+    installJsonBodyLimits(app, { workspaceFileMb: Number(process.env.PORTAL_WORKSPACE_MAX_FILE_MB) });
 
     const { server, protocol } = createPortalServer({ app });
 

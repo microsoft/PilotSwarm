@@ -4,7 +4,7 @@ import http from "node:http";
 import express from "express";
 import { OPERATIONS } from "pilotswarm-sdk/api";
 import { createApiRouter } from "../api/router.js";
-import { createJsonRpcError } from "../server.js";
+import { createJsonRpcError, installJsonBodyLimits } from "../server.js";
 
 function createHarness({ callImpl, role = "user" } = {}) {
     const calls = [];
@@ -194,6 +194,21 @@ test("legacy RPC errors preserve client codes and redact unexpected faults", () 
     assert.equal(validation.status, 400);
     assert.deepEqual(validation.body.error.validation.errors, [{ code: "bad", message: "bad" }]);
 
+    // Workspace files: the conflict's current etag (null: deleted) and a too-large file's size reach the browser.
+    const gone = createJsonRpcError(Object.assign(new Error("the file was deleted since it was read"), { code: "WORKSPACE_FILES_CONFLICT", status: 409, etag: null }));
+    assert.equal(gone.status, 409);
+    assert.deepEqual(gone.body.error, { code: "WORKSPACE_FILES_CONFLICT", message: "the file was deleted since it was read", etag: null });
+    const big = createJsonRpcError(Object.assign(new Error("larger than 20 MB"), { code: "WORKSPACE_FILES_TOO_LARGE", status: 413, size: 22020096 }));
+    assert.deepEqual(big.body.error, { code: "WORKSPACE_FILES_TOO_LARGE", message: "larger than 20 MB", size: 22020096 });
+    const plain = createJsonRpcError(Object.assign(new Error("nope"), { code: "FORBIDDEN", etag: { x: 1 }, size: "12" }));
+    assert.deepEqual(plain.body.error, { code: "FORBIDDEN", message: "nope" }, "only a string or null etag and a number size");
+
+    // A 5xx keeps its message only when the error says it may be shown.
+    const off = createJsonRpcError(Object.assign(new Error("workspace files are not set up on this portal"), { code: "WORKSPACE_FILES_DISABLED", status: 503, expose: true }));
+    assert.deepEqual(off, { status: 503, body: { ok: false, error: { code: "WORKSPACE_FILES_DISABLED", message: "workspace files are not set up on this portal" } } });
+    const io = createJsonRpcError(Object.assign(new Error("EACCES: open '/ws/home/users/x/a.txt'"), { code: "WORKSPACE_FILES_IO", status: 500 }));
+    assert.equal(io.body.error.message, "Internal server error", "an I/O error's message stays on the server");
+
     const fault = createJsonRpcError(new Error("connect ECONNREFUSED 10.0.0.7:5432 user=admin"));
     assert.equal(fault.status, 500);
     assert.deepEqual(fault.body.error, { code: "INTERNAL_ERROR", message: "Internal server error" });
@@ -308,6 +323,9 @@ const VALID_ACCESS_CLASSES = new Set([
     "authed",
     "session:list", "session:create", "session:read", "session:write",
     "session:manage", "session:destroy", "session:share",
+    // Workspace files (the Workspace pane): the session's owner only, with
+    // no admin pass, enforced whatever AUTHZ_ENFORCE_OWNERSHIP says.
+    "session:files",
     // Cross-session copy: the runtime gates fromSessionId for read and
     // toSessionId for write (runtime.js "session:copy" branch). In the table
     // since copyArtifact stopped being /api/rpc-only.
@@ -359,5 +377,56 @@ test("session sharing ops are classified session:share", () => {
         const op = OPERATIONS.find((o) => o.name === name);
         assert.ok(op, `${name} present in the protocol table`);
         assert.equal(op.access, "session:share", `${name} must be session:share`);
+    }
+});
+
+test("body limits: the workspace file routes take a whole file; other routes keep 2 MB", async () => {
+    const app = express();
+    installJsonBodyLimits(app, { workspaceFileMb: 20 });
+    app.use((req, res) => res.json({ ok: true, bytes: String(req.body?.call?.contentBase64 || "").length }));
+    app.use((error, _req, res, _next) => res.status(error.status || 500).json({ ok: false, type: error.type }));
+    const server = await new Promise((resolve) => { const s = app.listen(0, () => resolve(s)); });
+    try {
+        const base = `http://localhost:${server.address().port}/api/v1`;
+        const body = JSON.stringify({ slot: 1, call: { op: "write", path: "work/big.bin", contentBase64: "x".repeat(3 * 1024 * 1024) } });
+        const post = (path) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+        for (const path of ["/management/sessions/s1/canvas-workspace", "/management/sessions/s1/workspace/files"]) {
+            const response = await post(path);
+            assert.equal(response.status, 200, path);
+            assert.equal((await response.json()).bytes, 3 * 1024 * 1024, path);
+        }
+        assert.equal((await post("/management/sessions/s1/rename")).status, 413, "any other route keeps the 2 MB cap");
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
+test("/api/v1 errors keep a workspace conflict's etag, a too-large size, and an exposed 5xx message", async () => {
+    const errors = {
+        changed: Object.assign(new Error("the file changed since it was read"), { code: "WORKSPACE_FILES_CONFLICT", status: 409, etag: "sha256:abc" }),
+        deleted: Object.assign(new Error("the file was deleted since it was read"), { code: "WORKSPACE_FILES_CONFLICT", status: 409, etag: null }),
+        big: Object.assign(new Error("larger than 20 MB"), { code: "WORKSPACE_FILES_TOO_LARGE", status: 413, size: 22020096 }),
+        late: Object.assign(new Error("the folder did not answer within 30 s"), { code: "WORKSPACE_FILES_TIMEOUT", status: 504, expose: true }),
+        io: Object.assign(new Error("EACCES: open '/ws/home/users/x/a.txt'"), { code: "WORKSPACE_FILES_IO", status: 500, etag: "sha256:hidden" }),
+    };
+    let next = null;
+    const { baseUrl, close } = await createHarness({ callImpl: () => { throw errors[next]; } });
+    try {
+        const call = async (name) => {
+            next = name;
+            const response = await fetch(`${baseUrl}/api/v1/management/sessions/s1/workspace/files`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ call: { op: "write", folder: "working", path: "a.txt", contentBase64: "", ifMatch: "sha256:old" } }),
+            });
+            return { status: response.status, error: (await response.json()).error };
+        };
+        assert.deepEqual(await call("changed"), { status: 409, error: { code: "WORKSPACE_FILES_CONFLICT", message: "the file changed since it was read", etag: "sha256:abc" } });
+        assert.deepEqual(await call("deleted"), { status: 409, error: { code: "WORKSPACE_FILES_CONFLICT", message: "the file was deleted since it was read", etag: null } });
+        assert.deepEqual(await call("big"), { status: 413, error: { code: "WORKSPACE_FILES_TOO_LARGE", message: "larger than 20 MB", size: 22020096 } });
+        assert.deepEqual(await call("late"), { status: 504, error: { code: "WORKSPACE_FILES_TIMEOUT", message: "the folder did not answer within 30 s" } });
+        assert.deepEqual(await call("io"), { status: 500, error: { code: "WORKSPACE_FILES_IO", message: "Internal server error" } }, "a fault shows neither its message nor its fields");
+    } finally {
+        await close();
     }
 });

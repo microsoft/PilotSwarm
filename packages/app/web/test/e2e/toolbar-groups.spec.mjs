@@ -15,7 +15,7 @@ const NAMES = {
     canvas: /Show canvas|Hide the canvas/i,
     diagnostics: /diagnostics/i,
     expand: /Expand the canvas|Restore the canvas/i,
-    workspace: /^Workspace/i,
+    sessions: /^Sessions — /i,
     budget: /Budget|Close budget/i,
     admin: /^Admin console$|^Settings$|^Close (admin console|settings)$/i,
     theme: /^Theme$/i,
@@ -61,7 +61,7 @@ test.describe("desktop", () => {
         expect(t.left[3]).toMatch(/^Forward.*\((Alt|Option)\+/);
         expect(t.left[4]).toMatch(/^(Show canvas|Hide the canvas)$/);
         expect(t.left[5]).toMatch(/^(Show|Hide) diagnostics/);
-        expect(t.right.map((n) => n.slice(0, 14))).toEqual(["Workspace — se", "Master of Agen", "Budget — provi", "Admin console", "Theme"]);
+        expect(t.right.map((n) => n.slice(0, 14))).toEqual(["Sessions — ses", "Master of Agen", "Budget — provi", "Admin console", "Theme"]);
     });
 
     test("a fresh profile opens as sessions + chat only, even on a wide desktop with a canvas to show", async ({ page }) => {
@@ -104,8 +104,8 @@ test.describe("desktop", () => {
         await expect(page.locator(".ps-admin-console__header button")).toHaveCount(0);
         await expect(page.locator(".ps-admin-console__who")).toHaveCount(0);
 
-        // Workspace is a destination: back, with the left cluster.
-        await page.getByRole("button", { name: NAMES.workspace }).first().click();
+        // The Sessions view is a destination: back, with the left cluster.
+        await page.getByRole("button", { name: NAMES.sessions }).first().click();
         await page.waitForTimeout(300);
         await expect(page.locator(".ps-admin-console__header h2")).toHaveCount(0);
         t = await toolbarNames(page);

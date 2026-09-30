@@ -117,6 +117,39 @@ describe("a repo mirrored from an upstream, with a sandbox remote", () => {
     });
 });
 
+describe("a service that already runs as the clone uid (a laptop run)", () => {
+    it("makes a clone without switching users, so it needs no setpriv (macOS has none)", async () => {
+        const fixture = await createGitFixture();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-own-uid-root-")));
+        const port = await freePort();
+        const base = `http://127.0.0.1:${port}`;
+        // No runGit: the service's own runner, as `node repo-service.mjs` uses it.
+        const service = createRepoService({
+            root,
+            rootName: "a",
+            publicUrl: base,
+            repos: { app: { upstream: fixture.remote, sandbox: true } },
+            cloneUid: process.getuid(),
+        });
+        try {
+            await service.prepare();
+            await service.listen(port);
+            const response = await fetch(new URL("/v1/clones", base), {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ rootSessionId: "tree-own", repo: "app" }),
+            });
+            const made = await response.json();
+            assert.equal(made.workspace?.folder, "sessions/tree-own/app", JSON.stringify(made));
+            assert.equal(await git(["-C", made.path, "rev-parse", "HEAD"]), await git(["-C", fixture.remote, "rev-parse", "refs/heads/main"]));
+        } finally {
+            await service.close();
+            await fixture.cleanup();
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+});
+
 describe("a clone made as another uid than the mirror's owner", () => {
     // On the repo pod the service owns the mirror and the clone runs as the
     // session uid. Git 2.45.1 to 2.47 (the pod has Debian's 2.47) refuses a

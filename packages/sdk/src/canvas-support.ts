@@ -46,16 +46,16 @@ export function eventSlot(row: any): number {
  * well past a five-event window. The session_canvases table is the fast
  * path; this scan is the durable fallback.
  */
-export async function latestCanvasEventData(catalog: any, sessionId: string, slot = 1): Promise<{ rev: number; responseContract?: Record<string, any> }> {
+export async function latestCanvasEventData(catalog: any, sessionId: string, slot = 1): Promise<{ rev: number; responseContract?: Record<string, any>; data?: Record<string, any> }> {
     const rows = await catalog.getSessionEventsBefore(
         sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
     );
-    let latest: { rev: number; responseContract?: Record<string, any> } = { rev: 0 };
+    let latest: { rev: number; responseContract?: Record<string, any>; data?: Record<string, any> } = { rev: 0 };
     for (const row of rows || []) {
         if (eventSlot(row) !== slot) continue;
         const rev = Number((row?.data as any)?.rev);
         if (Number.isFinite(rev) && Number.isInteger(rev) && rev > latest.rev) {
-            latest = { rev, responseContract: (row?.data as any)?.responseContract };
+            latest = { rev, responseContract: (row?.data as any)?.responseContract, data: row?.data ?? {} };
         }
     }
     return latest;

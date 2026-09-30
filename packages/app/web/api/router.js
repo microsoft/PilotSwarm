@@ -3,6 +3,7 @@ import path from "node:path";
 import { API_VERSION, OPERATIONS, coerceQueryValue } from "pilotswarm-sdk/api";
 import { getAuthConfig } from "../auth.js";
 import { getPublicAuthContext } from "../auth/authz/engine.js";
+import { errorDetail } from "./error-detail.js";
 
 /**
  * The versioned Web API router (`/api/v1`).
@@ -63,22 +64,9 @@ function statusForError(error) {
 function sendError(res, error, fallbackStatus) {
     const status = fallbackStatus || statusForError(error);
     const code = error?.code || (status === 404 ? "NOT_FOUND" : status === 400 ? "INVALID_REQUEST" : status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL_ERROR");
-    // 500s are unexpected server faults; their raw messages can leak
-    // connection strings, file paths, or stack detail. Send a generic
-    // message and keep the code for correlation. Client-facing errors
-    // (4xx: validation, not-found, auth, lifecycle conflicts) keep their
-    // message because it is actionable and non-sensitive.
-    const message = status >= 500 ? "Internal server error" : (error?.message || String(error));
-    const envelope = { ok: false, error: { code, message } };
-    if (status < 500 && Array.isArray(error?.candidates)) {
-        envelope.error.candidates = error.candidates;
-    }
-    // Structured validation detail (agent-package uploads): per-rule codes +
-    // messages the dialog renders verbatim. 4xx-only, never on faults.
-    if (status < 500 && Array.isArray(error?.validation?.errors)) {
-        envelope.error.validation = error.validation;
-    }
-    res.status(status).json(envelope);
+    // 5xx messages stay on the server unless exposed; 4xx keep their
+    // message and the fields a client acts on (error-detail.js).
+    res.status(status).json({ ok: false, error: errorDetail(error, status, code) });
 }
 
 // Session/child id path params must look like ids — never a path fragment.

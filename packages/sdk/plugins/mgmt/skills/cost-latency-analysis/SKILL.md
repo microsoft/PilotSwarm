@@ -2,10 +2,9 @@
 name: cost-latency-analysis
 description: |
   How to compute model latency and estimated $ cost from PilotSwarm
-  observability data. Read this before reporting that a model is
-  "slow" or "expensive" — most apparent slowness is orchestration
-  overhead, not model inference, and most cost numbers are guesses
-  unless they reference a real published price card.
+  data. Read this before calling a model "slow" or "expensive": most
+  slowness is orchestration overhead, and a cost is a guess unless it
+  cites a published price card.
 ---
 
 # Cost & Latency Analysis

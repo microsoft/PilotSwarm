@@ -274,6 +274,20 @@ npm run chat
 This runs one worker + one client in a single process (via
 `packages/sdk/examples/chat.js`). Type a message and get a response.
 
+### The whole platform in the browser (portal, workers, workspaces)
+
+```bash
+scripts/local-pilotswarm.sh up      # then open http://localhost:3001
+scripts/local-pilotswarm.sh down    # stop
+```
+
+This starts the web portal with two workers inside it, dev sign-in (pick one
+of five test people, so the per-person rules can be tried), and session
+workspaces on local folders under `~/pilotswarm-local` (a repo service with two
+public repos, a shared folder, and each person's own folder). It needs
+`DATABASE_URL` and `GITHUB_TOKEN` in `.env`. After a code change, run
+`scripts/local-pilotswarm.sh restart`. The script's header lists the rest.
+
 ### TUI (embedded workers, local PG)
 
 ```bash

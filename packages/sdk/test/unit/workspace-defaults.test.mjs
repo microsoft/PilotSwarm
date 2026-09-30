@@ -100,8 +100,8 @@ describe("D1 applyWorkspaceDefaults", () => {
     });
 
     it("a bad default is left out with the reason; required is kept only when true", () => {
-        const result = applyWorkspaceDefaults(clone, { extra: { "Bad Name": { root: "x" }, abs: { root: "x", folder: "/etc" }, must: { root: "logs", required: true } } });
-        assert.deepEqual(result.skipped.map((s) => s.name).sort(), ["Bad Name", "abs"]);
+        const result = applyWorkspaceDefaults(clone, { extra: { "Bad Name": { root: "x" }, abs: { root: "x", folder: "/etc" }, work: { root: "x" }, must: { root: "logs", required: true } } });
+        assert.deepEqual(result.skipped.map((s) => s.name).sort(), ["Bad Name", "abs", "work"], "\"work\" is what canvas apps call the working folder");
         assert.deepEqual(result.workspace.extra, { must: { root: "logs", required: true } });
     });
 });

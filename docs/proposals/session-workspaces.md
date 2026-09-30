@@ -948,6 +948,7 @@ caller's request.
 | `session.workspace_available` | `{ revision }` |
 | `session.workspace_adopted` | `{ revision, agents, skills, skipped }` |
 | `session.workspace_defaults` | `{ revision, workingFolder: { root, folder? } \| null, extra: [{ name, root, folder?, home? }] }`: the deployment's default folders a turn used (4.11), recorded only when they change. `getSessionWorkspace` returns the latest as `defaults`. |
+| `session.workspace_opened` | `{ revision, path, extraPaths? }`: the folders of the record that a turn opened (the working folder and the record's extra folders, not the default folders), recorded before the model runs, only when they change. `getSessionWorkspace` takes the paths of the current revision from it: a folder the session was created with has a path only here. The portal's Workspace tab serves only folders a worker opened. |
 | `session.workspace_released` | `{ reason, cancelled, workerNodeId, detail? }`. Written by the worker that ran the release (4.5): `cancelled` counts the tasks it stopped, `detail` names what did not finish. |
 
 **Errors:** `WORKSPACE_ROOT_UNKNOWN`, `WORKSPACE_PATH_INVALID` (also a

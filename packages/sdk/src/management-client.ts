@@ -32,6 +32,40 @@ import type {
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
+import {
+    DEFAULT_WORKSPACE_FILE_MAX_BYTES,
+    WORKSPACE_FILE_ERROR_CODES,
+    WORKSPACE_FILE_OPS,
+    WORKSPACE_FILES_CHANGED_EVENT,
+    type WorkspaceFileChange,
+    checkWorkspaceFilePath,
+    resolveWorkspaceFileFolder,
+    runWorkspaceFileCall,
+    workspaceFileError,
+    workspaceFileFolders,
+    type WorkspaceFileCall,
+    type WorkspaceFileFolder,
+    type WorkspaceFilesConfig,
+} from "./workspace-files.js";
+import {
+    CANVAS_WS_ERROR_CODES,
+    canvasCommandArgv,
+    canvasDirListable,
+    canvasDirWritable,
+    canvasFolderName,
+    canvasPathAllowed,
+    canvasTreeReadable,
+    canvasTreeWritable,
+    canvasWsError,
+    checkCanvasCommandParams,
+    normalizeCanvasWorkspaceManifest,
+    runCanvasCommandLocally,
+    splitCanvasPath,
+    type CanvasCommandsConfig,
+    type CanvasWorkspaceDeclaration,
+} from "./canvas-workspace.js";
+import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
+import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -633,6 +667,17 @@ export interface PilotSwarmManagementClientOptions {
     enhancedFactsSchema?: string;
     /** Path to model_providers.json. Auto-discovers if not set. */
     modelProvidersPath?: string;
+    /**
+     * Session workspace files (the portal's Workspace pane): where this
+     * process reaches the workspace roots, and the size limit. Unset: the
+     * file calls answer WORKSPACE_FILES_DISABLED.
+     */
+    workspaceFiles?: WorkspaceFilesConfig | null;
+    /**
+     * canvas-ws commands: where they run and which programs may run. Unset:
+     * canvas apps can use files but not commands (CANVAS_WS_COMMANDS_DISABLED).
+     */
+    canvasCommands?: CanvasCommandsConfig | null;
     /** App plugin dirs used to discover app-defined system agents for restart operations. */
     pluginDirs?: string[];
     /** Disable bundled PilotSwarm management agents when discovering restartable system agents. */
@@ -686,6 +731,10 @@ export class PilotSwarmManagementClient {
     private _modelProviders: ModelProviderRegistry | null = null;
     private _systemAgents: AgentConfig[] = [];
     private _artifactStore: ArtifactStore | null = null;
+    /** canvas-ws declarations by "sessionId:slot", for the canvas revision they were read from. */
+    /** canvas-ws: when each command last told the agent it ran (see canvasWorkspace). */
+    private _canvasRunNoted = new Map<string, number>();
+    private _canvasDeclarations = new Map<string, { rev: number; found: { declaration: CanvasWorkspaceDeclaration | null; error?: string } }>();
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
@@ -1714,7 +1763,7 @@ export class PilotSwarmManagementClient {
      */
     async getSessionWorkspace(sessionId: string): Promise<SessionWorkspaceView> {
         this._ensureStarted();
-        const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted", "session.workspace_defaults"];
+        const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted", "session.workspace_defaults", "session.workspace_opened"];
         const events = (await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, types))
             .slice()
             .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
@@ -1737,17 +1786,36 @@ export class PilotSwarmManagementClient {
         // Paths, from the changes in order. A path holds while its folder
         // stays the same: the working folder's path survives a change of
         // extra folders only, and an extra folder that moved without a
-        // reported path has none (section 4.10).
+        // reported path has none (section 4.10). A turn that opened the
+        // record's folders (session.workspace_opened) gives their paths for
+        // the revision it ran under; a folder the session was created with
+        // has its path only there.
         const folderKey = (folder: any) => (folder && typeof folder === "object" ? `${folder.root}\0${folder.folder ?? ""}` : "");
         const own = (map: any, name: string) => (map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name) ? map[name] : undefined);
         let path: string | null = null;
         let pathFolder = "";
         const extraPaths: Record<string, string> = {};
         const extraFolders: Record<string, string> = {};
+        let currentRecord: any = null;
+        let currentRevision = 0;
         for (const event of events) {
-            if ((event as any).eventType !== "session.workspace_changed") continue;
             const data = (event as any).data ?? {};
+            if ((event as any).eventType === "session.workspace_opened") {
+                if (!currentRecord || Number(data.revision) !== currentRevision) continue;
+                if (typeof data.path === "string") path = data.path;
+                if (data.extraPaths && typeof data.extraPaths === "object") {
+                    for (const [name, value] of Object.entries(data.extraPaths)) {
+                        if (typeof value !== "string" || !own(currentRecord.extra, name)) continue;
+                        extraPaths[name] = value;
+                        extraFolders[name] = folderKey(own(currentRecord.extra, name));
+                    }
+                }
+                continue;
+            }
+            if ((event as any).eventType !== "session.workspace_changed") continue;
             const record = data.workspace && typeof data.workspace === "object" ? data.workspace : null;
+            currentRecord = record;
+            currentRevision = Number(data.revision) || 0;
             const key = folderKey(record);
             if (key !== pathFolder) {
                 path = null;
@@ -1792,6 +1860,331 @@ export class PilotSwarmManagementClient {
                 : null,
             defaults,
         };
+    }
+
+    /**
+     * Session workspace files (the portal's Workspace pane): the session's
+     * folders, whether this process serves them, and the size limit.
+     * `enabled` is false when no `workspaceFiles` config was given.
+     */
+    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; folders: WorkspaceFileFolder[] }> {
+        this._ensureStarted();
+        const config = this.config.workspaceFiles ?? null;
+        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, folders: [] };
+        const view = await this.getSessionWorkspace(sessionId);
+        const folders = workspaceFileFolders(view, config).map((folder) => {
+            if (!folder.available) return folder;
+            return { ...folder, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
+        });
+        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, folders };
+    }
+
+    /**
+     * Session workspace files: one call (list, stat, read, find, write,
+     * mkdir, move, delete, zip) in one of the session's folders. Paths are relative
+     * to the folder and must stay inside it. File contents travel as base64.
+     * Rejects with an error whose `code` is a WORKSPACE_FILES_* code and whose
+     * `status` is its HTTP status; a stale `ifMatch` is WORKSPACE_FILES_CONFLICT
+     * with the file's current `etag`.
+     *
+     * This is the trusted, direct-mode call: the Web API allows it only to
+     * the session's owner.
+     */
+    async sessionWorkspaceFiles(sessionId: string, call: WorkspaceFileCall): Promise<Record<string, any>> {
+        this._ensureStarted();
+        const config = this.config.workspaceFiles ?? null;
+        const codes = WORKSPACE_FILE_ERROR_CODES;
+        if (!config) throw workspaceFileError(codes.DISABLED, "workspace files are not set up here (PORTAL_WORKSPACE_ROOTS)");
+        const op = (call as any)?.op;
+        if (!(WORKSPACE_FILE_OPS as readonly string[]).includes(op)) {
+            throw workspaceFileError(codes.PATH_INVALID, `unknown workspace file call "${String(op)}"`);
+        }
+        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        const from = resolveWorkspaceFileFolder(folders, (call as any).folder, config);
+        const request: Record<string, unknown> = { op, base: from.base, rootPath: from.rootPath, path: checkWorkspaceFilePath((call as any).path) };
+        if (op === "write") {
+            const c = call as Extract<WorkspaceFileCall, { op: "write" }>;
+            if (typeof c.contentBase64 !== "string") throw workspaceFileError(codes.PATH_INVALID, "contentBase64 must be a string");
+            request.contentBase64 = c.contentBase64;
+            if (c.ifMatch === null || typeof c.ifMatch === "string") request.ifMatch = c.ifMatch;
+            request.createParents = c.createParents === true;
+        } else if (op === "zip" && (call as any).paths !== undefined) {
+            const paths = (call as any).paths;
+            if (!Array.isArray(paths) || paths.length === 0 || paths.length > 500) throw workspaceFileError(codes.PATH_INVALID, "paths must be a list of 1-500 paths in the folder");
+            request.paths = paths.map((one: unknown) => checkWorkspaceFilePath(one));
+        } else if (op === "find") {
+            const query = (call as Extract<WorkspaceFileCall, { op: "find" }>).query;
+            if (typeof query !== "string" || query.length > 200) throw workspaceFileError(codes.PATH_INVALID, "query must be text, up to 200 characters");
+            request.query = query;
+        } else if (op === "delete") {
+            request.recursive = (call as Extract<WorkspaceFileCall, { op: "delete" }>).recursive === true;
+        } else if (op === "move") {
+            const c = call as Extract<WorkspaceFileCall, { op: "move" }>;
+            const to = resolveWorkspaceFileFolder(folders, c.toFolder ?? c.folder, config);
+            request.toBase = to.base;
+            request.toRootPath = to.rootPath;
+            request.toPath = checkWorkspaceFilePath(c.toPath);
+            request.toName = to.folder.name;
+        }
+        const result = await runWorkspaceFileCall(request, config);
+        // A change the owner made: the agent is told at its next turn
+        // (session-proxy reads these). Best effort: the change happened.
+        if (op === "write" || op === "mkdir" || op === "move" || op === "delete") {
+            const change: WorkspaceFileChange = {
+                op,
+                folder: from.folder.name,
+                path: String(request.path),
+                ...(op === "write" ? { created: result?.created === true } : {}),
+                ...(op === "move" ? { toFolder: String(request.toName), toPath: String(request.toPath) } : {}),
+            };
+            await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: change }]).catch(() => {});
+        }
+        return result;
+    }
+
+    /**
+     * canvas-ws: one call from a canvas app to its session's folders. The
+     * call is checked against the `workspace` block of the app's
+     * CANVAS-APP-MANIFEST, read from the canvas document the agent drew
+     * (never from the page). Paths are "<folder>/<path>", where the working
+     * folder is "work".
+     *
+     * Calls: info, list, stat, read, write, mkdir, move, delete, zip, run,
+     * watch. The Web API allows them only to the session's owner.
+     */
+    async canvasWorkspace(sessionId: string, slot: number, call: Record<string, any>): Promise<Record<string, any>> {
+        this._ensureStarted();
+        const config = this.config.workspaceFiles ?? null;
+        const W = WORKSPACE_FILE_ERROR_CODES;
+        const X = CANVAS_WS_ERROR_CODES;
+        if (!config) throw workspaceFileError(W.DISABLED, "workspace files are not set up here (PORTAL_WORKSPACE_ROOTS)");
+        const canvasSlot = normalizeShareSlot(slot);
+        const op = String(call?.op ?? "");
+        if (!["info", "list", "stat", "read", "write", "mkdir", "move", "delete", "zip", "run", "watch"].includes(op)) {
+            throw canvasWsError(X.PARAM_INVALID, `unknown canvas workspace call "${op}"`);
+        }
+        const { declaration, error: manifestError } = await this._canvasWorkspaceDeclaration(sessionId, canvasSlot);
+        if (!declaration) {
+            throw canvasWsError(X.UNDECLARED, manifestError
+                ? `this canvas app's manifest is broken, so it has no workspace access: ${manifestError}`
+                : "this canvas app declared no workspace access (a \"workspace\" block in its CANVAS-APP-MANIFEST)");
+        }
+        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        const byName = new Map(folders.map((folder) => [canvasFolderName(folder), folder]));
+        const commands = this.config.canvasCommands ?? null;
+
+        if (op === "info") {
+            const commandFolders = new Set(Object.values(declaration.commands).map((command) => command.in.split("/")[0]));
+            return {
+                folders: [...byName.entries()]
+                    .filter(([name]) => commandFolders.has(name) || canvasDirListable(declaration, name))
+                    .map(([name, folder]) => ({ name, role: folder.role, home: folder.home, available: folder.available })),
+                read: declaration.read,
+                write: declaration.write,
+                watch: declaration.watch,
+                commands: Object.fromEntries(Object.entries(declaration.commands).map(([name, command]) => [name, { in: command.in, params: command.params ?? {} }])),
+                commandsEnabled: Boolean(commands),
+                maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES,
+            };
+        }
+        if (op === "watch") {
+            if (!declaration.watch) throw canvasWsError(X.DENIED, "this canvas app did not declare \"watch\": true");
+            return { watching: true };
+        }
+        const locate = (value: unknown) => {
+            const where = splitCanvasPath(value);
+            const folder = byName.get(where.folder);
+            if (!folder) throw canvasWsError(X.FOLDER_UNKNOWN, `the session has no folder "${where.folder}" ("work" is the working folder)`);
+            const resolved = resolveWorkspaceFileFolder(folders, folder.id, config);
+            return { ...where, canvasPath: where.path ? `${where.folder}/${where.path}` : where.folder, folder, base: resolved.base, rootPath: resolved.rootPath };
+        };
+        const deny = (target: string, what: string) => canvasWsError(X.DENIED, `this canvas app may not ${what} ${target}`);
+        // Every file call for a canvas refuses a path through a link: the
+        // app's paths are checked as written, so the path must be the place.
+        const fileCall = (request: Record<string, unknown>) => runWorkspaceFileCall({ ...request, noLinks: true }, config);
+
+        if (op === "run") {
+            const name = String(call.command ?? "");
+            const command = Object.prototype.hasOwnProperty.call(declaration.commands, name) ? declaration.commands[name] : null;
+            if (!command) throw canvasWsError(X.COMMAND_UNKNOWN, `this canvas app declared no command "${name}"`);
+            if (!commands) throw canvasWsError(X.COMMANDS_DISABLED, "this deployment does not run canvas commands");
+            if (!commands.allow.includes(command.run[0])) throw canvasWsError(X.PROGRAM_NOT_ALLOWED, `this deployment does not run "${command.run[0]}" for canvas apps`);
+            // The command's folder: a session folder, or a folder inside one,
+            // inside it on disk too (a link out of it is refused).
+            const home = locate(command.in);
+            const place = await fileCall({ op: "stat", base: home.base, rootPath: home.rootPath, path: checkWorkspaceFilePath(home.path) });
+            if (place.kind !== "dir") throw canvasWsError(X.PARAM_INVALID, `the command's folder ${command.in} is not a folder`);
+            const inside = (rel: string) => home.path === "" || rel === home.path || rel.startsWith(`${home.path}/`);
+            const checked = checkCanvasCommandParams(command, call.params);
+            const values: Record<string, string | null> = {};
+            for (const [param, { type, value }] of Object.entries(checked)) {
+                if (type !== "path" || value === null) {
+                    values[param] = value;
+                    continue;
+                }
+                const where = locate(value);
+                if (where.folder.id !== home.folder.id || !inside(where.path)) throw canvasWsError(X.PARAM_INVALID, `"${param}" must be inside ${command.in}/`);
+                // A command can read what a path names: a file must be one the
+                // app may read; a folder, one it may read all of (a command such
+                // as git log -p reads every file inside). A path the app may not
+                // read is refused whether or not it exists.
+                const fileReadable = canvasPathAllowed(declaration, where.canvasPath, "read");
+                const treeReadable = canvasTreeReadable(declaration, where.canvasPath);
+                if (!fileReadable && !treeReadable) throw deny(where.canvasPath, "read");
+                let kind: string | null = null;
+                try {
+                    kind = (await fileCall({ op: "stat", base: where.base, rootPath: where.rootPath, path: checkWorkspaceFilePath(where.path) })).kind;
+                } catch (error: any) {
+                    if (error?.code !== W.NOT_FOUND) throw error;
+                }
+                if (kind === "dir" ? !treeReadable : !fileReadable) throw deny(where.canvasPath, "read");
+                // Relative to the command's folder.
+                const rel = home.path === "" ? where.path : where.path.slice(home.path.length).replace(/^\//, "");
+                values[param] = rel === "" ? "." : rel.startsWith("-") ? `./${rel}` : rel;
+            }
+            const owner = await this._catalog!.getSession(sessionId).then((row: any) => row?.owner ?? null).catch(() => null);
+            const author = owner?.email ? { name: String(owner.displayName || owner.email), email: String(owner.email) } : null;
+            const cwd = home.path ? `${home.base.replace(/\/+$/, "")}/${home.path}` : home.base;
+            const ran = await runCanvasCommandLocally(canvasCommandArgv(command, values), cwd, {
+                top: home.base,
+                timeoutSeconds: command.timeoutSeconds,
+                maxOutputBytes: command.maxOutputBytes,
+                author,
+            });
+            // A command may change files (git restore, commit): the agent's
+            // next turn is told it ran. Once a minute per command and folder,
+            // so a page that polls git status does not flood the session.
+            const noteKey = `${sessionId}\0${name}\0${home.folder.id}\0${home.path}`;
+            const now = Date.now();
+            if (now - (this._canvasRunNoted.get(noteKey) ?? 0) >= 60_000) {
+                this._canvasRunNoted.set(noteKey, now);
+                if (this._canvasRunNoted.size > 1000) this._canvasRunNoted.delete(this._canvasRunNoted.keys().next().value!);
+                const change: WorkspaceFileChange = { op: "run", folder: home.folder.name, path: home.path, command: name };
+                await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: { ...change, via: "canvas" } }]).catch(() => {});
+            }
+            return ran;
+        }
+
+        const target = locate(call.path);
+        const request: Record<string, unknown> = { op, base: target.base, rootPath: target.rootPath, path: checkWorkspaceFilePath(target.path) };
+        switch (op) {
+            case "list": {
+                if (!canvasDirListable(declaration, target.canvasPath)) throw deny(target.canvasPath, "list");
+                const listed = await fileCall(request);
+                const entries = (listed.entries ?? []).filter((entry: any) => {
+                    if (entry.kind === "link") return false;
+                    const child = `${target.canvasPath}/${entry.name}`;
+                    const isDir = entry.kind === "dir" || (entry.kind === "link" && entry.target === "dir");
+                    return isDir ? canvasDirListable(declaration, child) : canvasPathAllowed(declaration, child, "read");
+                }).map((entry: any) => {
+                    const child = `${target.canvasPath}/${entry.name}`;
+                    const isDir = entry.kind === "dir" || (entry.kind === "link" && entry.target === "dir");
+                    const writable = isDir ? canvasDirWritable(declaration, child) : canvasPathAllowed(declaration, child, "write");
+                    return { ...entry, path: child, ...(writable ? {} : { readOnly: true }) };
+                });
+                return { path: target.canvasPath, entries, truncated: listed.truncated === true };
+            }
+            case "stat": {
+                // A folder the app may list, or a file it may read. A path that
+                // is neither answers the same whether or not it exists.
+                const fileReadable = canvasPathAllowed(declaration, target.canvasPath, "read");
+                if (!fileReadable && !canvasDirListable(declaration, target.canvasPath)) throw deny(target.canvasPath, "read");
+                let stat: Record<string, any>;
+                try {
+                    stat = await fileCall(request);
+                } catch (error: any) {
+                    if (!fileReadable && error?.code === W.NOT_FOUND) throw deny(target.canvasPath, "read");
+                    throw error;
+                }
+                if (stat.kind !== "dir" && !fileReadable) throw deny(target.canvasPath, "read");
+                return { path: target.canvasPath, ...stat };
+            }
+            case "read": {
+                if (!canvasPathAllowed(declaration, target.canvasPath, "read")) throw deny(target.canvasPath, "read");
+                const read = await fileCall(request);
+                return { path: target.canvasPath, ...read, readOnly: read.readOnly === true || !canvasPathAllowed(declaration, target.canvasPath, "write") };
+            }
+            case "zip":
+                if (!canvasTreeReadable(declaration, target.canvasPath)) throw deny(target.canvasPath, "download everything in");
+                return { path: target.canvasPath, ...(await fileCall(request)) };
+            case "write":
+                if (!canvasPathAllowed(declaration, target.canvasPath, "write")) throw deny(target.canvasPath, "write");
+                if (typeof call.contentBase64 !== "string") throw canvasWsError(X.PARAM_INVALID, "contentBase64 must be a string");
+                request.contentBase64 = call.contentBase64;
+                if (call.ifMatch === null || typeof call.ifMatch === "string") request.ifMatch = call.ifMatch;
+                request.createParents = call.createParents === true;
+                break;
+            case "mkdir":
+                if (!canvasDirWritable(declaration, target.canvasPath)) throw deny(target.canvasPath, "make the folder");
+                break;
+            case "delete": {
+                request.recursive = call.recursive === true;
+                const deleting = await fileCall({ ...request, op: "stat" });
+                const allowed = deleting.kind !== "dir"
+                    ? canvasPathAllowed(declaration, target.canvasPath, "write")
+                    : request.recursive
+                        ? canvasTreeWritable(declaration, target.canvasPath)
+                        : canvasDirWritable(declaration, target.canvasPath);
+                if (!allowed) throw deny(target.canvasPath, request.recursive ? "delete everything in" : "delete");
+                break;
+            }
+            case "move": {
+                const to = locate(call.toPath);
+                if (!canvasPathAllowed(declaration, target.canvasPath, "write")) throw deny(target.canvasPath, "move");
+                if (!canvasPathAllowed(declaration, to.canvasPath, "write")) throw deny(to.canvasPath, "write");
+                // A folder carries its contents: both places must be writable all the way down.
+                const moving = await fileCall({ ...request, op: "stat" });
+                if (moving.kind === "dir" && !(canvasTreeWritable(declaration, target.canvasPath) && canvasTreeWritable(declaration, to.canvasPath))) {
+                    throw deny(target.canvasPath, "move the folder");
+                }
+                request.toBase = to.base;
+                request.toRootPath = to.rootPath;
+                request.toPath = checkWorkspaceFilePath(to.path);
+                request.toName = to.folder.name;
+                break;
+            }
+        }
+        const result = await fileCall(request);
+        const change: WorkspaceFileChange = {
+            op: op as WorkspaceFileChange["op"],
+            folder: target.folder.name,
+            path: String(request.path),
+            ...(op === "write" ? { created: result?.created === true } : {}),
+            ...(op === "move" ? { toFolder: String(request.toName), toPath: String(request.toPath) } : {}),
+        };
+        await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: { ...change, via: "canvas" } }]).catch(() => {});
+        return { path: target.canvasPath, ...result };
+    }
+
+    /**
+     * The canvas's `workspace` block, from the document drawn at the slot's
+     * latest revision; `error` when its manifest is broken.
+     */
+    private async _canvasWorkspaceDeclaration(sessionId: string, slot: number): Promise<{ declaration: CanvasWorkspaceDeclaration | null; error?: string }> {
+        // The draw event carries the checked block with its own rev (written
+        // after the page's upload), so a call during a redraw gets the old
+        // page's block with the old rev, never a mix.
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        if (latest.rev === 0) return { declaration: null };
+        const data = latest.data ?? {};
+        if (Object.prototype.hasOwnProperty.call(data, "workspace")) {
+            const checked = normalizeCanvasWorkspaceManifest(data.workspace);
+            const error = typeof data.manifestError === "string" ? data.manifestError : checked.error;
+            return { declaration: checked.workspace, ...(error ? { error } : {}) };
+        }
+        // A canvas drawn before the event carried the block: read the page.
+        const rev = latest.rev;
+        const key = `${sessionId}:${slot}`;
+        const cached = this._canvasDeclarations.get(key);
+        if (cached && cached.rev === rev) return cached.found;
+        if (!this._artifactStore) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.DISABLED, "canvas apps need the artifact store here");
+        const html = await this._artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
+        const extraction = extractCanvasAppManifest(html);
+        const found = { declaration: extraction.manifest?.workspace ?? null, ...(extraction.error ? { error: extraction.error } : {}) };
+        this._canvasDeclarations.delete(key);
+        this._canvasDeclarations.set(key, { rev, found });
+        if (this._canvasDeclarations.size > 500) this._canvasDeclarations.delete(this._canvasDeclarations.keys().next().value!);
+        return found;
     }
 
     /**

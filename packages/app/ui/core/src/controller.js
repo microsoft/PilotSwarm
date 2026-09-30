@@ -3324,9 +3324,11 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * The Workspace mode: sessions, chat and the panels. Closes whichever
-     * other mode is up. A real destination, so the toolbar can offer "back
-     * to the workspace" as a button rather than "close whatever is open".
+     * The Sessions view: the session list, chat and the panels (named
+     * "workspace" in code from before session workspaces existed). Closes
+     * whichever other view is up. A real destination, so the toolbar can offer
+     * "back to the sessions view" as a button rather than "close whatever is
+     * open".
      */
     openWorkspace() {
         if (this.getState().admin?.visible) this.closeAdminConsole();

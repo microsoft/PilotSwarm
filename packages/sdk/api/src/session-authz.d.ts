@@ -33,7 +33,8 @@ export type SessionAccessClass =
     | "session:write"
     | "session:manage"
     | "session:destroy"
-    | "session:share";
+    | "session:share"
+    | "session:files";
 
 export declare const SESSION_VISIBILITY_VALUES: readonly string[];
 

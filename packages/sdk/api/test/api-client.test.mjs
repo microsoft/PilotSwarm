@@ -70,6 +70,24 @@ test("401 fires onUnauthorized and throws ApiError", async () => {
     assert.equal(unauthorized, 1);
 });
 
+test("a workspace file error keeps its etag (null: deleted) and size", async () => {
+    const { client } = createClient({
+        responses: [
+            jsonResponse({ ok: false, error: { code: "WORKSPACE_FILES_CONFLICT", message: "deleted", etag: null } }, { status: 409 }),
+            jsonResponse({ ok: false, error: { code: "WORKSPACE_FILES_TOO_LARGE", message: "big", size: 22020096 } }, { status: 413 }),
+            jsonResponse({ ok: false, error: { code: "WORKSPACE_FILES_CONFLICT", message: "changed", etag: "sha256:ab" } }),
+        ],
+    });
+    await assert.rejects(client.call("listSessions"), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, "WORKSPACE_FILES_CONFLICT");
+        assert.ok(Object.prototype.hasOwnProperty.call(error, "etag") && error.etag === null, "null means the file is gone");
+        return true;
+    });
+    await assert.rejects(client.call("listSessions"), (error) => error.size === 22020096);
+    await assert.rejects(client.call("listSessions"), (error) => error.etag === "sha256:ab", "an ok:false body with status 200 too");
+});
+
 // v0.5.14 (105e78f): onForbidden is an ADMISSION signal, not a per-op one. A
 // 403 on a normal operation (e.g. a non-owner renaming) throws to the caller
 // but must NOT flip the app to the access-denied gate; only the admission

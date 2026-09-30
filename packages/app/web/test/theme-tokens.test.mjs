@@ -21,6 +21,7 @@ const CSS = path.resolve(__dirname, "../src/index.css");
 const JS_SOURCES = [
     path.resolve(__dirname, "../../ui/react/src/web-app.js"),
     path.resolve(__dirname, "../../ui/react/src/native-task-card.js"),
+    path.resolve(__dirname, "../../ui/react/src/workspace-pane.js"),
     path.resolve(__dirname, "../src/App.jsx"),
 ];
 

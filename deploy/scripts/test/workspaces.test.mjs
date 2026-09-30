@@ -208,6 +208,39 @@ for (const [edge, tls, overlay] of PORTAL_OVERLAYS) {
     // The patch restates the base list; if the base changes, this catches the drift.
     assert.deepEqual(patched.split(","), [...base.split(","), "/app/packages/sdk/examples/repo-workspaces/plugin"]);
   });
+
+  test(`rendered portal/${overlay}: the Workspace tab sees the workers' roots at the workers' paths`, (t) => {
+    const portal = stage(t, "portal", stampEnv({ EDGE_MODE: edge, TLS_SOURCE: tls, WORKSPACES_ENABLED: "true" }));
+    const worker = stage(t, "worker", stampEnv({ WORKSPACES_ENABLED: "true" }));
+    const portalObjects = render(t, join(portal, "overlays", overlay));
+    if (!portalObjects) return;
+    const workerObjects = render(t, join(worker, "overlays/default"));
+    const deployment = portalObjects["Deployment/pilotswarm-portal"];
+    const portal0 = container(deployment, "portal");
+    const worker0 = container(workerObjects["Deployment/copilot-runtime-worker"], "worker");
+    const workerEnv = envOf(worker0);
+    // Every root a worker has, by the same name and path.
+    const workerRoots = [workerEnv.PS_WORKSPACE_ROOTS, workerEnv.PS_PLAIN_ROOTS, workerEnv.PS_HOME_ROOT].join(",").split(",").sort();
+    assert.deepEqual(envOf(portal0).PORTAL_WORKSPACE_ROOTS.split(",").sort(), workerRoots);
+    // The same mount: the attacher's folder at the workers' /ws.
+    const mount = byName(portal0.volumeMounts, "workspaces");
+    assert.equal(mount.mountPath, byName(worker0.volumeMounts, "workspaces").mountPath);
+    assert.equal(mount.mountPropagation, "HostToContainer");
+    const attacher = container(workerObjects["DaemonSet/pilotswarm-attacher"], "attacher");
+    assert.equal(byName(deployment.spec.template.spec.volumes, "workspaces").hostPath.path, envOf(attacher).ATTACHER_MOUNT_BASE);
+    // Base entries survive the strategic merge.
+    for (const name of ["PORTAL_TUI_MODE", "PS_MODEL_PROVIDERS_PATH"]) assert.ok(byName(portal0.env, name), name);
+    // Room for whole-file calls: 2 GiB, and the base's request is kept.
+    assert.equal(portal0.resources?.limits?.memory, "2Gi");
+    assert.ok(portal0.resources?.requests?.memory, "the base memory request is kept");
+    assert.ok(deployment.spec.template.spec.volumes.length > 1, "the base volumes are kept");
+    // Behind NGINX, a whole file (20 MB as base64, about 27 MB) must fit one request.
+    const ingress = Object.entries(portalObjects).find(([key]) => key.startsWith("Ingress/"))?.[1];
+    if (edge !== "afd") {
+      const size = ingress?.metadata?.annotations?.["nginx.ingress.kubernetes.io/proxy-body-size"];
+      assert.ok(size && parseInt(size, 10) >= 28, `${overlay}: NGINX proxy-body-size ${size} holds a 20 MB file`);
+    }
+  });
 }
 
 test("rendered repo-cache: one image in all three containers, the exports mounted, no Namespace of its own", (t) => {
