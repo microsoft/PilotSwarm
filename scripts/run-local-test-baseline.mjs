@@ -1491,12 +1491,21 @@ export async function terminateRecordedProcessTrees(records, {
     }
 }
 
-function fallbackFailureSummary(output, env, additionalSecrets) {
+export function fallbackFailureSummary(output, env, additionalSecrets = []) {
     const lines = stripAnsi(redactSensitiveText(output, env, additionalSecrets))
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
-    return compactMessage(lines.at(-1) || "Vitest exited without a structured failure");
+    const explicitError = lines.find((line) =>
+        /^(?:AggregateError|AssertionError|Error|RangeError|ReferenceError|SyntaxError|TypeError):\s/.test(line),
+    );
+    const failedSuite = lines.find((line) => /^FAIL\s+\S/.test(line));
+    return compactMessage(
+        explicitError
+        || failedSuite
+        || lines.at(-1)
+        || "Vitest exited without a structured failure",
+    );
 }
 
 export function classifyAttemptEvidence({

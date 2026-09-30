@@ -17,6 +17,7 @@ import {
     createRoundState,
     createVitestListArgs,
     dirtyWorktreeEntries,
+    fallbackFailureSummary,
     getProcessIdentity,
     incompleteRetryPlans,
     incompleteRetryTarget,
@@ -1100,6 +1101,19 @@ test("suite-level failures defer to captured reporter output for triage", (t) =>
     assert.equal(result.valid, true);
     assert.equal(result.summary, "");
     assert.equal(result.testCounts.skipped, 7);
+});
+
+test("fallback failure summaries prefer the actionable exception over reporter footers", () => {
+    const output = [
+        "FAIL  test/local/smoke-basic.test.js > smoke",
+        "Error: Cannot find package 'example-package'",
+        "Tests  7 skipped (7)",
+        "Duration  15.00s",
+    ].join("\n");
+    assert.equal(
+        fallbackFailureSummary(output, {}),
+        "Error: Cannot find package 'example-package'",
+    );
 });
 
 test("gates an attempt until PID persistence and retains only a redacted native report", {
