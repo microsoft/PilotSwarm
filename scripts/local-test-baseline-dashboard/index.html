@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PilotSwarm SDK local test baseline</title>
+  <title>PilotSwarm local test validation</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 <main>
   <header>
     <div>
-      <h1>PilotSwarm SDK local test baseline</h1>
+      <h1>PilotSwarm local test validation</h1>
       <div id="metadata" class="meta">Loading results…</div>
     </div>
     <div class="refresh-controls">
@@ -19,15 +19,24 @@
     </div>
   </header>
   <div id="error" class="error" hidden></div>
-  <section id="cards" class="cards" aria-label="Baseline summary"></section>
+  <section class="live-panel" aria-label="Live campaign progress">
+    <div>
+      <h2>Live progress</h2>
+      <div id="live-status" class="meta">No active run</div>
+    </div>
+    <div id="live-cards" class="cards live-cards"></div>
+    <div id="active-files" class="active-files"></div>
+  </section>
+  <section id="cards" class="cards" aria-label="Campaign summary"></section>
   <section class="filters" aria-label="Test filters">
     <label>Search file or notes
       <input id="search" type="search" placeholder="e.g. model-selection">
     </label>
     <label>Result (select one or more)
-      <select id="result-filter" multiple size="4">
+      <select id="result-filter" multiple size="5">
         <option value="passed">Passed</option>
         <option value="failed">Failed</option>
+        <option value="timed_out">Timed out</option>
         <option value="interrupted">Interrupted</option>
         <option value="pending">Pending</option>
       </select>
@@ -35,7 +44,7 @@
     <label>Stability
       <select id="stability-filter">
         <option value="">All stability</option>
-        <option value="Flaky">Flaky</option>
+        <option value="Mixed">Mixed</option>
         <option value="Consistent">Consistent</option>
         <option value="Single observation">Single observation</option>
       </select>

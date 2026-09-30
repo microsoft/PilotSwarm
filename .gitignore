@@ -481,7 +481,6 @@ examples/horizon-harvester/graph.md
 
 # Playwright
 /test-results/
-/pilotswarm-local-test-baseline.json
 /playwright-report/
 /blob-report/
 

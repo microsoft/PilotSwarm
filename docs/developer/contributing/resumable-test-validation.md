@@ -18,9 +18,9 @@ A **validation campaign** is the durable collection of test evidence for:
 - one semantic provider/model profile.
 
 A campaign can span multiple runner invocations. It records every selected test
-file, every attempt, and the current result for each file. Compatible passes
-remain complete while later invocations retry only work that is pending, failed,
-or interrupted.
+file, every attempt, and the current result for each file. Compatible completed
+attempts remain available while later invocations add explicitly requested
+retries or reruns.
 
 A **run** is one invocation of the campaign runner. Worker counts, retry limits,
 and process deadlines belong to the run and may change without creating a new
@@ -34,6 +34,12 @@ Use a campaign whenever restarting from zero would discard valuable evidence.
 Common cases include long-running suites, tests with intermittent failures,
 resource-constrained runs, interrupted local sessions, and pre-publication
 validation of a risky change.
+
+A campaign does not need to be green to be complete. A stable failure is a
+valid result, especially when the same failure occurs for both a baseline and a
+candidate commit. **Completion** means every job planned for the campaign run
+reached a terminal result; **outcome** describes how many tests passed, failed,
+timed out, or produced mixed history.
 
 ## Vitest: define and execute tests
 
@@ -80,7 +86,7 @@ supplies the behavior that a one-shot Vitest or `run-tests.sh` invocation does
 not retain:
 
 - pin evidence to an exact committed revision and semantic test profile,
-- preserve compatible passes when operational controls change,
+- preserve compatible completed evidence when operational controls change,
 - apply a process-level deadline and terminate a hung file process,
 - finish the initial breadth-first pass before spending workers on retries,
 - retain every failure, timeout, retry, and eventual pass for triage, and
@@ -147,9 +153,10 @@ The runner:
 6. checkpoints the manifest after every attempt.
 
 Unknown and historically short files run before historically long files. A
-file that exceeds its process deadline is terminated, recorded as interrupted,
-and left eligible for a later run. One long file cannot prevent another worker
-from taking the next queued file.
+file that exceeds its process deadline is terminated and recorded as timed out.
+That timeout is a valid terminal observation and remains eligible for configured
+retry rounds. One long file cannot prevent another worker from taking the next
+queued file.
 
 The default campaign manifest is:
 
@@ -176,19 +183,21 @@ npm run test:validation -- \
 ```
 
 Changing worker counts, retry count, or timeout does **not** invalidate existing
-passes. By default, continuation selects only pending, failed, and interrupted
-files.
+attempt evidence. A continuation can add retries or explicitly rerun selected
+files without discarding earlier terminal results.
 
 Retries are separate rounds:
 
 1. every selected file receives its initial attempt,
-2. failures enter the first retry round,
+2. configured non-passing or interrupted results enter the first retry round,
 3. each retry round uses `--retry-workers`, and
 4. a file leaves later rounds as soon as it passes.
 
 This prevents a few slow failures from occupying every initial worker with
 immediate retries. Vitest still controls concurrency inside each file; the
 campaign manager does not force tests within a file to run sequentially.
+When the configured rounds finish, the run is complete even if some tests
+remain failed or timed out.
 
 Useful controls:
 
@@ -241,9 +250,8 @@ The machine-readable status exposes at least:
 - current run, phase, and retry round,
 - runner heartbeat, last progress time, and last state transition,
 - total, queued, active, completed, and remaining job counts for each round,
-- the number of campaign files that still lack a current pass,
+- current pass, failure, interruption, timeout, and mixed-history counts,
 - each active file's worker slot, start time, elapsed time, and deadline,
-- completed pass, failure, interruption, and mixed-history counts, and
 - whether the run finished normally, was interrupted, or appears stale.
 
 Silence from a test process is not by itself proof that it is stuck; a valid
@@ -264,7 +272,8 @@ and does not require the dashboard process to be running.
 
 ## Campaign identity
 
-Passes are reusable only when all semantic inputs still match:
+Completed attempt evidence is reusable only when all semantic inputs still
+match:
 
 | Input | Same campaign? |
 | --- | --- |
@@ -277,7 +286,7 @@ Passes are reusable only when all semantic inputs still match:
 | Per-file process timeout | May change |
 
 A source change, selection/catalog change, or provider/model profile change
-must not inherit passes. If an existing manifest belongs to a different
+must not inherit evidence. If an existing manifest belongs to a different
 identity, the runner refuses to continue it and explains whether to use
 `--fresh` or a different output path. It does not silently reinterpret old
 results.
@@ -288,6 +297,39 @@ equivalent credential should not create a different profile.
 
 There is no cross-campaign pass inference. Even when two commits touch unrelated
 files, each campaign must establish its own evidence.
+
+## Compare two committed revisions
+
+To infer whether a candidate likely introduced a regression, produce two
+independent campaigns:
+
+1. a **baseline campaign** for the known comparison commit, and
+2. a **candidate campaign** for the commit being evaluated.
+
+Each campaign remains attributable to exactly one committed revision. A separate
+comparison record links their campaign identities and compares only compatible
+evidence: the same resolved test selection and semantic provider/model profile.
+The comparison must not merge attempts from the two revisions into one campaign
+or reuse a baseline pass as candidate evidence.
+
+The comparison classifies file-level changes such as:
+
+| Baseline | Candidate | Interpretation |
+| --- | --- | --- |
+| Pass | Fail or timeout | Likely regression |
+| Fail or timeout | Pass | Likely fix |
+| Fail | Fail | Pre-existing or shared failure |
+| Pass | Pass | No observed functional regression |
+| Mixed/flaky | Any changed result | Inconclusive without attempt-level review |
+
+Duration and reliability deltas may also indicate a regression even when both
+commits pass. The comparison record includes the run controls used by each
+campaign. Different timeout or retry policies do not invalidate the underlying
+campaigns, but they reduce direct comparability and must be surfaced rather than
+hidden.
+
+The comparison is evidence, not proof of causality. External services, load,
+and flaky tests can produce different observations for identical source.
 
 ## Inspect status
 
@@ -308,15 +350,19 @@ revealing the absolute results path.
 
 ## Interpret the result
 
-The runner exits successfully only when every file in the resolved campaign
-selection currently passes. Pending, failed, or interrupted files keep the
-exit code nonzero.
+The runner exits successfully when every job planned for that invocation reaches
+a terminal result and the evidence is persisted. Test failures and timeouts are
+successful observations, not runner failures.
+
+The runner exits nonzero when evidence collection itself is incomplete or
+untrustworthy, for example because the coordinator failed, the source changed,
+the run was interrupted, a process could not be terminated, or a native report
+could not be retained safely.
 
 A failed attempt followed by a pass remains visible as mixed or flaky history.
-The current campaign may be green, but the history still requires triage before
-you rely on the evidence. This is especially important before a risky merge.
-Raising a timeout can show that a test passes with more time; it does not erase
-the original timeout.
+Neither result erases the other. Raising a timeout can show that a test passes
+with more time; it does not erase the original timeout. A user or comparison
+consumer decides whether the resulting evidence indicates a likely regression.
 
 Each attempt retains:
 
@@ -332,14 +378,17 @@ consume them without understanding a PilotSwarm-specific assertion schema.
 
 ## What counts as complete evidence
 
-For the SDK local campaign:
+For a complete SDK local campaign:
 
 - the worktree remained clean,
 - the campaign identity matches the intended commit and profile,
-- every resolved file has a current pass,
-- no file is pending or interrupted,
-- mixed/flaky history has been reviewed, and
+- every planned job reached a terminal result,
+- no job remains queued, active, or unrecorded,
+- every completed Vitest process has a safely retained native report, while a
+  process-level timeout or forced termination has a complete supervisor record,
+  and
 - required checks outside the current profile were run separately.
 
-The harness records evidence. The person following the merge or publication
-protocol decides whether that evidence is sufficient.
+Failures, timeouts, and mixed history remain part of a complete campaign. The
+harness records evidence; the person or agent following the merge, publication,
+or regression-analysis protocol decides what that evidence implies.
