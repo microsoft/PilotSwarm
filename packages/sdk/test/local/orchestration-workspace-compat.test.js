@@ -186,8 +186,9 @@ async function run(version, maxSegments = 8) {
 
 describe("sessions without a workspace (C2)", () => {
     it("1.0.79 and 1.0.80 yield the same activities, timers and races, segment by segment", async () => {
-        const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.80");
+        const { DURABLE_SESSION_ORCHESTRATION_REGISTRY } = await import("../../src/orchestration-registry.ts");
+        expect(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.80")?.handler.name)
+            .toBe("durableSessionOrchestration_1_0_80");
         const frozen = await run("1.0.79");
         const latest = await run("1.0.80");
 

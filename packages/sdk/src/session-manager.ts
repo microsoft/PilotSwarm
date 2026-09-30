@@ -2044,7 +2044,7 @@ export class SessionManager {
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
-    "update_canvas"]);
+    "update_canvas", "create_signal_webhook"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
         // gate: sessionConfig.tools below is the sole chokepoint where
@@ -2070,6 +2070,8 @@ export class SessionManager {
         else delete config.workspaceTools;
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            durableSignals: effectiveSerializableConfig.durableSignals === true,
+            webhookEndpoints: effectiveSerializableConfig.webhookEndpoints === true,
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
@@ -2882,7 +2884,10 @@ export class SessionManager {
                             const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await client.resumeSession(sessionId, {
-                                tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
+                                tools: [...ManagedSession.systemToolDefs({
+                                    durableSignals: config.durableSignals === true,
+                                    webhookEndpoints: config.webhookEndpoints === true,
+                                }), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);

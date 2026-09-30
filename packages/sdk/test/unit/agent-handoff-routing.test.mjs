@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createSessionManagerProxy, createSessionProxy } from "../../dist/session-proxy.js";
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
+import { SIGNAL_ACTIVITY_CAPABILITY } from "../../dist/session-signals.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
 const context = () => new OrchestrationContext({ instanceId: "parent", executionId: "1", orchestrationName: "test", orchestrationVersion: "1.0.74" });
@@ -48,8 +49,14 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74 through 1.0.79 separately and activates 1.0.80", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.80");
+test("registry preserves upstream versions and introduces only the complete 1.0.81 release", () => {
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.81");
+    assert.deepEqual(DURABLE_SESSION_ORCHESTRATION_REGISTRY.filter(r => Number(r.version.split(".")[2]) > 80)
+        .map(r => ({ version: r.version, handler: r.handler.name })),
+    [{ version: "1.0.81", handler: "durableSessionOrchestration_1_0_81" }]);
+    assert.equal(existsSync(new URL("../../src/orchestration_1_0_81/index.ts", import.meta.url)), false,
+        "there must be no intermediate signal-only snapshot");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.78").handler.name, "durableSessionOrchestration_1_0_78");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.77").handler.name, "durableSessionOrchestration_1_0_77");
@@ -57,6 +64,42 @@ test("registry retains 1.0.74 through 1.0.79 separately and activates 1.0.80", (
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.74").handler.name, "durableSessionOrchestration_1_0_74");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.75").handler.name, "durableSessionOrchestration_1_0_75");
 });
+
+// Main's non-signal 1.0.79 at 7cac3109, with only its own version pinned.
+const main79Hashes = {
+    "agents.ts": "04385760ff1d9e465d23b6430217de858579edbeea716fe1ceda984016d5f4d2",
+    "index.ts": "e8d3a085b351584f5d9df5cae686e72f949bc35e83442536d7b7b5c8774b0d0a",
+    "lifecycle.ts": "498dfe9c73253058929cfdd5d14185ca16347920ddba42c26c16dd9548a12d42",
+    "queue.ts": "529218aed1877208a144e5cad6acece5b3c4711af5dcc72065231698649c4c3b",
+    "runtime.ts": "483e19f6a3ef9681444007c5078fe5de4b67b5226577b67cd948ba45aa879d02",
+    "state.ts": "6f696822458e8ae1aa9fdf5a6850c911ed9eb1875f252876c9f5f1e0987afdc7",
+    "turn.ts": "ff1aea267ac079d9734876572a0ee8cd25999321d545574e8007038262dfe3a8",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+};
+for (const [name, hash] of Object.entries(main79Hashes)) {
+    test(`main's frozen 1.0.79 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_79/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
+
+// Released workspace handler from e79f2265, with only its own version pinned.
+const main80Hashes = {
+    "agents.ts": "0dd393eff03ed0ac56994b3595c33a92eb151b1ef6c3023c5b7a15364c723e1b",
+    "index.ts": "e06fde79e3a1aec37c8662caacde59b69e6c811907af76021f01d27945cf046a",
+    "lifecycle.ts": "b9b272b385f80ce477597b97839d06b4f7677a0991366bfc8b58a0fe3a3bc527",
+    "queue.ts": "3045703385614adc465fb411893ff2c128f886a97eea410e2e6091d1248273e6",
+    "runtime.ts": "0403ef2c81b5981f7987b293f26bbf1aaed79292fd7023769a7a88e73d060da7",
+    "state.ts": "5035fdda1cc726bc16e701c58ec8fff52c5262c71c3011be812defd0cb0c5247",
+    "turn.ts": "a3cfca9a7fb6d20f4b48a8c9911db0f062a135f4d9a17d0529940618316ee305",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+};
+for (const [name, hash] of Object.entries(main80Hashes)) {
+    test(`main's frozen 1.0.80 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_80/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
 
 test("legacy proxy descriptors retain their serialized names, inputs and affinity, without tags", () => {
     const ctx = context();
@@ -173,4 +216,20 @@ test("a workspace session's turns and workspace activities go only to workers th
     // A session that never had a workspace keeps the handoff tag.
     const plain = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "agent-handoff-v2");
     assert.equal(plain.runTurn("work", false, 1).tag, AGENT_HANDOFF_CAPABILITY);
+});
+
+test("signal-capable workspace turns cannot be claimed by workspace-only workers", () => {
+    const workspace = { schema: 1, root: "a", folder: "repo-x" };
+    for (const config of [{ durableSignals: true, workspace }, { durableSignals: true }]) {
+        const proxy = createSessionProxy(context(), "child", "affinity", config, "agent-handoff-v2");
+        for (const epochStart of [false, true]) {
+            const task = wire(proxy.runTurn("work", false, 2, { epochStart, workspaceRevision: 2 }));
+            assert.equal(task.name, epochStart ? "runTurnSignalsEpochV1" : "runTurnSignalsV1");
+            assert.equal(task.tag, SIGNAL_ACTIVITY_CAPABILITY);
+            assert.equal(task.sessionId, "affinity");
+            assert.equal(JSON.parse(task.input).workspaceRevision, 2);
+            assert.deepEqual(JSON.parse(task.input).config, config);
+        }
+        assert.equal(proxy.releaseWorkspace({ reason: "idle", revision: 2, turnIndex: 2 }).tag, WORKSPACE_CAPABILITY);
+    }
 });

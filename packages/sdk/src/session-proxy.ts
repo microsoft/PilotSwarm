@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -697,12 +697,13 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string },
         ) {
+            const turnRoutingContract = config.durableSignals === true ? "signals-v1" : routingContract;
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
-                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
+                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", turnRoutingContract),
                 {
                     sessionId,
                     prompt,
@@ -750,6 +751,8 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
+            // Signal-capable workers also implement the workspace contract.
+            if (turnRoutingContract === "signals-v1") return routeHandoffActivity(task, turnRoutingContract);
             // Session workspaces (1.0.80): the turn of a session that has, or
             // had, a workspace goes only to workers that know workspaces. An
             // older worker would run it in its own folder.
@@ -836,6 +839,7 @@ export function buildRunTurnConfig(
     inputConfig: SerializableSessionConfig,
     hostname: string,
     fallbackAgentIdentity?: string,
+    durableSignals = false,
 ): SerializableSessionConfig {
     const runConfig: SerializableSessionConfig = {
         ...inputConfig,
@@ -844,6 +848,11 @@ export function buildRunTurnConfig(
             `Running on host "${hostname}".`,
         ]),
     };
+    if (durableSignals) runConfig.durableSignals = true;
+    else delete runConfig.durableSignals;
+    if (durableSignals && ["true", "1"].includes(process.env.PILOTSWARM_WEBHOOKS_ENABLED ?? "")) {
+        runConfig.webhookEndpoints = true;
+    } else delete runConfig.webhookEndpoints;
 
     if (!runConfig.agentIdentity && fallbackAgentIdentity) {
         runConfig.agentIdentity = fallbackAgentIdentity;
@@ -1407,6 +1416,7 @@ export function registerActivities(
             transcriptEpoch?: number;
             /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
             epochStart?: boolean;
+            durableSignals?: boolean;
             /** Session workspaces (1.0.80+): the workspace revision, for the provider's lease. */
             workspaceRevision?: number;
             /** 1.0.80: the pending changed-cwd note, appended to the prompt the model gets. */
@@ -1474,7 +1484,7 @@ export function registerActivities(
             }
         }
 
-        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity, input.durableSignals === true);
         // Session workspaces: an orchestration older than 1.0.80 drops the
         // result of set_session_workspace, so its turns get no workspace
         // tools (review F3).
@@ -2362,6 +2372,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         };
 
         const controlToolBridge = {
+            createSignalWebhook: async (args: { signal_name: string; label?: string; expires_at?: string; max_uses?: number; wake?: boolean }) => {
+                if (!runConfig.webhookEndpoints || !catalog) {
+                    throw new Error("Webhook endpoints are not enabled on this worker.");
+                }
+                const owner = await resolveEffectiveSpawnOwner(id => catalog.getSession(id), input.sessionId);
+                if (!owner) throw new Error("The session has no authorized webhook owner.");
+                const observation = await catalog.getUserRole(owner);
+                const role = evaluateRoleObservation(observation, { principal: owner });
+                const management = PilotSwarmManagementClient._webhookTools(catalog, process.env.PILOTSWARM_WEBHOOK_PUBLIC_ORIGIN);
+                return management.createSignalEndpoint(input.sessionId, args.signal_name, {
+                    ...(args.label !== undefined ? { label: args.label } : {}),
+                    ...(args.expires_at !== undefined ? { expiresAt: args.expires_at } : {}),
+                    ...(args.max_uses !== undefined ? { maxUses: args.max_uses } : {}),
+                    ...(args.wake !== undefined ? { wake: args.wake } : {}),
+                }, { principal: owner, isAdmin: role.isAdmin, adminScope: loadAdminScope() });
+            },
             /**
              * Session workspaces: the attach and the path check behind the
              * agent's set_session_workspace, run on this worker with the same
@@ -4178,6 +4204,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
                     controlToolBridge,
+                    ...(input.durableSignals ? { durableSignals: true } : {}),
+                    ...(runConfig.webhookEndpoints ? { webhookEndpoints: true } : {}),
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                 });
             };
@@ -4357,6 +4385,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const statusMap: Record<string, string> = {
                     completed: "idle", // orchestration decides idle vs completed; default to idle
                     wait: "waiting",
+                    "signal-wait": result.type === "signal-wait" && result.action === "wait" ? "waiting" : "idle",
                     cron: "running",
                     input_required: "input_required",
                     error: "error",
@@ -4381,6 +4410,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     updates.waitReason = null;
                 } else if (result.type === "wait") {
                     updates.waitReason = (result as any).reason ?? null;
+                    updates.lastError = null;
+                } else if (result.type === "signal-wait" && result.action === "wait") {
+                    updates.waitReason = `Waiting for signal: ${result.names.join(", ")} (${result.reason})`;
                     updates.lastError = null;
                 } else if (result.type === "input_required") {
                     updates.waitReason = (result as any).question ?? null;
@@ -4629,6 +4661,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
     registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
+    const runSignalTurnHandler = (ctx: any, input: Parameters<typeof runTurnHandler>[1]) =>
+        runTurnHandler(ctx, { ...input, durableSignals: true });
+    runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn, runSignalTurnHandler);
+    runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn2, runSignalTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

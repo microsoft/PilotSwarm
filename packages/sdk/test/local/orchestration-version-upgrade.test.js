@@ -114,8 +114,8 @@ describe("orchestration version upgrades", () => {
     });
 
     // 1.0.79 is the version frozen when session workspaces opened 1.0.80
-    // (test C4): its sessions carry no config.workspace into 1.0.80.
-    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79"]) {
+    // (test C4): its sessions carry no config.workspace into the latest handler.
+    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80"]) {
         it(`upgrades ${sourceVersion} snapshots into the latest orchestration`, async () => {
             const values = new Map();
             const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
@@ -132,8 +132,9 @@ describe("orchestration version upgrades", () => {
                 }),
             ]);
 
-            // 1.0.79 starts mid-life, so the turn index must survive into 1.0.80 (T4).
-            const startIteration = sourceVersion === "1.0.79" ? 5 : 0;
+            // Recent versions start mid-life, so the turn index must survive (T4).
+            const recent = ["1.0.79", "1.0.80"].includes(sourceVersion);
+            const startIteration = recent ? 5 : 0;
             const sourceGen = sourceHandler(sourceCtx, {
                 sessionId: `upgrade-${sourceVersion}`,
                 config: { model: "github-copilot:gpt-5.4" },
@@ -181,10 +182,10 @@ describe("orchestration version upgrades", () => {
                 },
             });
             expect(latestResult.done).toBe(false);
-            // Test C4: a session from before workspaces makes no workspace call in 1.0.80.
+            // Test C4: a session without a workspace makes no workspace call after upgrade.
             expect(latestCalls.filter((call) => /workspace/i.test(call))).toEqual([]);
-            if (sourceVersion === "1.0.79") {
-                // 1.0.79 asks for one turn on the new model; 1.0.80 runs it
+            if (recent) {
+                // The old handler asks for one turn on the new model; latest runs it
                 // at the carried turn index, with no workspace fields on the wire.
                 expect(latestTurns).toHaveLength(1);
                 expect(latestTurns[0][0]).toMatch(/^Continue on github-copilot:gpt-5\.4-mini\./);

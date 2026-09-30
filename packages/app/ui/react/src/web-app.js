@@ -2,6 +2,7 @@ import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
+import { AdminWebhooksSection } from "./webhook-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -71,6 +72,7 @@ import {
     selectSessionOwnerFilterModal,
     selectSessionRows,
     selectSessionStatusSummary,
+    selectSessionSignalWait,
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
@@ -4480,11 +4482,13 @@ const SESSION_DETAIL_NONE = "—";
  * authoritative on its own and always shows.
  */
 export function visibleWaitReason(session, statusLabel) {
+    const status = String(statusLabel || "");
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait && (signalWait.interrupted || status === "waiting")) return signalWait.text;
     const reason = typeof session?.waitReason === "string" && session.waitReason.trim()
         ? clampWaitReason(session.waitReason)
         : null;
     if (!reason) return null;
-    const status = String(statusLabel || "");
     // "waiting", and "waiting on 7" / "waiting on children" for a parent whose
     // descendants are still going.
     const waiting = status === "waiting"
@@ -4550,6 +4554,7 @@ export function clampWaitReason(
  * the wake-up instruction read as a stall reason.
  */
 export function waitReasonLabel(session) {
+    if (selectSessionSignalWait(session)) return session?.signalWait?.mode === "any" ? "Race" : "Signal";
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
@@ -4609,6 +4614,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         : (childCount > 0 ? String(childCount) : null);
 
     const statusSummary = selectSessionStatusSummary(session);
+    const signalWait = selectSessionSignalWait(session);
 
     // Why this session is stopped, where the person is standing.
     //
@@ -4640,8 +4646,8 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         // Clipped on screen, whole on hover: for a cron the full text is the
         // wake-up instruction, and someone reading the box is often trying to
         // find out exactly what the next tick will do.
-        ...(!pause && typeof session?.waitReason === "string" && session.waitReason.trim()
-            ? { title: session.waitReason.trim() }
+        ...(!pause && (signalWait || (typeof session?.waitReason === "string" && session.waitReason.trim()))
+            ? { title: signalWait?.text || session.waitReason.trim() }
             : {}),
     },
         // The sentence already says when it clears wherever it can; `clears`
@@ -4683,7 +4689,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
                 key: "halt",
                 className: `ps-session-detail-mark${pause ? " is-paused" : ""}`,
                 title: pause ? pause.reason : waitReason,
-            }, pause ? "paused" : "waiting"));
+            }, pause ? "paused" : signalWait?.interrupted ? "signal interrupted" : "waiting"));
         }
         return React.createElement("div", { className: "ps-session-detail-box is-collapsed" },
             React.createElement("button", {
@@ -9514,13 +9520,17 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
             ? state.outbox.bySessionId[activeSessionId]
             : [];
+        const canStopTurn = canStopSessionTurn(activeSession);
         return {
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
-            canStopTurn: canStopSessionTurn(activeSession),
+            canStopTurn,
+            stopTurnLabel: canStopTurn && activeSession.status === "waiting"
+                ? activeSession.signalWait?.mode === "any" ? "Stop the event race" : "Stop waiting for a signal"
+                : "Stop the current turn",
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -9869,8 +9879,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
-                    title: "Stop the current turn (the session stays alive and returns to idle)",
-                    "aria-label": "Stop the current turn",
+                    title: `${promptState.stopTurnLabel} (the session stays alive and returns to idle)`,
+                    "aria-label": promptState.stopTurnLabel,
                     disabled: stoppingTurn,
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: stopTurn,
@@ -13624,17 +13634,34 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             const isPlainShortcut = !event.metaKey && !event.ctrlKey && !event.altKey;
             const isShiftTheme = !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "T" && event.shiftKey;
             const isShiftModel = !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "N" && event.shiftKey;
+            const webhooks = controller.getState().admin?.section === "webhooks" && controller.getState().admin?.visible
+                ? controller.getState().admin.webhooks : null;
             const selectVisibleInspectorTab = (delta) => {
                 const nextTab = cycleTabs(visibleInspectorTabs, currentInspectorTab, delta);
                 controller.selectInspectorTab(nextTab).catch(() => {});
             };
 
-            if (!editable && isShiftTheme) {
+            // This settings page replaces the workspace. Never create/stop a
+            // hidden session while operating webhook controls. Dialog keys are
+            // owned by the form or the existing confirmation flow below.
+            if (webhooks && !modal) {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    if (webhooks.editor || webhooks.capabilityId) controller.closeWebhookDialog();
+                    else controller.closeAdminConsole();
+                } else if (!editable && event.key === "r" && isPlainShortcut && !webhooks.editor && !webhooks.capabilityId) {
+                    event.preventDefault();
+                    void controller.refreshAdminWebhooks();
+                }
+                return;
+            }
+
+            if (!webhooks && !editable && isShiftTheme) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
                 return;
             }
-            if (!editable && isShiftModel) {
+            if (!webhooks && !editable && isShiftModel) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
                 return;
@@ -13979,6 +14006,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
+    const showWebhooks = view.section === "webhooks";
     const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
         workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
@@ -14130,7 +14158,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showFeatures ? featureSection : providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
+                showWebhooks ? React.createElement(AdminWebhooksSection, { controller }) : showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -14159,7 +14188,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view })
+                    : showWebhooks ? React.createElement(AdminWebhooksSection, { controller }) : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -14255,6 +14285,8 @@ function AdminSettingsTree({ controller, view }) {
                         controller.setAdminModelProviderPage("shared");
                     } else if (row.id === "features") {
                         controller.setAdminSection("features");
+                    } else if (row.id === "webhooks") {
+                        controller.setAdminSection("webhooks");
                     } else {
                         controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
                     }
