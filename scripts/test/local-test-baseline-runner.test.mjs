@@ -34,6 +34,7 @@ import {
     planRecoveryRounds,
     planRetryFiles,
     planRetryTargetFiles,
+    prepareCampaignEnvironment,
     processIdentitiesMatch,
     providerModelFingerprint,
     providerRedactionSecrets,
@@ -1396,4 +1397,27 @@ test("loads .env defaults without replacing ambient overrides", (t) => {
     assert.equal(env.FILE_ONLY, "yes");
     assert.equal(env.HORIZON_DATABASE_URL, undefined);
     assert.equal(env.PS_TEST_SKIP_STALE_CLEANUP, "1");
+});
+
+test("routes the configured baseline database through canonical test aliases", () => {
+    const databaseUrl = "postgresql://test:test@127.0.0.1:54329/pilotswarm_test";
+    const env = prepareCampaignEnvironment({
+        DATABASE_URL: databaseUrl,
+        HORIZON_DATABASE_URL: "postgresql://unused.invalid/horizon",
+        PILOTSWARM_RUNTIME_URL: "https://unused.invalid",
+    });
+
+    assert.equal(env.DATABASE_URL, databaseUrl);
+    assert.equal(env.PS_TEST_DATABASE_URL, databaseUrl);
+    assert.equal(env.TEST_DATABASE_URL, databaseUrl);
+    assert.equal(env.PILOTSWARM_RUNTIME_PROVIDER, "postgres");
+    assert.equal(env.HORIZON_DATABASE_URL, undefined);
+    assert.equal(env.PILOTSWARM_RUNTIME_URL, undefined);
+});
+
+test("report-only environment preparation does not require a database", () => {
+    assert.deepEqual(
+        prepareCampaignEnvironment({ FILE_ONLY: "yes" }, { reportOnly: true }),
+        { FILE_ONLY: "yes" },
+    );
 });

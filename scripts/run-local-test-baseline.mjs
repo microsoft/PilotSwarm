@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { testStorageEnvironment } from "./test-provider-plan.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -1124,6 +1125,16 @@ export function parseEnvFile(filePath, baseEnv = process.env) {
     env.PS_TEST_SKIP_STALE_CLEANUP = "1";
     env.RUST_LOG ||= "error";
     return env;
+}
+
+export function prepareCampaignEnvironment(env, { reportOnly = false } = {}) {
+    const prepared = reportOnly
+        ? { ...env }
+        : testStorageEnvironment("baseline", env);
+    if (!prepared.PS_MODEL_PROVIDERS_PATH && prepared.MODEL_PROVIDERS_PATH) {
+        prepared.PS_MODEL_PROVIDERS_PATH = prepared.MODEL_PROVIDERS_PATH;
+    }
+    return prepared;
 }
 
 const activeChildren = new Map();
@@ -2619,8 +2630,8 @@ async function main() {
 
     const outputPath = resolveOutputPath(options.output);
     const envFile = path.join(REPO_ROOT, ".env");
-    const env = fs.existsSync(envFile) ? parseEnvFile(envFile) : { ...process.env };
-    env.PS_MODEL_PROVIDERS_PATH ||= env.MODEL_PROVIDERS_PATH;
+    const loadedEnv = fs.existsSync(envFile) ? parseEnvFile(envFile) : { ...process.env };
+    const env = prepareCampaignEnvironment(loadedEnv, { reportOnly: options.reportOnly });
     const sourceSnapshot = captureSourceSnapshot();
     const testedRevision = {
         repository: sourceSnapshot.repository,

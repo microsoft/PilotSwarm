@@ -132,6 +132,9 @@ input to the implementation work, not the specification.
 - Configure the dedicated test database and model/provider environment described
   in [Local tests and CI setup](local-ci-and-tests.md). Never use an application
   or production database.
+- The baseline profile applies the canonical test-storage routing, so the
+  configured `DATABASE_URL` is also supplied as `PS_TEST_DATABASE_URL` and
+  `TEST_DATABASE_URL`; individual tests must not fall back to another port.
 - Do not run two campaigns against the same test database at the same time.
 
 ## Start a campaign
