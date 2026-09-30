@@ -18,6 +18,7 @@ const STATE_SCHEMA_VERSION = 6;
 const MAX_CAPTURED_OUTPUT = 256 * 1024;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const TIMEOUT_CLEANUP_GRACE_MS = 30_000;
+const ATTEMPT_GATE_READY_TIMEOUT_MS = 60_000;
 const SEMANTIC_ENV_KEYS = [
     "PS_TEST_FORCE_MODEL",
     "TEST_FORCE_MODEL",
@@ -1882,7 +1883,7 @@ export async function runTestFile(
     await new Promise((resolve, reject) => {
         const readyTimer = setTimeout(
             () => reject(new Error(`Attempt process gate did not become ready for ${file}`)),
-            10_000,
+            ATTEMPT_GATE_READY_TIMEOUT_MS,
         );
         child.once("message", (message) => {
             if (message?.type !== "ready") return;
