@@ -1564,7 +1564,7 @@ export function classifyAttemptEvidence({
         return {
             status: "failed",
             collectionStatus: "complete",
-            summary: parsed.summary || `${parsed.testCounts.failed} tests failed`,
+            summary: parsed.summary || fallbackFailureSummary(output, env, redactionSecrets),
         };
     }
     return {

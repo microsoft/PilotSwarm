@@ -1116,6 +1116,29 @@ test("fallback failure summaries prefer the actionable exception over reporter f
     );
 });
 
+test("valid suite-level failure evidence uses the captured actionable exception", () => {
+    const result = classifyAttemptEvidence({
+        timedOut: false,
+        timeoutMs: 300_000,
+        abnormalGateExit: false,
+        code: 1,
+        parsed: {
+            valid: true,
+            summary: "",
+            testCounts: { total: 7, passed: 0, failed: 0, skipped: 7, todo: 0 },
+            evidenceError: null,
+        },
+        output: [
+            "FAIL  test/local/smoke-basic.test.js > smoke",
+            "Error: Cannot find package 'example-package'",
+            "Tests  7 skipped (7)",
+        ].join("\n"),
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.collectionStatus, "complete");
+    assert.equal(result.summary, "Error: Cannot find package 'example-package'");
+});
+
 test("gates an attempt until PID persistence and retains only a redacted native report", {
     timeout: 30_000,
 }, async (t) => {
