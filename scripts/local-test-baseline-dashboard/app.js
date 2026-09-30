@@ -226,6 +226,9 @@ function renderLive(data) {
     const now = Date.now();
     const heartbeatAge = run?.heartbeatAt ? Math.max(0, now - Date.parse(run.heartbeatAt)) : null;
     const progressAge = run?.lastProgressAt ? Math.max(0, now - Date.parse(run.lastProgressAt)) : null;
+    const transitionAge = run?.lastTransitionAt
+        ? Math.max(0, now - Date.parse(run.lastTransitionAt))
+        : null;
     elements.liveStatus.textContent = [
         `campaign ${data.status ?? "unknown"}`,
         run?.phase ? `${run.phase} round ${run.round ?? "—"}` : "no run",
@@ -242,6 +245,7 @@ function renderLive(data) {
         ["Queued / active", round ? `${round.queued} / ${round.active}` : "—"],
         ["Campaign unfinished", data.summary?.unfinished ?? 0],
         ["Last progress", formatAge(progressAge)],
+        ["Last transition", formatAge(transitionAge)],
         ["Heartbeat", formatAge(heartbeatAge)],
     ];
     elements.liveCards.replaceChildren(...cards.map(([label, value]) => {

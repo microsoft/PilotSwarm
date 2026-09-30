@@ -33,5 +33,9 @@ jobs:
         run: |
           npm run test:api --workspace=pilotswarm-sdk
           npm run test:unit --workspace=pilotswarm-sdk
+      - name: Validation campaign unit tests
+        run: |
+          npm run test:validation:unit
+          npm run test:validation:dashboard:unit
       - name: Application unit tests
         run: npm test --workspace=pilotswarm

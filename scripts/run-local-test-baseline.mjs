@@ -715,6 +715,31 @@ export function planRetryFiles(state, priorRoundFiles) {
     return priorRoundFiles.filter((file) => state.tests[file]?.status !== "passed");
 }
 
+export function schedulingDurationMs(entry) {
+    const durations = trustedAttempts(entry)
+        .map((attempt) => attempt.durationMs)
+        .filter((durationMs) => Number.isFinite(durationMs) && durationMs >= 0)
+        .sort((left, right) => left - right);
+    if (durations.length === 0) return null;
+    const middle = Math.floor(durations.length / 2);
+    return durations.length % 2 === 1
+        ? durations[middle]
+        : (durations[middle - 1] + durations[middle]) / 2;
+}
+
+export function orderFilesForScheduling(state, files) {
+    return [...files].sort((left, right) => {
+        const leftDuration = schedulingDurationMs(state.tests?.[left]);
+        const rightDuration = schedulingDurationMs(state.tests?.[right]);
+        if (leftDuration === null && rightDuration !== null) return -1;
+        if (leftDuration !== null && rightDuration === null) return 1;
+        if (leftDuration !== null && rightDuration !== null && leftDuration !== rightDuration) {
+            return leftDuration - rightDuration;
+        }
+        return left < right ? -1 : left > right ? 1 : 0;
+    });
+}
+
 function compactMessage(value, limit = 500) {
     const clean = stripAnsi(String(value ?? ""))
         .replace(/\s+/g, " ")
@@ -1320,6 +1345,11 @@ export function retainVitestReport(
             evidenceError: null,
         };
     } catch (error) {
+        const safeError = compactMessage(redactSensitiveText(
+            error.message,
+            env,
+            additionalSecrets,
+        ));
         try {
             const unsafePath = resolveReportArtifactPath(
                 campaignOutputDirectory,
@@ -1332,7 +1362,7 @@ export function retainVitestReport(
             testCounts: null,
             summary: "",
             reportDigest: null,
-            evidenceError: `Vitest report evidence could not be retained safely: ${error.message}`,
+            evidenceError: `Vitest report evidence could not be retained safely: ${safeError}`,
         };
     }
 }
@@ -2126,7 +2156,7 @@ export function reconcileActiveEntries(
     return reconciled;
 }
 
-function redactActiveReports(state, run, outputPath, env, redactionSecrets) {
+export function redactActiveReports(state, run, outputPath, env, redactionSecrets) {
     for (const [file, active] of Object.entries(run?.activeFiles ?? {})) {
         const attempt = state.tests[file]?.attempts?.find(
             (candidate) => candidate.number === active.attemptNumber
@@ -2397,10 +2427,11 @@ async function executeRound({
     expectedFingerprint,
     redactionSecrets,
 }) {
+    const scheduledFiles = orderFilesForScheduling(state, files);
     const round = createRoundState(
         roundNumber,
         kind,
-        files,
+        scheduledFiles,
         concurrency,
         new Date().toISOString(),
         retryTarget,
@@ -2412,7 +2443,7 @@ async function executeRound({
     markRoundStarted(round);
     persist(state, outputPath, { transition: true });
 
-    const queue = [...files];
+    const queue = [...scheduledFiles];
     let completedAttempts = 0;
     let firstError = null;
     async function worker(slot) {
@@ -2596,7 +2627,13 @@ async function executeRound({
     ));
     await waitForActiveProcesses();
     if (Object.keys(state.currentRun.activeFiles).length > 0) {
-        redactActiveReports(state, state.currentRun, outputPath, env);
+        redactActiveReports(
+            state,
+            state.currentRun,
+            outputPath,
+            env,
+            redactionSecrets,
+        );
         const reconciled = reconcileActiveEntries(
             state,
             state.currentRun,
@@ -2608,7 +2645,7 @@ async function executeRound({
     round.status = abortReason ? "interrupted" : "complete";
     persist(state, outputPath, { transition: true });
     if (firstError) throw firstError;
-    return { files, completedAttempts };
+    return { files: scheduledFiles, completedAttempts };
 }
 
 async function main() {

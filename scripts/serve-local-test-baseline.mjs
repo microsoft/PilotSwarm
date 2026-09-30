@@ -74,6 +74,15 @@ export function isLoopbackHost(host) {
             && normalized.split(".").every((part) => Number(part) <= 255);
 }
 
+export function isLoopbackAuthority(authority) {
+    if (!authority) return false;
+    try {
+        return isLoopbackHost(new URL(`http://${authority}`).hostname);
+    } catch {
+        return false;
+    }
+}
+
 function sendJson(response, status, value) {
     response.writeHead(status, {
         "Content-Type": "application/json; charset=utf-8",
@@ -92,7 +101,9 @@ function sendFile(response, filePath, contentType) {
         response.end(content);
     } catch (error) {
         sendJson(response, error.code === "ENOENT" ? 404 : 500, {
-            error: error.message,
+            error: error.code === "ENOENT"
+                ? "Dashboard asset is not available"
+                : "Dashboard asset could not be read",
         });
     }
 }
@@ -135,6 +146,7 @@ export function campaignProgress(campaign, nowMs = Date.now()) {
         lastProgressAt: run?.lastProgressAt ?? null,
         lastProgressAgeMs: ageMs(run?.lastProgressAt, nowMs),
         lastTransitionAt: run?.lastTransitionAt ?? null,
+        lastTransitionAgeMs: ageMs(run?.lastTransitionAt, nowMs),
         unfinished: campaign.summary?.unfinished ?? null,
         outcomes: {
             passed: campaign.summary?.passed ?? 0,
@@ -169,6 +181,10 @@ export function createDashboardServer({
     ]);
 
     return http.createServer((request, response) => {
+        if (!isLoopbackAuthority(request.headers.host)) {
+            sendJson(response, 403, { error: "Loopback Host header required" });
+            return;
+        }
         const url = new URL(request.url ?? "/", "http://localhost");
         if (request.method !== "GET") {
             response.writeHead(405, { Allow: "GET" });
@@ -183,7 +199,7 @@ export function createDashboardServer({
                 sendJson(response, error.code === "ENOENT" ? 404 : 500, {
                     error: error.code === "ENOENT"
                         ? "Campaign results are not available"
-                        : `Could not read results: ${error.message}`,
+                        : "Campaign results could not be read",
                 });
             }
             return;

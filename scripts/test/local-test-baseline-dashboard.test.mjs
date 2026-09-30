@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     campaignProgress,
     createDashboardServer,
+    isLoopbackAuthority,
     isLoopbackHost,
     parseDashboardArgs,
 } from "../serve-local-test-baseline.mjs";
@@ -74,6 +76,9 @@ test("parses loopback-only dashboard options and default campaign path", () => {
     assert.equal(isLoopbackHost("127.0.0.2"), true);
     assert.equal(isLoopbackHost("::1"), true);
     assert.equal(isLoopbackHost("0.0.0.0"), false);
+    assert.equal(isLoopbackAuthority("127.0.0.1:4310"), true);
+    assert.equal(isLoopbackAuthority("[::1]:4310"), true);
+    assert.equal(isLoopbackAuthority("localhost.attacker.example"), false);
     assert.throws(() => parseDashboardArgs(["--host", "0.0.0.0"]), /loopback/);
     assert.throws(() => parseDashboardArgs(["--port", "-1"]), /between 0 and 65535/);
 });
@@ -91,6 +96,7 @@ test("derives live round, active file, and liveness progress", () => {
     });
     assert.equal(progress.heartbeatAgeMs, 2000);
     assert.equal(progress.lastProgressAgeMs, 12_000);
+    assert.equal(progress.lastTransitionAgeMs, 7000);
     assert.equal(progress.activeFiles[0].elapsedMs, 22_000);
     assert.equal(progress.activeFiles[0].deadlineRemainingMs, 278_000);
 });
@@ -116,6 +122,18 @@ test("serves live results, private health, progress API, and assets", async (t) 
         const status = await fetch(`${base}/api/status`).then((response) => response.json());
         assert.equal(status.progress.activeFiles[0].file, "slow.test.js");
 
+        const rejectedHost = await new Promise((resolve, reject) => {
+            const request = http.get({
+                hostname: "127.0.0.1",
+                port: address.port,
+                path: "/api/status",
+                headers: { Host: "attacker.example" },
+            }, resolve);
+            request.on("error", reject);
+        });
+        assert.equal(rejectedHost.statusCode, 403);
+        rejectedHost.resume();
+
         const first = await fetch(`${base}/api/results`).then((response) => response.json());
         assert.equal(first.summary.passed, 1);
         const updated = campaign();
@@ -132,6 +150,8 @@ test("serves live results, private health, progress API, and assets", async (t) 
         const app = await fetch(`${base}/app.js`).then((response) => response.text());
         assert.match(app, /renderLive/);
         assert.match(app, /heartbeatAt/);
+        assert.match(app, /lastTransitionAt/);
+        assert.match(app, /Last transition/);
         assert.match(app, /deadlineAt/);
         assert.match(app, /Timed out/);
         assert.match(app, /row\.timedOut/);

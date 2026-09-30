@@ -25,6 +25,7 @@ import {
     markRoundFileCompleted,
     markRoundFileStarted,
     markRoundStarted,
+    orderFilesForScheduling,
     parseArgs,
     parseDuration,
     parseEnvFile,
@@ -41,6 +42,7 @@ import {
     reconcileActiveEntries,
     reconcileStaleRun,
     recordAttempt,
+    redactActiveReports,
     redactNativeReport,
     redactSensitiveText,
     refreshProviderRedactionSecrets,
@@ -50,6 +52,7 @@ import {
     resolveOutputPath,
     retainVitestReport,
     runTestFile,
+    schedulingDurationMs,
     summarizeState,
     superviseProcessDeadline,
     trustedAttempts,
@@ -689,6 +692,53 @@ test("plans breadth-first initial and retry rounds with monotonic counts", () =>
     );
 });
 
+test("schedules unknown files before known files, then shortest median duration first", () => {
+    const completed = (status, durationMs) => ({
+        status,
+        collectionStatus: "complete",
+        durationMs,
+    });
+    const state = {
+        tests: {
+            "unknown-b.test.js": { attempts: [] },
+            "unknown-a.test.js": {
+                attempts: [{
+                    status: "interrupted",
+                    collectionStatus: "interrupted",
+                    durationMs: 1,
+                }],
+            },
+            "short.test.js": {
+                attempts: [
+                    completed("passed", 1000),
+                    completed("passed", 3000),
+                    completed("failed", 2000),
+                ],
+            },
+            "long.test.js": {
+                attempts: [completed("timed_out", 120_000)],
+            },
+        },
+    };
+
+    assert.equal(schedulingDurationMs(state.tests["unknown-a.test.js"]), null);
+    assert.equal(schedulingDurationMs(state.tests["short.test.js"]), 2000);
+    assert.deepEqual(
+        orderFilesForScheduling(state, [
+            "long.test.js",
+            "unknown-b.test.js",
+            "short.test.js",
+            "unknown-a.test.js",
+        ]),
+        [
+            "unknown-a.test.js",
+            "unknown-b.test.js",
+            "short.test.js",
+            "long.test.js",
+        ],
+    );
+});
+
 test("plans additive retry targets across invocations without repeating the initial observation", () => {
     const failure = (number) => ({
         number,
@@ -1080,6 +1130,57 @@ test("redacts retained native Vitest reports recursively without changing their 
     assert.equal(JSON.parse(retained).numTotalTests, 1);
 });
 
+test("redacts provider secrets before retaining interrupted active reports", (t) => {
+    const dir = scratch(t);
+    const outputPath = path.join(dir, "campaign.json");
+    const reportPath = path.join(dir, "reports", "interrupted.json");
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, JSON.stringify({
+        numTotalTests: 1,
+        numPassedTests: 0,
+        numFailedTests: 1,
+        numPendingTests: 0,
+        testResults: [{
+            name: "suite",
+            assertionResults: [{
+                status: "failed",
+                title: "interrupted",
+                failureMessages: ["provider-literal-secret"],
+            }],
+        }],
+    }));
+    const run = {
+        runId: "run-1",
+        activeFiles: {
+            "interrupted.test.js": {
+                attemptNumber: 1,
+            },
+        },
+    };
+    const state = {
+        tests: {
+            "interrupted.test.js": {
+                attempts: [{
+                    number: 1,
+                    runId: "run-1",
+                    reportPath: "reports/interrupted.json",
+                }],
+            },
+        },
+    };
+
+    redactActiveReports(
+        state,
+        run,
+        outputPath,
+        {},
+        new Set(["provider-literal-secret"]),
+    );
+
+    assert.doesNotMatch(fs.readFileSync(reportPath, "utf8"), /provider-literal-secret/);
+    assert.equal(state.tests["interrupted.test.js"].attempts[0].evidenceError, undefined);
+});
+
 test("missing or malformed native reports fail evidence retention and are not kept", (t) => {
     const dir = scratch(t);
     const missing = path.join(dir, "missing.json");
@@ -1088,10 +1189,16 @@ test("missing or malformed native reports fail evidence retention and are not ke
     assert.match(missingResult.evidenceError, /not produced/);
 
     const malformed = path.join(dir, "malformed.json");
-    fs.writeFileSync(malformed, '{"testResults":[');
-    const malformedResult = retainVitestReport(malformed, {}, [], dir);
+    fs.writeFileSync(malformed, '{"testResults":[provider-literal-secret');
+    const malformedResult = retainVitestReport(
+        malformed,
+        {},
+        new Set(["provider-literal-secret"]),
+        dir,
+    );
     assert.equal(malformedResult.valid, false);
     assert.match(malformedResult.evidenceError, /could not be retained safely/);
+    assert.doesNotMatch(malformedResult.evidenceError, /provider-literal-secret/);
     assert.equal(fs.existsSync(malformed), false);
 
     const wrongShape = path.join(dir, "wrong-shape.json");

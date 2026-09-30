@@ -172,6 +172,14 @@ The default campaign manifest is:
 test-results/local-test-validation/campaign.json
 ```
 
+Use `--output` to keep independent campaign manifests when validating different
+commits:
+
+```bash
+npm run test:validation -- \
+  --output test-results/candidate/campaign.json
+```
+
 All generated reports stay under `test-results/`, which is already ignored by
 Git. Do not attach the raw campaign directory to an issue or PR without first
 reviewing it for private paths, hosts, test data, and failure output.
@@ -197,9 +205,11 @@ files without discarding earlier terminal results.
 Retries are separate rounds:
 
 1. every selected file receives its initial attempt,
-2. configured non-passing or interrupted results enter the first retry round,
-3. each retry round uses `--retry-workers`, and
-4. a file leaves later rounds as soon as it passes.
+2. interrupted or unfinished attempts are recovered in a distinct recovery
+   round before new observations are scheduled,
+3. configured non-passing terminal results enter the first retry round,
+4. each retry round uses `--retry-workers`, and
+5. a file leaves later rounds as soon as it passes.
 
 This prevents a few slow failures from occupying every initial worker with
 immediate retries. Vitest still controls concurrency inside each file; the
@@ -213,7 +223,7 @@ Useful controls:
 # Run or continue only named files.
 npm run test:validation -- \
   --file smoke-basic.test.js \
-  --file reliability-recovery.test.js
+  --file reliability-crash.test.js
 
 # Explicitly rerun current passes as well as non-passes.
 npm run test:validation -- --all
@@ -225,6 +235,15 @@ npm run test:validation -- --fresh
 `--file` changes the resolved selection and therefore identifies a different
 campaign. `--all` changes what executes in the current campaign, not the
 campaign identity.
+
+Each round uses deterministic shortest-work-first scheduling based only on
+evidence already recorded in that campaign. Files without a complete terminal
+attempt are unknown and run first, ordered by path. Known files follow in
+ascending order of their median complete-attempt duration, with path as the
+tie-breaker. A fresh campaign therefore begins with all files unknown; its
+initial observations provide scheduling history for retries, resumed runs, and
+later `--all` rounds. Scheduling history affects queue order only and never
+reuses another campaign's pass or failure evidence.
 
 ## Track progress and detect stalls
 
@@ -269,10 +288,10 @@ deadline guarantees that the attempt cannot run indefinitely.
 
 The dashboard presents the same status for a person: completion progress,
 active files and elapsed time, round totals, the decreasing unfinished-job
-count, current retry round, recent transitions, and the ages of both the last
-progress event and runner heartbeat. A stale heartbeat is displayed as a warning
-rather than as a test failure because the runner may have been terminated
-externally.
+count, current retry round, the most recent state transition, and the ages of
+the last progress event and runner heartbeat. A stale heartbeat is displayed as
+a warning rather than as a test failure because the runner may have been
+terminated externally.
 
 Agents and scripts consume the campaign JSON or a stable JSON status endpoint;
 they must not scrape console output or HTML. Reading status is side-effect-free
@@ -338,6 +357,15 @@ hidden.
 
 The comparison is evidence, not proof of causality. External services, load,
 and flaky tests can produce different observations for identical source.
+
+Write a machine-readable comparison record after both campaigns complete:
+
+```bash
+npm run test:validation:compare -- \
+  --baseline test-results/baseline/campaign.json \
+  --candidate test-results/candidate/campaign.json \
+  --output test-results/comparisons/baseline-to-candidate.json
+```
 
 ## Inspect status
 
