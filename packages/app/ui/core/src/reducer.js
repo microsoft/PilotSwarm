@@ -1154,7 +1154,7 @@ function baseReducer(state, action) {
                         : selection.ui.agentPickerUsage,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
-                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true }
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: nextDesktopPanes.sideTab === "workspace" ? "workspace" : "canvas" }
                         : {}),
                     layout: nextLayout,
                     sessionViews: nextSessionViews,
@@ -3511,6 +3511,13 @@ function baseReducer(state, action) {
         // the whole point of splitting the old enum in two.
         // Zen: sessions hidden, chat a narrow rail, canvas the workbench.
         // Turning it on opens the canvas; it means nothing without one.
+        // The side pane's tab: the session's canvas, or its Workspace.
+        case "ui/sidePaneTab": {
+            const tab = action.tab === "workspace" ? "workspace" : "canvas";
+            if (tab === (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas")) return state;
+            return { ...state, ui: { ...state.ui, sidePaneTab: tab } };
+        }
+
         case "ui/canvasZen": {
             const on = typeof action.on === "boolean" ? action.on : !state.ui.canvasZen;
             if (on === Boolean(state.ui.canvasZen)) return state;

@@ -128,16 +128,28 @@ test("a stored rightPaneMode migrates", () => {
     // "canvas" was a deliberate choice, so it is honored. "panes" was the
     // default value rather than a choice, and the new default is a clean
     // two-column workspace.
-    assert.deepEqual(normalizeStoredDesktopPanes(null, "canvas"), { canvasOpen: true, diagnosticsOpen: false, zen: false });
-    assert.deepEqual(normalizeStoredDesktopPanes(null, "panes"), { canvasOpen: false, diagnosticsOpen: false, zen: false });
-    assert.deepEqual(normalizeStoredDesktopPanes(null, null), { canvasOpen: false, diagnosticsOpen: false, zen: false });
+    assert.deepEqual(normalizeStoredDesktopPanes(null, "canvas"), { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "canvas" });
+    assert.deepEqual(normalizeStoredDesktopPanes(null, "panes"), { canvasOpen: false, diagnosticsOpen: false, zen: false, sideTab: "canvas" });
+    assert.deepEqual(normalizeStoredDesktopPanes(null, null), { canvasOpen: false, diagnosticsOpen: false, zen: false, sideTab: "canvas" });
 });
 
 test("a stored desktopPanes wins over the legacy enum", () => {
     assert.deepEqual(
         normalizeStoredDesktopPanes({ canvasOpen: false, diagnosticsOpen: true }, "canvas"),
-        { canvasOpen: false, diagnosticsOpen: true, zen: false },
+        { canvasOpen: false, diagnosticsOpen: true, zen: false, sideTab: "canvas" },
     );
+});
+
+test("the side pane's tab (canvas or Workspace) is a pane setting: stored, applied from the profile, and set", () => {
+    assert.equal(normalizeStoredDesktopPanes({ canvasOpen: true, sideTab: "workspace" }, null).sideTab, "workspace");
+    assert.equal(normalizeStoredDesktopPanes({ canvasOpen: true, sideTab: "junk" }, null).sideTab, "canvas");
+    assert.equal(createInitialState({ desktopPanes: { canvasOpen: true, sideTab: "workspace" } }).ui.sidePaneTab, "workspace");
+    const st = store();
+    assert.equal(st.getState().ui.sidePaneTab, "canvas");
+    st.dispatch({ type: "ui/sidePaneTab", tab: "workspace" });
+    assert.equal(st.getState().ui.sidePaneTab, "workspace");
+    st.dispatch({ type: "profileSettings/apply", settings: { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "canvas" } } });
+    assert.equal(st.getState().ui.sidePaneTab, "canvas", "another device's saved choice arrives");
 });
 
 test("junk in the stored value degrades to both closed, never to a crash", () => {

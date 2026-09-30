@@ -159,6 +159,74 @@ When two agents or two skills have the same name:
 
 The one that lost is listed under `skipped`, with the reason.
 
+## The Workspace tab: see and change the files yourself
+
+The portal's side pane has two tabs: **Canvas** and **Workspace**. Open the
+side pane with the toolbar's canvas button, then pick **Workspace**.
+
+```
+Workspace tab
+  folder chips   the session's folders: its working folder, "home" (yours), "shared", ...
+  tree           the folder's files, dotfiles too; .git is shown but locked
+  viewer         the file you picked
+```
+
+What you can do:
+
+| To | Do this |
+|---|---|
+| Find a file | Type part of its name in **Find files** above the tree. Arrow keys and Enter pick one; Escape clears |
+| Open a file | Click it. Code is colored by its type (a script with no extension, by its `#!` line). Images show as a picture |
+| Move in the tree | Arrow keys. Right opens a folder; Left closes it, or goes up to the folder. Home and End. Enter opens |
+| Find in a file | Ctrl+F / ⌘F in the editor, or the search button above the file (on a phone, the button). Enter goes to the next match, Shift+Enter to the one before |
+| Edit a file | Type, then **Save** (or Ctrl+S / ⌘S). A dot marks unsaved changes; they stay if you switch files or sessions, even while a save is on its way. Leaving the page with unsaved changes asks first. Only UTF-8 text can be edited (other files are download only); a file keeps its CRLF line ends and its byte-order mark |
+| Read markdown | **Edit** shows the text; **Preview** shows it rendered, read-only. In Preview, a link to a heading scrolls there, a link to another file opens it here, and a web link opens a new tab. Images show only after **Show images** |
+| Upload | The upload button, or drop files from your computer onto a folder in the tree |
+| Download | The download button on a file, or on a folder (as a `.zip`; scripts stay runnable, `.git` is left out) |
+| Move | Drag a file or folder onto another folder |
+| Rename | The rename button on a row (hover it), or F2. The name is selected, not its extension |
+| Delete | The delete button on a row (hover it), or the Delete key on a row (or on picked rows) |
+| New file, new folder | The buttons above the tree: inside the folder you picked, or next to the file you picked. A folder's row also has **New file here** |
+| Pick several | Ctrl/⌘-click, Shift-click, or **Select**. Then **Download**, **Delete**, or drag them |
+
+When the file changed after you opened it, for example because the agent
+edited it, **Save** asks what to do:
+
+| Choice | What happens |
+|---|---|
+| Compare | Both versions side by side; the arrows copy a change into yours; then save |
+| Keep mine | Your version replaces the one on disk |
+| Take theirs | The version on disk replaces yours |
+| Keep both | Both sets of changes are kept, when they are on different lines |
+
+Only the session's owner sees its folders here. Admins and people the session
+is shared with do not, because a session's folders include its owner's own
+folder. The pane checks for changes on disk every 10 seconds, and at once
+when an agent tool call that edits files finishes.
+
+A session's folders open when its first turn starts, so a new session shows
+them a few seconds after your first message. Before that the tab has nothing
+to show: no worker has opened them yet. While a turn runs and no folder is
+open, the tab checks every 2 seconds.
+
+The tab remembers, for each session, the folder, the folders you opened, the
+file, and Edit or Preview, in this browser. Coming back to the session shows
+them again. If the file is gone, you get the default view. Drag the line
+between the tree and the file to give either more room.
+
+The agent's next turn is told which files you changed here, so it reads them
+again before relying on what it saw.
+
+### Canvas apps that use your files
+
+An agent can draw a canvas app that reads and changes the session's files
+itself, without asking the agent each time: a git history browser, a notes
+editor. Ask for one in plain words, for example "draw a canvas app for this
+repo's git history; clicking a commit shows its diff". The app can reach only
+the paths and commands the agent wrote into it, and only for you, the
+session's owner. Commands (such as `git log`) run only on deployments that
+turn them on.
+
 ## Limits
 
 | What | Limit |
@@ -167,6 +235,7 @@ The one that lost is listed under `skipped`, with the reason.
 | Agents and skills loaded by path | 32 per session |
 | One agent or skill file | 64 KB |
 | Your instruction files, read from extra folder `home` | 32 KB |
+| A file you open, save, upload or download in the Workspace tab | 20 MB (the deployment can change it); a folder `.zip` also 20 MB of files |
 
 ## When something goes wrong
 

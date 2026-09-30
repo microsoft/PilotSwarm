@@ -10,7 +10,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST = path.resolve(__dirname, "../../dist");
+// PS_E2E_DIST: test a build kept apart from dist/, which a running local
+// portal may be serving.
+const DIST = process.env.PS_E2E_DIST ? path.resolve(process.env.PS_E2E_DIST) : path.resolve(__dirname, "../../dist");
 
 // These tests run against the BUILT bundle, so a stale dist means every one of
 // them passes against the previous build - silently, and with total conviction.

@@ -86,7 +86,7 @@ test('dashboard visits count, panel activity and polling do not, and history is 
     await page.waitForTimeout(4300);
     expect((await saved(page)).entries.length).toBe(before);
     await forward(page).click(); await expect(page.locator('.ps-moa-workspace')).toHaveAttribute('data-dashboard-id','review');
-    await page.getByRole('button',{name:'Workspace — sessions, chat and panels',exact:true}).click();
+    await page.getByRole('button',{name:'Sessions — session list, chat and panels',exact:true}).click();
     for (let i=0; i<12; i++) await select(page, 1 + i%3);
     expect((await saved(page)).entries).toHaveLength(10);
 });
@@ -428,7 +428,7 @@ for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${
     await expect(page.locator('.portal-header')).not.toBeVisible();
     await page.getByRole('button',{name:'Exit zen',exact:true}).click();
     await check('leaving MoA zen');
-    await page.getByRole('button',{name:'Workspace — sessions, chat and panels',exact:true}).click();
+    await page.getByRole('button',{name:'Sessions — session list, chat and panels',exact:true}).click();
     await check('returning to workspace');
     expect(f.errors).toEqual([]);
 });

@@ -1,4 +1,5 @@
 # Keeps the app plugin and adds the sample's plugin (Dockerfile.portal copies it).
+# Strategic merge: env entries and volumes merge by name into the base Deployment.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,3 +12,27 @@ spec:
           env:
             - name: PLUGIN_DIRS
               value: /app/packages/app/tui/plugins,/app/packages/sdk/examples/repo-workspaces/plugin
+            # The side pane's Workspace tab: the portal reads and writes the
+            # session folders at the same /ws paths the workers use, as the
+            # same user (uid 1000, the image's `node`). The roots are the
+            # workers' PS_WORKSPACE_ROOTS, PS_PLAIN_ROOTS and PS_HOME_ROOT.
+            - name: PORTAL_WORKSPACE_ROOTS
+              value: a=/ws/a,shared=/ws/shared,home=/ws/home
+          # A file call that carries a whole file (up to 20 MB) holds it
+          # several times over while it runs; two run at once
+          # (packages/sdk/src/workspace-files.ts), next to everything else
+          # the portal does.
+          resources:
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: workspaces
+              mountPath: /ws
+              mountPropagation: HostToContainer
+      volumes:
+        # The node attacher's mounts (worker component, attacher.yaml). It
+        # mounts every root at start on every node, this pod's node included.
+        - name: workspaces
+          hostPath:
+            path: /mnt/ps
+            type: DirectoryOrCreate

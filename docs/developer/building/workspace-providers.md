@@ -225,7 +225,10 @@ Rules to know:
   that every worker mounts at the same path.
 - **What the portal shows.** PilotSwarm records the defaults a turn used as
   a `session.workspace_defaults` event, when they change, and the portal
-  shows them.
+  shows them. It records the record's folders a turn opened, with their
+  paths, as `session.workspace_opened`. The portal's Workspace tab serves
+  only folders a worker opened, so your `ensureAttached` answer also
+  decides what the session's owner can see there.
 
 Defaults are never saved in the record, and they do not count against the
 four extra folders a session may set. A default is optional unless you say
@@ -263,6 +266,70 @@ identity provider) avoids a new empty folder when an email changes.
 
 Pick the level that fits who uses the deployment. Level 1 guards against
 mistakes, not against a person who wants to read another person's files.
+
+## The portal's Workspace tab
+
+The portal's Workspace tab lets a session's owner browse, edit, upload and
+download the session's files (the [user guide](../../user-guide/workspaces.md)
+shows it). The portal does the file calls itself, on its own mount of the
+roots; it never asks a worker. So a deployment that wants the tab:
+
+```
+1. Mount the roots in the portal pod: the same export, at the same path and
+   as the same uid as on the workers (so files it writes look like the agent's)
+2. Tell the portal where they are, by root name:
+     PORTAL_WORKSPACE_ROOTS=a=/ws/a,shared=/ws/shared,home=/ws/home
+3. Optional: the file limit, in MB (default 20; also the limit of a folder .zip):
+     PORTAL_WORKSPACE_MAX_FILE_MB=20
+4. Optional: serve roots that have no .pilotswarm-export marker (default: refuse them):
+     PORTAL_WORKSPACE_REQUIRE_MARKER=false
+```
+
+Without `PORTAL_WORKSPACE_ROOTS` the portal hides the tab. A root the portal
+does not list is shown but cannot be opened.
+
+The Azure GitOps deployment does steps 1 and 2 when `WORKSPACES_ENABLED=true`:
+the portal pod mounts the node attacher's `/mnt/ps` at `/ws`, like the
+workers (`deploy/providers/azure/gitops/portal/components/workspaces`). The
+attacher mounts every root at start on every node, the portal's included.
+
+The portal applies the rules, not the mount (the mount can reach every
+folder):
+
+- only the session's owner: the `session:files` access class, enforced even
+  when `AUTHZ_ENFORCE_OWNERSHIP` is off, with no pass for admins;
+- only folders a worker opened for the session: a folder of its record after
+  a turn or a set opened it (`session.workspace_opened`, or a path in
+  `session.workspace_changed`), and the default folders its last turn used.
+  A record alone is not enough: nothing checked it yet. Every path stays
+  inside its folder, links included;
+- a root must hold its `.pilotswarm-export` marker: an unmounted share is an
+  empty local folder, and writes would land on the node's own disk;
+- `.git` and a root's `.pilotswarm-export` are read-only;
+- every file call runs in a child process with a deadline (30 s), so a hung
+  mount cannot hang the portal.
+
+### Canvas apps on the session's files (canvas-ws)
+
+A canvas app can make the same file calls, and run commands, through the
+portal (`canvasWorkspace` in the Web API). The app's manifest declares what
+it may touch; the portal reads that declaration from the drawn document and
+checks every call against it (`packages/sdk/src/canvas-workspace.ts`).
+Commands are off unless the deployment says where they run:
+
+```
+PORTAL_CANVAS_COMMANDS_RUNNER=local     run them as a child process of the portal
+PORTAL_CANVAS_COMMANDS_ALLOW=git        the programs a command may run (default: git)
+```
+
+`local` is for development: the program runs as the portal's own user, with
+a clean environment and no shell. For git it turns off hooks, fsmonitor,
+pagers, editors, credential helpers and the network, stops at the session
+folder when it looks for a repository, and refuses a repository whose own
+settings start programs (a diff textconv, a filter, an alias with `!`). The
+portal's user still reaches the portal's own files, so a shared deployment
+needs a sandboxed runner (a pod with the worker image, the roots, and no
+secrets) before it turns commands on.
 
 ## Testing your provider
 

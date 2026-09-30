@@ -235,12 +235,15 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
             // Zen: chat as a narrow rail, canvas as the workbench. Only
             // meaningful with the canvas open.
             zen: candidate.zen === true && candidate.canvasOpen === true,
+            // The side pane's tab: the session's canvas, or its Workspace.
+            sideTab: candidate.sideTab === "workspace" ? "workspace" : "canvas",
         };
     }
     return {
         canvasOpen: legacyRightPaneMode === "canvas",
         diagnosticsOpen: false,
         zen: false,
+        sideTab: "canvas",
     };
 }
 
@@ -398,6 +401,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             diagnosticsOpen: desktopPanes.diagnosticsOpen,
             // Chat-rail + canvas-workbench mode. Persisted with the columns.
             canvasZen: desktopPanes.zen,
+            sidePaneTab: desktopPanes.sideTab,
             // Canvas filling the workspace. Deliberately NOT persisted: it is
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.

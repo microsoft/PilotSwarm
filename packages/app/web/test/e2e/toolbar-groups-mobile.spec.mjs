@@ -32,9 +32,9 @@ test("no cluster labels, no admin console, no workspace/expand buttons", async (
     expect(t.labels).toEqual([]);
     expect(t.text).not.toMatch(/Panels|Mode/);
     expect(t.names.some((n) => /^Admin console$|^Settings$|^Close (admin console|settings)$/i.test(n)), "admin stays off the phone").toBe(false);
-    expect(t.names.some((n) => /^Workspace/i.test(n) || /Expand the canvas|Restore the canvas/i.test(n)), "desktop-only mode/expand buttons").toBe(false);
+    expect(t.names.some((n) => /^Sessions — session list/i.test(n) || /Expand the canvas|Restore the canvas/i.test(n)), "desktop-only mode/expand buttons").toBe(false);
     // What the phone DOES keep.
     expect(t.names.some((n) => /New session/i.test(n))).toBe(true);
     expect(t.names.some((n) => /Budget/i.test(n)), "budget reflows to a phone and stays").toBe(true);
-    expect(t.names.some((n) => /^Main — /i.test(n)), "the Main view cycle").toBe(true);
+    expect(t.names.some((n) => /^Sessions — (list|chat)/i.test(n)), "the Sessions view cycle").toBe(true);
 });

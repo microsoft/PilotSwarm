@@ -2,8 +2,9 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 # Session workspaces on the portal side. The portal lists and starts only
-# agents it loads itself, so it loads the sample's repo-coder agent too. The
-# deploy tool adds this component to the staged portal overlay when
+# agents it loads itself, so it loads the sample's repo-coder agent too. It
+# also serves the side pane's Workspace tab from the node's workspace mounts.
+# The deploy tool adds this component to the staged portal overlay when
 # WORKSPACES_ENABLED=true (deploy/scripts/lib/workspaces.mjs).
 
 patches:

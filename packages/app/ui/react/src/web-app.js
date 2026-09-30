@@ -4,6 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { AdminWebhooksSection } from "./webhook-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
 // and react-dom is a dependency wherever this file loads, so it is safe in the
@@ -30,6 +31,7 @@ import {
     getPromptInputRows,
     getTheme,
     isThemeLight,
+    themeCodeColors,
     normalizeStoredCanvasPrefs,
     parseTerminalMarkupRuns,
     parseMarkdownLines,
@@ -209,6 +211,14 @@ export function getPortalLinkOrigins() {
     return portalLinkOrigins;
 }
 
+// The side pane's Workspace tab shows only when this portal serves the
+// workspace roots (PORTAL_WORKSPACE_ROOTS). The host app sets it from the
+// portal config before the first render; unset, the tab shows.
+let portalWorkspaceFiles = true;
+export function setPortalWorkspaceFiles(on) {
+    portalWorkspaceFiles = on !== false;
+}
+
 function copySessionLinkText(url) {
     const text = formatPortalLinksForCopy(buildPortalLinks(url, portalLinkOrigins));
     if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
@@ -372,6 +382,7 @@ function normalizeProfileSettings(settings) {
             canvasOpen: candidate.desktopPanes.canvasOpen === true,
             diagnosticsOpen: candidate.desktopPanes.diagnosticsOpen === true,
             zen: candidate.desktopPanes.zen === true,
+            sideTab: candidate.desktopPanes.sideTab === "workspace" ? "workspace" : "canvas",
         };
     }
     if (hasOwn(candidate, "canvasPrefs")) {
@@ -498,7 +509,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             }
             : {
                 rightPaneMode: state.canvasOpen ? "canvas" : "panes",
-                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true },
+                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true, sideTab: state.sidePaneTab === "workspace" ? "workspace" : "canvas" },
             }),
         canvasPrefs: state.canvasPrefs,
         // Written from BOTH device classes: a phone carries the desktop's
@@ -554,6 +565,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
                     canvasOpen: state?.ui?.canvasOpen === true,
                     diagnosticsOpen: state?.ui?.diagnosticsOpen === true,
                     zen: state?.ui?.canvasZen === true,
+                    sideTab: state?.ui?.sidePaneTab === "workspace" ? "workspace" : "canvas",
                 },
             }),
         canvasPrefs: state?.canvas?.prefs,
@@ -1031,6 +1043,22 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-success", theme.tui.green);
     root.style.setProperty("--ps-warning", theme.tui.yellow);
     root.style.setProperty("--ps-danger", theme.tui.red);
+    // Text colours for code and files (the Workspace tab): the theme's own,
+    // each one readable on the panel (themeCodeColors checks 4.5:1).
+    const code = themeCodeColors(theme);
+    root.style.setProperty("--ps-code-keyword", code.keyword);
+    root.style.setProperty("--ps-code-string", code.string);
+    root.style.setProperty("--ps-code-number", code.number);
+    root.style.setProperty("--ps-code-function", code.function);
+    root.style.setProperty("--ps-code-type", code.type);
+    root.style.setProperty("--ps-code-property", code.property);
+    root.style.setProperty("--ps-code-variable", code.variable);
+    root.style.setProperty("--ps-code-comment", code.comment);
+    root.style.setProperty("--ps-code-heading", code.heading);
+    root.style.setProperty("--ps-code-link", code.link);
+    root.style.setProperty("--ps-code-invalid", code.invalid);
+    root.style.setProperty("--ps-code-inserted", code.inserted);
+    root.style.setProperty("--ps-code-deleted", code.deleted);
     // Expose the theme id so a theme can carry CHROME, not just colours. Win95
     // is defined by its bevels — raised faces, inset wells, square corners —
     // and none of that is expressible as a palette entry.
@@ -3148,7 +3176,13 @@ function useElementBox(ref) {
     return box;
 }
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false) {
+// A canvas link opens in a new tab, never in the canvas frame: a page loaded
+// there would stand in the canvas's place, and the frame's bridges (canvas-ws,
+// canvas-kv, actions) answer by frame. Runs on window, after the page's own
+// click handlers, and leaves "#" links, targets and downloads alone.
+const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href],area[href]');if(!a||e.defaultPrevented||a.hasAttribute('download'))return;var h=a.getAttribute('href')||'';if(!h||h.charAt(0)==='#'||/^javascript:/i.test(h))return;var t=a.getAttribute('target');if(t&&t!=='_self')return;e.preventDefault();try{window.open(new URL(h,document.baseURI).href,'_blank','noopener')}catch(x){}});</script>`;
+
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -3161,11 +3195,13 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             // would otherwise make the iframe offer a download instead of
             // rendering, and a missing charset would mojibake UTF-8 content.
             const bytes = await response.arrayBuffer();
-            // Only MoA canvases opt into panel navigation. Ordinary canvases
-            // retain native Tab behavior and their exact document bytes.
-            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
+            // Only MoA canvases opt into panel navigation; ordinary canvases
+            // retain native Tab behavior. A canvas gets the link guard; an
+            // artifact preview keeps its exact document bytes.
+            const bridge = (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
+                + (linkGuard ? CANVAS_LINK_GUARD : "");
             let parts = [bytes];
-            if (panelKeys) {
+            if (bridge) {
                 const html = new TextDecoder().decode(bytes);
                 // Keep the doctype first so panel navigation cannot change
                 // the canvas from standards mode into quirks mode.
@@ -3766,6 +3802,15 @@ function fetchArtifactObjectUrl(controller, sessionId, filename) {
             const typedBlob = imageMime && !IMAGE_CONTENT_TYPE_RE.test(blob.type)
                 ? new Blob([blob], { type: imageMime })
                 : blob;
+            // An SVG never gets a same-origin blob: address: opened in a new
+            // tab from it, its script would run as the portal. A data:
+            // document has no origin.
+            if (/^image\/svg\+xml\b/i.test(typedBlob.type)) {
+                const bytes = new Uint8Array(await typedBlob.arrayBuffer());
+                let text = "";
+                for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                return `data:image/svg+xml;base64,${btoa(text)}`;
+            }
             return URL.createObjectURL(typedBlob);
         })
         .catch((error) => {
@@ -7913,6 +7958,12 @@ function RestoreGlyph() {
  * loads hidden-but-painted behind the live frame and is promoted on load, so
  * a live redraw is a composite swap of something already drawn.
  */
+// canvas-ws: the calls a page may make from the staging frame (reads), the
+// ones that change files, and the fields a call may carry to the server.
+const CANVAS_WS_READS = new Set(["info", "list", "stat", "read"]);
+const CANVAS_WS_CHANGES = new Set(["write", "mkdir", "move", "delete", "run"]);
+const CANVAS_WS_FIELDS = ["path", "toPath", "contentBase64", "ifMatch", "recursive", "createParents", "command", "params"];
+
 function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
     const panelKeyRef = React.useRef(onPanelKey); panelKeyRef.current = onPanelKey;
     const panelKeys = Boolean(onPanelKey);
@@ -7920,6 +7971,11 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     const [staging, setStaging] = React.useState(null); // { url, rev }
     const [loadError, setLoadError] = React.useState(null); // { rev }
     const [retryTick, setRetryTick] = React.useState(0);
+    // The live frame loaded another document: the page followed a link, so
+    // what is in the frame now is not the drawn canvas. It gets nothing from
+    // the bridges below until the canvas is loaded again.
+    const [leftPage, setLeftPage] = React.useState(false);
+    React.useEffect(() => { setLeftPage(false); }, [live?.url]);
     // Blob URLs tracked in a ref so cleanup can revoke directly — setState
     // updaters are neither a reliable post-unmount hook nor a pure place for
     // side effects (StrictMode double-invokes them).
@@ -7930,6 +7986,13 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // The staging frame's element, so the KV bridge can answer a page's
     // `ready` posted at script time (before promote). See the bridge below.
     const stagingIframeElRef = React.useRef(null);
+    // canvas-ws: the page windows that asked to watch, and a download in flight.
+    const canvasWatchersRef = React.useRef(new WeakSet());
+    const canvasDownloadRef = React.useRef(false);
+    // canvas-ws: why the server refused this app's manifest, shown until a redraw.
+    // A page shows only its own guess; the owner needs the real reason.
+    const [brokenManifest, setBrokenManifest] = React.useState(null);
+    React.useEffect(() => { setBrokenManifest(null); }, [latestRev]);
     const hostBox = useElementBox(hostRef);
     // The frame geometry each revision LOADED at. A sandboxed page cannot be
     // poked after the fact (no reaching into an opaque origin), and pages
@@ -7958,14 +8021,17 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             const frameEl = liveIframeElRef.current;
             const payload = event.data;
             if (!payload || typeof payload !== "object" || !event.source) return;
-            const fromLive = Boolean(frameEl && event.source === frameEl.contentWindow);
+            // Only a frame loaded for THIS session: across a session switch the
+            // old page is still there for a moment, and its calls are not the
+            // new session's.
+            const fromLive = Boolean(frameEl && event.source === frameEl.contentWindow && frameEl.dataset.session === sessionId && !frameEl.dataset.leftPage);
             // A document runs its scripts in the STAGING frame first and is
             // promoted on load — so a page that calls CanvasKV() at script
             // time posts `ready` before this frame is live. KV READS are
             // safe to answer from the staging frame of THIS canvas (it holds
             // the revision about to go live; the reply goes back to the
             // window that asked). Writes and actions stay live-frame only.
-            const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow);
+            const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId);
             if (!fromLive && !fromStaging) return;
             if (payload.type === "moa-panel-key") {
                 if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
@@ -8029,11 +8095,105 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                     return;
                 }
                 fail(`unknown canvas-kv op ${op}`, "INVALID_REQUEST");
+                return;
+            }
+            // The workspace bridge (canvas-ws): the session's folders, and the
+            // commands the app's manifest declared. The SERVER checks every
+            // call against that declaration, read from the drawn document;
+            // this bridge adds only which canvas asked. Reads may come from
+            // the staging frame; changes, commands and downloads only from
+            // the live one.
+            if (payload.type === "canvas-ws") {
+                const id = payload.id;
+                const transport = controller.transport;
+                const source = event.source;
+                const post = (message) => {
+                    try { source.postMessage(message, "*"); } catch { /* frame mid-teardown */ }
+                };
+                const fail = (error, code = "ERROR") => {
+                    const message = String(error?.message || error || "failed");
+                    if (error?.code === "CANVAS_WS_UNDECLARED" && /manifest is broken/i.test(message)) {
+                        setBrokenManifest(message.replace(/^.*?manifest is broken[^:]*:\s*/i, ""));
+                    }
+                    post({ type: "canvas-ws-result", id, ok: false, error: message, code: error?.code || code });
+                };
+                if (typeof transport?.canvasWorkspace !== "function") { fail("workspace access is not available on this deployment", "UNAVAILABLE"); return; }
+                const op = String(payload.op || "");
+                if (!fromLive && !CANVAS_WS_READS.has(op)) { fail("the canvas is still loading; retry in a moment", "NOT_READY"); return; }
+                if (op === "download") {
+                    // Only right after a click (or key) IN the canvas: a page must
+                    // not save files on the person's computer by itself. A click
+                    // anywhere counts as recent activity for a few seconds, so the
+                    // canvas frame must also be the element that has focus, which
+                    // it is after a click inside it and not after one elsewhere.
+                    if (!navigator.userActivation?.isActive || document.activeElement !== frameEl) { fail("a download needs a click in the canvas", "NOT_ALLOWED"); return; }
+                    if (canvasDownloadRef.current) { fail("a download is already running", "BUSY"); return; }
+                    canvasDownloadRef.current = true;
+                    const target = String(payload.path || "");
+                    const name = target.split("/").filter(Boolean).pop() || "download";
+                    transport.canvasWorkspace(sessionId, slot, { op: "read", path: target })
+                        .then((read) => ({ read, filename: name, type: "application/octet-stream" }))
+                        .catch((error) => {
+                            if (error?.code !== "WORKSPACE_FILES_NOT_A_FILE") throw error;
+                            return transport.canvasWorkspace(sessionId, slot, { op: "zip", path: target })
+                                .then((read) => ({ read, filename: `${name}.zip`, type: "application/zip" }));
+                        })
+                        .then(({ read, filename, type }) => {
+                            downloadBase64(read.contentBase64, filename, type);
+                            post({ type: "canvas-ws-result", id, ok: true, result: { filename, size: read.size ?? null } });
+                        })
+                        .catch(fail)
+                        .finally(() => { canvasDownloadRef.current = false; });
+                    return;
+                }
+                const call = { op };
+                for (const field of CANVAS_WS_FIELDS) if (payload[field] !== undefined) call[field] = payload[field];
+                transport.canvasWorkspace(sessionId, slot, call)
+                    .then((result) => {
+                        if (op === "watch") canvasWatchersRef.current.add(source);
+                        if (CANVAS_WS_CHANGES.has(op)) announceWorkspaceChange(sessionId, "canvas");
+                        post({ type: "canvas-ws-result", id, ok: true, result });
+                    })
+                    .catch(fail);
             }
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
     }, [controller, sessionId, slot]);
+
+    // canvas-ws watch: tell a page that asked when the session's files may
+    // have changed — an agent tool call finished, or someone changed files
+    // through the portal. The page reads again what it shows.
+    const selectToolActivity = React.useCallback((state) => workspaceToolActivity(state, sessionId), [sessionId]);
+    const toolActivity = useControllerSelector(controller, selectToolActivity);
+    const finishedToolCalls = Number(String(toolActivity || "0").split("\u0001")[0]) || 0;
+    const tellWatchers = React.useCallback((reason) => {
+        if (liveIframeElRef.current?.dataset.leftPage) return;
+        const frameWindow = liveIframeElRef.current?.contentWindow;
+        if (!frameWindow || !canvasWatchersRef.current.has(frameWindow)) return;
+        try { frameWindow.postMessage({ type: "canvas-ws-change", reason }, "*"); } catch { /* frame mid-teardown */ }
+    }, []);
+    const lastToolCalls = React.useRef(finishedToolCalls);
+    React.useEffect(() => {
+        if (finishedToolCalls === lastToolCalls.current) return undefined;
+        lastToolCalls.current = finishedToolCalls;
+        const timer = setTimeout(() => tellWatchers("agent"), 400);
+        return () => clearTimeout(timer);
+    }, [finishedToolCalls, tellWatchers]);
+    React.useEffect(() => {
+        let timer = null;
+        const onChange = (event) => {
+            if (event.detail?.sessionId !== sessionId) return;
+            const reason = event.detail?.source === "pane" ? "owner" : "canvas";
+            clearTimeout(timer);
+            timer = setTimeout(() => tellWatchers(reason), 150);
+        };
+        window.addEventListener(WORKSPACE_CHANGED_EVENT, onChange);
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener(WORKSPACE_CHANGED_EVENT, onChange);
+        };
+    }, [sessionId, tellWatchers]);
 
     // Live KV changes for this slot → the page, as `canvas-kv-change`. A
     // pointer-only ping (value too big for the notify) fetches that one key.
@@ -8041,6 +8201,8 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         if (!controller || !sessionId || typeof controller.subscribeCanvasKv !== "function") return undefined;
         return controller.subscribeCanvasKv(sessionId, (change) => {
             if (!change || Number(change.slot) !== Number(slot)) return;
+            // A page the canvas navigated to is not the canvas: no values.
+            if (liveIframeElRef.current?.dataset.leftPage) return;
             const frameWindow = liveIframeElRef.current?.contentWindow;
             if (!frameWindow) return;
             const deliver = (entry) => {
@@ -8058,7 +8220,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         if (!controller || !sessionId || !latestRev) return undefined;
         let cancelled = false;
         let retryTimer = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`, panelKeys)
+        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`, panelKeys, true)
             .then((url) => {
                 if (cancelled) { URL.revokeObjectURL(url); return; }
                 // A staging revision that never loaded is superseded here —
@@ -8068,7 +8230,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 }
                 urlsRef.current.staging = url;
                 setLoadError(null);
-                setStaging({ url, rev: latestRev });
+                setStaging({ url, rev: latestRev, sessionId });
             })
             .catch(() => {
                 if (cancelled) return;
@@ -8147,7 +8309,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // one idempotent applyData(). Posting into a cross-origin frame is
     // allowed; a page with no listener ignores it.
     React.useEffect(() => {
-        if (!live || !dataRev || dataPayload === null) return;
+        if (!live || !dataRev || dataPayload === null || liveIframeElRef.current?.dataset.leftPage) return;
         try {
             liveIframeElRef.current?.contentWindow?.postMessage(
                 { type: "canvas-data", data: dataPayload, dataRev }, "*",
@@ -8237,6 +8399,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 ? ((el) => { liveIframeElRef.current = el; })
                 : ((el) => { stagingIframeElRef.current = el; }),
             className: `ps-html-preview-frame${frame === live ? "" : " is-staging"}`,
+            "data-session": frame.sessionId || "",
             style: zoomStyle,
             src: frame.url,
             title: "Session canvas",
@@ -8248,8 +8411,24 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             // autoplay is what lets a game's sound effects actually play.
             allow: "autoplay *",
             referrerPolicy: "no-referrer",
-            onLoad: frame === staging ? () => promote(frame) : undefined,
+            onLoad: frame === staging
+                ? () => promote(frame)
+                : (event) => { event.currentTarget.dataset.leftPage = "1"; setLeftPage(true); },
         })),
+        leftPage && !loadError
+            ? React.createElement("div", { className: "ps-canvas-load-error", role: "status" },
+                React.createElement("span", null, "The canvas opened another page here, so that page gets nothing from this session."),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-artifact-pane-btn",
+                    onClick: () => { autoRetryRef.current = { rev: 0, used: false }; setLeftPage(false); setRetryTick((t) => t + 1); },
+                }, "Show the canvas again"))
+            : null,
+        brokenManifest && !loadError
+            ? React.createElement("div", { className: "ps-canvas-load-error", role: "status" },
+                React.createElement("span", null, `This canvas app cannot use the session's files: its manifest is broken (${brokenManifest}). Ask the agent to draw it again.`),
+                React.createElement("button", { type: "button", className: "ps-artifact-pane-btn", onClick: () => setBrokenManifest(null) }, "Dismiss"))
+            : null,
         loadError
             ? React.createElement("div", { className: "ps-canvas-load-error" },
                 React.createElement("span", null,
@@ -8284,8 +8463,38 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
 // invalidates it, rather than racing it.
 const CANVAS_SNAPSHOT_SETTLE_MS = 160;
 
+// The side pane shows the session's canvas or its Workspace (its folders and
+// files). The choice is a pane setting like the others: it roams with the
+// profile (desktopPanes.sideTab), saved from a desktop.
+function useSidePaneMode(controller) {
+    const mode = useControllerSelector(controller, (state) => (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas"));
+    const choose = React.useCallback((next) => controller?.dispatch({ type: "ui/sidePaneTab", tab: next }), [controller]);
+    return [mode, choose];
+}
+
+function SidePaneTabs({ mode, onChange, compact = false }) {
+    // No Workspace tab here: the canvas pane as it was, a glyph for a title.
+    if (!portalWorkspaceFiles) {
+        return compact ? null : React.createElement("span", { className: "ps-artifact-pane-name ps-canvas-pane-glyph", title: "Canvas" }, React.createElement(CanvasGlyph));
+    }
+    const tab = (value, label, glyph, title) => React.createElement("button", {
+        type: "button",
+        role: "tab",
+        className: `ps-side-pane-tab${mode === value ? " is-on" : ""}`,
+        "aria-selected": mode === value,
+        title,
+        onClick: () => onChange(value),
+    }, React.createElement(glyph), compact ? null : React.createElement("span", null, label));
+    return React.createElement("span", { className: "ps-side-pane-tabs", role: "tablist", "aria-label": "Side pane" },
+        tab("canvas", "Canvas", CanvasGlyph, "The session's canvas"),
+        tab("workspace", "Workspace", FolderGlyph, "The session's folders and files"));
+}
+
 function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote = false, maximized = false, onToggleMaximized = null }) {
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
+    const [paneMode, setPaneMode] = useSidePaneMode(controller);
+    const workspaceTab = portalWorkspaceFiles;
+    const onCanvas = !workspaceTab || paneMode === "canvas";
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
     const setZoom = React.useCallback((next) => {
         controller.dispatch({ type: "files/htmlZoom", zoom: next });
@@ -8349,14 +8558,18 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // maximized. That second half is not cosmetic: maximized covers the whole
     // viewport including the toolbar, so if a cleared canvas (sizeBytes 0)
     // dropped the strip it would take the only way back with it.
-    const showRevStrip = mobile && (view.exists || maximized);
+    //
+    // With a Workspace tab the strip always renders: it holds the Canvas |
+    // Workspace switch, the only way to reach the Workspace on a phone.
+    const showRevStrip = mobile && (workspaceTab || view.exists || maximized);
     const header = mobile
         ? (showRevStrip
             ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
-                React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
-                    view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : ""),
-                React.createElement(CanvasSlotControls, { controller, view, compact: true }),
-                view.exists
+                React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
+                React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
+                    onCanvas ? (view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
+                onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+                onCanvas && view.exists
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-canvas-max-btn",
@@ -8376,11 +8589,12 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     : null)
             : null)
         : (maximized ? (toolbarSlot ? createPortal(React.createElement(React.Fragment, null,
-            view.exists
+            React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
+            onCanvas && view.exists
                 ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                 : null,
-            React.createElement(CanvasSlotControls, { controller, view, compact: true }),
-            view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+            onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+            onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
             React.createElement("button", {
                 type: "button",
                 className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
@@ -8399,21 +8613,20 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 type: "button",
                 className: "ps-artifact-pane-btn ps-toolbar-canvas-restore",
                 onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: false }),
-                title: "Back to the workspace",
+                title: "Back to the sessions view",
                 "aria-label": "Restore canvas",
             }, React.createElement(RestoreGlyph))), toolbarSlot) : null)
         : React.createElement("header", { className: "ps-artifact-pane-bar" },
             React.createElement("span", { className: "ps-artifact-pane-heading" },
-                React.createElement("span", { className: "ps-artifact-pane-name ps-canvas-pane-glyph", title: view.note || "Canvas" },
-                    React.createElement(CanvasGlyph)),
-                view.exists
+                React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode }),
+                onCanvas && view.exists
                     ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
                         `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                     : null,
-                React.createElement(CanvasSlotControls, { controller, view })),
+                onCanvas ? React.createElement(CanvasSlotControls, { controller, view }) : null),
             React.createElement("span", { className: "ps-artifact-pane-actions" },
-                view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
-                view.exists
+                onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+                onCanvas && view.exists
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-artifact-pane-btn",
@@ -8453,25 +8666,34 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         "aria-label": "Session canvas",
     },
     header,
-    React.createElement("div", { className: "ps-artifact-pane-body" },
-        view.exists
-            ? React.createElement(CanvasFrame, {
-                key: `slot:${view.slot}`,
-                controller,
-                sessionId: view.sessionId,
-                slot: view.slot,
-                latestRev: view.latestRev,
-                zoom,
-                visible,
-                focusOnPromote,
-                dataRev: view.latestDataRev,
-                dataPayload: view.dataPayload,
-                dataPatch: view.dataPatch,
-            })
-            : React.createElement("div", { className: "ps-canvas-blank" },
-                React.createElement("p", { className: "ps-canvas-blank-title" }, "Nothing on the canvas yet."),
-                React.createElement("p", null,
-                    "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))),
+    // Both views stay mounted, so switching keeps the canvas page's state
+    // and the Workspace's open file. The one not shown is parked off to the
+    // side (not hidden: a canvas frame must never load hidden, see the iOS
+    // note on .ps-canvas-pane .ps-html-preview-frame).
+    React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
+        React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
+            view.exists
+                ? React.createElement(CanvasFrame, {
+                    key: `slot:${view.slot}`,
+                    controller,
+                    sessionId: view.sessionId,
+                    slot: view.slot,
+                    latestRev: view.latestRev,
+                    zoom,
+                    visible: visible && onCanvas,
+                    focusOnPromote,
+                    dataRev: view.latestDataRev,
+                    dataPayload: view.dataPayload,
+                    dataPatch: view.dataPatch,
+                })
+                : React.createElement("div", { className: "ps-canvas-blank" },
+                    React.createElement("p", { className: "ps-canvas-blank-title" }, "Nothing on the canvas yet."),
+                    React.createElement("p", null,
+                        "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))),
+        workspaceTab
+            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? " is-parked" : ""}`, inert: onCanvas },
+                React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas }))
+            : null),
         shareOpen && view.exists
             ? React.createElement(CanvasShareDialog, {
                 controller,
@@ -9991,7 +10213,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         ...(mobile ? [] : [{
             key: "workspace",
             icon: React.createElement(MainLayoutGlyph),
-            label: "Workspace — sessions, chat and panels",
+            label: "Sessions — session list, chat and panels",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {}),
             active: !moa?.active && !adminVisible && !budgetOpen,
         }]),
@@ -10045,9 +10267,9 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         // layout/panes mark) — a shape-shifting icon reads as three different
         // buttons; only the tooltip names what the next tap gives you.
         const mainLabels = {
-            split: "Main — sessions and chat (tap for chat only)",
-            chat: "Main — chat only (tap for sessions only)",
-            sessions: "Main — sessions only (tap for both)",
+            split: "Sessions — list and chat (tap for chat only)",
+            chat: "Sessions — chat only (tap for list only)",
+            sessions: "Sessions — list only (tap for both)",
         };
         // Two tabs, not three: the row was out of space, and Inspector +
         // Activity are one idea on the desktop already (Diagnostics, the
@@ -13399,8 +13621,12 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             // session open with its own (default) columns.
             if (event.defaultPrevented) return;
             const target = event.target;
+            // A pane that answers its own keys (the Workspace tab's tree, say)
+            // counts as typing: a letter there must not complete, cancel or
+            // delete the session.
             const editable = target instanceof HTMLElement
-                && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable);
+                && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable
+                    || Boolean(target.closest("[data-own-keys]")));
             const modal = controller.getState().ui.modal;
             const visibleInspectorTabs = getVisibleInspectorTabs(controller);
             const currentInspectorTab = controller.getState().ui.inspectorTab;
@@ -13745,6 +13971,10 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 return;
             }
             if (!mobile && event.key === "Escape") {
+                // In full screen or zen, Escape steps down a level (their own
+                // handler); taking it here left the person stuck there.
+                const ui = controller.getState().ui;
+                if (ui.canvasOpen && (ui.canvasZen || ui.canvasMaximized)) return;
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.FOCUS_SESSIONS).catch(() => {});
             }
@@ -15064,6 +15294,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         diagnosticsOpen: rootState.ui.diagnosticsOpen === true,
         canvasMaximized: rootState.ui.canvasMaximized === true,
         canvasZen: rootState.ui.canvasZen === true,
+        sidePaneTab: rootState.ui.sidePaneTab === "workspace" ? "workspace" : "canvas",
         // Live reference — reducer updates replace the object, so
         // shallow-equal sees changes and the save effect fires.
         canvasPrefs: rootState.canvas?.prefs,
@@ -15394,7 +15625,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -15508,6 +15739,12 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (suspended || (!canvasMaximized && !zenActive)) return undefined;
         const onKey = (e) => {
             if (e.key !== "Escape") return;
+            // Something nearer used the key (an editor's find box, a rename,
+            // a dialog in the Workspace tab), or the person is typing: Escape
+            // steps down one thing only.
+            if (e.defaultPrevented) return;
+            const target = e.target;
+            if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
             controller.dispatch(canvasMaximized
                 ? { type: "ui/canvasMaximized", on: false }
                 : { type: "ui/canvasZen", on: false });

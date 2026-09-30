@@ -18,6 +18,8 @@
  * only the contract is enforced (browser-side, default-closed, unchanged).
  */
 
+import { normalizeCanvasWorkspaceManifest, type CanvasWorkspaceDeclaration } from "./canvas-workspace.js";
+
 const CANVAS_CONTRACT_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const CANVAS_CONTRACT_FIELD_TYPES = new Set(["string", "number", "boolean", "json"]);
 const CANVAS_CONTRACT_MAX_ACTIONS = 16;
@@ -115,6 +117,12 @@ export interface CanvasAppManifest {
     interface?: CanvasAppInterface;
     /** Catalog tags, e.g. ["review", "release", "collaborative"]. */
     tags?: string[];
+    /**
+     * canvas-ws: the session folders the app may read and write, and the
+     * commands it may run there (canvas-workspace.ts). The server checks
+     * every call against this block, read from the drawn document.
+     */
+    workspace?: CanvasWorkspaceDeclaration;
 }
 
 export interface CanvasAppInterface {
@@ -323,6 +331,9 @@ export function extractCanvasAppManifest(html: string): { manifest: CanvasAppMan
     if (iface.interface) manifest.interface = iface.interface;
     const tags = normalizeTags(raw.tags);
     if (tags) manifest.tags = tags;
+    const workspace = normalizeCanvasWorkspaceManifest(raw.workspace);
+    if (workspace.error) return { manifest: null, error: `CANVAS-APP-MANIFEST workspace: ${workspace.error}` };
+    if (workspace.workspace) manifest.workspace = workspace.workspace;
     return { manifest };
 }
 
@@ -342,6 +353,7 @@ export function canvasAppCard(manifest: CanvasAppManifest | null): Record<string
     if (manifest.kv) card.kv = manifest.kv;
     if (manifest.interface) card.interface = manifest.interface;
     if (manifest.tags) card.tags = manifest.tags;
+    if (manifest.workspace) card.workspace = manifest.workspace;
     return Object.keys(card).length > 0 ? card : undefined;
 }
 

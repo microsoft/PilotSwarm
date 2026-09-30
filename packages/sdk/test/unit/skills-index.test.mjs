@@ -24,6 +24,7 @@ import path from "node:path";
 import { PilotSwarmWorker } from "../../dist/worker.js";
 import { SessionManager, agentOwnerKey } from "../../dist/session-manager.js";
 import { ManagedSession } from "../../dist/managed-session.js";
+import { loadSkillsSync } from "../../dist/skills.js";
 
 function makeTmpDir(prefix) {
     return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -254,4 +255,25 @@ test("the private index sorts by name and clips like the fleet-wide one", async 
     const zeta = lines[1];
     assert.ok(zeta.length < 300, `clipped: ${zeta.length}`);
     assert.match(zeta, /(alpha|beta|gamma|delta)…$/, `ends on a whole word: ${zeta.slice(-30)}`);
+});
+
+test("every bundled skill's description fits the index whole (240 characters)", () => {
+    // The index clips a description at 240 characters (clipDescription). A
+    // clipped one loses its end, which is where "Read this before …" usually
+    // is. Read with the loader the index uses: block scalars too.
+    const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../plugins");
+    const long = [];
+    let checked = 0;
+    for (const plugin of fs.readdirSync(root)) {
+        const skills = path.join(root, plugin, "skills");
+        if (!fs.existsSync(skills)) continue;
+        for (const skill of loadSkillsSync(skills)) {
+            const description = String(skill.description || "").replace(/\s+/g, " ").trim();
+            checked += 1;
+            assert.ok(description.length > 0, `${plugin}/${skill.name} has a description`);
+            if (description.length > 240) long.push(`${plugin}/${skill.name}: ${description.length}`);
+        }
+    }
+    assert.ok(checked >= 7, `checked only ${checked} skills`);
+    assert.deepEqual(long, [], `descriptions the index would clip:\n  ${long.join("\n  ")}`);
 });

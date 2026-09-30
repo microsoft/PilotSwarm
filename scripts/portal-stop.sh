@@ -15,14 +15,17 @@ PORT="${PORT:-3001}"
 # to the port. portal-start.sh would then probe that survivor, see a healthy
 # response, and report "ready" for a server it did not start — handing you a
 # stale build with no indication anything was wrong.
+#
+# Only the process LISTENING on the port: a browser with the portal open also
+# has a socket on it, and killing that is killing the browser's network.
 sweep_port() {
   local held
-  held="$(lsof -ti:"$PORT" 2>/dev/null || true)"
+  held="$(lsof -ti tcp:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
   [ -z "$held" ] && return 0
   echo "  Sweeping port $PORT (pids: $(echo "$held" | tr '\n' ' '))"
   echo "$held" | xargs kill 2>/dev/null || true
   sleep 1
-  held="$(lsof -ti:"$PORT" 2>/dev/null || true)"
+  held="$(lsof -ti tcp:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
   [ -z "$held" ] && return 0
   echo "$held" | xargs kill -9 2>/dev/null || true
 }

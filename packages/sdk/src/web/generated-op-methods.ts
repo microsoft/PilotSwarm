@@ -12,6 +12,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "cancelPendingMessage",
     "cancelSession",
     "cancelSessionGroup",
+    "canvasWorkspace",
     "clearProviderRoutingDependencies",
     "clearSystemSessionModel",
     "completeSession",
@@ -124,6 +125,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessions",
     "listSessionShares",
     "listSessionsPage",
+    "listSessionWorkspaceFolders",
     "listSignalEndpoints",
     "listWebhookBindings",
     "listWebhookConnectors",
@@ -160,6 +162,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "sendAnswer",
     "sendMessage",
     "sendSessionEvent",
+    "sessionWorkspaceFiles",
     "setAgentPackageEnabled",
     "setAgentPackageScope",
     "setArtifactPinned",
@@ -257,6 +260,16 @@ export interface ManagementOps {
     cancelSessionGroup(params: {
         groupId: string;
         reason?: any;
+    }): Promise<any>;
+
+    /**
+     * canvas-ws: one call from a canvas app to its session's folders, checked against the workspace block of the app's CANVAS-APP-MANIFEST: { op: info|list|stat|read|write|mkdir|move|delete|zip|watch, path: "<folder>/<path>" } or { op: run, command, params }. The session's owner only.
+     * @remarks `POST /management/sessions/:sessionId/canvas-workspace` — access: `session:files`
+     */
+    canvasWorkspace(params: {
+        sessionId: string;
+        slot?: any;
+        call?: any;
     }): Promise<any>;
 
     /**
@@ -1205,6 +1218,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * The session's folders for the Workspace pane (working folder, then extra folders), whether this deployment serves each one, and the file size limit. The session's owner only.
+     * @remarks `GET /management/sessions/:sessionId/workspace/folders` — access: `session:files`
+     */
+    listSessionWorkspaceFolders(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * List authorized signal endpoint metadata, never capability tokens.
      * @remarks `GET /sessions/:sessionId/signal-endpoints` — access: `session:write`
      */
@@ -1530,6 +1551,15 @@ export interface ManagementOps {
         sessionId: string;
         eventName?: any;
         data?: any;
+    }): Promise<any>;
+
+    /**
+     * One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. The session's owner only.
+     * @remarks `POST /management/sessions/:sessionId/workspace/files` — access: `session:files`
+     */
+    sessionWorkspaceFiles(params: {
+        sessionId: string;
+        call?: any;
     }): Promise<any>;
 
     /**
@@ -1975,6 +2005,7 @@ export function createManagementOps(
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
         cancelSession: (params: Record<string, unknown> = {}) => callOp("cancelSession", params),
         cancelSessionGroup: (params: Record<string, unknown> = {}) => callOp("cancelSessionGroup", params),
+        canvasWorkspace: (params: Record<string, unknown> = {}) => callOp("canvasWorkspace", params),
         clearProviderRoutingDependencies: (params: Record<string, unknown> = {}) => callOp("clearProviderRoutingDependencies", params),
         clearSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("clearSystemSessionModel", params),
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
@@ -2087,6 +2118,7 @@ export function createManagementOps(
         listSessions: (params: Record<string, unknown> = {}) => callOp("listSessions", params),
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
+        listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listSignalEndpoints: (params: Record<string, unknown> = {}) => callOp("listSignalEndpoints", params),
         listWebhookBindings: (params: Record<string, unknown> = {}) => callOp("listWebhookBindings", params),
         listWebhookConnectors: (params: Record<string, unknown> = {}) => callOp("listWebhookConnectors", params),
@@ -2123,6 +2155,7 @@ export function createManagementOps(
         sendAnswer: (params: Record<string, unknown> = {}) => callOp("sendAnswer", params),
         sendMessage: (params: Record<string, unknown> = {}) => callOp("sendMessage", params),
         sendSessionEvent: (params: Record<string, unknown> = {}) => callOp("sendSessionEvent", params),
+        sessionWorkspaceFiles: (params: Record<string, unknown> = {}) => callOp("sessionWorkspaceFiles", params),
         setAgentPackageEnabled: (params: Record<string, unknown> = {}) => callOp("setAgentPackageEnabled", params),
         setAgentPackageScope: (params: Record<string, unknown> = {}) => callOp("setAgentPackageScope", params),
         setArtifactPinned: (params: Record<string, unknown> = {}) => callOp("setArtifactPinned", params),

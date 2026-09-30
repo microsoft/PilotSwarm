@@ -328,7 +328,7 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     await expect(page.locator(".ps-moa-workspace")).not.toHaveClass(/is-zen/);
     await panel(page, "panel-1").locator("header").first().click();
     await expect(composer(page)).toHaveValue("draft while canvas open");
-    await page.getByRole("button", { name: /^Workspace/ }).click();
+    await page.getByRole("button", { name: /^Sessions — / }).click();
     await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();
     const showCanvas = page.getByRole("button", { name: "Show canvas", exact: true });
     if (await showCanvas.count()) await showCanvas.click();
@@ -586,7 +586,7 @@ test("toolbar and session-picker Tab navigation never cycles panels behind them"
 test("MoA stays in the workspace/budget/admin mode cluster and those modes remain usable outside zen", async ({ page }) => {
     const f = await fixture(page, [layout(chat(1))]);
     const launcher = page.getByRole("button", { name: "Master of Agents", exact: true });
-    const workspace = page.getByRole("button", { name: /^Workspace/ });
+    const workspace = page.getByRole("button", { name: /^Sessions — / });
     const budget = page.getByRole("button", { name: /^Budget|^Close budget$/ });
     const admin = page.getByRole("button", { name: /^(Admin console|Settings|Close admin console|Close settings)$/ });
     await expect(launcher.locator("xpath=ancestor::*[contains(@class,'ps-toolbar-actions')][1]")).toHaveClass(/is-tools/);
@@ -699,7 +699,7 @@ test("create from the picker uses the standard dialog and binds only its target 
     await composer(page).press("Enter");
     await expect.poll(() => f.sends.length).toBe(1);
     expect(f.sends[0].sessionId).toBe(freshId);
-    await page.getByRole("button", { name: /^Workspace/ }).click();
+    await page.getByRole("button", { name: /^Sessions — / }).click();
     await expect(page.locator(".ps-session-list-button.is-selected")).toHaveAttribute("data-session-id", original);
     expect(f.errors).toEqual([]);
 });
@@ -763,7 +763,7 @@ test("panel info, personal manage and terminate actions retain their own session
     await expect(composer(page)).toBeVisible();
     await expect(page.locator(".ps-moa-composer-strip")).toHaveAttribute("data-session-id", sid(2));
     // The normal session view keeps its original link and sharing controls.
-    await page.getByRole("button", { name: /^Workspace/ }).click();
+    await page.getByRole("button", { name: /^Sessions — / }).click();
     await page.locator(".ps-session-list-button").filter({ hasText: "Session 2" }).first().click();
     await expect(page.getByRole("button", { name: "Copy link — copy a direct link to this session", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Manage session — rename, switch model, and sharing", exact: true }).click();

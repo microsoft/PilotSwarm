@@ -203,6 +203,25 @@ export {
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
 export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
+export {
+    DEFAULT_WORKSPACE_FILE_MAX_BYTES,
+    WORKSPACE_FILE_ERROR_CODES,
+    WORKSPACE_FILE_OPS,
+    WORKSPACE_FILES_CHANGED_EVENT,
+    WORKSPACE_FILES_NOTED_EVENT,
+    workspaceFileChangesNote,
+    workspaceFileErrorStatus,
+    workspaceFileFolders,
+    workspaceFilesConfigFromEnv,
+} from "./workspace-files.js";
+export type { WorkspaceFileCall, WorkspaceFileChange, WorkspaceFileFolder, WorkspaceFilesConfig } from "./workspace-files.js";
+export {
+    CANVAS_WS_ERROR_CODES,
+    canvasCommandsConfigFromEnv,
+    canvasGlobMatch,
+    normalizeCanvasWorkspaceManifest,
+} from "./canvas-workspace.js";
+export type { CanvasCommand, CanvasCommandParam, CanvasCommandsConfig, CanvasWorkspaceDeclaration } from "./canvas-workspace.js";
 export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader

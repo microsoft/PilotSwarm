@@ -1,6 +1,6 @@
 ---
 name: canvas-apps
-description: Interactive and SHARED canvas apps — page actions, the canvas_kv store several people write at once, requests the page queues for you, saving and reusing apps. Load before any canvas that takes input or that more than one person uses.
+description: Interactive and SHARED canvas apps — page actions, the canvas_kv store, requests the page queues, the session's files and declared commands (canvas-ws), saving apps. Load before any canvas that takes input, uses files, or is shared.
 ---
 
 # Canvas Apps
@@ -254,6 +254,112 @@ card gives. You never need the HTML.
 by every session. A reusable app reads its rows from the KV; a page with a
 customer list baked into a JS literal is not reusable and must not be
 published. Republishing the same name replaces the card and the artifact.
+
+## The session's folders (canvas-ws)
+
+A canvas app can read and change the session's files, and run commands you
+declare, with no turn of yours: a git history viewer, a notes editor, a
+test-log browser. It is for the session's **owner** only; for anyone else
+every call fails.
+
+Declare the access in the manifest. The server checks every call against
+this block, read from the document you drew; the page cannot widen it.
+
+```
+"workspace": {
+  "read":  ["work/**"],                       list and read
+  "write": ["home/notes/*.md"],               also write, move, delete
+  "watch": true,                              the page hears when files change
+  "commands": {
+    "history": { "in": "work",
+      "run": ["git", "log", "--format=%H%x09%an%x09%ar%x09%s", "-n", "{limit}", "--", "{path}"],
+      "params": { "path": { "type": "path" }, "limit": { "type": "int", "min": 1, "max": 200, "default": 50 } } },
+    "show": { "in": "work", "run": ["git", "show", "--stat", "--patch", "{sha}"],
+      "params": { "sha": { "type": "sha" } } }
+  }
+}
+```
+
+Paths are `<folder>/<path>`: `work` is the working folder, an extra folder
+keeps its name (`home`, `shared`). In a session with no repo, the person's
+own folder IS the working folder, so it is `work`, not `home`. Call `info()`
+to see the names. `**` crosses folders, `*` does not.
+Declare the least you need. `.git` is read-only whatever you declare.
+A command's `in` is a session folder or a folder inside one (`work/tfenv`
+for a repo cloned into the working folder); its `path` values must be
+inside it and are passed relative to it.
+
+Commands: `run[0]` is a program name (no path). A `{param}` must be a whole
+argument, never part of one. Types: `path` (inside the command's folder, a
+file the app may read, or a folder it may read all of), `int` (`min`
+defaults to 0), `enum` (`values`), `ref` (a branch or tag), `sha` (hex),
+`text` (one line, not starting with `-`). There is no shell.
+`timeoutSeconds` ≤ 60, output ≤ 1 MB. For git: `run[1]` is the subcommand
+(log, show, diff, status, blame, ls-files, add, commit, restore, reset,
+stash, switch, checkout, mv, rm, …), with no options before it; choose the
+repository with `in` (`work/tfenv`), never `-C`. Options that start
+programs or reach outside (`--output`, `--no-index`, `--exec`, …) and
+absolute or `..` paths are refused when you draw. Git runs with no network,
+no hooks, and not in a repository whose own settings start programs.
+The deployment decides whether commands run at all and which programs may
+run (git by default). A page cannot know which: handle
+`CANVAS_WS_COMMANDS_DISABLED` and `CANVAS_WS_PROGRAM_NOT_ALLOWED`. Your next
+turn is told a command ran (once a minute per command), not what it did.
+
+Paste this helper:
+
+```js
+function CanvasWorkspace() {
+  const waiting = new Map(); let n = 0; const listeners = [];
+  const ask = (msg, tries = 20) => new Promise((res, rej) => {
+    const id = ++n; waiting.set(id, { res, rej, msg, tries });
+    parent.postMessage({ type: "canvas-ws", id, ...msg }, "*");
+  });
+  window.addEventListener("message", (e) => {
+    const m = e.data || {};
+    if (m.type === "canvas-ws-change") { listeners.forEach((f) => f(m)); return; }
+    if (m.type !== "canvas-ws-result") return;
+    const w = waiting.get(m.id); if (!w) return; waiting.delete(m.id);
+    if (!m.ok && m.code === "NOT_READY" && w.tries > 0) { setTimeout(() => ask(w.msg, w.tries - 1).then(w.res, w.rej), 250); return; }
+    m.ok ? w.res(m.result) : w.rej(Object.assign(new Error(m.error || "failed"), { code: m.code }));
+  });
+  const b64 = { enc: (s) => { const u = new TextEncoder().encode(s); let b = ""; for (let i = 0; i < u.length; i += 0x8000) b += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(b); },
+                dec: (s) => new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))) };
+  return {
+    info: () => ask({ op: "info" }),                            // → { folders, read, write, commands, commandsEnabled, maxBytes }
+    list: (path) => ask({ op: "list", path }),                  // → { entries: [{ name, path, kind, size, mtimeMs, readOnly? }] }
+    readText: (path) => ask({ op: "read", path }).then((r) => ({ ...r, text: b64.dec(r.contentBase64) })),   // + etag
+    writeText: (path, text, ifMatch) => ask({ op: "write", path, contentBase64: b64.enc(text), ifMatch }),   // ifMatch: etag, or null = create only
+    mkdir: (path) => ask({ op: "mkdir", path }),
+    move: (path, toPath) => ask({ op: "move", path, toPath }),
+    remove: (path, recursive) => ask({ op: "delete", path, recursive }),
+    run: (command, params) => ask({ op: "run", command, params }),   // → { exitCode, stdout, stderr, truncated }
+    download: (path) => ask({ op: "download", path }),          // from a click handler only: saves the file (a folder as .zip)
+    watch: (f) => { listeners.push(f); return ask({ op: "watch" }); },   // f({ reason: "agent" | "owner" | "canvas" })
+  };
+}
+```
+
+A write with a stale `ifMatch` fails `WORKSPACE_FILES_CONFLICT`: read again,
+show both, let the person choose. A create-only write (`ifMatch: null`) on
+a file that exists fails `WORKSPACE_FILES_EXISTS`. Other codes:
+
+| Code | Means |
+|---|---|
+| `CANVAS_WS_DENIED` | outside your block; or `watch` not declared; or the repo's git settings start programs |
+| `CANVAS_WS_UNDECLARED` | no block, or a broken one (the message says what is wrong) |
+| `CANVAS_WS_TIMEOUT`, `CANVAS_WS_BUSY`, `CANVAS_WS_RUN_FAILED` | a command ran too long, too many ran at once (try again), or it did not start |
+| `WORKSPACE_FILES_NOT_FOUND`, `_READ_ONLY`, `_TOO_LARGE`, `_OUTSIDE` | no such path; `.git` and read-only files; over the size limit; a link or a path out of the folder (canvas apps never follow links) |
+| `WORKSPACE_FILES_BUSY` | too many file calls at once in the portal: try again in a moment |
+| `NOT_READY`, `NOT_ALLOWED`, `BUSY`, `UNAVAILABLE` | from the portal: the page is still loading (the helper retries), a download without a click, a download already running, no workspace support |
+
+The change notice carries no paths: read again what you show. Your next
+turn is told which files the page changed.
+
+A link in a canvas opens in a new tab, never in the canvas frame. A page
+that sends itself elsewhere (`location.href = ...`) loses the session: the
+page it loads gets no answers, and the portal offers to show the canvas
+again.
 
 ## Where html-visuals differs
 

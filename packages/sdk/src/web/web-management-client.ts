@@ -436,6 +436,21 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("retrySessionWorkspace", { sessionId, options: opts });
     }
 
+    /** Workspace files: the session's folders for the Workspace pane (the session's owner only). */
+    async listSessionWorkspaceFolders(sessionId: string): Promise<any> {
+        return this._api.call("listSessionWorkspaceFolders", { sessionId });
+    }
+
+    /** Workspace files: one call in one of the session's folders (the session's owner only). */
+    async sessionWorkspaceFiles(sessionId: string, call: Record<string, unknown>): Promise<any> {
+        return this._api.call("sessionWorkspaceFiles", { sessionId, call });
+    }
+
+    /** canvas-ws: one call from a canvas app, checked against its declared workspace block (the session's owner only). */
+    async canvasWorkspace(sessionId: string, slot: number, call: Record<string, any>): Promise<any> {
+        return this._api.call("canvasWorkspace", { sessionId, slot, call });
+    }
+
     async regenerateSession(sessionId: string, options: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string; model?: string; force?: boolean } = {}): Promise<any> {
         return this._api.call("regenerateSession", { sessionId, options });
     }

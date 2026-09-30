@@ -156,6 +156,9 @@ export const OPERATIONS = [
     { name: "getSessionWorkspace", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/workspace", params: { sessionId: path("sessionId") }, summary: "The session's workspace: record, revision, path, status, last error, held-prompt count, and adopted repo agents and skills." },
     { name: "setSessionWorkspace", access: "session:manage", method: "PUT", path: "/management/sessions/:sessionId/workspace", params: { sessionId: path("sessionId"), expectedRevision: body(), workspace: body(), options: body() }, summary: "Set ({ root, folder, extra }) or clear (null) the session's workspace. A record without extra keeps the session's extra folders; extra (even {} or null) sets exactly those. expectedRevision must match the current revision. Applied between turns; answers with the new revision or a WORKSPACE_* error code." },
     { name: "retrySessionWorkspace", access: "session:write", method: "POST", path: "/management/sessions/:sessionId/workspace/retry", params: { sessionId: path("sessionId"), options: body() }, summary: "Retry now: interrupt a workspace wait so the held prompts run, or are held again with no model call." },
+    { name: "listSessionWorkspaceFolders", access: "session:files", method: "GET", path: "/management/sessions/:sessionId/workspace/folders", params: { sessionId: path("sessionId") }, summary: "The session's folders for the Workspace pane (working folder, then extra folders), whether this deployment serves each one, and the file size limit. The session's owner only." },
+    { name: "sessionWorkspaceFiles", access: "session:files", method: "POST", path: "/management/sessions/:sessionId/workspace/files", params: { sessionId: path("sessionId"), call: body() }, summary: "One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. The session's owner only." },
+    { name: "canvasWorkspace", access: "session:files", method: "POST", path: "/management/sessions/:sessionId/canvas-workspace", params: { sessionId: path("sessionId"), slot: body(), call: body() }, summary: "canvas-ws: one call from a canvas app to its session's folders, checked against the workspace block of the app's CANVAS-APP-MANIFEST: { op: info|list|stat|read|write|mkdir|move|delete|zip|watch, path: \"<folder>/<path>\" } or { op: run, command, params }. The session's owner only." },
     { name: "regenerateSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/regenerate", params: { sessionId: path("sessionId"), options: body() }, summary: "Regenerate the session's transcript in place (epoch rebirth): archive, distill, and recreate the Copilot session at a turn boundary. Enqueue-then-observe; outcomes arrive as session.regenerate_* events." },
     { name: "getSessionTokensByModel", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/tokens-by-model", params: { sessionId: path("sessionId") }, summary: "Token totals grouped by model." },
     { name: "getSessionTreeStats", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/tree-stats", params: { sessionId: path("sessionId") }, summary: "Stats rolled up across the spawn tree." },
@@ -394,11 +397,15 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
         this.status = status;
         if (Array.isArray(candidates)) this.candidates = candidates;
+        // Workspace files: a conflict's current etag (null: the file is gone)
+        // and a too-large file's size.
+        if (etag === null || typeof etag === "string") this.etag = etag;
+        if (Number.isFinite(size)) this.size = size;
     }
 }

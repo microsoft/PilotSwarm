@@ -253,6 +253,29 @@ ContainerLogV2
 
 The removal records stay in the service's state file for a year.
 
+## Run it on your laptop
+
+`scripts/local-pilotswarm.sh` runs the whole platform on one machine, this
+example included, with no NFS and no Kubernetes:
+
+| Piece | Where |
+|---|---|
+| PostgreSQL | the `pilotswarm-pg` container (`DATABASE_URL` in `.env`), started if it is stopped |
+| Portal | `http://localhost:3001`, with dev sign-in (pick Ada, Alice, Bob, Carol or Dave) and 2 workers inside the portal process |
+| Repo service | `http://127.0.0.1:8080`, with the same two repos as the release environment |
+| Folders | `~/pilotswarm-local/ws/a`, `shared` and `home`: plain folders with the marker, in place of the NFS exports |
+
+```text
+scripts/local-pilotswarm.sh up        start everything
+scripts/local-pilotswarm.sh restart   after a code change
+scripts/local-pilotswarm.sh down      stop; `reset` also deletes the folders; `logs` follows the logs
+```
+
+It needs `.env` with `DATABASE_URL` (local PostgreSQL) and `GITHUB_TOKEN` (a
+GitHub Copilot token). Everything runs as you, so nothing is root-owned: the
+shared folder's starter files are read-only only by their mode. NFS itself
+(mounts, stale mounts, root squash) is not covered.
+
 ## Deploying it
 
 The Azure deployment ships this example when `WORKSPACES_ENABLED=true` is in

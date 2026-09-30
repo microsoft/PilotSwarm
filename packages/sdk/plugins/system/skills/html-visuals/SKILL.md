@@ -196,6 +196,8 @@ these produces a blank or broken page, not an error message:
    If you need a charting library you cannot inline, hand-write the SVG.
 2. **No storage.** `localStorage`, `sessionStorage`, cookies and `parent` property reads all
    throw — `parent.postMessage` is the one allowed call. Keep state in memory.
+   Shared state, the session's files, and commands such as `git log` go
+   through that call: load `canvas-apps`.
 2b. **Sound: unlock on `touchend`/`click` — never only `touchstart`.** Three
    silent failures, none of which raise an error:
    - `touchstart` does NOT grant user activation (spec: only `touchend`,

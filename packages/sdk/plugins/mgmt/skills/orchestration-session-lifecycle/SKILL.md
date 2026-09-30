@@ -2,9 +2,9 @@
 name: orchestration-session-lifecycle
 description: |
   How a PilotSwarm session maps to a duroxide orchestration. Read this
-  before concluding that an "idle" session means its orchestration is
-  broken, not running, or stuck. Most idle sessions are completely
-  healthy — they're just dehydrated and waiting for the next stimulus.
+  before concluding that an "idle" session's orchestration is broken,
+  stopped or stuck: most idle sessions are healthy, dehydrated and
+  waiting for their next stimulus.
 ---
 
 # Orchestration ↔ Session Lifecycle

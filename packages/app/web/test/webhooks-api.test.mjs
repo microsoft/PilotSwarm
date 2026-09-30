@@ -7,6 +7,7 @@ import { WebhookRuntime, WEBHOOK_MAX_BODY_BYTES, PilotSwarmManagementClient } fr
 import { createWebhookRouter, webhookRequestContext } from "../api/webhooks.js";
 import { PortalRuntime } from "../runtime.js";
 import { createApiRouter } from "../api/router.js";
+import { installJsonBodyLimits } from "../server.js";
 import { webhookHostConfig, authorizeWebhookTemplate } from "../../tui/src/webhook-host.js";
 
 const secret = "local-only-synthetic-hook-secret";
@@ -40,14 +41,14 @@ async function ingressFixture(options = {}) {
         onError: code => counters.push(code),
     }));
     // Mirrors production: the shared JSON parser must never touch hook bodies.
-    app.use(express.json());
+    installJsonBodyLimits(app, { workspaceFileMb: 20 });
     const server = await serverFor(app);
     const post = (body = fixtureBody, headers = {}) => fetch(`${server.base}/hooks/c/${connectorId}`, {
         method: "POST", body,
         headers: { "content-type": "application/json", "x-github-event": "workflow_run",
             "x-github-delivery": "local-delivery", "x-hub-signature-256": sign(body), ...headers },
     });
-    return { ...server, post, accepted, counters };
+    return { ...server, app, post, accepted, counters };
 }
 
 test("public ingress authenticates exact bytes before normalization and accepts without routing", async () => {
@@ -64,6 +65,29 @@ test("public ingress authenticates exact bytes before normalization and accepts 
         const altered = JSON.stringify(JSON.parse(fixtureBody));
         const rejected = await fixture.post(altered, { "x-hub-signature-256": sign(fixtureBody) });
         assert.equal(rejected.status, 401);
+        assert.equal(fixture.accepted.length, 1);
+    } finally { await fixture.close(); }
+});
+
+test("workspace uploads keep their larger JSON limit without widening webhook or general API limits", async () => {
+    const fixture = await ingressFixture();
+    fixture.app.use((req, res) => res.json({ bytes: req.body?.call?.contentBase64?.length }));
+    fixture.app.use((error, _req, res, _next) => res.status(error.status || 500).json({ type: error.type }));
+    try {
+        const size = 3 * 1024 * 1024;
+        const body = JSON.stringify({ call: { contentBase64: "x".repeat(size) } });
+        const post = path => fetch(`${fixture.base}/api/v1${path}`, {
+            method: "POST", headers: { "content-type": "application/json" }, body,
+        });
+        for (const path of ["/management/sessions/s1/workspace/files", "/management/sessions/s1/canvas-workspace"]) {
+            const response = await post(path);
+            assert.equal(response.status, 200, path);
+            assert.deepEqual(await response.json(), { bytes: size });
+        }
+        assert.equal((await post("/management/sessions/s1/rename")).status, 413);
+        assert.equal((await fixture.post(body)).status, 413);
+        assert.equal(fixture.accepted.length, 0);
+        assert.equal((await fixture.post()).status, 202);
         assert.equal(fixture.accepted.length, 1);
     } finally { await fixture.close(); }
 });

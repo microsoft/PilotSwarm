@@ -1,5 +1,159 @@
 # Changelog
 
+## 0.8.0 — 2026-09-30
+
+**The Workspace tab.** The portal's side pane has two tabs: **Canvas** and
+**Workspace**. The Workspace tab shows the session's folders to the
+session's owner: the working folder, "home", "shared", and so on.
+
+- A file tree with dotfiles. `.git` is shown but read-only.
+- An editor with syntax colors (CodeMirror). Markdown has **Edit** and a
+  read-only **Preview**. Images show as a picture.
+- Upload (a button, or drop files), download (a file, or a folder as a
+  `.zip`), drag to move, rename, delete, new file, new folder.
+- A save over a file that changed on disk asks: Compare, Keep mine, Take
+  theirs, or Keep both. Save over a deleted file offers Save as new.
+- **Find files** above the tree: names across the folder, `.git` left out,
+  up to 200 results.
+- **Find in file**: Ctrl+F / ⌘F, or the search button. Find only, with a
+  match count.
+- Pick several with Ctrl/⌘-click, Shift-click or **Select**; then download,
+  delete or drag them.
+- The tree works with the keyboard: arrow keys, Home and End, one tab stop.
+- New file and New folder go into the folder you picked.
+- In Preview, a heading link scrolls, a link to another file opens it, and a
+  web link opens a new tab. Images, remote or not, show only after **Show
+  images**.
+- A folder `.zip` keeps file modes, so scripts stay runnable. The toast says
+  when `.git` was left out.
+- The divider between the tree and the file can be dragged. On a phone the
+  tree sits above the file.
+- Each session's view is kept in the browser: the folder, the open folders,
+  the file, Edit or Preview, and where you were in each file.
+- Leaving the page with unsaved changes asks first. Text typed while a save
+  is on its way stays, even if you open another file. Deleting a file drops
+  its unsaved edits.
+- Only UTF-8 text opens in the editor; other files are download only, so a
+  save cannot change their bytes. A save keeps CRLF line ends and a
+  byte-order mark.
+- An SVG shows from a `data:` address, never a same-origin `blob:` one, so
+  its script cannot run as the portal when opened in a new tab.
+- Preview drops `class`, image maps and `usemap`, and prefixes a file's own
+  ids (`user-content-`): a file cannot borrow the portal's styles or cover
+  it. Any link click that is not a new tab is stopped.
+- Delete acts on the focused row, or on the picked rows when the focused
+  one is picked.
+- The agent's next turn is told which files the owner changed. A file the
+  agent is editing is marked.
+- Every text color is readable in every theme (at least 4.5:1, measured in
+  the browser tests). Code colors come from each theme's palette
+  (`--ps-code-*`).
+- The tab shows only when the portal serves the workspace roots. The
+  choice between Canvas and Workspace is a pane setting, saved with your
+  profile like the other panes.
+
+**Which folders the tab serves.** Only folders a worker opened for the
+session. A folder named in the session's record is not enough: nothing
+checked it yet.
+
+- A session's folders open when its first turn starts. The turn records the
+  record's folders it opened, with their paths, as
+  `session.workspace_opened`. It does this before the model runs, and only
+  when they changed. So a folder the session was created with opens too,
+  for example a sub-agent's inherited folder.
+- While a turn runs and no folder is open, the tab checks every 2 seconds,
+  not every 10.
+- A root must hold its `.pilotswarm-export` marker. An unmounted share is an
+  empty local folder. `PORTAL_WORKSPACE_REQUIRE_MARKER=false` turns the
+  check off.
+- At most 2 calls that carry a whole file (read, write, zip, move) and 6
+  others run at once in the portal. A call that waits more than 10 s for
+  its turn fails with `WORKSPACE_FILES_BUSY`, so a hung mount cannot hold
+  everyone's calls. The tab runs one check at a time.
+- A move to another root (another mount) keeps relative links relative.
+- An extra or default folder cannot be named `work`: canvas apps call the
+  working folder that.
+
+**Web API and management client.**
+
+- New operations `listSessionWorkspaceFolders` and `sessionWorkspaceFiles`
+  (list, stat, read, find, write, mkdir, move, delete, zip).
+- New access class `session:files`: the session's owner only. Admins get no
+  pass. It holds even when `AUTHZ_ENFORCE_OWNERSHIP` is off.
+- The portal does the file calls on its own mount (`PORTAL_WORKSPACE_ROOTS`),
+  in child processes with a deadline. The file limit is
+  `PORTAL_WORKSPACE_MAX_FILE_MB` (default 20).
+- `/api/v1` and `/api/rpc` build error bodies the same way
+  (`api/error-detail.js`). `ApiError` keeps a conflict's `etag` (null: the
+  file was deleted) and a too-large file's `size`.
+- A workspace timeout, a busy portal, an unserved root, or files turned off
+  keep their message; other 5xx errors still say "Internal server error".
+
+**Canvas apps can use the session's folders (canvas-ws).**
+
+- The app's CANVAS-APP-MANIFEST declares a `workspace` block: the paths it
+  may read and write, `watch`, and named commands with typed parameters.
+- The page calls through the portal with the `CanvasWorkspace()` helper from
+  the `canvas-apps` skill. New Web API operation `canvasWorkspace`.
+- The server checks every call against the block in the drawn document. The
+  session's owner only.
+- Commands run only where the deployment turns them on:
+  `PORTAL_CANVAS_COMMANDS_RUNNER=local`, with the programs in
+  `PORTAL_CANVAS_COMMANDS_ALLOW` (default git). No shell; each parameter is
+  one whole argument. Git runs without hooks, network, or repository
+  settings that start programs. A command picks its repository with `in`,
+  never `git -C`.
+- Deployments leave commands off until a sandboxed runner exists.
+- When the server refuses an app's manifest, the canvas says why. An app
+  drawn with `git -C` needs to be drawn again.
+- A link in a canvas opens in a new tab, never in the canvas frame. If a
+  page sends the frame elsewhere, the page that loads gets nothing from the
+  session (canvas-ws, canvas-kv, actions, data), and the canvas offers to
+  show itself again.
+
+**Portal.**
+
+- The phone toolbar keeps every button in view down to 340 px wide.
+- Keys pressed on a focused row of the Workspace tab no longer trigger the
+  portal's single-key session commands (for example `d`, complete).
+- Escape steps down out of full screen, then zen, also when nothing has
+  focus. Escape in a find box, a rename, a dialog, or while typing, stays
+  there.
+- The main view is called "Sessions".
+- The portal build writes `dist/THIRD-PARTY-NOTICES.txt`: every bundled
+  component with its license text.
+
+**Deployment and tools.**
+
+- Azure GitOps: with `WORKSPACES_ENABLED=true` the portal pod mounts the
+  node's workspace mounts at `/ws` and serves the Workspace tab
+  (`PORTAL_WORKSPACE_ROOTS=a=/ws/a,shared=/ws/shared,home=/ws/home`). Its
+  memory limit is 2 GiB.
+- `scripts/local-pilotswarm.sh`: the whole platform on one machine
+  (PostgreSQL, the portal with two workers, dev sign-in, session workspaces
+  on local folders). `PS_LOCAL_WORKSPACES=on|no-defaults|no-portal|off` sets
+  up each workspace case. The portal listens on 127.0.0.1 only: dev sign-in
+  takes no password and agents run commands as you. The script trusts its
+  repo-service PID file only while that process is the repo service.
+- The reference repo service runs git directly when it already runs as the
+  clone's uid (macOS has no `setpriv`). It listens where `REPO_SERVICE_HOST`
+  says.
+- `scripts/portal-stop.sh` stops only the process that listens on the port.
+  It used to stop browsers' network processes too.
+- `.gitignore` no longer hides new files under `packages/`.
+- Skill descriptions fit the skills index whole (240 characters): the
+  `canvas-apps` skill and three management skills were shortened. A test
+  reads every bundled skill with the index's own loader.
+
+- Validation (local): SDK unit 1,383 passed (1 skip), SDK API 40, the
+  workspace suites on a real worker 112 (12 files), UI 842, web 156, TUI 22,
+  MCP, deployment scripts 361, CI policy 109, browser tests 555. Each fix
+  from the browser passes and the two adversarial reviews was broken on
+  purpose and a test failed. A live check on the local platform opened a
+  created-with folder during the first turn. The differential capture
+  against v0.7.1 differs only in the `canvas-apps` skill's description. The
+  all-provider run for the release candidate runs in GitHub Actions.
+
 ## 0.7.1 — 2026-09-29
 
 - Portal: a native task that runs an agent from the person's own folder, or

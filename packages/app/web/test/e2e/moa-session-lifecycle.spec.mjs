@@ -141,7 +141,7 @@ test('failed deletion keeps the pane and its bindings', async ({ page }) => {
 
 test('deleting from the normal workspace also clears inactive MoA bindings', async ({ page }) => {
     const f = await fixture(page);
-    await page.getByRole('button', { name: /^Workspace/ }).click();
+    await page.getByRole('button', { name: /^Sessions — / }).click();
     await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();
     await page.getByRole('button', { name: 'Terminate — mark completed, cancel, or delete this session', exact: true }).click();
     await page.locator('.ps-modal').getByRole('button', { name: 'Delete Session', exact: true }).click();
