@@ -48,7 +48,9 @@ session's owner: the working folder, "home", "shared", and so on.
 - Every text color is readable in every theme (at least 4.5:1, measured in
   the browser tests). Code colors come from each theme's palette
   (`--ps-code-*`).
-- The tab shows only when the portal serves the workspace roots.
+- The tab shows only when the portal serves the workspace roots. The
+  choice between Canvas and Workspace is a pane setting, saved with your
+  profile like the other panes.
 
 **Which folders the tab serves.** Only folders a worker opened for the
 session. A folder named in the session's record is not enough: nothing

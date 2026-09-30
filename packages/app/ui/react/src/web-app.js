@@ -380,6 +380,7 @@ function normalizeProfileSettings(settings) {
             canvasOpen: candidate.desktopPanes.canvasOpen === true,
             diagnosticsOpen: candidate.desktopPanes.diagnosticsOpen === true,
             zen: candidate.desktopPanes.zen === true,
+            sideTab: candidate.desktopPanes.sideTab === "workspace" ? "workspace" : "canvas",
         };
     }
     if (hasOwn(candidate, "canvasPrefs")) {
@@ -506,7 +507,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             }
             : {
                 rightPaneMode: state.canvasOpen ? "canvas" : "panes",
-                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true },
+                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true, sideTab: state.sidePaneTab === "workspace" ? "workspace" : "canvas" },
             }),
         canvasPrefs: state.canvasPrefs,
         // Written from BOTH device classes: a phone carries the desktop's
@@ -562,6 +563,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
                     canvasOpen: state?.ui?.canvasOpen === true,
                     diagnosticsOpen: state?.ui?.diagnosticsOpen === true,
                     zen: state?.ui?.canvasZen === true,
+                    sideTab: state?.ui?.sidePaneTab === "workspace" ? "workspace" : "canvas",
                 },
             }),
         canvasPrefs: state?.canvas?.prefs,
@@ -8456,20 +8458,11 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
 const CANVAS_SNAPSHOT_SETTLE_MS = 160;
 
 // The side pane shows the session's canvas or its Workspace (its folders and
-// files). The choice is this browser's, remembered across reloads.
-const SIDE_PANE_MODE_KEY = "pilotswarm.sidePane.mode";
-function useSidePaneMode() {
-    const [mode, setMode] = React.useState(() => {
-        try {
-            return window.localStorage.getItem(SIDE_PANE_MODE_KEY) === "workspace" ? "workspace" : "canvas";
-        } catch {
-            return "canvas";
-        }
-    });
-    const choose = React.useCallback((next) => {
-        setMode(next);
-        try { window.localStorage.setItem(SIDE_PANE_MODE_KEY, next); } catch { /* private window: this tab only */ }
-    }, []);
+// files). The choice is a pane setting like the others: it roams with the
+// profile (desktopPanes.sideTab), saved from a desktop.
+function useSidePaneMode(controller) {
+    const mode = useControllerSelector(controller, (state) => (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas"));
+    const choose = React.useCallback((next) => controller?.dispatch({ type: "ui/sidePaneTab", tab: next }), [controller]);
     return [mode, choose];
 }
 
@@ -8493,7 +8486,7 @@ function SidePaneTabs({ mode, onChange, compact = false }) {
 
 function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote = false, maximized = false, onToggleMaximized = null }) {
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
-    const [paneMode, setPaneMode] = useSidePaneMode();
+    const [paneMode, setPaneMode] = useSidePaneMode(controller);
     const workspaceTab = portalWorkspaceFiles;
     const onCanvas = !workspaceTab || paneMode === "canvas";
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
@@ -15269,6 +15262,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         diagnosticsOpen: rootState.ui.diagnosticsOpen === true,
         canvasMaximized: rootState.ui.canvasMaximized === true,
         canvasZen: rootState.ui.canvasZen === true,
+        sidePaneTab: rootState.ui.sidePaneTab === "workspace" ? "workspace" : "canvas",
         // Live reference — reducer updates replace the object, so
         // shallow-equal sees changes and the save effect fires.
         canvasPrefs: rootState.canvas?.prefs,
@@ -15599,7 +15593,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
