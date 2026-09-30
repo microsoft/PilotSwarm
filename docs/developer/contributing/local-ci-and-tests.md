@@ -74,6 +74,12 @@ alone does not reproduce this complete gate. Files run concurrently, so do not
 run two full harnesses against the same database simultaneously. Stop the
 disposable database with `docker stop pilotswarm-test-postgres` when finished.
 
+For a long-running risky-change campaign that checkpoints completed files and
+supports controlled continuation after triage, see
+[Resumable local test validation](resumable-test-validation.md). That WIP
+harness complements this complete gate; it does not silently replace phases it
+does not yet manage.
+
 The SDK uses the tracked test model catalog by default; your private root catalog
 is not automatically a live model matrix. `PS_MODEL_PROVIDERS_PATH` can override
 the SDK catalog, but individual tests may require specific models/providers.
