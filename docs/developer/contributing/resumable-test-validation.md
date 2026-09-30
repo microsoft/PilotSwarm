@@ -1,13 +1,10 @@
 # Resumable local test validation
 
 > **Functional specification and acceptance contract:** this document is the
-> normative description of the resumable validation harness, not a description
-> of every behavior in the exploratory prototype. Implementation work should
-> conform to it, and prototype gaps are expected to be brought into alignment.
-> The contract can evolve when implementation evidence or repository constraints
-> justify a change, but such changes should be reviewed explicitly rather than
-> introduced as silent deviations. The feature-branch implementation is not yet
-> complete enough to use as merge evidence.
+> normative description of the resumable validation harness. Implementation
+> changes should conform to it. The contract can evolve when implementation
+> evidence or repository constraints justify a change, but such changes should
+> be reviewed explicitly rather than introduced as silent deviations.
 
 ## What is a validation campaign?
 
@@ -107,7 +104,7 @@ The harness supports a merge or publication protocol; it does not define one.
 Create the candidate commit and decide whether to publish or roll it back
 outside the harness.
 
-The intended long-term shape is:
+The implemented layering is:
 
 ```text
 Vitest and canonical repository scripts
@@ -121,8 +118,7 @@ This preserves one source of truth for what tests exist and how the complete
 gate runs. Removing the campaign state should leave the underlying Vitest and
 `run-tests.sh` workflows fully usable.
 
-Everything below describes that intended value and boundary. The prototype is
-input to the implementation work, not the specification.
+Everything below defines the utility's value, behavior, and boundary.
 
 ## Before starting
 
