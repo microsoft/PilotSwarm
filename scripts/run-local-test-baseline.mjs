@@ -1277,9 +1277,13 @@ export function retainVitestReport(
             skipped: report.numPendingTests ?? 0,
             todo: report.numTodoTests ?? 0,
         };
+        const suiteFailed = (report.numFailedTestSuites ?? 0) > 0
+            || (report.testResults ?? []).some((suite) => suite.status === "failed");
         const summary = firstFailure
             ? compactMessage(firstFailure)
-            : `${testCounts.passed} tests passed${testCounts.failed ? `, ${testCounts.failed} failed` : ""}`;
+            : suiteFailed
+                ? ""
+                : `${testCounts.passed} tests passed${testCounts.failed ? `, ${testCounts.failed} failed` : ""}`;
         const retainedPath = resolveReportArtifactPath(
             campaignOutputDirectory,
             reportPath,
@@ -1721,8 +1725,9 @@ export async function runTestFile(
         vitestPath,
         "run",
         `test/local/${file}`,
+        "--reporter=default",
         "--reporter=json",
-        `--outputFile=${reportArgumentPath}`,
+        `--outputFile.json=${reportArgumentPath}`,
     ];
     if (tagsFilter) vitestArgs.push(`--tagsFilter=${tagsFilter}`);
     const payload = JSON.stringify({

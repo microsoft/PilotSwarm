@@ -1078,6 +1078,30 @@ test("missing or malformed native reports fail evidence retention and are not ke
     assert.equal(fs.existsSync(wrongShape), false);
 });
 
+test("suite-level failures defer to captured reporter output for triage", (t) => {
+    const dir = scratch(t);
+    const reportPath = path.join(dir, "suite-failure.json");
+    fs.writeFileSync(reportPath, JSON.stringify({
+        numTotalTests: 7,
+        numPassedTests: 0,
+        numFailedTests: 0,
+        numPendingTests: 7,
+        numTodoTests: 0,
+        numFailedTestSuites: 1,
+        testResults: [{
+            status: "failed",
+            assertionResults: Array.from({ length: 7 }, () => ({
+                status: "skipped",
+                failureMessages: [],
+            })),
+        }],
+    }));
+    const result = retainVitestReport(reportPath, {}, [], dir);
+    assert.equal(result.valid, true);
+    assert.equal(result.summary, "");
+    assert.equal(result.testCounts.skipped, 7);
+});
+
 test("gates an attempt until PID persistence and retains only a redacted native report", {
     timeout: 30_000,
 }, async (t) => {
