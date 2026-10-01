@@ -67,7 +67,9 @@ test("GitHub configuration stays in private files and overrides stale local path
   assert.match(content, /MODEL_PROVIDERS_FILE=deploy\/envs\/local\/ci\/model_providers.json$/m);
   assert.match(content, /DEPLOY_PRINCIPAL_ID=33333333-3333-3333-3333-333333333333$/m);
   assert.equal(JSON.parse(readFileSync(join(writeDir, "foundry-deployments.json"), "utf8")).length, 2);
-  assert.equal(statSync(join(writeDir, ".env")).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(join(writeDir, ".env")).mode & 0o777, 0o600);
+  }
   assert.equal(JSON.parse(readFileSync(join(writeDir, "model_providers.json"), "utf8")).providers[0].wireApi, "responses");
 });
 

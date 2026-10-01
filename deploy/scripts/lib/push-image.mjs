@@ -141,12 +141,12 @@ export async function refreshAzureOidcLogin(env, reason = "registry push") {
     throw new Error("Could not obtain a fresh GitHub OIDC assertion.");
   }
 
-  const login = spawnSync(resolveCli("az"), [
+  const login = run("az", [
     "login", "--service-principal", "--username", clientId,
     "--tenant", tenantId, "--federated-token", assertion,
     "--subscription", subscriptionId, "--output", "none",
-  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  if (login.error || login.status !== 0) {
+  ], { capture: true, allowFail: true });
+  if (login.status !== 0) {
     throw new Error("Fresh Azure OIDC login failed.");
   }
   log("info", `Refreshed Azure OIDC login before ${reason}.`);
