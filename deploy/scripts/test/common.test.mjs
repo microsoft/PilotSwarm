@@ -62,8 +62,8 @@ test("redactArgs masks generic --value=foo (equals-form)", () => {
   assert.deepEqual(out, ["az", "keyvault", "secret", "set", "--name=k", "--value=***"]);
 });
 
-test("redactArgs masks --token, --secret, --client-secret, --connection-string, --sas-token, --account-key", () => {
-  const flags = ["--token", "--secret", "--client-secret", "--connection-string", "--sas-token", "--account-key", "--admin-password"];
+test("redactArgs masks token, secret, connection, and account credential flags", () => {
+  const flags = ["--token", "--federated-token", "--secret", "--client-secret", "--connection-string", "--sas-token", "--account-key", "--admin-password"];
   for (const f of flags) {
     assert.deepEqual(
       redactArgs(["cli", f, "v"]),
