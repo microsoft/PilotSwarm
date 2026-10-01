@@ -2333,6 +2333,21 @@ body.is-resizing-pane-y iframe {
   min-height: 0;
 }
 
+.ps-external-work-index-view {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ps-external-work-index-frame {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: var(--ps-background);
+}
+
 .ps-work-index-tab {
   border: 0;
   border-bottom: 2px solid transparent;
