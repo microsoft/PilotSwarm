@@ -6373,11 +6373,35 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         : null);
 }
 
-function WorkIndexTabs({ activeTab, onChange, panelId, isAdmin = false, scope = "visible", onScopeChange }) {
+function normalizeExternalWorkIndexViews(value) {
+    if (!Array.isArray(value)) return [];
+    return value.filter((view) => (
+        view
+        && typeof view.id === "string"
+        && typeof view.label === "string"
+        && typeof view.url === "string"
+    )).map((view) => ({
+        id: view.id,
+        label: view.label,
+        url: view.url,
+        tabId: `external:${view.id}`,
+    }));
+}
+
+function WorkIndexTabs({
+    activeTab,
+    onChange,
+    panelId,
+    isAdmin = false,
+    scope = "visible",
+    onScopeChange,
+    externalViews = [],
+}) {
     const tabs = [
         { id: "sessions", label: "Sessions" },
         { id: "workflowRuns", label: "Workflow Runs" },
         { id: "workflowGenerators", label: "Workflow Generators" },
+        ...externalViews.map((view) => ({ id: view.tabId, label: view.label })),
     ];
     const selectRelative = (currentId, delta) => {
         const currentIndex = tabs.findIndex((tab) => tab.id === currentId);
@@ -6387,6 +6411,17 @@ function WorkIndexTabs({ activeTab, onChange, panelId, isAdmin = false, scope = 
             document.getElementById(`ps-work-index-tab-${tabs[nextIndex].id}`)?.focus();
         });
     };
+    const scopeButton = isAdmin
+        ? React.createElement("button", {
+            type: "button",
+            className: `ps-work-index-scope${scope === "fleet" ? " is-fleet" : ""}`,
+            "aria-pressed": scope === "fleet",
+            onClick: () => onScopeChange?.(scope === "fleet" ? "visible" : "fleet"),
+            title: scope === "fleet"
+                ? "Return to records visible to your own identity"
+                : "View the fleet-wide read-only catalog",
+        }, scope === "fleet" ? "Fleet view · read-only" : "My view")
+        : null;
     return React.createElement("div", { className: "ps-work-index-heading" },
     React.createElement("div", {
         className: "ps-work-index-tabs",
@@ -6421,17 +6456,7 @@ function WorkIndexTabs({ activeTab, onChange, panelId, isAdmin = false, scope = 
             }
         },
     }, tab.label))),
-    isAdmin
-        ? React.createElement("button", {
-            type: "button",
-            className: `ps-work-index-scope${scope === "fleet" ? " is-fleet" : ""}`,
-            "aria-pressed": scope === "fleet",
-            onClick: () => onScopeChange?.(scope === "fleet" ? "visible" : "fleet"),
-            title: scope === "fleet"
-                ? "Return to records visible to your own identity"
-                : "View the fleet-wide read-only catalog",
-        }, scope === "fleet" ? "Fleet view · read-only" : "My view")
-        : null);
+    String(activeTab).startsWith("external:") ? null : scopeButton);
 }
 
 function previewExecutionStatus(session) {
@@ -8491,6 +8516,7 @@ function WorkIndexPane({
     panelClassName = "",
     structuredRows = false,
     showDetailBox = null,
+    externalViews = [],
 }) {
     const isAdmin = useControllerSelector(controller, (state) => {
         const role = state.auth?.authorization?.role;
@@ -8709,6 +8735,11 @@ function WorkIndexPane({
         loadPersistedWorkflowRunDetail(controller.transport, workflowRun.raw, { scope: catalogScope })
     ), [catalogScope, controller]);
     const panelId = "ps-work-index-panel";
+    const normalizedExternalViews = React.useMemo(
+        () => normalizeExternalWorkIndexViews(externalViews),
+        [externalViews],
+    );
+    const externalView = normalizedExternalViews.find((view) => view.tabId === activeTab) || null;
     const title = React.createElement(WorkIndexTabs, {
         activeTab,
         onChange: onTabChange,
@@ -8716,9 +8747,24 @@ function WorkIndexPane({
         isAdmin,
         scope: catalogScope,
         onScopeChange: onCatalogScopeChange,
+        externalViews: normalizedExternalViews,
     });
     const readOnly = catalogScope === "fleet";
-    const content = activeTab === "workflowRuns"
+    const content = externalView
+        ? React.createElement("section", {
+            className: `ps-panel ps-external-work-index-view${panelClassName ? ` ${panelClassName}` : ""}`,
+            "aria-label": externalView.label,
+        },
+        React.createElement("header", { className: "ps-panel-header" },
+            React.createElement("div", { className: "ps-panel-title" }, title)),
+        React.createElement("iframe", {
+            className: "ps-external-work-index-frame",
+            src: externalView.url,
+            title: externalView.label,
+            sandbox: "allow-downloads allow-forms allow-popups allow-same-origin allow-scripts",
+            referrerPolicy: "no-referrer",
+        }))
+        : activeTab === "workflowRuns"
         ? React.createElement(WorkflowRunPane, {
             key: catalogScope,
             controller,
@@ -10070,6 +10116,7 @@ function MobileWorkspace({
     onWorkIndexScopeChange,
     onFleetSessionSelect,
     onEnterZen,
+    externalViews,
 }) {
     const sessionPane = React.createElement(WorkIndexPane, {
         controller,
@@ -10079,6 +10126,7 @@ function MobileWorkspace({
         catalogScope: workIndexScope,
         onCatalogScopeChange: onWorkIndexScopeChange,
         onFleetSessionSelect,
+        externalViews,
     });
     if (layout === "chat") {
         return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
@@ -10102,6 +10150,7 @@ function MobileWorkspace({
                 catalogScope: workIndexScope,
                 onCatalogScopeChange: onWorkIndexScopeChange,
                 onFleetSessionSelect,
+                externalViews,
             }));
     }
     return React.createElement("div", { className: "ps-mobile-workspace" },
@@ -18589,7 +18638,13 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     return new PilotSwarmUiController({ store, transport });
 }
 
-export function PilotSwarmWebApp({ controller, suspended = false, moa = null, viewNavigation = null }) {
+export function PilotSwarmWebApp({
+    controller,
+    suspended = false,
+    moa = null,
+    viewNavigation = null,
+    externalViews = [],
+}) {
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
@@ -19248,6 +19303,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
             catalogScope: workIndexScope,
             onCatalogScopeChange: changeWorkIndexScope,
             onFleetSessionSelect: selectFleetSession,
+            externalViews,
         })) : null,
     React.createElement("div", {
         style: {
@@ -19396,6 +19452,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         workIndexScope,
         onWorkIndexScopeChange: changeWorkIndexScope,
         onFleetSessionSelect: selectFleetSession,
+        externalViews,
         onEnterZen: moa?.openMobileZen,
     });
 
