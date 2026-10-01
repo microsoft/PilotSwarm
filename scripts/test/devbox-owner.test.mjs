@@ -40,7 +40,7 @@ const IS_WIN = process.platform === "win32";
 const STUB_SUBJECT = "00000000-0000-0000-0000-000000000000";
 // A fake token the stubbed `gh auth token` returns. If the preload injects it
 // into GITHUB_TOKEN, that is the regression this test catches.
-const STUB_GH_TOKEN = "gho_stubtokenstubtokenstubtokenstub01234";
+const STUB_GH_TOKEN = "ghp_" + "x".repeat(36);
 
 /**
  * Create a throwaway directory of stub `gh`/`az` executables and return it so
