@@ -27,7 +27,7 @@ test('examples, secret names, public Azure IDs and structure remain shareable', 
     '$loginServer = "$Registry.azurecr.io"',
     '$expectedDatabaseHost = "$($Config.StampName)-pg.postgres.database.azure.com"',
     'PORTAL_HOSTNAME=localhost',
-    'https://example.azurecr.io/worker:example',
+    'https://placeholder.azurecr.io/worker:example',
     'GITHUB_TOKEN=ghp_' + 'x'.repeat(36),
   ].join('\n')), []);
 });

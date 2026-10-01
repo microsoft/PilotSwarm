@@ -1,7 +1,7 @@
 {
   "publicAzureHosts": ["privatelink.file.core.windows.net"],
   "exampleAzureHosts": [
-    "acr_name.azurecr.io", "example.azurecr.io", "placeholder.azurecr.io", "placeholder.blob.core.windows.net",
+    "acr_name.azurecr.io", "placeholder.azurecr.io", "placeholder.blob.core.windows.net",
     "your-foundry-resource.services.ai.azure.com", "myvault.vault.azure.net",
     "myacr.azurecr.io", "old-stamp-pg.postgres.database.azure.com",
     "ps.example.postgres.database.azure.com", "acct.blob.core.windows.net",
