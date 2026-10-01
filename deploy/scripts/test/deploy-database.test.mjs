@@ -32,6 +32,7 @@ function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvVa
     RESOURCE_PREFIX: "psfixture", RESOURCE_GROUP: "psfixture-rg",
     GLOBAL_RESOURCE_PREFIX: "psfixtureglobal", GLOBAL_RESOURCE_GROUP: "psfixtureglobal-rg",
     PORTAL_RESOURCE_NAME: "psfixture-portal", ACME_EMAIL: "test@example.invalid",
+    PORTAL_AUTH_PROVIDER: "none", PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "true",
     DEPLOY_POSTGRES: "false", PILOTSWARM_USE_MANAGED_IDENTITY: "0",
     KV_NAME: "test-vault", ACR_LOGIN_SERVER: "test.azurecr.io",
     WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000001",
@@ -46,7 +47,7 @@ function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvVa
     }
   }
   if (omitFlag) delete env.DEPLOY_POSTGRES;
-  const scaffolded = renderLocalEnv({ name, targets: env });
+  const scaffolded = renderLocalEnv({ name, targets: env, portalConfig: env });
   writeFileSync(join(local, ".env"), omitFlag
     ? scaffolded.replace(/^DEPLOY_POSTGRES=.*\n/m, "")
     : scaffolded);
@@ -61,7 +62,7 @@ function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvVa
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
-const tool = path.basename(process.argv[1]);
+const tool = process.env.BYO_TOOL || path.basename(process.argv[1]);
 const option = key => args[args.indexOf(key) + 1];
 const safe = args.map((a, i) => args[i - 1] === "--value" ? "<redacted>" : a);
 fs.appendFileSync(process.env.BYO_CALLS, JSON.stringify({tool, args: safe}) + "\\n");
@@ -71,6 +72,9 @@ if (args[0] === "account") { console.log("fixture-subscription"); process.exit(0
 if (args[0] === "ad") process.exit(1);
 if (args[0] === "group" && args[1] === "exists") { console.log("true"); process.exit(0); }
 if (args[0] === "deployment" && args[2] === "show") {
+  if ((option("--query") || "").includes("properties.outputs.edgeMode.value")) {
+    console.log(JSON.stringify({output:"afd", parameter:"afd"})); process.exit(0);
+  }
   const value = x => ({type:"String", value:x});
   console.log(JSON.stringify({
     postgresFqdn: value(""), postgresAadAdminPrincipalName: value(""),
@@ -109,7 +113,15 @@ if (args[0] === "keyvault") {
 }
 `;
   for (const tool of ["az", "git", "docker"]) {
-    writeFileSync(join(dir, tool), cli, { mode: 0o755 });
+    if (process.platform === "win32") {
+      writeFileSync(join(dir, `${tool}.cjs`), cli);
+      writeFileSync(
+        join(dir, `${tool}.cmd`),
+        `@echo off\r\nset "BYO_TOOL=${tool}"\r\n"${process.execPath}" "%~dp0${tool}.cjs" %*\r\n`,
+      );
+    } else {
+      writeFileSync(join(dir, tool), cli, { mode: 0o755 });
+    }
   }
   const callsFile = join(dir, "calls.jsonl");
   const valuesFile = join(dir, "values.jsonl");
@@ -155,6 +167,10 @@ test("build-only dispatch reaches build preflight without database settings", (t
   assert.match(result.stdout, /=== \[worker\] build ===/);
   assert.match(result.stderr, /Required CLI not found or not runnable: docker/);
   assert.doesNotMatch(result.stderr, /requires DATABASE_URL|PILOTSWARM_DB_AAD_USER/);
+  assert.ok(
+    !f.calls().some(({ args }) => args[0] === "deployment"),
+    "build-only must not inspect deployed ingress topology",
+  );
 });
 
 for (const service of ["global-infra", "base-infra"]) {

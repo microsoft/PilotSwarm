@@ -371,6 +371,7 @@ const SENSITIVE_FLAG_PATTERNS = [
   /^--?password$/i,
   /^-p$/, // az login -p, az ad sp create-for-rbac -p
   /^--?token$/i,
+  /^--?federated-token$/i,
   /^--?secret$/i,
   /^--?client-secret$/i,
   /^--?admin-password$/i,

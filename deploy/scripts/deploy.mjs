@@ -41,6 +41,7 @@ import {
   applyStubKeys,
   unsupportedEdgeTlsReason,
   edgeModeTransitionReason,
+  requiresEdgeModeValidation,
   parseDeployedEdgeModeLookup,
 } from "./lib/overlay-contracts.mjs";
 import { configureServiceEnv, loadDeployManifest } from "./lib/services-manifest.mjs";
@@ -628,10 +629,12 @@ async function main() {
 
   // 5) Subscription pin (FR-005)
   assertSubscription(env.SUBSCRIPTION_ID);
-  const deployedEdgeMode = readDeployedEdgeMode({ envName, env });
-  const transitionReason = edgeModeTransitionReason(deployedEdgeMode, edgeMode);
-  if (transitionReason) {
-    throw new Error(transitionReason);
+  if (requiresEdgeModeValidation(steps)) {
+    const deployedEdgeMode = readDeployedEdgeMode({ envName, env });
+    const transitionReason = edgeModeTransitionReason(deployedEdgeMode, edgeMode);
+    if (transitionReason) {
+      throw new Error(transitionReason);
+    }
   }
 
   // 6) Resolve image tag (FR-017) — shared across services in `all` mode so

@@ -71,6 +71,14 @@ export function edgeModeTransitionReason(deployedEdgeMode, requestedEdgeMode) {
   );
 }
 
+export function requiresEdgeModeValidation(steps) {
+  if (!steps) return true;
+  const topologySteps = new Set(["bicep", "render", "manifests", "rollout"]);
+  return String(steps)
+    .split(",")
+    .some((step) => topologySteps.has(step.trim()));
+}
+
 export function parseDeployedEdgeModeLookup({
   status,
   stdout = "",

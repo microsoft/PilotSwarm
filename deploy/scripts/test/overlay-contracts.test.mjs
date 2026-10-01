@@ -26,6 +26,7 @@ import {
   DEFAULT_TLS_SOURCE,
   unsupportedEdgeTlsReason,
   edgeModeTransitionReason,
+  requiresEdgeModeValidation,
   parseDeployedEdgeModeLookup,
   databaseOverlayOmittedKeys,
 } from "../lib/overlay-contracts.mjs";
@@ -239,6 +240,15 @@ test("edge mode transitions fail closed because ARM deployments are incremental"
   assert.equal(edgeModeTransitionReason("port-forward", "port-forward"), null);
   assert.match(edgeModeTransitionReason("afd", "port-forward"), /In-place EDGE_MODE transitions/);
   assert.match(edgeModeTransitionReason("private", "afd"), /decommission the existing stamp/);
+});
+
+test("edge mode validation runs only for topology-affecting steps", () => {
+  assert.equal(requiresEdgeModeValidation(null), true);
+  assert.equal(requiresEdgeModeValidation("bicep"), true);
+  assert.equal(requiresEdgeModeValidation("render,manifests"), true);
+  assert.equal(requiresEdgeModeValidation("build"), false);
+  assert.equal(requiresEdgeModeValidation("push,seed-secrets"), false);
+  assert.equal(requiresEdgeModeValidation("noop"), false);
 });
 
 test("deployment lookup uses the output and falls back to the legacy parameter", () => {
