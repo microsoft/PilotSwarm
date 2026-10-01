@@ -24,6 +24,9 @@ test('examples, secret names, public Azure IDs and structure remain shareable', 
     'clientId: c632b3df-fb67-4d84-bdcf-b95ad541b5c8',
     'secrets.AZURE_CI_DATABASE_JSON',
     'RESOURCE_GROUP="${RESOURCE_GROUP}"',
+    '$loginServer = "$Registry.azurecr.io"',
+    '$expectedDatabaseHost = "$($Config.StampName)-pg.postgres.database.azure.com"',
+    'PORTAL_HOSTNAME=localhost',
     'GITHUB_TOKEN=ghp_' + 'x'.repeat(36),
   ].join('\n')), []);
 });

@@ -21,6 +21,15 @@ export function scanText(path, text) {
     const number = index + 1;
     for (const match of line.matchAll(azureHost)) {
       const host = match[0].toLowerCase();
+      const prefix = line.slice(0, match.index);
+      const tokenStart = Math.max(
+        prefix.lastIndexOf(' '),
+        prefix.lastIndexOf('\t'),
+        prefix.lastIndexOf('"'),
+        prefix.lastIndexOf("'"),
+        prefix.lastIndexOf('`'),
+      );
+      if (prefix.slice(tokenStart + 1).includes('$')) continue;
       if (!policy.exampleAzureHosts.includes(host) && !policy.publicAzureHosts.includes(host) && !/^__[a-z0-9_]+__\./.test(host)) add(number, 'concrete-azure-host');
     }
     {
@@ -44,7 +53,7 @@ export function scanText(path, text) {
     const assignment = line.match(/^\s*(?:export\s+)?(?:ACR_NAME|ACR_REGISTRY|K8S_CONTEXT|RESOURCE_GROUP|SUBSCRIPTION_ID|AZURE_SUBSCRIPTION_ID|PORTAL_HOST(?:NAME)?)\s*=\s*["']?([^\s"'`#]+)/);
     if (assignment) {
       const value = assignment[1];
-      if (value && !/[$<{}]|placeholder|example|^your[-_]|^my[-_]|^test[-_]|^__|^0{8}-|^unused$|^\.\.\.$/.test(value)) add(number, 'literal-deployment-setting');
+      if (value && !/[$<{}]|placeholder|example|^your[-_]|^my[-_]|^test[-_]|^__|^0{8}-|^unused$|^localhost$|^\.\.\.$/.test(value)) add(number, 'literal-deployment-setting');
     }
   }
   return findings;
