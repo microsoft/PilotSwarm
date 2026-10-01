@@ -189,9 +189,10 @@ Notes:
 - Default parallelism is eight SDK test files. Override PS_TEST_MAX_WORKERS or
     use --sequential. Provider phases themselves run one after the other.
 - A full run (no suite filter) also runs the deploy-scripts tests
-    (node --test against deploy/scripts/test/*.test.mjs) and the
-    mcp-server unit tests (node) before the SDK suites. Set
-    SKIP_DEPLOY_SCRIPTS_TESTS=1 or SKIP_MCP_SERVER_TESTS=1 to skip.
+    (node --test against deploy/scripts/test/*.test.mjs), WorkflowGenerator and
+    provider tests, and the mcp-server unit tests (node) before the SDK suites.
+    Set SKIP_DEPLOY_SCRIPTS_TESTS=1, SKIP_WORKFLOW_GENERATOR_TESTS=1, or
+    SKIP_MCP_SERVER_TESTS=1 to skip.
     The mcp-server LIVE integration suite is opt-in via
     `npm run test:mcp-server:integration` (or :all).
 - Provider-level HorizonDB tests run only when --with-horizondb or
@@ -626,6 +627,20 @@ run_deploy_scripts_tests() {
     record_run_phase "deploy-scripts tests" "PASS"
 }
 
+# Run the WorkflowGenerator controller, provider host, and concrete provider module
+# unit suites together so provider ABI changes cannot bypass the full workflow.
+run_workflow_generator_tests() {
+    if [ "${SKIP_WORKFLOW_GENERATOR_TESTS:-0}" = "1" ]; then
+        echo "⏭  Skipping WorkflowGenerator/provider tests (SKIP_WORKFLOW_GENERATOR_TESTS=1)."
+        record_run_phase "WorkflowGenerator/provider tests" "SKIPPED"
+        return 0
+    fi
+    echo "🧪 Running WorkflowGenerator/provider tests (node)..."
+    (cd "$REPO_ROOT" && npm run --silent test:workflow-generator) \
+        || { echo "❌ WorkflowGenerator/provider tests failed"; exit 1; }
+    record_run_phase "WorkflowGenerator/provider tests" "PASS"
+}
+
 # Run the mcp-server unit suite when no SDK suite filter is in effect.
 # The mcp-server has a small pure-mock unit test (no DB, no Copilot) plus
 # LIVE integration smokes that are opt-in via test:mcp-server:integration.
@@ -958,6 +973,10 @@ load_env_file() {
     local file="$1"
     local line key value
     while IFS= read -r line || [ -n "$line" ]; do
+        # Match Node's --env-file handling on Windows: read -r preserves the
+        # carriage return from CRLF files, which otherwise becomes part of the
+        # exported value (and invalidates credentials such as GITHUB_TOKEN).
+        line="${line%$'\r'}"
         case "$line" in
             ''|'#'*) continue ;;
         esac
@@ -1142,6 +1161,7 @@ elif [ ${#HORIZON_TARGET_FILES[@]} -gt 0 ]; then
     exit 0
 else
     run_deploy_scripts_tests
+    run_workflow_generator_tests
     run_mcp_server_tests
     run_sdk_unit_tests
     run_app_tests

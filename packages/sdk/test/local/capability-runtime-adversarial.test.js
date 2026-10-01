@@ -139,6 +139,42 @@ describe("capability binding exact identity and access boundaries", () => {
         expect(() => bindCapabilities([a, b], ALICE, [select("a", ["lookup"]), select("b", ["lookup"])], [], {}, null, true)).toThrow(/collision/);
     });
 
+    it("treats an identical original MCP server as already satisfied", () => {
+        const src = source("shared", {
+            tools: [],
+            mcp: { SqlOps: { type: "http", url: "https://example.test/mcp" } },
+        });
+        const result = bindCapabilities(
+            [src],
+            ALICE,
+            [select("shared", [], ["SqlOps"])],
+            [],
+            { SqlOps: { type: "http", url: "https://example.test/mcp", tools: ["*"] } },
+            null,
+            true,
+        );
+
+        expect(result.mcpServers).toEqual({});
+        expect(result.unavailable).toEqual([]);
+    });
+
+    it("still rejects a same-name MCP server with different configuration", () => {
+        const src = source("shared", {
+            tools: [],
+            mcp: { SqlOps: { type: "http", url: "https://plugin.example/mcp", tools: ["*"] } },
+        });
+
+        expect(() => bindCapabilities(
+            [src],
+            ALICE,
+            [select("shared", [], ["SqlOps"])],
+            [],
+            { SqlOps: { type: "http", url: "https://repository.example/mcp", tools: ["*"] } },
+            null,
+            true,
+        )).toThrow(/collision/);
+    });
+
     it("rejects framework/native control exports regardless of source visibility", () => {
         for (const name of ["task", "use_package", "set_cluster_feature_flag"]) {
             const src = source("shared", { tools: [tool(name)] });

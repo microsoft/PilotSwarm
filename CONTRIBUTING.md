@@ -24,6 +24,33 @@ optional full/additive HorizonDB tests, and installing the GitHub workflows in
 your own repository. It documents the actual full test wrapper and eight-file
 parallelism. Never use an application database for test cleanup.
 
+### Resumable local test baseline
+
+For a resumable per-file baseline, use the baseline runner. It records each
+attempt in a local JSON file, retries only files whose latest result is not
+passing by default, and enforces an independent timeout for every file:
+
+```bash
+npm run test:local:baseline -- \
+  --parallelism 8 \
+  --retry-count 1 \
+  --timeout-per-file 5m
+```
+
+Use `--all` to reassess current passes or repeat `--file <path>` to select
+exact files under `packages/sdk/test/local/`. The generated
+`pilotswarm-local-test-baseline.json` is local run data and should not be
+staged or committed.
+
+View the live, sortable baseline dashboard while a run is in progress:
+
+```bash
+npm run test:local:baseline:dashboard
+```
+
+The dashboard reads the JSON file on every refresh and defaults to
+`http://127.0.0.1:4310`.
+
 ## Project Layout
 
 ```

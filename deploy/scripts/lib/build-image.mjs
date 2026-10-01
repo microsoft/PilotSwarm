@@ -13,7 +13,7 @@ import { SERVICE_IMAGE_INFO } from "./service-info.mjs";
 
 // Build a service image and write a gzipped OCI/docker tarball to the staging dir.
 // Returns the absolute path to the .tar.gz on disk.
-export async function buildImage({ service, envName, imageTag, stagingDir: stage }) {
+export async function buildImage({ service, envName, imageTag, stagingDir: stage, env = {} }) {
   const info = SERVICE_IMAGE_INFO[service];
   if (!info) {
     throw new Error(
@@ -51,25 +51,64 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
   }
 
   // 1) docker buildx build (platform pinned per repo Docker convention).
+  const workerBuildArgs = service === "worker"
+    ? [
+        "--build-arg",
+        `PILOTSWARM_SOURCE_COMMIT=${run("git", ["rev-parse", "HEAD"], { capture: true }).stdout.trim()}`,
+        "--build-arg",
+        `PILOTSWARM_BUILD_ID=${imageTag}`,
+      ]
+    : [];
+  // Forward the npm registry so in-image `npm ci` works on corporate networks
+  // that block registry.npmjs.org. The Dockerfiles declare `ARG NPM_REGISTRY`
+  // (default = public registry) and npm rewrites the lockfile's resolved URLs
+  // onto it, so the image stays reproducible. Prefer an explicit NPM_REGISTRY
+  // override, else inherit the host's configured registry when it is a
+  // non-default mirror — zero operator action on an already-configured host.
+  const npmRegistry = resolveNpmRegistry(env);
+  const registryBuildArgs = npmRegistry
+    ? ["--build-arg", `NPM_REGISTRY=${npmRegistry}`]
+    : [];
+  if (npmRegistry) log("info", `NPM_REGISTRY=${npmRegistry} (in-image npm ci)`);
   log("info", `docker buildx build → ${localTag}`);
-  await runForeground("docker", [
+  const buildArgs = [
     "buildx",
     "build",
     "--platform",
     "linux/amd64",
     "--load",
+    ...workerBuildArgs,
+    ...registryBuildArgs,
     "-t",
     localTag,
     "-f",
     dockerfileAbs,
     REPO_ROOT,
-  ]);
+  ];
+  await runForeground("docker", buildArgs);
 
   // 2) docker save | zlib gzip → <staging>/<repo>.tar.gz (no host gzip CLI).
   const outPath = join(stage, `${dockerImageRepo}.tar.gz`);
   log("info", `docker save | zlib gzip → ${outPath}`);
   await pipedSaveToGzip(localTag, outPath);
   return outPath;
+}
+
+// resolveNpmRegistry: pick the npm registry to bake into in-image `npm ci`.
+// Explicit NPM_REGISTRY wins; otherwise inherit the host's configured registry
+// when it is a non-default mirror (corporate networks that block npmjs.org are
+// usually already pointed at one). Returns null to leave the Dockerfile default.
+function resolveNpmRegistry(env) {
+  const configured = String(env.NPM_REGISTRY ?? "").trim();
+  if (configured) return configured;
+  if (process.env.NPM_REGISTRY) return process.env.NPM_REGISTRY;
+  try {
+    const r = run("npm", ["config", "get", "registry"], { capture: true }).stdout.trim();
+    if (r && r !== "undefined" && !/registry\.npmjs\.org/i.test(r)) return r;
+  } catch {
+    // npm not resolvable here — fall back to the Dockerfile's public default.
+  }
+  return null;
 }
 
 // runForeground: spawn with inherited stdio, no shell, no batch-file weirdness

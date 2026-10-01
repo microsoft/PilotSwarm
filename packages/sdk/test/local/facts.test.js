@@ -632,7 +632,7 @@ async function testAccessibleScopeIncludesFullLineage(env) {
 
 /**
  * The agent-tuner is read-only at the namespace gate level (write/delete
- * blocked) but its job is to investigate ANY session, not just its own
+ * blocked) but its workflowRun is to investigate ANY session, not just its own
  * spawn lineage. The lineage gate that limits normal task agents must
  * be bypassed for it. This regression test reproduces the failure mode
  * captured in the screenshot that prompted facts migration 0004:

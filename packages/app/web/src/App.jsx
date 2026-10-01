@@ -79,6 +79,9 @@ const DEFAULT_PORTAL_CONFIG = {
             loadingMessage: "Preparing your workspace",
             loadingCopy: "Connecting the shared workspace and live session feeds...",
         },
+        footer: {
+            links: [],
+        },
         auth: {
             signInTitle: "Sign in to PilotSwarm",
             signInMessage: null,
@@ -320,7 +323,19 @@ function PortalBrandMark({ branding, size = "compact", themeIcon = null }) {
             }));
 }
 
-function PortalLoadingScreen({ branding, ui, shellStyle, error = null }) {
+function PortalFooter({ footer }) {
+    const links = Array.isArray(footer?.links) ? footer.links : [];
+    if (links.length === 0) return null;
+    return React.createElement("footer", { className: "portal-footer" },
+        links.map((link) => React.createElement("a", {
+            key: link.url,
+            href: link.url,
+            target: "_blank",
+            rel: "noopener noreferrer",
+        }, link.label)));
+}
+
+function PortalLoadingScreen({ branding, ui, footer, shellStyle, error = null }) {
     return React.createElement("div", { className: "portal-gate", style: shellStyle },
         React.createElement("div", { className: "portal-gate-card" },
             React.createElement("div", { className: "portal-gate-brand" },
@@ -328,7 +343,8 @@ function PortalLoadingScreen({ branding, ui, shellStyle, error = null }) {
                 React.createElement("div", { className: "portal-gate-kicker" }, getWorkspaceTitle(branding))),
             React.createElement("h1", { className: "portal-gate-title" }, error ? "Portal startup failed" : (ui?.loadingMessage || "Preparing your workspace")),
             React.createElement("p", { className: "portal-gate-copy" }, error || ui?.loadingCopy || "Connecting the shared workspace and live session feeds..."),
-        ));
+        ),
+        React.createElement(PortalFooter, { footer }));
 }
 
 function DevPersonaPicker({ authConfig, onSignIn }) {
@@ -347,7 +363,7 @@ function DevPersonaPicker({ authConfig, onSignIn }) {
         )));
 }
 
-function PortalSignedOut({ branding, authUi, authConfig, error, onSignIn, shellStyle }) {
+function PortalSignedOut({ branding, authUi, authConfig, footer, error, onSignIn, shellStyle }) {
     const providerDisplayName = authConfig?.displayName || branding?.title || "Authentication";
     const isDevProvider = authConfig?.provider === "dev";
     return React.createElement("div", { className: "portal-gate", style: shellStyle },
@@ -376,10 +392,11 @@ function PortalSignedOut({ branding, authUi, authConfig, error, onSignIn, shellS
                     className: "portal-primary-button",
                     onClick: () => onSignIn().catch(() => {}),
                 }, authUi?.signInLabel || "Sign In"),
-        ));
+        ),
+        React.createElement(PortalFooter, { footer }));
 }
 
-function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shellStyle }) {
+function PortalForbidden({ branding, authUi, authConfig, footer, error, onSignOut, shellStyle }) {
     const providerDisplayName = authConfig?.displayName || branding?.title || "Authentication";
     return React.createElement("div", { className: "portal-gate", style: shellStyle },
         React.createElement("div", { className: "portal-gate-card" },
@@ -393,7 +410,8 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
                 className: "portal-primary-button",
                 onClick: () => onSignOut().catch(() => {}),
             }, "Sign Out"),
-        ));
+        ),
+        React.createElement(PortalFooter, { footer }));
 }
 
 /**
@@ -733,6 +751,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa, viewNavigation }),
             moa.mobileZen ? React.createElement(MobileZen, { controller, onClose: moa.closeMobileZen, drafts: moa.zenDrafts, createTransport: createPanelTransport }) : null,
             moa.loaded ? React.createElement(MoaWorkspace, { controller, moa, viewNavigation, visible: moa.active, createTransport: createPanelTransport }) : null),
+        React.createElement(PortalFooter, { footer: portal?.footer }),
     );
 }
 
@@ -744,7 +763,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
  * this page holds no authenticated write path at all, and canvas-action
  * postMessages from the page are simply dropped here.
  */
-function CanvasShareView({ token }) {
+function CanvasShareView({ token, footer }) {
     const [doc, setDoc] = React.useState(null);          // { url, docRev }
     const [status, setStatus] = React.useState("loading"); // loading | live | gone
     const iframeRef = React.useRef(null);
@@ -908,7 +927,8 @@ function CanvasShareView({ token }) {
     if (status === "gone") {
         return React.createElement("div", { className: "ps-share-view ps-share-view-gone" },
             React.createElement("p", null, "This canvas link is no longer valid."),
-            React.createElement("p", { className: "ps-share-view-sub" }, "The owner may have reset or removed it."));
+            React.createElement("p", { className: "ps-share-view-sub" }, "The owner may have reset or removed it."),
+            React.createElement(PortalFooter, { footer }));
     }
     return React.createElement("div", { className: "ps-share-view" },
         React.createElement("div", { className: "ps-share-view-strip" },
@@ -922,7 +942,8 @@ function CanvasShareView({ token }) {
                 title: "Shared canvas",
                 onLoad: () => postState(),
             })
-            : React.createElement("div", { className: "ps-share-view-loading" }, "Loading canvas..."));
+            : React.createElement("div", { className: "ps-share-view-loading" }, "Loading canvas..."),
+        React.createElement(PortalFooter, { footer }));
 }
 
 export default function App() {
@@ -954,13 +975,17 @@ export default function App() {
         return new URLSearchParams(window.location.search).get("canvasShare");
     }, []);
     if (canvasShareToken) {
-        return React.createElement(CanvasShareView, { token: canvasShareToken });
+        return React.createElement(CanvasShareView, {
+            token: canvasShareToken,
+            footer: publicConfig.config?.portal?.footer,
+        });
     }
 
     if (publicConfig.loading || auth.loading) {
         return React.createElement(PortalLoadingScreen, {
             branding: publicConfig.config?.portal?.branding,
             ui: publicConfig.config?.portal?.ui,
+            footer: publicConfig.config?.portal?.footer,
             shellStyle,
             error: publicConfig.error,
         });
@@ -969,6 +994,7 @@ export default function App() {
         return React.createElement(PortalLoadingScreen, {
             branding: publicConfig.config?.portal?.branding,
             ui: publicConfig.config?.portal?.ui,
+            footer: publicConfig.config?.portal?.footer,
             shellStyle,
             error: publicConfig.error,
         });
@@ -978,6 +1004,7 @@ export default function App() {
             branding: publicConfig.config?.portal?.branding,
             authUi: publicConfig.config?.portal?.auth,
             authConfig: publicConfig.config?.auth,
+            footer: publicConfig.config?.portal?.footer,
             error: auth.error,
             onSignIn: auth.signIn,
             shellStyle,
@@ -988,6 +1015,7 @@ export default function App() {
             branding: publicConfig.config?.portal?.branding,
             authUi: publicConfig.config?.portal?.auth,
             authConfig: publicConfig.config?.auth,
+            footer: publicConfig.config?.portal?.footer,
             error: auth.error,
             onSignOut: auth.signOut,
             shellStyle,

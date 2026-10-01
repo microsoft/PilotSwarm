@@ -398,11 +398,307 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "preserve_moa_dashboards",
             sql: migration_0076_preserve_moa_dashboards(schema),
         },
-        { version: "0077", name: "feature_flags", sql: featureFlagsMigration(schema) },
-        { version: "0078", name: "native_tasks_default_policy", sql: nativeTasksDefaultPolicyMigration(schema) },
-        { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
-        { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
+        {
+            version: "0077",
+            name: "feature_flags",
+            sql: featureFlagsMigration(schema),
+        },
+        {
+            version: "0078",
+            name: "native_tasks_default_policy",
+            sql: nativeTasksDefaultPolicyMigration(schema),
+        },
+        {
+            version: "0079",
+            name: "base_agent_v2",
+            sql: baseAgentV2Migration(schema),
+        },
+        {
+            version: "0080",
+            name: "session_page_system_filter",
+            sql: migration_0080_session_page_system_filter(schema),
+        },
+        {
+            version: "0081",
+            name: "session_git_state_pinning",
+            sql: migration_0081_session_git_state_pinning(schema),
+        },
+        {
+            version: "0082",
+            name: "fix_session_git_state_setter",
+            sql: migration_0082_fix_session_git_state_setter(schema),
+        },
+        {
+            version: "0083",
+            name: "workflow_generators",
+            sql: migration_0083_workflow_generators(schema),
+        },
+        {
+            version: "0084",
+            name: "workflow_run_session_acknowledgement",
+            sql: migration_0084_workflow_run_session_acknowledgement(schema),
+        },
+        {
+            version: "0085",
+            name: "workflow_run_lifecycle_state_runs_and_journal",
+            sql: migration_0085_workflow_run_lifecycle_state_runs_and_journal(schema),
+        },
+        {
+            version: "0086",
+            name: "workflow_run_external_operations",
+            sql: migration_0086_workflow_run_external_operations(schema),
+        },
+        {
+            version: "0087",
+            name: "worker_timeline_index",
+            sql: migration_0087_worker_timeline_index(schema),
+        },
+        {
+            version: "0088",
+            name: "worker_registration_refresh",
+            sql: migration_0088_worker_registration_refresh(schema),
+        },
+        {
+            version: "0089",
+            name: "session_routing_contract",
+            sql: migration_0089_session_routing_contract(schema),
+        },
+        {
+            version: "0090",
+            name: "workflow_run_cleanup_tombstones",
+            sql: migration_0090_workflow_run_cleanup_tombstones(schema),
+        },
+        {
+            version: "0091",
+            name: "workflow_run_waits",
+            sql: migration_0091_workflow_run_waits(schema),
+        },
+        {
+            version: "0092",
+            name: "workflow_run_wait_scheduling",
+            sql: migration_0092_workflow_run_wait_scheduling(schema),
+        },
+        {
+            version: "0093",
+            name: "workflow_run_wait_condition_overrides",
+            sql: migration_0093_workflow_run_wait_condition_overrides(schema),
+        },
+        {
+            version: "0094",
+            name: "workflow_generator_source_provider_ids",
+            sql: migration_0094_workflow_generator_source_provider_ids(schema),
+        },
+        {
+            version: "0095",
+            name: "workflow_terminology_cutover",
+            sql: migration_0095_workflow_terminology_cutover(schema),
+        },
+        {
+            version: "0096",
+            name: "shared_workflow_run_identity",
+            sql: migration_0096_shared_workflow_run_identity(schema),
+        },
+        {
+            version: "0097",
+            name: "neutral_workflow_run_contract",
+            sql: migration_0097_neutral_workflow_run_contract(schema),
+        },
+        {
+            version: "0098",
+            name: "workflow_compute_affinity",
+            sql: migration_0098_workflow_compute_affinity(schema),
+        },
+        {
+            version: "0099",
+            name: "workflow_0096_collision_compatibility",
+            sql: migration_0099_workflow_0096_collision_compatibility(schema),
+        },
+        {
+            version: "0100",
+            name: "workflow_run_execution_affinity",
+            sql: migration_0100_workflow_run_execution_affinity(schema),
+        },
+        {
+            version: "0101",
+            name: "workflow_run_viewer_index",
+            sql: migration_0101_workflow_run_viewer_index(schema),
+        },
+        {
+            version: "0102",
+            name: "catalog_query_pages",
+            sql: migration_0102_catalog_query_pages(schema),
+        },
     ];
+}
+
+function migration_0102_catalog_query_pages(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE INDEX IF NOT EXISTS ix_workflow_generators_catalog_updated
+    ON ${s}.workflow_generators(updated_at DESC, workflow_generator_id DESC)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS ix_workflow_runs_catalog_updated
+    ON ${s}.workflow_runs(updated_at DESC, workflow_run_id DESC)
+    WHERE deleted_at IS NULL;
+
+-- Replace the ten-argument routine instead of overloading it. Because both
+-- versions have defaults, retaining both would make older calls with ten or
+-- fewer arguments ambiguous. The three new trailing defaults preserve those
+-- callers while the current SDK uses the explicit thirteen-argument form.
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions_page(
+    INT, TIMESTAMPTZ, TEXT, BOOL, TEXT, TEXT, BOOL, TEXT, TEXT, TEXT
+);
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions_page(
+    INT, TIMESTAMPTZ, TEXT, BOOL, TEXT, TEXT, BOOL, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ
+);
+CREATE FUNCTION ${s}.cms_list_sessions_page(
+    p_limit                 INT         DEFAULT 51,
+    p_cursor_updated_at     TIMESTAMPTZ DEFAULT NULL,
+    p_cursor_session_id     TEXT        DEFAULT NULL,
+    p_include_deleted       BOOL        DEFAULT FALSE,
+    p_viewer_provider       TEXT        DEFAULT NULL,
+    p_viewer_subject        TEXT        DEFAULT NULL,
+    p_viewer_system_visible BOOL        DEFAULT TRUE,
+    p_placement_provider    TEXT        DEFAULT NULL,
+    p_placement_subject     TEXT        DEFAULT NULL,
+    p_system_filter         TEXT        DEFAULT 'all',
+    p_owner_query           TEXT        DEFAULT NULL,
+    p_status                TEXT        DEFAULT NULL,
+    p_updated_after         TIMESTAMPTZ DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 51), 201));
+    v_placement_user BIGINT;
+    v_system_filter TEXT := COALESCE(p_system_filter, 'all');
+BEGIN
+    IF v_system_filter NOT IN ('all', 'only', 'exclude') THEN
+        RAISE EXCEPTION 'system filter must be all, only, or exclude' USING ERRCODE = '22023';
+    END IF;
+    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
+        SELECT u.user_id INTO v_placement_user
+        FROM ${s}.users u
+        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
+    END IF;
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        usgp.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider,
+        u.subject,
+        u.email,
+        u.display_name,
+        sess.splash_mobile,
+        sess.visibility,
+        sess.root_session_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
+    WHERE
+        (p_include_deleted OR sess.deleted_at IS NULL)
+        AND (
+            v_system_filter = 'all'
+            OR (v_system_filter = 'only' AND sess.is_system)
+            OR (v_system_filter = 'exclude' AND NOT sess.is_system)
+        )
+        AND (
+            p_owner_query IS NULL
+            OR u.display_name ILIKE '%' || p_owner_query || '%'
+            OR u.email ILIKE '%' || p_owner_query || '%'
+            OR u.subject ILIKE '%' || p_owner_query || '%'
+        )
+        AND (p_status IS NULL OR sess.state = p_status)
+        AND (p_updated_after IS NULL OR sess.updated_at >= p_updated_after)
+        AND (
+            p_cursor_updated_at IS NULL
+            OR date_trunc('milliseconds', sess.updated_at) < date_trunc('milliseconds', p_cursor_updated_at)
+            OR (
+                date_trunc('milliseconds', sess.updated_at) = date_trunc('milliseconds', p_cursor_updated_at)
+                AND sess.session_id < p_cursor_session_id
+            )
+        )
+        AND (
+            p_viewer_provider IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM ${s}.sessions root
+                LEFT JOIN ${s}.session_owners root_owner ON root_owner.session_id = root.session_id
+                LEFT JOIN ${s}.users root_user ON root_user.user_id = root_owner.user_id
+                WHERE root.session_id = COALESCE(sess.root_session_id, sess.session_id)
+                  AND (
+                    (root.is_system AND p_viewer_system_visible)
+                    OR (
+                        root_user.provider = BTRIM(p_viewer_provider)
+                        AND root_user.subject = BTRIM(p_viewer_subject)
+                    )
+                    OR COALESCE(root.visibility, 'private') IN ('shared_read', 'shared_write')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM ${s}.session_shares share
+                        JOIN ${s}.users viewer ON viewer.user_id = share.user_id
+                        WHERE share.session_id = root.session_id
+                          AND viewer.provider = BTRIM(p_viewer_provider)
+                          AND viewer.subject = BTRIM(p_viewer_subject)
+                    )
+                  )
+            )
+        )
+    ORDER BY date_trunc('milliseconds', sess.updated_at) DESC, sess.session_id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 /** Additive page filter used by the portal's independent system-session load. */
@@ -14913,5 +15209,1316 @@ BEGIN
     RETURN v_user_id;
 END;
 $$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0079: session git-state pinning ───────────────────
+//
+// Durable git working-tree state for pod hydration. Pins a session's base
+// commit at turn 0 so cold cross-pod resumes never track a moving mirror HEAD
+// (which silently forward-jumps the tree or corrupts a 3-way patch replay).
+// See docs/architecture/aks-git-hydration.md §8.5. Columns are additive; the
+// scalar get/set procs follow the users.github_copilot_key precedent (0010)
+// rather than widening the shared cms_get_session read shape.
+
+function migration_0081_session_git_state_pinning(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0081_session_git_state_pinning:
+--   - git_base_sha    TEXT: the pinned base commit, captured once at turn 0.
+--                     All future reconciles target this, never origin/HEAD.
+--   - git_head_sha    TEXT: the session branch tip (session's own commits).
+--   - git_branch      TEXT: the session's working branch name.
+--   - git_state_epoch BIGINT: monotonic; bumped on every dehydrate so hydrate
+--                     can detect/ignore a stale delta-blob set (row is the
+--                     commit point — blobs written first, row last).
+
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_base_sha    TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_head_sha    TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_branch      TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_state_epoch BIGINT NOT NULL DEFAULT 0;
+
+-- ── cms_get_session_git_state ────────────────────────────────────
+-- Internal read for the pod-side materializer / hydrate path. Returns the
+-- durable git pointer for a session, or an all-NULL/zero row when unpinned.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_git_state(
+    p_session_id TEXT
+) RETURNS TABLE (
+    git_base_sha    TEXT,
+    git_head_sha    TEXT,
+    git_branch      TEXT,
+    git_state_epoch BIGINT
+) AS $$
+DECLARE
+    v_session_id TEXT := NULLIF(BTRIM(p_session_id), '');
+BEGIN
+    IF v_session_id IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        se.git_base_sha,
+        se.git_head_sha,
+        se.git_branch,
+        COALESCE(se.git_state_epoch, 0)::bigint
+    FROM ${s}.sessions se
+    WHERE se.session_id = v_session_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_set_session_git_state ────────────────────────────────────
+-- Transactional write of the durable git pointer. Used both for the turn-0
+-- base pin and for the "explicit advance" escape hatch (which is the only
+-- path that moves git_base_sha). All four scalars are set in one UPDATE so a
+-- half-advanced pointer is never persisted. Callers pass the already-computed
+-- next epoch (dehydrate bumps it; a pure base pin may leave it unchanged).
+-- Returns TRUE when the session row exists and was updated.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_session_git_state(
+    p_session_id TEXT,
+    p_base_sha   TEXT,
+    p_head_sha   TEXT,
+    p_branch     TEXT,
+    p_epoch      BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_session_id TEXT := NULLIF(BTRIM(p_session_id), '');
+    v_rows       INTEGER;
+BEGIN
+    IF v_session_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET git_base_sha    = NULLIF(BTRIM(p_base_sha), ''),
+        git_head_sha    = NULLIF(BTRIM(p_head_sha), ''),
+        git_branch      = NULLIF(BTRIM(p_branch),   ''),
+        git_state_epoch = COALESCE(p_epoch, git_state_epoch, 0),
+        updated_at      = now()
+    WHERE session_id = v_session_id;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows > 0;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0080: fix cms_set_session_git_state result var type ──────────
+//
+// 0079 shipped cms_set_session_git_state with `v_found BOOLEAN`, then did
+// `GET DIAGNOSTICS v_found = ROW_COUNT` (an INTEGER) and `RETURN v_found > 0`.
+// On PostgreSQL that raises `operator does not exist: boolean > integer` at
+// call time (surfaced as "beforeRunTurn reconcile failed"), so the turn-0 base
+// pin never persisted. This is a forward-only, idempotent CREATE OR REPLACE that
+// repairs the function on DBs already advanced past 0079; fresh DBs get the
+// corrected body directly from 0079.
+function migration_0082_fix_session_git_state_setter(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_set_session_git_state(
+    p_session_id TEXT,
+    p_base_sha   TEXT,
+    p_head_sha   TEXT,
+    p_branch     TEXT,
+    p_epoch      BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_session_id TEXT := NULLIF(BTRIM(p_session_id), '');
+    v_rows       INTEGER;
+BEGIN
+    IF v_session_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET git_base_sha    = NULLIF(BTRIM(p_base_sha), ''),
+        git_head_sha    = NULLIF(BTRIM(p_head_sha), ''),
+        git_branch      = NULLIF(BTRIM(p_branch),   ''),
+        git_state_epoch = COALESCE(p_epoch, git_state_epoch, 0),
+        updated_at      = now()
+    WHERE session_id = v_session_id;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows > 0;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0081: durable WorkflowGenerator registry ──────────────
+
+function migration_0083_workflow_generators(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.workflow_generators (
+    workflow_generator_id         TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL CHECK (BTRIM(name) <> ''),
+    owner_provider       TEXT NOT NULL CHECK (BTRIM(owner_provider) <> ''),
+    owner_subject        TEXT NOT NULL CHECK (BTRIM(owner_subject) <> ''),
+    owner_email          TEXT,
+    owner_display_name   TEXT,
+    cadence_seconds      INTEGER NOT NULL CHECK (cadence_seconds > 0),
+    source_type          TEXT
+                         CHECK (source_type IS NULL OR source_type ~ '^[a-z][a-z0-9._-]{0,127}$'),
+    source_config        JSONB NOT NULL DEFAULT '{}'::jsonb
+                         CHECK (jsonb_typeof(source_config) = 'object'),
+    operational_state    TEXT NOT NULL DEFAULT 'enabled'
+                         CHECK (operational_state IN ('enabled', 'paused', 'disabled')),
+    active_workflow_definition_id TEXT,
+    next_run_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    watermark            JSONB,
+    total_cycles         BIGINT NOT NULL DEFAULT 0,
+    successful_cycles    BIGINT NOT NULL DEFAULT 0,
+    failed_cycles        BIGINT NOT NULL DEFAULT 0,
+    materialized_workflow_runs   BIGINT NOT NULL DEFAULT 0,
+    last_cycle_at        TIMESTAMPTZ,
+    last_error           TEXT,
+    lease_owner          TEXT,
+    lease_expires_at     TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (owner_provider, owner_subject, name)
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_definitions (
+    workflow_definition_id       TEXT PRIMARY KEY,
+    workflow_type       TEXT NOT NULL CHECK (BTRIM(workflow_type) <> ''),
+    name                TEXT NOT NULL CHECK (BTRIM(name) <> ''),
+    owner_provider      TEXT NOT NULL CHECK (BTRIM(owner_provider) <> ''),
+    owner_subject       TEXT NOT NULL CHECK (BTRIM(owner_subject) <> ''),
+    owner_email         TEXT,
+    owner_display_name  TEXT,
+    version             INTEGER NOT NULL CHECK (version > 0),
+    definition_hash     TEXT NOT NULL CHECK (BTRIM(definition_hash) <> ''),
+    workflow_definition JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(workflow_definition) = 'object'),
+    affinities          JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(affinities) = 'object'),
+    validation_gates    JSONB NOT NULL DEFAULT '[]'::jsonb
+                        CHECK (jsonb_typeof(validation_gates) = 'array'),
+    guardrails          JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(guardrails) = 'object'),
+    created_by          TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (workflow_type, version),
+    UNIQUE (workflow_type, definition_hash)
+);
+
+ALTER TABLE ${s}.workflow_generators
+    DROP CONSTRAINT IF EXISTS workflow_generators_active_workflow_definition_id_fkey;
+ALTER TABLE ${s}.workflow_generators
+    ADD CONSTRAINT workflow_generators_active_workflow_definition_id_fkey
+    FOREIGN KEY (active_workflow_definition_id)
+    REFERENCES ${s}.workflow_definitions(workflow_definition_id)
+    DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_generator_cycles (
+    cycle_id             TEXT PRIMARY KEY,
+    workflow_generator_id         TEXT NOT NULL REFERENCES ${s}.workflow_generators(workflow_generator_id) ON DELETE CASCADE,
+    workflow_definition_id        TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'running'
+                         CHECK (status IN ('running', 'succeeded', 'failed')),
+    claimed_by           TEXT NOT NULL,
+    watermark_before     JSONB,
+    watermark_after      JSONB,
+    discovered_count     INTEGER NOT NULL DEFAULT 0 CHECK (discovered_count >= 0),
+    created_count        INTEGER NOT NULL DEFAULT 0 CHECK (created_count >= 0),
+    error                TEXT,
+    started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at         TIMESTAMPTZ,
+    UNIQUE (workflow_generator_id, cycle_id),
+    FOREIGN KEY (workflow_definition_id)
+        REFERENCES ${s}.workflow_definitions(workflow_definition_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_generator_cycles_running
+    ON ${s}.workflow_generator_cycles(workflow_generator_id)
+    WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS ix_workflow_generator_cycles_generator_started
+    ON ${s}.workflow_generator_cycles(workflow_generator_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_runs (
+    workflow_run_id               TEXT PRIMARY KEY,
+    workflow_generator_id         TEXT REFERENCES ${s}.workflow_generators(workflow_generator_id) ON DELETE SET NULL,
+    workflow_definition_id        TEXT NOT NULL REFERENCES ${s}.workflow_definitions(workflow_definition_id),
+    workflow_type        TEXT NOT NULL CHECK (BTRIM(workflow_type) <> ''),
+    owner_provider       TEXT NOT NULL CHECK (BTRIM(owner_provider) <> ''),
+    owner_subject        TEXT NOT NULL CHECK (BTRIM(owner_subject) <> ''),
+    owner_email          TEXT,
+    owner_display_name   TEXT,
+    created_by           TEXT,
+    effective_config     JSONB NOT NULL DEFAULT '{}'::jsonb
+                         CHECK (jsonb_typeof(effective_config) = 'object'),
+    workflow_run_key              TEXT NOT NULL CHECK (BTRIM(workflow_run_key) <> ''),
+    input                JSONB NOT NULL DEFAULT '{}'::jsonb
+                         CHECK (jsonb_typeof(input) = 'object'),
+    lifecycle_state      TEXT NOT NULL DEFAULT 'pending_session'
+                         CHECK (lifecycle_state IN ('pending_session', 'active', 'blocked', 'completed', 'cancelled')),
+    first_seen_cycle_id  TEXT REFERENCES ${s}.workflow_generator_cycles(cycle_id),
+    last_seen_cycle_id   TEXT REFERENCES ${s}.workflow_generator_cycles(cycle_id),
+    first_discovered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_discovered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    session_attempts     INTEGER NOT NULL DEFAULT 0 CHECK (session_attempts >= 0),
+    session_error        TEXT,
+    induction_lease_owner   TEXT,
+    induction_lease_expires_at TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_workflow_runs_generator_state
+    ON ${s}.workflow_runs(workflow_generator_id, lifecycle_state, created_at);
+CREATE INDEX IF NOT EXISTS ix_workflow_runs_owner_state
+    ON ${s}.workflow_runs(owner_provider, owner_subject, lifecycle_state, created_at);
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_producers (
+    observation_id       TEXT PRIMARY KEY,
+    workflow_run_id      TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    producer_type        TEXT NOT NULL CHECK (producer_type IN ('direct_request', 'workflow_generator')),
+    producer_id          TEXT NOT NULL CHECK (BTRIM(producer_id) <> ''),
+    producer_observation_id TEXT,
+    payload              JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(payload) = 'object'),
+    observed_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_producers_producer
+    ON ${s}.workflow_run_producers(producer_type, producer_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_workflow_run_producers_run
+    ON ${s}.workflow_run_producers(workflow_run_id, observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_sessions (
+    association_id       TEXT PRIMARY KEY,
+    workflow_run_id               TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    session_id           TEXT NOT NULL UNIQUE,
+    ordinal              INTEGER NOT NULL CHECK (ordinal > 0),
+    is_current           BOOLEAN NOT NULL DEFAULT TRUE,
+    status               TEXT NOT NULL DEFAULT 'reserved'
+                         CHECK (status IN ('reserved', 'active', 'failed', 'replaced')),
+    error                TEXT,
+    reserved_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attached_at          TIMESTAMPTZ,
+    ended_at             TIMESTAMPTZ,
+    UNIQUE (workflow_run_id, ordinal)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_sessions_one_current
+    ON ${s}.workflow_run_sessions(workflow_run_id)
+    WHERE is_current;
+CREATE INDEX IF NOT EXISTS ix_workflow_run_sessions_history
+    ON ${s}.workflow_run_sessions(workflow_run_id, ordinal DESC);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_workflow_generator_definition_immutable()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'WORKFLOW_GENERATOR_DEFINITION_IMMUTABLE';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_workflow_generator_definition_immutable
+    ON ${s}.workflow_definitions;
+CREATE TRIGGER trg_workflow_generator_definition_immutable
+    BEFORE UPDATE ON ${s}.workflow_definitions
+    FOR EACH ROW EXECUTE FUNCTION ${s}.cms_workflow_generator_definition_immutable();
+`;
+}
+
+// ─── Migration 0082: WorkflowRun session acknowledgement ───────────────
+
+function migration_0084_workflow_run_session_acknowledgement(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_run_sessions
+    DROP CONSTRAINT IF EXISTS workflow_run_sessions_status_check;
+ALTER TABLE ${s}.workflow_run_sessions
+    ADD CONSTRAINT workflow_run_sessions_status_check
+    CHECK (status IN ('reserved', 'unacked', 'active', 'failed', 'replaced'));
+`;
+}
+
+// ─── Migration 0083: durable WorkflowRun lifecycle execution ───────────
+
+function migration_0085_workflow_run_lifecycle_state_runs_and_journal(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_runs
+    ADD COLUMN IF NOT EXISTS current_state TEXT,
+    ADD COLUMN IF NOT EXISTS state_revision BIGINT NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS current_state_entered_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+UPDATE ${s}.workflow_runs j
+SET current_state = COALESCE(
+    NULLIF(BTRIM(d.workflow_definition->'lifecycle'->>'initialState'), ''),
+    NULLIF(BTRIM(d.workflow_definition->>'initialState'), ''),
+    'Initial'
+)
+FROM ${s}.workflow_definitions d
+WHERE d.workflow_definition_id = j.workflow_definition_id
+  AND j.current_state IS NULL;
+
+UPDATE ${s}.workflow_runs SET current_state = 'Initial' WHERE current_state IS NULL;
+ALTER TABLE ${s}.workflow_runs ALTER COLUMN current_state SET NOT NULL;
+ALTER TABLE ${s}.workflow_runs ALTER COLUMN current_state SET DEFAULT 'Initial';
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_state_runs (
+    state_run_id                 TEXT PRIMARY KEY,
+    workflow_run_id                       TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    workflow_definition_id                TEXT NOT NULL REFERENCES ${s}.workflow_definitions(workflow_definition_id),
+    state_name                   TEXT NOT NULL CHECK (BTRIM(state_name) <> ''),
+    state_revision               BIGINT NOT NULL CHECK (state_revision > 0),
+    state_owner                  TEXT CHECK (state_owner IN ('user', 'platform')),
+    status                       TEXT NOT NULL DEFAULT 'reserved'
+                                 CHECK (status IN ('reserved', 'unacked', 'active', 'waiting', 'input_required', 'completed', 'failed')),
+    session_id                   TEXT UNIQUE,
+    predecessor_journal_entry_id TEXT,
+    source_id                    TEXT,
+    source_path                  TEXT,
+    source_commit                TEXT,
+    markdown_sha256              TEXT,
+    allowed_outcomes             JSONB NOT NULL DEFAULT '[]'::jsonb
+                                 CHECK (jsonb_typeof(allowed_outcomes) = 'array'),
+    terminal                     BOOLEAN,
+    attempt                      INTEGER NOT NULL DEFAULT 1 CHECK (attempt > 0),
+    lease_owner                  TEXT,
+    lease_expires_at             TIMESTAMPTZ,
+    started_at                   TIMESTAMPTZ,
+    completed_at                 TIMESTAMPTZ,
+    error                        TEXT,
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (workflow_run_id, state_revision)
+);
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_state_runs_runnable
+    ON ${s}.workflow_run_state_runs(status, created_at)
+    WHERE status IN ('reserved', 'waiting');
+CREATE INDEX IF NOT EXISTS ix_workflow_run_state_runs_workflowRun
+    ON ${s}.workflow_run_state_runs(workflow_run_id, state_revision);
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_journal_entries (
+    journal_entry_id TEXT PRIMARY KEY,
+    workflow_run_id           TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    sequence         BIGINT NOT NULL CHECK (sequence > 0),
+    entry_kind       TEXT NOT NULL DEFAULT 'state_transition'
+                     CHECK (entry_kind = 'state_transition'),
+    workflow_definition_id    TEXT NOT NULL REFERENCES ${s}.workflow_definitions(workflow_definition_id),
+    from_state       TEXT NOT NULL CHECK (BTRIM(from_state) <> ''),
+    to_state         TEXT NOT NULL CHECK (BTRIM(to_state) <> ''),
+    from_revision    BIGINT NOT NULL CHECK (from_revision > 0),
+    to_revision      BIGINT NOT NULL CHECK (to_revision > 0),
+    state_run_id     TEXT NOT NULL UNIQUE REFERENCES ${s}.workflow_run_state_runs(state_run_id),
+    session_id       TEXT NOT NULL,
+    outcome          TEXT,
+    summary          TEXT NOT NULL CHECK (BTRIM(summary) <> ''),
+    idempotency_key  TEXT NOT NULL UNIQUE CHECK (BTRIM(idempotency_key) <> ''),
+    transitioned_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (workflow_run_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_journal_entries_workflowRun
+    ON ${s}.workflow_run_journal_entries(workflow_run_id, sequence);
+
+ALTER TABLE ${s}.workflow_run_sessions
+    ADD COLUMN IF NOT EXISTS state_run_id TEXT REFERENCES ${s}.workflow_run_state_runs(state_run_id);
+ALTER TABLE ${s}.workflow_run_sessions
+    DROP CONSTRAINT IF EXISTS workflow_run_sessions_status_check;
+ALTER TABLE ${s}.workflow_run_sessions
+    ADD CONSTRAINT workflow_run_sessions_status_check
+    CHECK (status IN ('reserved', 'unacked', 'active', 'failed', 'replaced', 'completed'));
+CREATE INDEX IF NOT EXISTS ix_workflow_run_sessions_state_run
+    ON ${s}.workflow_run_sessions(state_run_id);
+
+INSERT INTO ${s}.workflow_run_state_runs (
+    state_run_id, workflow_run_id, workflow_definition_id, state_name, state_revision,
+    status, session_id, started_at, error
+)
+SELECT
+    'legacy-state-run:' || j.workflow_run_id || ':' || j.state_revision,
+    j.workflow_run_id,
+    j.workflow_definition_id,
+    j.current_state,
+    j.state_revision,
+    CASE
+        WHEN js.status = 'active' THEN 'active'
+        WHEN js.status = 'unacked' THEN 'unacked'
+        WHEN js.status = 'failed' THEN 'failed'
+        ELSE 'reserved'
+    END,
+    js.session_id,
+    js.attached_at,
+    js.error
+FROM ${s}.workflow_runs j
+LEFT JOIN ${s}.workflow_run_sessions js
+  ON js.workflow_run_id = j.workflow_run_id
+ AND js.is_current
+ON CONFLICT (workflow_run_id, state_revision) DO NOTHING;
+
+UPDATE ${s}.workflow_run_sessions js
+SET state_run_id = sr.state_run_id
+FROM ${s}.workflow_run_state_runs sr
+WHERE js.workflow_run_id = sr.workflow_run_id
+  AND js.is_current
+  AND sr.state_revision = (
+      SELECT j.state_revision FROM ${s}.workflow_runs j WHERE j.workflow_run_id = js.workflow_run_id
+  )
+  AND js.state_run_id IS NULL;
+`;
+}
+
+// ─── Migration 0084: durable external operations ────────────────
+
+function migration_0086_workflow_run_external_operations(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_external_operations (
+    operation_id           TEXT PRIMARY KEY,
+    workflow_run_id                 TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    state_run_id           TEXT NOT NULL REFERENCES ${s}.workflow_run_state_runs(state_run_id) ON DELETE CASCADE,
+    workflow_definition_id          TEXT NOT NULL REFERENCES ${s}.workflow_definitions(workflow_definition_id),
+    created_session_id     TEXT NOT NULL,
+    session_id             TEXT NOT NULL,
+    provider               TEXT NOT NULL CHECK (BTRIM(provider) <> ''),
+    kind                   TEXT NOT NULL CHECK (BTRIM(kind) <> ''),
+    operation_key          TEXT NOT NULL CHECK (BTRIM(operation_key) <> ''),
+    idempotency_key        TEXT NOT NULL UNIQUE CHECK (BTRIM(idempotency_key) <> ''),
+    correlation_id         TEXT NOT NULL UNIQUE CHECK (BTRIM(correlation_id) <> ''),
+    signal_key             TEXT NOT NULL UNIQUE CHECK (BTRIM(signal_key) <> ''),
+    request                JSONB NOT NULL DEFAULT '{}'::jsonb
+                           CHECK (jsonb_typeof(request) = 'object'),
+    status                 TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'succeeded', 'failed')),
+    result                 JSONB,
+    evidence               JSONB,
+    error                  TEXT,
+    next_poll_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    poll_lease_owner       TEXT,
+    poll_lease_expires_at  TIMESTAMPTZ,
+    completed_at           TIMESTAMPTZ,
+    wait_started_at        TIMESTAMPTZ,
+    wait_completed_at      TIMESTAMPTZ,
+    signal_status          TEXT NOT NULL DEFAULT 'blocked'
+                           CHECK (signal_status IN ('blocked', 'pending', 'delivering', 'delivered')),
+    signal_attempts        INTEGER NOT NULL DEFAULT 0 CHECK (signal_attempts >= 0),
+    next_signal_at         TIMESTAMPTZ,
+    signal_lease_owner     TEXT,
+    signal_lease_expires_at TIMESTAMPTZ,
+    signal_delivered_at    TIMESTAMPTZ,
+    last_signal_error      TEXT,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (state_run_id, provider, kind, operation_key)
+);
+
+ALTER TABLE ${s}.workflow_run_external_operations
+    ADD COLUMN IF NOT EXISTS created_session_id TEXT,
+    ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ;
+UPDATE ${s}.workflow_run_external_operations
+SET created_session_id = session_id
+WHERE created_session_id IS NULL;
+ALTER TABLE ${s}.workflow_run_external_operations
+    ALTER COLUMN created_session_id SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_external_operations_poll
+    ON ${s}.workflow_run_external_operations(provider, next_poll_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_workflow_run_external_operations_signal
+    ON ${s}.workflow_run_external_operations(next_signal_at)
+    WHERE signal_status IN ('pending', 'delivering');
+CREATE INDEX IF NOT EXISTS ix_workflow_run_external_operations_state_run
+    ON ${s}.workflow_run_external_operations(state_run_id, provider, kind);
+`;
+}
+
+// ─── Migration 0085: worker timeline query index ─────────────────
+
+function migration_0087_worker_timeline_index(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
+    ON ${s}.session_events(worker_node_id, created_at DESC)
+    WHERE worker_node_id IS NOT NULL;
+`;
+}
+
+// ─── Migration 0086: refresh worker registration identity ───────
+
+function migration_0088_worker_registration_refresh(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
+    p_worker_node_id TEXT, p_pool TEXT, p_phase TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT,
+    p_info JSONB, p_health JSONB, p_state JSONB
+) RETURNS TABLE(domain TEXT, epoch BIGINT, actuation TEXT, desired JSONB) AS $$
+DECLARE
+    v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), 'default');
+    v_phase TEXT := CASE WHEN p_phase IN ('starting', 'ready', 'draining') THEN p_phase ELSE 'starting' END;
+BEGIN
+    IF p_worker_node_id IS NULL OR BTRIM(p_worker_node_id) = '' OR p_worker_node_id = '*' THEN
+        RAISE EXCEPTION 'WORKER_ID_INVALID: worker_node_id must be a non-empty identifier';
+    END IF;
+    INSERT INTO ${s}.workers (worker_node_id, pool, phase, owner_provider, owner_subject,
+                              registered_at, updated_at, info, health, state)
+    VALUES (p_worker_node_id, v_pool, v_phase,
+            NULLIF(BTRIM(p_owner_provider), ''), NULLIF(BTRIM(p_owner_subject), ''),
+            now(), now(),
+            COALESCE(p_info, '{}'::jsonb), COALESCE(p_health, '{}'::jsonb), COALESCE(p_state, '{}'::jsonb))
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET pool = EXCLUDED.pool,
+            phase = EXCLUDED.phase,
+            owner_provider = EXCLUDED.owner_provider,
+            owner_subject = EXCLUDED.owner_subject,
+            info = EXCLUDED.info,
+            health = EXCLUDED.health,
+            state = EXCLUDED.state,
+            updated_at = now();
+
+    DELETE FROM ${s}.workers w WHERE w.updated_at < now() - interval '1 hour';
+
+    RETURN QUERY
+    WITH contrib AS (
+        SELECT d.domain AS c_domain, d.epoch AS c_epoch,
+               d.actuation AS c_actuation, d.desired AS c_desired,
+               CASE WHEN d.worker_node_id = p_worker_node_id THEN 3
+                    WHEN d.pool = v_pool THEN 2
+                    ELSE 1 END AS specificity
+          FROM ${s}.fleet_directives d
+         WHERE (d.pool = '*' AND d.worker_node_id = '*')
+            OR (d.pool = v_pool AND d.worker_node_id = '*')
+            OR (d.worker_node_id = p_worker_node_id)
+    )
+    SELECT c.c_domain,
+           SUM(c.c_epoch)::BIGINT,
+           (array_agg(c.c_actuation ORDER BY c.specificity DESC))[1],
+           COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[1], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[2], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[3], '{}'::jsonb)
+      FROM contrib c
+     GROUP BY c.c_domain;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0087: immutable session routing contract ─────────
+
+function migration_0089_session_routing_contract(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS routing_config JSONB;
+
+ALTER TABLE ${s}.sessions
+    DROP CONSTRAINT IF EXISTS sessions_routing_config_object;
+ALTER TABLE ${s}.sessions
+    ADD CONSTRAINT sessions_routing_config_object
+    CHECK (routing_config IS NULL OR jsonb_typeof(routing_config) = 'object');
+`;
+}
+
+// ─── Migration 0088: owner-managed logical WorkflowRun cleanup ──────────
+
+function migration_0090_workflow_run_cleanup_tombstones(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_generators
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.workflow_runs
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.workflow_generators
+    DROP CONSTRAINT IF EXISTS workflow_generators_owner_provider_owner_subject_name_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_generators_active_owner_name
+    ON ${s}.workflow_generators(owner_provider, owner_subject, name)
+    WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_runs_active_type_key
+    ON ${s}.workflow_runs(workflow_type, workflow_run_key)
+    WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_cleanup_tombstones (
+    aggregate_type       TEXT NOT NULL CHECK (aggregate_type IN ('generator', 'workflowRun')),
+    aggregate_id         TEXT NOT NULL,
+    workflow_generator_id         TEXT,
+    workflow_run_id               TEXT,
+    owner_provider       TEXT NOT NULL,
+    owner_subject        TEXT NOT NULL,
+    actor_provider       TEXT NOT NULL,
+    actor_subject        TEXT NOT NULL,
+    actor_display_name   TEXT,
+    deleted_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    cleanup_status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (cleanup_status IN ('pending', 'completed', 'failed')),
+    cleanup_error        TEXT,
+    session_ids          JSONB NOT NULL DEFAULT '[]'::jsonb
+                         CHECK (jsonb_typeof(session_ids) = 'array'),
+    final_outcome        JSONB NOT NULL DEFAULT '{}'::jsonb
+                         CHECK (jsonb_typeof(final_outcome) = 'object'),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (aggregate_type, aggregate_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_cleanup_tombstones_owner
+    ON ${s}.workflow_run_cleanup_tombstones(owner_provider, owner_subject, deleted_at DESC);
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_cleanup_tombstones_status
+    ON ${s}.workflow_run_cleanup_tombstones(cleanup_status, updated_at);
+`;
+}
+
+// ─── Migration 0089: canonical durable WorkflowRun waits ────────────────
+
+function migration_0091_workflow_run_waits(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_waits (
+    wait_id                    TEXT PRIMARY KEY,
+    workflow_run_id                     TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    state_run_id               TEXT NOT NULL REFERENCES ${s}.workflow_run_state_runs(state_run_id) ON DELETE CASCADE,
+    workflow_definition_id              TEXT NOT NULL REFERENCES ${s}.workflow_definitions(workflow_definition_id),
+    session_id                 TEXT NOT NULL,
+    external_operation_id      TEXT UNIQUE REFERENCES ${s}.workflow_run_external_operations(operation_id) ON DELETE CASCADE,
+    wait_key                   TEXT NOT NULL CHECK (BTRIM(wait_key) <> ''),
+    kind                       TEXT NOT NULL
+                               CHECK (kind IN ('response', 'observed_condition', 'timer')),
+    status                     TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (status IN ('pending', 'satisfied', 'failed', 'timed_out', 'cancelled')),
+    detection_mode             TEXT NOT NULL
+                               CHECK (detection_mode IN ('direct_submission', 'poll', 'event', 'hybrid', 'timer')),
+    expected_state_revision    BIGINT NOT NULL CHECK (expected_state_revision > 0),
+    prompt                     JSONB NOT NULL DEFAULT '{}'::jsonb
+                               CHECK (jsonb_typeof(prompt) = 'object'),
+    response_schema            JSONB NOT NULL DEFAULT '{}'::jsonb
+                               CHECK (jsonb_typeof(response_schema) = 'object'),
+    responder_policy           JSONB NOT NULL DEFAULT '{}'::jsonb
+                               CHECK (jsonb_typeof(responder_policy) = 'object'),
+    provider                   TEXT,
+    target                     JSONB,
+    predicate                  JSONB,
+    provider_cursor            JSONB,
+    latest_observation         JSONB,
+    response_id                TEXT,
+    response                   JSONB,
+    response_delivery_status   TEXT NOT NULL DEFAULT 'none'
+                               CHECK (response_delivery_status IN ('none', 'pending', 'enqueued')),
+    response_enqueued_at       TIMESTAMPTZ,
+    satisfaction_evidence      JSONB,
+    satisfied_by               JSONB,
+    deadline_at                TIMESTAMPTZ,
+    next_check_at              TIMESTAMPTZ,
+    satisfied_at               TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (state_run_id, wait_key),
+    CHECK (provider IS NULL OR BTRIM(provider) <> ''),
+    CHECK (target IS NULL OR jsonb_typeof(target) = 'object'),
+    CHECK (predicate IS NULL OR jsonb_typeof(predicate) = 'object'),
+    CHECK (response IS NULL OR jsonb_typeof(response) = 'object'),
+    CHECK (satisfaction_evidence IS NULL OR jsonb_typeof(satisfaction_evidence) = 'object'),
+    CHECK (satisfied_by IS NULL OR jsonb_typeof(satisfied_by) = 'object')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_waits_pending_response
+    ON ${s}.workflow_run_waits(state_run_id)
+    WHERE kind = 'response' AND status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_workflowRun
+    ON ${s}.workflow_run_waits(workflow_run_id, expected_state_revision, created_at);
+CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_session_pending
+    ON ${s}.workflow_run_waits(session_id, kind, status);
+CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_due
+    ON ${s}.workflow_run_waits(next_check_at)
+    WHERE status = 'pending'
+      AND kind IN ('observed_condition', 'timer');
+`;
+}
+
+// ─── Migration 0090: durable WorkflowRun wait scheduling ────────────────
+
+function migration_0092_workflow_run_wait_scheduling(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_run_waits
+    ADD COLUMN IF NOT EXISTS signal_key TEXT,
+    ADD COLUMN IF NOT EXISTS check_attempts INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS consecutive_check_failures INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS check_lease_owner TEXT,
+    ADD COLUMN IF NOT EXISTS check_lease_expires_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS last_check_error TEXT,
+    ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ;
+
+UPDATE ${s}.workflow_run_waits wait
+SET signal_key = operation.signal_key,
+    check_lease_owner = operation.poll_lease_owner,
+    check_lease_expires_at = operation.poll_lease_expires_at,
+    wait_started_at = operation.wait_started_at,
+    wait_completed_at = operation.wait_completed_at
+FROM ${s}.workflow_run_external_operations operation
+WHERE wait.external_operation_id = operation.operation_id
+  AND (
+      wait.signal_key IS NULL
+      OR wait.check_lease_owner IS DISTINCT FROM operation.poll_lease_owner
+      OR wait.check_lease_expires_at IS DISTINCT FROM operation.poll_lease_expires_at
+      OR wait.wait_started_at IS DISTINCT FROM operation.wait_started_at
+      OR wait.wait_completed_at IS DISTINCT FROM operation.wait_completed_at
+  );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_waits_signal_key
+    ON ${s}.workflow_run_waits(signal_key)
+    WHERE signal_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_check_lease
+    ON ${s}.workflow_run_waits(check_lease_expires_at)
+    WHERE status = 'pending'
+      AND kind = 'observed_condition';
+`;
+}
+
+// ─── Migration 0091: operator condition overrides ───────────────
+//
+// Lets an operator "mock" an individual observed condition as satisfied. The
+// override is a set of opaque condition keys (e.g. "policy:<configId>",
+// "reviewer:<id>") the observer honors by treating the matching condition as
+// satisfied when it rebuilds its live snapshot. Additive and inert by default:
+// an empty array changes nothing for any existing wait.
+function migration_0093_workflow_run_wait_condition_overrides(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_run_waits
+    ADD COLUMN IF NOT EXISTS condition_overrides JSONB NOT NULL DEFAULT '[]'::jsonb;
+`;
+}
+
+// ─── Migration 0092: opaque WorkflowGenerator source-provider IDs ─────────────
+
+function migration_0094_workflow_generator_source_provider_ids(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_generators
+    DROP CONSTRAINT IF EXISTS workflow_generators_source_type_check;
+
+ALTER TABLE ${s}.workflow_generators
+    ADD CONSTRAINT workflow_generators_source_type_check
+    CHECK (source_type IS NULL OR source_type ~ '^[a-z][a-z0-9._-]{0,127}$');
+`;
+}
+
+// ─── Migration 0095: destructive Workflow terminology cutover ─────────
+//
+// The pre-rename Workflow Generator data is intentionally disposable. Existing
+// installations have migrations 0083-0094 recorded against the legacy job_*
+// objects, while fresh installations create the workflow_* objects directly.
+// Remove only the legacy subsystem and then converge both cases on the current
+// workflow schema.
+function migration_0095_workflow_terminology_cutover(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+DROP TABLE IF EXISTS
+    ${s}.workflow_run_waits,
+    ${s}.workflow_run_external_operations,
+    ${s}.workflow_run_journal_entries,
+    ${s}.workflow_run_state_runs,
+    ${s}.workflow_run_sessions,
+    ${s}.workflow_run_producers,
+    ${s}.workflow_runs,
+    ${s}.workflow_run_cleanup_tombstones,
+    ${s}.workflow_generator_cycles,
+    ${s}.workflow_definitions,
+    ${s}.workflow_generators,
+    ${s}.job_waits,
+    ${s}.job_external_operations,
+    ${s}.job_journal_entries,
+    ${s}.job_state_runs,
+    ${s}.job_sessions,
+    ${s}.jobs,
+    ${s}.job_cleanup_tombstones,
+    ${s}.job_generator_cycles,
+    ${s}.job_generator_definitions,
+    ${s}.job_generators
+CASCADE;
+
+DROP FUNCTION IF EXISTS ${s}.cms_job_generator_definition_immutable();
+
+${migration_0083_workflow_generators(schema)}
+${migration_0084_workflow_run_session_acknowledgement(schema)}
+${migration_0085_workflow_run_lifecycle_state_runs_and_journal(schema)}
+${migration_0086_workflow_run_external_operations(schema)}
+${migration_0090_workflow_run_cleanup_tombstones(schema)}
+${migration_0091_workflow_run_waits(schema)}
+${migration_0092_workflow_run_wait_scheduling(schema)}
+${migration_0093_workflow_run_wait_condition_overrides(schema)}
+${migration_0094_workflow_generator_source_provider_ids(schema)}
+`;
+}
+
+// ─── Migration 0096: shared Definition and Run identity ─────────────────
+//
+// Preserve workflow state when upgrading from the generator-owned 0095 schema.
+// Fresh schemas already have this shape because 0095 composes the latest table
+// definitions; every statement below is therefore additive and idempotent.
+function migration_0096_shared_workflow_run_identity(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_generators
+    ADD COLUMN IF NOT EXISTS source_type TEXT,
+    ADD COLUMN IF NOT EXISTS source_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'workflow_definitions'
+          AND column_name = 'source_type'
+    ) THEN
+        UPDATE ${s}.workflow_generators generator
+        SET source_type = COALESCE(
+                generator.source_type,
+                (
+                    SELECT definition.source_type
+                    FROM ${s}.workflow_definitions definition
+                    WHERE definition.workflow_generator_id = generator.workflow_generator_id
+                    ORDER BY
+                        (definition.workflow_definition_id = generator.active_workflow_definition_id) DESC,
+                        definition.version DESC
+                    LIMIT 1
+                )
+            ),
+            source_config = CASE
+                WHEN generator.source_config = '{}'::jsonb THEN COALESCE(
+                    (
+                        SELECT definition.source_config
+                        FROM ${s}.workflow_definitions definition
+                        WHERE definition.workflow_generator_id = generator.workflow_generator_id
+                        ORDER BY
+                            (definition.workflow_definition_id = generator.active_workflow_definition_id) DESC,
+                            definition.version DESC
+                        LIMIT 1
+                    ),
+                    '{}'::jsonb
+                )
+                ELSE generator.source_config
+            END;
+    END IF;
+END $$;
+
+ALTER TABLE ${s}.workflow_generators
+    DROP CONSTRAINT IF EXISTS workflow_generators_source_type_check;
+ALTER TABLE ${s}.workflow_generators
+    ADD CONSTRAINT workflow_generators_source_type_check
+    CHECK (source_type IS NULL OR source_type ~ '^[a-z][a-z0-9._-]{0,127}$');
+
+ALTER TABLE ${s}.workflow_definitions
+    ADD COLUMN IF NOT EXISTS workflow_type TEXT,
+    ADD COLUMN IF NOT EXISTS name TEXT,
+    ADD COLUMN IF NOT EXISTS owner_provider TEXT,
+    ADD COLUMN IF NOT EXISTS owner_subject TEXT,
+    ADD COLUMN IF NOT EXISTS owner_email TEXT,
+    ADD COLUMN IF NOT EXISTS owner_display_name TEXT,
+    ADD COLUMN IF NOT EXISTS definition_hash TEXT;
+
+DROP TRIGGER IF EXISTS trg_workflow_generator_definition_immutable
+    ON ${s}.workflow_definitions;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'workflow_definitions'
+          AND column_name = 'workflow_generator_id'
+    ) THEN
+        UPDATE ${s}.workflow_definitions definition
+        SET workflow_type = COALESCE(
+                definition.workflow_type,
+                'legacy-generator:' || definition.workflow_generator_id
+            ),
+            name = COALESCE(definition.name, generator.name),
+            owner_provider = COALESCE(definition.owner_provider, generator.owner_provider),
+            owner_subject = COALESCE(definition.owner_subject, generator.owner_subject),
+            owner_email = COALESCE(definition.owner_email, generator.owner_email),
+            owner_display_name = COALESCE(
+                definition.owner_display_name,
+                generator.owner_display_name
+            ),
+            definition_hash = COALESCE(
+                definition.definition_hash,
+                md5(definition.workflow_definition_id)
+            )
+        FROM ${s}.workflow_generators generator
+        WHERE generator.workflow_generator_id = definition.workflow_generator_id;
+    END IF;
+END $$;
+
+UPDATE ${s}.workflow_definitions
+SET workflow_type = COALESCE(workflow_type, 'legacy-definition:' || workflow_definition_id),
+    name = COALESCE(name, workflow_definition_id),
+    owner_provider = COALESCE(owner_provider, 'system'),
+    owner_subject = COALESCE(owner_subject, 'system'),
+    definition_hash = COALESCE(definition_hash, md5(workflow_definition_id));
+
+ALTER TABLE ${s}.workflow_generators
+    DROP CONSTRAINT IF EXISTS workflow_generators_active_workflow_definition_id_fkey;
+ALTER TABLE ${s}.workflow_generator_cycles
+    DROP CONSTRAINT IF EXISTS workflow_generator_cycles_workflow_generator_id_workflow_definition_id_fkey,
+    DROP CONSTRAINT IF EXISTS workflow_generator_cycles_workflow_definition_id_fkey;
+ALTER TABLE ${s}.workflow_runs
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_workflow_run_key_key,
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_workflow_definition_id_fkey,
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_first_seen_cycle_id_fkey,
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_last_seen_cycle_id_fkey;
+ALTER TABLE ${s}.workflow_definitions
+    DROP CONSTRAINT IF EXISTS workflow_definitions_workflow_generator_id_version_key,
+    DROP CONSTRAINT IF EXISTS workflow_definitions_workflow_generator_id_workflow_definition_id_key,
+    DROP CONSTRAINT IF EXISTS workflow_definitions_workflow_generator_id_fkey,
+    DROP CONSTRAINT IF EXISTS workflow_definitions_source_type_check;
+
+ALTER TABLE ${s}.workflow_definitions
+    ALTER COLUMN workflow_type SET NOT NULL,
+    ALTER COLUMN name SET NOT NULL,
+    ALTER COLUMN owner_provider SET NOT NULL,
+    ALTER COLUMN owner_subject SET NOT NULL,
+    ALTER COLUMN definition_hash SET NOT NULL,
+    DROP COLUMN IF EXISTS workflow_generator_id CASCADE,
+    DROP COLUMN IF EXISTS source_type,
+    DROP COLUMN IF EXISTS source_config;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_definitions_type_version
+    ON ${s}.workflow_definitions(workflow_type, version);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_definitions_type_hash
+    ON ${s}.workflow_definitions(workflow_type, definition_hash);
+
+ALTER TABLE ${s}.workflow_generators
+    ADD CONSTRAINT workflow_generators_active_workflow_definition_id_fkey
+    FOREIGN KEY (active_workflow_definition_id)
+    REFERENCES ${s}.workflow_definitions(workflow_definition_id)
+    DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE ${s}.workflow_generator_cycles
+    ADD CONSTRAINT workflow_generator_cycles_workflow_definition_id_fkey
+    FOREIGN KEY (workflow_definition_id)
+    REFERENCES ${s}.workflow_definitions(workflow_definition_id);
+
+CREATE TRIGGER trg_workflow_generator_definition_immutable
+    BEFORE UPDATE ON ${s}.workflow_definitions
+    FOR EACH ROW EXECUTE FUNCTION ${s}.cms_workflow_generator_definition_immutable();
+
+ALTER TABLE ${s}.workflow_runs
+    ADD COLUMN IF NOT EXISTS workflow_type TEXT,
+    ADD COLUMN IF NOT EXISTS owner_provider TEXT,
+    ADD COLUMN IF NOT EXISTS owner_subject TEXT,
+    ADD COLUMN IF NOT EXISTS owner_email TEXT,
+    ADD COLUMN IF NOT EXISTS owner_display_name TEXT,
+    ADD COLUMN IF NOT EXISTS created_by TEXT,
+    ADD COLUMN IF NOT EXISTS effective_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS source_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS induction_lease_owner TEXT,
+    ADD COLUMN IF NOT EXISTS induction_lease_expires_at TIMESTAMPTZ;
+
+UPDATE ${s}.workflow_runs run
+SET workflow_type = COALESCE(run.workflow_type, definition.workflow_type),
+    owner_provider = COALESCE(run.owner_provider, 'system'),
+    owner_subject = COALESCE(run.owner_subject, 'system'),
+    owner_display_name = COALESCE(run.owner_display_name, 'System'),
+    created_by = COALESCE(
+        run.created_by,
+        (
+            SELECT generator.owner_subject
+            FROM ${s}.workflow_generators generator
+            WHERE generator.workflow_generator_id = run.workflow_generator_id
+        )
+    ),
+    effective_config = CASE
+        WHEN run.effective_config = '{}'::jsonb THEN jsonb_build_object(
+            'workflowDefinition', definition.workflow_definition,
+            'affinities', definition.affinities,
+            'validationGates', definition.validation_gates,
+            'guardrails', definition.guardrails
+        )
+        ELSE run.effective_config
+    END
+FROM ${s}.workflow_definitions definition
+WHERE definition.workflow_definition_id = run.workflow_definition_id;
+
+ALTER TABLE ${s}.workflow_runs
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_workflow_run_key_key,
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_workflow_definition_id_fkey,
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_first_seen_cycle_id_fkey,
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_last_seen_cycle_id_fkey;
+
+ALTER TABLE ${s}.workflow_runs
+    ALTER COLUMN workflow_generator_id DROP NOT NULL,
+    ALTER COLUMN first_seen_cycle_id DROP NOT NULL,
+    ALTER COLUMN last_seen_cycle_id DROP NOT NULL,
+    ALTER COLUMN workflow_type SET NOT NULL,
+    ALTER COLUMN owner_provider SET NOT NULL,
+    ALTER COLUMN owner_subject SET NOT NULL;
+
+ALTER TABLE ${s}.workflow_runs
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_generator_id_fkey;
+ALTER TABLE ${s}.workflow_runs
+    ADD CONSTRAINT workflow_runs_workflow_generator_id_fkey
+    FOREIGN KEY (workflow_generator_id)
+    REFERENCES ${s}.workflow_generators(workflow_generator_id)
+    ON DELETE SET NULL;
+ALTER TABLE ${s}.workflow_runs
+    DROP CONSTRAINT IF EXISTS workflow_runs_workflow_definition_id_fkey;
+ALTER TABLE ${s}.workflow_runs
+    ADD CONSTRAINT workflow_runs_workflow_definition_id_fkey
+    FOREIGN KEY (workflow_definition_id)
+    REFERENCES ${s}.workflow_definitions(workflow_definition_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_runs_active_type_key
+    ON ${s}.workflow_runs(workflow_type, workflow_run_key)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS ix_workflow_runs_owner_state
+    ON ${s}.workflow_runs(owner_provider, owner_subject, lifecycle_state, created_at);
+
+CREATE TABLE IF NOT EXISTS ${s}.workflow_run_producers (
+    observation_id       TEXT PRIMARY KEY,
+    workflow_run_id      TEXT NOT NULL REFERENCES ${s}.workflow_runs(workflow_run_id) ON DELETE CASCADE,
+    producer_type        TEXT NOT NULL CHECK (producer_type IN ('direct_request', 'workflow_generator')),
+    producer_id          TEXT NOT NULL CHECK (BTRIM(producer_id) <> ''),
+    producer_observation_id TEXT,
+    payload              JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(payload) = 'object'),
+    observed_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO ${s}.workflow_run_producers (
+    observation_id, workflow_run_id, producer_type, producer_id,
+    producer_observation_id, payload, observed_at
+)
+SELECT
+    'legacy-generator:' || run.workflow_run_id,
+    run.workflow_run_id,
+    'workflow_generator',
+    run.workflow_generator_id,
+    run.first_seen_cycle_id,
+    COALESCE(run.source_payload, '{}'::jsonb),
+    run.first_discovered_at
+FROM ${s}.workflow_runs run
+WHERE run.workflow_generator_id IS NOT NULL
+ON CONFLICT (observation_id) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS ix_workflow_run_producers_producer
+    ON ${s}.workflow_run_producers(producer_type, producer_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_workflow_run_producers_run
+    ON ${s}.workflow_run_producers(workflow_run_id, observed_at DESC);
+
+ALTER TABLE ${s}.workflow_run_cleanup_tombstones
+    ALTER COLUMN workflow_generator_id DROP NOT NULL;
+`;
+}
+
+// ─── Migration 0097: neutral Workflow Run public contract ──────────────
+function migration_0097_neutral_workflow_run_contract(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'workflow_runs'
+          AND column_name = 'source_payload'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'workflow_runs'
+          AND column_name = 'input'
+    ) THEN
+        ALTER TABLE ${s}.workflow_runs RENAME COLUMN source_payload TO input;
+    ELSIF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'workflow_runs'
+          AND column_name = 'source_payload'
+    ) THEN
+        UPDATE ${s}.workflow_runs
+        SET input = source_payload
+        WHERE input = '{}'::jsonb AND source_payload <> '{}'::jsonb;
+        ALTER TABLE ${s}.workflow_runs DROP COLUMN source_payload;
+    END IF;
+END $$;
+
+ALTER TABLE ${s}.workflow_runs
+    ADD COLUMN IF NOT EXISTS input JSONB NOT NULL DEFAULT '{}'::jsonb,
+    DROP COLUMN IF EXISTS producer_type;
+`;
+}
+
+// ─── Migration 0098: independent controller and Session placement ──────
+function migration_0098_workflow_compute_affinity(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_generators
+    ADD COLUMN IF NOT EXISTS controller_compute_affinity TEXT;
+ALTER TABLE ${s}.workflow_generators
+    DROP CONSTRAINT IF EXISTS workflow_generators_controller_compute_affinity_check;
+ALTER TABLE ${s}.workflow_generators
+    ADD CONSTRAINT workflow_generators_controller_compute_affinity_check
+    CHECK (
+        controller_compute_affinity IS NULL
+        OR controller_compute_affinity IN ('cluster', 'devbox')
+    );
+
+ALTER TABLE ${s}.workflow_definitions
+    ADD COLUMN IF NOT EXISTS session_compute_affinity TEXT;
+ALTER TABLE ${s}.workflow_definitions
+    DROP CONSTRAINT IF EXISTS workflow_definitions_session_compute_affinity_check;
+ALTER TABLE ${s}.workflow_definitions
+    ADD CONSTRAINT workflow_definitions_session_compute_affinity_check
+    CHECK (
+        session_compute_affinity IS NULL
+        OR session_compute_affinity IN ('cluster', 'devbox')
+    );
+`;
+}
+
+// ─── Migration 0099: repair the feature-parent 0096 version collision ───
+//
+// c8ddaa7f shipped 0096 as workflow_generator_compute_affinity. The shared
+// identity branch later assigned 0096 to shared_workflow_run_identity, and the
+// migrator skips by version alone. Detect that exact historical record while
+// the generator-owned Definition column still exists, then rerun the additive,
+// idempotent shared conversion and its dependent normalization migrations.
+function migration_0099_workflow_0096_collision_compatibility(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TEMP TABLE workflow_0096_compatibility_state
+ON COMMIT DROP
+AS
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM ${s}.schema_migrations
+        WHERE version = '0096'
+          AND name = 'workflow_generator_compute_affinity'
+    )
+    AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = '${schema}'
+          AND table_name = 'workflow_definitions'
+          AND column_name = 'workflow_generator_id'
+    ) AS feature_0096_collision;
+
+${migration_0096_shared_workflow_run_identity(schema)}
+${migration_0097_neutral_workflow_run_contract(schema)}
+${migration_0098_workflow_compute_affinity(schema)}
+
+UPDATE ${s}.workflow_run_producers producer
+SET payload = run.input
+FROM ${s}.workflow_runs run,
+     workflow_0096_compatibility_state compatibility
+WHERE compatibility.feature_0096_collision
+  AND producer.workflow_run_id = run.workflow_run_id
+  AND producer.producer_type = 'workflow_generator'
+  AND producer.payload = '{}'::jsonb
+  AND run.input <> '{}'::jsonb;
+`;
+}
+
+// ─── Migration 0100: private execution-affinity principal ──────────────
+//
+// Workflow Runs remain publicly service-owned. These columns preserve the
+// principal whose devbox worker may execute an induced Session without
+// exposing or overloading the public resource owner.
+function migration_0100_workflow_run_execution_affinity(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.workflow_runs
+    ADD COLUMN IF NOT EXISTS execution_affinity_provider TEXT,
+    ADD COLUMN IF NOT EXISTS execution_affinity_subject TEXT,
+    ADD COLUMN IF NOT EXISTS execution_affinity_email TEXT,
+    ADD COLUMN IF NOT EXISTS execution_affinity_display_name TEXT;
+
+WITH execution_affinity AS (
+    SELECT
+        run.workflow_run_id,
+        COALESCE(
+            generator.owner_provider,
+            CASE
+                WHEN POSITION(':' IN direct_producer.producer_id) > 1
+                    THEN SPLIT_PART(direct_producer.producer_id, ':', 1)
+                ELSE NULL
+            END,
+            run.owner_provider,
+            'system'
+        ) AS provider,
+        COALESCE(
+            generator.owner_subject,
+            CASE
+                WHEN POSITION(':' IN direct_producer.producer_id) > 1
+                    THEN SUBSTRING(
+                        direct_producer.producer_id
+                        FROM POSITION(':' IN direct_producer.producer_id) + 1
+                    )
+                ELSE NULL
+            END,
+            run.owner_subject,
+            'system'
+        ) AS subject,
+        generator.owner_email AS email,
+        COALESCE(generator.owner_display_name, run.created_by) AS display_name
+    FROM ${s}.workflow_runs run
+    LEFT JOIN ${s}.workflow_generators generator
+      ON generator.workflow_generator_id = run.workflow_generator_id
+    LEFT JOIN LATERAL (
+        SELECT producer.producer_id
+        FROM ${s}.workflow_run_producers producer
+        WHERE producer.workflow_run_id = run.workflow_run_id
+          AND producer.producer_type = 'direct_request'
+        ORDER BY producer.observed_at, producer.observation_id
+        LIMIT 1
+    ) direct_producer ON TRUE
+)
+UPDATE ${s}.workflow_runs run
+SET execution_affinity_provider = COALESCE(
+        run.execution_affinity_provider,
+        execution_affinity.provider
+    ),
+    execution_affinity_subject = COALESCE(
+        run.execution_affinity_subject,
+        execution_affinity.subject
+    ),
+    execution_affinity_email = COALESCE(
+        run.execution_affinity_email,
+        execution_affinity.email
+    ),
+    execution_affinity_display_name = COALESCE(
+        run.execution_affinity_display_name,
+        execution_affinity.display_name
+    )
+FROM execution_affinity
+WHERE execution_affinity.workflow_run_id = run.workflow_run_id;
+
+ALTER TABLE ${s}.workflow_runs
+    ALTER COLUMN execution_affinity_provider SET NOT NULL,
+    ALTER COLUMN execution_affinity_subject SET NOT NULL;
+
+ALTER TABLE ${s}.workflow_runs
+    DROP CONSTRAINT IF EXISTS workflow_runs_execution_affinity_provider_check,
+    DROP CONSTRAINT IF EXISTS workflow_runs_execution_affinity_subject_check;
+ALTER TABLE ${s}.workflow_runs
+    ADD CONSTRAINT workflow_runs_execution_affinity_provider_check
+    CHECK (BTRIM(execution_affinity_provider) <> ''),
+    ADD CONSTRAINT workflow_runs_execution_affinity_subject_check
+    CHECK (BTRIM(execution_affinity_subject) <> '');
+`;
+}
+
+// ─── Migration 0101: Workflow Run viewer-scoped catalog index ─────────
+function migration_0101_workflow_run_viewer_index(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE INDEX IF NOT EXISTS ix_workflow_runs_execution_affinity
+    ON ${s}.workflow_runs(
+        execution_affinity_provider,
+        execution_affinity_subject,
+        created_at DESC,
+        workflow_run_id
+    )
+    WHERE deleted_at IS NULL;
 `;
 }

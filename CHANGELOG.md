@@ -220,6 +220,10 @@ checked it yet.
   runners and commit-specific results. Default main and release behavior remain
   unchanged; PR runs do not publish or deploy.
 
+- Let the standard worker load generic `beforeTurn` and `afterTurn` lifecycle
+  hooks from an operator-supplied ESM module. Fail closed before readiness on
+  invalid modules and preserve defined retry and dual-failure behavior inside
+  the bounded worker drain lifecycle.
 - Include the full MIT license and both copyright notices in every package;
   enforce packed contents before release and support additive notice repair
   for existing releases without replacing their assets or deploying.

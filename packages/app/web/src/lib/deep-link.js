@@ -14,7 +14,7 @@ export const DEEP_LINK_SESSION_STORAGE_KEY = "pilotswarm.portal.deepLinkSession"
 /**
  * A canvas slot from a URL or a stash, or null when the link named none.
  *
- * Guarding the empty cases first is the whole job: `Number(null)` and
+ * Guarding the empty cases first is the whole workflowRun: `Number(null)` and
  * `Number("")` are both 0, and 0 is an integer, so a bare `Number.isInteger`
  * check turns "no slot" into "slot 0" — which then clamps to 1 and looks
  * correct right up until someone links to slot 2.

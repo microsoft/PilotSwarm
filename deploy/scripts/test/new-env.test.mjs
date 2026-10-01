@@ -90,6 +90,7 @@ test("renderLocalEnv produces expected substitutions", () => {
   assert.match(out, /^AZURE_TENANT_ID=22222222-2222-2222-2222-222222222222$/m);
   assert.match(out, /^EDGE_MODE=afd$/m);
   assert.match(out, /^TLS_SOURCE=letsencrypt$/m);
+  assert.doesNotMatch(out, /^GIT_CACHE_ADO_PAT=/m);
   assert.match(out, /^DEPLOY_POSTGRES=true$/m);
   assert.match(out, /^PILOTSWARM_BLOB_USE_MANAGED_IDENTITY=1$/m);
   assert.match(out, /^DATABASE_URL_SECRET_NAME=$/m);
@@ -417,6 +418,26 @@ test("scaffolder accepts private + akv-selfsigned with HOST and PRIVATE_DNS_ZONE
     assert.match(content, /^HOST=portal$/m);
     assert.match(content, /^PRIVATE_DNS_ZONE=pilotswarm\.internal$/m);
     assert.match(content, /^PORTAL_HOSTNAME=portal\.pilotswarm\.internal$/m);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder accepts port-forward + akv-selfsigned without DNS inputs", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "port-forward",
+      "--tls-source", "akv-selfsigned",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const content = readFileSync(TEST_FILE, "utf8");
+    assert.match(content, /^EDGE_MODE=port-forward$/m);
+    assert.match(content, /^TLS_SOURCE=akv-selfsigned$/m);
+    assert.match(content, /^HOST=unused$/m);
+    assert.match(content, /^PRIVATE_DNS_ZONE=unused$/m);
+    assert.match(content, /^PORTAL_HOSTNAME=localhost$/m);
   } finally {
     cleanup();
   }

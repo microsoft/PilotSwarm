@@ -15,6 +15,7 @@ Driving sessions as an end user — scenario-based, from "say hello" to
 multi-hour multi-agent workflows.
 
 - [Terminal UI track](./user-guide/tui.md) · [Browser portal track](./user-guide/portal.md)
+- [Workflow Runs and Workflow Generators](./user-guide/workflow-runs-and-generators.md) — when to create a Session, create one Workflow Run, or register a Workflow Generator
 - [Keybindings](./user-guide/keybindings.md) — TUI controls and slash commands
 - [Working in folders and repos](./user-guide/workspaces.md) — session workspaces: repo clones, your own folder, the shared folder
 

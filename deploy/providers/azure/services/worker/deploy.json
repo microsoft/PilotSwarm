@@ -16,10 +16,12 @@
   "image": {
     "repo":       "pilotswarm-worker",
     "dockerfile": "deploy/Dockerfile.worker",
-    "buildWorkspaces": ["packages/sdk", "packages/horizon-store"]
+    "buildWorkspaces": ["packages/sdk", "packages/horizon-store", "packages/workflow-generator"]
   },
   "rollout": {
-    "deployment": "copilot-runtime-worker",
-    "namespace": "pilotswarm"
+    "kind": "Deployment",
+    "name": "copilot-runtime-worker",
+    "namespace": "pilotswarm",
+    "verifyImage": true
   }
 }

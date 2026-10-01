@@ -166,7 +166,15 @@ const API = {
         principal: { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User", groups: [], roles: ["admin"] },
         authorization: { allowed: true, role: "admin", reason: "Authentication disabled", matchedGroups: [] },
     },
-    "/api/portal-config": { ok: true, portal: { branding: { title: "PilotSwarm", pageTitle: "PilotSwarm" } } },
+    "/api/portal-config": {
+        ok: true,
+        portal: {
+            branding: { title: "PilotSwarm", pageTitle: "PilotSwarm" },
+            footer: {
+                links: [{ label: "Example deployment policy", url: "https://example.test/deployment-policy" }],
+            },
+        },
+    },
     "/api/bootstrap": {
         ok: true,
         mode: "remote",
@@ -255,6 +263,11 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 res.end(JSON.stringify({ ok: true, result: { sessions: SESSIONS, hasMore: false, nextCursor: null } }));
                 return;
             }
+            if (/\/sessions$/.test(pathname) && req.method === "GET") {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: SESSIONS }));
+                return;
+            }
             const sessionMatch = /\/sessions\/([^/]+)$/.exec(pathname);
             if (sessionMatch && req.method === "PATCH") {
                 // A rename. RECORDED, so a test can prove a single Enter in the
@@ -294,7 +307,21 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 return;
             }
 
-            let body = API[pathname];
+            let body = pathname === "/api/v1/bootstrap" ? API["/api/bootstrap"] : API[pathname];
+            if ((pathname === "/api/bootstrap" || pathname === "/api/v1/bootstrap") && body) {
+                body = {
+                    ...body,
+                    auth: {
+                        ...(body.auth || {}),
+                        authorization: {
+                            allowed: true,
+                            role: admin ? "admin" : "user",
+                            reason: "stub server",
+                            matchedGroups: [],
+                        },
+                    },
+                };
+            }
             if (body === undefined) {
                 // Everything else: derive from the last path segment, which is
                 // enough for the read-only surfaces these tests exercise.

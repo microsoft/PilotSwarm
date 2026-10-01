@@ -21,6 +21,15 @@
  *   PILOTSWARM_FACTS_PG_POOL_MAX    — Max facts pg pool connections (default: 3)
  *   PILOTSWARM_ORCHESTRATION_CONCURRENCY — Duroxide orchestration slots (default: 2)
  *   PILOTSWARM_WORKER_CONCURRENCY   — Duroxide worker/activity slots (default: 2)
+ *   PILOTSWARM_WORKER_DISPLAY_NAME  — Human-readable fleet label
+ *   PILOTSWARM_APPLICATION_VERSION  — Hosting application version (auto-detected in bundled app)
+ *   PILOTSWARM_SOURCE_COMMIT        — Full source revision used for this worker build
+ *   PILOTSWARM_BUILD_ID             — Deployment/image build identifier
+ *   PILOTSWARM_IMAGE_REF            — Container image repository/tag
+ *   PILOTSWARM_IMAGE_DIGEST         — Immutable container digest when available
+ *   PILOTSWARM_TURN_LIFECYCLE_HOOK_MODULE
+ *                                    — Optional module exporting turn hooks,
+ *                                      including durable Git pre/post hooks
  *   HORIZON_DATABASE_URL            — Optional EnhancedFactStore (HorizonDB); enables multi-signal search
  *   HORIZON_GRAPH_DATABASE_URL      — Optional knowledge graph (Apache AGE) target (opt-in)
  *   HORIZON_EMBED_URL/MODEL/DIM     — Optional durable in-DB embedder endpoint
@@ -37,7 +46,15 @@
 
 import os from "node:os";
 import fs from "node:fs";
-import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
+import path from "node:path";
+import {
+    PilotSwarmWorker,
+    horizonConfigFromEnv,
+    loadExtensionModules,
+    parseExtensionModules,
+    loadTurnLifecycleHooksFromEnv,
+    loadWorkerStartupModuleFromEnv,
+} from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
 // for optional secrets that the user didn't provide. CSI Secret Store
@@ -55,6 +72,18 @@ for (const k of Object.keys(process.env)) {
 
 const logLevel = process.env.LOG_LEVEL || "info";
 const podName = process.env.POD_NAME || os.hostname();
+const readyFile = process.env.WORKER_READY_FILE?.trim();
+const clearReady = () => {
+    if (!readyFile) return;
+    try { fs.rmSync(readyFile, { force: true }); } catch { /* best effort */ }
+};
+const markReady = () => {
+    if (!readyFile) return;
+    fs.mkdirSync(path.dirname(readyFile), { recursive: true });
+    fs.writeFileSync(readyFile, `${podName} ${new Date().toISOString()}\n`);
+    console.log(`[worker] Readiness sentinel written: ${readyFile}`);
+};
+clearReady();
 
 // Plugin directories: env override or auto-detect bundled/default Docker plugin dirs.
 const pluginDirs = process.env.PLUGIN_DIRS
@@ -66,10 +95,22 @@ if (pluginDirs.length === 0 && fs.existsSync("/app/packages/cli/plugins/plugin.j
 if (pluginDirs.length === 0 && fs.existsSync("/app/plugin/plugin.json")) {
     pluginDirs.push("/app/plugin");
 }
+const workerStartup = await loadWorkerStartupModuleFromEnv({
+    env: process.env,
+    pluginDirs,
+    trace: (message) => console.log(`[worker-startup] ${message}`),
+});
+const effectivePluginDirs = [
+    ...new Set([
+        ...pluginDirs,
+        ...(workerStartup?.additionalPluginDirs ?? []),
+    ]),
+];
 
 console.log(`[worker] Pod: ${podName}`);
 console.log(`[worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
-if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(", ")}`);
+if (workerStartup) console.log("[worker] Startup module initialized");
+if (effectivePluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${effectivePluginDirs.join(", ")}`);
 if (process.env.SESSION_STATE_DIR) console.log(`[worker] Session state dir: ${process.env.SESSION_STATE_DIR}`);
 if (process.env.DUROXIDE_PG_POOL_MAX) console.log(`[worker] Duroxide PG pool max: ${process.env.DUROXIDE_PG_POOL_MAX}`);
 if (process.env.PILOTSWARM_CMS_PG_POOL_MAX) console.log(`[worker] CMS PG pool max: ${process.env.PILOTSWARM_CMS_PG_POOL_MAX}`);
@@ -91,6 +132,10 @@ if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
 // System message: falls back to default.agent.md from plugin if not set here.
 // Set explicitly to override the plugin default, or leave undefined to use it.
 const SYSTEM_MESSAGE = undefined;
+const turnLifecycleHooks = await loadTurnLifecycleHooksFromEnv();
+if (turnLifecycleHooks) {
+    console.log("[worker] Turn lifecycle hooks loaded");
+}
 
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
@@ -99,11 +144,18 @@ const worker = new PilotSwarmWorker({
     traceWriter: (message) => console.log(message),
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
     blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+    blobUseManagedIdentity: process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?.trim()
+        ? ["1", "true", "yes", "on"].includes(
+            process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY.trim().toLowerCase(),
+        )
+        : undefined,
     sessionStateDir: process.env.SESSION_STATE_DIR || undefined,
     modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH || undefined,
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
-    pluginDirs,
+    pluginDirs: effectivePluginDirs,
+    ...(workerStartup?.workerOptions ?? {}),
+    ...turnLifecycleHooks,
     // Bicep-deploy MI flow (set in worker-env ConfigMap by the overlay
     // .env). Unset on the legacy `scripts/deploy-aks.sh` path, local
     // Docker, and CI — those keep using the password URL via `store`
@@ -142,6 +194,49 @@ await loadExtensionModules(worker, parseExtensionModules(process.env.PILOTSWARM_
     log: (message) => console.log(`[worker] ${message}`),
 });
 
+let shutdownStarted = false;
+async function shutdown(signal) {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    console.log(`[worker] ${signal} received, draining...`);
+    clearReady();
+    try {
+        const shutdownErrors = [];
+        try {
+            await worker.gracefulShutdown();
+        } catch (error) {
+            shutdownErrors.push(error);
+        }
+        try {
+            await workerStartup?.shutdown?.();
+        } catch (error) {
+            shutdownErrors.push(error);
+        }
+        if (shutdownErrors.length > 0) {
+            throw new AggregateError(
+                shutdownErrors,
+                "One or more worker shutdown operations failed.",
+            );
+        }
+        process.exit(0);
+    } catch (error) {
+        console.error(`[worker] Worker shutdown failed: ${error?.stack ?? error}`);
+        process.exit(1);
+    }
+}
+
+function fatalExit(kind, error) {
+    clearReady();
+    console.error(`[worker] ${kind}: ${error?.stack ?? error}`);
+    process.exit(1);
+}
+
+process.once("exit", clearReady);
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("uncaughtException", (error) => fatalExit("Uncaught exception", error));
+process.on("unhandledRejection", (error) => fatalExit("Unhandled rejection", error));
+
 await worker.start();
 console.log(`[worker] Started ✓ Polling for orchestrations...`);
 if (worker.modelProviders) {
@@ -162,19 +257,7 @@ const mcpNames = Object.keys(worker.loadedMcpServers);
 if (mcpNames.length > 0) {
     console.log(`[worker] MCP servers: ${mcpNames.join(", ")}`);
 }
-
-// Graceful drain (lifecycle protocol §3.8): stop fetching, let in-flight
-// turns finish and commit within the drain budget, release warm sessions,
-// then exit. PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS sets the budget (60s
-// default); the pod's terminationGracePeriodSeconds must exceed it.
-async function shutdown(signal) {
-    console.log(`[worker] ${signal} received, draining...`);
-    await worker.gracefulShutdown();
-    process.exit(0);
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+markReady();
 
 // Block forever — worker polls in background
 await new Promise(() => {});

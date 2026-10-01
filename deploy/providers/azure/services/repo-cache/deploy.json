@@ -18,7 +18,9 @@
     "dockerfile": "deploy/Dockerfile.repo-cache"
   },
   "rollout": {
-    "deployment": "repo-cache",
-    "namespace": "pilotswarm"
+    "kind": "Deployment",
+    "name": "repo-cache",
+    "namespace": "pilotswarm",
+    "verifyImage": true
   }
 }

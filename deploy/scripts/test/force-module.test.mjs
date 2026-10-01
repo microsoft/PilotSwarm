@@ -76,6 +76,8 @@ mock.module("../lib/deploy-marker.mjs", {
   namedExports: {
     computeTemplateHash: () => "tmpl-hash",
     computeParamsHash: () => "params-hash",
+    computeExternalParamsHash: () => "",
+    computeInlineParamsHash: () => "",
     shouldSkipDeploy: ({ moduleName, force }) => {
       skipCalls.push({ moduleName, force: force === true });
       return { skip: true, reason: "test-stub" };

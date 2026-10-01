@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560" role="img" aria-labelledby="title description">
+  <title id="title">PilotSwarm workflow resource model</title>
+  <desc id="description">An immutable Workflow Definition is selected by a direct request or referenced by a Workflow Generator. Both paths create durable Workflow Runs pinned to the Definition.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+    <style>
+      .box { stroke-width: 2; rx: 14; }
+      .title { font: 600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #24292f; }
+      .body { font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #57606a; }
+      .edge { fill: none; stroke: #57606a; stroke-width: 2.5; marker-end: url(#arrow); }
+      .edge-label { font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #57606a; }
+    </style>
+  </defs>
+
+  <rect x="300" y="30" width="400" height="120" class="box" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="500" y="78" text-anchor="middle" class="title">Workflow Definition</text>
+  <text x="500" y="108" text-anchor="middle" class="body">Immutable execution recipe</text>
+  <text x="500" y="132" text-anchor="middle" class="body">Lifecycle, entry state, affinities, gates</text>
+
+  <rect x="70" y="230" width="350" height="110" class="box" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="245" y="276" text-anchor="middle" class="title">Direct request</text>
+  <text x="245" y="307" text-anchor="middle" class="body">Known input executed once</text>
+
+  <rect x="580" y="230" width="350" height="110" class="box" fill="#fff8c5" stroke="#9a6700"/>
+  <text x="755" y="276" text-anchor="middle" class="title">Workflow Generator</text>
+  <text x="755" y="307" text-anchor="middle" class="body">Discovers targets repeatedly</text>
+
+  <path d="M 410 150 C 365 175, 300 190, 260 228" class="edge"/>
+  <text x="317" y="188" text-anchor="middle" class="edge-label">selected by</text>
+
+  <path d="M 590 150 C 635 175, 700 190, 740 228" class="edge"/>
+  <text x="683" y="188" text-anchor="middle" class="edge-label">referenced by</text>
+
+  <rect x="300" y="420" width="400" height="110" class="box" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="500" y="466" text-anchor="middle" class="title">Workflow Run</text>
+  <text x="500" y="497" text-anchor="middle" class="body">One durable execution pinned to the Definition</text>
+
+  <path d="M 245 340 C 270 385, 350 405, 430 419" class="edge"/>
+  <text x="315" y="386" text-anchor="middle" class="edge-label">creates</text>
+
+  <path d="M 755 340 C 730 385, 650 405, 570 419" class="edge"/>
+  <text x="685" y="386" text-anchor="middle" class="edge-label">produces</text>
+</svg>

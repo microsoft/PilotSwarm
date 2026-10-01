@@ -72,3 +72,92 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     const code = sql.split("\n").filter((ln) => !ln.trimStart().startsWith("--")).join("\n");
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
+
+test("0088: stable worker identities refresh owner and routing registration", () => {
+    const migration = migrations.find((m) => m.version === "0088");
+    assert.ok(migration, "migration 0088 must be registered");
+    assert.equal(migration.name, "worker_registration_refresh");
+    assert.match(migration.sql, /owner_provider = EXCLUDED\.owner_provider/);
+    assert.match(migration.sql, /owner_subject = EXCLUDED\.owner_subject/);
+    assert.match(migration.sql, /info = EXCLUDED\.info/);
+});
+
+test("0089: sessions persist an immutable routing contract", () => {
+    const migration = migrations.find((m) => m.version === "0089");
+    assert.ok(migration, "migration 0089 must be registered");
+    assert.equal(migration.name, "session_routing_contract");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS routing_config JSONB/);
+    assert.match(migration.sql, /jsonb_typeof\(routing_config\) = 'object'/);
+});
+
+test("0090: WorkflowRuns use logical deletion with durable cleanup tombstones", () => {
+    const migration = migrations.find((m) => m.version === "0090");
+    assert.ok(migration, "migration 0090 must be registered");
+    assert.equal(migration.name, "workflow_run_cleanup_tombstones");
+    assert.match(migration.sql, /ALTER TABLE "shape_check"\.workflow_generators\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ALTER TABLE "shape_check"\.workflow_runs\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ALTER TABLE "shape_check"\.sessions\s+ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /DROP CONSTRAINT IF EXISTS workflow_generators_owner_provider_owner_subject_name_key/i);
+    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_generators_active_owner_name/i);
+    assert.match(migration.sql, /WHERE deleted_at IS NULL/i);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_run_cleanup_tombstones/i);
+    assert.match(migration.sql, /aggregate_type\s+TEXT NOT NULL CHECK \(aggregate_type IN \('generator', 'workflowRun'\)\)/i);
+    assert.match(migration.sql, /cleanup_status\s+TEXT NOT NULL DEFAULT 'pending'/i);
+    assert.match(migration.sql, /cleanup_status IN \('pending', 'completed', 'failed'\)/i);
+    assert.match(migration.sql, /session_ids\s+JSONB NOT NULL DEFAULT '\[\]'::jsonb/i);
+    assert.match(migration.sql, /jsonb_typeof\(session_ids\) = 'array'/i);
+    assert.match(migration.sql, /PRIMARY KEY \(aggregate_type, aggregate_id\)/i);
+    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_cleanup_tombstones_status/i);
+});
+
+test("0091: WorkflowRun waits use one durable taxonomy with response fencing", () => {
+    const migration = migrations.find((m) => m.version === "0091");
+    assert.ok(migration, "migration 0091 must be registered");
+    assert.equal(migration.name, "workflow_run_waits");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_run_waits/i);
+    assert.match(migration.sql, /kind IN \('response', 'observed_condition', 'timer'\)/i);
+    assert.match(migration.sql, /detection_mode IN \('direct_submission', 'poll', 'event', 'hybrid', 'timer'\)/i);
+    assert.match(migration.sql, /expected_state_revision\s+BIGINT NOT NULL/i);
+    assert.match(migration.sql, /response_schema\s+JSONB NOT NULL/i);
+    assert.match(migration.sql, /responder_policy\s+JSONB NOT NULL/i);
+    assert.match(migration.sql, /satisfaction_evidence\s+JSONB/i);
+    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_waits_pending_response/i);
+    assert.match(migration.sql, /WHERE kind = 'response' AND status = 'pending'/i);
+    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_due/i);
+});
+
+test("0092: observed-condition waits persist scheduling leases and delivery boundaries", () => {
+    const migration = migrations.find((m) => m.version === "0092");
+    assert.ok(migration, "migration 0092 must be registered");
+    assert.equal(migration.name, "workflow_run_wait_scheduling");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS signal_key TEXT/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_attempts INTEGER NOT NULL DEFAULT 0/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS consecutive_check_failures INTEGER NOT NULL DEFAULT 0/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_lease_owner TEXT/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_lease_expires_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS last_check_error TEXT/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /FROM "shape_check"\.workflow_run_external_operations operation/i);
+    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_waits_signal_key/i);
+    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_check_lease/i);
+});
+
+test("0094: WorkflowGenerator source providers use opaque identifiers", () => {
+    const migration = migrations.find((m) => m.version === "0094");
+    assert.ok(migration, "migration 0094 must be registered");
+    assert.equal(migration.name, "workflow_generator_source_provider_ids");
+    assert.match(
+        migration.sql,
+        /DROP CONSTRAINT IF EXISTS workflow_generators_source_type_check/i,
+    );
+    assert.match(
+        migration.sql,
+        /CHECK \(source_type IS NULL OR source_type ~ '\^\[a-z\]\[a-z0-9\._-\]\{0,127\}\$'\)/i,
+    );
+    assert.doesNotMatch(
+        migration.sql,
+        /CHECK\s*\(\s*source_type\s+IN\s*\(/i,
+    );
+});

@@ -145,7 +145,12 @@ export function stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayN
   // Versioned Secret names prevent a new pod from starting with the previous
   // CSI-synced Secret while the driver is still refreshing the new values.
   const name = `pilotswarm-${service}-database-${hash}`;
-  const deployment = service === "worker" ? "copilot-runtime-worker" : "pilotswarm-portal";
+  const deployments = service === "worker"
+    ? [
+        { name: "copilot-runtime-worker", container: "worker" },
+        { name: "pilotswarm-workflow-generator", container: "workflow-generator" },
+      ]
+    : [{ name: "pilotswarm-portal", container: "portal" }];
   const componentDir = join(stagedServiceRoot, "components", "database-secrets");
   mkdirSync(componentDir, { recursive: true });
   const spc = {
@@ -170,13 +175,13 @@ export function stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayN
       }],
     },
   };
-  const patch = {
+  const patchFor = ({ name: deployment, container }) => ({
     apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: { name: deployment },
     spec: { template: { spec: {
       containers: [{
-        name: service,
+        name: container,
         env: refs.map(({ key }) => ({
           name: key,
           valueFrom: { secretKeyRef: { name, key } },
@@ -192,12 +197,15 @@ export function stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayN
         },
       }],
     } } },
-  };
+  });
   const component = {
     apiVersion: "kustomize.config.k8s.io/v1alpha1",
     kind: "Component",
     resources: ["secret-provider-class.yaml"],
-    patches: [{ target: { kind: "Deployment", name: deployment }, patch: JSON.stringify(patch) }],
+    patches: deployments.map((deployment) => ({
+      target: { kind: "Deployment", name: deployment.name },
+      patch: JSON.stringify(patchFor(deployment)),
+    })),
   };
   writeFileSync(join(componentDir, "secret-provider-class.yaml"), JSON.stringify(spc, null, 2) + "\n");
   writeFileSync(join(componentDir, "kustomization.yaml"), JSON.stringify(component, null, 2) + "\n");

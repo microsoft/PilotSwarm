@@ -37,6 +37,7 @@ import { selectSessionStatusSummary } from "../src/selectors.js";
 import {
     clampWaitReason,
     commitPanAxis,
+    sessionRoutingTagsText,
     visibleWaitReason,
     waitReasonLabel,
     WAIT_REASON_MAX_CHARS,
@@ -47,6 +48,20 @@ const webApp = readFileSync(
     fileURLToPath(new URL("../../react/src/web-app.js", import.meta.url)),
     "utf8",
 );
+
+test("session detail presents durable routing as human-readable tags", () => {
+    assert.equal(sessionRoutingTagsText({
+        routing: {
+            ownerAffinityRequired: true,
+            repo: "example-repo-a",
+            gitRef: "refs/heads/main",
+        },
+    }), "compute:devbox · repo:example-repo-a · git-ref:refs/heads/main");
+    assert.equal(sessionRoutingTagsText({
+        routing: { repo: "example-repo-b" },
+    }), "compute:cluster · repo:example-repo-b");
+    assert.equal(sessionRoutingTagsText({}), null);
+});
 
 // ── the fold: state and reducer ─────────────────────────────────────────────
 

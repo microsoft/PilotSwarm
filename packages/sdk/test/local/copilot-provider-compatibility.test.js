@@ -2,12 +2,13 @@ import { describe, it, expect } from "vitest";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createCopilotClient } from "../../src/copilot-client.ts";
 import { ModelProviderRegistry, applyReasoningEffortToProviderConfig } from "../../src/model-providers.ts";
 import { attachWorkloadIdentity } from "../../src/wif-credentials.ts";
 import { SessionManager } from "../../src/session-manager.ts";
+import { hasSignedInCopilotUserConfig, resolveCopilotHome } from "../../src/copilot-login-state.ts";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const MODEL = "gpt-5.6-terra";
@@ -31,6 +32,30 @@ async function harness(run) {
 }
 
 describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, synthetic HTTP)", () => {
+    it("recognizes legacy and current Copilot CLI login metadata", () => {
+        expect(hasSignedInCopilotUserConfig(
+            JSON.stringify({ copilotTokens: { "github.com": "redacted" } }),
+        )).toBe(true);
+        expect(hasSignedInCopilotUserConfig(
+            JSON.stringify({ loggedInUsers: [{ host: "github.com", login: "octocat" }] }),
+        )).toBe(true);
+        expect(hasSignedInCopilotUserConfig(
+            '// Copilot CLI config\n{"loggedInUsers":[{"host":"github.com","login":"octocat"}]}',
+        )).toBe(true);
+        expect(hasSignedInCopilotUserConfig(
+            JSON.stringify({ copilotTokens: {}, loggedInUsers: [] }),
+        )).toBe(false);
+    });
+
+    it("prefers COPILOT_HOME over the session-state layout", () => {
+        const configuredHome = join(tmpdir(), "configured-copilot-home");
+        const sessionStateDir = join(tmpdir(), "fallback-copilot-home", "session-state");
+        expect(resolveCopilotHome(sessionStateDir, {
+            COPILOT_HOME: configuredHome,
+        })).toBe(resolve(configuredHome));
+        expect(resolveCopilotHome(sessionStateDir, {})).toBe(dirname(sessionStateDir));
+    });
+
     it("reproduces the unmodified CLI's rejected snippy field", { timeout: 30_000 }, async () => {
         await harness(async ({ server, clients, options }) => {
             const client = new CopilotClient({ ...options, connection: RuntimeConnection.forStdio() });

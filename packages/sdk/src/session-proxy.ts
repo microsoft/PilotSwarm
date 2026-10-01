@@ -1,5 +1,6 @@
 import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
+import { runTurnRoutingTag } from "./activity-routing.js";
 import { createCopilotClient } from "./copilot-client.js";
 import {
     BoundAgentPackageUnavailableError,
@@ -7,6 +8,10 @@ import {
     PackageToolBindingError,
     type SessionManager,
 } from "./session-manager.js";
+import {
+    isCallerAuthConfigurationError,
+    isCallerReauthRequiredError,
+} from "./caller-auth-errors.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
@@ -28,8 +33,9 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type GitWorkspaceState } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
+import type { SessionBlobStore } from "./blob-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -41,6 +47,7 @@ import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
+import { extractPromptSystemContext } from "./orchestration/utils.js";
 import {
     archiveName,
     artifactExists,
@@ -67,6 +74,10 @@ import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycl
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
+import {
+    runWithTurnLifecycleHooks,
+    validateSessionConfigurationOverrides,
+} from "./turn-lifecycle-hooks.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -750,12 +761,34 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
-            // Session workspaces (1.0.80): the turn of a session that has, or
-            // had, a workspace goes only to workers that know workspaces. An
-            // older worker would run it in its own folder.
-            return (config as { workspace?: unknown }).workspace || (turnMeta?.workspaceRevision ?? 0) > 0
-                ? routeWorkspaceActivity(task)
-                : routeHandoffActivity(task, routingContract);
+            // Workspace sessions require a workspace-capable worker. For
+            // non-workspace sessions, retain the fork's repo/generic routing
+            // tag so repository fleets cannot steal generic turns.
+            if ((config as { workspace?: unknown }).workspace || (turnMeta?.workspaceRevision ?? 0) > 0) {
+                return routeWorkspaceActivity(task);
+            }
+            const runTurnTask = routeHandoffActivity(task, routingContract);
+            // Routing tag for the runTurn activity (duroxide worker affinity).
+            // Two mutually-exclusive cases, and crucially runTurn is NEVER left
+            // untagged -- an untagged runTurn is served by ANY worker in
+            // `defaultAnd` mode (every repository worker), which would let a repo
+            // fleet steal a repo-less turn and run it inside that repo's
+            // enlistment (leaking its cwd, skills, and MCP servers):
+            //   - config.repo set  -> `repo:<name>`: only a repository worker whose
+            //     workerTagFilter includes that tag can dequeue it (repo affinity).
+            //   - config.repo unset -> `generic`: only the generic worker pool
+            //     (PILOTSWARM_WORKER_TAGS=generic) serves it, so a repo-less
+            //     session runs in a clean, repo-free worker. Repository workers
+            //     (`defaultAnd:[repo:<name>]`) reject a `generic`-tagged turn
+            //     because it is tagged (not untagged) and does not match their
+            //     repo. Support activities stay UNTAGGED (below) so any worker
+            //     can serve them -- only the runTurn is pinned.
+            // Duroxide carries ONE tag per activity, so the repo/owner affinity
+            // tag is applied last and is the tag a worker matches on; the
+            // handoff contract above still validates tag-routing support and
+            // selects the versioned activity name.
+            if (typeof runTurnTask?.withTag !== "function") return runTurnTask;
+            return runTurnTask.withTag(runTurnRoutingTag(config));
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -976,6 +1009,98 @@ export function childModelCreationOptions(config: SerializableSessionConfig) {
     };
 }
 
+/** @internal Routing options inherited by every child of an owner-affined WorkflowRun session. */
+export function childRoutingCreationOptions(config: SerializableSessionConfig) {
+    return {
+        repo: config.repo,
+        gitRef: config.gitRef,
+        requireOwnerAffinity: Boolean(config.ownerAffinity),
+        ...(config.workspace ? { workspace: config.workspace } : {}),
+    };
+}
+
+/**
+ * Resolve routing from a session's durable orchestration input without
+ * changing the orchestration's scheduled activity payload or replay history.
+ */
+export async function durableSessionRoutingConfig(
+    client: {
+        listExecutions(instanceId: string): Promise<number[]>;
+        readExecutionHistory(instanceId: string, executionId: number): Promise<Array<{
+            kind?: string;
+            data?: string;
+        }>>;
+    },
+    sessionId: string,
+) {
+    const instanceId = `session-${sessionId}`;
+    const executions = await client.listExecutions(instanceId);
+    if (!Array.isArray(executions) || executions.length === 0) {
+        throw new Error(`Cannot resolve routing for ${sessionId}: no durable execution`);
+    }
+    const executionId = executions[executions.length - 1];
+    const history = await client.readExecutionHistory(instanceId, executionId);
+    const started = history.find((event) => event.kind === "OrchestrationStarted");
+    if (!started?.data) {
+        throw new Error(`Cannot resolve routing for ${sessionId}: orchestration input is missing`);
+    }
+    let payload: unknown;
+    try {
+        payload = JSON.parse(started.data);
+    } catch {
+        throw new Error(`Cannot resolve routing for ${sessionId}: orchestration input is invalid`);
+    }
+    const input = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).input
+        : null;
+    const config = input && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>).config
+        : null;
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error(`Cannot resolve routing for ${sessionId}: session config is missing`);
+    }
+    const routing = config as SerializableSessionConfig;
+    return {
+        repo: routing.repo,
+        gitRef: routing.gitRef,
+        ownerAffinity: routing.ownerAffinity,
+    };
+}
+
+export async function durableSessionRoutingCreationOptions(
+    client: Parameters<typeof durableSessionRoutingConfig>[0],
+    sessionId: string,
+) {
+    return childRoutingCreationOptions(
+        await durableSessionRoutingConfig(client, sessionId),
+    );
+}
+
+/** Persist the exact attempt-scoped distiller seed before any enqueue retry. */
+export async function loadOrCreateDistillerSeed(input: {
+    artifactStore: Pick<ArtifactStore, "statArtifact" | "downloadArtifactText" | "uploadArtifactIfAbsent">;
+    sessionId: string;
+    filename: string;
+    build: () => Promise<string>;
+}): Promise<string> {
+    if (await input.artifactStore.statArtifact(input.sessionId, input.filename)) {
+        return input.artifactStore.downloadArtifactText(input.sessionId, input.filename);
+    }
+    if (!input.artifactStore.uploadArtifactIfAbsent) {
+        throw new Error("Distiller seed persistence requires atomic artifact creation");
+    }
+    const seed = await input.build();
+    const created = await input.artifactStore.uploadArtifactIfAbsent(
+        input.sessionId,
+        input.filename,
+        Buffer.from(seed, "utf8"),
+        "text/markdown",
+    );
+    return created
+        ? seed
+        : input.artifactStore.downloadArtifactText(input.sessionId, input.filename);
+}
+
 /** @internal Initial turn options shared by every named-agent creation path. */
 export function bootstrapTurnOptions(requiredTool?: string) {
     return {
@@ -993,7 +1118,7 @@ export function bootstrapTurnOptions(requiredTool?: string) {
 export function createSessionManagerProxy(
     ctx: any,
     routingContract?: ActivityRoutingContract,
-    options?: { childResultProvenance?: boolean },
+    options: { childResultProvenance?: boolean; ownerAwareRouting?: boolean } = {},
 ) {
     return {
         listModels() {
@@ -1004,7 +1129,13 @@ export function createSessionManagerProxy(
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
         spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean) {
-            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
+            // The handoff contract (when present) selects the versioned name and
+            // capability tag; without it the owner-aware orchestration keeps its
+            // own "2" name so the durable yield sequence stays version-stable.
+            const spawnActivityName = routingContract
+                ? routedActivityName("spawnChildSession", routingContract)
+                : (options.ownerAwareRouting ? "spawnChildSession2" : "spawnChildSession");
+            return routeHandoffActivity(ctx.scheduleActivity(spawnActivityName, {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
@@ -1129,7 +1260,10 @@ export function createSessionManagerProxy(
         // ── Service-session distiller (1.0.68) ─────────────────
         /** Spawn the regen-distiller service session under the tree root (idempotent per attempt). */
         runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string }) {
-            return ctx.scheduleActivity("runRegenSpawnDistiller", { sessionId, epoch, attemptId, ...(opts ?? {}) });
+            return ctx.scheduleActivity(
+                options.ownerAwareRouting ? "runRegenSpawnDistiller2" : "runRegenSpawnDistiller",
+                { sessionId, epoch, attemptId, ...(opts ?? {}) },
+            );
         },
         /** Poll the distiller service session: running | completed (with response) | failed. */
         runRegenCheckDistiller(distillerSessionId: string) {
@@ -1187,8 +1321,31 @@ export function registerActivities(
     factStore?: import("./facts-store.js").FactStore | null,
     /** Worker node identifier — written on every CMS event for worker tracking. */
     workerNodeId?: string,
+    /** Process-local hooks around each complete run-turn activity attempt. */
+    turnHooks?: import("./turn-lifecycle-hooks.js").TurnLifecycleHooks<SerializableSessionConfig, TurnResult> & {
+        configureSession?: import("./turn-lifecycle-hooks.js").ConfigureSessionHook<SerializableSessionConfig>;
+    },
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /**
+     * Pre-turn reconcile hook (git-hydration MVP) — invoked at the top of the
+     * `runTurn` activity before the session touches its working directory.
+     * See {@link import("./types.js").BeforeRunTurnHook}.
+     */
+    beforeRunTurn?: import("./types.js").BeforeRunTurnHook,
+    /**
+     * Session-scoped blob store — backs the durable git-workspace blob IO
+     * (bundle / patch / meta) that hydrate/dehydrate read and write. Present
+     * only for a CMS-backed worker with a blob store; when absent the git hooks
+     * fall back to legacy moving-ref behavior.
+     */
+    blobStore?: SessionBlobStore | null,
+    /**
+     * Post-turn dehydrate hook (git-hydration §8.5) — invoked at the END of the
+     * `runTurn` activity on EVERY turn, best-effort. See
+     * {@link import("./types.js").AfterRunTurnHook}.
+     */
+    afterRunTurn?: import("./types.js").AfterRunTurnHook,
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1386,7 +1543,7 @@ export function registerActivities(
     };
 
     // ── runTurn ──────────────────────────────────────────────
-    const runTurnHandler = async (
+    const runTurnBodyHandler = async (
         activityCtx: any,
         input: {
             sessionId: string;
@@ -1420,6 +1577,203 @@ export function registerActivities(
         // WITHOUT them (suspected work-item redelivery after eviction/lock
         // churn). This line makes the executed input's truth visible.
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} attachments=${Array.isArray(input.attachments) ? input.attachments.length : "absent"}`);
+
+        // ── Timing instrumentation (git-hydration) ───────────────────────
+        // A worker begins DISPATCHING this turn the moment the activity starts
+        // running on it. We stamp that instant and time the pre-work phases —
+        // git enlistment reconcile (cold turns only) and session-state prepare
+        // — so any hydration delay before real model/tool work is visible.
+        //
+        // Cold vs warm: on a repo-affinity worker the session-tree is PINNED,
+        // so one worker runs turn 0…N. Only the COLD turn (turn 0 or a cross-
+        // worker resume) pays session-state hydrate, a fresh SDK resume, AND
+        // the git enlistment reconcile; warm turns reuse the resident
+        // ManagedSession and pay only the model/tool work. We capture residency
+        // BEFORE any getOrCreate so aggregation can split one-time acquisition
+        // cost from cheap recurring warm turns, and so reconcile is scoped to
+        // acquisition rather than every turn.
+        // Safe here: this is an activity handler (non-deterministic wall-clock
+        // is allowed; the handler already uses Date.now()/new Date()).
+        const acquiredAtMs = Date.now();
+        let reconcileMs = 0;
+        let workBeginMs = 0;
+        const wasResident = typeof sessionManager.isSessionResident === "function"
+            && sessionManager.isSessionResident(input.sessionId);
+        const acquireMode = wasResident ? "warm" : "cold";
+        activityCtx.traceInfo(`[runTurn] turn dispatched session=${input.sessionId} turn=${input.turnIndex ?? 0} epoch=${input.transcriptEpoch ?? 0} mode=${acquireMode} worker=${workerNodeId ?? "(unset)"}`);
+        if (catalog && workerNodeId) {
+            void cmsRetryBestEffort(
+                `runTurn.recordEvent worker-capacity-acquired session=${input.sessionId}`,
+                () => catalog.recordEvents(input.sessionId, [{
+                    eventType: "session.worker_capacity_acquired",
+                    data: {
+                        acquiredAt: new Date(acquiredAtMs).toISOString(),
+                        turnIndex: input.turnIndex ?? 0,
+                        acquireMode,
+                    },
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+        }
+
+        // ── Shared durable git-IO (git-hydration §8.5) ───────────────────
+        // Build ONE durable IO object per turn, reused by BOTH the pre-turn
+        // hydrate hook (beforeRunTurn, cold only) and the post-turn dehydrate
+        // hook (afterRunTurn, every turn). It bridges the protocol module's
+        // storage-agnostic GitBlobIO/GitStateIO contracts onto the worker's
+        // real backends:
+        //   • blobs → the session-scoped SessionBlobStore (bundle/patch/meta)
+        //   • state → the CMS git-state row (the durable commit point)
+        // Present only when BOTH a CMS catalog and a session blob store exist;
+        // otherwise the git hooks fall back to their legacy moving-ref path.
+        let gitDurableIo:
+            | { state: import("./git-workspace.js").GitStateIO; blobs: import("./git-workspace.js").GitBlobIO }
+            | null = null;
+        if (
+            (beforeRunTurn || afterRunTurn) &&
+            catalog &&
+            typeof catalog.getSessionGitState === "function" &&
+            typeof catalog.setSessionGitState === "function" &&
+            blobStore &&
+            typeof blobStore.getGitWorkspaceBlob === "function" &&
+            typeof blobStore.putGitWorkspaceBlob === "function"
+        ) {
+            const sid = input.sessionId;
+            gitDurableIo = {
+                state: {
+                    // Fresh CRITICAL read: hydrate/dehydrate depend on a truthful
+                    // pinned pointer. A stale/omitted read would make dehydrate
+                    // compute a wrong bundle base (base==HEAD → no bundle → the
+                    // session's unpushed local commits are LOST).
+                    get: () =>
+                        cmsRetryCritical(
+                            `runTurn.getSessionGitState session=${sid}`,
+                            () => catalog!.getSessionGitState(sid),
+                            (msg: string) => activityCtx.traceInfo(msg),
+                        ).then((row) => row ?? null),
+                    set: (next) => {
+                        activityCtx.traceInfo(
+                            `[runTurn][git] persist pointer session=${sid} turn=${input.turnIndex ?? 0} ` +
+                            `base=${next?.baseSha ? next.baseSha.slice(0, 12) : "(null)"} head=${next?.headSha ? next.headSha.slice(0, 12) : "(none)"} ` +
+                            `branch=${next?.branch ?? "(default)"} epoch=${next?.epoch ?? 0}`,
+                        );
+                        return cmsRetryCritical(
+                            `runTurn.setSessionGitState session=${sid}`,
+                            () => catalog!.setSessionGitState(sid, next).then(() => undefined),
+                            (msg: string) => activityCtx.traceInfo(msg),
+                        );
+                    },
+                },
+                blobs: {
+                    get: (kind) => blobStore!.getGitWorkspaceBlob(sid, kind),
+                    put: (kind, data) => blobStore!.putGitWorkspaceBlob(sid, kind, data),
+                },
+            };
+        }
+
+        // ── Hydration-scoped reconcile hook (git-hydration) ──────────────
+        // A repository lifecycle module uses this to reconcile its reused local
+        // enlistment when a session is ACQUIRED onto the worker — i.e. a COLD
+        // turn (turn 0, or a cross-worker resume after the session-state was
+        // hydrated onto this node).
+        //
+        // We deliberately do NOT reconcile on warm turns. A pinned repo-
+        // affinity worker runs turn 0…N for the same resident session; the
+        // reconcile does `reset --hard origin/HEAD`, which would wipe the
+        // session's own mid-session working-tree edits on every subsequent
+        // turn. Scoping it to hydration syncs the tree once per acquisition
+        // (the moment it is safe — nothing has touched the tree yet) and then
+        // leaves the working directory alone for the life of the session.
+        //
+        // With worker concurrency pinned to 1 the reconcile runs on an idle
+        // tree (no other turn holds the single job slot). A reconcile failure
+        // fails THIS turn cleanly rather than executing against a stale/half-
+        // synced tree.
+        if (beforeRunTurn && !wasResident) {
+            const reconcileStartMs = Date.now();
+            try {
+                // Read the session's durable git pointer (§8.5) so the hook can
+                // target the PINNED base rather than live mirror HEAD. On turn 0
+                // this reads back the unpinned shape and the hook pins baseSha.
+                // A missing catalog (non-CMS worker) yields undefined, and the
+                // hook falls back to its legacy moving-ref behaviour.
+                let gitState: GitWorkspaceState | undefined;
+                let persistGitState: ((state: GitWorkspaceState) => Promise<void>) | undefined;
+                if (catalog && typeof catalog.getSessionGitState === "function") {
+                    gitState = await cmsRetryBestEffort(
+                        `runTurn.getSessionGitState session=${input.sessionId}`,
+                        () => catalog!.getSessionGitState(input.sessionId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    ) ?? undefined;
+                    // Hydration observability (§8.5): surface the durable pointer
+                    // the session is about to reconcile onto. `pinned` distinguishes
+                    // a resume onto a frozen base (baseSha set) from turn 0 where the
+                    // hook will freeze it. This single line lets `kubectl logs`
+                    // answer "which commit did this pod hydrate the session to?".
+                    activityCtx.traceInfo(
+                        `[runTurn][git] hydrate pointer read session=${input.sessionId} turn=${input.turnIndex ?? 0} ` +
+                        `pinned=${gitState?.baseSha ? "yes" : "no"} base=${gitState?.baseSha ? gitState.baseSha.slice(0, 12) : "(unpinned)"} ` +
+                        `head=${gitState?.headSha ? gitState.headSha.slice(0, 12) : "(none)"} branch=${gitState?.branch ?? "(default)"} epoch=${gitState?.epoch ?? 0}`,
+                    );
+                    // Durability commit point: persisting the pin / dehydrate
+                    // pointer must be reliable, so use the critical retry policy.
+                    persistGitState = (state: GitWorkspaceState) => {
+                        activityCtx.traceInfo(
+                            `[runTurn][git] persist pointer session=${input.sessionId} turn=${input.turnIndex ?? 0} ` +
+                            `base=${state?.baseSha ? state.baseSha.slice(0, 12) : "(null)"} head=${state?.headSha ? state.headSha.slice(0, 12) : "(none)"} ` +
+                            `branch=${state?.branch ?? "(default)"} epoch=${state?.epoch ?? 0}`,
+                        );
+                        return cmsRetryCritical(
+                            `runTurn.setSessionGitState session=${input.sessionId}`,
+                            () => catalog!.setSessionGitState(input.sessionId, state).then(() => undefined),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    };
+                } else {
+                    activityCtx.traceInfo(
+                        `[runTurn][git] no catalog git-state accessor — reconcile falls back to live mirror ref (unpinned) session=${input.sessionId}`,
+                    );
+                }
+                await beforeRunTurn({
+                    sessionId: input.sessionId,
+                    turnIndex: input.turnIndex,
+                    config: input.config,
+                    trace: (m: string) => activityCtx.traceInfo(m),
+                    gitState,
+                    persistGitState,
+                    // §8.5 durable IO — the new hydrate hook prefers these over
+                    // the legacy gitState/persistGitState moving-ref accessors.
+                    gitStateIO: gitDurableIo?.state,
+                    gitBlobs: gitDurableIo?.blobs,
+                });
+                reconcileMs = Date.now() - reconcileStartMs;
+                activityCtx.traceInfo(`[runTurn] enlistment reconcile complete (cold acquisition) session=${input.sessionId} turn=${input.turnIndex ?? 0} reconcile=${reconcileMs}ms`);
+            } catch (err) {
+                const message = `beforeRunTurn reconcile failed: ${err instanceof Error ? err.message : String(err)}`;
+                activityCtx.traceInfo(`[runTurn] ${message}`);
+                return { type: "error", message } as TurnResult;
+            }
+        } else if (beforeRunTurn) {
+            activityCtx.traceInfo(`[runTurn] enlistment reconcile skipped (warm turn) session=${input.sessionId} turn=${input.turnIndex ?? 0}`);
+        }
+
+        let sessionConfiguration = {};
+        if (turnHooks?.configureSession) {
+            try {
+                sessionConfiguration = validateSessionConfigurationOverrides(
+                    await turnHooks.configureSession({
+                        sessionId: input.sessionId,
+                        turnIndex: input.turnIndex,
+                        config: input.config,
+                        trace: (message) => activityCtx.traceInfo(message),
+                    }),
+                );
+            } catch (error) {
+                const message = `configureSession failed: ${error instanceof Error ? error.message : String(error)}`;
+                activityCtx.traceInfo(`[runTurn] ${message}`);
+                return { type: "error", message } as TurnResult;
+            }
+        }
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
         const turnTelemetry = {
@@ -2064,8 +2418,41 @@ export function registerActivities(
                 ...(epochCreate ? { epochStart: true } : {}),
                 trace,
                 lockHeld: true,
+                sessionConfiguration,
             });
         } catch (err: any) {
+            if (isCallerAuthConfigurationError(err)) {
+                return {
+                    type: "error",
+                    message: err.message,
+                } as TurnResult;
+            }
+            if (isCallerReauthRequiredError(err)) {
+                const reason = "needs re-auth";
+                trace(
+                    `session=${input.sessionId} delegated caller credential requires sign-in; ` +
+                    "parking the turn for automatic retry",
+                );
+                if (catalog) {
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent caller-reauth session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.caller_reauth_required",
+                            data: {
+                                reason,
+                                message: err.message,
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+                return {
+                    type: "wait",
+                    seconds: 60,
+                    reason,
+                    resumePrompt: extractPromptSystemContext(input.prompt).prompt || input.prompt,
+                } as TurnResult;
+            }
             const message = err?.message || String(err);
             if (isMissingSessionStateErrorMessage(message) || isLiveSessionLostErrorMessage(message)) {
                 const detail = isMissingSessionStateErrorMessage(message)
@@ -2090,6 +2477,7 @@ export function registerActivities(
                                 turnIndex: input.turnIndex,
                                 trace,
                                 lockHeld: true,
+                                sessionConfiguration,
                             });
                             lifecycleBaseVersion = recoveredVersion;
                             lifecycleRehydrated = true;
@@ -2143,6 +2531,7 @@ export function registerActivities(
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
+                        sessionConfiguration,
                     });
                 } catch (recoveryErr: any) {
                     const recoveryMessage = recoveryErr?.message || String(recoveryErr);
@@ -2567,6 +2956,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         nestingLevel: 0,
                         ...(normalizedModel ? { model: normalizedModel } : {}),
                         ...(args.reasoning_effort ? { reasoningEffort: args.reasoning_effort } : {}),
+                        ...childRoutingCreationOptions(input.config),
                         boundAgentName: !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name,
                         ...(agentDef.packageId ? { boundAgentPackageId: agentDef.packageId } : {}),
                         ...(!agentDef.packageId ? { boundAgentSource: "deployment" as const } : {}),
@@ -2840,7 +3230,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         parentSessionId: input.sessionId,
                         nestingLevel: childNestingLevel,
                         ...childModelCreationOptions(childConfig),
-                        ...(childConfig.workspace ? { workspace: childConfig.workspace } : {}),
+                        ...childRoutingCreationOptions(childConfig),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
@@ -3986,6 +4376,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // in-flight turn index so stopSessionTurn() can address the
             // turn-scoped stop queue (stopTurn.<turnIndex>).
             if (catalog) {
+                await catalog.acknowledgeWorkflowRunSession(input.sessionId, workerNodeId);
                 await cmsRetryBestEffort(
                     `runTurn.preTurn updateSession state=running session=${input.sessionId}`,
                     () => catalog!.updateSession(input.sessionId, {
@@ -4001,6 +4392,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 );
             }
 
+            workBeginMs = Date.now();
+            const preWorkMs = workBeginMs - acquiredAtMs;
+            activityCtx.traceInfo(`[runTurn] begin work session=${input.sessionId} turn=${input.turnIndex ?? 0} mode=${acquireMode} worker=${workerNodeId ?? "(unset)"}: dispatch->work=${preWorkMs}ms (reconcile=${reconcileMs}ms prepare=${preWorkMs - reconcileMs}ms)`);
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
 
             // Record turn_started CMS event
@@ -4213,6 +4607,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: input.turnIndex,
                         trace,
                         lockHeld: true,
+                        sessionConfiguration,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -4283,6 +4678,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
+                        sessionConfiguration,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -4310,7 +4706,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     content: result.content.trim(),
                 } as TurnResult;
             }
-            activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
+            const workMs = workBeginMs ? Date.now() - workBeginMs : 0;
+            const totalMs = Date.now() - acquiredAtMs;
+            const turnExecutionCompletedAt = new Date();
+            activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type} mode=${acquireMode} work=${workMs}ms total(dispatch->done)=${totalMs}ms`);
 
             // Drain event writes before the atomic post-turn writeback records
             // session.turn_completed.
@@ -4349,6 +4748,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             if (cancelled) return { type: "cancelled" };
+
+            if (catalog) {
+                await cmsRetryBestEffort(
+                    `runTurn.postTurn record execution-completed session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.turn_execution_completed",
+                        data: {
+                            turnIndex: input.turnIndex ?? 0,
+                            resultType: result.type,
+                            executionCompletedAt: turnExecutionCompletedAt.toISOString(),
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
 
             // ── Activity-level writeback: sync turn result → CMS ──
             // This lets listSessions() read entirely from CMS without
@@ -4467,6 +4881,31 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         (msg) => activityCtx.traceInfo(msg),
                     );
                 }
+                const workflowRunExecutionStatus = result.type === "input_required"
+                    ? "input_required"
+                    : result.type === "wait" || result.type === "wait_for_agents" || result.type === "system_wait"
+                        ? "waiting"
+                        : null;
+                if (workflowRunExecutionStatus) {
+                    if (result.type === "input_required") {
+                            await cmsRetryCritical(
+                            `runTurn.postTurn startWorkflowRunResponseWait session=${input.sessionId}`,
+                            () => catalog!.startWorkflowRunResponseWait({
+                                sessionId: input.sessionId,
+                                waitKey: `response:${input.sessionId}:${input.turnIndex ?? 0}`,
+                                question: result.question,
+                                choices: result.choices,
+                                allowFreeform: result.allowFreeform,
+                            }),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    }
+                    await cmsRetryBestEffort(
+                        `runTurn.postTurn setWorkflowRunSessionExecutionStatus status=${workflowRunExecutionStatus} session=${input.sessionId}`,
+                        () => catalog!.setWorkflowRunSessionExecutionStatus(input.sessionId, workflowRunExecutionStatus),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
             }
 
             return result;
@@ -4477,6 +4916,40 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const bodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
             ? { ...(await executeTurnBody()), workspaceAttached: true }
             : await executeTurnBody();
+
+        // ── Post-turn dehydrate (git-hydration §8.5) ────────────────────
+        // Persist the session's uncommitted git work (unpushed local commits +
+        // tracked/untracked edits) to durable storage at the END of EVERY turn,
+        // cold or warm. Runs under the run-turn lock (single-writer safe with
+        // concurrency=1 + repo-affinity pinning). A hard pod kill deletes the
+        // emptyDir workspace with no graceful drain, so a turn's git work must
+        // already be durable the moment the turn finishes — a later graceful
+        // dehydrateSession activity would never run after an eviction. Best-
+        // effort: a dehydrate failure is logged loudly but MUST NOT fail an
+        // otherwise-successful turn. Only fires when the durable IO exists
+        // (CMS catalog + session blob store both present).
+        if (afterRunTurn && gitDurableIo) {
+            const dehydrateStartMs = Date.now();
+            try {
+                await afterRunTurn({
+                    sessionId: input.sessionId,
+                    turnIndex: input.turnIndex,
+                    config: input.config,
+                    trace: (m: string) => activityCtx.traceInfo(m),
+                    result: bodyResult,
+                    gitStateIO: gitDurableIo.state,
+                    gitBlobs: gitDurableIo.blobs,
+                });
+                activityCtx.traceInfo(
+                    `[runTurn][git] dehydrate complete session=${input.sessionId} turn=${input.turnIndex ?? 0} dehydrate=${Date.now() - dehydrateStartMs}ms`,
+                );
+            } catch (err) {
+                activityCtx.traceInfo(
+                    `[runTurn][git] dehydrate FAILED (best-effort, turn result preserved) session=${input.sessionId} ` +
+                    `turn=${input.turnIndex ?? 0}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
 
         // ── Session lifecycle protocol commit (proposal §3.2) ───────────
         // The turn and its snapshot durability are one activity completion:
@@ -4625,6 +5098,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
+    const runTurnHandler = async (
+        activityCtx: any,
+        input: Parameters<typeof runTurnBodyHandler>[1],
+    ): Promise<TurnResult> => runWithTurnLifecycleHooks({
+        beforeTurn: turnHooks?.beforeTurn,
+        afterTurn: turnHooks?.afterTurn,
+        context: {
+            sessionId: input.sessionId,
+            turnIndex: input.turnIndex,
+            config: input.config,
+            trace: (message) => activityCtx.traceInfo(message),
+        },
+        run: () => runTurnBodyHandler(activityCtx, input),
+    });
+
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
@@ -4803,6 +5291,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string },
     ): Promise<void> => {
         const trace = activityTrace(activityCtx, "hydrateSession");
+        const hydrateStartMs = Date.now();
         const hydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.hydration", {
             attributes: {
                 "pilotswarm.session_id": input.sessionId,
@@ -4820,7 +5309,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 hydrationSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage(error) });
                 throw error;
             }
-            trace(`session=${input.sessionId} complete`);
+            trace(`session=${input.sessionId} complete hydrate=${Date.now() - hydrateStartMs}ms`);
             hydrationSpan.setAttribute("pilotswarm.hydration_result", "completed");
             if (catalog) {
                 // Best-effort: metric summary and the session.hydrated event are
@@ -5203,7 +5692,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // System child agents with a stable agentId use a deterministic UUID.
     // Other child sessions use a random UUID.
     // Goes through the full SDK path: CMS registration + orchestration startup.
-    registerHandoffActivity(runtime, "spawnChildSession", async (
+    const spawnChildSessionActivity = async (
         activityCtx: any,
         input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean },
     ): Promise<string> => {
@@ -5309,7 +5798,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 parentSessionId: input.parentSessionId,
                 nestingLevel: input.nestingLevel,
                 ...childModelCreationOptions(input.config),
-                ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
+                ...childRoutingCreationOptions(input.config),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,
@@ -5386,7 +5875,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             await sdkClient.stop();
             trace(`sdkClient.stop done (${Date.now() - clientStopAt}ms total=${Date.now() - startedAt}ms)`);
         }
-    });
+    };
+    // Registers both the legacy "spawnChildSession" name and the handoff-v2
+    // "spawnChildSessionV2" name against the same handler.
+    registerHandoffActivity(runtime, "spawnChildSession", spawnChildSessionActivity);
+    // 1.0.74 owner-affinity: the owner-aware orchestration schedules this
+    // activity under the "2" name so the durable yield sequence changes with
+    // the version. Register the same handler under both names so every
+    // orchestration version replays safely.
+    runtime.registerActivity("spawnChildSession2", spawnChildSessionActivity);
 
     // ── sendToSession ───────────────────────────────────────
     // Sends a message to any session's orchestration event queue directly.
@@ -5768,6 +6265,65 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<void> => {
         if (!catalog) return;
         const eventTypes = input.events.map((e) => e.eventType).join(",");
+        for (const event of input.events) {
+            const data = event.data
+                && typeof event.data === "object"
+                && !Array.isArray(event.data)
+                ? event.data as Record<string, unknown>
+                : null;
+            if (event.eventType === "session.wait_started" && data) {
+                const waitKey = typeof data.waitKey === "string" ? data.waitKey : "";
+                const reason = typeof data.reason === "string" ? data.reason : "Durable timer";
+                const deadlineAt = typeof data.deadlineAt === "string"
+                    ? new Date(data.deadlineAt)
+                    : null;
+                if (waitKey && deadlineAt && Number.isFinite(deadlineAt.getTime())) {
+                    await cmsRetryBestEffort(
+                        `startWorkflowRunTimerWait session=${input.sessionId}`,
+                        () => catalog!.startWorkflowRunTimerWait({
+                            sessionId: input.sessionId,
+                            waitKey,
+                            reason,
+                            dueAt: deadlineAt,
+                        }),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+            } else if (event.eventType === "session.wait_completed") {
+                await cmsRetryBestEffort(
+                    `completeWorkflowRunTimerWait session=${input.sessionId}`,
+                    () => catalog!.completeWorkflowRunTimerWait(input.sessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            } else if (event.eventType === "session.wait_cancelled") {
+                await cmsRetryBestEffort(
+                    `cancelWorkflowRunTimerWait session=${input.sessionId}`,
+                    () => catalog!.cancelWorkflowRunTimerWait(input.sessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+            const phase = event.eventType === "session.system_wait_started"
+                ? "started"
+                : event.eventType === "session.system_wait_completed"
+                    ? "completed"
+                    : null;
+            const signalKey = phase
+                && data
+                && typeof data.signalKey === "string"
+                ? String(data.signalKey)
+                : null;
+            if (phase && signalKey) {
+                await cmsRetryCritical(
+                    `recordWorkflowRunExternalOperationWait session=${input.sessionId} phase=${phase}`,
+                    () => catalog!.recordWorkflowRunExternalOperationWait(
+                        input.sessionId,
+                        signalKey,
+                        phase,
+                    ),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+        }
         await cmsRetryBestEffort(
             `recordSessionEvent session=${input.sessionId} events=${eventTypes}`,
             () => catalog!.recordEvents(input.sessionId, input.events, workerNodeId),
@@ -5861,7 +6417,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         }
     };
 
-    runtime.registerActivity("runRegenSpawnDistiller", async (
+    const runRegenSpawnDistillerActivity = async (
         activityCtx: any,
         input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string },
     ) => {
@@ -5877,23 +6433,108 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const distillerSessionId = distillerSessionIdFor(input.sessionId, input.epoch, input.attemptId);
         // Build the seed once — reused by the fresh spawn and by the re-seed
         // path below so a create-then-crash-before-send retry still delivers it.
-        const buildSeed = async (): Promise<string> => {
-            const closure = await assembleRegenClosure({ catalog, artifactStore: artifactStore! }, input.sessionId);
-            const seed = buildMapReduceSeedPrompt({
-                servedSessionId: input.sessionId,
-                epoch: input.epoch,
-                attemptId: input.attemptId,
-                archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
-                ...(input.archiveChunkIds?.length ? { archiveChunkIds: input.archiveChunkIds } : {}),
-                closure,
-                ...(input.handoff ? { handoff: input.handoff } : {}),
-                ...(input.instructions ? { instructions: input.instructions } : {}),
-            });
-            // Dump the EXACT distiller input (§9 dumps) on the served session.
-            await artifactStore!.uploadArtifact(
-                input.sessionId, distillInputName(input.epoch, input.attemptId), Buffer.from(seed, "utf8"), "text/markdown",
+        const buildSeed = (): Promise<string> => loadOrCreateDistillerSeed({
+            artifactStore: artifactStore!,
+            sessionId: input.sessionId,
+            filename: distillInputName(input.epoch, input.attemptId),
+            build: async () => {
+                const closure = await assembleRegenClosure(
+                    { catalog, artifactStore: artifactStore! },
+                    input.sessionId,
+                );
+                return buildMapReduceSeedPrompt({
+                    servedSessionId: input.sessionId,
+                    epoch: input.epoch,
+                    attemptId: input.attemptId,
+                    archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
+                    ...(input.archiveChunkIds?.length ? { archiveChunkIds: input.archiveChunkIds } : {}),
+                    closure,
+                    ...(input.handoff ? { handoff: input.handoff } : {}),
+                    ...(input.instructions ? { instructions: input.instructions } : {}),
+                });
+            },
+        });
+        const resolveParentContext = async () => {
+            let rootId = input.sessionId;
+            for (let hop = 0; hop < 16; hop++) {
+                const row = await catalog.getSession(rootId).catch(() => null);
+                if (!row?.parentSessionId) break;
+                rootId = row.parentSessionId;
+            }
+            const owner = await resolveEffectiveSpawnOwner(
+                (id) => catalog.getSession(id),
+                rootId,
+            ).catch(() => null);
+            const routingClient = activityCtx.getClient();
+            if (!routingClient) {
+                throw new Error("distiller spawn cannot resolve the parent routing contract");
+            }
+            const routingConfig = await durableSessionRoutingConfig(
+                routingClient,
+                input.sessionId,
             );
-            return seed;
+            if (routingConfig.ownerAffinity && !owner) {
+                throw new Error("distiller spawn cannot resolve the owner-affined parent principal");
+            }
+            return {
+                rootId,
+                owner,
+                routingConfig,
+                routing: childRoutingCreationOptions(routingConfig),
+            };
+        };
+        const parent = await resolveParentContext();
+        const distillerMessageId = `regen-distiller:${input.sessionId}:${input.epoch}:${input.attemptId}`;
+        const ensureDistillerAndSend = async (
+            sdkClient: PilotSwarmClient,
+            model: string | undefined,
+            seed: string,
+        ) => {
+            const reasoningEffort = normalizeDistillerEffort(input.distillerReasoningEffort);
+            const contextTier = normalizeDistillerTier(input.distillerContextTier);
+            const createConfig = {
+                sessionId: distillerSessionId,
+                parentSessionId: parent.rootId,
+                nestingLevel: 1,
+                agentId: REGEN_DISTILLER_SERVICE_KIND,
+                ...parent.routing,
+                ...(model ? { model } : {}),
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextTier ? { contextTier } : {}),
+                systemMessage: DISTILLER_SYSTEM_MESSAGE,
+                toolNames: ["read_transcript_page"],
+                ...(parent.owner ? { owner: parent.owner } : {}),
+            };
+            await sdkClient.createSession(createConfig);
+            await catalog.markSessionService(
+                distillerSessionId,
+                REGEN_DISTILLER_SERVICE_KIND,
+                input.sessionId,
+            );
+            await cmsRetryBestEffort(
+                `runRegenSpawnDistiller.updateSession meta session=${distillerSessionId}`,
+                () => catalog.updateSession(distillerSessionId, {
+                    title: `Regen Distiller — ${input.sessionId.slice(0, 8)} e${input.epoch}→e${input.epoch + 1}`,
+                    agentId: REGEN_DISTILLER_SERVICE_KIND,
+                }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            const session = await sdkClient.resumeSession(distillerSessionId, {
+                ...parent.routingConfig,
+                ...(model ? { model } : {}),
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextTier ? { contextTier } : {}),
+                systemMessage: DISTILLER_SYSTEM_MESSAGE,
+                toolNames: ["read_transcript_page"],
+            });
+            // Stamped as machinery: an unstamped user-role prompt would render
+            // as the reader's own words. The clientMessageId makes the seed
+            // send idempotent across activity retries.
+            await session.send(seed, {
+                bootstrap: true,
+                sender: { kind: "system", display: "regen distiller seed" },
+                clientMessageIds: [distillerMessageId],
+            });
         };
         const existing = await catalog.getSession(distillerSessionId).catch(() => null);
         if (existing) {
@@ -5903,7 +6544,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // mismatch is not a real attack, but defense-in-depth: never collect
             // a foreign/mislabelled session as the distiller (adversarial-review
             // finding). A mismatch throws → the pipeline falls back deterministically.
-            if (existing.serviceKind !== REGEN_DISTILLER_SERVICE_KIND || existing.serviceOf !== input.sessionId) {
+            const repairableUnmarkedCreate = existing.serviceKind == null
+                && existing.serviceOf == null
+                && existing.state === "pending"
+                && existing.parentSessionId === parent.rootId
+                && !existing.orchestrationId;
+            const matchingService = existing.serviceKind === REGEN_DISTILLER_SERVICE_KIND
+                && existing.serviceOf === input.sessionId;
+            if (!matchingService && !repairableUnmarkedCreate) {
                 throw new Error(
                     `distiller id collision: ${distillerSessionId} exists but is not this session's distiller `
                     + `(serviceKind=${existing.serviceKind ?? "null"}, serviceOf=${existing.serviceOf ?? "null"})`,
@@ -5921,14 +6569,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const reseedClient = new PilotSwarmClient(internalClientConfig());
                 try {
                     await reseedClient.start();
-                    await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
-                    // Stamped like the normal seed path below: a distiller
-                    // seed is machinery, and an unstamped user-role prompt is
-                    // rendered as the reader's own words.
-                    await (reseedClient as any)._startTurn(distillerSessionId, seed, {
-                        bootstrap: true,
-                        sender: { kind: "system", display: "regen distiller seed" },
-                    });
+                    await ensureDistillerAndSend(reseedClient, existing.model ?? undefined, seed);
                 } finally {
                     await reseedClient.stop().catch(() => {});
                 }
@@ -5949,57 +6590,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             activityCtx.traceInfo(`[runRegenSpawnDistiller] no distiller model resolvable — caller falls back deterministically`);
             return { fallback: "no-model" };
         }
-        // Root ancestor: service sessions collect under the tree root so a
-        // sub-agent's distiller is still visible at the top (§9.1).
-        let rootId = input.sessionId;
-        for (let hop = 0; hop < 16; hop++) {
-            const row = await catalog.getSession(rootId).catch(() => null);
-            if (!row?.parentSessionId) break;
-            rootId = row.parentSessionId;
-        }
         const seed = await buildSeed();
-        const owner = await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), rootId).catch(() => null);
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
-            const session = await sdkClient.createSession({
-                sessionId: distillerSessionId,
-                parentSessionId: rootId,
-                nestingLevel: 1,
-                agentId: REGEN_DISTILLER_SERVICE_KIND,
-                ...(resolvedRef ? { model: resolvedRef } : {}),
-                // Operator-chosen distiller knobs. The context tier is the one
-                // that decides whether a large archive can be read in a single
-                // pass or has to be sampled, so it is worth exposing.
-                ...(normalizeDistillerEffort(input.distillerReasoningEffort)
-                    ? { reasoningEffort: normalizeDistillerEffort(input.distillerReasoningEffort)! }
-                    : {}),
-                ...(normalizeDistillerTier(input.distillerContextTier)
-                    ? { contextTier: normalizeDistillerTier(input.distillerContextTier)! }
-                    : {}),
-                systemMessage: DISTILLER_SYSTEM_MESSAGE,
-                toolNames: ["read_transcript_page"],
-                ...(owner ? { owner } : {}),
-            });
-            await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
-            await cmsRetryBestEffort(
-                `runRegenSpawnDistiller.updateSession meta session=${distillerSessionId}`,
-                () => catalog.updateSession(distillerSessionId, {
-                    title: `Regen Distiller — ${input.sessionId.slice(0, 8)} e${input.epoch}→e${input.epoch + 1}`,
-                    agentId: REGEN_DISTILLER_SERVICE_KIND,
-                }),
-                (msg) => activityCtx.traceInfo(msg),
-            );
-            await session.send(seed, {
-                bootstrap: true,
-                sender: { kind: "system", display: "regen distiller seed" },
-            });
+            await ensureDistillerAndSend(sdkClient, resolvedRef, seed);
         } finally {
             await sdkClient.stop().catch(() => {});
         }
-        activityCtx.traceInfo(`[runRegenSpawnDistiller] spawned ${distillerSessionId} under root ${rootId} model=${resolvedRef ?? "(default)"}`);
+        activityCtx.traceInfo(`[runRegenSpawnDistiller] spawned ${distillerSessionId} under root ${parent.rootId} model=${resolvedRef ?? "(default)"}`);
         return { distillerSessionId, distillerModel: resolvedRef ?? "(default)" };
-    });
+    };
+    runtime.registerActivity("runRegenSpawnDistiller", runRegenSpawnDistillerActivity);
+    // 1.0.74 owner-affinity: same double-registration rationale as
+    // spawnChildSession2 — the owner-aware orchestration schedules the "2"
+    // name; both must resolve to this handler for replay safety.
+    runtime.registerActivity("runRegenSpawnDistiller2", runRegenSpawnDistillerActivity);
 
     runtime.registerActivity("runRegenCheckDistiller", async (
         _activityCtx: any,

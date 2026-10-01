@@ -826,6 +826,16 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
             waitReason: saved.reason,
             waitStartedAt: resumeNow,
         });
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "session.wait_started",
+            data: {
+                seconds: saved.remainingSec,
+                reason: saved.reason,
+                preserveAffinity: !resumeWaitPlan.shouldRelease,
+                waitKey: `timer:${runtime.input.sessionId}:resume:${state.iteration}:${resumeNow}`,
+                deadlineAt: new Date(resumeNow + saved.remainingSec * 1000).toISOString(),
+            },
+        }]);
 
         state.activeTimer = {
             deadlineMs: resumeNow + saved.remainingSec * 1000,
@@ -1316,6 +1326,21 @@ export function* handleTurnResult(
     if (pastGates && state.budgetStash) {
         state.budgetStash = null;
     }
+    // Caller re-auth backoff (silent devbox token refresh): a "needs re-auth"
+    // wait retries with an increasing backoff; any other result resets the
+    // counter.
+    let isCallerReauthWait = false;
+    if (result.type === "wait" && result.reason === "needs re-auth") {
+        isCallerReauthWait = true;
+        state.callerReauthWaitCount = (state.callerReauthWaitCount ?? 0) + 1;
+        result = {
+            ...result,
+            seconds: callerReauthBackoffSeconds(state.callerReauthWaitCount),
+        };
+    } else {
+        state.callerReauthWaitCount = 0;
+    }
+
     // Session workspaces: a turn got past the gate, so the workspace is back.
     if (pastGates && state.config.workspace && state.workspaceStatus?.state === "unavailable") {
         state.workspaceStatus = { state: "ready" };
@@ -1408,6 +1433,42 @@ export function* handleTurnResult(
             yield* applyCronAtAction(runtime, result, sourcePrompt);
             return;
 
+        case "system_wait": {
+            ensureTaskContext(runtime, sourcePrompt);
+            yield* releaseAffinity(runtime, "system_wait", { signalKey: result.signalKey });
+            state.pendingSystemWait = {
+                signalKey: result.signalKey,
+                reason: result.reason,
+            };
+
+            const waitStartedAt: number = yield ctx.utcNow();
+            if (result.content) {
+                yield* writeLatestResponse(runtime, {
+                    iteration: state.iteration,
+                    type: "wait",
+                    content: result.content,
+                    waitReason: result.reason,
+                    waitStartedAt,
+                    model: (result as any).model,
+                });
+            }
+            publishStatus(runtime, "waiting", {
+                waitReason: result.reason,
+                waitStartedAt,
+                signalKey: result.signalKey,
+                waitKind: "system",
+            });
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.system_wait_started",
+                data: {
+                    signalKey: result.signalKey,
+                    reason: result.reason,
+                    waitStartedAt,
+                },
+            }]);
+            return;
+        }
+
         case "wait": {
             if (gate === "workspace") {
                 yield* holdForWorkspace(runtime, result, sourcePrompt, clientMessageIds, isBootstrap, requiredTool, sender, attachments);
@@ -1474,6 +1535,9 @@ export function* handleTurnResult(
                 seconds: result.seconds,
                 holdWindowSeconds: options.idleTimeout,
             });
+            if (isCallerReauthWait && state.blobEnabled) {
+                waitPlan.shouldRelease = true;
+            }
             if (waitPlan.shouldRelease) {
                 yield* releaseAffinity(runtime, "timer");
             }
@@ -1501,7 +1565,13 @@ export function* handleTurnResult(
 
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.wait_started",
-                data: { seconds: result.seconds, reason: result.reason, preserveAffinity: !waitPlan.shouldRelease },
+                data: {
+                    seconds: result.seconds,
+                    reason: result.reason,
+                    preserveAffinity: !waitPlan.shouldRelease,
+                    waitKey: `timer:${runtime.input.sessionId}:${state.iteration}:${waitStartedAt}`,
+                    deadlineAt: new Date(waitStartedAt + result.seconds * 1000).toISOString(),
+                },
             }]);
 
             state.activeTimer = {
@@ -1510,7 +1580,8 @@ export function* handleTurnResult(
                 reason: result.reason,
                 type: "wait",
                 content: result.content,
-                budget: gate === "budget",
+                budget: result.budget === true || gate === "budget",
+                resumePrompt: result.resumePrompt,
                 ...(gate ? { gate } : {}),
             };
             return;
@@ -1661,6 +1732,29 @@ export function* handleTurnResult(
 
 // ─── processTimer: handle fired timers by type ──────────────
 
+export function callerReauthBackoffSeconds(attempt: number): number {
+    return Math.min(60 * (2 ** Math.max(0, attempt - 1)), 900);
+}
+
+export function buildWaitResumePrompt(
+    timer: { reason: string; resumePrompt?: string },
+    seconds: number,
+    taskContext?: string,
+): string {
+    const timerPrompt = timer.resumePrompt
+        ?? `The ${seconds} second wait is now complete. Continue with your task.`;
+    const resumeSystemPrompt = [
+        timer.reason ? `Wait reason: "${timer.reason}".` : undefined,
+        taskContext ? `Original user request: "${taskContext}".` : undefined,
+        timer.resumePrompt
+            ? "Retry the interrupted user request now; it was not previously delivered to the model."
+            : "Resume the interrupted task now.",
+        "Do not treat this as a new unrelated user request.",
+        "Do not call wait() again for the delay that already finished.",
+    ].filter(Boolean).join(" ");
+    return appendSystemContext(timerPrompt, resumeSystemPrompt) ?? timerPrompt;
+}
+
 export function* processTimer(
     runtime: DurableSessionRuntime,
     timerItem: any,
@@ -1680,20 +1774,13 @@ export function* processTimer(
                 yield* processPrompt(runtime, flushPendingChildDigestIntoPrompt(runtime, BUDGET_TIMER_WAKE_PROMPT) ?? BUDGET_TIMER_WAKE_PROMPT, false);
                 return;
             }
-            const timerPrompt = `The ${seconds} second wait is now complete. Continue with your task.`;
-            const resumeSystemPrompt = [
-                timer.reason ? `Wait reason: "${timer.reason}".` : undefined,
-                state.taskContext ? `Original user request: "${state.taskContext}".` : undefined,
-                "Resume the interrupted task now.",
-                "Do not treat this as a new unrelated user request.",
-                "Do not call wait() again for the delay that already finished.",
-            ].filter(Boolean).join(" ");
+            const resumePrompt = buildWaitResumePrompt(timer, seconds, state.taskContext);
             // ≥1.0.71: a child digest held for this wake-up (queue.ts
             // nextTimerCandidate) rides into the prompt here, so holding it
             // never loses it.
             yield* processPrompt(
                 runtime,
-                flushPendingChildDigestIntoPrompt(runtime, appendSystemContext(timerPrompt, resumeSystemPrompt) ?? timerPrompt) ?? timerPrompt,
+                flushPendingChildDigestIntoPrompt(runtime, resumePrompt) ?? resumePrompt,
                 false,
             );
             return;

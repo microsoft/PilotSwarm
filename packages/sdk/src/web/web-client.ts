@@ -60,6 +60,8 @@ export class WebPilotSwarmClient {
         reasoningEffort?: string;
         contextTier?: string;
         groupId?: string | null;
+        repo?: string;
+        compute?: "cluster" | "devbox";
         onUserInputRequest?: UserInputHandler;
     } & Record<string, unknown>): Promise<WebPilotSwarmSession> {
         for (const key of ["sessionId", "parentSessionId", "agentId", "toolNames", "nestingLevel"]) {
@@ -72,6 +74,8 @@ export class WebPilotSwarmClient {
             reasoningEffort: config?.reasoningEffort,
             contextTier: config?.contextTier,
             groupId: config?.groupId,
+            repo: config?.repo,
+            compute: config?.compute,
             ...(config?.workspace != null ? { workspace: config.workspace } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
@@ -86,6 +90,8 @@ export class WebPilotSwarmClient {
         splashMobile?: string;
         initialPrompt?: string;
         groupId?: string | null;
+        repo?: string;
+        compute?: "cluster" | "devbox";
         /** Session workspaces: the working folder, { root, folder? }. */
         workspace?: { root: string; folder?: string } | null;
         onUserInputRequest?: UserInputHandler;
@@ -100,6 +106,8 @@ export class WebPilotSwarmClient {
             splashMobile: opts?.splashMobile,
             initialPrompt: opts?.initialPrompt,
             groupId: opts?.groupId,
+            repo: opts?.repo,
+            compute: opts?.compute,
             ...(opts?.workspace != null ? { workspace: opts.workspace } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, opts?.onUserInputRequest);

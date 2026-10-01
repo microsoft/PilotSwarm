@@ -1211,4 +1211,3 @@ test("an image button in markdown loads nothing either", async ({ page }) => {
     await page.waitForTimeout(300);
     expect(remote).toEqual([]);
 });
-

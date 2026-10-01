@@ -190,7 +190,7 @@ confirmed parallel-only flake.
 ### Approved cleanup and final full regression gate
 
 The operator approved the broader test-only cleanup. At 14:42 PDT, 26 exact
-stale job IDs were revalidated against test-only labels and creation timestamps,
+stale workflow run IDs were revalidated against test-only labels and creation timestamps,
 then cancelled using `df.cancel`. All 13 corresponding schemas were preserved;
 no schemas or data were deleted. No matching old test embedder loops remained.
 The ten active loops with non-test/unknown-purpose labels were left untouched.
@@ -219,7 +219,7 @@ Final SDK JSON directory:
 
 The unit and browser totals listed above also passed on this frozen source.
 
-1. Cleanup and the unchanged isolated rerun are complete. No production jobs or
+1. Cleanup and the unchanged isolated rerun are complete. No production workflowRuns or
    service configuration changed. The improvement strongly supports stale test
    loop load as the contributor; it does not pinpoint an upstream scheduler
    implementation defect.
@@ -297,7 +297,7 @@ than the CLI's `pong: image-smoke` response. After correcting that probe-only
 assertion and validating its timestamp, both image checks passed. No
 application source, assertion in the regression suites or timeout was changed.
 
-The two temporary image-check Jobs and the generated 27 MB build context were
+The two temporary image-check Workflow Runs and the generated 27 MB build context were
 removed. Logs, reproducible source, registry images and rollback digests remain.
 The pre-existing local Postgres container was left as found; no local portal
 was started. Waldemort CHK was not deployed or reconfigured.

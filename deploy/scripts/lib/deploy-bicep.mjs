@@ -9,6 +9,7 @@
 // Subsequent stages (manifests, rollout) see the merged env map in-process.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, isAbsolute } from "node:path";
 import { run, runJson, log, REPO_ROOT } from "./common.mjs";
 import { renderParams } from "./render-params.mjs";
@@ -17,12 +18,15 @@ import { saveCache } from "./bicep-outputs-cache.mjs";
 import {
   computeTemplateHash,
   computeParamsHash,
+  computeExternalParamsHash,
+  computeInlineParamsHash,
   shouldSkipDeploy,
   saveMarker,
 } from "./deploy-marker.mjs";
 import { assertFoundryDeploymentsValid } from "./validate-foundry-deployments.mjs";
 import { resolveAppgwWafCustomRulesFile } from "./appgw-waf-rules.mjs";
 import { prepareHorizonDbEnvForRender, ensureHorizonDbParameterGroup } from "./horizondb.mjs";
+import { normalizeBooleanEnv } from "./env-flags.mjs";
 
 // Bicep main.bicep paths and params templates are derived by convention from
 // the module name: deploy/providers/azure/services/<Module>/bicep/{main.bicep,<Module>.params.template.json}.
@@ -33,6 +37,91 @@ function moduleBicepPath(moduleName) {
 }
 function moduleParamsTemplate(moduleName) {
   return `deploy/providers/azure/services/${moduleName}/bicep/${moduleName}.params.template.json`;
+}
+
+// External `--parameters <name>=@<file>` inputs are threaded straight to `az`
+// (see the append sites in deployBicep) instead of through the rendered params
+// template, so their CONTENT is invisible to computeParamsHash. This helper
+// enumerates them for a module so their file contents can be folded into the
+// deploy marker via computeExternalParamsHash — otherwise editing e.g. the
+// agent-pools JSON (a pool-count change) would not bust the marker and the
+// change would be silently skipped on a marker hit. Keep this list in lockstep
+// with the `baseArgs.push("--parameters", \`<name>=@...\`)` append sites below.
+function externalParamFilesFor(moduleName, env) {
+  const files = [];
+  const add = (param, raw) => {
+    if (!raw) return;
+    files.push({ param, path: isAbsolute(raw) ? raw : join(REPO_ROOT, raw) });
+  };
+  if (moduleName === "base-infra") {
+    if ((env.FOUNDRY_ENABLED || "").toLowerCase() === "true") {
+      add("foundryDeployments", env.FOUNDRY_DEPLOYMENTS_FILE);
+    }
+    add("additionalAgentPools", env.AGENT_POOLS_FILE);
+    add("appgwWafCustomRules", env.APPGW_WAF_CUSTOM_RULES_FILE);
+  } else if (moduleName === "global-infra") {
+    add("customRules", env.WAF_CUSTOM_RULES_FILE);
+  }
+  return files;
+}
+
+export function boundedDeploymentName(value, maxLength = 64) {
+  if (value.length <= maxLength) return value;
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 8);
+  const prefix = value
+    .slice(0, maxLength - hash.length - 1)
+    .replace(/-+$/, "");
+  return `${prefix}-${hash}`;
+}
+
+export function resolveDevboxPrincipal(env) {
+  if (!env.DEVBOX_PRINCIPAL_ID) return null;
+  if (!env.DEVBOX_PRINCIPAL_NAME) {
+    throw new Error("DEVBOX_PRINCIPAL_NAME is required when DEVBOX_PRINCIPAL_ID is set.");
+  }
+  const type = env.DEVBOX_PRINCIPAL_TYPE || "Group";
+  if (!["User", "Group", "ServicePrincipal"].includes(type)) {
+    throw new Error("DEVBOX_PRINCIPAL_TYPE must be User, Group, or ServicePrincipal.");
+  }
+  return {
+    id: env.DEVBOX_PRINCIPAL_ID,
+    name: env.DEVBOX_PRINCIPAL_NAME,
+    type,
+  };
+}
+
+export function resolveKeyVaultPurgeProtection(env) {
+  const key = "KEY_VAULT_PURGE_PROTECTION_ENABLED";
+  if (env[key] === undefined || String(env[key]).trim() === "") return null;
+  const value = { [key]: env[key] };
+  return normalizeBooleanEnv(value, key, { defaultValue: true });
+}
+
+export function inlineParamsForMarker(moduleName, env) {
+  if (moduleName !== "base-infra") return [];
+  const values = [];
+  const add = (param, value) => {
+    if (value !== undefined && value !== null && value !== "") {
+      values.push({ param, value });
+    }
+  };
+  add("postgresLocation", env.POSTGRES_LOCATION);
+  add("appGwExistsOverride", env.APPGW_EXISTS_OVERRIDE);
+  const keyVaultPurgeProtection = resolveKeyVaultPurgeProtection(env);
+  if (keyVaultPurgeProtection !== null) {
+    add("keyVaultPurgeProtectionEnabled", String(keyVaultPurgeProtection));
+  }
+  const devboxPrincipal = resolveDevboxPrincipal(env);
+  if (devboxPrincipal) {
+    add("devboxPrincipalId", devboxPrincipal.id);
+    add("devboxPrincipalName", devboxPrincipal.name);
+    add("devboxPrincipalType", devboxPrincipal.type);
+  }
+  if ((env.FOUNDRY_ENABLED || "").toLowerCase() === "true") {
+    add("foundryLocation", env.FOUNDRY_LOCATION);
+    add("foundryAuthMode", env.FOUNDRY_AUTH_MODE);
+  }
+  return values;
 }
 
 // FR-022 alias map: Bicep camelCase output → UPPER_SNAKE env key.
@@ -49,6 +138,10 @@ const OUTPUT_ALIAS = {
   // identity per uami-federation.bicep) → cascades into both services'
   // overlay `.env` substitution in `all` mode.
   csiIdentityClientId: "WORKLOAD_IDENTITY_CLIENT_ID",
+  // Same shared csiIdentity UAMI, principalId (Entra object id). Consumed by
+  // the `workload-group` deploy step to add the identity to the shared-cluster
+  // Entra authorization group (group-membership.mjs).
+  csiIdentityPrincipalId: "WORKLOAD_IDENTITY_PRINCIPAL_ID",
   // Worker/Portal bicep each emit their own manifest container as
   // `manifestsContainerName`; since worker and portal are deployed via
   // separate `deploy.mjs` invocations, the env-key DEPLOYMENT_STORAGE_CONTAINER_NAME
@@ -82,7 +175,7 @@ const OUTPUT_ALIAS = {
   portalTlsCertName: "PORTAL_TLS_CERT_NAME",
 };
 
-export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules }) {
+export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules, replacePools }) {
   const modules = moduleListOverride ?? SERVICE_TO_MODULES[service];
   if (!modules || modules.length === 0) {
     log("info", `No Bicep modules for service '${service}'; skipping.`);
@@ -93,15 +186,19 @@ export async function deployBicep({ service, envName, env, region, stagingDir, m
 
   const forceSet = new Set(Array.isArray(forceModules) ? forceModules : []);
   for (const moduleName of modules) {
-    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet });
+    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet, replacePools });
     if (moduleName === "horizondb") await ensureHorizonDbParameterGroup(env);
   }
   return env;
 }
 
-async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet }) {
+async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet, replacePools }) {
   const scope = MODULE_SCOPE[moduleName];
   if (!scope) throw new Error(`Unknown Bicep scope for module '${moduleName}'`);
+  const moduleIdentity =
+    env.DEPLOY_INSTANCE && moduleName === service
+      ? `${moduleName}-${env.DEPLOY_INSTANCE}`
+      : moduleName;
   const paramsRel = moduleParamsTemplate(moduleName);
   const bicepRel = moduleBicepPath(moduleName);
   const templateAbs = join(REPO_ROOT, paramsRel);
@@ -127,13 +224,31 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // bypass `az deployment create` entirely. Bypass with `--force`.
   const templateHash = computeTemplateHash(moduleName);
   const paramsHash = computeParamsHash(renderedPath);
+  // External @file params (additionalAgentPools, foundryDeployments, WAF custom
+  // rules) bypass the rendered params template, so computeParamsHash can't see
+  // them. Fold their content into the marker separately — otherwise editing one
+  // of those files (e.g. changing a fleet pool count) won't bust the marker and
+  // the change is silently skipped on a marker hit.
+  const externalParamsHash = computeExternalParamsHash(
+    externalParamFilesFor(moduleName, env),
+  );
+  const inlineParams = inlineParamsForMarker(moduleName, env);
+  const inlineParamsHash = computeInlineParamsHash(inlineParams);
   // Per-module bypass: the operator can pass `--force-module <name>`
   // (collected into forceSet) to force a single module past its marker
   // without rebuilding everything via `--force`.
   const effectiveForce =
     force === true ||
-    (forceSet && forceSet.has(moduleName));
-  const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force: effectiveForce });
+    (forceSet && (forceSet.has(moduleName) || forceSet.has(moduleIdentity)));
+  const decision = shouldSkipDeploy({
+    envName,
+    moduleName: moduleIdentity,
+    templateHash,
+    paramsHash,
+    externalParamsHash,
+    inlineParamsHash,
+    force: effectiveForce,
+  });
   if (decision.skip) {
     log(
       "info",
@@ -150,7 +265,9 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   }
 
   // 2) Run az deployment <scope> create.
-  const deploymentName = `${moduleName}-${envName}-${(region || "global").replace(/[^a-zA-Z0-9-]/g, "")}`;
+  const deploymentName = boundedDeploymentName(
+    `${moduleIdentity}-${envName}-${(region || "global").replace(/[^a-zA-Z0-9-]/g, "")}`,
+  );
   const baseArgs = [
     "deployment",
     scope,
@@ -168,6 +285,13 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // before this process uploads manifests and images. A GitHub OIDC login
   // supplies DEPLOY_PRINCIPAL_ID; an interactive login resolves its user ID.
   // The enterprise path can leave the Bicep parameter empty.
+  //
+  // `desiredAgentPools` is declared at function scope (not inside the
+  // base-infra block below) so the reconcileAgentPools() preflight further
+  // down — which runs after that block has closed — can still see it. It is
+  // assigned from AGENT_POOLS_FILE inside the base-infra block; it stays null
+  // for every other module.
+  let desiredAgentPools = null;
   if (moduleName === "base-infra") {
     const localPrincipal = resolveLocalDeploymentPrincipal(env);
     if (localPrincipal) {
@@ -178,6 +302,52 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         `localDeploymentPrincipalType=${localPrincipal.type}`,
       );
       log("info", `[${moduleName}] granting Storage Blob Data Contributor to ${localPrincipal.label} via Bicep`);
+    }
+    // Per-stamp governance overrides for subscriptions that restrict certain
+    // base-infra resources. Passed as `--parameters` (not via the fail-closed
+    // params template) so they stay zero-impact on stamps that don't set them:
+    //   * POSTGRES_LOCATION       -> provision Postgres in a different region
+    //     when the sub is region-restricted from PG Flexible Server (main.bicep
+    //     `postgresLocation`).
+    //   * APPGW_EXISTS_OVERRIDE   -> skip the `check-appgw-exists` deployment
+    //     script when a subscription security policy denies its shared-key
+    //     storage account (main.bicep `appGwExistsOverride`).
+    if (env.POSTGRES_LOCATION) {
+      baseArgs.push("--parameters", `postgresLocation=${env.POSTGRES_LOCATION}`);
+      log("info", `[${moduleName}] postgresLocation override = ${env.POSTGRES_LOCATION}`);
+    }
+    if (env.APPGW_EXISTS_OVERRIDE) {
+      baseArgs.push("--parameters", `appGwExistsOverride=${env.APPGW_EXISTS_OVERRIDE}`);
+      log("info", `[${moduleName}] appGwExistsOverride = ${env.APPGW_EXISTS_OVERRIDE} (skipping check-appgw-exists script)`);
+    }
+    const keyVaultPurgeProtection = resolveKeyVaultPurgeProtection(env);
+    if (keyVaultPurgeProtection !== null) {
+      baseArgs.push(
+        "--parameters",
+        `keyVaultPurgeProtectionEnabled=${keyVaultPurgeProtection}`,
+      );
+      log(
+        keyVaultPurgeProtection ? "info" : "warn",
+        `[${moduleName}] Key Vault purge protection = ${keyVaultPurgeProtection}`,
+      );
+    }
+    const devboxPrincipal = resolveDevboxPrincipal(env);
+    if (devboxPrincipal) {
+      log(
+        "warn",
+        `[${moduleName}] SECURITY EXCEPTION: devbox principal ${devboxPrincipal.name} receives ` +
+          "secondary PostgreSQL administrator access and raw session-container read/write access. " +
+          "This controlled-preview workaround is not an upstreamable default.",
+      );
+      baseArgs.push(
+        "--parameters",
+        `devboxPrincipalId=${devboxPrincipal.id}`,
+        "--parameters",
+        `devboxPrincipalName=${devboxPrincipal.name}`,
+        "--parameters",
+        `devboxPrincipalType=${devboxPrincipal.type}`,
+      );
+      log("info", `[${moduleName}] devbox control-plane principal = ${devboxPrincipal.name} (${devboxPrincipal.type})`);
     }
     // Foundry deployments: when FOUNDRY_ENABLED=true the orchestrator
     // threads the per-stamp deployments JSON file in via
@@ -218,15 +388,92 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         );
       }
       if (Array.isArray(parsedDeployments) && parsedDeployments.length > 0) {
-        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${env.LOCATION}`);
+        // Foundry account region may be decoupled from the stamp region via
+        // FOUNDRY_LOCATION (e.g. a westus2 stamp hosting its Foundry account in
+        // westus3 because westus2 offers no OpenAI-format models). Validate
+        // model availability against the EFFECTIVE Foundry region, not the
+        // stamp region, so the preflight matches where the account lands.
+        const foundryRegion = env.FOUNDRY_LOCATION || env.LOCATION;
+        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${foundryRegion}`);
         assertFoundryDeploymentsValid({
           deployments: parsedDeployments,
-          region: env.LOCATION,
+          region: foundryRegion,
           subscriptionId: env.SUBSCRIPTION_ID,
         });
       }
       baseArgs.push("--parameters", `foundryDeployments=@${abs}`);
       log("info", `[${moduleName}] applying Foundry deployments from ${abs}`);
+      // Optional Foundry region override, decoupled from the stamp region.
+      // Zero-impact when unset (bicep param defaults to '' → account co-locates
+      // with the stamp). Mirrors the POSTGRES_LOCATION override pattern above.
+      if (env.FOUNDRY_LOCATION) {
+        baseArgs.push("--parameters", `foundryLocation=${env.FOUNDRY_LOCATION}`);
+        log("info", `[${moduleName}] foundryLocation override = ${env.FOUNDRY_LOCATION} (Foundry account decoupled from stamp region ${env.LOCATION})`);
+      }
+      // Foundry data-plane auth mode. Threaded only when explicitly set; when
+      // unset the bicep param defaults to `entra` (workload identity) — the
+      // stage-manifests catalog transform defaults to entra in lock-step, so
+      // the account's disableLocalAuth and the catalog's auth shape agree. Set
+      // `FOUNDRY_AUTH_MODE=key` to opt a stamp back into key auth (legacy pss*
+      // siblings whose subscription permits it). See stage-manifests.mjs +
+      // deploy/providers/azure/services/base-infra/bicep/foundry.bicep.
+      if (env.FOUNDRY_AUTH_MODE) {
+        baseArgs.push("--parameters", `foundryAuthMode=${env.FOUNDRY_AUTH_MODE}`);
+        log("info", `[${moduleName}] foundryAuthMode = ${env.FOUNDRY_AUTH_MODE}`);
+      }
+    }
+    // Additional AKS agent pools: when AGENT_POOLS_FILE is set the
+    // orchestrator threads the per-stamp pools JSON file in via
+    // `--parameters additionalAgentPools=@<file>`. The file is an artifact
+    // composed by the owning fleet/composition repository; this orchestrator
+    // stays generic and only threads it. When unset the bicep param defaults
+    // to [] and no file is required. Mirrors the foundryDeployments pattern
+    // above.
+    //
+    // IMPORTANT — a managedCluster PUT can only *update* pools that already
+    // exist; Azure forbids ADDING (or removing) a pool through it once the
+    // cluster exists ("Adding agent pools to an existing cluster is not allowed
+    // through managed cluster operations"). It also cannot change a pool's
+    // IMMUTABLE fields (vmSize, osType/osSKU, osDiskSizeGB, osDiskType) in
+    // place. So before we PUT, reconcileAgentPools() converges the live pools
+    // to the desired file via the per-pool API (`az aks nodepool add/delete`):
+    // it ADDS any declared-but-missing pool and, gated behind --replace-pools,
+    // REPLACES a pool whose immutable shape changed. After that the PUT below
+    // is a no-op for these pools. See reconcileAgentPools() at the bottom.
+    // See the function-scope declaration above; only the assignment lives here.
+    desiredAgentPools = null;
+    if (env.AGENT_POOLS_FILE) {
+      const raw = env.AGENT_POOLS_FILE;
+      const abs = isAbsolute(raw) ? raw : join(REPO_ROOT, raw);
+      if (!existsSync(abs)) {
+        throw new Error(
+          `AGENT_POOLS_FILE points to a missing file: ${abs}. ` +
+            `Either unset AGENT_POOLS_FILE (stamps without fleets need no pools ` +
+            `file) or generate the JSON array file. Each entry is an AKS ` +
+            `agentPoolProfile object (name, count, vmSize, osType, osSKU, ` +
+            `osDiskSizeGB, osDiskType, mode, nodeLabels, nodeTaints); the ` +
+            `base-infra module injects vnetSubnetID and type.`,
+        );
+      }
+      let parsedPools;
+      try {
+        parsedPools = JSON.parse(readFileSync(abs, "utf8"));
+      } catch (e) {
+        throw new Error(
+          `AGENT_POOLS_FILE is not valid JSON (${abs}): ${e.message}`,
+        );
+      }
+      if (!Array.isArray(parsedPools)) {
+        throw new Error(
+          `AGENT_POOLS_FILE must contain a JSON array of agent pools (${abs}).`,
+        );
+      }
+      baseArgs.push("--parameters", `additionalAgentPools=@${abs}`);
+      desiredAgentPools = parsedPools;
+      log(
+        "info",
+        `[${moduleName}] applying ${parsedPools.length} additional agent pool(s) from ${abs}`,
+      );
     }
     // AppGw WAF custom rules: optional JSON array file at
     // APPGW_WAF_CUSTOM_RULES_FILE. Mirrors the AFD-side WAF_CUSTOM_RULES_FILE
@@ -258,17 +505,23 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
 
   // global-infra optionally accepts a custom-rules JSON file via env var
   // WAF_CUSTOM_RULES_FILE — passed straight through to az as
-  // `--parameters customRules=@<file>`. The file is gitignored (recommended
-  // location: deploy/envs/local/<env>/waf-custom-rules.json) so site-specific
-  // rules (e.g. corpnet allow-lists) never need to be checked in. The bicep
-  // param defaults to [] when unset so this is purely additive.
+  // `--parameters customRules=@<file>`. The value is resolved as: an absolute
+  // path as-is; a `${STAMP_ENV_DIR}`-anchored path (expanded at env load) so an
+  // external stamp/composition repo can inject rules it owns, colocated with
+  // its stamp env file; otherwise relative to the PilotSwarm repo root. This is
+  // the supported entry point for site-specific rules (e.g. a corpnet ingress
+  // allow-list) that a stamp wants versioned outside PilotSwarm. In-repo
+  // operators may instead point at a gitignored file under
+  // deploy/envs/local/<env>/. The bicep param defaults to [] so this is
+  // purely additive.
   if (moduleName === "global-infra" && env.WAF_CUSTOM_RULES_FILE) {
     const raw = env.WAF_CUSTOM_RULES_FILE;
     const abs = isAbsolute(raw) ? raw : join(REPO_ROOT, raw);
     if (!existsSync(abs)) {
       throw new Error(
         `WAF_CUSTOM_RULES_FILE points to a missing file: ${abs}. ` +
-          `Either unset it or create the JSON array file (gitignored under deploy/envs/local/).`,
+          `Either unset it or create the JSON array file. External stamp repos ` +
+          `can anchor the path with \${STAMP_ENV_DIR} to colocate it with the stamp env file.`,
       );
     }
     baseArgs.push("--parameters", `customRules=@${abs}`);
@@ -289,6 +542,18 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   }
 
   log("info", `[${moduleName}] az ${baseArgs.join(" ")}`);
+  // Preflight the fleet pools via the per-pool API BEFORE the managedCluster
+  // PUT — the PUT cannot add a missing pool or change an immutable field, so
+  // without this the deployment fails on exactly those cases. Only base-infra
+  // carries additionalAgentPools; scope==="group" guarantees `rg` is set above.
+  if (moduleName === "base-infra" && desiredAgentPools) {
+    await reconcileAgentPools({
+      pools: desiredAgentPools,
+      cluster: env.AKS_CLUSTER_NAME,
+      rg: env.RESOURCE_GROUP,
+      replacePools,
+    });
+  }
   run("az", baseArgs);
 
   // 3) Capture outputs and merge into env map.
@@ -319,14 +584,164 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // Persist the success marker so a subsequent invocation can skip this
   // deploy when neither the bicep tree nor the rendered params have
   // changed. Includes the deployment name + region for diagnostics.
-  saveMarker(envName, moduleName, {
+  saveMarker(envName, moduleIdentity, {
     deploymentName,
     region: region || env.LOCATION || "",
     templateHash,
     paramsHash,
+    externalParamsHash,
+    inlineParamsHash,
     deployedAt: new Date().toISOString(),
     outputKeys: addedKeys,
   });
+}
+
+// AKS agent-pool fields that Azure treats as IMMUTABLE: they cannot be changed
+// on an existing pool, so a difference forces a pool replacement (delete + add)
+// rather than an in-place update. `desired` keys come from the AGENT_POOLS_FILE
+// entry (the shape Generate-AgentPools.ps1 emits); `live` keys are the casing
+// `az aks nodepool show` returns.
+const IMMUTABLE_POOL_FIELDS = [
+  { desired: "vmSize", live: "vmSize", label: "vmSize" },
+  { desired: "osType", live: "osType", label: "osType" },
+  { desired: "osSKU", live: "osSku", label: "osSKU" },
+  { desired: "osDiskSizeGB", live: "osDiskSizeGb", label: "osDiskSizeGB" },
+  { desired: "osDiskType", live: "osDiskType", label: "osDiskType" },
+];
+
+// Compare a desired pool (from AGENT_POOLS_FILE) against its live counterpart
+// and return the immutable fields that differ. Fields the file does not declare
+// are skipped (the pool inherits the AKS/bicep default, which we don't force).
+export function immutablePoolDiffs(desired, live) {
+  const diffs = [];
+  for (const f of IMMUTABLE_POOL_FIELDS) {
+    const want = desired[f.desired];
+    if (want === undefined || want === null) continue;
+    const have = live[f.live];
+    const equal =
+      typeof want === "number" || typeof have === "number"
+        ? Number(want) === Number(have)
+        : String(want).toLowerCase() === String(have ?? "").toLowerCase();
+    if (!equal) diffs.push({ field: f.label, desired: want, live: have ?? "(unset)" });
+  }
+  return diffs;
+}
+
+// Build the `az aks nodepool add` argv for a desired pool. Generic over the
+// AGENT_POOLS_FILE entry shape — mirrors the fields base-infra's bicep declares
+// (name, mode, count, vmSize, osType, osSKU, osDisk*, autoscale, scaleDownMode,
+// labels, taints) and injects the same vnetSubnetID the bicep defaults add, so
+// a per-pool add lands identically to a bicep-created pool.
+export function poolAddArgs(pool, { cluster, rg, subnetId }) {
+  const args = [
+    "aks", "nodepool", "add",
+    "--cluster-name", cluster,
+    "--resource-group", rg,
+    "--name", pool.name,
+  ];
+  if (pool.mode) args.push("--mode", pool.mode);
+  if (pool.count !== undefined && pool.count !== null) args.push("--node-count", String(pool.count));
+  if (pool.vmSize) args.push("--node-vm-size", pool.vmSize);
+  if (pool.osType) args.push("--os-type", pool.osType);
+  if (pool.osSKU) args.push("--os-sku", pool.osSKU);
+  if (pool.osDiskSizeGB !== undefined && pool.osDiskSizeGB !== null) args.push("--node-osdisk-size", String(pool.osDiskSizeGB));
+  if (pool.osDiskType) args.push("--node-osdisk-type", pool.osDiskType);
+  if (pool.scaleDownMode) args.push("--scale-down-mode", pool.scaleDownMode);
+  if (pool.enableAutoScaling) {
+    args.push("--enable-cluster-autoscaler");
+    if (pool.minCount !== undefined && pool.minCount !== null) args.push("--min-count", String(pool.minCount));
+    if (pool.maxCount !== undefined && pool.maxCount !== null) args.push("--max-count", String(pool.maxCount));
+  }
+  const labels = pool.nodeLabels ? Object.entries(pool.nodeLabels) : [];
+  if (labels.length) args.push("--labels", ...labels.map(([k, v]) => `${k}=${v}`));
+  if (Array.isArray(pool.nodeTaints) && pool.nodeTaints.length) args.push("--node-taints", ...pool.nodeTaints);
+  if (subnetId) args.push("--vnet-subnet-id", subnetId);
+  return args;
+}
+
+// Converge the cluster's fleet pools to the desired AGENT_POOLS_FILE via the
+// per-pool API, run BEFORE the managedCluster PUT so the PUT never has to add a
+// pool or change an immutable field (both of which it cannot do on an existing
+// cluster). Behaviour per desired pool:
+//   * cluster/RG unknown, or cluster not yet created → no-op (a fresh stamp's
+//     first PUT creates the cluster AND all pools in one shot, which is allowed).
+//   * pool absent           → `az aks nodepool add` (additive, non-destructive).
+//   * only mutable drift    → leave it; the managedCluster PUT reconciles
+//                             count/labels/taints in place.
+//   * immutable field drift → DESTRUCTIVE replacement. Refused unless
+//     `replacePools` is set; otherwise delete + re-add with the new shape.
+export async function reconcileAgentPools({ pools, cluster, rg, replacePools }) {
+  if (!Array.isArray(pools) || pools.length === 0) return;
+  if (!cluster || !rg) {
+    log(
+      "info",
+      "[base-infra] agent-pool preflight: AKS cluster/RG not known yet (fresh stamp?); the managedCluster deployment will create the cluster and its pools.",
+    );
+    return;
+  }
+  const listRes = run(
+    "az",
+    ["aks", "nodepool", "list", "--cluster-name", cluster, "--resource-group", rg, "-o", "json"],
+    { capture: true, allowFail: true },
+  );
+  if (listRes.status !== 0) {
+    log(
+      "info",
+      `[base-infra] agent-pool preflight: cluster '${cluster}' not found yet; the managedCluster deployment will create it with all declared pools.`,
+    );
+    return;
+  }
+  let live = [];
+  try {
+    live = JSON.parse(listRes.stdout);
+  } catch {
+    live = [];
+  }
+  const liveByName = new Map((Array.isArray(live) ? live : []).map((p) => [p.name, p]));
+  // Every fleet pool shares the cluster's node subnet (bicep injects it); derive
+  // it from any live pool so a per-pool add lands on the same subnet.
+  const subnetId = (Array.isArray(live) ? live : []).find((p) => p.vnetSubnetId)?.vnetSubnetId ?? null;
+
+  for (const pool of pools) {
+    if (!pool || !pool.name) continue;
+    const existing = liveByName.get(pool.name);
+
+    if (!existing) {
+      log(
+        "warn",
+        `[base-infra] pool '${pool.name}' is declared but absent on the cluster → adding via the per-pool API (a managedCluster PUT cannot add a pool to an existing cluster).`,
+      );
+      run("az", poolAddArgs(pool, { cluster, rg, subnetId }));
+      log("ok", `[base-infra] pool '${pool.name}' added (${pool.vmSize}, count ${pool.count}).`);
+      continue;
+    }
+
+    const diffs = immutablePoolDiffs(pool, existing);
+    if (diffs.length === 0) continue; // identical or mutable-only → PUT reconciles
+
+    const summary = diffs.map((d) => `${d.field} ${d.live} → ${d.desired}`).join(", ");
+    if (!replacePools) {
+      throw new Error(
+        `Agent pool '${pool.name}' needs REPLACEMENT — immutable change: ${summary}.\n` +
+          `Azure cannot change these in place, and the managedCluster deployment would fail on it.\n` +
+          `Replacing the pool DELETES it (drains + destroys its nodes), takes any fleet pinned to\n` +
+          `it DOWN, and forces those nodes to re-seed their node-local cache from scratch on recreate.\n` +
+          `This is a DESTRUCTIVE operation — re-run with --replace-pools to perform the delete + recreate.`,
+      );
+    }
+    log(
+      "warn",
+      `[base-infra] ⚠ REPLACING pool '${pool.name}' (${summary}). Deleting it now (nodes drain + destroy; the fleet on it goes DOWN and cold-reseeds), then recreating with the new shape.`,
+    );
+    run("az", [
+      "aks", "nodepool", "delete",
+      "--cluster-name", cluster,
+      "--resource-group", rg,
+      "--name", pool.name,
+    ]);
+    run("az", poolAddArgs(pool, { cluster, rg, subnetId }));
+    log("ok", `[base-infra] pool '${pool.name}' replaced (now ${pool.vmSize}, count ${pool.count}).`);
+  }
 }
 
 // Look up the AAD principal currently signed in to the Azure CLI and return

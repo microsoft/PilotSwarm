@@ -11,7 +11,7 @@ spec:
         - name: portal
           env:
             - name: PLUGIN_DIRS
-              value: /app/packages/app/tui/plugins,/app/packages/sdk/examples/repo-workspaces/plugin
+              value: /app/packages/app/tui/plugins,/app/deployment-plugin,/app/packages/sdk/examples/repo-workspaces/plugin
             # The side pane's Workspace tab: the portal reads and writes the
             # session folders at the same /ws paths the workers use, as the
             # same user (uid 1000, the image's `node`). The roots are the

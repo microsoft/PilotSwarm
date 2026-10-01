@@ -20,6 +20,7 @@ export interface ActiveTimer {
     shouldRehydrate?: boolean;
     waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     content?: string;
+    resumePrompt?: string;
     question?: string;
     choices?: string[];
     allowFreeform?: boolean;
@@ -34,6 +35,7 @@ export type ShutdownMode = NonNullable<OrchestrationInput["pendingShutdown"]>["m
 export type PendingShutdownState = NonNullable<OrchestrationInput["pendingShutdown"]>;
 export type PendingChildDigest = NonNullable<OrchestrationInput["pendingChildDigest"]>;
 export type PendingInputQuestion = NonNullable<OrchestrationInput["pendingInputQuestion"]>;
+export type PendingSystemWait = NonNullable<OrchestrationInput["pendingSystemWait"]>;
 export type CronSchedule = NonNullable<OrchestrationInput["cronSchedule"]>;
 export type CronAtSchedule = NonNullable<OrchestrationInput["cronAtSchedule"]>;
 
@@ -83,6 +85,7 @@ export interface DurableSessionState {
     iteration: number;
     loopIteration: number;
     retryCount: number;
+    callerReauthWaitCount: number;
 
     needsHydration: boolean;
     /**
@@ -120,6 +123,7 @@ export interface DurableSessionState {
 
     activeTimer: ActiveTimer | null;
     pendingInputQuestion: PendingInputQuestion | null;
+    pendingSystemWait: PendingSystemWait | null;
     waitingForAgentIds: string[] | null;
     interruptedWaitTimer: InterruptedWaitTimer | null;
     /**
@@ -439,6 +443,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         iteration: input.iteration ?? 0,
         loopIteration: 0,
         retryCount: input.retryCount ?? 0,
+        callerReauthWaitCount: input.callerReauthWaitCount ?? 0,
 
         needsHydration: input.needsHydration ?? false,
         snapshotVersion: input.snapshotVersion ?? 0,
@@ -468,6 +473,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         activeTimer: null,
         pendingInputQuestion: input.pendingInputQuestion ?? null,
+        pendingSystemWait: input.pendingSystemWait ?? null,
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,

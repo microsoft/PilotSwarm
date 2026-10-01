@@ -10,6 +10,30 @@ import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downlo
 // shared module.
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
+import { describeWorkflowRunTransitionBookkeepingEvent } from "./workflow-run-transition-bookkeeping.js";
+import {
+    applyWorkflowRunCatalogView,
+    buildVisibleWorkflowGeneratorTreeRows,
+    workflowGeneratorTreeRowKey,
+    workflowGeneratorTreeSelectionKey,
+    navigateWorkflowGeneratorTree,
+    toWorkflowRunCatalog,
+} from "./workflow-generator-tree-navigation.js";
+import { persistedStateRunLabel, isCurrentStateRun } from "./workflow-run-state-run-label.js";
+import { describeWorkflowRunWait, describeObservedConditionChecks, workflowRunWaitGlossaryEntry, persistedWorkflowRunWaitLabel } from "./workflow-run-wait-label.js";
+import { activateWorkflowRunTransitionSession } from "./workflow-run-transition-navigation.js";
+import {
+    reconcileWorkerTimelineLaneOrder,
+    reorderWorkerTimelineLane,
+} from "./worker-timeline-lane-order.js";
+import {
+    DEFAULT_WORKER_TIMELINE_ZOOM,
+    WORKER_TIMELINE_SPAN_LEVELS_MS,
+    computeWorkerTimelineZoomLayout,
+    defaultWorkerTimelineZoom,
+    formatWorkerTimelineSpan,
+    stepWorkerTimelineZoom,
+} from "./worker-timeline-zoom.js";
 import {
     normalizeMoa,
     UI_COMMANDS,
@@ -22,7 +46,6 @@ import {
     buildPortalLinks,
     formatPortalLinksForCopy,
     createStore,
-    AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
     formatCronTimestampForClient,
     formatHumanDurationSeconds,
@@ -36,6 +59,7 @@ import {
     parseMarkdownLines,
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
+    applyWorkerFleetViewOptions,
     selectActivityPane,
     selectWorkerDetailsPane,
     selectAdminConsole,
@@ -62,6 +86,9 @@ import {
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
+    selectRepoPickerModal,
+    selectRepoBranchInputModal,
+    selectRepoAgentInputModal,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
     selectSessionWorkspaceModal,
@@ -97,6 +124,15 @@ const SCROLL_ROW_HEIGHT = 16;
 const HISTORY_SCROLL_GESTURE_GAP_MS = 200;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
+const WORKFLOW_RUN_TABLE_COLUMNS = [
+    { key: "status", label: "Status", filterPlaceholder: "Filter status" },
+    { key: "workflow", label: "Workflow", filterPlaceholder: "Filter workflow" },
+    { key: "key", label: "Run key", filterPlaceholder: "Filter run key" },
+    { key: "currentState", label: "Current state", filterPlaceholder: "Filter state" },
+    { key: "origin", label: "Origin", filterPlaceholder: "Filter origin" },
+    { key: "owner", label: "Owner", filterPlaceholder: "Filter owner" },
+    { key: "updated", label: "Updated", filterPlaceholder: "Filter updated" },
+];
 // Minimum downward finger travel (px) while at the top of the chat pane before
 // a touch pull counts as a load-older-history request.
 const TOUCH_TOP_PULL_THRESHOLD_PX = 56;
@@ -2114,8 +2150,8 @@ function describeArtifact(filename) {
 
 /**
  * A filename read as a title: drop the extension, drop a trailing date stamp,
- * and turn separators into spaces. `icm-pg-outage-chain-20260805.html` reads as
- * "Icm pg outage chain" — the same move a document viewer makes, because the
+ * and turn separators into spaces. `customer-escalation-20260101.html` reads as
+ * "Customer escalation" — the same move a document viewer makes, because the
  * card is a thing you recognize at a glance, not a path you retype.
  */
 function artifactCardTitle(filename) {
@@ -4140,7 +4176,9 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     },
     hasHeader ? React.createElement("header", { className: "ps-panel-header" },
         React.createElement("div", { className: "ps-panel-title" },
-            Array.isArray(title)
+            React.isValidElement(title)
+                ? title
+                : Array.isArray(title)
                 ? React.createElement(Runs, { runs: title, theme })
                 : flattenTitleText(title)),
         titleRight || actions
@@ -4171,6 +4209,7 @@ function PortalNodeMapLines({ lines, theme, controller }) {
             // raw array/object shapes for direct (test) rendering.
             const runs = Array.isArray(line?.runs) ? line.runs : Array.isArray(line) ? line : [line];
             const nodeSelect = runs.find((run) => run?.nodeSelect)?.nodeSelect || null;
+            const nodeWorkerId = runs.find((run) => run?.nodeWorkerId)?.nodeWorkerId || null;
             const nodeSelected = runs.some((run) => run?.nodeSelected);
             const content = React.createElement(Runs, { runs, theme });
             if (nodeSelect) {
@@ -4184,7 +4223,7 @@ function PortalNodeMapLines({ lines, theme, controller }) {
                     onPointerDown: (event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        controller.selectNodeMapNode(nodeSelect);
+                        controller.selectNodeMapNode(nodeSelect, nodeWorkerId);
                     },
                 }, content);
             }
@@ -4553,6 +4592,16 @@ export function waitReasonLabel(session) {
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
+export function sessionRoutingTagsText(session) {
+    const routing = session?.routing;
+    if (!routing) return null;
+    return [
+        routing.ownerAffinityRequired === true ? "compute:devbox" : "compute:cluster",
+        routing.repo ? `repo:${routing.repo}` : null,
+        routing.gitRef ? `git-ref:${routing.gitRef}` : null,
+    ].filter(Boolean).join(" · ");
+}
+
 function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null, onOpenBudget = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
@@ -4601,6 +4650,8 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         : session.visibility === "shared_write" ? "shared · write"
             : session.visibility === "shared_read" ? "shared · read"
                 : "private";
+
+    const tags = sessionRoutingTagsText(session);
 
     // Groups have members rather than descendants; both answer "how many are
     // under this row", so they share the field.
@@ -4720,6 +4771,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         field("Title", session?.title, "is-title"),
         field("ID", session?.sessionId, "is-id"),
         field("Owner", session?.owner ? formatAdminPrincipalLabel(session.owner) : null),
+        field("Tags", tags),
         field("Model", model),
         field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
         field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
@@ -5317,7 +5369,7 @@ const SessionSearchControl = React.memo(function SessionSearchControl({ query = 
 
 const EMPTY_PICKER_SELECTION = Object.freeze([]);
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null, title = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -6177,7 +6229,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         : null;
 
     const sessionPanel = actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
-        title: [{ text: searchOverlay ? "Find a session" : "Sessions", color: "yellow", bold: true }],
+        title: title || [{ text: searchOverlay ? "Find a session" : "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
         theme,
@@ -6319,6 +6371,2427 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             onClose: () => setLinkModal(null),
         })
         : null);
+}
+
+function WorkIndexTabs({ activeTab, onChange, panelId, isAdmin = false, scope = "visible", onScopeChange }) {
+    const tabs = [
+        { id: "sessions", label: "Sessions" },
+        { id: "workflowRuns", label: "Workflow Runs" },
+        { id: "workflowGenerators", label: "Workflow Generators" },
+    ];
+    const selectRelative = (currentId, delta) => {
+        const currentIndex = tabs.findIndex((tab) => tab.id === currentId);
+        const nextIndex = (currentIndex + delta + tabs.length) % tabs.length;
+        onChange(tabs[nextIndex].id);
+        requestAnimationFrame(() => {
+            document.getElementById(`ps-work-index-tab-${tabs[nextIndex].id}`)?.focus();
+        });
+    };
+    return React.createElement("div", { className: "ps-work-index-heading" },
+    React.createElement("div", {
+        className: "ps-work-index-tabs",
+        role: "tablist",
+        "aria-label": "Work index",
+    },
+    tabs.map((tab) => React.createElement("button", {
+        key: tab.id,
+        id: `ps-work-index-tab-${tab.id}`,
+        type: "button",
+        role: "tab",
+        className: `ps-work-index-tab${activeTab === tab.id ? " is-active" : ""}`,
+        "aria-selected": activeTab === tab.id,
+        "aria-controls": panelId,
+        tabIndex: activeTab === tab.id ? 0 : -1,
+        onClick: () => onChange(tab.id),
+        onKeyDown: (event) => {
+            if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                selectRelative(tab.id, -1);
+            } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                selectRelative(tab.id, 1);
+            } else if (event.key === "Home") {
+                event.preventDefault();
+                onChange(tabs[0].id);
+                requestAnimationFrame(() => document.getElementById(`ps-work-index-tab-${tabs[0].id}`)?.focus());
+            } else if (event.key === "End") {
+                event.preventDefault();
+                onChange(tabs[tabs.length - 1].id);
+                requestAnimationFrame(() => document.getElementById(`ps-work-index-tab-${tabs[tabs.length - 1].id}`)?.focus());
+            }
+        },
+    }, tab.label))),
+    isAdmin
+        ? React.createElement("button", {
+            type: "button",
+            className: `ps-work-index-scope${scope === "fleet" ? " is-fleet" : ""}`,
+            "aria-pressed": scope === "fleet",
+            onClick: () => onScopeChange?.(scope === "fleet" ? "visible" : "fleet"),
+            title: scope === "fleet"
+                ? "Return to records visible to your own identity"
+                : "View the fleet-wide read-only catalog",
+        }, scope === "fleet" ? "Fleet view · read-only" : "My view")
+        : null);
+}
+
+function previewExecutionStatus(session) {
+    const state = String(session?.status || session?.state || "").toLowerCase();
+    if (state === "input_required" || state === "waiting") return "PARKED";
+    if (state === "failed" || state === "error") return "FAILED";
+    if (state === "completed" || state === "replaced") return "DONE";
+    if (state === "cancelled") return "ABANDONED";
+    if (state === "unacked") return "UNACKED";
+    return state === "running" || state === "active" ? "RUNNING" : "READY";
+}
+
+function persistedGeneratorStatus(generator) {
+    if (generator.operationalState === "paused") return "PAUSED";
+    if (generator.operationalState === "disabled") return "STOPPED";
+    if (generator.lastError || generator.hasError) return "DEGRADED";
+    return generator.totalCycles > 0 ? "RUNNING" : "REGISTERED";
+}
+
+function persistedWorkflowRunStatus(workflowRun) {
+    switch (workflowRun.lifecycleState) {
+        case "active": return "RUNNING";
+        case "blocked": return "PARKED";
+        case "completed": return "DONE";
+        case "cancelled": return "ABANDONED";
+        default: return "READY";
+    }
+}
+
+function persistedStateRunStatus(run) {
+    switch (run.status) {
+        case "input_required": return "AWAITING DECISION";
+        case "waiting": return "AWAITING CONDITION";
+        case "active": return "RUNNING";
+        case "completed": return "DONE";
+        case "failed": return "FAILED";
+        case "unacked": return "READY";
+        default: return "PREPARING";
+    }
+}
+
+function formatWorkflowRunTimelineTimestamp(value) {
+    if (!value) return "";
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function formatWorkflowRunTimelineDuration(durationMs) {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return "";
+    const seconds = Math.round(durationMs / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+}
+
+function workflowRunTimelineEventDetail(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const preferred = [
+        data.question,
+        data.reason,
+        data.signalKey,
+        data.signal_key,
+        data.content,
+        data.summary,
+        data.error,
+    ].find((value) => typeof value === "string" && value.trim());
+    if (preferred) return preferred.trim().replace(/\s+/g, " ").slice(0, 360);
+    if (!event?.data || (typeof event.data === "object" && Object.keys(data).length === 0)) return "";
+    try {
+        return JSON.stringify(event.data).slice(0, 360);
+    } catch {
+        return String(event.data).slice(0, 360);
+    }
+}
+
+function buildWorkflowRunTransitionTimeline(transition, events) {
+    const entries = [];
+    const add = (at, label, detail = "", kind = "event") => {
+        if (!at) return;
+        const timestamp = new Date(at).getTime();
+        if (Number.isNaN(timestamp)) return;
+        entries.push({ at, timestamp, label, detail, kind });
+    };
+    add(transition.createdAt, "State run created", `${transition.stateName} · revision ${transition.revision}`, "state");
+    add(transition.reservedAt, "Execution session reserved", transition.sessionId || "", "session");
+    add(transition.attachedAt, "Session enqueued", "Waiting for an eligible worker.", "session");
+    add(
+        transition.startedAt,
+        "Worker acknowledged state",
+        transition.leaseOwner ? `Worker ${transition.leaseOwner}` : "",
+        "worker",
+    );
+    for (const event of events || []) {
+        const bookkeeping = describeWorkflowRunTransitionBookkeepingEvent(event.eventType);
+        if (!bookkeeping) continue;
+        add(
+            event.createdAt,
+            bookkeeping.label,
+            workflowRunTimelineEventDetail(event),
+            bookkeeping.kind,
+        );
+    }
+    if (transition.status === "waiting" || transition.status === "input_required") {
+        const waitDescription = describeWorkflowRunWait(transition.activeWait, transition.status);
+        add(
+            transition.updatedAt,
+            waitDescription.timelineLabel,
+            waitDescription.timelineDetail,
+            "wait",
+        );
+    }
+    add(transition.completedAt, "State run completed", transition.summary || "", "state");
+    add(
+        transition.transitionedAt,
+        persistedStateRunLabel(transition, " completed"),
+        transition.summary || "",
+        "transition",
+    );
+    add(transition.endedAt, "Execution session ended", "", "session");
+    entries.sort((left, right) => left.timestamp - right.timestamp);
+
+    const withGaps = [];
+    for (const entry of entries) {
+        const previous = withGaps[withGaps.length - 1];
+        if (previous?.timestamp && entry.timestamp - previous.timestamp >= 30_000) {
+            withGaps.push({
+                at: entry.at,
+                timestamp: entry.timestamp,
+                label: `Durable idle gap · ${formatWorkflowRunTimelineDuration(entry.timestamp - previous.timestamp)}`,
+                detail: "No persisted worker activity occurred during this interval.",
+                kind: "idle",
+            });
+        }
+        withGaps.push(entry);
+    }
+    if (
+        (transition.status === "waiting" || transition.status === "input_required")
+        && withGaps.length > 0
+    ) {
+        const last = withGaps[withGaps.length - 1];
+        const idleMs = Date.now() - last.timestamp;
+        if (idleMs >= 30_000) {
+            withGaps.push({
+                at: null,
+                timestamp: Date.now(),
+                label: `Durable wait active · ${formatWorkflowRunTimelineDuration(idleMs)}`,
+                detail: "The state remains non-runnable; no polling activity is being persisted.",
+                kind: "idle",
+            });
+        }
+    }
+    return withGaps;
+}
+
+async function listWorkflowRunWaitsWithCompatibility(transport, workflowRunId, options = {}) {
+    if (typeof transport.listWorkflowRunWaits !== "function") {
+        if (typeof console !== "undefined") {
+            console.warn("Workflow Run wait details are unavailable because this server/client does not support listWorkflow RunWaits.");
+        }
+        return [];
+    }
+    try {
+        return await transport.listWorkflowRunWaits(workflowRunId, options);
+    } catch (error) {
+        if (error?.status !== 404) throw error;
+        if (typeof console !== "undefined") {
+            console.warn("Workflow Run wait details are unavailable because this server does not expose the Workflow Run waits endpoint.");
+        }
+        return [];
+    }
+}
+
+function workflowGeneratorSourceTypeLabel(sourceType) {
+    if (!sourceType) return "Preview source";
+    return sourceType;
+}
+
+function workflowGeneratorSourceQueryText(generator) {
+    const config = generator && typeof generator.sourceConfig === "object"
+        ? generator.sourceConfig
+        : null;
+    if (!config) return "";
+    const direct = config.wiql || config.query || config.kql || config.filter;
+    if (typeof direct === "string" && direct.trim()) return direct.trim();
+    try {
+        return JSON.stringify(config, null, 2);
+    } catch {
+        return "";
+    }
+}
+
+function formatWorkflowGeneratorCadence(cadenceSeconds) {
+    const seconds = Number(cadenceSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    if (seconds < 60) return `Every ${seconds}s`;
+    const minutes = seconds / 60;
+    if (Number.isInteger(minutes) && seconds < 3600) return `Every ${minutes} min`;
+    if (seconds < 3600) return `Every ~${Math.round(minutes)} min`;
+    const hours = Math.floor(seconds / 3600);
+    const remMinutes = Math.round((seconds % 3600) / 60);
+    return remMinutes ? `Every ${hours}h ${remMinutes}m` : `Every ${hours}h`;
+}
+
+function renderWorkflowGeneratorDetailFields(generator) {
+    if (!generator) return null;
+    const cadence = formatWorkflowGeneratorCadence(generator.cadenceSeconds);
+    const cadenceSuffix = Number(generator.cadenceSeconds) > 0
+        ? `${generator.cadenceSeconds}s`
+        : "";
+    const cadenceValue = cadence && cadenceSuffix
+        ? `${cadence} · ${cadenceSuffix}`
+        : cadence || cadenceSuffix;
+    const rows = [
+        ["Created", formatWorkflowRunTimelineTimestamp(generator.createdAt)],
+        ["Cadence", cadenceValue],
+        ["Last run", generator.lastCycleAt
+            ? formatWorkflowRunTimelineTimestamp(generator.lastCycleAt)
+            : "Never run"],
+        ["Next run", formatWorkflowRunTimelineTimestamp(generator.nextRunAt)],
+        ["Source type", workflowGeneratorSourceTypeLabel(generator.sourceType)],
+    ].filter(([, value]) => typeof value === "string" && value.length > 0);
+    const query = workflowGeneratorSourceQueryText(generator);
+    return React.createElement("dl", { className: "ps-workflow-generator-detail-fields" },
+        ...rows.map(([label, value]) => React.createElement("div", {
+            key: label,
+            className: "ps-workflow-generator-detail-field",
+        },
+            React.createElement("dt", null, label),
+            React.createElement("dd", { title: value }, value))),
+        query
+            ? React.createElement("div", {
+                key: "source-query",
+                className: "ps-workflow-generator-detail-field is-query",
+            },
+                React.createElement("dt", null, "Source query"),
+                React.createElement("dd", null,
+                    React.createElement("code", {
+                        className: "ps-workflow-generator-source-query",
+                    }, query)))
+            : null);
+}
+
+async function loadPersistedWorkflowRunDetail(
+    transport,
+    workflowRun,
+    { label = null, definition = null, scope = "visible" } = {},
+) {
+    const resolvedDefinition = definition?.workflowDefinitionId === workflowRun.workflowDefinitionId
+        ? definition
+        : workflowRun.workflowDefinitionId
+            ? await transport.getWorkflowDefinition(workflowRun.workflowDefinitionId, { scope })
+            : null;
+    const [sessions, stateRuns, waits, journal] = await Promise.all([
+        transport.listWorkflowRunSessions(workflowRun.workflowRunId, { scope }),
+        transport.listWorkflowRunStateRuns(workflowRun.workflowRunId, { scope }),
+        listWorkflowRunWaitsWithCompatibility(transport, workflowRun.workflowRunId, { scope }),
+        transport.listWorkflowRunJournal(workflowRun.workflowRunId, { scope }),
+    ]);
+    const transitions = stateRuns.map((run) => {
+        const entry = journal.find((candidate) => candidate.stateRunId === run.stateRunId) || null;
+        const session = sessions.find((candidate) => candidate.stateRunId === run.stateRunId)
+            || sessions.find((candidate) => candidate.sessionId === run.sessionId)
+            || null;
+        const runWaits = waits.filter((candidate) => candidate.stateRunId === run.stateRunId);
+        const pendingWaits = run.status === "waiting" || run.status === "input_required"
+            ? runWaits.filter((candidate) => candidate.status === "pending")
+            : [];
+        const activeWait = pendingWaits.find((candidate) => candidate.kind === "response")
+            || pendingWaits[0]
+            || null;
+        return {
+            id: run.stateRunId,
+            stateName: run.stateName,
+            revision: run.stateRevision,
+            status: run.status,
+            statusLabel: persistedWorkflowRunWaitLabel(activeWait) || persistedStateRunStatus(run),
+            waits: runWaits,
+            activeWait,
+            stateOwner: run.stateOwner,
+            sourceId: run.sourceId,
+            sourcePath: run.sourcePath,
+            sourceCommit: run.sourceCommit,
+            sessionId: run.sessionId || session?.sessionId || null,
+            leaseOwner: run.leaseOwner,
+            createdAt: run.createdAt,
+            updatedAt: run.updatedAt,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            reservedAt: session?.reservedAt || null,
+            attachedAt: session?.attachedAt || null,
+            endedAt: session?.endedAt || null,
+            fromState: entry?.fromState || run.stateName,
+            toState: entry?.toState || null,
+            terminal: run.terminal === true,
+            outcome: entry?.outcome || null,
+            summary: entry?.summary || "",
+            journalEntryId: entry?.journalEntryId || null,
+            journalSequence: Number.isFinite(Number(entry?.sequence))
+                ? Number(entry.sequence)
+                : null,
+            fromRevision: Number.isFinite(Number(entry?.fromRevision))
+                ? Number(entry.fromRevision)
+                : run.stateRevision,
+            toRevision: Number.isFinite(Number(entry?.toRevision))
+                ? Number(entry.toRevision)
+                : null,
+            idempotencyKey: entry?.idempotencyKey || null,
+            transitionedAt: entry?.transitionedAt || null,
+        };
+    });
+    return {
+        ...toWorkflowRunCatalog([workflowRun])[0],
+        id: workflowRun.workflowRunId,
+        label: label || workflowRun.workflowRunKey || workflowRun.workflowRunId,
+        lifecycleState: workflowRun.lifecycleState,
+        status: persistedWorkflowRunStatus(workflowRun),
+        workflowDefinitionId: workflowRun.workflowDefinitionId,
+        definition: resolvedDefinition,
+        sessions: sessions.map((session) => ({
+            id: session.sessionId,
+            title: `Execution session ${session.ordinal}`,
+            status: previewExecutionStatus(session),
+            current: session.isCurrent,
+        })),
+        transitions,
+    };
+}
+
+async function loadPersistedWorkflowGenerators(transport, scope = "visible", options = {}) {
+    const page = typeof transport.listWorkflowGeneratorsPage === "function"
+        ? await transport.listWorkflowGeneratorsPage({ ...options, scope })
+        : {
+            generators: await transport.listWorkflowGenerators({ scope }),
+            hasMore: false,
+            nextCursor: null,
+        };
+    const generators = await Promise.all(page.generators.map(async (generator) => {
+        const [activeDefinition, workflowRunRows] = await Promise.all([
+            generator.activeDefinitionId
+                ? transport.getWorkflowDefinition(generator.activeDefinitionId, { scope })
+                : null,
+            transport.listWorkflowGeneratorRuns(generator.workflowGeneratorId, { scope }),
+        ]);
+        const workflowRuns = await Promise.all(workflowRunRows.map((workflowRun) => (
+            loadPersistedWorkflowRunDetail(transport, workflowRun, {
+                label: `${generator.name}_${workflowRun.workflowRunKey}`,
+                definition: activeDefinition,
+                scope,
+            })
+        )));
+        return {
+            id: generator.workflowGeneratorId,
+            name: generator.name,
+            ownerLabel: generator.owner?.displayName
+                || generator.owner?.email
+                || generator.owner?.subject
+                || "Unknown owner",
+            repo: activeDefinition?.affinities?.repo || "Any repo",
+            cadenceSeconds: generator.cadenceSeconds,
+            status: persistedGeneratorStatus(generator),
+            createdAt: generator.createdAt,
+            lastCycleAt: generator.lastCycleAt,
+            nextRunAt: generator.nextRunAt,
+            definitionVersion: activeDefinition?.version ?? 0,
+            definition: activeDefinition,
+            sourceType: generator.sourceType,
+            sourceConfig: scope === "fleet" ? null : generator.sourceConfig,
+            workflowRuns,
+        };
+    }));
+    return {
+        generators,
+        hasMore: Boolean(page.hasMore),
+        nextCursor: page.nextCursor || null,
+    };
+}
+
+const EMPTY_CATALOG_QUERY = Object.freeze({
+    owner: "",
+    status: "",
+    repository: "",
+    placement: "",
+    origin: "",
+    recent: "",
+});
+
+function catalogQueryRequest(query) {
+    const recentMs = query.recent === "24h"
+        ? 24 * 60 * 60 * 1000
+        : query.recent === "7d"
+            ? 7 * 24 * 60 * 60 * 1000
+            : query.recent === "30d"
+                ? 30 * 24 * 60 * 60 * 1000
+                : null;
+    return {
+        owner: query.owner || undefined,
+        status: query.status || undefined,
+        repository: query.repository || undefined,
+        placement: query.placement || undefined,
+        origin: query.origin || undefined,
+        updatedAfter: recentMs ? new Date(Date.now() - recentMs).toISOString() : undefined,
+    };
+}
+
+function useDebouncedCatalogQuery(query) {
+    const [debounced, setDebounced] = React.useState(query);
+    React.useEffect(() => {
+        const timer = window.setTimeout(() => setDebounced(query), 300);
+        return () => window.clearTimeout(timer);
+    }, [query]);
+    return debounced;
+}
+
+function CatalogQueryControls({
+    query,
+    onChange,
+    includeOrigin = false,
+    includeRepository = true,
+    includePlacement = true,
+}) {
+    const update = (key) => (event) => onChange({ ...query, [key]: event.target.value });
+    const active = Object.values(query).some(Boolean);
+    return React.createElement("div", {
+        className: "ps-workflow-run-catalog-toolbar",
+        "aria-label": "Server-side catalog filters",
+    },
+    React.createElement("input", {
+        className: "ps-workflow-run-filter",
+        value: query.owner,
+        onChange: update("owner"),
+        placeholder: "Filter owner",
+        "aria-label": "Filter owner",
+    }),
+    React.createElement("input", {
+        className: "ps-workflow-run-filter",
+        value: query.status,
+        onChange: update("status"),
+        placeholder: "Filter status",
+        "aria-label": "Filter status",
+    }),
+    includeRepository ? React.createElement("input", {
+        className: "ps-workflow-run-filter",
+        value: query.repository,
+        onChange: update("repository"),
+        placeholder: "Filter repository",
+        "aria-label": "Filter repository",
+    }) : null,
+    includePlacement ? React.createElement("input", {
+        className: "ps-workflow-run-filter",
+        value: query.placement,
+        onChange: update("placement"),
+        placeholder: "Filter placement",
+        "aria-label": "Filter placement",
+    }) : null,
+    includeOrigin
+        ? React.createElement("select", {
+            className: "ps-workflow-run-filter",
+            value: query.origin,
+            onChange: update("origin"),
+            "aria-label": "Filter origin",
+        },
+        React.createElement("option", { value: "" }, "All origins"),
+        React.createElement("option", { value: "direct" }, "Direct"),
+        React.createElement("option", { value: "workflow_generator" }, "Workflow Generator"))
+        : null,
+    React.createElement("select", {
+        className: "ps-workflow-run-filter",
+        value: query.recent,
+        onChange: update("recent"),
+        "aria-label": "Filter recent activity",
+    },
+    React.createElement("option", { value: "" }, "Any time"),
+    React.createElement("option", { value: "24h" }, "Updated in 24 hours"),
+    React.createElement("option", { value: "7d" }, "Updated in 7 days"),
+    React.createElement("option", { value: "30d" }, "Updated in 30 days")),
+    React.createElement("button", {
+        type: "button",
+        className: "ps-mini-button",
+        disabled: !active,
+        onClick: () => onChange({ ...EMPTY_CATALOG_QUERY }),
+    }, "Clear filters"));
+}
+
+const WORKFLOW_GENERATOR_CREATE_SECTIONS = [
+    {
+        id: "registration",
+        title: "Registration",
+        description: "Mutable Workflow Generator identity and schedule. Owner is assigned from the signed-in user.",
+        open: true,
+        fields: [
+            { key: "name", label: "Name", kind: "text", placeholder: "BacklogProcessor", required: true },
+            { key: "cadenceSeconds", label: "Materialization cadence (seconds)", kind: "number", min: 30 },
+        ],
+    },
+    {
+        id: "source",
+        title: "Expansion source",
+        description: "Immutable definition fields that discover inputs and produce stable Workflow RunKeys.",
+        open: true,
+        fields: [
+            {
+                key: "sourceType",
+                label: "Source provider ID",
+                kind: "text",
+                placeholder: "example-source",
+                required: true,
+                help: "Opaque provider ID registered with the Workflow Generator controller.",
+            },
+            { key: "expansionAgent", label: "Expansion agent", kind: "text", placeholder: "example-expand" },
+            {
+                key: "sourceConfig",
+                label: "Source configuration (JSON)",
+                kind: "textarea",
+                rows: 5,
+                help: "Provider-specific and extensible. Include the query/filter and any stable-key configuration.",
+            },
+        ],
+    },
+    {
+        id: "affinities",
+        title: "Inherited affinities",
+        description: "Placement settings inherited by every Workflow Run. User affinity is assigned from the signed-in owner.",
+        fields: [
+            { key: "repoAffinity", label: "Repository affinity", kind: "text", placeholder: "service-repo" },
+            { key: "gitRef", label: "Git ref", kind: "text", placeholder: "main" },
+            {
+                key: "computeAffinity",
+                label: "Compute affinity",
+                kind: "select",
+                options: [
+                    { value: "devbox", label: "Devbox" },
+                    { value: "cluster", label: "Cluster" },
+                    { value: "devbox,cluster", label: "Devbox and cluster" },
+                ],
+            },
+            { key: "modelAffinity", label: "Model affinity", kind: "text", placeholder: "Optional model" },
+        ],
+    },
+    {
+        id: "lifecycle",
+        title: "Lifecycle and blocking",
+        description: "Per-state agent/prompt bindings and the principals allowed to unblock generated Workflow Runs.",
+        fields: [
+            {
+                key: "states",
+                label: "Lifecycle states (JSON)",
+                kind: "textarea",
+                rows: 7,
+                help: "Each state may be prompt-driven, automatic, or system-event-driven.",
+            },
+            {
+                key: "blockingPrincipals",
+                label: "Blocking principals",
+                kind: "text",
+                placeholder: "workflowRunCreator, team:service-owners",
+                help: "Comma-separated users, groups, or symbolic principals.",
+            },
+        ],
+    },
+    {
+        id: "validation",
+        title: "Validation gates",
+        description: "Build, test, approval, or system-event gates represented as an extensible array.",
+        fields: [
+            {
+                key: "validationGates",
+                label: "Validation gates (JSON)",
+                kind: "textarea",
+                rows: 5,
+            },
+        ],
+    },
+    {
+        id: "guardrails",
+        title: "Guardrails",
+        description: "Initial count and anti-thrash limits from the orchestration vision.",
+        fields: [
+            { key: "maxOutstandingWorkflow Runs", label: "Maximum outstanding Workflow Runs", kind: "number", min: 1 },
+            { key: "maxBlockedWorkflow Runs", label: "Maximum blocked Workflow Runs", kind: "number", min: 1 },
+            { key: "maxItemsPerCycle", label: "Maximum items per cycle", kind: "number", min: 1 },
+            { key: "maxAttemptsPerState", label: "Maximum attempts per state", kind: "number", min: 1 },
+            { key: "maxTotalSteps", label: "Maximum total Workflow Run steps", kind: "number", min: 1 },
+        ],
+    },
+];
+
+const WORKFLOW_GENERATOR_CREATE_DEFAULTS = {
+    name: "",
+    cadenceSeconds: "300",
+    sourceType: "",
+    expansionAgent: "",
+    sourceConfig: "{}",
+    repoAffinity: "",
+    gitRef: "",
+    computeAffinity: "devbox",
+    modelAffinity: "",
+    states: '{\n  "Work Details Gathered": {\n    "kind": "prompt",\n    "prompt": "workflowRun/work-details"\n  },\n  "Done": {\n    "kind": "auto"\n  }\n}',
+    blockingPrincipals: "workflowRunCreator",
+    validationGates: "[]",
+    maxOutstandingWorkflowRuns: "5",
+    maxBlockedWorkflowRuns: "2",
+    maxItemsPerCycle: "100",
+    maxAttemptsPerState: "3",
+    maxTotalSteps: "50",
+};
+
+function parseWorkflowGeneratorJson(value, label, expected) {
+    let parsed;
+    try {
+        parsed = JSON.parse(value);
+    } catch (error) {
+        throw new Error(`${label} must be valid JSON: ${error.message}`);
+    }
+    if (expected === "array" && !Array.isArray(parsed)) {
+        throw new Error(`${label} must be a JSON array.`);
+    }
+    if (expected === "object" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) {
+        throw new Error(`${label} must be a JSON object.`);
+    }
+    return parsed;
+}
+
+function WorkflowGeneratorCreateField({ field, value, onChange, autoFocus = false }) {
+    const common = {
+        className: field.kind === "textarea" ? "ps-modal-input ps-workflow-generator-textarea" : "ps-modal-input",
+        value,
+        onChange: (event) => onChange(event.target.value),
+        required: Boolean(field.required),
+        autoFocus,
+    };
+    const control = field.kind === "select"
+        ? React.createElement("select", common,
+            field.options.map((option) => React.createElement("option", {
+                key: option.value,
+                value: option.value,
+            }, option.label)))
+        : field.kind === "textarea"
+            ? React.createElement("textarea", {
+                ...common,
+                rows: field.rows,
+                spellCheck: false,
+            })
+            : React.createElement("input", {
+                ...common,
+                type: field.kind,
+                min: field.min,
+                placeholder: field.placeholder,
+            });
+    return React.createElement("label", { className: "ps-workflow-generator-field" },
+        React.createElement("span", null, field.label),
+        control,
+        field.help
+            ? React.createElement("small", { className: "ps-workflow-generator-field-help" }, field.help)
+            : null);
+}
+
+function WorkflowGeneratorCreateModal({ onCreate, onClose }) {
+    const [draft, setDraft] = React.useState(WORKFLOW_GENERATOR_CREATE_DEFAULTS);
+    const [error, setError] = React.useState("");
+    const [submitting, setSubmitting] = React.useState(false);
+    const dialogRef = React.useRef(null);
+    const previousFocusRef = React.useRef(typeof document === "undefined" ? null : document.activeElement);
+    const stop = (event) => event.stopPropagation();
+    React.useEffect(() => () => {
+        const previousFocus = previousFocusRef.current;
+        if (previousFocus instanceof HTMLElement) {
+            requestAnimationFrame(() => previousFocus.focus());
+        }
+    }, []);
+    const handleKeyDown = (event) => {
+        event.stopPropagation();
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable = [...(dialogRef.current?.querySelectorAll(
+            "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        ) || [])];
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    };
+    const submit = async (event) => {
+        event.preventDefault();
+        const trimmedName = draft.name.trim();
+        if (!trimmedName) return;
+        setSubmitting(true);
+        try {
+            const sourceConfig = parseWorkflowGeneratorJson(draft.sourceConfig, "Source configuration", "object");
+            const states = parseWorkflowGeneratorJson(draft.states, "Lifecycle states", "object");
+            const validationGates = parseWorkflowGeneratorJson(draft.validationGates, "Validation gates", "array");
+            const positiveInteger = (value, label) => {
+                const parsed = Number(value);
+                if (!Number.isInteger(parsed) || parsed < 1) {
+                    throw new Error(`${label} must be a positive integer.`);
+                }
+                return parsed;
+            };
+            await onCreate({
+                name: trimmedName,
+                cadenceSeconds: Math.max(30, positiveInteger(draft.cadenceSeconds, "Cadence")),
+                definition: {
+                    sourceType: draft.sourceType,
+                    sourceConfig,
+                    affinities: {
+                        repo: draft.repoAffinity.trim() || null,
+                        gitRef: draft.gitRef.trim() || null,
+                        compute: draft.computeAffinity.split(","),
+                        model: draft.modelAffinity.trim() || null,
+                    },
+                    workflowDefinition: {
+                        expansionAgent: draft.expansionAgent.trim() || null,
+                        states,
+                        blockingPrincipals: draft.blockingPrincipals
+                            .split(",")
+                            .map((value) => value.trim())
+                            .filter(Boolean),
+                    },
+                    validationGates,
+                    guardrails: {
+                        maxOutstandingWorkflowRuns: positiveInteger(draft.maxOutstandingWorkflowRuns, "Maximum outstanding Workflow Runs"),
+                        maxBlockedWorkflowRuns: positiveInteger(draft.maxBlockedWorkflowRuns, "Maximum blocked Workflow Runs"),
+                        maxItemsPerCycle: positiveInteger(draft.maxItemsPerCycle, "Maximum items per cycle"),
+                        maxAttemptsPerState: positiveInteger(draft.maxAttemptsPerState, "Maximum attempts per state"),
+                        maxTotalSteps: positiveInteger(draft.maxTotalSteps, "Maximum total Workflow Run steps"),
+                    },
+                },
+            });
+        } catch (submitError) {
+            setError(submitError instanceof Error ? submitError.message : String(submitError));
+        } finally {
+            setSubmitting(false);
+        }
+    };
+    const setValue = (key) => (value) => {
+        setDraft((current) => ({ ...current, [key]: value }));
+        setError("");
+    };
+
+    return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
+        React.createElement("form", {
+            ref: dialogRef,
+            className: "ps-workflow-generator-modal",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-labelledby": "ps-workflow-generator-create-title",
+            onClick: stop,
+            onKeyDown: handleKeyDown,
+            onSubmit: submit,
+        },
+            React.createElement("div", { className: "ps-share-modal-head" },
+                React.createElement("span", { id: "ps-workflow-generator-create-title" }, "Create Workflow Generator"),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-modal-close",
+                    onClick: onClose,
+                    "aria-label": "Close",
+                    title: "Close",
+                }, "✕")),
+            React.createElement("p", { className: "ps-workflow-generator-modal-note" },
+                "Registration creates a durable Workflow Generator and immutable definition version 1. Owner is your signed-in identity."),
+            React.createElement("div", { className: "ps-workflow-generator-form-sections" },
+                WORKFLOW_GENERATOR_CREATE_SECTIONS.map((section) => React.createElement("details", {
+                    key: section.id,
+                    className: "ps-workflow-generator-form-section",
+                    open: section.open,
+                },
+                React.createElement("summary", null,
+                    React.createElement("strong", null, section.title),
+                    React.createElement("span", null, section.description)),
+                React.createElement("div", { className: "ps-workflow-generator-form-grid" },
+                    section.fields.map((field, fieldIndex) => React.createElement(WorkflowGeneratorCreateField, {
+                        key: field.key,
+                        field,
+                        value: draft[field.key],
+                        onChange: setValue(field.key),
+                        autoFocus: section.id === "registration" && fieldIndex === 0,
+                    })))))),
+            error
+                ? React.createElement("div", {
+                    className: "ps-workflow-generator-form-error",
+                    role: "alert",
+                }, error)
+                : null,
+            React.createElement("div", { className: "ps-workflow-generator-modal-actions" },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: onClose,
+                }, "Cancel"),
+                React.createElement("button", {
+                    type: "submit",
+                    className: "ps-mini-button is-primary",
+                    disabled: submitting || !draft.name.trim(),
+                }, submitting ? "Registering..." : "Register Workflow Generator"))));
+}
+
+function WorkflowRunTransitionTimeline({ transition, timeline, onOverrideCondition }) {
+    const [overridePending, setOverridePending] = React.useState(null);
+    if (!transition) return null;
+    const handleOverrideCondition = async (conditionKey, nextOverridden) => {
+        if (!onOverrideCondition || !transition.activeWait) return;
+        const { workflowRunId, waitId } = transition.activeWait;
+        setOverridePending(conditionKey);
+        try {
+            await onOverrideCondition(workflowRunId, waitId, conditionKey, nextOverridden);
+        } finally {
+            setOverridePending(null);
+        }
+    };
+    const entries = buildWorkflowRunTransitionTimeline(transition, timeline.events);
+    const activeWaitInfo = transition.activeWait
+        ? describeWorkflowRunWait(transition.activeWait, transition.status)
+        : null;
+    const activeWaitAffordance = activeWaitInfo
+        ? (activeWaitInfo.kind === "response"
+            ? "Response wait · answer in the session to continue"
+            : activeWaitInfo.kind === "timer"
+                ? "Scheduled wait · resumes automatically at the scheduled time · no worker retained"
+                : (activeWaitInfo.providerLabel
+                    ? `Observed-condition wait · ${activeWaitInfo.providerLabel} state authoritative`
+                    : "Observed-condition wait")
+                    + ` · awaiting ${activeWaitInfo.predicateLabel || "external condition"} · no worker retained`)
+        : null;
+    return React.createElement("div", { className: "ps-workflow-run-transition-timeline" },
+        React.createElement("div", { className: "ps-workflow-run-transition-timeline-header" },
+            React.createElement("strong", null,
+                persistedStateRunLabel(transition, { pendingArrow: true }),
+                isCurrentStateRun(transition)
+                    ? React.createElement("span", { className: "ps-state-run-current-badge" }, "current")
+                    : null),
+            React.createElement("span", null,
+                `Revision ${transition.revision} · ${transition.statusLabel}`
+                + (transition.stateOwner ? ` · ${transition.stateOwner}` : ""))),
+        transition.sourcePath
+            ? React.createElement("div", { className: "ps-workflow-run-transition-source" },
+                transition.sourcePath,
+                transition.sourceCommit ? ` @ ${transition.sourceCommit.slice(0, 12)}` : "")
+            : null,
+        transition.activeWait
+            ? React.createElement("div", {
+                className: `ps-workflow-run-transition-journal ps-workflow-run-wait is-${activeWaitInfo.kind.replaceAll("_", "-")}-wait`,
+            },
+                React.createElement("strong", null, activeWaitInfo.reason),
+                transition.activeWait.prompt?.question
+                    ? React.createElement("span", null, transition.activeWait.prompt.question)
+                    : null,
+                (() => {
+                    const checks = describeObservedConditionChecks(transition.activeWait);
+                    if (!checks.length) return null;
+                    return React.createElement("ul", { className: "ps-workflow-run-wait-conditions" },
+                        checks.map((check) => React.createElement("li", {
+                            key: check.key,
+                            className: `ps-workflow-run-wait-condition is-${check.state}`
+                                + (check.overridden ? " is-overridden" : ""),
+                            title: check.detail ? `${check.label}: ${check.detail}` : check.label,
+                        },
+                            React.createElement("span", {
+                                className: "ps-workflow-run-wait-condition-icon",
+                                "aria-hidden": "true",
+                            }, check.state === "satisfied" ? "✔" : check.state === "failed" ? "✖" : "⌛"),
+                            React.createElement("span", { className: "ps-workflow-run-wait-condition-label" },
+                                check.label,
+                                check.overridden
+                                    ? React.createElement("span", {
+                                        className: "ps-workflow-run-wait-condition-override-tag",
+                                    }, "overridden")
+                                    : null),
+                            onOverrideCondition
+                                ? React.createElement("button", {
+                                    type: "button",
+                                    className: "ps-workflow-run-wait-condition-override"
+                                        + (check.overridden ? " is-overridden" : ""),
+                                    disabled: overridePending === check.key,
+                                    onClick: () => handleOverrideCondition(check.key, !check.overridden),
+                                    title: check.overridden
+                                        ? "Clear the operator override and let the real condition apply"
+                                        : "Mock this condition as satisfied so the wait can resume",
+                                }, overridePending === check.key
+                                    ? "…"
+                                    : check.overridden ? "Clear" : "Override")
+                                : null)));
+                })(),
+                React.createElement("span", { className: "ps-workflow-run-wait-affordance" }, activeWaitAffordance),
+                activeWaitInfo.glossary
+                    ? React.createElement("span", {
+                        className: "ps-workflow-run-wait-help",
+                        title: activeWaitInfo.glossary.rationale,
+                    }, `How this wait resumes: ${activeWaitInfo.glossary.rationale}`)
+                    : null,
+                React.createElement("span", null,
+                    `Wait ${transition.activeWait.waitId}`
+                    + ` · ${transition.activeWait.detectionMode.replaceAll("_", " ")}`))
+            : null,
+        transition.journalEntryId
+            ? React.createElement("div", { className: "ps-workflow-run-transition-journal" },
+                React.createElement("strong", null, `Journal #${transition.journalSequence}`),
+                React.createElement("span", null,
+                    `Revision ${transition.fromRevision} → ${transition.toRevision}`
+                    + (transition.outcome ? ` · outcome ${transition.outcome}` : "")),
+                React.createElement("span", null,
+                    `Entry ${transition.journalEntryId}`
+                    + (transition.idempotencyKey ? ` · idempotency ${transition.idempotencyKey}` : "")))
+            : null,
+        timeline.loading
+            ? React.createElement("div", { className: "ps-workflow-run-transition-empty" }, "Loading durable timeline...")
+            : timeline.error
+                ? React.createElement("div", {
+                    className: "ps-workflow-run-transition-error",
+                    role: "alert",
+                }, timeline.error)
+                : entries.length === 0
+                    ? React.createElement("div", { className: "ps-workflow-run-transition-empty" },
+                        "No durable events have been recorded for this state run.")
+                    : React.createElement("div", { className: "ps-workflow-run-transition-events" },
+                        entries.map((entry, index) => React.createElement("div", {
+                            className: `ps-workflow-run-transition-event is-${entry.kind}`,
+                            key: `${entry.timestamp}:${entry.label}:${index}`,
+                        },
+                        React.createElement("time", {
+                            dateTime: entry.at ? new Date(entry.at).toISOString() : undefined,
+                        }, entry.at ? formatWorkflowRunTimelineTimestamp(entry.at) : "now"),
+                        React.createElement("div", { className: "ps-workflow-run-transition-event-body" },
+                            React.createElement("strong", null, entry.label),
+                            entry.detail ? React.createElement("span", null, entry.detail) : null)))),
+        transition.summary
+            ? React.createElement("div", { className: "ps-workflow-run-transition-summary" },
+                React.createElement("strong", null,
+                    !transition.terminal && transition.toState
+                        ? `Handoff summary for ${transition.toState}`
+                        : "Final state summary"),
+                React.createElement("span", null, transition.summary))
+            : null);
+}
+
+function WorkflowGeneratorPane({
+    controller,
+    title,
+    panelClassName = "",
+    showDetailBox = true,
+    generators,
+    loading,
+    loadError,
+    onCreateGenerator,
+    onDeleteGenerator,
+    onDeleteWorkflowRun,
+    onOverrideCondition,
+    onSelectSession = null,
+    catalogControls = null,
+    hasMore = false,
+    loadingMore = false,
+    onLoadMore = null,
+    readOnly = false,
+}) {
+    const viewState = useControllerSelector(controller, (state) => ({
+        focused: state.ui.focusRegion === "sessions",
+    }), shallowEqualObject);
+    const [expandedGenerators, setExpandedGenerators] = React.useState(() => new Set());
+    const [expandedWorkflowRuns, setExpandedWorkflowRuns] = React.useState(() => new Set());
+    const [selected, setSelected] = React.useState({ kind: "none", workflowGeneratorId: null });
+    const [createOpen, setCreateOpen] = React.useState(false);
+    const [cleanup, setCleanup] = React.useState({ pendingKey: null, error: "" });
+    const [timeline, setTimeline] = React.useState({
+        transitionId: null,
+        loading: false,
+        error: "",
+        events: [],
+    });
+    const timelineRequestRef = React.useRef(0);
+    const treeItemRefs = React.useRef(new Map());
+
+    const toggle = (setter, id) => {
+        setter((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const selectWorkflowRun = (generator, workflowRun) => {
+        setSelected({ kind: "workflowRun", workflowGeneratorId: generator.id, workflowRunId: workflowRun.id });
+        const currentSession = workflowRun.sessions.find((session) => session.current && session.id)
+            || workflowRun.sessions.find((session) => session.id);
+        if (!readOnly && currentSession?.id) controller.loadSession(currentSession.id).catch(() => {});
+        controller.setFocus("sessions");
+    };
+
+    const selectTransition = async (generator, workflowRun, transition) => {
+        setSelected({
+            kind: "transition",
+            workflowGeneratorId: generator.id,
+            workflowRunId: workflowRun.id,
+            transitionId: transition.id,
+        });
+        controller.setFocus("sessions");
+        if (readOnly) {
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events: [],
+            });
+            if (transition.sessionId && onSelectSession) {
+                try {
+                    await onSelectSession(transition.sessionId);
+                } catch (error) {
+                    controller.dispatch({
+                        type: "ui/status",
+                        text: `Failed to open transition session: ${error instanceof Error ? error.message : String(error)}`,
+                    });
+                }
+            }
+            return;
+        }
+        activateWorkflowRunTransitionSession(controller, transition).catch((error) => {
+            controller.dispatch({
+                type: "ui/status",
+                text: `Failed to open transition session: ${error instanceof Error ? error.message : String(error)}`,
+            });
+        });
+        const request = ++timelineRequestRef.current;
+        if (!transition.sessionId || typeof controller.transport?.getSessionEvents !== "function") {
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events: [],
+            });
+            return;
+        }
+        setTimeline({
+            transitionId: transition.id,
+            loading: true,
+            error: "",
+            events: [],
+        });
+        try {
+            const events = await controller.transport.getSessionEvents(
+                transition.sessionId,
+                undefined,
+                500,
+            );
+            if (request !== timelineRequestRef.current) return;
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events,
+            });
+        } catch (error) {
+            if (request !== timelineRequestRef.current) return;
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+                events: [],
+            });
+        }
+    };
+
+    const treeRows = React.useMemo(
+        () => buildVisibleWorkflowGeneratorTreeRows(
+            generators,
+            expandedGenerators,
+            expandedWorkflowRuns,
+        ),
+        [generators, expandedGenerators, expandedWorkflowRuns],
+    );
+    const selectedTreeKey = workflowGeneratorTreeSelectionKey(selected);
+    const activeTreeKey = treeRows.some((row) => row.key === selectedTreeKey)
+        ? selectedTreeKey
+        : null;
+    const registerTreeItem = (key, node) => {
+        if (node) treeItemRefs.current.set(key, node);
+        else treeItemRefs.current.delete(key);
+    };
+    const focusTreeItem = (key) => {
+        requestAnimationFrame(() => treeItemRefs.current.get(key)?.focus());
+    };
+    const selectTreeRow = (row) => {
+        const generator = generators.find((candidate) => candidate.id === row.workflowGeneratorId);
+        if (!generator) return;
+        if (row.kind === "generator") {
+            setSelected({ kind: "generator", workflowGeneratorId: generator.id });
+            focusTreeItem(row.key);
+            return;
+        }
+        const workflowRun = generator.workflowRuns.find((candidate) => candidate.id === row.workflowRunId);
+        if (!workflowRun) return;
+        if (row.kind === "workflowRun") {
+            selectWorkflowRun(generator, workflowRun);
+            focusTreeItem(row.key);
+            return;
+        }
+        const transition = workflowRun.transitions.find(
+            (candidate) => candidate.id === row.transitionId,
+        );
+        if (!transition) return;
+        selectTransition(generator, workflowRun, transition);
+        focusTreeItem(row.key);
+    };
+    const handleTreeKeyDown = (event) => {
+        if (
+            event.altKey
+            || event.ctrlKey
+            || event.metaKey
+            || event.shiftKey
+            || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
+        ) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const action = navigateWorkflowGeneratorTree(treeRows, activeTreeKey, event.key);
+        if (!action) return;
+        if (action.type === "select") {
+            selectTreeRow(action.row);
+            return;
+        }
+        const setter = action.row.kind === "generator"
+            ? setExpandedGenerators
+            : setExpandedWorkflowRuns;
+        const id = action.row.kind === "generator"
+            ? action.row.workflowGeneratorId
+            : action.row.workflowRunId;
+        setter((current) => {
+            const next = new Set(current);
+            if (action.type === "expand") next.add(id);
+            else next.delete(id);
+            return next;
+        });
+    };
+
+    const selectedGenerator = generators.find((generator) => generator.id === selected.workflowGeneratorId) || null;
+    const selectedWorkflowRun = selectedGenerator?.workflowRuns.find((workflowRun) => workflowRun.id === selected.workflowRunId) || null;
+    const selectedTransition = selectedWorkflowRun?.transitions.find(
+        (transition) => transition.id === selected.transitionId,
+    ) || null;
+    const selectionTitle = selectedTransition
+        ? persistedStateRunLabel(selectedTransition, { pendingArrow: true })
+        : selectedWorkflowRun?.label || selectedGenerator?.name || "Nothing selected";
+    const selectionMeta = selectedTransition
+        ? `Revision ${selectedTransition.revision} · ${selectedTransition.statusLabel}`
+        : selectedWorkflowRun
+            ? `${selectedWorkflowRun.lifecycleState} · ${selectedWorkflowRun.status} · ${selectedWorkflowRun.sessions.length} session${selectedWorkflowRun.sessions.length === 1 ? "" : "s"}`
+            : selectedGenerator
+                ? `${selectedGenerator.status} · owner-affined to ${selectedGenerator.ownerLabel} · definition v${selectedGenerator.definitionVersion} · ${selectedGenerator.definition?.sourceType || "preview source"} · ${selectedGenerator.workflowRuns.length} workflowRun${selectedGenerator.workflowRuns.length === 1 ? "" : "s"}`
+                : "";
+    const cleanupTarget = readOnly
+        ? null
+        : selected.kind === "generator" && selectedGenerator
+            ? {
+                kind: "generator",
+                key: `generator:${selectedGenerator.id}`,
+                label: selectedGenerator.name,
+                id: selectedGenerator.id,
+            }
+            : selected.kind === "workflowRun" && selectedWorkflowRun
+                ? {
+                    kind: "workflowRun",
+                    key: `workflowRun:${selectedWorkflowRun.id}`,
+                    label: selectedWorkflowRun.label,
+                    id: selectedWorkflowRun.id,
+                }
+                : null;
+    const confirmCleanup = async () => {
+        if (!cleanupTarget || cleanup.pendingKey) return;
+        const noun = cleanupTarget.kind === "generator" ? "Workflow Generator" : "Workflow Run";
+        const scope = cleanupTarget.kind === "generator"
+            ? "This logically deletes the generator and all Workflow Runs it induced, cancels active work, and removes them from normal views."
+            : "This logically deletes only this Workflow Run, cancels its active work, and removes it from normal views.";
+        if (!window.confirm(
+            `Delete ${noun} "${cleanupTarget.label}"?\n\n${scope} Historical records are retained for audit and retry.`,
+        )) return;
+
+        setCleanup({ pendingKey: cleanupTarget.key, error: "" });
+        try {
+            if (cleanupTarget.kind === "generator") {
+                await onDeleteGenerator(cleanupTarget.id);
+                setExpandedGenerators((current) => {
+                    const next = new Set(current);
+                    next.delete(cleanupTarget.id);
+                    return next;
+                });
+            } else {
+                await onDeleteWorkflowRun(cleanupTarget.id);
+                setExpandedWorkflowRuns((current) => {
+                    const next = new Set(current);
+                    next.delete(cleanupTarget.id);
+                    return next;
+                });
+            }
+            setSelected({ kind: "none", workflowGeneratorId: null });
+            setCleanup({ pendingKey: null, error: "" });
+        } catch (error) {
+            setCleanup({
+                pendingKey: null,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    };
+
+    const actions = readOnly ? null : React.createElement(IconButton, {
+        className: "ps-mini-button",
+        icon: React.createElement(PlusGlyph),
+        label: "Create Workflow Generator",
+        onClick: () => setCreateOpen(true),
+    });
+
+    return React.createElement(React.Fragment, null,
+        React.createElement(Panel, {
+            title,
+            color: "yellow",
+            focused: viewState.focused,
+            actions,
+            className: `ps-workflow-generator-pane${panelClassName ? ` ${panelClassName}` : ""}`,
+        },
+        React.createElement("div", { className: "ps-workflow-generator-preview-note" },
+            readOnly
+                ? "Fleet-wide Workflow Generators · read-only administration view"
+                : "Persisted Workflow Generators · Workflow Runs retain identity across replacement sessions"),
+        catalogControls,
+        React.createElement("div", {
+            className: "ps-action-list ps-workflow-generator-list",
+            role: "tree",
+            "aria-label": "Workflow Generators",
+            tabIndex: activeTreeKey ? -1 : 0,
+            onKeyDown: handleTreeKeyDown,
+        },
+            loading
+                ? React.createElement("div", { className: "ps-workflow-run-tree-empty" }, "Loading Workflow Generators...")
+                : loadError
+                    ? React.createElement("div", {
+                        className: "ps-workflow-generator-load-error",
+                        role: "alert",
+                    }, loadError)
+                    : generators.length === 0
+                        ? React.createElement("div", { className: "ps-workflow-run-tree-empty" }, "No registered Workflow Generators")
+                        : generators.map((generator) => {
+                const generatorExpanded = expandedGenerators.has(generator.id);
+                const generatorSelected = selected.kind === "generator" && selected.workflowGeneratorId === generator.id;
+                const generatorKey = workflowGeneratorTreeRowKey("generator", generator.id);
+                return React.createElement(React.Fragment, { key: generator.id },
+                    React.createElement("div", {
+                        className: "ps-workflow-run-tree-row is-generator",
+                        role: "treeitem",
+                        "aria-level": 1,
+                        "aria-expanded": generatorExpanded,
+                        "aria-selected": generatorSelected,
+                    },
+                        React.createElement("button", {
+                            type: "button",
+                            className: "ps-workflow-run-tree-toggle",
+                            tabIndex: -1,
+                            onClick: () => toggle(setExpandedGenerators, generator.id),
+                            "aria-label": generatorExpanded ? `Collapse ${generator.name}` : `Expand ${generator.name}`,
+                        }, generatorExpanded ? "▼" : "▶"),
+                        React.createElement("button", {
+                            type: "button",
+                            className: `ps-workflow-run-tree-content${generatorSelected ? " is-selected" : ""}`,
+                            ref: (node) => registerTreeItem(generatorKey, node),
+                            tabIndex: activeTreeKey === generatorKey ? 0 : -1,
+                            onClick: () => setSelected({ kind: "generator", workflowGeneratorId: generator.id }),
+                        },
+                        React.createElement("span", { className: `ps-workflow-generator-status is-${generator.status.toLowerCase()}` }, "●"),
+                        React.createElement("span", { className: "ps-workflow-run-tree-primary" }, generator.name),
+                        React.createElement("span", { className: "ps-workflow-run-tree-state" }, generator.status),
+                        React.createElement("span", { className: "ps-workflow-run-tree-meta" },
+                            `v${generator.definitionVersion} · ${generator.workflowRuns.length} workflowRun${generator.workflowRuns.length === 1 ? "" : "s"}`))),
+                    generatorExpanded
+                        ? generator.workflowRuns.length === 0
+                            ? React.createElement("div", { className: "ps-workflow-run-tree-empty" }, "No materialized workflowRuns")
+                            : generator.workflowRuns.map((workflowRun) => {
+                                const workflowRunExpanded = expandedWorkflowRuns.has(workflowRun.id);
+                                const workflowRunSelected = selected.kind === "workflowRun"
+                                    && selected.workflowGeneratorId === generator.id
+                                    && selected.workflowRunId === workflowRun.id;
+                                const workflowRunKey = workflowGeneratorTreeRowKey("workflowRun", generator.id, workflowRun.id);
+                                return React.createElement(React.Fragment, { key: workflowRun.id },
+                                    React.createElement("div", {
+                                        className: "ps-workflow-run-tree-row is-workflowRun",
+                                        role: "treeitem",
+                                        "aria-level": 2,
+                                        "aria-expanded": workflowRunExpanded,
+                                        "aria-selected": workflowRunSelected,
+                                    },
+                                        React.createElement("button", {
+                                            type: "button",
+                                            className: "ps-workflow-run-tree-toggle",
+                                            tabIndex: -1,
+                                            onClick: () => toggle(setExpandedWorkflowRuns, workflowRun.id),
+                                            "aria-label": workflowRunExpanded ? `Collapse ${workflowRun.label}` : `Expand ${workflowRun.label}`,
+                                        }, workflowRunExpanded ? "▼" : "▶"),
+                                        React.createElement("button", {
+                                            type: "button",
+                                            className: `ps-workflow-run-tree-content${workflowRunSelected ? " is-selected" : ""}`,
+                                            ref: (node) => registerTreeItem(workflowRunKey, node),
+                                            tabIndex: activeTreeKey === workflowRunKey ? 0 : -1,
+                                            onClick: () => selectWorkflowRun(generator, workflowRun),
+                                        },
+                                        React.createElement("span", { className: "ps-workflow-run-tree-primary" }, workflowRun.label),
+                                        React.createElement("span", {
+                                            className: `ps-workflow-run-tree-state is-${workflowRun.lifecycleState}`,
+                                        }, workflowRun.status),
+                                        React.createElement("span", { className: "ps-workflow-run-tree-meta" },
+                                            `${workflowRun.lifecycleState} · ${workflowRun.transitions.length} state run${workflowRun.transitions.length === 1 ? "" : "s"}`))),
+                                    workflowRunExpanded
+                                        ? workflowRun.transitions.length === 0
+                                            ? React.createElement("div", { className: "ps-workflow-run-tree-empty" },
+                                                "No lifecycle state runs")
+                                            : workflowRun.transitions.map((transition) => {
+                                            const transitionSelected = selected.kind === "transition"
+                                                && selected.workflowGeneratorId === generator.id
+                                                && selected.workflowRunId === workflowRun.id
+                                                && selected.transitionId === transition.id;
+                                            const transitionKey = workflowGeneratorTreeRowKey(
+                                                "transition",
+                                                generator.id,
+                                                workflowRun.id,
+                                                transition.id,
+                                            );
+                                            return React.createElement("button", {
+                                                type: "button",
+                                                key: transition.id,
+                                                className: `ps-workflow-run-transition-row${transitionSelected ? " is-selected" : ""}`,
+                                                ref: (node) => registerTreeItem(transitionKey, node),
+                                                role: "treeitem",
+                                                "aria-level": 3,
+                                                "aria-selected": transitionSelected,
+                                                tabIndex: activeTreeKey === transitionKey ? 0 : -1,
+                                                onClick: () => selectTransition(generator, workflowRun, transition),
+                                                title: "Inspect this state run's durable timeline",
+                                            },
+                                            React.createElement("span", { className: "ps-workflow-run-session-branch" }, "└"),
+                                            React.createElement("span", { className: "ps-workflow-run-tree-primary" },
+                                                persistedStateRunLabel(transition, { pendingArrow: true }),
+                                                isCurrentStateRun(transition)
+                                                    ? React.createElement("span", { className: "ps-state-run-current-badge" }, "current")
+                                                    : null),
+                                            React.createElement("span", {
+                                                className: `ps-workflow-run-transition-status is-${transition.status}`,
+                                            }, transition.statusLabel),
+                                            React.createElement("span", { className: "ps-workflow-run-tree-meta" },
+                                                `revision ${transition.revision}`
+                                                + (transition.sessionId ? ` · session ${transition.sessionId.slice(0, 8)}` : "")));
+                                        })
+                                        : null);
+                            })
+                        : null);
+            })),
+        hasMore
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button",
+                disabled: loadingMore,
+                onClick: onLoadMore,
+            }, loadingMore ? "Loading..." : "Load more Workflow Generators")
+            : null,
+        showDetailBox
+            ? React.createElement("div", { className: "ps-workflow-generator-detail" },
+                React.createElement("strong", null, selectionTitle),
+                React.createElement("span", null, selectionMeta),
+                selectedGenerator && !selectedWorkflowRun && !selectedTransition
+                    ? renderWorkflowGeneratorDetailFields(selectedGenerator)
+                    : null,
+                selectedTransition
+                    ? React.createElement(WorkflowRunTransitionTimeline, {
+                        transition: selectedTransition,
+                        timeline: timeline.transitionId === selectedTransition.id
+                            ? timeline
+                            : { transitionId: selectedTransition.id, loading: true, error: "", events: [] },
+                        onOverrideCondition: readOnly ? null : onOverrideCondition,
+                    })
+                    : selectedWorkflowRun
+                    ? React.createElement("span", null,
+                        "Expand the Workflow Run and select a state run to inspect its durable transition timeline.")
+                    : null,
+                cleanupTarget
+                    ? React.createElement("div", { className: "ps-workflow-generator-detail-actions" },
+                        React.createElement("button", {
+                            type: "button",
+                            className: "ps-mini-button is-danger",
+                            onClick: confirmCleanup,
+                            disabled: Boolean(cleanup.pendingKey),
+                        }, cleanup.pendingKey === cleanupTarget.key
+                            ? "Deleting..."
+                            : `Delete ${cleanupTarget.kind === "generator" ? "Workflow Generator" : "Workflow Run"}`))
+                    : null,
+                cleanup.error
+                    ? React.createElement("div", {
+                        className: "ps-workflow-generator-cleanup-error",
+                        role: "alert",
+                    }, cleanup.error)
+                    : null)
+            : null),
+        createOpen && !readOnly
+            ? React.createElement(WorkflowGeneratorCreateModal, {
+                onClose: () => setCreateOpen(false),
+                onCreate: async (input) => {
+                    const generator = await onCreateGenerator(input);
+                    setExpandedGenerators((current) => new Set(current).add(generator.id));
+                    setSelected({ kind: "generator", workflowGeneratorId: generator.id });
+                    setCreateOpen(false);
+                },
+            })
+            : null);
+}
+
+function WorkflowRunPane({
+    controller,
+    title,
+    panelClassName = "",
+    showDetailBox = true,
+    workflowRuns,
+    loading,
+    loadError,
+    onLoadDetail,
+    onDeleteWorkflowRun,
+    onOverrideCondition,
+    onSelectSession = null,
+    catalogControls = null,
+    hasMore = false,
+    loadingMore = false,
+    onLoadMore = null,
+    readOnly = false,
+}) {
+    const viewState = useControllerSelector(controller, (state) => ({
+        focused: state.ui.focusRegion === "sessions",
+    }), shallowEqualObject);
+    const [selectedId, setSelectedId] = React.useState(null);
+    const [detail, setDetail] = React.useState({
+        workflowRunId: null,
+        loading: false,
+        error: "",
+        value: null,
+    });
+    const [selectedTransitionId, setSelectedTransitionId] = React.useState(null);
+    const [timeline, setTimeline] = React.useState({
+        transitionId: null,
+        loading: false,
+        error: "",
+        events: [],
+    });
+    const [cleanup, setCleanup] = React.useState({ pending: false, error: "" });
+    const [fullscreen, setFullscreen] = React.useState(false);
+    const [columnFilters, setColumnFilters] = React.useState({});
+    const [sort, setSort] = React.useState({ column: null, direction: "asc" });
+    const detailRequestRef = React.useRef(0);
+    const timelineRequestRef = React.useRef(0);
+
+    React.useEffect(() => {
+        if (!fullscreen) return undefined;
+        const closeOnEscape = (event) => {
+            if (event.key === "Escape") setFullscreen(false);
+        };
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+    }, [fullscreen]);
+
+    React.useEffect(() => {
+        if (selectedId && !workflowRuns.some((workflowRun) => workflowRun.id === selectedId)) {
+            setSelectedId(null);
+            setDetail({ workflowRunId: null, loading: false, error: "", value: null });
+            setSelectedTransitionId(null);
+        }
+    }, [selectedId, workflowRuns]);
+
+    const selectWorkflowRun = React.useCallback(async (workflowRun) => {
+        const request = ++detailRequestRef.current;
+        setSelectedId(workflowRun.id);
+        setSelectedTransitionId(null);
+        setTimeline({ transitionId: null, loading: false, error: "", events: [] });
+        setCleanup({ pending: false, error: "" });
+        setDetail({
+            workflowRunId: workflowRun.id,
+            loading: true,
+            error: "",
+            value: null,
+        });
+        controller.setFocus("sessions");
+        try {
+            const loaded = await onLoadDetail(workflowRun);
+            if (request !== detailRequestRef.current) return;
+            setDetail({
+                workflowRunId: workflowRun.id,
+                loading: false,
+                error: "",
+                value: loaded,
+            });
+            const currentSession = loaded.sessions.find((session) => session.current && session.id)
+                || loaded.sessions.find((session) => session.id);
+            if (!readOnly && currentSession?.id) controller.loadSession(currentSession.id).catch(() => {});
+        } catch (error) {
+            if (request !== detailRequestRef.current) return;
+            setDetail({
+                workflowRunId: workflowRun.id,
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+                value: null,
+            });
+        }
+    }, [controller, onLoadDetail]);
+
+    const selectTransition = React.useCallback(async (transition) => {
+        setSelectedTransitionId(transition.id);
+        if (readOnly) {
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events: [],
+            });
+            if (transition.sessionId && onSelectSession) {
+                try {
+                    await onSelectSession(transition.sessionId);
+                } catch (error) {
+                    controller.dispatch({
+                        type: "ui/status",
+                        text: `Failed to open transition session: ${error instanceof Error ? error.message : String(error)}`,
+                    });
+                }
+            }
+            return;
+        }
+        activateWorkflowRunTransitionSession(controller, transition).catch((error) => {
+            controller.dispatch({
+                type: "ui/status",
+                text: `Failed to open transition session: ${error instanceof Error ? error.message : String(error)}`,
+            });
+        });
+        const request = ++timelineRequestRef.current;
+        if (!transition.sessionId || typeof controller.transport?.getSessionEvents !== "function") {
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events: [],
+            });
+            return;
+        }
+        setTimeline({
+            transitionId: transition.id,
+            loading: true,
+            error: "",
+            events: [],
+        });
+        try {
+            const events = await controller.transport.getSessionEvents(
+                transition.sessionId,
+                undefined,
+                500,
+            );
+            if (request !== timelineRequestRef.current) return;
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events,
+            });
+        } catch (error) {
+            if (request !== timelineRequestRef.current) return;
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+                events: [],
+            });
+        }
+    }, [controller, onSelectSession, readOnly]);
+
+    const visibleWorkflowRuns = React.useMemo(() => applyWorkflowRunCatalogView(workflowRuns, {
+        filters: columnFilters,
+        sortColumn: sort.column,
+        sortDirection: sort.direction,
+    }), [columnFilters, sort, workflowRuns]);
+    const hasActiveTableView = Boolean(sort.column)
+        || Object.values(columnFilters).some((value) => String(value || "").trim());
+    const toggleSort = (column) => {
+        setSort((current) => current.column === column
+            ? { column, direction: current.direction === "asc" ? "desc" : "asc" }
+            : { column, direction: "asc" });
+    };
+    const selectedSummary = workflowRuns.find((workflowRun) => workflowRun.id === selectedId) || null;
+    const selectedDetail = detail.workflowRunId === selectedId ? detail.value : null;
+    const selectedTransition = selectedDetail?.transitions.find(
+        (transition) => transition.id === selectedTransitionId,
+    ) || null;
+    const deleteSelected = async () => {
+        if (!selectedSummary || cleanup.pending) return;
+        if (!window.confirm(
+            `Delete Workflow Run "${selectedSummary.key}"?\n\n`
+            + "This logically deletes the Workflow Run, cancels its active work, and removes it from normal views. "
+            + "Historical records are retained for audit and retry.",
+        )) return;
+        setCleanup({ pending: true, error: "" });
+        try {
+            await onDeleteWorkflowRun(selectedSummary.id);
+            setSelectedId(null);
+            setDetail({ workflowRunId: null, loading: false, error: "", value: null });
+            setSelectedTransitionId(null);
+            setCleanup({ pending: false, error: "" });
+        } catch (error) {
+            setCleanup({
+                pending: false,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    };
+
+    const panel = React.createElement(Panel, {
+        title,
+        color: "yellow",
+        focused: viewState.focused,
+        className: `ps-workflow-generator-pane ps-workflow-run-catalog-pane${panelClassName ? ` ${panelClassName}` : ""}`,
+    },
+    React.createElement("div", { className: "ps-workflow-run-catalog-toolbar" },
+        React.createElement("div", { className: "ps-workflow-generator-preview-note" },
+            `Showing ${visibleWorkflowRuns.length} of ${workflowRuns.length} Workflow Runs`
+            + " · details load only after selection"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            onClick: () => {
+                setColumnFilters({});
+                setSort({ column: null, direction: "asc" });
+            },
+            disabled: !hasActiveTableView,
+        }, "Reset view"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button ps-workflow-run-fullscreen-button",
+            onClick: () => setFullscreen((current) => !current),
+            "aria-label": fullscreen ? "Exit full-screen Workflow Runs" : "Open Workflow Runs full screen",
+            title: fullscreen ? "Exit full screen" : "Full screen",
+        }, fullscreen ? "Exit full screen" : "Full screen")),
+    catalogControls,
+    React.createElement("div", { className: "ps-workflow-run-table-scroll" },
+    React.createElement("table", {
+        className: "ps-workflow-run-table",
+        role: "grid",
+        "aria-label": "Workflow Runs",
+    },
+        React.createElement("thead", null,
+            React.createElement("tr", { className: "ps-workflow-run-table-heading" },
+                WORKFLOW_RUN_TABLE_COLUMNS.map((column) => React.createElement("th", {
+                    key: column.key,
+                    scope: "col",
+                    "aria-sort": sort.column === column.key
+                        ? (sort.direction === "asc" ? "ascending" : "descending")
+                        : "none",
+                },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-workflow-run-table-sort",
+                    onClick: () => toggleSort(column.key),
+                    "aria-label": `Sort by ${column.label} ${
+                        sort.column === column.key && sort.direction === "asc"
+                            ? "descending"
+                            : "ascending"
+                    }`,
+                },
+                React.createElement("span", null, column.label),
+                React.createElement("span", {
+                    className: "ps-workflow-run-table-sort-indicator",
+                    "aria-hidden": "true",
+                }, sort.column === column.key
+                    ? (sort.direction === "asc" ? "▲" : "▼")
+                    : "↕"))))),
+            React.createElement("tr", { className: "ps-workflow-run-table-filters" },
+                WORKFLOW_RUN_TABLE_COLUMNS.map((column) => React.createElement("th", {
+                    key: column.key,
+                    scope: "col",
+                },
+                React.createElement("input", {
+                    type: "search",
+                    value: columnFilters[column.key] || "",
+                    placeholder: column.filterPlaceholder,
+                    "aria-label": column.filterPlaceholder,
+                    onChange: (event) => {
+                        const value = event.target.value;
+                        setColumnFilters((current) => ({ ...current, [column.key]: value }));
+                    },
+                }))))),
+        React.createElement("tbody", null,
+        loading
+            ? React.createElement("tr", null,
+                React.createElement("td", { colSpan: 7, className: "ps-workflow-run-table-empty" },
+                    "Loading Workflow Runs..."))
+            : loadError
+                ? React.createElement("tr", null,
+                    React.createElement("td", {
+                        colSpan: 7,
+                        className: "ps-workflow-generator-load-error ps-workflow-run-table-empty",
+                        role: "alert",
+                    }, loadError))
+                : workflowRuns.length === 0
+                    ? React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 7, className: "ps-workflow-run-table-empty" },
+                            "No Workflow Runs"))
+                    : visibleWorkflowRuns.length === 0
+                        ? React.createElement("tr", null,
+                            React.createElement("td", { colSpan: 7, className: "ps-workflow-run-table-empty" },
+                                "No Workflow Runs match the current filters"))
+                    : visibleWorkflowRuns.map((workflowRun) => React.createElement("tr", {
+                        key: workflowRun.id,
+                        className: selectedId === workflowRun.id ? "is-selected" : "",
+                        role: "row",
+                        tabIndex: 0,
+                        "aria-selected": selectedId === workflowRun.id,
+                        onClick: () => selectWorkflowRun(workflowRun),
+                        onKeyDown: (event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            selectWorkflowRun(workflowRun);
+                        },
+                    },
+                    React.createElement("td", null,
+                        React.createElement("span", {
+                            className: `ps-workflow-run-table-status is-${persistedWorkflowRunStatus(workflowRun.raw).toLowerCase()}`,
+                        }, persistedWorkflowRunStatus(workflowRun.raw))),
+                    React.createElement("td", { className: "ps-workflow-run-table-primary" },
+                        workflowRun.workflowType),
+                    React.createElement("td", { className: "ps-workflow-run-table-key" }, workflowRun.key),
+                    React.createElement("td", null, workflowRun.currentState),
+                    React.createElement("td", null, workflowRun.origin),
+                    React.createElement("td", null, workflowRun.ownerLabel),
+                    React.createElement("td", { className: "ps-workflow-run-table-time" },
+                        formatWorkflowRunTimelineTimestamp(workflowRun.updatedAt) || "Unavailable")))))),
+    hasMore
+        ? React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            disabled: loadingMore,
+            onClick: onLoadMore,
+        }, loadingMore ? "Loading..." : "Load more Workflow Runs")
+        : null,
+    showDetailBox && selectedSummary
+        ? React.createElement("div", { className: "ps-workflow-generator-detail" },
+            React.createElement("strong", null,
+                selectedDetail?.definition?.name
+                    ? `${selectedDetail.definition.name} · ${selectedSummary.key}`
+                    : `${selectedSummary.workflowType} · ${selectedSummary.key}`),
+            React.createElement("span", null,
+                `${selectedSummary.lifecycleState} · ${selectedSummary.currentState}`
+                + ` · ${selectedSummary.origin} · ${selectedSummary.ownerLabel}`),
+            React.createElement("dl", { className: "ps-workflow-generator-detail-fields" },
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Definition"),
+                    React.createElement("dd", null,
+                        selectedDetail?.definition
+                            ? `${selectedDetail.definition.name || selectedSummary.workflowType}`
+                                + ` · v${selectedDetail.definition.version ?? "?"}`
+                            : selectedSummary.workflowDefinitionId || "Unavailable")),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Repository"),
+                    React.createElement("dd", null, selectedSummary.repository || "Not specified")),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Compute"),
+                    React.createElement("dd", null, selectedSummary.compute || "Not specified")),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Created"),
+                    React.createElement("dd", null,
+                        formatWorkflowRunTimelineTimestamp(selectedSummary.createdAt) || "Unavailable")),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Updated"),
+                    React.createElement("dd", null,
+                        formatWorkflowRunTimelineTimestamp(selectedSummary.updatedAt) || "Unavailable"))),
+            detail.loading
+                ? React.createElement("div", { className: "ps-workflow-run-tree-empty" },
+                    "Loading Workflow Run details...")
+                : detail.error
+                    ? React.createElement("div", {
+                        className: "ps-workflow-generator-load-error",
+                        role: "alert",
+                    }, detail.error)
+                    : selectedDetail
+                        ? React.createElement(React.Fragment, null,
+                            React.createElement("div", { className: "ps-workflow-run-catalog-sessions" },
+                                selectedDetail.sessions.map((session) => React.createElement("button", {
+                                    key: session.id,
+                                    type: "button",
+                                    className: "ps-workflow-run-session-row",
+                                    disabled: readOnly,
+                                    title: readOnly ? "Fleet view is read-only" : undefined,
+                                    onClick: () => {
+                                        if (!readOnly) controller.loadSession(session.id).catch(() => {});
+                                    },
+                                },
+                                React.createElement("span", { className: "ps-workflow-run-session-branch" }, "↳"),
+                                React.createElement("span", null, session.title),
+                                React.createElement("span", null, session.status)))),
+                            React.createElement("div", { className: "ps-workflow-run-catalog-transitions" },
+                                selectedDetail.transitions.map((transition) => React.createElement("button", {
+                                    key: transition.id,
+                                    type: "button",
+                                    className: `ps-workflow-run-transition-row${selectedTransitionId === transition.id ? " is-selected" : ""}`,
+                                    onClick: () => selectTransition(transition),
+                                },
+                                React.createElement("span", { className: "ps-workflow-run-session-branch" }, "└"),
+                                React.createElement("span", { className: "ps-workflow-run-tree-primary" },
+                                    persistedStateRunLabel(transition, { pendingArrow: true })),
+                                React.createElement("span", {
+                                    className: `ps-workflow-run-transition-status is-${transition.status}`,
+                                }, transition.statusLabel),
+                                React.createElement("span", { className: "ps-workflow-run-tree-meta" },
+                                    `revision ${transition.revision}`)))),
+                            selectedTransition
+                                ? React.createElement(WorkflowRunTransitionTimeline, {
+                                    transition: selectedTransition,
+                                    timeline: timeline.transitionId === selectedTransition.id
+                                        ? timeline
+                                        : {
+                                            transitionId: selectedTransition.id,
+                                            loading: true,
+                                            error: "",
+                                            events: [],
+                                        },
+                                    onOverrideCondition: readOnly ? null : onOverrideCondition,
+                                })
+                                : React.createElement("span", null,
+                                    "Select a lifecycle state run to inspect its durable transition timeline."))
+                        : null,
+            !readOnly ? React.createElement("div", { className: "ps-workflow-generator-detail-actions" },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button is-danger",
+                    onClick: deleteSelected,
+                    disabled: cleanup.pending,
+                }, cleanup.pending ? "Deleting..." : "Delete Workflow Run")) : null,
+            cleanup.error
+                ? React.createElement("div", {
+                    className: "ps-workflow-generator-cleanup-error",
+                    role: "alert",
+                }, cleanup.error)
+                : null)
+        : null);
+    if (!fullscreen || typeof document === "undefined") return panel;
+    return createPortal(
+        React.createElement("div", {
+            className: "ps-workflow-run-fullscreen",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-label": "Full-screen Workflow Runs",
+        }, panel),
+        document.body,
+    );
+}
+
+function fleetSessionOwnerLabel(session) {
+    const owner = session?.owner || {};
+    return owner.displayName || owner.email || owner.subject || "Unknown";
+}
+
+function fleetSessionRepository(session) {
+    const repo = session?.repo || session?.repository || session?.routing?.repo || session?.creationConfig?.repo;
+    if (!repo) return "Not specified";
+    if (typeof repo === "string") return repo;
+    return repo.name || repo.repository || repo.url || "Configured";
+}
+
+function fleetSessionStatus(session) {
+    return session?.status || session?.orchestrationStatus || session?.customStatus?.status || "unknown";
+}
+
+function FleetSessionPane({ controller, title, panelClassName = "", onSelectSession = null }) {
+    const [sessions, setSessions] = React.useState([]);
+    const [loading, setLoading] = React.useState(true);
+    const [loadingMore, setLoadingMore] = React.useState(false);
+    const [loadError, setLoadError] = React.useState("");
+    const [page, setPage] = React.useState({ hasMore: false, nextCursor: null });
+    const [query, setQuery] = React.useState({ ...EMPTY_CATALOG_QUERY });
+    const debouncedQuery = useDebouncedCatalogQuery(query);
+    const [selectedId, setSelectedId] = React.useState(null);
+    const [detail, setDetail] = React.useState({ sessionId: null, loading: false, error: "", value: null });
+    const loadSequenceRef = React.useRef(0);
+    const detailSequenceRef = React.useRef(0);
+
+    const loadSessions = React.useCallback(async ({ append = false, cursor = null } = {}) => {
+        const sequence = ++loadSequenceRef.current;
+        if (append) setLoadingMore(true);
+        else setLoading(true);
+        setLoadError("");
+        try {
+            const result = await controller.transport.listSessionsPage({
+                scope: "fleet",
+                limit: 50,
+                cursor,
+                ...catalogQueryRequest(debouncedQuery),
+            });
+            if (sequence !== loadSequenceRef.current) return;
+            setSessions((current) => append
+                ? [...current, ...result.sessions.filter((row) => !current.some(
+                    (existing) => (existing.sessionId || existing.id) === (row.sessionId || row.id),
+                ))]
+                : result.sessions);
+            setPage({ hasMore: Boolean(result.hasMore), nextCursor: result.nextCursor || null });
+        } catch (error) {
+            if (sequence !== loadSequenceRef.current) return;
+            setLoadError(error instanceof Error ? error.message : String(error));
+        } finally {
+            if (sequence === loadSequenceRef.current) {
+                setLoading(false);
+                setLoadingMore(false);
+            }
+        }
+    }, [controller, debouncedQuery]);
+
+    React.useEffect(() => {
+        loadSessions().catch(() => {});
+        return () => {
+            loadSequenceRef.current += 1;
+        };
+    }, [loadSessions]);
+
+    const selectSession = React.useCallback(async (session) => {
+        const sessionId = session.sessionId || session.id;
+        const sequence = ++detailSequenceRef.current;
+        setSelectedId(sessionId);
+        setDetail({ sessionId, loading: true, error: "", value: null });
+        try {
+            if (onSelectSession) await onSelectSession(sessionId);
+            let value = controller.getState().sessions.byId[sessionId] || null;
+            if (!value) value = await controller.transport.getSession(sessionId, { scope: "fleet" });
+            if (sequence !== detailSequenceRef.current) return;
+            setDetail({ sessionId, loading: false, error: "", value });
+        } catch (error) {
+            if (sequence !== detailSequenceRef.current) return;
+            setDetail({
+                sessionId,
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+                value: null,
+            });
+        }
+    }, [controller, onSelectSession]);
+
+    const selectedSummary = sessions.find((session) => (session.sessionId || session.id) === selectedId) || null;
+    const selected = detail.sessionId === selectedId && detail.value ? detail.value : selectedSummary;
+
+    return React.createElement(Panel, {
+        title,
+        color: "yellow",
+        className: `ps-fleet-session-pane${panelClassName ? ` ${panelClassName}` : ""}`,
+    },
+    React.createElement("div", { className: "ps-workflow-generator-preview-note" },
+        `Fleet-wide Sessions · read-only administration view · ${sessions.length} loaded`),
+    React.createElement(CatalogQueryControls, {
+        query,
+        onChange: setQuery,
+        includeRepository: false,
+        includePlacement: false,
+    }),
+    React.createElement("div", { className: "ps-fleet-session-table-scroll" },
+        React.createElement("table", { className: "ps-fleet-session-table", role: "grid", "aria-label": "Fleet Sessions" },
+            React.createElement("thead", null,
+                React.createElement("tr", null,
+                    React.createElement("th", { scope: "col" }, "Status"),
+                    React.createElement("th", { scope: "col" }, "Session"),
+                    React.createElement("th", { scope: "col" }, "Owner"),
+                    React.createElement("th", { scope: "col" }, "Repository"),
+                    React.createElement("th", { scope: "col" }, "Updated"))),
+            React.createElement("tbody", null,
+                loading
+                    ? React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 5, className: "ps-workflow-run-table-empty" }, "Loading fleet Sessions..."))
+                    : loadError
+                        ? React.createElement("tr", null,
+                            React.createElement("td", {
+                                colSpan: 5,
+                                className: "ps-workflow-generator-load-error ps-workflow-run-table-empty",
+                                role: "alert",
+                            }, loadError))
+                        : sessions.length === 0
+                            ? React.createElement("tr", null,
+                                React.createElement("td", { colSpan: 5, className: "ps-workflow-run-table-empty" }, "No Sessions"))
+                            : sessions.map((session) => {
+                                const sessionId = session.sessionId || session.id;
+                                return React.createElement("tr", {
+                                    key: sessionId,
+                                    className: selectedId === sessionId ? "is-selected" : "",
+                                    tabIndex: 0,
+                                    "aria-selected": selectedId === sessionId,
+                                    onClick: () => selectSession(session),
+                                    onKeyDown: (event) => {
+                                        if (event.key !== "Enter" && event.key !== " ") return;
+                                        event.preventDefault();
+                                        selectSession(session);
+                                    },
+                                },
+                                React.createElement("td", null, fleetSessionStatus(session)),
+                                React.createElement("td", { className: "ps-workflow-run-table-primary" },
+                                    session.title || sessionId),
+                                React.createElement("td", null, fleetSessionOwnerLabel(session)),
+                                React.createElement("td", null, fleetSessionRepository(session)),
+                                React.createElement("td", { className: "ps-workflow-run-table-time" },
+                                    formatWorkflowRunTimelineTimestamp(session.updatedAt || session.createdAt) || "Unavailable"));
+                            })))),
+    page.hasMore
+        ? React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            disabled: loadingMore,
+            onClick: () => loadSessions({ append: true, cursor: page.nextCursor }),
+        }, loadingMore ? "Loading..." : "Load more Sessions")
+        : null,
+    selectedSummary
+        ? React.createElement("div", { className: "ps-workflow-generator-detail" },
+            React.createElement("strong", null, selected?.title || selectedId),
+            React.createElement("span", null,
+                `${fleetSessionStatus(selected)} · ${fleetSessionOwnerLabel(selected)} · read-only`),
+            React.createElement("dl", { className: "ps-workflow-generator-detail-fields" },
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Session ID"),
+                    React.createElement("dd", null, selectedId)),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Repository"),
+                    React.createElement("dd", null, fleetSessionRepository(selected))),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Compute"),
+                    React.createElement("dd", null, selected?.compute || selected?.placement || "Not specified")),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Created"),
+                    React.createElement("dd", null,
+                        formatWorkflowRunTimelineTimestamp(selected?.createdAt) || "Unavailable")),
+                React.createElement("div", { className: "ps-workflow-generator-detail-field" },
+                    React.createElement("dt", null, "Updated"),
+                    React.createElement("dd", null,
+                        formatWorkflowRunTimelineTimestamp(selected?.updatedAt) || "Unavailable"))),
+            detail.loading
+                ? React.createElement("div", { className: "ps-workflow-run-tree-empty" }, "Loading Session details...")
+                : detail.error
+                    ? React.createElement("div", { className: "ps-workflow-generator-load-error", role: "alert" }, detail.error)
+                    : null)
+        : null);
+}
+
+function WorkIndexPane({
+    controller,
+    activeTab,
+    onTabChange,
+    catalogScope = "visible",
+    onCatalogScopeChange = null,
+    onFleetSessionSelect = null,
+    panelClassName = "",
+    structuredRows = false,
+    showDetailBox = null,
+}) {
+    const isAdmin = useControllerSelector(controller, (state) => {
+        const role = state.auth?.authorization?.role;
+        return role === "admin" || role === "anonymous";
+    });
+    const [workflowRuns, setWorkflowRuns] = React.useState([]);
+    const [workflowRunsLoading, setWorkflowRunsLoading] = React.useState(false);
+    const [workflowRunsLoadingMore, setWorkflowRunsLoadingMore] = React.useState(false);
+    const [workflowRunsError, setWorkflowRunsError] = React.useState("");
+    const [workflowRunPage, setWorkflowRunPage] = React.useState({ hasMore: false, nextCursor: null });
+    const [workflowRunQuery, setWorkflowRunQuery] = React.useState({ ...EMPTY_CATALOG_QUERY });
+    const debouncedWorkflowRunQuery = useDebouncedCatalogQuery(workflowRunQuery);
+    const [workflowGenerators, setWorkflowGenerators] = React.useState([]);
+    const [workflowGeneratorsLoading, setWorkflowGeneratorsLoading] = React.useState(false);
+    const [workflowGeneratorsLoadingMore, setWorkflowGeneratorsLoadingMore] = React.useState(false);
+    const [workflowGeneratorsError, setWorkflowGeneratorsError] = React.useState("");
+    const [workflowGeneratorPage, setWorkflowGeneratorPage] = React.useState({ hasMore: false, nextCursor: null });
+    const [workflowGeneratorQuery, setWorkflowGeneratorQuery] = React.useState({ ...EMPTY_CATALOG_QUERY });
+    const debouncedWorkflowGeneratorQuery = useDebouncedCatalogQuery(workflowGeneratorQuery);
+    const workflowRunLoadSequenceRef = React.useRef(0);
+    const loadSequenceRef = React.useRef(0);
+    React.useEffect(() => {
+        if (!isAdmin && catalogScope !== "visible") onCatalogScopeChange?.("visible");
+    }, [catalogScope, isAdmin, onCatalogScopeChange]);
+    const refreshWorkflowRuns = React.useCallback(async ({
+        background = false,
+        append = false,
+        cursor = null,
+    } = {}) => {
+        const transport = controller.transport;
+        if (typeof transport?.listWorkflowRunsPage !== "function"
+            && typeof transport?.listWorkflowRuns !== "function") {
+            setWorkflowRunsError("This portal server does not expose Workflow Run APIs.");
+            return [];
+        }
+        const sequence = ++workflowRunLoadSequenceRef.current;
+        if (append) setWorkflowRunsLoadingMore(true);
+        else if (!background) setWorkflowRunsLoading(true);
+        setWorkflowRunsError("");
+        try {
+            const result = typeof transport.listWorkflowRunsPage === "function"
+                ? await transport.listWorkflowRunsPage({
+                    scope: catalogScope,
+                    limit: 50,
+                    cursor,
+                    ...catalogQueryRequest(debouncedWorkflowRunQuery),
+                })
+                : {
+                    workflowRuns: await transport.listWorkflowRuns({ scope: catalogScope }),
+                    hasMore: false,
+                    nextCursor: null,
+                };
+            const rows = toWorkflowRunCatalog(result.workflowRuns);
+            if (sequence === workflowRunLoadSequenceRef.current) {
+                setWorkflowRuns((current) => {
+                    if (!append && !background) return rows;
+                    const incomingIds = new Set(rows.map((row) => row.id));
+                    return append
+                        ? [...current, ...rows.filter((row) => !current.some((existing) => existing.id === row.id))]
+                        : [...rows, ...current.filter((row) => !incomingIds.has(row.id))];
+                });
+                if (!background) {
+                    setWorkflowRunPage({
+                        hasMore: Boolean(result.hasMore),
+                        nextCursor: result.nextCursor || null,
+                    });
+                }
+            }
+            return rows;
+        } catch (error) {
+            if (sequence === workflowRunLoadSequenceRef.current) {
+                setWorkflowRunsError(error instanceof Error ? error.message : String(error));
+            }
+            throw error;
+        } finally {
+            if (!background && sequence === workflowRunLoadSequenceRef.current) {
+                setWorkflowRunsLoading(false);
+            }
+            if (append && sequence === workflowRunLoadSequenceRef.current) {
+                setWorkflowRunsLoadingMore(false);
+            }
+        }
+    }, [catalogScope, controller, debouncedWorkflowRunQuery]);
+    const refreshWorkflowGenerators = React.useCallback(async ({
+        background = false,
+        append = false,
+        cursor = null,
+    } = {}) => {
+        const transport = controller.transport;
+        if (typeof transport?.listWorkflowGenerators !== "function") {
+            setWorkflowGeneratorsError("This portal server does not expose Workflow Generator APIs.");
+            return [];
+        }
+        const sequence = ++loadSequenceRef.current;
+        if (append) setWorkflowGeneratorsLoadingMore(true);
+        else if (!background) setWorkflowGeneratorsLoading(true);
+        setWorkflowGeneratorsError("");
+        try {
+            const result = await loadPersistedWorkflowGenerators(transport, catalogScope, {
+                limit: 25,
+                cursor,
+                ...catalogQueryRequest(debouncedWorkflowGeneratorQuery),
+            });
+            if (sequence === loadSequenceRef.current) {
+                setWorkflowGenerators((current) => {
+                    if (!append && !background) return result.generators;
+                    const incomingIds = new Set(result.generators.map((generator) => generator.id));
+                    return append
+                        ? [...current, ...result.generators.filter(
+                            (generator) => !current.some((existing) => existing.id === generator.id),
+                        )]
+                        : [...result.generators, ...current.filter((generator) => !incomingIds.has(generator.id))];
+                });
+                if (!background) {
+                    setWorkflowGeneratorPage({
+                        hasMore: result.hasMore,
+                        nextCursor: result.nextCursor,
+                    });
+                }
+            }
+            return result.generators;
+        } catch (error) {
+            if (sequence === loadSequenceRef.current) {
+                setWorkflowGeneratorsError(error instanceof Error ? error.message : String(error));
+            }
+            throw error;
+        } finally {
+            if (!background && sequence === loadSequenceRef.current) setWorkflowGeneratorsLoading(false);
+            if (append && sequence === loadSequenceRef.current) setWorkflowGeneratorsLoadingMore(false);
+        }
+    }, [catalogScope, controller, debouncedWorkflowGeneratorQuery]);
+    React.useEffect(() => {
+        if (activeTab !== "workflowRuns") return undefined;
+        refreshWorkflowRuns().catch(() => {});
+        let polling = false;
+        const timer = window.setInterval(async () => {
+            if (polling || document.visibilityState === "hidden") return;
+            polling = true;
+            try {
+                await refreshWorkflowRuns({ background: true });
+            } catch {
+                // The pane surfaces the load error; keep the polling loop alive.
+            } finally {
+                polling = false;
+            }
+        }, 10_000);
+        return () => {
+            window.clearInterval(timer);
+            workflowRunLoadSequenceRef.current += 1;
+        };
+    }, [activeTab, refreshWorkflowRuns]);
+    React.useEffect(() => {
+        if (activeTab !== "workflowGenerators") return undefined;
+        refreshWorkflowGenerators().catch(() => {});
+        let polling = false;
+        const timer = window.setInterval(async () => {
+            if (polling || document.visibilityState === "hidden") return;
+            polling = true;
+            try {
+                await refreshWorkflowGenerators({ background: true });
+            } catch {
+                // The pane surfaces the load error; keep the polling loop alive.
+            } finally {
+                polling = false;
+            }
+        }, 10_000);
+        return () => {
+            window.clearInterval(timer);
+            loadSequenceRef.current += 1;
+        };
+    }, [activeTab, refreshWorkflowGenerators]);
+    const createWorkflowGenerator = React.useCallback(async (input) => {
+        const published = await controller.transport.createWorkflowDefinition({
+            workflowType: input.definition.workflowType || input.name,
+            name: input.name,
+            definition: {
+                workflowDefinition: input.definition.workflowDefinition,
+                affinities: input.definition.affinities,
+                validationGates: input.definition.validationGates,
+                guardrails: input.definition.guardrails,
+            },
+        });
+        const result = await controller.transport.createWorkflowGenerator({
+            name: input.name,
+            cadenceSeconds: input.cadenceSeconds,
+            workflowDefinitionId: published.workflowDefinition.workflowDefinitionId,
+            source: {
+                type: input.definition.sourceType,
+                config: input.definition.sourceConfig,
+            },
+        });
+        const generators = await refreshWorkflowGenerators();
+        const created = generators.find((generator) => generator.id === result.generator.workflowGeneratorId);
+        if (!created) throw new Error("Workflow Generator was created but could not be reloaded.");
+        return created;
+    }, [controller, refreshWorkflowGenerators]);
+    const deleteWorkflowGenerator = React.useCallback(async (workflowGeneratorId) => {
+        const result = await controller.transport.deleteWorkflowGenerator(workflowGeneratorId);
+        await refreshWorkflowGenerators();
+        if (activeTab === "workflowRuns") await refreshWorkflowRuns();
+        return result;
+    }, [activeTab, controller, refreshWorkflowGenerators, refreshWorkflowRuns]);
+    const deleteWorkflowRun = React.useCallback(async (workflowRunId) => {
+        const result = await controller.transport.deleteWorkflowRun(workflowRunId);
+        await Promise.all([
+            refreshWorkflowRuns(),
+            activeTab === "workflowGenerators" ? refreshWorkflowGenerators() : Promise.resolve(),
+        ]);
+        return result;
+    }, [activeTab, controller, refreshWorkflowGenerators, refreshWorkflowRuns]);
+    const overrideCondition = React.useCallback(async (workflowRunId, waitId, conditionKey, overridden) => {
+        await controller.transport.setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden);
+        if (activeTab === "workflowGenerators") await refreshWorkflowGenerators();
+    }, [activeTab, controller, refreshWorkflowGenerators]);
+    const loadWorkflowRunDetail = React.useCallback((workflowRun) => (
+        loadPersistedWorkflowRunDetail(controller.transport, workflowRun.raw, { scope: catalogScope })
+    ), [catalogScope, controller]);
+    const panelId = "ps-work-index-panel";
+    const title = React.createElement(WorkIndexTabs, {
+        activeTab,
+        onChange: onTabChange,
+        panelId,
+        isAdmin,
+        scope: catalogScope,
+        onScopeChange: onCatalogScopeChange,
+    });
+    const readOnly = catalogScope === "fleet";
+    const content = activeTab === "workflowRuns"
+        ? React.createElement(WorkflowRunPane, {
+            key: catalogScope,
+            controller,
+            title,
+            panelClassName,
+            showDetailBox: showDetailBox === null ? !panelClassName.includes("ps-mobile-session-pane") : showDetailBox,
+            workflowRuns,
+            loading: workflowRunsLoading,
+            loadError: workflowRunsError,
+            onLoadDetail: loadWorkflowRunDetail,
+            onDeleteWorkflowRun: deleteWorkflowRun,
+            onOverrideCondition: overrideCondition,
+            onSelectSession: onFleetSessionSelect,
+            catalogControls: readOnly ? React.createElement(CatalogQueryControls, {
+                query: workflowRunQuery,
+                onChange: setWorkflowRunQuery,
+                includeOrigin: true,
+            }) : null,
+            hasMore: workflowRunPage.hasMore,
+            loadingMore: workflowRunsLoadingMore,
+            onLoadMore: () => refreshWorkflowRuns({
+                append: true,
+                cursor: workflowRunPage.nextCursor,
+            }),
+            readOnly,
+        })
+        : activeTab === "workflowGenerators"
+            ? React.createElement(WorkflowGeneratorPane, {
+            key: catalogScope,
+            controller,
+            title,
+            panelClassName,
+            showDetailBox: showDetailBox === null ? !panelClassName.includes("ps-mobile-session-pane") : showDetailBox,
+            generators: workflowGenerators,
+            loading: workflowGeneratorsLoading,
+            loadError: workflowGeneratorsError,
+            onCreateGenerator: createWorkflowGenerator,
+            onDeleteGenerator: deleteWorkflowGenerator,
+            onDeleteWorkflowRun: deleteWorkflowRun,
+            onOverrideCondition: overrideCondition,
+            onSelectSession: onFleetSessionSelect,
+            catalogControls: readOnly ? React.createElement(CatalogQueryControls, {
+                query: workflowGeneratorQuery,
+                onChange: setWorkflowGeneratorQuery,
+            }) : null,
+            hasMore: workflowGeneratorPage.hasMore,
+            loadingMore: workflowGeneratorsLoadingMore,
+            onLoadMore: () => refreshWorkflowGenerators({
+                append: true,
+                cursor: workflowGeneratorPage.nextCursor,
+            }),
+            readOnly,
+        })
+            : readOnly
+                ? React.createElement(FleetSessionPane, {
+                    controller,
+                    title,
+                    panelClassName,
+                    onSelectSession: onFleetSessionSelect,
+                })
+                : React.createElement(SessionPane, {
+                    controller,
+                    title,
+                    panelClassName,
+                    structuredRows,
+                    showDetailBox,
+                });
+    return React.createElement("div", {
+        id: panelId,
+        className: "ps-work-index-panel",
+        role: "tabpanel",
+        "aria-labelledby": `ps-work-index-tab-${activeTab}`,
+    }, content);
 }
 
 // Compact confirmation dialog for the Copy link button: shows the copied URL
@@ -7054,7 +9527,7 @@ function HistoryLoadIndicator({ loading, manual, pullDistance, onManualLoad }) {
             : React.createElement("span", { className: "ps-history-label" }, label));
 }
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, forceReadOnly = false, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const viewState = useControllerSelector(controller, (state) => {
@@ -7137,14 +9610,17 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
     const [manualLoadingSessionId, setManualLoadingSessionId] = React.useState(null);
-    // Scroll-up expands the transcript automatically until the soft cap, then
-    // refuses — and the portal had no control to ask for more, so a busy
-    // session's history became unreachable from the browser. Surface the
-    // control exactly when the automatic path has given up.
-    const showLoadOlder = Boolean(
-        viewState.activeHistory?.hasOlderEvents
-        && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
-    );
+    // Cold-open loads only the newest DEFAULT_HISTORY_EVENT_LIMIT (300) raw
+    // events, so any session with more than that (a busy multi-turn run emits
+    // hundreds of tool/status events) opens showing only the tail — the
+    // original prompt and early turns sit below the window. Scroll-to-top
+    // auto-expands, but that path is invisible: nothing tells the reader more
+    // history exists, and gating this button on the soft cap meant it never
+    // appeared for ordinary sessions (loadedEventCount 300 « 3000). Surface it
+    // whenever there IS older history to reach, so the head is always one
+    // discoverable click away — clicking pages backward (and the button
+    // persists until the oldest event is loaded).
+    const showLoadOlder = Boolean(viewState.activeHistory?.hasOlderEvents);
     const lines = React.useMemo(
         () => selectChatLines(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
@@ -7183,12 +9659,14 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // read-only BY KIND: their transcript is the trace of runtime machinery,
     // never a conversation surface — no prompt for anyone, owner included.
     const activeIsService = Boolean(viewState.sessionsById?.[viewState.activeSessionId]?.serviceKind);
-    const readOnly = activeIsService || (Boolean(access) && access.canWrite === false);
+    const readOnly = forceReadOnly || activeIsService || (Boolean(access) && access.canWrite === false);
     const composer = composerBase
         ? React.createElement("div", { className: "ps-chat-composer" },
             readOnly
                 ? React.createElement("div", { className: "ps-composer-readonly" },
-                    activeIsService
+                    forceReadOnly
+                        ? "Fleet view is read-only. Switch to My view to participate in this session."
+                        : activeIsService
                         ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
                         : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
                 : React.createElement(PromptComposer, { controller, mobile, active: true }))
@@ -7583,28 +10061,59 @@ function useKeyboardTakeover(enabled, focusSelector = ".ps-prompt-input") {
  * detail sub-panel). This replaced chat-focus mode, which was a second way to
  * say "chat only" with its own chrome and its own exit.
  */
-function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
-    const sessionPane = React.createElement(SessionPane, {
+function MobileWorkspace({
+    controller,
+    layout = "split",
+    workIndexTab,
+    onWorkIndexTabChange,
+    workIndexScope,
+    onWorkIndexScopeChange,
+    onFleetSessionSelect,
+    onEnterZen,
+}) {
+    const sessionPane = React.createElement(WorkIndexPane, {
         controller,
         panelClassName: "ps-mobile-session-pane",
+        activeTab: workIndexTab,
+        onTabChange: onWorkIndexTabChange,
+        catalogScope: workIndexScope,
+        onCatalogScopeChange: onWorkIndexScopeChange,
+        onFleetSessionSelect,
     });
     if (layout === "chat") {
         return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
             React.createElement("div", { className: "ps-mobile-chat-pane" },
-                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
+                React.createElement(ChatPane, {
+                    controller,
+                    mobile: true,
+                    fullWidth: true,
+                    forceReadOnly: workIndexScope === "fleet",
+                    onEnterZen,
+                })));
     }
     if (layout === "sessions") {
         return React.createElement("div", { className: "ps-mobile-workspace is-sessions-only" },
-            React.createElement(SessionPane, {
+            React.createElement(WorkIndexPane, {
                 controller,
                 panelClassName: "ps-mobile-session-pane",
                 showDetailBox: true,
+                activeTab: workIndexTab,
+                onTabChange: onWorkIndexTabChange,
+                catalogScope: workIndexScope,
+                onCatalogScopeChange: onWorkIndexScopeChange,
+                onFleetSessionSelect,
             }));
     }
     return React.createElement("div", { className: "ps-mobile-workspace" },
         sessionPane,
         React.createElement("div", { className: "ps-mobile-chat-pane" },
-            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
+            React.createElement(ChatPane, {
+                controller,
+                mobile: true,
+                fullWidth: true,
+                forceReadOnly: workIndexScope === "fleet",
+                onEnterZen,
+            })));
 }
 
 /** Frame-and-easel glyph for the Canvas toggle. */
@@ -9368,6 +11877,692 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     });
 }
 
+function compactTimelineId(value) {
+    const normalized = String(value || "");
+    if (!normalized) return "—";
+    return normalized.length > 12 ? normalized.slice(0, 8) : normalized;
+}
+
+function formatTimelineDuration(value) {
+    const totalSeconds = Math.max(0, Math.round((Number(value) || 0) / 1_000));
+    const hours = Math.floor(totalSeconds / 3_600);
+    const minutes = Math.floor((totalSeconds % 3_600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+}
+
+function timelineAxisTicks(startAt, endAt, height) {
+    const startMs = new Date(startAt).getTime();
+    const endMs = new Date(endAt).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return [];
+    const tickCount = Math.max(4, Math.min(12, Math.round(height / 90)));
+    return Array.from({ length: tickCount + 1 }, (_, index) => {
+        const ratio = index / tickCount;
+        const atMs = startMs + ((endMs - startMs) * ratio);
+        const iso = new Date(atMs).toISOString();
+        return {
+            key: `${index}:${iso}`,
+            ratio,
+            date: iso.slice(5, 10),
+            time: `${iso.slice(11, 19)}Z`,
+        };
+    });
+}
+
+function workerTimelineLaneLabel(lane) {
+    if (lane?.kind === "overhead") return "Platform overhead";
+    if (lane?.kind === "idle") return "Idle / available";
+    if (lane?.workflowRunKey) return `Workflow Run ${lane.workflowRunKey}`;
+    return `Workflow Run ${compactTimelineId(lane?.workflowRunId)}`;
+}
+
+function openWorkerTimelineSession(controller, sessionId) {
+    const normalizedSessionId = String(sessionId || "").trim();
+    if (!normalizedSessionId) return;
+    controller.setFocus("chat");
+    controller.loadSession(normalizedSessionId).catch((error) => {
+        controller.dispatch({
+            type: "ui/status",
+            text: `Failed to open worker timeline session: ${error instanceof Error ? error.message : String(error)}`,
+        });
+    });
+}
+
+export function WorkerTimelineSwimlane({
+    timeline,
+    theme,
+    controller,
+    fullscreen = false,
+    onToggleFullscreen = null,
+    laneOrder = [],
+    onReorderLane = null,
+    zoom = DEFAULT_WORKER_TIMELINE_ZOOM,
+    onZoomIn = null,
+    onZoomOut = null,
+    onHideWorkflowRun = null,
+    onShowAllWorkflowRuns = null,
+}) {
+    const sourceLanes = Array.isArray(timeline?.lanes) ? timeline.lanes : [];
+    const reconciledLaneOrder = reconcileWorkerTimelineLaneOrder(sourceLanes, laneOrder);
+    const lanesByKey = new Map(sourceLanes.map((lane) => [lane.key, lane]));
+    const lanes = reconciledLaneOrder.map((key) => lanesByKey.get(key)).filter(Boolean);
+    const segments = Array.isArray(timeline?.segments) ? timeline.segments : [];
+    const markers = Array.isArray(timeline?.markers) ? timeline.markers : [];
+    const scrollRef = React.useRef(null);
+    const headersRef = React.useRef(null);
+    const [availableChartHeight, setAvailableChartHeight] = React.useState(360);
+    const [draggedLaneKey, setDraggedLaneKey] = React.useState(null);
+    const [dropTarget, setDropTarget] = React.useState(null);
+    React.useEffect(() => {
+        const scrollNode = scrollRef.current;
+        if (!scrollNode) return undefined;
+        const measure = () => {
+            // The true fit target is the scroll viewport minus the sticky
+            // header — that's the space the timeline body actually gets. Feeding
+            // this (not a hardcoded 360) into the zoom layout is what lets a full
+            // zoom-out clamp the chart to the viewport so the whole run shows
+            // without scrolling, in the inline pane and full-screen alike. Floor
+            // keeps lanes legible on a very short pane.
+            const headerHeight = headersRef.current?.offsetHeight || 0;
+            const available = Math.max(160, Math.round(scrollNode.clientHeight - headerHeight));
+            setAvailableChartHeight(available);
+        };
+        const frame = window.requestAnimationFrame(measure);
+        const observer = typeof ResizeObserver === "function"
+            ? new ResizeObserver(measure)
+            : null;
+        observer?.observe(scrollNode);
+        if (headersRef.current) observer?.observe(headersRef.current);
+        window.addEventListener("resize", measure);
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer?.disconnect();
+            window.removeEventListener("resize", measure);
+        };
+    }, [fullscreen, timeline?.durationMs, lanes.length]);
+    const startAt = timeline?.displayStartAt || timeline?.startAt;
+    const endAt = timeline?.displayEndAt || timeline?.endAt;
+    const startMs = new Date(startAt).getTime();
+    const endMs = new Date(endAt).getTime();
+    const durationMs = Number(timeline?.durationMs) || 0;
+    const displayDurationMs = Number(timeline?.displayDurationMs) || durationMs;
+    if (
+        lanes.length === 0
+        || !Number.isFinite(startMs)
+        || !Number.isFinite(endMs)
+        || durationMs <= 0
+        || displayDurationMs <= 0
+    ) {
+        return null;
+    }
+
+    const zoomLayout = computeWorkerTimelineZoomLayout({
+        durationMs: displayDurationMs,
+        laneCount: lanes.length,
+        zoom,
+        minimumChartHeight: availableChartHeight,
+    });
+    const chartHeight = zoomLayout.chartHeight;
+    const ticks = timelineAxisTicks(startAt, endAt, chartHeight);
+    const laneIndex = new Map(lanes.map((lane, index) => [lane.key, index]));
+    const workflowRunLaneCount = lanes.filter((lane) => lane.kind === "workflowRun").length;
+    const busyMs = Number(timeline.busyMs) || 0;
+    const overheadMs = Number(timeline.overheadMs) || 0;
+    const capacityWaitMs = Number(timeline.capacityWaitMs) || 0;
+    const idleMs = Number(timeline.idleMs) || 0;
+    const activeWorkerMs = busyMs + overheadMs;
+    const utilization = activeWorkerMs > 0
+        ? Math.round((busyMs / activeWorkerMs) * 100)
+        : 0;
+    const overheadPercent = activeWorkerMs > 0 ? 100 - utilization : 0;
+    const utilizationTooltip = [
+        "Worker utilization = active Workflow Run work / active worker time",
+        `${formatTimelineDuration(busyMs)} (${busyMs} ms) / ${formatTimelineDuration(activeWorkerMs)} (${activeWorkerMs} ms) × 100 = ${utilization}%`,
+        `Active worker time: ${formatTimelineDuration(busyMs)} Workflow Run work + ${formatTimelineDuration(overheadMs)} platform overhead`,
+        `Excluded: ${formatTimelineDuration(idleMs)} idle / available when no Workflow Run or platform work was active.`,
+        `Also excluded: ${formatTimelineDuration(capacityWaitMs)} per-Workflow Run queue time because queued Workflow Runs can overlap the worker timeline and one another.`,
+    ].join("\n");
+    const overheadTooltip = [
+        "Platform overhead = platform overhead / active worker time",
+        `${formatTimelineDuration(overheadMs)} (${overheadMs} ms) / ${formatTimelineDuration(activeWorkerMs)} (${activeWorkerMs} ms) × 100 = ${overheadPercent}%`,
+        `Active worker time: ${formatTimelineDuration(busyMs)} Workflow Run work + ${formatTimelineDuration(overheadMs)} platform overhead`,
+        `Utilization ${utilization}% + overhead ${overheadPercent}% = ${activeWorkerMs > 0 ? "100%" : "0% (no active worker time)"}.`,
+        `Excluded: ${formatTimelineDuration(idleMs)} idle / available and ${formatTimelineDuration(capacityWaitMs)} overlapping per-Workflow Run queue time.`,
+    ].join("\n");
+    const gridColumns = `var(--ps-worker-timeline-axis-width) repeat(${lanes.length}, minmax(${zoomLayout.laneWidthPx}px, 1fr))`;
+    const laneColumns = `repeat(${lanes.length}, minmax(${zoomLayout.laneWidthPx}px, 1fr))`;
+    const chartWidth = `${zoomLayout.chartWidth}px`;
+    const zoomIndex = WORKER_TIMELINE_SPAN_LEVELS_MS.indexOf(zoomLayout.visibleSpanMs);
+    // Zoom IN shrinks the visible span (toward the sub-second end of the
+    // ladder); zoom OUT grows it. Zooming out stops being meaningful once the
+    // whole run already fits the viewport, so gate it on the run duration too.
+    const canZoomIn = zoomIndex > 0;
+    const canZoomOut = zoomIndex < WORKER_TIMELINE_SPAN_LEVELS_MS.length - 1
+        && zoomLayout.visibleSpanMs < displayDurationMs;
+    const workerName = String(timeline?.workerName || timeline?.workerNodeId || "").trim();
+    const workerHostname = String(timeline?.hostname || "").trim();
+    const positionPercent = (atMs) => (
+        Math.max(0, Math.min(100, ((atMs - startMs) / displayDurationMs) * 100))
+    );
+
+    return React.createElement("section", { className: "ps-worker-swimlane" },
+        React.createElement("div", { className: "ps-worker-swimlane__heading" },
+            React.createElement("h3", null,
+                "Worker utilization",
+                workerName
+                    ? React.createElement("span", {
+                        className: "ps-worker-swimlane__worker-name",
+                        title: timeline?.workerNodeId || workerName,
+                    }, ` · ${workerName}`)
+                    : null,
+                workerHostname && workerHostname !== workerName
+                    ? React.createElement("span", {
+                        className: "ps-worker-swimlane__worker-host",
+                        title: `Host: ${workerHostname}`,
+                    }, ` · ${workerHostname}`)
+                    : null),
+            React.createElement("div", { className: "ps-worker-swimlane__heading-controls" },
+                React.createElement("span", null,
+                    `${formatTimelineDuration(busyMs)} Workflow Run work · `
+                    + `${formatTimelineDuration(overheadMs)} platform overhead · `
+                    + `${formatTimelineDuration(capacityWaitMs)} runnable queued (no compute) · `
+                    + `${formatTimelineDuration(idleMs)} idle / available · `,
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__utilization",
+                        title: utilizationTooltip,
+                        tabIndex: 0,
+                        "aria-label": utilizationTooltip,
+                    }, `${utilization}% utilized`),
+                    " · ",
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__utilization",
+                        title: overheadTooltip,
+                        tabIndex: 0,
+                        "aria-label": overheadTooltip,
+                    }, `${overheadPercent}% overhead`)),
+                React.createElement("div", {
+                    className: "ps-worker-swimlane__zoom-controls",
+                    role: "group",
+                    "aria-label": "Worker timeline zoom",
+                },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: onZoomOut || undefined,
+                    disabled: !canZoomOut || !onZoomOut,
+                    "aria-label": "Zoom out worker timeline",
+                    title: "Zoom out timeline",
+                }, "Zoom out"),
+                React.createElement("output", {
+                    className: "ps-worker-swimlane__zoom-level",
+                    "aria-live": "polite",
+                    title: `Visible span: ${formatWorkerTimelineSpan(zoomLayout.visibleSpanMs)} of the timeline fills the pane`,
+                }, formatWorkerTimelineSpan(zoomLayout.visibleSpanMs)),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: onZoomIn || undefined,
+                    disabled: !canZoomIn || !onZoomIn,
+                    "aria-label": "Zoom in worker timeline",
+                    title: "Zoom in timeline",
+                }, "Zoom in")),
+                onShowAllWorkflowRuns && Number(timeline?.hiddenWorkflowRunCount) > 0
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-worker-swimlane__show-hidden",
+                        onClick: onShowAllWorkflowRuns,
+                        title: `Hidden: ${(Array.isArray(timeline?.hiddenWorkflowRuns) ? timeline.hiddenWorkflowRuns : [])
+                            .map((workflowRun) => workflowRun.workflowRunKey || workflowRun.workflowRunId)
+                            .join(", ")}`,
+                        "aria-label": `Show all ${timeline.hiddenWorkflowRunCount} hidden Workflow Runs`,
+                    }, `${timeline.hiddenWorkflowRunCount} hidden · Show all`)
+                    : null,
+                onToggleFullscreen
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-worker-swimlane__fullscreen-button",
+                        onClick: onToggleFullscreen,
+                        "aria-label": fullscreen
+                            ? "Exit full-screen worker utilization"
+                            : "Open worker utilization full screen",
+                        title: fullscreen ? "Exit full screen" : "Full screen",
+                    }, fullscreen ? "Exit full screen" : "Full screen")
+                    : null)),
+        React.createElement("div", { className: "ps-worker-swimlane__scroll", ref: scrollRef },
+            React.createElement("div", {
+                className: "ps-worker-swimlane__chart",
+                style: {
+                    width: `max(100%, ${chartWidth})`,
+                    minWidth: chartWidth,
+                    "--ps-worker-timeline-height": `${chartHeight}px`,
+                },
+                role: "region",
+                "aria-label": `${workerName ? `Worker timeline for ${workerName}` : "Worker timeline"} across ${workflowRunLaneCount} Workflow Runs over ${formatTimelineDuration(durationMs)}`,
+            },
+            React.createElement("div", {
+                className: "ps-worker-swimlane__headers",
+                ref: headersRef,
+                style: { gridTemplateColumns: gridColumns },
+            },
+            React.createElement("div", { className: "ps-worker-swimlane__axis-header" }, "UTC"),
+            lanes.map((lane) => React.createElement("div", {
+                key: lane.key,
+                className: [
+                    "ps-worker-swimlane__lane-header",
+                    `is-${lane.kind}`,
+                    draggedLaneKey === lane.key ? "is-dragging" : "",
+                    dropTarget?.key === lane.key ? `is-drop-${dropTarget.position}` : "",
+                ].filter(Boolean).join(" "),
+                style: { "--ps-worker-lane-color": resolveColor(theme, lane.color) },
+                title: `${lane.workflowRunId ? `${lane.workflowRunId} · ` : ""}Drag to reorder this lane`,
+                draggable: Boolean(onReorderLane),
+                tabIndex: onReorderLane ? 0 : undefined,
+                onDragStart: onReorderLane
+                    ? (event) => {
+                        setDraggedLaneKey(lane.key);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", lane.key);
+                    }
+                    : undefined,
+                onDragOver: onReorderLane
+                    ? (event) => {
+                        event.preventDefault();
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        const position = event.clientX < bounds.left + (bounds.width / 2)
+                            ? "before"
+                            : "after";
+                        event.dataTransfer.dropEffect = "move";
+                        setDropTarget({ key: lane.key, position });
+                    }
+                    : undefined,
+                onDrop: onReorderLane
+                    ? (event) => {
+                        event.preventDefault();
+                        const sourceKey = draggedLaneKey || event.dataTransfer.getData("text/plain");
+                        const position = dropTarget?.key === lane.key ? dropTarget.position : "before";
+                        onReorderLane(sourceKey, lane.key, position);
+                        setDraggedLaneKey(null);
+                        setDropTarget(null);
+                    }
+                    : undefined,
+                onDragEnd: onReorderLane
+                    ? () => {
+                        setDraggedLaneKey(null);
+                        setDropTarget(null);
+                    }
+                    : undefined,
+                onKeyDown: onReorderLane
+                    ? (event) => {
+                        if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                        const index = lanes.findIndex((candidate) => candidate.key === lane.key);
+                        const targetIndex = event.key === "ArrowLeft" ? index - 1 : index + 1;
+                        const target = lanes[targetIndex];
+                        if (!target) return;
+                        event.preventDefault();
+                        onReorderLane(
+                            lane.key,
+                            target.key,
+                            event.key === "ArrowLeft" ? "before" : "after",
+                        );
+                    }
+                    : undefined,
+            },
+            onReorderLane
+                ? React.createElement("span", {
+                    className: "ps-worker-swimlane__lane-drag-handle",
+                    "aria-hidden": "true",
+                }, "::")
+                : null,
+            React.createElement("strong", null, workerTimelineLaneLabel(lane)),
+            lane.workflowRunId
+                ? React.createElement(React.Fragment, null,
+                    React.createElement("span", {
+                        className: `ps-worker-swimlane__workflowRun-status is-${lane.status}`,
+                    }, lane.statusLabel),
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__workflowRun-id",
+                        title: lane.workflowRunId,
+                    }, compactTimelineId(lane.workflowRunId)),
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__workflowRun-metrics",
+                    },
+                    React.createElement("span", {
+                        title: `Total active Workflow Run time: ${formatTimelineDuration(lane.activeMs)}`,
+                    }, `Active ${formatTimelineDuration(lane.activeMs)}`),
+                    React.createElement("span", {
+                        title: `Total runnable queue time: ${formatTimelineDuration(lane.queuedMs)}`,
+                    }, `Queued ${formatTimelineDuration(lane.queuedMs)}`),
+                    React.createElement("span", {
+                        title: `Response wait ${formatTimelineDuration(lane.humanWaitMs)} + observed-condition wait ${formatTimelineDuration(lane.systemWaitMs)} = ${formatTimelineDuration(lane.waitMs)}; waits are excluded from efficiency.`,
+                    }, `Waits ${formatTimelineDuration(lane.waitMs)}`),
+                    React.createElement("span", {
+                        title: `Efficiency = active / (active + attributable platform overhead + queued): ${formatTimelineDuration(lane.activeMs)} / (${formatTimelineDuration(lane.activeMs)} + ${formatTimelineDuration(lane.overheadMs)} + ${formatTimelineDuration(lane.queuedMs)}) = ${lane.efficiencyPercent}%. Response and observed-condition waits are excluded.`,
+                    }, `Efficiency ${lane.efficiencyPercent}%`)))
+                : React.createElement("span", null,
+                    lane.kind === "overhead" ? "recorded bookkeeping" : "no active Workflow Run turn"),
+            onHideWorkflowRun && lane.workflowRunId
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-worker-swimlane__lane-hide",
+                    onClick: (event) => { event.stopPropagation(); onHideWorkflowRun(lane.workflowRunId); },
+                    onMouseDown: (event) => event.stopPropagation(),
+                    draggable: false,
+                    "aria-label": `Hide Workflow Run ${lane.workflowRunId} from the timeline`,
+                    title: "Hide this Workflow Run from the timeline",
+                }, "×")
+                : null))),
+            React.createElement("div", {
+                className: "ps-worker-swimlane__body",
+                style: { height: `${chartHeight}px` },
+            },
+            ticks.map((tick, index) => React.createElement("div", {
+                key: tick.key,
+                className: `ps-worker-swimlane__tick${index === 0 ? " is-first" : ""}${index === ticks.length - 1 ? " is-last" : ""}`,
+                style: { top: `${tick.ratio * 100}%` },
+            },
+            React.createElement("span", { className: "ps-worker-swimlane__tick-label" },
+                React.createElement("span", null, tick.date),
+                React.createElement("span", null, tick.time)),
+            React.createElement("span", { className: "ps-worker-swimlane__tick-line" }))),
+            React.createElement("div", {
+                className: "ps-worker-swimlane__lanes",
+                style: { gridTemplateColumns: laneColumns },
+            },
+            lanes.map((lane) => React.createElement("div", {
+                key: lane.key,
+                className: `ps-worker-swimlane__lane is-${lane.kind}`,
+                style: { "--ps-worker-lane-color": resolveColor(theme, lane.color) },
+            }))),
+            segments.map((segment) => {
+                const index = laneIndex.get(segment.laneKey);
+                if (index === undefined) return null;
+                const top = positionPercent(Number(segment.startMs));
+                const height = Math.max(0, (Number(segment.durationMs) / displayDurationMs) * 100);
+                const lane = lanes[index];
+                const heightPx = (height / 100) * chartHeight;
+                const segmentColor = resolveColor(theme, segment.color || lane.color);
+                const canOpenSession = segment.kind !== "idle" && Boolean(segment.sessionId);
+                const isWorkflowRunExecution = segment.kind === "work" || segment.kind === "work_wrap_up";
+                const segmentSummary = isWorkflowRunExecution
+                    ? `${segment.kind === "work_wrap_up" ? "Active Workflow Run turn wrap-up" : "Active Workflow Run turn"} · ${segment.label}`
+                    : segment.kind === "capacity_wait"
+                        ? `${segment.label} · ${segment.activity}`
+                        : segment.activity;
+                const title = `${workerTimelineLaneLabel(lane)} · ${segmentSummary} · ${formatTimelineDuration(segment.durationMs)}`
+                    + (isWorkflowRunExecution && segment.activity ? ` · ${segment.activity}` : "")
+                    + (canOpenSession ? ` · Click to open session ${segment.sessionId}` : "");
+                return React.createElement(canOpenSession ? "button" : "div", {
+                    key: segment.key,
+                    type: canOpenSession ? "button" : undefined,
+                    className: `ps-worker-swimlane__segment is-${segment.kind}${isWorkflowRunExecution && heightPx < 30 ? " is-compact" : ""}`,
+                    style: {
+                        "--ps-worker-lane-index": index,
+                        "--ps-worker-lane-count": lanes.length,
+                        "--ps-worker-lane-color": resolveColor(theme, lane.color),
+                        "--ps-worker-segment-color": segmentColor,
+                        "--ps-worker-segment-height": `${height}%`,
+                        top: `${top}%`,
+                    },
+                    title,
+                    "aria-label": title,
+                    onClick: canOpenSession
+                        ? () => openWorkerTimelineSession(controller, segment.sessionId)
+                        : undefined,
+                }, segment.kind === "overhead"
+                    ? React.createElement("span", {
+                        className: "ps-worker-swimlane__overhead-duration",
+                    }, formatTimelineDuration(segment.durationMs))
+                    : isWorkflowRunExecution
+                        ? React.createElement(React.Fragment, null,
+                        React.createElement("strong", {
+                            className: "ps-worker-swimlane__work-label",
+                        }, segment.label),
+                        heightPx >= 30
+                            ? React.createElement("span", null, formatTimelineDuration(segment.durationMs))
+                            : null)
+                    : heightPx >= 30
+                        ? React.createElement(React.Fragment, null,
+                        React.createElement("strong", null, segment.label),
+                        React.createElement("span", null, segment.kind === "capacity_wait"
+                            ? `no compute allocated · ${formatTimelineDuration(segment.durationMs)}${segment.pending ? " · ongoing" : ""}`
+                            : segment.compute === false
+                            ? `no active compute · ${formatTimelineDuration(segment.durationMs)}`
+                            : formatTimelineDuration(segment.durationMs)))
+                        : null);
+            }),
+            markers.map((marker) => {
+                const index = laneIndex.get(marker.laneKey);
+                if (index === undefined) return null;
+                const canOpenSession = Boolean(marker.sessionId);
+                const title = `${new Date(marker.at).toISOString().replace("T", " ").replace(".000Z", "Z")} · ${marker.activity}`
+                    + (canOpenSession ? ` · Click to open session ${marker.sessionId}` : "");
+                const isLabeledMilestone = marker.kind === "transition"
+                    || marker.kind === "completion"
+                    || marker.kind === "materialization";
+                return React.createElement(canOpenSession ? "button" : "span", {
+                    key: marker.key,
+                    type: canOpenSession ? "button" : undefined,
+                    className: `ps-worker-swimlane__marker is-${marker.kind}`,
+                    style: {
+                        "--ps-worker-lane-index": index,
+                        "--ps-worker-lane-count": lanes.length,
+                        "--ps-worker-marker-color": resolveColor(theme, marker.color),
+                        top: `${positionPercent(Number(marker.atMs))}%`,
+                    },
+                    title,
+                    "aria-label": title,
+                    onClick: canOpenSession
+                        ? () => openWorkerTimelineSession(controller, marker.sessionId)
+                        : undefined,
+                }, isLabeledMilestone
+                    ? React.createElement(React.Fragment, null,
+                        marker.kind === "materialization"
+                            ? React.createElement("span", {
+                                className: "ps-worker-swimlane__materialization-label",
+                            }, marker.label)
+                            : marker.kind === "completion"
+                            ? React.createElement("span", { className: "ps-worker-swimlane__completion-glyph" }, "✓")
+                            : React.createElement("span", { className: "ps-worker-swimlane__transition-glyph" }),
+                        marker.kind === "materialization"
+                            ? null
+                            : React.createElement("span", { className: "ps-worker-swimlane__transition-label" }, marker.label))
+                    : null);
+            })))),
+        React.createElement("div", { className: "ps-worker-swimlane__legend" },
+            React.createElement("span", { className: "is-work" }, "Solid = active Workflow Run turn"),
+            React.createElement("span", { className: "is-wrap-up" }, "Striped solid = active Workflow Run turn wrap-up"),
+            React.createElement("span", {
+                className: "is-human-wait",
+                style: { "--ps-wait-color": resolveColor(theme, "yellow") },
+            }, "Yellow dotted = response wait, no active compute"),
+            React.createElement("span", {
+                className: "is-system-wait",
+                style: { "--ps-wait-color": resolveColor(theme, "magenta") },
+            }, "Purple dotted = observed-condition wait, no active compute"),
+            React.createElement("span", {
+                className: "is-capacity-wait",
+                style: { "--ps-capacity-wait-color": resolveColor(theme, "red") },
+            }, "Red dashed = queued, waiting for worker; no compute allocated"),
+            React.createElement("span", { className: "is-overhead" }, "Yellow rectangles = platform overhead duration"),
+            React.createElement("span", { className: "is-idle" }, "Hatched = idle / available, no active Workflow Run turn"),
+            React.createElement("span", { className: "is-materialization" }, "Line = Workflow Run materialized"),
+            React.createElement("span", { className: "is-transition" }, "Labeled pill = point-in-time transition/completion"),
+            React.createElement("span", { className: "is-marker" }, "Dots = waits and operations")));
+}
+
+function WorkerTimelineTable({ timeline, theme }) {
+    const rows = Array.isArray(timeline?.rows) ? timeline.rows : [];
+    let body;
+    if (timeline?.loading && rows.length === 0) {
+        body = React.createElement("p", { className: "ps-worker-timeline__status" },
+            "Loading durable worker activity...");
+    } else if (timeline?.error) {
+        body = React.createElement("p", {
+            className: "ps-worker-timeline__status is-error",
+            role: "alert",
+        }, timeline.error);
+    } else if (rows.length === 0) {
+        body = React.createElement("p", { className: "ps-worker-timeline__status" },
+            "No durable Workflow Run activity recorded for this worker.");
+    } else {
+        body = React.createElement("div", { className: "ps-worker-timeline__scroll" },
+            React.createElement("table", { className: "ps-worker-timeline__table" },
+                React.createElement("colgroup", null,
+                    React.createElement("col", { className: "is-timestamp" }),
+                    React.createElement("col", { className: "is-id" }),
+                    React.createElement("col", { className: "is-id" }),
+                    React.createElement("col", { className: "is-activity" })),
+                React.createElement("thead", null,
+                    React.createElement("tr", null,
+                        React.createElement("th", { scope: "col" }, "Timestamp"),
+                        React.createElement("th", { scope: "col" }, "Workflow Run ID"),
+                        React.createElement("th", { scope: "col" }, "Session ID"),
+                        React.createElement("th", { scope: "col" }, "Activity"))),
+                React.createElement("tbody", null,
+                    rows.map((row) => {
+                        const [date, time = ""] = String(row.timestamp || "").split(" ");
+                        return React.createElement("tr", { key: row.key },
+                            React.createElement("td", null,
+                                React.createElement("time", {
+                                    className: "ps-worker-timeline__timestamp",
+                                    dateTime: String(row.timestamp || "").replace(" ", "T"),
+                                },
+                                React.createElement("span", null, date),
+                                React.createElement("span", null, time))),
+                            React.createElement("td", null,
+                                React.createElement("code", {
+                                    className: "ps-worker-timeline__id",
+                                    title: row.workflowRunId || undefined,
+                                }, compactTimelineId(row.workflowRunId))),
+                            React.createElement("td", null,
+                                React.createElement("code", {
+                                    className: "ps-worker-timeline__id",
+                                    title: row.sessionId || undefined,
+                                }, compactTimelineId(row.sessionId))),
+                            React.createElement("td", {
+                                className: "ps-worker-timeline__activity",
+                                style: {
+                                    color: resolveColor(theme, row.color),
+                                    fontWeight: row.bold ? 700 : 400,
+                                },
+                            }, row.activity));
+                    }))));
+    }
+    return React.createElement("section", { className: "ps-worker-timeline" },
+        React.createElement("h3", null, `Timeline (${rows.length})`),
+        body);
+}
+
+function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
+    const [utilizationFullscreen, setUtilizationFullscreen] = React.useState(false);
+    const [timelineZoom, setTimelineZoom] = React.useState(
+        () => defaultWorkerTimelineZoom(swimlane?.displayDurationMs || swimlane?.durationMs),
+    );
+    const [laneOrder, setLaneOrder] = React.useState(
+        () => reconcileWorkerTimelineLaneOrder(swimlane?.lanes),
+    );
+    React.useEffect(() => {
+        setLaneOrder((current) => reconcileWorkerTimelineLaneOrder(swimlane?.lanes, current));
+    }, [swimlane?.lanes]);
+    React.useEffect(() => {
+        // Reset to "fit the whole run" only when switching workers — not on
+        // every live duration tick, which would fight a manual zoom.
+        setTimelineZoom(defaultWorkerTimelineZoom(swimlane?.displayDurationMs || swimlane?.durationMs));
+    }, [swimlane?.workerNodeId]);
+    React.useEffect(() => {
+        if (!utilizationFullscreen) return undefined;
+        const closeOnEscape = (event) => {
+            if (event.key === "Escape") setUtilizationFullscreen(false);
+        };
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+    }, [utilizationFullscreen]);
+
+    const toggleUtilizationFullscreen = () => {
+        setUtilizationFullscreen((current) => !current);
+    };
+    const zoomIn = () => {
+        setTimelineZoom((current) => stepWorkerTimelineZoom(current, "in"));
+    };
+    const zoomOut = () => {
+        setTimelineZoom((current) => stepWorkerTimelineZoom(current, "out"));
+    };
+    const reorderLane = (sourceKey, targetKey, position) => {
+        setLaneOrder((current) => reorderWorkerTimelineLane(
+            reconcileWorkerTimelineLaneOrder(swimlane?.lanes, current),
+            sourceKey,
+            targetKey,
+            position,
+        ));
+    };
+    const hideWorkflowRun = (workflowRunId) => {
+        if (swimlane?.workerNodeId && typeof controller?.toggleWorkerTimelineHiddenWorkflowRun === "function") {
+            controller.toggleWorkerTimelineHiddenWorkflowRun(swimlane.workerNodeId, workflowRunId);
+        }
+    };
+    const showAllWorkflowRuns = () => {
+        if (swimlane?.workerNodeId && typeof controller?.clearWorkerTimelineHiddenWorkflowRuns === "function") {
+            controller.clearWorkerTimelineHiddenWorkflowRuns(swimlane.workerNodeId);
+        }
+    };
+    const fullscreenOverlay = utilizationFullscreen && typeof document !== "undefined"
+        ? createPortal(
+            React.createElement("div", {
+                className: "ps-worker-swimlane-fullscreen",
+                role: "dialog",
+                "aria-modal": "true",
+                "aria-label": "Full-screen worker utilization",
+            },
+            React.createElement(WorkerTimelineSwimlane, {
+                timeline: swimlane,
+                theme,
+                controller,
+                fullscreen: true,
+                onToggleFullscreen: toggleUtilizationFullscreen,
+                laneOrder,
+                onReorderLane: reorderLane,
+                zoom: timelineZoom,
+                onZoomIn: zoomIn,
+                onZoomOut: zoomOut,
+                onHideWorkflowRun: hideWorkflowRun,
+                onShowAllWorkflowRuns: showAllWorkflowRuns,
+            })),
+            document.body)
+        : null;
+
+    return React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-worker-details" },
+            React.createElement("div", { className: "ps-worker-details__metadata" },
+                lines.map((line, index) => React.createElement(Line, {
+                    key: `worker-detail:${index}`,
+                    line,
+                    theme,
+                }))),
+            React.createElement("div", { className: "ps-worker-details__panes" },
+                utilizationFullscreen
+                    ? React.createElement("div", {
+                        className: "ps-worker-swimlane__fullscreen-placeholder",
+                        "aria-hidden": "true",
+                    })
+                    : React.createElement(WorkerTimelineSwimlane, {
+                        timeline: swimlane,
+                        theme,
+                        controller,
+                        onToggleFullscreen: toggleUtilizationFullscreen,
+                        laneOrder,
+                        onReorderLane: reorderLane,
+                        zoom: timelineZoom,
+                        onZoomIn: zoomIn,
+                        onZoomOut: zoomOut,
+                        onHideWorkflowRun: hideWorkflowRun,
+                        onShowAllWorkflowRuns: showAllWorkflowRuns,
+                    }),
+                React.createElement(WorkerTimelineTable, { timeline, theme }))),
+        fullscreenOverlay);
+}
+
 function ActivityPane({ controller, panelClassName = "", extraActions = null }) {
     const viewState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
@@ -9435,12 +12630,21 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
         color: "gray",
         focused: viewState.focused,
         actions: extraActions,
-        lines: activity.lines,
+        lines: nodeMode && activity.detailsLines ? activity.detailsLines : activity.lines,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
         paneKey: "activity",
-        className: "is-wrapped",
+        className: nodeMode ? "is-worker-details" : "is-wrapped",
+        renderBody: nodeMode && activity.timelineTable
+            ? (lines, theme) => React.createElement(WorkerDetailsBody, {
+                lines,
+                timeline: activity.timelineTable,
+                swimlane: activity.timelineSwimlane,
+                theme,
+                controller,
+            })
+            : null,
         // Stable identity class so styling can target the activity surface
         // without depending on which slot rendered it.
         panelClassName: `ps-activity-pane${panelClassName ? ` ${panelClassName}` : ""}`,
@@ -10066,7 +13270,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, readOnly = false, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -10109,8 +13313,9 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         {
             key: "new",
             icon: React.createElement(PlusGlyph),
-            label: "New session — choose model and agent",
-            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
+            label: "New session",
+            onClick: () => controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {}),
+            disabled: readOnly,
         },
         {
             key: "filter",
@@ -10159,6 +13364,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             // Three states: plain outline (empty), green dot bottom-left
             // (loaded), green + yellow (loaded with unseen changes).
             loadedDot: canvasView.exists,
+            disabled: readOnly,
         },
         // Providers & Budgets. Both device classes: what a turn costs, and
         // what stopped a session, are answers a person needs wherever they
@@ -10185,6 +13391,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             label: diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics (inspector and activity)",
             onClick: () => controller.dispatch({ type: "ui/diagnosticsOpen" }),
             active: diagnosticsOpen,
+            disabled: readOnly,
         }]),
         // Admin console is desktop-only: its settings tree, package detail
         // and file preview need width the phone layout cannot give them, so
@@ -10278,6 +13485,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                     ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap for inspector)")
                     : "Diagnostics — inspector and activity",
                 focus: nextDiagnosticsPane,
+                disabled: readOnly,
             },
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
@@ -10290,6 +13498,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                         icon: React.createElement(def.icon),
                         label: def.label,
                         active: def.active ?? (mobilePane === def.id),
+                        disabled: Boolean(def.disabled),
                         onClick: () => {
                             if (onSelectMobilePane) onSelectMobilePane(def.id, def.focus);
                         },
@@ -10306,7 +13515,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     const MODES = ["workspace", "moa", "budget", "admin"];
 
     // While the canvas is full screen, ANY other button first drops full
-    // screen and then does its own job. Pressing Filter and watching nothing
+    // screen and then does its own workflowRun. Pressing Filter and watching nothing
     // happen behind a canvas — or watching a panel open where you cannot see
     // it — is the confusing half of every full-screen mode. The Canvas toggle
     // is exempt: it already means "put the canvas away", and closing drops
@@ -12900,6 +16109,9 @@ function ModalLayer({ controller }) {
         modelPicker: selectModelPickerModal(state),
         reasoningEffortPicker: selectReasoningEffortPickerModal(state),
         contextTierPicker: selectContextTierPickerModal(state),
+        repoPicker: selectRepoPickerModal(state),
+        repoBranchInput: selectRepoBranchInputModal(state),
+        repoAgentInput: selectRepoAgentInputModal(state),
         sessionAgentPicker: selectSessionAgentPickerModal(state),
         sessionGroupPicker: selectSessionGroupPickerModal(state),
         sessionGroupName: selectSessionGroupNameModal(state),
@@ -12919,6 +16131,8 @@ function ModalLayer({ controller }) {
     const modal = modalState.rawModal;
     const renameInputRef = React.useRef(null);
     const groupNameInputRef = React.useRef(null);
+    const repoBranchInputRef = React.useRef(null);
+    const repoAgentInputRef = React.useRef(null);
     const workspaceInputRef = React.useRef(null);
     const listModalRef = React.useRef(null);
     // Full-text search for the people list in the session filter.
@@ -12955,6 +16169,34 @@ function ModalLayer({ controller }) {
     }, [modal?.type, modalState.sessionGroupName?.cursorIndex, modalState.sessionGroupName?.value]);
 
     React.useEffect(() => {
+        if (modal?.type !== "repoBranchInput" || !modalState.repoBranchInput) return;
+        const inputNode = repoBranchInputRef.current;
+        if (!inputNode) return;
+        if (document.activeElement !== inputNode) {
+            try {
+                inputNode.focus({ preventScroll: true });
+            } catch {
+                inputNode.focus();
+            }
+        }
+        inputNode.setSelectionRange(modalState.repoBranchInput.cursorIndex, modalState.repoBranchInput.cursorIndex);
+    }, [modal?.type, modalState.repoBranchInput?.cursorIndex, modalState.repoBranchInput?.value]);
+
+    React.useEffect(() => {
+        if (modal?.type !== "repoAgentInput" || !modalState.repoAgentInput) return;
+        const inputNode = repoAgentInputRef.current;
+        if (!inputNode) return;
+        if (document.activeElement !== inputNode) {
+            try {
+                inputNode.focus({ preventScroll: true });
+            } catch {
+                inputNode.focus();
+            }
+        }
+        inputNode.setSelectionRange(modalState.repoAgentInput.cursorIndex, modalState.repoAgentInput.cursorIndex);
+    }, [modal?.type, modalState.repoAgentInput?.cursorIndex, modalState.repoAgentInput?.value]);
+
+    React.useEffect(() => {
         if (modal?.type !== "sessionWorkspace" || !modalState.sessionWorkspace) return;
         const inputNode = workspaceInputRef.current;
         if (!inputNode) return;
@@ -12975,6 +16217,7 @@ function ModalLayer({ controller }) {
             "modelPicker",
             "reasoningEffortPicker",
             "contextTierPicker",
+            "repoPicker",
             "sessionAgentPicker",
             "sessionGroupPicker",
             "artifactPicker",
@@ -12999,6 +16242,7 @@ function ModalLayer({ controller }) {
         modalState.modelPicker?.selectedRowIndex,
         modalState.reasoningEffortPicker?.selectedRowIndex,
         modalState.contextTierPicker?.selectedRowIndex,
+        modalState.repoPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
         modalState.sessionGroupPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
@@ -13182,6 +16426,13 @@ function ModalLayer({ controller }) {
     if (modal.type === "contextTierPicker" && modalState.contextTierPicker) {
         return renderListModal(modalState.contextTierPicker, pickerConfirmLabel);
     }
+    if (modal.type === "repoPicker" && modalState.repoPicker) {
+        // The primary button follows the selection: the generic row creates a
+        // session directly, while a repo row advances to the branch step.
+        const picked = modal.items?.[modal.selectedIndex || 0];
+        const confirmLabel = picked?.kind === "repo" ? "Continue" : "Create Session";
+        return renderListModal(modalState.repoPicker, confirmLabel);
+    }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         // Every row is an agent now, so Enter always creates.
         const SORTS = [
@@ -13203,7 +16454,7 @@ function ModalLayer({ controller }) {
                 onChange: (event) => controller.setAgentPickerQuery(event.target.value),
                 // The list's own keys must still work from inside the box, but
                 // every OTHER key has to stay here — the modal binds j and k to
-                // move the selection, and without this you cannot type "kusto".
+                // move the selection, and without this you cannot type "provider-id".
                 onKeyDown: (event) => {
                     const passes = ["ArrowUp", "ArrowDown", "Enter", "Escape", "Tab"];
                     if (!passes.includes(event.key)) event.stopPropagation();
@@ -13355,6 +16606,39 @@ function ModalLayer({ controller }) {
                     }, modalState.sessionGroupName.mode === "rename" ? "Rename" : "Create and Move")),
             ));
     }
+    if (modal.type === "repoBranchInput" && modalState.repoBranchInput) {
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modalState.repoBranchInput.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
+                ),
+                React.createElement("input", {
+                    ref: repoBranchInputRef,
+                    className: "ps-modal-input",
+                    value: modalState.repoBranchInput.value,
+                    placeholder: modalState.repoBranchInput.placeholder,
+                    onChange: (event) => controller.setRepoBranchInputValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
+                    onKeyDown: (event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                        }
+                    },
+                    autoFocus: true,
+                }),
+                React.createElement("div", { className: "ps-modal-details" },
+                    normalizeLines(modalState.repoBranchInput.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
+                    }, "Continue")),
+            ));
+    }
     if (modal.type === "sessionWorkspace" && modalState.sessionWorkspace) {
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
@@ -13387,6 +16671,39 @@ function ModalLayer({ controller }) {
                         className: "ps-modal-button is-primary",
                         onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
                     }, modalState.sessionWorkspace.confirmLabel)),
+            ));
+    }
+    if (modal.type === "repoAgentInput" && modalState.repoAgentInput) {
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modalState.repoAgentInput.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
+                ),
+                React.createElement("input", {
+                    ref: repoAgentInputRef,
+                    className: "ps-modal-input",
+                    value: modalState.repoAgentInput.value,
+                    placeholder: modalState.repoAgentInput.placeholder,
+                    onChange: (event) => controller.setRepoAgentInputValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
+                    onKeyDown: (event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                        }
+                    },
+                    autoFocus: true,
+                }),
+                React.createElement("div", { className: "ps-modal-details" },
+                    normalizeLines(modalState.repoAgentInput.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
+                    }, "Create Session")),
             ));
     }
     if (modal.type === "terminatePicker") {
@@ -13600,7 +16917,7 @@ function ScopedModalLayer({ controller }) {
     return React.createElement(ModalLayer, { controller });
 }
 
-function useKeyboardShortcuts(controller, mobile, suspended = false) {
+function useKeyboardShortcuts(controller, mobile, suspended = false, workIndexTab = "sessions", readOnly = false) {
     React.useEffect(() => {
         if (suspended) return undefined;
         const handler = (event) => {
@@ -13634,12 +16951,6 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
                 return;
             }
-            if (!editable && isShiftModel) {
-                event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
-                return;
-            }
-
             if (modal && !editable) {
                 if (event.key === "Escape" || (modal.type === "confirm" && event.key === "n")) {
                     event.preventDefault();
@@ -13719,12 +17030,22 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 return;
             }
 
+            if (workIndexTab !== "sessions") {
+                return;
+            }
+
+            if (isShiftModel && !readOnly) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
+                return;
+            }
+
             if (event.key === "r" && isPlainShortcut && focusRegion !== "prompt") {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.REFRESH).catch(() => {});
                 return;
             }
-            if (event.key === "n" && isPlainShortcut) {
+            if (event.key === "n" && isPlainShortcut && !readOnly) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {});
                 return;
@@ -13733,8 +17054,9 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 focusRegion === "inspector"
                 && currentInspectorTab === "files"
                 && (
-                    (event.key === "u" && isPlainShortcut)
-                    || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a")
+                    !readOnly
+                    && ((event.key === "u" && isPlainShortcut)
+                    || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a"))
                 )
             ) {
                 event.preventDefault();
@@ -13746,7 +17068,7 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {});
                 return;
             }
-            if (focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "x" && isPlainShortcut) {
+            if (!readOnly && focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "x" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE).catch(() => {});
                 return;
@@ -13801,22 +17123,22 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 controller.handleCommand(UI_COMMANDS.OPEN_ARTIFACT_PICKER).catch(() => {});
                 return;
             }
-            if (event.key === "p" && isPlainShortcut) {
+            if (!readOnly && event.key === "p" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.FOCUS_PROMPT).catch(() => {});
                 return;
             }
-            if (event.key === "c" && isPlainShortcut) {
+            if (!readOnly && event.key === "c" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.CANCEL_SESSION).catch(() => {});
                 return;
             }
-            if (event.key === "d" && isPlainShortcut) {
+            if (!readOnly && event.key === "d" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.DONE_SESSION).catch(() => {});
                 return;
             }
-            if (event.key === "D" && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            if (!readOnly && event.key === "D" && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.DELETE_SESSION).catch(() => {});
                 return;
@@ -13866,7 +17188,7 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN).catch(() => {});
                 return;
             }
-            if (focusRegion === "sessions" && event.ctrlKey && event.key.toLowerCase() === "g" && !event.metaKey && !event.altKey) {
+            if (!readOnly && focusRegion === "sessions" && event.ctrlKey && event.key.toLowerCase() === "g" && !event.metaKey && !event.altKey) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {});
                 return;
@@ -13881,7 +17203,7 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 controller.handleCommand(UI_COMMANDS.PAGE_DOWN).catch(() => {});
                 return;
             }
-            if (focusRegion === "sessions" && event.key === "t" && isPlainShortcut) {
+            if (!readOnly && focusRegion === "sessions" && event.key === "t" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {});
                 return;
@@ -13955,7 +17277,7 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [controller, mobile, suspended]);
+    }, [controller, mobile, readOnly, suspended, workIndexTab]);
 }
 
 function formatAdminPrincipalLabel(principal) {
@@ -14167,8 +17489,26 @@ function AdminConsolePanel({ controller, mobile = false }) {
 
 function AdminWorkersPane({ controller, view }) {
     const workers = view.workers || {};
-    const rows = workers.rows || [];
     const counts = workers.counts || {};
+    const [status, setStatus] = React.useState("all");
+    const [compute, setCompute] = React.useState("all");
+    const [field, setField] = React.useState("all");
+    const [query, setQuery] = React.useState("");
+    const [sort, setSort] = React.useState("default");
+    const rows = React.useMemo(() => applyWorkerFleetViewOptions(workers.rows || [], {
+        status,
+        compute,
+        field,
+        query,
+        sort,
+    }), [workers.rows, status, compute, field, query, sort]);
+    const option = (value, label) => React.createElement("option", { key: value, value }, label);
+    const cellLines = (...lines) => React.createElement("div", { className: "ps-admin-workers__cell-lines" },
+        lines.filter(Boolean).map((line, index) => React.createElement("span", {
+            key: `${index}:${line}`,
+            className: index === 0 ? undefined : "is-muted",
+            title: String(line),
+        }, line)));
     // Liveness is heartbeat recency (~20s beats, 90s window): a static
     // snapshot rots into "0 live" while the pane sits open. Poll while
     // mounted; the TUI refreshes on `r`.
@@ -14198,34 +17538,113 @@ function AdminWorkersPane({ controller, view }) {
         workers.error
             ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, workers.error)
             : null,
+        React.createElement("div", { className: "ps-admin-workers__controls" },
+            React.createElement("label", null,
+                React.createElement("span", null, "State"),
+                React.createElement("select", {
+                    "aria-label": "Worker state filter",
+                    value: status,
+                    onChange: (event) => setStatus(event.target.value),
+                }, [
+                    option("all", "All"),
+                    option("live", "Live"),
+                    option("stale", "Stale"),
+                ])),
+            React.createElement("label", null,
+                React.createElement("span", null, "Environment"),
+                React.createElement("select", {
+                    "aria-label": "Worker environment filter",
+                    value: compute,
+                    onChange: (event) => setCompute(event.target.value),
+                }, [
+                    option("all", "All"),
+                    option("cluster", "Cluster"),
+                    option("devbox", "Devbox"),
+                ])),
+            React.createElement("label", null,
+                React.createElement("span", null, "Filter"),
+                React.createElement("select", {
+                    "aria-label": "Worker filter field",
+                    value: field,
+                    onChange: (event) => setField(event.target.value),
+                }, [
+                    option("all", "All fields"),
+                    option("owner", "Owner"),
+                    option("version", "Version"),
+                    option("commit", "Commit"),
+                    option("build", "Build / image"),
+                ])),
+            React.createElement("input", {
+                type: "search",
+                "aria-label": "Filter workers",
+                placeholder: "Filter workers…",
+                value: query,
+                onChange: (event) => setQuery(event.target.value),
+            }),
+            React.createElement("label", null,
+                React.createElement("span", null, "Sort"),
+                React.createElement("select", {
+                    "aria-label": "Worker sort",
+                    value: sort,
+                    onChange: (event) => setSort(event.target.value),
+                }, [
+                    option("default", "Pool / worker"),
+                    option("stale", "Stale first"),
+                    option("owner", "Owner"),
+                    option("version", "Application version"),
+                    option("commit", "Commit"),
+                    option("build", "Build / image"),
+                ])),
+            React.createElement("span", { className: "ps-admin-workers__shown" }, `${rows.length} shown`)),
         workers.empty
             ? React.createElement("p", { className: "ps-admin-console__hint" },
                 "No workers registered. Workers appear here on their first heartbeat and self-prune after an hour of silence.")
+            : rows.length === 0
+                ? React.createElement("p", { className: "ps-admin-console__hint" }, "No workers match the current filters.")
             : React.createElement("div", { className: "ps-admin-workers__scroll" },
                 React.createElement("table", { className: "ps-admin-workers__table" },
                     React.createElement("thead", null, React.createElement("tr", null,
-                        ["Worker", "Pool", "Phase", "Heartbeat", "Uptime", "RSS", "Sessions", "Loop p99", "Packages", "SDK"]
+                        ["Worker", "Pool / phase", "Heartbeat", "Owner", "Version / commit", "Build / image", "Affinities", "Utilization", "Health", "Packages"]
                             .map((label) => React.createElement("th", { key: label }, label)))),
                     React.createElement("tbody", null, rows.map((row) => React.createElement("tr", {
                         key: row.id,
                         className: row.live ? "is-live" : "is-stale",
                     },
-                        React.createElement("td", { className: "ps-admin-workers__id", title: row.owner ? `owner: ${row.owner}` : undefined },
+                        React.createElement("td", { className: "ps-admin-workers__id" },
                             React.createElement("span", { className: `ps-worker-dot${row.live ? " is-live" : ""}` }),
-                            row.id,
+                            cellLines(row.displayName, row.hostname, row.id),
                             row.substrate && row.substrate !== "kubernetes"
                                 ? React.createElement("span", { className: "ps-admin-workers__substrate" }, row.substrate)
                                 : null),
-                        React.createElement("td", null, row.pool),
                         React.createElement("td", null,
+                            cellLines(row.pool),
                             React.createElement("span", { className: `ps-worker-phase is-${row.phase}` }, row.phase)),
-                        React.createElement("td", null, row.agoText),
-                        React.createElement("td", null, row.uptimeText ?? "—"),
-                        React.createElement("td", null, row.rssText ?? "—"),
-                        React.createElement("td", null, row.sessions ?? "—"),
-                        React.createElement("td", null, row.eventLoopText ?? "—"),
+                        React.createElement("td", null, cellLines(
+                            row.live ? `${row.agoText} · live` : `${row.agoText} · stale`,
+                            `started ${row.processStartedAt}`,
+                        )),
+                        React.createElement("td", null,
+                            row.ownerPrincipal ? formatAdminPrincipalLabel(row.ownerPrincipal) : row.owner),
+                        React.createElement("td", null, cellLines(
+                            `app ${row.applicationVersion}`,
+                            `SDK ${row.sdkVersion}`,
+                            `commit ${row.sourceCommitShort}`,
+                        )),
+                        React.createElement("td", null, cellLines(
+                            `build ${row.buildId}`,
+                            row.imageRef,
+                            row.imageDigest,
+                        )),
+                        React.createElement("td", { title: row.affinityText }, row.affinityText),
+                        React.createElement("td", null, row.utilizationText),
+                        React.createElement("td", null, cellLines(
+                            row.uptimeText ? `up ${row.uptimeText}` : "uptime unknown",
+                            row.rssText ? `rss ${row.rssText}` : "rss unknown",
+                            row.sessions != null ? `${row.sessions} resident sessions` : "resident sessions unknown",
+                            row.eventLoopText ? `loop ${row.eventLoopText}` : "loop unknown",
+                        )),
                         React.createElement("td", { title: row.pkgEpoch != null ? `epoch ${row.pkgEpoch}` : undefined }, row.pkgText ?? "—"),
-                        React.createElement("td", null, row.sdkVersion ?? "—")))))));
+                    ))))));
 }
 
 function AdminSettingsTree({ controller, view }) {
@@ -14382,7 +17801,7 @@ function AdminPackageDetailPane({ controller, view }) {
                     ? React.createElement("button", { type: "button", className: "ps-primary-button", onClick: act("sync"), disabled: Boolean(pending) },
                         pending === "sync" ? "Syncing…" : "Sync now")
                     : null,
-                // Publishing a new version is the same job as adding one, so it
+                // Publishing a new version is the same workflowRun as adding one, so it
                 // is the same dialog with the destination already chosen.
                 React.createElement("button", {
                     type: "button",
@@ -15235,6 +18654,32 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // The phone's Main layout: split | chat | sessions (cycled by the Main
     // toolbar button). Desktop has real columns and needs no such cycle.
     const [mobileMainLayout, setMobileMainLayout] = React.useState("split");
+    const [workIndexTab, setWorkIndexTab] = React.useState("sessions");
+    const [workIndexScope, setWorkIndexScope] = React.useState("visible");
+    const preFleetSessionIdRef = React.useRef(null);
+    const selectedFleetSessionIdRef = React.useRef(null);
+    const changeWorkIndexScope = React.useCallback(async (nextScope) => {
+        if (nextScope === "fleet") {
+            preFleetSessionIdRef.current = controller.getState().sessions.activeSessionId || null;
+            selectedFleetSessionIdRef.current = null;
+            controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+            controller.closeArtifactPane?.().catch(() => {});
+            controller.dispatch({ type: "ui/canvasMaximized", on: false });
+            setWorkIndexScope("fleet");
+            return;
+        }
+        const restoreSessionId = preFleetSessionIdRef.current;
+        if (selectedFleetSessionIdRef.current && restoreSessionId) {
+            await controller.loadSession(restoreSessionId).catch(() => {});
+        }
+        preFleetSessionIdRef.current = null;
+        selectedFleetSessionIdRef.current = null;
+        setWorkIndexScope("visible");
+    }, [controller]);
+    const selectFleetSession = React.useCallback(async (sessionId) => {
+        selectedFleetSessionIdRef.current = sessionId;
+        await controller.openUnlistedSession(sessionId);
+    }, [controller]);
     const state = useControllerSelector(controller, (rootState) => ({
         moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
@@ -15313,7 +18758,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
-    useKeyboardShortcuts(controller, mobile, suspended);
+    useKeyboardShortcuts(controller, mobile, suspended, workIndexTab, workIndexScope === "fleet");
 
     const lastCreatedSessionRef = React.useRef(state.revealedCreatedSessionId);
     React.useEffect(() => {
@@ -15617,7 +19062,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // targets. Mapping chat/sessions/prompt back to Main fought the
         // toolbar: the sessions-only layout's list reclaims focus, which
         // bounced the user out of Inspector the instant they tapped it.
-        // Returning to Main is the Main button's job now.
+        // Returning to Main is the Main button's workflowRun now.
         //
         // Gate on the RAW request, not the normalized region: on a phone a
         // workspace region (sessions/chat) normalizes to inspector, so the
@@ -15644,7 +19089,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         () => computeLegacyLayout(gridViewport, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust, state.activityPaneAdjust),
         [gridViewport, state.activityPaneAdjust, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust],
     );
-    const filesFullscreenActive = state.filesFullscreen && state.inspectorTab === "files";
+    const filesFullscreenActive = workIndexScope !== "fleet"
+        && state.filesFullscreen
+        && state.inspectorTab === "files";
     // Preview detaches into the activity slot only while the Files tab is open
     // AND something is selected — otherwise Activity keeps the slot. Fullscreen
     // is excluded because it already shows the preview alone.
@@ -15655,6 +19102,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // The takeover pane only makes sense on desktop; the phone has its own
     // full-viewport overlay and no column to take over.
     const artifactPaneActive = !mobile
+        && workIndexScope !== "fleet"
         && state.artifactPaneOpen
         && Boolean(state.selectedArtifactId)
         && !filesFullscreenActive;
@@ -15663,6 +19111,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // precedence while open, and its ✕ leaves rightPaneMode untouched — so
     // closing a preview returns to the canvas, restore-what-was-displaced.
     const canvasModeActive = !mobile
+        && workIndexScope !== "fleet"
         && state.canvasOpen
         && !filesFullscreenActive;
     // sessionId is a dep ON PURPOSE, not just canvasModeActive. The reset
@@ -15682,6 +19131,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // rather than instead of it. The artifact reader still takes the whole
     // right side while it is open, as it always did.
     const diagnosticsActive = !mobile
+        && workIndexScope !== "fleet"
         && state.diagnosticsOpen
         && !filesFullscreenActive
         && !artifactPaneActive
@@ -15695,7 +19145,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     // In the STORE, not local state: the header owns the way out (the rev
     // strip is promoted up there while full screen), and every other toolbar
-    // button has to be able to drop it before doing its own job.
+    // button has to be able to drop it before doing its own workflowRun.
     const canvasMaximized = state.canvasMaximized && canvasModeActive;
     // Zen: chat rail + canvas workbench. Diagnostics steps aside but keeps
     // its stored toggle; the session list hides entirely.
@@ -15790,7 +19240,15 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "1" },
     },
-        React.createElement(SessionPane, { controller, structuredRows: true })) : null,
+        React.createElement(WorkIndexPane, {
+            controller,
+            structuredRows: true,
+            activeTab: workIndexTab,
+            onTabChange: setWorkIndexTab,
+            catalogScope: workIndexScope,
+            onCatalogScopeChange: changeWorkIndexScope,
+            onFleetSessionSelect: selectFleetSession,
+        })) : null,
     React.createElement("div", {
         style: {
             gridColumn: "2",
@@ -15803,7 +19261,10 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "3" },
     },
-        React.createElement(ChatPane, { controller }))),
+        React.createElement(ChatPane, {
+            controller,
+            forceReadOnly: workIndexScope === "fleet",
+        }))),
     rightSideActive
         ? (artifactPaneActive
             ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })
@@ -15927,7 +19388,16 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
     else if (mobilePane === "canvas") mobileContent = null;
-    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout, onEnterZen: moa?.openMobileZen });
+    else mobileContent = React.createElement(MobileWorkspace, {
+        controller,
+        layout: mobileMainLayout,
+        workIndexTab,
+        onWorkIndexTabChange: setWorkIndexTab,
+        workIndexScope,
+        onWorkIndexScopeChange: changeWorkIndexScope,
+        onFleetSessionSelect: selectFleetSession,
+        onEnterZen: moa?.openMobileZen,
+    });
 
     // The phone's canvas layer: a sibling of the content region's pane, NOT a
     // child of any pane. That is deliberate — panes mount and unmount as the
@@ -15943,7 +19413,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         : null;
 
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
-        React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),
+        React.createElement(Toolbar, {
+            controller,
+            mobile: false,
+            moa,
+            viewNavigation,
+            readOnly: workIndexScope === "fleet",
+        }),
         React.createElement(ModalLayer, { controller }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
@@ -15953,6 +19429,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         React.createElement(Toolbar, {
             controller, moa, viewNavigation,
             mobile,
+            readOnly: workIndexScope === "fleet",
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
             mobilePane,

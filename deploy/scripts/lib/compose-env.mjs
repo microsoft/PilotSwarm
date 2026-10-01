@@ -20,7 +20,36 @@ import { log } from "./common.mjs";
 import { deploysPostgres } from "./database-env.mjs";
 import { validateHorizonDbConfig } from "./horizondb.mjs";
 
-export function composeDerivedEnv(env) {
+export function composeDerivedEnv(
+  env,
+  { includeGenericWorkerDefaults = true } = {},
+) {
+  // The normal worker Deployment is the repo-less pool. Keep these defaults
+  // here as well as template.env so local envs scaffolded before the fields
+  // were introduced continue to stage successfully.
+  if (includeGenericWorkerDefaults) {
+    const workerTags = (env.PILOTSWARM_WORKER_TAGS || "generic")
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    if (!workerTags.includes("generic")) {
+      throw new Error(
+        `PILOTSWARM_WORKER_TAGS must include 'generic' for the repo-less worker service; got '${env.PILOTSWARM_WORKER_TAGS}'.`,
+      );
+    }
+    env.PILOTSWARM_WORKER_TAGS = workerTags.join(",");
+    if (!env.WORKER_REPLICAS) {
+      env.WORKER_REPLICAS = "3";
+    }
+    if (!/^[1-9][0-9]*$/.test(env.WORKER_REPLICAS) || Number(env.WORKER_REPLICAS) > 100) {
+      throw new Error(
+        `WORKER_REPLICAS must be an integer from 1 to 100; got '${env.WORKER_REPLICAS}'.`,
+      );
+    }
+  }
+
+  env.WORKFLOW_GENERATOR_SOURCE_PROVIDERS_JSON ||= "[]";
+
   validateHorizonDbConfig(env);
   if (String(env.HORIZONDB_ENABLED).toLowerCase() === "true") {
     if (env.FOUNDRY_ENDPOINT) {
@@ -31,6 +60,8 @@ export function composeDerivedEnv(env) {
   env.HORIZON_EMBED_MODEL ||= "text-embedding-3-small";
   env.HORIZON_EMBED_DIM ||= "1536";
   env.HORIZON_EMBED_API_KEY_HEADER ||= "api-key";
+
+
   // Bring-your-own database: base-infra provisions no
   // server, so any POSTGRES_* value here is empty or a stale leftover that the
   // per-env Bicep outputs cache merged in from an earlier provisioned run
@@ -103,4 +134,5 @@ export function composeDerivedEnv(env) {
       `postgresql://${encodeURIComponent(env.PILOTSWARM_DB_AAD_USER)}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
     log("info", `Composed PILOTSWARM_CMS_FACTS_DATABASE_URL (passwordless AAD URL) for CMS + facts.`);
   }
+
 }

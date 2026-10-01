@@ -34,13 +34,14 @@ const read = (rel) => readFileSync(join(SRC, rel), "utf8");
 test("the latest version is 1.0.80", () => {
     assert.match(
         read("orchestration-version.ts"),
-        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.80";/,
+        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.81";/,
     );
 });
 
-test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
+test("1.0.70 through 1.0.80 are frozen in their own directories", () => {
     assert.ok(existsSync(join(SRC, "orchestration_1_0_70/index.ts")), "the frozen copy must exist");
     assert.ok(existsSync(join(SRC, "orchestration_1_0_71/index.ts")), "the latest frozen copy must exist");
+    assert.ok(existsSync(join(SRC, "orchestration_1_0_73/index.ts")), "the newest frozen copy must exist");
     const registry = read("orchestration-registry.ts");
     assert.match(
         registry,
@@ -52,13 +53,20 @@ test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
         /import \{ durableSessionOrchestration_1_0_71 \} from "\.\/orchestration_1_0_71\/index\.js";/,
         "1.0.71 must resolve to its frozen directory",
     );
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_73 \} from "\.\/orchestration_1_0_73\/index\.js";/);
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_80 \} from "\.\/orchestration\/index\.js";/);
-    assert.match(registry, /\{ version: "1\.0\.70", handler: durableSessionOrchestration_1_0_70 \}/);
-    assert.match(registry, /\{ version: "1\.0\.71", handler: durableSessionOrchestration_1_0_71 \}/);
     assert.match(
         registry,
-        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_80 \}/,
+        /import \{ durableSessionOrchestration_1_0_73 \} from "\.\/orchestration_1_0_73\/index\.js";/,
+        "1.0.73 must resolve to its frozen directory now that 1.0.81 is the live latest",
+    );
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_79 \} from "\.\/orchestration_1_0_79\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_80 \} from "\.\/orchestration_1_0_80\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_81 \} from "\.\/orchestration\/index\.js";/);
+    assert.match(registry, /\{ version: "1\.0\.70", handler: durableSessionOrchestration_1_0_70 \}/);
+    assert.match(registry, /\{ version: "1\.0\.71", handler: durableSessionOrchestration_1_0_71 \}/);
+    assert.match(registry, /\{ version: "1\.0\.73", handler: durableSessionOrchestration_1_0_73 \}/);
+    assert.match(
+        registry,
+        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_81 \}/,
     );
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_72 \} from "\.\/orchestration_1_0_72\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.72", handler: durableSessionOrchestration_1_0_72 \}/);
@@ -67,7 +75,9 @@ test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
     assert.match(registry, /\{ version: "1\.0\.73", handler: durableSessionOrchestration_1_0_73 \}/);
     assert.match(read("orchestration_1_0_73/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.73";/);
     assert.match(read("orchestration_1_0_73/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
-    for (const patch of [74, 75, 76, 77, 78, 79]) {
+    // 1.0.80 is upstream's last live tree, frozen here so the fork's combined
+    // 1.0.81 can open without rewriting the history it inherited.
+    for (const patch of [74, 75, 76, 77, 78, 79, 80]) {
         assert.match(registry, new RegExp(`import \\{ durableSessionOrchestration_1_0_${patch} \\} from "\\.\\/orchestration_1_0_${patch}\\/index\\.js";`));
         assert.match(registry, new RegExp(`\\{ version: "1\\.0\\.${patch}", handler: durableSessionOrchestration_1_0_${patch} \\}`));
         assert.match(read(`orchestration_1_0_${patch}/runtime.ts`), new RegExp(`CURRENT_ORCHESTRATION_VERSION = "1\\.0\\.${patch}";`));
@@ -99,13 +109,116 @@ test("a frozen orchestration self-identifies with its OWN version", () => {
         "the new frozen version must not follow the moving latest",
     );
     assert.match(
+        read("orchestration_1_0_73/runtime.ts"),
+        /export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.73";/,
+    );
+    assert.doesNotMatch(
+        read("orchestration_1_0_73/runtime.ts"),
+        /CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION/,
+        "the newest frozen version must not follow the moving latest",
+    );
+    assert.match(
+        read("orchestration_1_0_78/runtime.ts"),
+        /export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.78";/,
+    );
+    assert.doesNotMatch(
+        read("orchestration_1_0_78/runtime.ts"),
+        /CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION/,
+        "1.0.78 was the live tree until 1.0.79 opened — the freeze must pin it",
+    );
+    assert.match(
+        read("orchestration_1_0_79/runtime.ts"),
+        /export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.79";/,
+    );
+    assert.match(
+        read("orchestration_1_0_80/runtime.ts"),
+        /export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.80";/,
+    );
+    assert.match(
         read("orchestration/runtime.ts"),
         /export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;/,
     );
-    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_80\(/);
+    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_81\(/);
+    assert.match(read("orchestration_1_0_80/index.ts"), /export function\* durableSessionOrchestration_1_0_80\(/);
+    assert.match(read("orchestration_1_0_79/index.ts"), /export function\* durableSessionOrchestration_1_0_79\(/);
+    assert.match(read("orchestration_1_0_78/index.ts"), /export function\* durableSessionOrchestration_1_0_78\(/);
     assert.match(read("orchestration_1_0_73/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
     assert.match(read("orchestration_1_0_71/index.ts"), /export function\* durableSessionOrchestration_1_0_71\(/);
     assert.match(read("orchestration_1_0_70/index.ts"), /export function\* durableSessionOrchestration_1_0_70\(/);
+});
+
+test("only the live 1.0.81 orchestration is owner-affinity aware", () => {
+    // WHY THE BUMP: 1.0.74 routes a session's children (and the regen
+    // distiller) to the worker that owns the parent by scheduling
+    // spawnChildSession2 / runRegenSpawnDistiller2 instead of the base names.
+    // That changes the durable yield sequence, so 1.0.73 is frozen rather than
+    // edited. The freeze is the invariant: which proxy each version builds.
+    //
+    // 1.0.81 combines upstream's workspace-aware 1.0.80 with the fork's
+    // named-agent handoff contract and owner-aware spawn routing. Both
+    // predecessor implementations remain frozen under their shipped versions.
+    assert.match(
+        read("orchestration/runtime.ts"),
+        /createSessionManagerProxy\(ctx, "agent-handoff-v2", \{\s*childResultProvenance: true,\s*ownerAwareRouting: true,\s*\}\)/,
+        "the live 1.0.81 orchestration builds the handoff-contract + owner-aware proxy",
+    );
+    assert.match(
+        read("orchestration/runtime.ts"),
+        /createSessionProxy\(ctx, input\.sessionId, state\.affinityKey, state\.config, "agent-handoff-v2"\)/,
+        "and its session proxy opts into the handoff contract",
+    );
+    assert.match(
+        read("orchestration_1_0_78/runtime.ts"),
+        /createSessionManagerProxy\(ctx, "agent-handoff-v2", \{ childResultProvenance: true \}\)/,
+        "frozen 1.0.78 keeps upstream's contract-only proxy",
+    );
+    assert.doesNotMatch(
+        read("orchestration_1_0_78/runtime.ts"),
+        /ownerAwareRouting/,
+        "a frozen version must not gain owner-aware routing after the fact",
+    );
+    assert.match(
+        read("orchestration_1_0_73/runtime.ts"),
+        /createSessionManagerProxy\(ctx\)/,
+        "frozen 1.0.73 must keep the plain proxy — base activity names only",
+    );
+    assert.doesNotMatch(
+        read("orchestration_1_0_73/runtime.ts"),
+        /ownerAwareRouting/,
+        "a frozen version must not gain owner-aware routing after the fact",
+    );
+    const sp = read("session-proxy.ts");
+    // The proxy schedules the "2" activity names ONLY when owner-aware, and
+    // both names resolve to the same handler so every version replays.
+    assert.match(sp, /options\.ownerAwareRouting \? "spawnChildSession2" : "spawnChildSession"/);
+    assert.match(sp, /options\.ownerAwareRouting \? "runRegenSpawnDistiller2" : "runRegenSpawnDistiller"/);
+    assert.match(sp, /runtime\.registerActivity\("spawnChildSession2", spawnChildSessionActivity\)/);
+    assert.match(sp, /runtime\.registerActivity\("runRegenSpawnDistiller2", runRegenSpawnDistillerActivity\)/);
+});
+
+test("runTurn keeps repo/owner isolation while the handoff contract rides the activity name", () => {
+    // Duroxide carries ONE tag per activity. The capability tag and the
+    // repo/owner affinity tag cannot both ride runTurn, so the affinity tag —
+    // a security boundary that holds for EVERY version — is applied last, and
+    // the contract is represented by the versioned name plus the fail-closed
+    // tag-routing check.
+    const routing = read("activity-routing.ts");
+    assert.match(routing, /export const AGENT_HANDOFF_CAPABILITY = "pilotswarm\.agent-handoff\.v2";/);
+    assert.match(routing, /runTurn: "runTurnV3",/);
+    assert.match(routing, /runTurn2: "runTurnEpochV3",/);
+    assert.match(
+        routing,
+        /throw new Error\("Agent handoff requires Duroxide activity tag routing support"\)/,
+        "routing must fail closed when the SDK cannot express tags",
+    );
+    assert.match(
+        routing,
+        /export function runTurnRoutingTag\(/,
+        "owner/repo affinity tagging must survive the handoff merge",
+    );
+    const sp = read("session-proxy.ts");
+    assert.match(sp, /routedActivityName\(turnMeta\?\.epochStart \? "runTurn2" : "runTurn", routingContract\)/);
+    assert.match(sp, /return runTurnTask\.withTag\(runTurnRoutingTag\(config\)\);/);
 });
 
 test("the frozen 1.0.70 keeps the OLD delivery: note parked for the system message, nothing in the prompt", () => {

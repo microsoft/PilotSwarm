@@ -552,6 +552,7 @@ export function buildContinueInput(
         ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
         ...(state.recentClientMessageIds?.length ? { recentClientMessageIds: [...state.recentClientMessageIds] } : {}),
+        ...(state.callerReauthWaitCount > 0 ? { callerReauthWaitCount: state.callerReauthWaitCount } : {}),
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(state.runtimeModelNotice ? { runtimeModelNotice: state.runtimeModelNotice } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),
@@ -583,6 +584,7 @@ export function buildContinueInput(
         // retry count, so the retry still gets the partial-changes note.
         retryCount: state.workspaceStatus?.state === "unavailable" ? state.retryCount : 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
+        ...(state.pendingSystemWait ? { pendingSystemWait: state.pendingSystemWait } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
         // A queued-while-blocked prompt must survive the epoch boundary too,
@@ -644,6 +646,7 @@ export function* versionedContinueAsNew(
             ...(state.activeTimer.shouldRehydrate ? { shouldRehydrate: true } : {}),
             ...(state.activeTimer.waitPlan ? { waitPlan: state.activeTimer.waitPlan } : {}),
             ...(state.activeTimer.content ? { content: state.activeTimer.content } : {}),
+            ...(state.activeTimer.resumePrompt ? { resumePrompt: state.activeTimer.resumePrompt } : {}),
             ...(state.activeTimer.question ? { question: state.activeTimer.question } : {}),
             ...(state.activeTimer.choices ? { choices: state.activeTimer.choices } : {}),
             ...(state.activeTimer.allowFreeform !== undefined ? { allowFreeform: state.activeTimer.allowFreeform } : {}),
@@ -1077,6 +1080,13 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
                 // A gate wait is dropped after the turn, never re-armed.
                 ...(timerGate(timer) ? { gate: timerGate(timer), ...(timerGate(timer) === "budget" ? { budget: true } : {}) } : {}),
             };
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.wait_cancelled",
+                data: {
+                    reason: "interrupted_by_model_switch",
+                    remainingSeconds: runtime.state.interruptedWaitTimer.remainingSec,
+                },
+            }]);
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; will auto-resume interrupted wait (${runtime.state.interruptedWaitTimer.remainingSec}s remain)`);
             runtime.state.activeTimer = null;
             return;

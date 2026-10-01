@@ -135,6 +135,9 @@ export class HttpApiTransport {
     uploadAgentPackage(files, scope) { return this.api.call("uploadAgentPackage", { files, scope }); }
     listAgentWorkerState() { return this.api.call("listAgentWorkerState"); }
     listWorkers() { return this.api.call("listWorkers"); }
+    getWorkerTimeline(workerNodeId, options = {}) {
+        return this.api.call("getWorkerTimeline", { workerNodeId, ...options });
+    }
     setAgentPackageScope(name, scope, selector) { return this.api.call("setAgentPackageScope", { name, scope, ...selectorParams(selector, { scopeless: true }) }); }
     setAgentPackageEnabled(name, enabled, selector) { return this.api.call("setAgentPackageEnabled", { name, enabled, ...selectorParams(selector) }); }
     pinAgentPackageVersion(name, semver, selector) { return this.api.call("pinAgentPackageVersion", { name, semver, ...selectorParams(selector) }); }
@@ -155,24 +158,134 @@ export class HttpApiTransport {
         return this.bootstrap?.sessionCreationPolicy || null;
     }
 
+    // ── Workflow Generators ──────────────────────────────────────────────────
+
+    async createWorkflowGenerator(input) {
+        return this.api.call("createWorkflowGenerator", input);
+    }
+
+    async listWorkflowGenerators(options = {}) {
+        return this.api.call("listWorkflowGenerators", options);
+    }
+
+    async listWorkflowGeneratorsPage(options = {}) {
+        const cursor = options.cursor ?? null;
+        return this.api.call("listWorkflowGeneratorsPage", {
+            ...options,
+            cursor: undefined,
+            cursorUpdatedAt: cursor?.updatedAt,
+            cursorId: cursor?.id,
+        });
+    }
+
+    async getWorkflowGenerator(workflowGeneratorId, options = {}) {
+        return this.api.call("getWorkflowGenerator", { workflowGeneratorId, scope: options.scope });
+    }
+
+    async deleteWorkflowGenerator(workflowGeneratorId) {
+        return this.api.call("deleteWorkflowGenerator", { workflowGeneratorId });
+    }
+
+    async listWorkflowDefinitions(workflowType) {
+        return this.api.call("listWorkflowDefinitions", { workflowType });
+    }
+
+    async getWorkflowDefinition(workflowDefinitionId, options = {}) {
+        return this.api.call("getWorkflowDefinition", { workflowDefinitionId, scope: options.scope });
+    }
+
+    async createWorkflowDefinition(input) {
+        return this.api.call("createWorkflowDefinition", input);
+    }
+
+    async setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId) {
+        return this.api.call("setWorkflowGeneratorDefinition", {
+            workflowGeneratorId,
+            workflowDefinitionId,
+        });
+    }
+
+    async createWorkflowRun(input) {
+        return this.api.call("createWorkflowRun", input);
+    }
+
+    async listWorkflowRuns(options = {}) {
+        return this.api.call("listWorkflowRuns", options);
+    }
+
+    async listWorkflowRunsPage(options = {}) {
+        const cursor = options.cursor ?? null;
+        return this.api.call("listWorkflowRunsPage", {
+            ...options,
+            cursor: undefined,
+            cursorUpdatedAt: cursor?.updatedAt,
+            cursorId: cursor?.id,
+        });
+    }
+
+    async listWorkflowGeneratorRuns(workflowGeneratorId, options = {}) {
+        return this.api.call("listWorkflowGeneratorRuns", { workflowGeneratorId, scope: options.scope });
+    }
+
+    async listWorkflowGeneratorCycles(workflowGeneratorId, limit) {
+        return this.api.call("listWorkflowGeneratorCycles", { workflowGeneratorId, limit });
+    }
+
+    async getWorkflowRun(workflowRunId, options = {}) {
+        return this.api.call("getWorkflowRun", { workflowRunId, scope: options.scope });
+    }
+
+    async deleteWorkflowRun(workflowRunId) {
+        return this.api.call("deleteWorkflowRun", { workflowRunId });
+    }
+
+    async listWorkflowRunSessions(workflowRunId, options = {}) {
+        return this.api.call("listWorkflowRunSessions", { workflowRunId, scope: options.scope });
+    }
+
+    async listWorkflowRunStateRuns(workflowRunId, options = {}) {
+        return this.api.call("listWorkflowRunStateRuns", { workflowRunId, scope: options.scope });
+    }
+
+    async listWorkflowRunWaits(workflowRunId, options = {}) {
+        return this.api.call("listWorkflowRunWaits", { workflowRunId, scope: options.scope });
+    }
+
+    async listWorkflowRunJournal(workflowRunId, options = {}) {
+        return this.api.call("listWorkflowRunJournal", { workflowRunId, scope: options.scope });
+    }
+
+    async setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden) {
+        return this.api.call("setWorkflowRunWaitConditionOverride", { workflowRunId, waitId, conditionKey, overridden });
+    }
+
     // ── Sessions ────────────────────────────────────────────────────────
 
-    async listSessions() {
-        return this.api.call("listSessions");
+    async listSessions(options = {}) {
+        return this.api.call("listSessions", options);
     }
 
     async listSessionsPage(opts = {}) {
+        // The keyset cursor travels as two scalar query params rather than a
+        // JSON blob so the request URL carries no encoded braces/quotes for an
+        // edge WAF to block.
+        const cursor = opts?.cursor ?? null;
         return this.api.call("listSessionsPage", {
             limit: opts?.limit,
-            cursor: opts?.cursor ?? undefined,
+            cursorUpdatedAt: cursor ? cursor.updatedAt : undefined,
+            cursorSessionId: cursor ? cursor.sessionId : undefined,
             includeDeleted: opts?.includeDeleted,
             systemFilter: opts?.systemFilter,
+            owner: opts?.owner,
+            status: opts?.status,
+            updatedAfter: opts?.updatedAfter,
+            scope: opts?.scope,
             viewerOnly: opts?.viewerOnly,
         });
     }
 
-    async getSession(sessionId) {
-        return this.api.call("getSession", { sessionId });
+    async getSession(sessionId, options = {}) {
+        return this.api.call("getSession", { sessionId, scope: options.scope });
     }
 
     // ── Session sharing / access (security model) ────────────────────────
@@ -439,8 +552,8 @@ export class HttpApiTransport {
 
     // ── Models ──────────────────────────────────────────────────────────
 
-    async listModels() {
-        return this.api.call("listModels");
+    async listModels(options = {}) {
+        return this.api.call("listModels", options);
     }
 
     // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──────

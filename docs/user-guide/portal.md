@@ -74,6 +74,41 @@ When the portal opens you see three panes:
 The layout is responsive — on narrow screens it collapses panes into a
 stack you swipe between, with a top bar for navigation.
 
+## Admin Fleet view
+
+Administrators see a scope button in the Work Index header:
+
+- **My view** uses the ordinary viewer-scoped catalogs. It shows Sessions,
+  Workflow Generators, and Workflow Runs visible to the signed-in principal.
+- **Fleet view · read-only** requests the fleet-wide catalogs and requires an
+  unrestricted administrator. Non-admin callers cannot request this scope.
+
+Fleet Session selection opens the normal transcript pane, but the workspace
+remains read-only: the prompt composer, Session management shortcuts, creation,
+Canvas, Diagnostics, file mutation, Workflow Generator creation/deletion,
+Workflow Run deletion, and wait-condition overrides are unavailable. Returning
+to **My view** restores the Session that was selected before entering Fleet
+view.
+
+Fleet catalog and detail responses are metadata projections rather than the
+full mutable resource records. They exclude Workflow Run inputs/effective
+configuration, Generator source queries, Definition bodies, Session
+summaries/results, wait prompts/responses, and journal summaries. Selecting a
+Session transcript is a separate authorized content read; Workflow Run
+transition timelines do not fetch raw Session events in Fleet mode.
+
+Fleet catalogs are loaded in stable, most-recently-updated pages. Use the
+owner, status, repository, placement, origin, and recent-activity controls
+available for each catalog to filter on the server, then choose **Load more**
+to continue from the current page without duplicates or skipped equal-time
+records. Session data does not currently carry the same persisted repository
+and placement metadata, so its Fleet filters are owner, status, and recent
+activity.
+
+Fleet view is an operational browsing surface, not an impersonation mode. The
+administrator remains the authenticated actor; the server authorizes the
+requested data scope and any Session content reads under that identity.
+
 ---
 
 # Part 1 — Beginner

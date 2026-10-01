@@ -1,0 +1,1302 @@
+# Workflow Generator lifecycle state machines
+
+## Purpose and audience
+
+This document defines the architecture and behavioral contract for publishing,
+resolving, executing, and observing durable Workflow Run state machines. It is intended
+for PilotSwarm architects and engineers implementing lifecycle source loading,
+policy, persistence, workers, transitions, waits, notifications, APIs, and
+portal experiences. It also provides profile owners and advanced lifecycle
+authors with the conceptual model and ownership boundaries their definitions
+must follow.
+
+This is a forward-looking design rather than an operations guide or a
+step-by-step end-user authoring tutorial. The currently implemented
+Workflow Generator discovery, materialization, provider, and controller behavior is
+documented in [Workflow Generator controller](./workflow-generators.md).
+
+## Status
+
+This document describes the target lifecycle architecture for durable Workflow Runs
+created by a Workflow Generator. The current implementation includes Workflow Run discovery,
+exactly-once materialization, definition pinning, state runs, Workflow Run session
+history, versioned Markdown-backed state execution, the Workflow Run journal, constrained atomic
+transitions, durable Workflow Run waits, and infrastructure-owned external
+operations. Newly published definitions resolve and validate their complete
+reachable graph and persist an immutable state-machine snapshot before any
+Workflow Run can reference that definition.
+
+### Immutable definition snapshots
+
+Publishing a Workflow Definition resolves every lifecycle source's mutable
+`requestedRef`, walks every state reachable from the initial state, validates
+all transitions, and stores the exact Markdown, source provenance, transitions,
+and canonical snapshot hash in the durable catalog. The Workflow Definition is
+immutable; a Workflow Run pins that version when it is created.
+
+Retries, waits, replacement workers, and subsequently entered states execute
+the same durable snapshot without re-reading the source repository. Updating a
+branch or state file requires publishing another Workflow Definition version;
+only Workflow Runs created against that version observe the change. Git commit,
+path, and per-state digest remain provenance, while the stored content is the
+execution source of truth.
+
+Definitions published before immutable snapshots were introduced retain the
+legacy state-entry resolution path for compatibility.
+
+Successor sessions receive ordered journal summaries and can call
+`read_job_source_session` with a journal entry's source Session ID to page
+through that prior session's durable execution events. The catalog authorizes
+the read from the current Workflow Run session association and exposes only sessions
+already referenced by the same Workflow Run's journal.
+
+## Summary
+
+A Workflow Generator discovers source records and materializes durable Workflow Runs. Each Workflow Run
+then progresses through a durable state machine. State instructions are
+authored as Markdown and remain in their separate user and platform sources.
+Publication compiles those sources into one immutable definition snapshot.
+When a worker activates or resumes a state run, it loads the current state's
+exact Markdown and transitions from the snapshot pinned by the Workflow Run.
+
+The state loader is generic. It does not hardcode a particular state machine or
+repository. Each resolved source provides a safe base path and filename prefix,
+so the current state resolves conventionally to
+`<basePath>/<filePrefix>.<state>.md`. Lifecycle profiles and policies will
+determine which states exist, who may author them, and where extension
+boundaries occur.
+
+The authoring Markdown remains the source material. The durable execution source
+of truth is the compiled state-machine snapshot persisted with the immutable
+Workflow Definition. The snapshot contains exact state content, transitions,
+resolved source coordinates, and a canonical hash.
+
+Workers execute state runs, but the catalog remains authoritative for leases,
+allowed transitions, state revisions, idempotency, and history. A worker may
+disappear while a Workflow Run is parked on a response, observed-condition, or timer
+wait; another worker can later resume the same durable state run.
+
+## TL;DR
+
+1. The platform defines reusable state-machine profiles with explicit
+   extension points that repositories and users can plug into.
+2. A user supplies the domain-specific behavior for the extension points they
+   are allowed to control, such as how to diagnose and propose a fix for a
+   particular class of bug.
+3. The platform pins the user source and selected profile versions without
+   copying their Markdown into a combined artifact.
+4. Workers execute the concrete state machine autonomously. The catalog, not
+   an individual worker, remains authoritative for state and transitions.
+5. Execution alternates between active work, such as LLM prompts and tools,
+   and durable response, observed-condition, or timer waits.
+6. Workflows dehydrate during waits. They do not retain a worker, process, or
+   in-memory call stack while waiting, and any eligible worker may resume them
+   after the wake condition is satisfied.
+7. Human participation does not define a wait kind. A response submitted
+   through PilotSwarm satisfies a response wait; a human action recorded in an
+   authoritative provider satisfies an observed-condition wait.
+
+The normal operating mode is autonomous execution. Human interaction is an
+exception represented as durable, observable blocked work rather than a
+required step between every state.
+
+## Goals
+
+- Let authors describe state behavior in readable Markdown.
+- Keep transition syntax small and deterministic.
+- Support repository-specific, platform-provided, and user-defined state
+  machines.
+- Compose user-authored fragments with platform-owned lifecycle profiles.
+- Pin every Workflow Run to an immutable effective lifecycle.
+- Execute state runs on any eligible worker without worker affinity.
+- Dehydrate workflows during response, observed-condition, and timer waits.
+- Reuse durable session suspension for response waits.
+- Enforce transitions atomically in the catalog.
+- Preserve a durable Workflow Run journal between state runs so knowledge learned in one
+  state is available to the next.
+- Expose current state, waits, ownership, and history in the portal.
+- Notify responsible humans when their input blocks an otherwise autonomous
+  workflow.
+- Preserve exactly-once Workflow Run materialization independently of state execution.
+
+## Non-goals
+
+- Inferring transitions from unstructured agent prose.
+- Requiring authors to write a YAML state-machine schema.
+- Letting agents or clients submit arbitrary destination states.
+- Keeping a worker process alive while waiting for a person.
+- Allowing a mutable branch to change the lifecycle of an existing Workflow Run.
+- Building a separate human-input system alongside the existing session
+  `ask_user` behavior.
+- Requiring a graphical state-machine editor for the initial implementation.
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| Workflow Generator | Mutable registration that periodically discovers source records |
+| Workflow Definition | Immutable version containing source, lifecycle, affinity, validation, and guardrail configuration |
+| Workflow Run | Durable identity for one discovered source record |
+| Lifecycle source | Repository, Git ref, and root Markdown file supplied for publication |
+| State machine fragment | States and transitions authored by one owner, such as a repository team |
+| Lifecycle profile | Versioned state machine or composable fragment provided by a platform or repository |
+| Lifecycle policy | Rules describing allowed profiles, state ownership, extension points, and overrides |
+| Lifecycle state source | Immutable user or platform source containing conventionally named state Markdown |
+| Effective lifecycle | Pinned state sources, policy, profile versions, and any validated runtime projection used by a Workflow Run |
+| State run | One durable attempt to execute one Workflow Run state at one state revision |
+| Workflow Run session | PilotSwarm session associated with a Workflow Run and normally with one state run |
+| Transition | Atomic movement from one official state to another |
+| Workflow Run journal | Ordered, append-only history whose state-transition entries carry a concise `summary` and source-session reference |
+| Workflow Run wait | Durable condition that parks a state run without retaining a worker |
+| Response wait | Workflow Run wait satisfied by an authorized response submitted directly through PilotSwarm |
+| Observed-condition wait | Workflow Run wait satisfied when PilotSwarm verifies a predicate in another authoritative system |
+| Timer wait | Workflow Run wait satisfied when a durable time condition is reached |
+| Detection mode | How PilotSwarm learns a wait may be satisfied: direct submission, polling, provider event, or hybrid |
+| Attention request | Durable indication that named humans or principals are blocking progress |
+
+The state machine belongs to the Workflow Run. A session is execution history for a
+state run; it is not the Workflow Run itself and does not own authoritative Workflow Run state.
+
+## Authoring model
+
+### Files
+
+An authored lifecycle starts with one root file and one file per authored
+state:
+
+```text
+Example.workflow.md
+Example.WorkDetailsGathered.md
+Example.Diagnosed.md
+```
+
+The root file identifies the initial state and, when required by policy, the
+handoff to another lifecycle fragment:
+
+```markdown
+# Example lifecycle
+
+## Initial state
+
+[WorkDetailsGathered](./Example.WorkDetailsGathered.md)
+
+## Platform handoff
+
+`FixProposed`
+```
+
+A state file contains the instructions for that state and its possible next
+states:
+
+```markdown
+# Work details gathered
+
+Review the available details. Ask the user for any information required to
+confirm a diagnosis.
+
+## Possible next states
+
+- [Diagnosed](./Example.Diagnosed.md) - the diagnosis is supported.
+- [WorkDetailsGathered](./Example.WorkDetailsGathered.md) - more details are required.
+```
+
+Local Markdown links identify states owned by the same fragment. A declared
+handoff state may be referenced by its canonical state name without requiring
+the author to provide a file for that state.
+
+### Authors describe outcomes, not tools
+
+Lifecycle authors describe:
+
+- What the agent should accomplish in the state.
+- When human input is required.
+- What should be captured in the transition summary.
+- Which outcomes are possible.
+
+Authors do not instruct portal users to perform transitions, and they do not
+need to mention the runtime transition tool. During execution, the runtime
+injects a `complete_state` tool whose allowed outcomes are derived from the
+validated transition contract when that later validation layer is implemented.
+
+### Ownership and composition
+
+State ownership is policy, not loader behavior. For example, one policy may
+define:
+
+```text
+User-authored diagnostic fragment:
+  WorkDetailsGathered <-> Diagnosed -> FixProposed
+
+Platform-owned delivery profile:
+  FixProposed -> AutomatedCodeReviewApproved -> Validated -> PRPublished
+      -> HumanCodeReviewApproved -> Committed
+       |
+       +-- significant findings --> Diagnosed
+```
+
+Under that policy:
+
+- The user owns instructions and outgoing transitions before `FixProposed`.
+- `FixProposed` is the handoff boundary.
+- The platform owns instructions and transitions from `FixProposed` onward.
+- A user-authored platform state such as `FixProposed.md` or `PRPublished.md`
+  is rejected.
+
+This is not a universal loader restriction. Another policy can select a
+different handoff, different owned states, or allow a fully user-defined
+machine.
+
+## State source resolution, validation, and publication
+
+Publication converts mutable repository and platform content into an immutable
+definition by resolving mutable refs, reading the complete reachable graph, and
+persisting the compiled state-machine snapshot:
+
+```text
+Initial state + resolved user/platform sources
+                    |
+                    v
+Load each reachable <filePrefix>.<state>.md
+                    |
+                    v
+Validate transitions and require exactly one source per state
+                    |
+                    v
+Persist exact Markdown + transitions + provenance + canonical hash
+                    |
+                    v
+Workflow Runs pin the immutable definition version
+```
+
+For example, a Workflow Run in `FixProposed` may probe
+`HelloWorld.FixProposed.md` in its pinned user source and
+`StandardDelivery.FixProposed.md` in its pinned platform profile. If only the
+platform file exists, that exact file is executed. A missing state or a state
+present in multiple sources is an explicit error.
+
+The source reader returns `null` only when the candidate file is absent. Access,
+network, authentication, and source-integrity failures propagate rather than
+being treated as absence. Loaded Markdown retains its original content and line
+endings and may be cached by immutable source identity, path, and content
+digest.
+
+### State loader responsibilities
+
+The initial generic loader must:
+
+- Accept the durable current state and pinned user/platform source metadata.
+- Derive a conventional candidate path for only that state in each source.
+- Reject duplicate or ambiguous state definitions.
+- Reject unsafe source-relative paths and filename prefixes.
+- Preserve exact Markdown content and line endings.
+- Return the owner, immutable source coordinates, source path, and content
+  digest with the loaded Markdown.
+- Distinguish a missing file from a source-read failure.
+
+The loader deliberately does not:
+
+- List or load unrelated state files.
+- Copy user and platform files into a combined package.
+- Parse `## Possible next states`.
+- Validate transition targets, reachability, terminals, or handoffs.
+- Enforce lifecycle profile ownership policy.
+- Produce or persist a compiled graph JSON document.
+
+### Deferred semantic validation
+
+A later publication stage may:
+
+- Parse the initial-state link from the root lifecycle document.
+- Parse local next-state links and declared external handoffs.
+- Reject missing local link targets.
+- Detect unreachable states.
+- Detect nonterminal states with no outgoing transition.
+- Validate terminal-state and ownership rules.
+- Produce stable outcome keys for runtime tools.
+
+Any normalized graph produced for these operations is a derived projection of
+the pinned Markdown sources, not a second authoring or storage contract.
+
+### Policy responsibilities
+
+The selected lifecycle policy must:
+
+- Define which lifecycle profiles may be selected.
+- Define the official state catalog, when one is required.
+- Define which principals may author each state or fragment.
+- Define required entry and handoff states.
+- Define whether authored states may override profile states.
+- Define whether complete user-owned state machines are permitted.
+- Define administrative transitions such as cancellation independently of
+  user-authored business transitions.
+
+### Profile registry responsibilities
+
+The profile registry stores versioned lifecycle fragments, for example:
+
+```text
+standard-delivery@1
+repository-specific-triage@2
+custom-only@1
+```
+
+A profile contains immutable state Markdown, a filename prefix, ownership
+metadata, and a version or digest. Updating a profile creates a new version; it
+does not mutate definitions or Workflow Runs pinned to an older profile.
+
+### Published lifecycle pins
+
+The immutable Workflow Definition should retain:
+
+```json
+{
+  "lifecycle": {
+    "name": "Example",
+    "initialState": "WorkDetailsGathered",
+    "policy": {
+      "name": "diagnostic-extension",
+      "version": 1
+    },
+    "sources": [
+      {
+        "sourceId": "example-user",
+        "owner": "user",
+        "filePrefix": "Example",
+        "basePath": "automation/lifecycles/example",
+        "kind": "github",
+        "repositoryUrl": "https://github.com/example/service-repo",
+        "requestedRef": "refs/heads/users/demo/lifecycle",
+        "resolvedCommit": "<commit>",
+        "digest": "<source-digest>"
+      },
+      {
+        "sourceId": "standard-delivery@1",
+        "owner": "platform",
+        "filePrefix": "StandardDelivery",
+        "basePath": "profiles/standard-delivery",
+        "kind": "ado",
+        "repositoryUrl": "https://dev.azure.com/example/platform/_git/lifecycle-profiles",
+        "resolvedCommit": "<commit>",
+        "version": 1,
+        "digest": "<profile-digest>"
+      }
+    ],
+    "digest": "<effective-lifecycle-digest>"
+  }
+}
+```
+
+Runtime execution reads files only from these immutable pins. It never reads
+the mutable branch represented by `requestedGitRef`; source clients may cache
+files by the resolved commit or profile version.
+
+## Required components
+
+| Component | Responsibility |
+|---|---|
+| Lifecycle source client | Resolve Git refs and read lifecycle files using service authentication |
+| Lifecycle state loader | Resolve and read exact `Prefix.State.md` content during definition publication |
+| Lifecycle state-machine compiler | Walk and validate the complete reachable graph and produce its canonical immutable snapshot |
+| Lifecycle semantic validator | Parse transitions and reject missing, ambiguous, or malformed reachable states before publication |
+| Lifecycle policy evaluator | Enforce state catalogs, ownership, profiles, and extension boundaries |
+| Lifecycle profile registry | Store versioned platform and repository state-machine fragments |
+| Lifecycle publisher | Resolve mutable refs and persist the exact compiled state-machine snapshot in an immutable definition |
+| Workflow Generator controller | Discover records, reconcile exactly-once Workflow Runs, and initialize lifecycle execution |
+| Workflow Run catalog | Store current state, revisions, leases, runs, transitions, and session associations |
+| State-run worker | Execute one leased state run and create or resume its Workflow Run session |
+| Session runtime | Run agent instructions and provide durable wait and `ask_user` suspension |
+| External-operation adapters | Start and observe builds, tests, deployments, and other asynchronous system work |
+| Transition tool | Request one validator-approved state outcome |
+| Attention dispatcher | Persist, deduplicate, deliver, and resolve human-attention notifications |
+| Portal | Register lifecycle sources and display state, waits, ownership, attention, and history |
+
+These are logical responsibilities. They do not all require separate services.
+The loader, validator, and publisher can live with the management API or worker
+SDK, and state-run leasing can use the existing PostgreSQL catalog. Attention
+delivery should use a durable outbox so a notification failure cannot roll
+back or duplicate a Workflow Run-state transaction.
+
+## End-to-end Workflow Run lifecycle
+
+### 1. Register and publish a Workflow Generator
+
+The author supplies:
+
+- Source-provider configuration, such as a WIQL query.
+- Cadence and guardrails.
+- Repository and Git-ref affinities.
+- Lifecycle source repository, Git ref, and root path.
+- A lifecycle policy or profile selection when it is not supplied by a
+  platform default.
+
+The server resolves mutable lifecycle refs, pins the selected policy and
+profile versions, and publishes an immutable Workflow Definition. Semantic
+graph validation may be added as a later publication step.
+
+### 2. Discover source records
+
+The Workflow Generator controller leases a due generator, evaluates its source
+provider, and reconciles discoveries. Database uniqueness on
+`(workflow_generator_id, workflow_run_key)` continues to make this exactly-once across retries.
+
+### 3. Initialize a Workflow Run
+
+A newly materialized Workflow Run is pinned to the active immutable definition and
+initialized with:
+
+```text
+current_state = effectiveLifecycle.entryState
+state_revision = 1
+```
+
+The controller or state-run coordinator reserves the first state run. The
+source provider is no longer required for that Workflow Run to continue through its
+lifecycle.
+
+### 4. Lease and execute a state run
+
+Any eligible worker may lease the runnable state run. The worker:
+
+1. Loads the Workflow Run and its pinned lifecycle sources.
+2. Derives the current state's candidate path in each source and loads the
+   exact Markdown from the one source that supplies it.
+3. Creates or resumes the Workflow Run session associated with the state run.
+4. Injects the runtime state-completion protocol.
+5. Executes the session.
+
+Workers perform execution but do not decide which transitions are valid. The
+catalog and pinned graph remain authoritative.
+
+### 5. Perform active work or wait durably
+
+A state run may alternate between active execution and three durable Workflow Run wait
+kinds. Classify the wait by how completion becomes authoritative, not by
+whether a human or automation performs the surrounding action:
+
+| Mode | Satisfaction contract | Examples | Worker retained? |
+|---|---|---|---|
+| Active execution | The current worker completes an LLM, tool, or short API call | Prompt execution, local tool | Yes, while the call runs |
+| Response wait | An authorized response is submitted directly through PilotSwarm | Resolve an ambiguity, select an option | No |
+| Observed-condition wait | PilotSwarm verifies a predicate in another authoritative system | Build, validation, review approval, PR completion, deployment | No |
+| Timer wait | A durable time condition is reached | Retry backoff, scheduled wake-up, deadline | No |
+
+When a state must wait, the runtime checkpoints the workflow, releases the
+worker, and resumes only through the corresponding durable boundary:
+
+- `ask_user` persists a response wait owned by the Workflow Run session.
+- `start_external_operation` and `system_wait` persist an
+  observed-condition wait whose result and evidence are owned by the state
+  run.
+- The existing Duroxide durable timer remains the wake-up engine for `wait`;
+  its start and completion are projected into a timer `WorkflowRunWait`.
+
+Detection mode is separate from wait kind. A response normally arrives by
+direct submission. An observed condition may be detected by polling, a
+provider event, or a hybrid in which events accelerate detection and polling
+guarantees reconciliation. A webhook about PR approval remains an
+observed-condition wait because the repository provider, not the webhook, is
+authoritative.
+
+A person reviewing or completing a PR acts outside the Workflow Run session, so those
+are observed-condition waits rather than response waits. A build, test,
+reviewer, or PR owner does not require an agent loop to remain alive and poll
+in memory.
+
+Examples of durable wake conditions include:
+
+- A submitted build reaches a terminal status.
+- A validation or test suite completes with recorded results.
+- An automated code review finishes.
+- Required human code-review approval appears in the repository provider.
+- An authorized person completes or merges the pull request.
+- A change or fix is present on the required target branch.
+- A deployment containing the change completes in the target environment.
+- A callback or event arrives for a correlation ID.
+- A durable polling timer expires.
+- A retry or deadline timer becomes due.
+- An authorized person submits an answer through the session.
+- A person or automation performs the requested action in an external system.
+
+Observed-condition waits should be expressed as durable predicates over
+external evidence, not as workers sleeping until a command finishes. For
+example, a port wait may track a source commit, target repository, and target
+branch until the required change is observed there. A deployment wait may
+track an artifact or commit through a deployment system until the intended
+environment reports completion.
+
+On wake-up, any eligible worker may lease and resume the state run from its
+persisted state.
+
+### 6. Resolve each Workflow Run wait through its authoritative boundary
+
+If state instructions require an answer inside the Workflow Run session, the agent
+invokes the existing durable `ask_user` tool. This is a response wait:
+
+```text
+Workflow Run current state: WorkDetailsGathered
+State run: input_required
+Session: input_required
+Broad Workflow Run status: blocked
+```
+
+The Workflow Run has not transitioned. The worker releases the execution lease and may
+process other work. The pending question remains owned by the durable session.
+
+The portal presents the pending question and uses the existing session answer
+path. After the user answers, any worker can lease and resume the same state
+run and session.
+
+For example, the Workflow Run owner may need to resolve an ambiguity or select among
+explicit options before work can continue. PilotSwarm validates the submitted
+response against the pending wait identity, responder policy, expected answer
+shape, and Workflow Run state revision before making the state run runnable.
+
+For an observed-condition wait, the state records the provider, target
+resource, completion predicate, and polling cursor in its durable context,
+then invokes `system_wait` with the signal key assigned to that observation.
+A PilotSwarm observer claims due checks, polls the provider, persists current
+evidence, and publishes the matching signal only after the predicate is
+satisfied.
+
+Observed-condition waits include:
+
+- Waiting for builds.
+- Waiting for validation.
+- Waiting for automated code review.
+- Waiting for human code review recorded in the repository provider.
+- Waiting for an authorized person to complete or merge a pull request.
+
+The last two remain observed-condition waits because the action occurs outside
+PilotSwarm and a provider observer verifies it. No artificial `ask_user`
+question is created. The portal should label the predicate specifically, such
+as `Awaiting human code review` or `Awaiting PR completion`.
+
+`HumanCodeReviewApproved` is a lifecycle state reached after review approval;
+it is not itself a wait type. A subsequent transition from
+`HumanCodeReviewApproved` to `Committed` uses a separate observed-condition
+wait for PR completion.
+
+A timer wait stores its time condition and deadline in durable state. The
+existing Duroxide timer, rather than a provider observer or submitted
+response, makes the session runnable when that condition is reached; the
+boundary is projected into the canonical Workflow Run wait model.
+
+#### Current implementation status
+
+Response waits are projected into the canonical durable `WorkflowRunWait` model when a
+Workflow Run session invokes `ask_user`. The wait records the owning Workflow Run and state run,
+expected state revision, question, allowed choices, responder policy, and
+direct-submission detection mode. Answer submission satisfies that record
+before resuming the durable session; stale, invalid, or duplicate submissions
+are rejected, and a failed queue delivery reopens the same wait. Delivery state
+is recorded as `pending` or `enqueued` so the acceptance-to-enqueue boundary is
+observable. A process crash or ambiguous queue acknowledgement can still leave
+a satisfied response in `pending`; a future scheduler/outbox recovery pass must
+redrive that state before the platform can claim exactly-once response delivery.
+
+Observed-condition waits are claimed from the canonical `WorkflowRunWait` model with
+`SKIP LOCKED` leases. Each check durably records its attempt count, provider
+cursor, latest observation, retry error, next-check time, and optional
+deadline. A check may remain pending, satisfy the predicate, fail terminally,
+or time out. Retryable observer failures use bounded backoff, expired leases
+are reclaimable after process loss, and state-revision fencing prevents a late
+check from reviving a cancelled or superseded wait. Provider events can
+accelerate `event` or `hybrid` waits without replacing polling reconciliation.
+
+The deterministic `mock` observer remains available for demonstrations. The
+Workflow Generator also registers a production Azure DevOps pull-request approval
+observer. It verifies that the PR still targets the source commit persisted by
+the Workflow Run wait, then treats Azure DevOps's current enabled, blocking policy
+evaluations as authoritative. Required reviewer identities and effective votes
+are retained as evidence. Provider events can accelerate the matching PR check,
+but only a fresh authoritative read can satisfy it. The observer also binds the
+target repository to the immutable Workflow Run definition's repository affinity through
+the server-owned `WORKFLOW_GENERATOR_ADO_REPOSITORY_BINDINGS` map before it acquires or uses
+an Azure DevOps credential. A companion `pull_request_completion` observer shares
+that client and repository authorization. It verifies the persisted source
+commit, satisfies the wait once the PR is `completed`, records an abandoned or
+incompatible PR as a terminal disposition, and preserves the merge commit,
+completion actor, completion time, and target branch as evidence. Provider events
+only accelerate its check; authoritative polling still recovers missed, stale,
+reordered, and duplicate events, and the observer never completes, abandons, or
+otherwise mutates the pull request. Generic response-delivery recovery remains a
+separate implementation slice. When approval must be renewed after each source
+push, the repository's Azure DevOps branch
+policy must enable vote reset; the observer does not reinterpret a current
+policy evaluation that Azure DevOps reports as approved.
+
+Timer waits are now projected into the same model for catalog and portal
+observability. Duroxide remains authoritative for durable timer scheduling and
+session resumption; the Workflow Run wait scheduler does not create a second timer
+engine.
+
+### 7. Complete a state
+
+The runtime generates an internal tool contract from the current state's
+allowed outcomes:
+
+```text
+complete_state(
+  outcome: one of the validated outcome keys,
+  summary: string
+)
+```
+
+Neither the lifecycle author nor the portal user invokes this tool directly.
+The agent invokes it after satisfying the state instructions.
+
+The server maps the outcome key to a destination from the immutable graph. It
+then applies the transition with a state-revision compare-and-swap. If the
+state or revision changed, the request is stale and fails without modifying
+the Workflow Run.
+
+State completion also produces one required text `summary`. The catalog writes
+the summary as part of the same transaction that commits the transition. The
+transition retains the concise context needed by the next state, while its
+`session_id` links to the authoritative full execution record when additional
+detail is needed. Structured evidence and artifact references are deferred.
+
+If an agent returns prose without successfully invoking `complete_state`, the
+state remains incomplete. The platform does not infer a transition from text.
+
+### 8. Enter the next state
+
+A successful transition:
+
+- Appends a state-transition entry to the Workflow Run journal.
+- Completes the source state run.
+- Updates the Workflow Run's current state and revision.
+- Reserves the next state run with a reference to the predecessor journal entry
+  when the destination is nonterminal.
+- Projects the new state into Workflow Generator hierarchy reads.
+
+The next state normally receives a new Workflow Run session. This keeps state execution
+history ordered and lets each session retain the exact instructions and tools
+used for that state revision. Before executing the next state's Markdown, the
+runtime injects the ordered Workflow Run journal, including each prior transition
+summary and originating session reference. Workers can retrieve additional
+detail from a durable source session when needed. A response wait resumes the
+existing session for the same state run rather than creating a new one.
+
+This handoff must not depend on an in-memory worker conversation. A different
+worker must be able to start the next state after a restart and receive the
+same persisted context.
+
+### 9. Cross an ownership boundary
+
+When a Workflow Run enters a handoff state, the effective graph selects the instructions
+owned by the next fragment or profile. Workers execute user-owned and
+platform-owned states through the same mechanism. Ownership affects
+publication and portal attribution, not the worker protocol.
+
+For example:
+
+```text
+Diagnosed --complete_state--> FixProposed
+  user-owned                   platform-owned
+```
+
+The Workflow Run remains pinned to the profile version composed at publication time.
+
+### 10. Reach a terminal state
+
+Entering a terminal state atomically:
+
+- Records the final transition.
+- Completes the previous state run.
+- Sets the Workflow Run's official current state to the terminal state.
+- Sets the broad Workflow Run lifecycle status to `completed` or `cancelled`.
+- Prevents additional state runs from being leased.
+
+A terminal state may have platform-authored Markdown for documentation or
+entry behavior, but it does not require an agent session when no work must be
+performed after entry.
+
+## Worker responsibility
+
+Each worker executes the state run it has leased. A worker is responsible for:
+
+- Loading the pinned instructions and transition contract.
+- Creating or resuming the associated Workflow Run session.
+- Running the agent turn.
+- Surfacing durable response, observed-condition, and timer waits.
+- Calling catalog operations on behalf of injected tools.
+- Reporting explicit execution failures.
+
+A worker is not responsible for:
+
+- Mutating the effective lifecycle.
+- Accepting arbitrary destination state names.
+- Deciding ownership policy.
+- Keeping state only in memory.
+- Holding a worker slot during a Workflow Run wait.
+- Advancing a state based solely on an agent's final text.
+- Overwriting a transition committed by another worker.
+
+The worker that starts a state run does not need to be the worker that resumes
+or completes it.
+
+## State and status model
+
+The official state machine and broad operational status answer different
+questions.
+
+| Field | Example | Purpose |
+|---|---|---|
+| `current_state` | `WorkDetailsGathered` | Official business lifecycle position |
+| `state_revision` | `3` | Concurrency and idempotency fence |
+| `lifecycle_state` | `blocked` | Broad operational status for scheduling and UI |
+| State-run status | `waiting` or `input_required` | Execution status of the current state revision |
+| Session status | `input_required` | Durable orchestration status and pending question |
+
+While an interactive-input gate blocks `WorkDetailsGathered -> Diagnosed`, the
+Workflow Run remains in `WorkDetailsGathered`. `blocked` is an operational status, not
+an official business state. All durable waits project the broad Workflow Run lifecycle
+status as `blocked`, which excludes the Workflow Run from runnable work.
+`input_required` means the Workflow Run is waiting for an answer through the session.
+`waiting` means it is waiting for an observed condition or timer. The matching
+signal may represent either a machine-owned predicate, a human action observed
+in another system, or a durable time condition. Resuming the same state run
+returns the Workflow Run to `active`.
+
+## Persistence model
+
+### Workflow Runs
+
+Extend the existing Workflow Runs table with:
+
+```text
+current_state
+state_revision
+current_state_entered_at
+```
+
+The existing broad `lifecycle_state` remains useful for values such as
+`pending_session`, `active`, `blocked`, `completed`, and `cancelled`.
+
+### State runs
+
+Add an append-oriented `workflow_run_state_runs` table:
+
+```text
+state_run_id
+workflow_run_id
+workflow_definition_id
+state_name
+state_revision
+state_owner
+status
+session_id
+predecessor_journal_entry_id
+attempt
+wait_kind
+wait_reason
+wait_started_at
+external_reference
+lease_owner
+lease_expires_at
+started_at
+completed_at
+error
+```
+
+There is at most one active state run for a Workflow Run state revision. A session ID is
+reserved before starting session execution so retries retain a durable
+association. Except for the initial state run,
+`predecessor_journal_entry_id` identifies the journal entry that caused this
+run to be created.
+
+`wait_kind` distinguishes `response`, `observed_condition`, and `timer` waits.
+Provider-specific correlation data belongs in `external_reference`;
+credentials and secrets do not. Detection mode is recorded separately where
+an observed condition supports polling, events, or hybrid reconciliation.
+
+### Workflow Run journal
+
+Add an ordered, append-only `workflow_run_journal_entries` table. The MVP requires
+state-transition entries, while the journal can later support other durable Workflow Run
+events:
+
+```text
+journal_entry_id
+workflow_run_id
+sequence
+entry_kind
+workflow_definition_id
+from_state
+to_state
+from_revision
+to_revision
+state_run_id
+session_id
+outcome
+summary
+idempotency_key
+transitioned_at
+```
+
+The journal append and Workflow Run update occur in one database transaction. A unique
+idempotency key prevents a replayed tool call from creating duplicate history.
+A state-transition journal entry is also the durable state-to-state handoff:
+
+- `outcome` records the transition outcome used to select the destination.
+- `summary` is the single free-form text field describing what the state
+  learned or produced for the next state.
+- `session_id` links to the full prompts, responses, tools, and pending or
+  answered questions from the completed state when more detail is needed.
+
+The next state runner loads the ordered Workflow Run journal before creating or resuming
+its session. This makes prior summaries available across worker changes,
+process restarts, and ownership handoffs.
+
+### Atomic transition
+
+The authoritative update follows compare-and-swap semantics:
+
+```sql
+UPDATE workflowRuns
+SET current_state = :to_state,
+    state_revision = state_revision + 1,
+    current_state_entered_at = now(),
+    updated_at = now()
+WHERE workflow_run_id = :workflow_run_id
+  AND current_state = :from_state
+  AND state_revision = :expected_revision;
+```
+
+The transaction must also verify that the pinned effective graph contains the
+requested edge. A zero-row update indicates a stale or competing transition.
+
+### Attention requests
+
+Add a durable attention-request and notification-outbox model:
+
+```text
+attention_request_id
+workflow_run_id
+state_run_id
+session_id
+state_revision
+blocking_principal
+question
+status
+deduplication_key
+created_at
+resolved_at
+
+notification_outbox_id
+attention_request_id
+channel
+destination_reference
+status
+attempt
+next_attempt_at
+delivered_at
+```
+
+The transaction that marks a Workflow Run blocked creates the attention request and
+outbox record. Delivery happens asynchronously. Resolving the pending question
+closes the attention request even if one notification channel is temporarily
+unavailable.
+
+## API surfaces
+
+The management API needs:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/workflow-definitions/validate` | Resolve and preview a lifecycle without publishing |
+| `POST` | `/api/v1/workflow-generators` | Register a generator and publish definition version 1 |
+| `POST` | `/api/v1/workflow-generators/{id}/definitions` | Publish a new immutable definition with pinned lifecycle sources |
+| `GET` | `/api/v1/workflow-definitions/{id}` | Read source coordinates, profiles, graph, and digest |
+| `GET` | `/api/v1/workflow-runs/{id}` | Read current state, revision, status, and active state run |
+| `GET` | `/api/v1/workflow-runs/{id}/journal` | Read the ordered Workflow Run journal |
+| `GET` | `/api/v1/workflow-runs/{id}/state-runs` | Read state execution and session history |
+| `GET` | `/api/v1/attention-requests` | List unresolved work blocking the current principal |
+
+The existing session messaging endpoint remains the way portal users answer
+`ask_user`. There is no public endpoint that lets a user directly force an
+arbitrary Workflow Run transition.
+
+Internal catalog operations are also required for:
+
+- Reserving and leasing state runs.
+- Acknowledging state-run execution.
+- Marking a state run as waiting or failed.
+- Completing a state with an allowed outcome.
+- Loading the Workflow Run journal and referenced source-session context for a state run.
+- Recovering expired state-run leases.
+- Creating and resolving attention requests.
+- Claiming and completing notification-outbox deliveries.
+
+## Portal experience
+
+### Registration
+
+The registration form should collect:
+
+```text
+Lifecycle repository
+Git ref
+Root lifecycle file
+Lifecycle policy/profile
+```
+
+Validation preview should show:
+
+- Resolved commit.
+- User-authored states.
+- Composed profile states.
+- State ownership.
+- Initial and handoff states.
+- Effective transition graph.
+- Validation failures.
+
+The server reloads and validates the source during publication even if the
+portal already displayed a successful preview.
+
+### Workflow Run hierarchy
+
+The portal should show:
+
+```text
+Current official state
+Broad operational status
+State owner
+Pending transition or outcome
+Pending human question
+Current state session
+Previous-state transition summary
+Pinned lifecycle digest
+Workflow Run journal
+```
+
+An input-required Workflow Run could appear as:
+
+```text
+State: WorkDetailsGathered
+Owner: User lifecycle
+Status: Blocked
+Pending: Diagnosed
+Action: Answer required
+```
+
+### Attention dashboard
+
+The portal should provide a principal-scoped view of unresolved attention
+requests:
+
+```text
+Blocked Workflow Runs
+  Workflow Run
+  Generator
+  Current state
+  Blocking question
+  Waiting since
+  Deadline or escalation
+  Open session
+```
+
+The dashboard is the authoritative pull experience. Notification channels are
+the push experience and should deep-link to the same Workflow Run and pending question.
+Users are not expected to monitor every autonomous Workflow Run or manually approve
+ordinary state transitions.
+
+After a handoff:
+
+```text
+State: FixProposed
+Owner: standard-delivery@1
+Status: Active
+```
+
+## Reliability and recovery
+
+### Worker failure
+
+State-run leases expire. Another worker can reclaim the run and use its durable
+session association and stable message IDs to resume or safely retry.
+When a transition has already committed, the successor run reconstructs its
+input context from the Workflow Run journal and referenced source sessions rather than
+from the failed worker's memory.
+
+### Response waits
+
+The session persists the pending question. No worker lease is held while the
+session is `input_required`. Answering the question makes the same state run
+runnable again. The attention request and notification outbox make the wait
+discoverable without making notification delivery part of session correctness.
+
+### Observed-condition waits
+
+The agent starts platform-owned work through `start_external_operation`. The
+catalog creates or returns the idempotent operation for the current state run
+and generates its operation ID, provider correlation ID, and exact signal key;
+the agent cannot supply or invent those identities. The agent then calls
+`system_wait` with that returned key.
+
+The Workflow Run wait scheduler claims due observed-condition waits, invokes the
+registered provider observer, and persists current observations, cursors,
+results, and evidence. Signal delivery remains on the linked external-operation
+outbox and has its own durable lease, attempt count, retry time, and completion
+marker, so scheduler restarts provide at-least-once delivery without
+duplicating the external operation. Authoritative wait-started and
+wait-completed timestamps live on the Workflow Run wait row and are mirrored to the
+operation row for compatibility. Delivery waits until the exact generated
+signal key is durably registered as parked.
+Only the exact key thaws the wait; unrelated messages and mismatched signals do
+not satisfy it. No worker is pinned while waiting for the external system.
+
+The operation belongs to the state run, not to one disposable Workflow Run session. If a
+session is replaced before its wait completes, the same idempotent operation is
+rebound to the state run's current session, delivery is re-armed, and the
+immutable creating-session reference remains available for attribution.
+
+After resumption the agent reads the durable record through
+`get_external_operation`. An `external_operation` validation gate can prevent a
+transition until a matching operation has succeeded, its signal has been
+observed by the matching durable wait, and evidence has been persisted:
+
+```json
+{
+  "type": "external_operation",
+  "name": "Example validation",
+  "beforeState": "Validated",
+  "provider": "mock",
+  "kind": "validation",
+  "requireEvidence": true
+}
+```
+
+`beforeState` names the destination state being protected. The initial
+deterministic `mock` provider supports success and failure outcomes without
+pretending that a real external service was called.
+
+### Timer waits
+
+Duroxide persists the timer and resumes the session when it fires. The runtime
+projects timer start and completion into the canonical Workflow Run wait model so the
+catalog and portal expose the same wait taxonomy without introducing a second
+timer scheduler. Interrupted timers cancel their current projection and create
+a fresh timer wait if the orchestration resumes the remaining duration. A
+process does not sleep or retain a worker while waiting, and timer completion
+remains revision-fenced through the current Workflow Run session.
+
+### Duplicate tool calls
+
+The transition idempotency key returns the already-committed result. A
+different transition for the same state revision fails the compare-and-swap.
+
+### Definition updates
+
+Publishing a new Workflow Definition affects only subsequently materialized
+Workflow Runs. Existing Workflow Runs continue using their pinned source commit, profile
+versions, effective graph, and digest.
+
+### Source disappearance
+
+Once materialized, a Workflow Run continues independently of whether its source record
+still matches the provider query. Source reconciliation cannot silently remove
+or reset lifecycle state.
+
+### Invalid agent completion
+
+If the agent finishes without `complete_state`, the state run remains
+incomplete and is handled according to retry guardrails. The runtime records an
+explicit error rather than guessing a transition.
+
+## Security and governance
+
+- Lifecycle source reads use service or delegated repository authorization.
+- Publication verifies that the registering principal may access the source.
+- Paths are normalized and constrained to the lifecycle source directory.
+- User content cannot replace a profile-owned state unless policy explicitly
+  allows it.
+- Runtime tools derive the Workflow Run identity from the session association, not tool
+  arguments supplied by the agent.
+- Transition targets come from the pinned effective graph.
+- All state changes are audited in the append-only Workflow Run journal.
+- State-to-state context uses concise journal summaries and source-session
+  references; it does not copy secrets or entire session transcripts into
+  every journal entry.
+- Attention reads are scoped to the blocking principal or an administrator.
+- Notification destinations are stored as protected references rather than
+  embedding webhook secrets in workflow definitions.
+- Point reads retain existing Workflow Generator ownership and administrator checks.
+- Secrets and source credentials are not stored in lifecycle source metadata.
+
+## Example lifecycle
+
+The initial demonstration uses a user-authored diagnostic fragment:
+
+```text
+WorkDetailsGathered <-> Diagnosed -> FixProposed
+```
+
+`WorkDetailsGathered` invokes durable `ask_user` before allowing the transition
+to `Diagnosed`. The Workflow Run stays in `WorkDetailsGathered` while blocked. After the
+answer, the session resumes, records a transition summary, and completes the
+state.
+
+`Diagnosed` produces the demonstration result and hands off to a
+platform-owned profile:
+
+```text
+FixProposed -> AutomatedCodeReviewApproved -> Validated -> PRPublished
+    -> HumanCodeReviewApproved -> Committed
+     |
+     +-- significant findings --> Diagnosed
+```
+
+Platform automation starts the configured code-review agent for `FixProposed`.
+Significant findings return the Workflow Run to user-owned `Diagnosed`; otherwise the
+state advances only when the latest review has no blocking findings. The
+deterministic demonstration represents this review with a mock external
+operation rather than launching a real review.
+
+`AutomatedCodeReviewApproved` submits the reviewed commit to the Private
+Validation Service exactly once through the external-operation interface. The
+catalog records the provider correlation and generated signal key. Only the
+matching completion signal thaws that state run, and the transition to
+`Validated` is rejected until successful validation evidence is durable.
+
+`Validated` prepares the change, pushes its branch, and publishes the pull
+request before transitioning to `PRPublished`. The deterministic demonstration
+uses a fictional URL and mock publication evidence rather than creating a real
+pull request.
+
+`PRPublished` uses an observed-condition wait for all required reviewers and
+policies to approve the current source commit. It then enters
+`HumanCodeReviewApproved`, which uses a separate observed-condition wait for an
+authorized person to complete the pull request. Approval alone must never
+complete it automatically. `Committed` is the terminal state and preserves the
+pull-request and merge evidence.
+
+The demonstration proves:
+
+- Repository-authored Markdown publication.
+- Branch-to-commit pinning.
+- Exactly-once Workflow Run materialization.
+- Worker-executed state runs.
+- Durable response and observed-condition waits with cross-worker resumption.
+- Infrastructure-generated external-operation identity and retryable signal delivery.
+- Evidence-gated transitions that reject prose-only validation.
+- Human-attention notification and dashboard discovery.
+- Atomic, constrained transitions.
+- User-to-platform lifecycle handoff.
+- Terminal Workflow Run completion.
+
+### Running the multi-Workflow Run demo
+
+With the portal backend, Workflow Generator controller, and a matching worker already
+running, the standalone runner acts only as a portal user:
+
+```powershell
+python scripts\workflow-generator-lifecycle-demo.py `
+  --repository-path C:\src\<lifecycle-repository> `
+  --user-branch <user-lifecycle-branch> `
+  --user-base-path <user-lifecycle-directory> `
+  --platform-branch <platform-lifecycle-branch> `
+  --platform-base-path <platform-lifecycle-directory> `
+  --full-run `
+  --response-wait-seconds 2 `
+  --operation-delay-seconds 1 `
+  <work-item-id> [<work-item-id> ...]
+```
+
+It canonicalizes legacy HTTPS or SSH Azure DevOps remotes, resolves both
+lifecycle branches to immutable commits, registers the Workflow Generator through
+the portal API, and waits until every Workflow Run reaches the durable
+`WorkDetailsGathered` response wait. It does not reset databases, build
+components, launch services, control the browser, or stop backend processes.
+Use `--portal-url` or `PILOTSWARM_PORTAL_URL` when the portal is not available
+at `http://localhost:4311`.
+
+During `--full-run`, `--response-wait-seconds` controls how long each Workflow Run
+remains at its initial `ask_user` gate before the runner answers it. Workflow Runs are
+timed and answered independently, so one Workflow Run does not remain parked merely
+because another has not reached the gate. `--operation-delay-seconds` controls
+the `delayMs` requested from each deterministic mock automated-review, validation,
+pull-request publication, human-review, and PR-completion operation. Its
+accepted range is 0 through 300 seconds. The previous
+`--human-wait-seconds` and `--system-wait-seconds` names remain accepted as
+hidden compatibility aliases.
+
+#### Real Azure DevOps provider mode (observe-existing-PR)
+
+`--provider-mode azure_devops` (or `WORKFLOW_GENERATOR_E2E_PROVIDER_MODE=azure_devops`)
+swaps the two human-facing gates from the deterministic mock to the production
+Azure DevOps observers: the transition into `HumanCodeReviewApproved` is gated
+by a real `pull_request_approval` observation and the transition into
+`Committed` by a real `pull_request_completion` observation. The automated
+review, validation, and pull-request-publication gates stay deterministic mocks —
+lifecycle-driven publication of a real branch and pull request is out of scope
+for this harness.
+
+Because both observers are strictly read-only, real-provider confidence is
+obtained by attaching the demo to a genuine, externally-managed pull request
+rather than by publishing a throwaway PR. Supply the pull request with
+`--observe-pull-request-url` (its organization, project, repository, and ID seed
+the durable target) plus `--observe-source-commit` (the 40-character head the PR
+must still point at). Individual fields can be overridden or supplied directly
+with `--observe-organization`, `--observe-project`, `--observe-repository-id`,
+and `--observe-pull-request-id`; matching `WORKFLOW_GENERATOR_E2E_OBSERVE_*` variables are
+also honored. The runner never publishes, approves, completes, abandons, or
+otherwise mutates the observed pull request.
+
+The observed target's organization, project, and repository must match the Workflow Run
+`affinities.repo` entry in the server-owned `WORKFLOW_GENERATOR_ADO_REPOSITORY_BINDINGS`
+array so the observers authorize the target before using any credential. A
+convenient live proof points at a recently-completed pull request already
+signed off by all required reviewers (for example a service-repository pull request), so
+a single `--full-run` observes real reviewer, policy, and completion state —
+including the real merge commit — with no mutation.
+
+The Workflow Run wait scheduler runs with the Workflow Generator by default. Set
+`WORKFLOW_GENERATOR_WAIT_SCHEDULER_ENABLED=false` to disable it. Optional tuning variables
+are `WORKFLOW_GENERATOR_WAIT_POLL_INTERVAL_MS`, `WORKFLOW_GENERATOR_WAIT_DEFAULT_CHECK_INTERVAL_MS`,
+`WORKFLOW_GENERATOR_WAIT_RETRY_DELAY_MS`, `WORKFLOW_GENERATOR_WAIT_MAX_RETRY_DELAY_MS`,
+`WORKFLOW_GENERATOR_WAIT_CLAIM_LIMIT`, and `WORKFLOW_GENERATOR_WAIT_LEASE_SECONDS`.
+Set `WORKFLOW_GENERATOR_MOCK_EXTERNAL_OPERATIONS=true` to register the deterministic mock
+observer used by lifecycle demos.
+The Azure DevOps pull-request approval observer is registered whenever the
+Workflow Run wait scheduler is enabled. It uses `WORKFLOW_GENERATOR_ADO_TOKEN` as an explicit bearer
+token, `WORKFLOW_GENERATOR_ADO_PAT` or `AZURE_DEVOPS_EXT_PAT` as a PAT, and otherwise
+`DefaultAzureCredential`. Its `pull_request_approval` target requires
+`organization`, `project`, `repositoryId`, `pullRequestId`, and the exact
+`expectedSourceCommit`. The Workflow Run definition must also have an `affinities.repo`
+value bound to the same organization, project, and repository ID in the
+server-owned `WORKFLOW_GENERATOR_ADO_REPOSITORY_BINDINGS` JSON array. The default durable
+operation key includes a hash of that canonical repository, pull request, and
+expected commit, so a new PR head creates a distinct wait. A
+`pull_request_completion` observer is registered alongside it with the same
+credential precedence, target shape, and repository authorization; its default
+operation key uses a distinct prefix so completion waits never collide with the
+approval wait for the same PR.
+
+## Implementation sequence
+
+1. Implement exact current-state Markdown loading from separate pinned user and
+   platform sources.
+2. Implement the lifecycle policy model and versioned profile registry.
+3. Extend definition publication to resolve and pin lifecycle source, profile,
+   policy, and entry-state metadata.
+4. Add Workflow Run current-state fields, state runs, transitions, and catalog
+   operations.
+5. Extend workers to lease state runs and execute the exact Markdown matching
+   the Workflow Run's durable current state.
+6. Add semantic graph validation, inject `complete_state`, and connect it to
+   atomic catalog transitions.
+7. Add durable external-wait projection and adapters for asynchronous system
+   work.
+8. Project existing `ask_user` suspension onto Workflow Run and state-run status.
+9. Add attention requests, notification outbox delivery, and a blocked-work
+   dashboard.
+10. Add lifecycle registration, validation preview, and Workflow Run history to the
+   portal.
+11. Run the end-to-end demonstration and add integration coverage for restart,
+   replay, stale revision, and ownership-boundary behavior.
+
+These slices should remain independently deployable. State loading can land
+before workers execute state machines, and worker support can land before the
+portal exposes the full lifecycle visualization.

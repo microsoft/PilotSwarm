@@ -25,6 +25,7 @@ import {
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
+import { deriveLegacyHumanInputCapacityWaits } from "./worker-timeline-legacy-fallback.js";
 
 const EXPORTS_DIR = path.resolve(
     expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
@@ -566,6 +567,7 @@ export class NodeSdkTransport {
         this.logSubscribers = new Set();
         this.logEntryCounter = 0;
         this.kubectlAvailable = null;
+        this.workerTimelineHistoryCache = new Map();
         // The native TUI runs as the local user. Portal deployments override
         // this per-RPC from the auth context inside PortalRuntime.call().
         this.currentUser = currentUser ? normalizeUserPrincipal(currentUser) : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
@@ -622,6 +624,9 @@ export class NodeSdkTransport {
             this.mgmt.stop(),
             stopEmbeddedWorkers(this.workers),
         ]);
+        this._agentPkgCatalog = null;
+        this._agentPkgCatalogPromise = null;
+        this.workerTimelineHistoryCache.clear();
         this.client = null;
     }
 
@@ -727,26 +732,49 @@ export class NodeSdkTransport {
     /**
      * Enforce user-scope visibility at create time and admit package agents
      * into the client's live allowlist. Baked agents pass through untouched.
+     *
+     * `repo` (optional): when the create targets a repository, an unregistered
+     * agent name may be a REPO-DISCOVERED agent shipped in that repo's checkout
+     * as `.github/agents/<name>.agent.md` (which the portal has no checkout to
+     * see). In that case the name is ADMITTED and the hydrated repo worker
+     * resolves it against config discovery (or rejects it) — the worker binds
+     * persona + workspace-relative MCP via `sessionConfig.agent`. Without a repo
+     * there is no workspace to resolve against, so the 403 stands.
      */
-    async _authorizePackageAgentCreate(agentName, owner, isAdmin) {
+    async _authorizePackageAgentCreate(agentName, owner, isAdmin, { repo } = {}) {
         const normalized = normalizeAgentName(agentName);
         const baked = this.creatableAgents.find((agent) => normalizeAgentName(agent.name) === normalized);
         if (baked) return baked.name;
         const registry = await this._listRegistryCreatableAgents(owner, isAdmin);
         const match = registry.find((entry) => normalizeAgentName(entry.name) === normalized);
-        if (!match) {
-            // Either the agent doesn't exist or it is a user-scope package the
-            // caller can't see — same answer either way (no existence oracle).
-            const err = new Error(`agent "${agentName}" is not available to you`);
-            err.code = "FORBIDDEN";
-            throw err;
+        if (match) {
+            // Client holds this.allowedAgentNames BY REFERENCE (live getter) —
+            // pushing here makes the delegated create pass client validation.
+            if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
+                this.allowedAgentNames.push(match.name);
+            }
+            return match.name;
         }
-        // Client holds this.allowedAgentNames BY REFERENCE (live getter) —
-        // pushing here makes the delegated create pass client validation.
-        if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
-            this.allowedAgentNames.push(match.name);
+        if (repo) {
+            // Repo-affinity create for an agent the portal can't see: trust the
+            // hydrated worker to resolve `<repo>/.github/agents/<name>.agent.md`
+            // (or reject at bind time). Admit the RAW name so the CMS row and the
+            // worker resolver agree, and register it so client validation passes.
+            if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(agentName)) {
+                this.allowedAgentNames.push(agentName);
+            }
+            const repoLabel = typeof repo === "string" ? repo : (repo?.url || repo?.name || JSON.stringify(repo));
+            console.log(
+                `[transport] admitting unregistered agent "${agentName}" for repo-affinity create ` +
+                `(repo=${repoLabel}); worker resolves against .github/agents`,
+            );
+            return agentName;
         }
-        return match.name;
+        // Either the agent doesn't exist or it is a user-scope package the
+        // caller can't see — same answer either way (no existence oracle).
+        const err = new Error(`agent "${agentName}" is not available to you`);
+        err.code = "FORBIDDEN";
+        throw err;
     }
 
     // ── Agent packages: registry CRUD (portal ops surface) ──────
@@ -774,6 +802,84 @@ export class NodeSdkTransport {
 
     async listWorkers() {
         return this.mgmt.listWorkers();
+    }
+
+    async getWorkerTimeline(workerNodeId, options = {}) {
+        const ctx = await this._agentPackagesContext();
+        if (!ctx) return [];
+        const since = options.since ? new Date(options.since) : undefined;
+        if (since && !Number.isFinite(since.getTime())) {
+            throw new Error("Worker timeline since must be a valid date");
+        }
+        const parsedLimit = Number(options.limit);
+        const requestedLimit = Math.min(
+            1_000,
+            Math.max(1, Number.isFinite(parsedLimit) ? Math.trunc(parsedLimit) : 200),
+        );
+        const timeline = await ctx.catalog.getWorkerTimeline(workerNodeId, {
+            since,
+            limit: Math.min(1_000, Math.max(requestedLimit, requestedLimit * 3)),
+        });
+        const sessionsWithHumanCapacityWait = new Set(timeline
+            .filter((entry) => (
+                entry?.eventType === "workflow_run.worker_capacity_wait"
+                && entry?.details?.waitSource === "human_input"
+                && entry?.sessionId
+            ))
+            .map((entry) => entry.sessionId));
+        const candidateSessionIds = [...new Set(timeline
+            .filter((entry) => (
+                entry?.eventType === "session.input_required_started"
+                && entry?.sessionId
+                && !sessionsWithHumanCapacityWait.has(entry.sessionId)
+            ))
+            .map((entry) => entry.sessionId))]
+            .slice(0, 50);
+
+        const historiesBySessionId = new Map();
+        const historyCacheTtlMs = 30_000;
+        const now = Date.now();
+        for (let offset = 0; offset < candidateSessionIds.length; offset += 8) {
+            const batch = candidateSessionIds.slice(offset, offset + 8);
+            const histories = await Promise.all(batch.map(async (sessionId) => {
+                const cached = this.workerTimelineHistoryCache.get(sessionId);
+                if (cached && now - cached.cachedAt < historyCacheTtlMs) {
+                    return cached.history;
+                }
+                const history = await this.mgmt._getAllExecutionHistory(sessionId);
+                this.workerTimelineHistoryCache.set(sessionId, {
+                    cachedAt: now,
+                    history,
+                });
+                return history;
+            }));
+            batch.forEach((sessionId, index) => {
+                if (Array.isArray(histories[index])) {
+                    historiesBySessionId.set(sessionId, histories[index]);
+                }
+            });
+        }
+        while (this.workerTimelineHistoryCache.size > 200) {
+            const oldestSessionId = this.workerTimelineHistoryCache.keys().next().value;
+            if (!oldestSessionId) break;
+            this.workerTimelineHistoryCache.delete(oldestSessionId);
+        }
+        const fallbackEntries = deriveLegacyHumanInputCapacityWaits({
+            timeline,
+            historiesBySessionId,
+            workerNodeId,
+        });
+        const ordered = [...timeline, ...fallbackEntries]
+            .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+        const recent = ordered.slice(-requestedLimit);
+        const recentWorkflowRunIds = new Set(recent.map((entry) => entry?.workflowRunId).filter(Boolean));
+        const materializationLines = ordered.filter((entry) => (
+            entry?.eventType === "workflow_run.materialized"
+            && recentWorkflowRunIds.has(entry.workflowRunId)
+            && !recent.some((candidate) => candidate.timelineId === entry.timelineId)
+        ));
+        return [...materializationLines, ...recent]
+            .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
     }
 
     async setAgentPackageScope(name, scope, owner, isAdmin, selector = null) {
@@ -991,6 +1097,90 @@ export class NodeSdkTransport {
 
     async listSessions() {
         return this.mgmt.listSessions(this._placementViewer());
+    }
+
+    async createWorkflowGenerator(input) {
+        return this.mgmt.createWorkflowGenerator(input);
+    }
+
+    async listWorkflowGenerators(owner) {
+        return this.mgmt.listWorkflowGenerators(owner);
+    }
+
+    async listWorkflowGeneratorsPage(options, owner = null) {
+        return this.mgmt.listWorkflowGeneratorsPage(options, owner);
+    }
+
+    async getWorkflowGenerator(workflowGeneratorId, includeDeleted = false) {
+        return this.mgmt.getWorkflowGenerator(workflowGeneratorId, includeDeleted);
+    }
+
+    async deleteWorkflowGenerator(workflowGeneratorId, actor, isAdmin = false) {
+        return this.mgmt.deleteWorkflowGenerator(workflowGeneratorId, actor, isAdmin);
+    }
+
+    async getWorkflowDefinition(workflowDefinitionId) {
+        return this.mgmt.getWorkflowDefinition(workflowDefinitionId);
+    }
+
+    async createWorkflowDefinition(input) {
+        return this.mgmt.createWorkflowDefinition(input);
+    }
+
+    async listWorkflowDefinitions(workflowType) {
+        return this.mgmt.listWorkflowDefinitions(workflowType);
+    }
+
+    async setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId) {
+        return this.mgmt.setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId);
+    }
+
+    async listWorkflowGeneratorRuns(workflowGeneratorId) {
+        return this.mgmt.listWorkflowGeneratorRuns(workflowGeneratorId);
+    }
+
+    async listWorkflowGeneratorCycles(workflowGeneratorId, limit) {
+        return this.mgmt.listWorkflowGeneratorCycles(workflowGeneratorId, limit);
+    }
+
+    async getWorkflowRun(workflowRunId, includeDeleted = false) {
+        return this.mgmt.getWorkflowRun(workflowRunId, includeDeleted);
+    }
+
+    async createWorkflowRun(input) {
+        return this.mgmt.createWorkflowRun(input);
+    }
+
+    async listWorkflowRuns(options, viewer = null) {
+        return this.mgmt.listWorkflowRuns(options, viewer);
+    }
+
+    async listWorkflowRunsPage(options, viewer = null) {
+        return this.mgmt.listWorkflowRunsPage(options, viewer);
+    }
+
+    async deleteWorkflowRun(workflowRunId, actor, isAdmin = false) {
+        return this.mgmt.deleteWorkflowRun(workflowRunId, actor, isAdmin);
+    }
+
+    async listWorkflowRunSessions(workflowRunId) {
+        return this.mgmt.listWorkflowRunSessions(workflowRunId);
+    }
+
+    async listWorkflowRunStateRuns(workflowRunId) {
+        return this.mgmt.listWorkflowRunStateRuns(workflowRunId);
+    }
+
+    async listWorkflowRunWaits(workflowRunId) {
+        return this.mgmt.listWorkflowRunWaits(workflowRunId);
+    }
+
+    async setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden) {
+        return this.mgmt.setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden);
+    }
+
+    async listWorkflowRunJournal(workflowRunId) {
+        return this.mgmt.listWorkflowRunJournal(workflowRunId);
     }
 
     async listSessionGroups() {
@@ -1370,7 +1560,8 @@ export class NodeSdkTransport {
         return model || null;
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, workspace } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, repo, gitRef, requireOwnerAffinity, workspace } = {}) {
+        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1378,6 +1569,9 @@ export class NodeSdkTransport {
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
+            ...(repo ? { repo } : {}),
+            ...(gitRef ? { gitRef } : {}),
+            ...(requireOwnerAffinity ? { requireOwnerAffinity: true } : {}),
             ...(workspace != null ? { workspace } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
@@ -1390,12 +1584,13 @@ export class NodeSdkTransport {
         };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, repo, gitRef, requireOwnerAffinity, workspace } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
         // exact names; only the worker resolver is fuzzy).
-        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
+        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false, { repo });
+        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(canonicalName, {
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1407,6 +1602,9 @@ export class NodeSdkTransport {
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
+            ...(repo ? { repo } : {}),
+            ...(gitRef ? { gitRef } : {}),
+            ...(requireOwnerAffinity ? { requireOwnerAffinity: true } : {}),
             ...(workspace != null ? { workspace } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);

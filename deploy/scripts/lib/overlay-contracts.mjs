@@ -30,7 +30,7 @@ import { PORTAL_CONFIG_KEYS } from "./portal-config.mjs";
 
 // Edge mode and TLS source value spaces. Mirrors `new-env.mjs` EDGE_MODES /
 // TLS_SOURCES — kept in sync via overlay-contracts.test.mjs.
-export const EDGE_MODES = ["afd", "private", "public"];
+export const EDGE_MODES = ["afd", "private", "public", "port-forward"];
 export const TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
 
 // JS-side authoritative defaults. Single source of truth — referenced by
@@ -38,6 +38,75 @@ export const TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
 // (the bicep-side defaults carry a comment pointer to this file).
 export const DEFAULT_EDGE_MODE = "afd";
 export const DEFAULT_TLS_SOURCE = "letsencrypt";
+
+export const SUPPORTED_TLS_BY_EDGE = Object.freeze({
+  afd: Object.freeze(["letsencrypt", "akv"]),
+  private: Object.freeze(["akv", "akv-selfsigned"]),
+  public: Object.freeze(["letsencrypt"]),
+  "port-forward": Object.freeze(["akv-selfsigned"]),
+});
+
+export function unsupportedEdgeTlsReason(edgeMode, tlsSource) {
+  const supported = SUPPORTED_TLS_BY_EDGE[edgeMode];
+  if (!supported || supported.includes(tlsSource)) return null;
+  if (edgeMode === "port-forward") {
+    return "Port-forward mode has no public or private ingress endpoint and uses a locally initiated AKV self-signed certificate.";
+  }
+  if (edgeMode === "private") {
+    return "Private ingress has no public HTTP-01 endpoint. Use TLS_SOURCE=akv or akv-selfsigned.";
+  }
+  if (edgeMode === "public") {
+    return "Public NGINX currently supports TLS_SOURCE=letsencrypt only.";
+  }
+  return "Azure Front Door requires a publicly trusted origin certificate. Use TLS_SOURCE=letsencrypt or akv.";
+}
+
+export function edgeModeTransitionReason(deployedEdgeMode, requestedEdgeMode) {
+  if (!deployedEdgeMode || deployedEdgeMode === requestedEdgeMode) return null;
+  return (
+    `In-place EDGE_MODE transitions are not supported (deployed='${deployedEdgeMode}', ` +
+    `requested='${requestedEdgeMode}'). Azure deployments are incremental, so changing modes ` +
+    "can leave the previous ingress resources active. Create a new stamp or decommission the " +
+    "existing stamp before changing EDGE_MODE."
+  );
+}
+
+export function parseDeployedEdgeModeLookup({
+  status,
+  stdout = "",
+  stderr = "",
+  deploymentName,
+}) {
+  if (status !== 0) {
+    const details = `${stderr}\n${stdout}`.trim();
+    if (/\b(?:DeploymentNotFound|ResourceGroupNotFound)\b/i.test(details)) {
+      return null;
+    }
+    throw new Error(
+      `Failed to inspect existing deployment "${deploymentName}" before validating EDGE_MODE` +
+        `${details ? `:\n${details}` : ` (Azure CLI exited ${status})`}`,
+    );
+  }
+
+  let lookup;
+  try {
+    lookup = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(
+      `Azure returned invalid deployment metadata for "${deploymentName}": ${error.message}`,
+    );
+  }
+
+  const deployedEdgeMode = [lookup?.output, lookup?.parameter]
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .find((value) => EDGE_MODES.includes(value));
+  if (deployedEdgeMode) return deployedEdgeMode;
+
+  throw new Error(
+    `Existing deployment "${deploymentName}" does not contain a recognized EDGE_MODE ` +
+      "output or parameter. Refusing to deploy because the prior ingress topology cannot be verified.",
+  );
+}
 
 // Collapse `akv-selfsigned` → `akv` (the two share a single overlay; the
 // only delta is the AKV issuer name, owned by Portal bicep). Mirrors
@@ -69,6 +138,7 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
   "PILOTSWARM_USE_MANAGED_IDENTITY",
   "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY",
   "SPC_KEYS_HASH",
+  "AKS_VNET_ID",
   ...PORTAL_CONFIG_KEYS.map(({ env }) => env),
 ]);
 
@@ -117,13 +187,30 @@ export const OVERLAY_CONTRACTS = Object.freeze({
     userRequiredEnvKeys: Object.freeze([
       "HOST",
       "PRIVATE_DNS_ZONE",
-      "AKS_VNET_ID",
     ]),
     composedEnvKeys: SHARED_COMPOSED_ENV_KEYS,
     stubKeys: Object.freeze([
       "FRONT_DOOR_PROFILE_NAME",
       "FRONT_DOOR_PROFILE_RESOURCE_GROUP",
       "FRONT_DOOR_ENDPOINT_NAME",
+      "FRONT_DOOR_ID",
+      "APPLICATION_GATEWAY_NAME",
+      "PRIVATE_LINK_CONFIGURATION_NAME",
+      "SSL_CERT_DOMAIN_SUFFIX",
+      "ACME_EMAIL",
+    ]),
+    bicepOutputKeys: SHARED_BICEP_OUTPUT_KEYS,
+  }),
+  "port-forward-akv": Object.freeze({
+    userRequiredEnvKeys: Object.freeze([]),
+    composedEnvKeys: SHARED_COMPOSED_ENV_KEYS,
+    stubKeys: Object.freeze([
+      "HOST",
+      "PRIVATE_DNS_ZONE",
+      "FRONT_DOOR_PROFILE_NAME",
+      "FRONT_DOOR_PROFILE_RESOURCE_GROUP",
+      "FRONT_DOOR_ENDPOINT_NAME",
+      "FRONT_DOOR_ID",
       "APPLICATION_GATEWAY_NAME",
       "PRIVATE_LINK_CONFIGURATION_NAME",
       "SSL_CERT_DOMAIN_SUFFIX",
@@ -172,11 +259,94 @@ export function getContract({ edgeMode, tlsSource }) {
   return c;
 }
 
-// Human-readable rendering for VPN combo error codes. Keeps the message
-// and remediation hint adjacent to the code so deploy.mjs / new-env.mjs
-// don't have to re-derive them. The hint NEVER points at the scaffolder
-// (re-running new-env.mjs would clobber operator edits) — it points at
-// the env file and the VPN docs.
+// Human-readable rendering for configuration-combination error codes. Keeps
+// the message and remediation hint adjacent to the code so deploy.mjs /
+// new-env.mjs don't have to re-derive them.
+const PORTAL_AUTH_COMBO_ERROR_DETAILS = Object.freeze({
+  "public-portal-auth-provider-required": Object.freeze({
+    message:
+      "EDGE_MODE='afd' publishes the portal on the public internet, but " +
+      "PORTAL_AUTH_PROVIDER is unset.",
+    hint:
+      "Set PORTAL_AUTH_PROVIDER=entra with PORTAL_AUTH_ENTRA_TENANT_ID and " +
+      "PORTAL_AUTH_ENTRA_CLIENT_ID. For an intentionally open sandbox, set " +
+      "PORTAL_AUTH_PROVIDER=none and PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true explicitly.",
+  }),
+  "public-portal-entra-requires-config": Object.freeze({
+    message:
+      "PORTAL_AUTH_PROVIDER=entra requires both PORTAL_AUTH_ENTRA_TENANT_ID " +
+      "and PORTAL_AUTH_ENTRA_CLIENT_ID.",
+    hint:
+      "Create or select the portal Entra app registration, add the AFD URL as " +
+      "a SPA redirect URI, and set both IDs in the stamp env file.",
+  }),
+  "public-portal-auth-allows-anonymous": Object.freeze({
+    message:
+      "A public authenticated portal cannot set " +
+      "PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true.",
+    hint:
+      "Set PORTAL_AUTH_ALLOW_UNAUTHENTICATED=false. To deploy an intentionally " +
+      "open sandbox, use PORTAL_AUTH_PROVIDER=none with the value true explicitly.",
+  }),
+  "public-portal-no-auth-not-explicit": Object.freeze({
+    message:
+      "PORTAL_AUTH_PROVIDER=none on a public AFD endpoint requires an explicit " +
+      "acknowledgement because the runtime otherwise allows anonymous access by default.",
+    hint:
+      "Use Entra authentication for shared stamps. Only for an intentionally open " +
+      "sandbox, set PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true explicitly.",
+  }),
+});
+
+function describePortalAuthComboError(code) {
+  const detail = PORTAL_AUTH_COMBO_ERROR_DETAILS[code];
+  if (!detail) {
+    return {
+      code,
+      message: `Portal authentication combo error: ${code}.`,
+      hint: "Check the portal authentication settings in the stamp env file.",
+    };
+  }
+  return { code, message: detail.message, hint: detail.hint };
+}
+
+function normalizedPortalSetting(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized === "__PS_UNSET__" ? "" : normalized;
+}
+
+export function validatePortalAuthCombo({ edgeMode, env }) {
+  if (String(edgeMode ?? "").toLowerCase() !== "afd") return [];
+
+  const provider = normalizedPortalSetting(env?.PORTAL_AUTH_PROVIDER).toLowerCase();
+  const allowUnauthenticated =
+    normalizedPortalSetting(env?.PORTAL_AUTH_ALLOW_UNAUTHENTICATED).toLowerCase();
+
+  if (!provider) return ["public-portal-auth-provider-required"];
+  if (provider === "none") {
+    return allowUnauthenticated === "true"
+      ? []
+      : ["public-portal-no-auth-not-explicit"];
+  }
+
+  const errors = [];
+  if (
+    provider === "entra"
+    && (
+      !normalizedPortalSetting(env?.PORTAL_AUTH_ENTRA_TENANT_ID)
+      || !normalizedPortalSetting(env?.PORTAL_AUTH_ENTRA_CLIENT_ID)
+    )
+  ) {
+    errors.push("public-portal-entra-requires-config");
+  }
+  if (allowUnauthenticated === "true") {
+    errors.push("public-portal-auth-allows-anonymous");
+  }
+  return errors;
+}
+
+// VPN hints never point at the scaffolder (re-running new-env.mjs would
+// clobber operator edits); they point at the env file and the VPN docs.
 const VPN_COMBO_ERROR_DETAILS = Object.freeze({
   "vpn-requires-afd": Object.freeze({
     message:
@@ -244,12 +414,16 @@ function describeVpnComboError(code) {
 //   missing — array of userRequiredEnvKey names that are unset/blank (and
 //             ACME_EMAIL when malformed on letsencrypt). These render as
 //             "requires <keys> to be set" with a scaffolder hint.
-//   combo   — array of `{ code, message, hint }` objects describing VPN
-//             gateway combo errors. These render distinctly: a named
-//             error + a hint that does NOT point at the scaffolder.
+//   combo   — array of `{ code, message, hint }` objects describing invalid
+//             cross-setting combinations.
 // Callers decide whether to throw or log — deploy.mjs throws via
 // process.exit(1); new-env.mjs warn-and-continues at scaffold time.
-export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
+export function validateRequiredEnv({
+  edgeMode,
+  tlsSource,
+  env,
+  enforcePortalAuth = true,
+}) {
   const contract = getContract({ edgeMode, tlsSource });
   const missing = [];
   for (const k of contract.userRequiredEnvKeys) {
@@ -280,13 +454,14 @@ export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
       missing.push("ACME_EMAIL"); // present but malformed → treat as missing
     }
   }
-  // VPN gateway combo validation. Returned as a SEPARATE channel from
-  // `missing` because the rendering and remediation
-  // differ — combo errors are not "set this key" errors and should not
-  // direct operators at the scaffolder. Gated on VPN_GATEWAY_ENABLED=true
-  // inside validateVpnGatewayCombo so non-VPN stamps are unaffected.
+  const portalAuthCodes = enforcePortalAuth
+    ? validatePortalAuthCombo({ edgeMode, env })
+    : [];
   const vpnCodes = validateVpnGatewayCombo({ edgeMode, tlsSource, env });
-  const combo = vpnCodes.map(describeVpnComboError);
+  const combo = [
+    ...portalAuthCodes.map(describePortalAuthComboError),
+    ...vpnCodes.map(describeVpnComboError),
+  ];
   return { missing, combo };
 }
 

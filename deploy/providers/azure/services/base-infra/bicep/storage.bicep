@@ -30,6 +30,9 @@ param storageAccountName string
 ])
 param skuName string = 'Standard_LRS'
 
+@description('Allow storage account shared-key (local auth) access. Defaults to true to preserve the legacy scripts/deploy-aks.sh connection-string flow. Set to false for managed-identity-only deployments or when tenant policy denies allowSharedKeyAccess=true. The MI-based worker/portal path (PILOTSWARM_USE_MANAGED_IDENTITY=1 + DefaultAzureCredential) does not use shared keys.')
+param allowSharedKeyAccess bool = true
+
 @description('Principal ID of the AKS kubelet UAMI that needs Blob Data Reader on manifest containers.')
 param aksKubeletPrincipalId string
 
@@ -47,6 +50,20 @@ param localDeploymentPrincipalId string = ''
 ])
 param localDeploymentPrincipalType string = 'User'
 
+// Part of the controlled-preview devbox security exception declared in
+// main.bicep. Container scope limits the blast radius but does not enforce
+// session ownership: the principal can read or modify every session blob.
+@description('SECURITY EXCEPTION: optional trusted devbox principal granted read/write access to every blob in copilot-sessions. Container-scoped, but not owner- or session-scoped.')
+param devboxPrincipalId string = ''
+
+@description('Principal type for devboxPrincipalId.')
+@allowed([
+  'User'
+  'Group'
+  'ServicePrincipal'
+])
+param devboxPrincipalType string = 'Group'
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
   location: location
@@ -57,7 +74,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   properties: {
     accessTier: 'Hot'
     allowBlobPublicAccess: false
-    allowSharedKeyAccess: true
+    allowSharedKeyAccess: allowSharedKeyAccess
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
   }
@@ -112,6 +129,16 @@ resource assignBlobContributorToLocalDeployer 'Microsoft.Authorization/roleAssig
   properties: {
     principalId: localDeploymentPrincipalId
     principalType: localDeploymentPrincipalType
+    roleDefinitionId: blobDataContributorDef.id
+  }
+}
+
+resource assignSessionBlobContributorToDevboxPrincipal 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(devboxPrincipalId)) {
+  name: guid(sessionsContainer.id, devboxPrincipalId, blobDataContributorRoleId)
+  scope: sessionsContainer
+  properties: {
+    principalId: devboxPrincipalId
+    principalType: devboxPrincipalType
     roleDefinitionId: blobDataContributorDef.id
   }
 }

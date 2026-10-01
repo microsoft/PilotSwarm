@@ -99,7 +99,7 @@ async function testPilotswarmRootCreated(env) {
 //
 // `agent-tuner` is deliberately absent: it became an installable package
 // (`agent-packages/agent-manager`) rather than an auto-started system agent.
-// It never had a background job — converting it lost nothing automatic — and
+// It never had a background workflowRun — converting it lost nothing automatic — and
 // a package has an owner, a version and an enable/disable lifecycle that a
 // permanently-respawned system session cannot have.
 const EXPECTED_CHILD_AGENT_IDS = ["sweeper", "resourcemgr", "facts-manager"];

@@ -4,11 +4,12 @@ import http from "node:http";
 import express from "express";
 import { OPERATIONS } from "pilotswarm-sdk/api";
 import { createApiRouter } from "../api/router.js";
+import { PortalRuntime } from "../runtime.js";
 import { createJsonRpcError, installJsonBodyLimits } from "../server.js";
 
-function createHarness({ callImpl, role = "user" } = {}) {
+function createHarness({ callImpl, role = "user", principal, runtime: runtimeOverride } = {}) {
     const calls = [];
-    const runtime = {
+    const runtime = runtimeOverride ?? {
         started: true,
         mode: "local",
         async start() {},
@@ -25,7 +26,10 @@ function createHarness({ callImpl, role = "user" } = {}) {
         },
     };
     const requireAuth = (req, _res, next) => {
-        req.auth = { principal: { provider: "none", subject: "unknown" }, authorization: { allowed: true, role, reason: "test", matchedGroups: [] } };
+        req.auth = {
+            principal: principal ?? { provider: "none", subject: "unknown" },
+            authorization: { allowed: true, role, reason: "test", matchedGroups: [] },
+        };
         next();
     };
     const app = express();
@@ -38,6 +42,88 @@ function createHarness({ callImpl, role = "user" } = {}) {
             resolve({ baseUrl, calls, close: () => new Promise((done) => server.close(done)) });
         });
     });
+}
+
+function createWorkflowAuthorizationRuntime() {
+    const runs = new Map([
+        ["run-alice", {
+            workflowRunId: "run-alice",
+            requestedBy: { provider: "dev", subject: "alice", displayName: "Alice" },
+        }],
+        ["run-bob", {
+            workflowRunId: "run-bob",
+            requestedBy: { provider: "dev", subject: "bob", displayName: "Bob" },
+        }],
+    ]);
+    const runtime = Object.create(PortalRuntime.prototype);
+    runtime.started = true;
+    runtime.startPromise = null;
+    runtime.authz = {
+        enforce: true,
+        adminScope: "unrestricted",
+        defaultVisibility: "private",
+        systemVisibility: "read",
+    };
+    runtime._breakGlassSeen = new Map();
+    runtime.transport = {
+        async getWorkflowRun(workflowRunId) {
+            return runs.get(workflowRunId) ?? null;
+        },
+        async listWorkflowRunSessions(workflowRunId) {
+            return [{ workflowRunId, sessionId: `session-${workflowRunId}` }];
+        },
+        async listWorkflowRunStateRuns(workflowRunId) {
+            return [{ workflowRunId, stateRunId: `state-${workflowRunId}` }];
+        },
+        async listWorkflowRunWaits(workflowRunId) {
+            return [{ workflowRunId, waitId: `wait-${workflowRunId}` }];
+        },
+        async listWorkflowRunJournal(workflowRunId) {
+            return [{ workflowRunId, sequence: 1 }];
+        },
+        async setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden) {
+            return { workflowRunId, waitId, conditionKey, overridden };
+        },
+        async deleteWorkflowRun(workflowRunId) {
+            return {
+                aggregateType: "workflowRun",
+                aggregateId: workflowRunId,
+                alreadyDeleted: false,
+                deletedSessionCount: 0,
+            };
+        },
+        async recordAuthzAudit() {},
+    };
+    return runtime;
+}
+
+function createWorkflowDefinitionRuntime() {
+    const calls = [];
+    const runtime = Object.create(PortalRuntime.prototype);
+    runtime.started = true;
+    runtime.startPromise = null;
+    runtime.authz = {
+        enforce: true,
+        adminScope: "unrestricted",
+        defaultVisibility: "private",
+        systemVisibility: "read",
+    };
+    runtime._breakGlassSeen = new Map();
+    runtime.transport = {
+        async createWorkflowDefinition(input) {
+            calls.push(input);
+            return {
+                workflowDefinition: {
+                    workflowDefinitionId: "definition-created",
+                    ...input,
+                    version: 1,
+                },
+                created: true,
+            };
+        },
+        async recordAuthzAudit() {},
+    };
+    return { runtime, calls };
 }
 
 test("every operation in the table is routable and dispatches by name", async () => {
@@ -65,10 +151,16 @@ test("every operation in the table is routable and dispatches by name", async ()
 test("path, query, and body params are collected with declared types", async () => {
     const { baseUrl, calls, close } = await createHarness();
     try {
-        const cursor = { updatedAt: 123, sessionId: "abc" };
-        await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&systemFilter=exclude&viewerOnly=true&cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
+        await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&systemFilter=exclude&scope=visible&cursorUpdatedAt=123&cursorSessionId=abc`);
         const page = calls.find((call) => call.name === "listSessionsPage");
-        assert.deepEqual(page.params, { limit: 5, includeDeleted: true, systemFilter: "exclude", viewerOnly: true, cursor });
+        assert.deepEqual(page.params, {
+            limit: 5,
+            includeDeleted: true,
+            systemFilter: "exclude",
+            scope: "visible",
+            cursorUpdatedAt: 123,
+            cursorSessionId: "abc",
+        });
 
         await fetch(`${baseUrl}/api/v1/sessions/s1/messages`, {
             method: "POST",
@@ -87,6 +179,188 @@ test("path, query, and body params are collected with declared types", async () 
         await fetch(`${baseUrl}/api/v1/management/sessions/s2/events?afterSeq=5`);
         const after = calls.find((call) => call.name === "getSessionEvents");
         assert.deepEqual(after.params, { sessionId: "s2", afterSeq: 5 }, "omitted eventTypes stays absent");
+    } finally {
+        await close();
+    }
+});
+
+test("direct Workflow Run REST creation rejects Definition execution overrides", async () => {
+    const { baseUrl, calls, close } = await createHarness();
+    try {
+        const response = await fetch(`${baseUrl}/api/v1/workflow-runs`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                workflowDefinitionId: "definition-1",
+                workflowRunKey: "request-1",
+                input: {},
+                affinities: { repo: "other-repo" },
+            }),
+        });
+        assert.equal(response.status, 400);
+        const payload = await response.json();
+        assert.equal(payload.error.code, "INVALID_REQUEST");
+        assert.match(payload.error.message, /inherit initialState and affinities/);
+        assert.equal(calls.some((call) => call.name === "createWorkflowRun"), false);
+    } finally {
+        await close();
+    }
+});
+
+test("Workflow Definition REST publication rejects unsupported content instead of persisting an empty definition", async () => {
+    const definitionRuntime = createWorkflowDefinitionRuntime();
+    const { baseUrl, close } = await createHarness({
+        runtime: definitionRuntime.runtime,
+        principal: {
+            provider: "dev",
+            subject: "alice",
+            email: "alice@example.test",
+            displayName: "Alice",
+        },
+    });
+    try {
+        for (const body of [
+            {
+                workflowType: "TestSwarm",
+                name: "Nested unsupported content",
+                definition: {
+                    content: {
+                        lifecycle: {
+                            initialState: "Plan",
+                        },
+                    },
+                },
+            },
+            {
+                workflowType: "TestSwarm",
+                name: "Top-level unsupported content",
+                definition: {},
+                content: {
+                    lifecycle: {
+                        initialState: "Plan",
+                    },
+                },
+            },
+        ]) {
+            const response = await fetch(`${baseUrl}/api/v1/workflow-definitions`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            assert.equal(response.status, 400);
+            const payload = await response.json();
+            assert.equal(payload.error.code, "INVALID_REQUEST");
+            assert.match(payload.error.message, /content/);
+            assert.match(payload.error.message, /definition\.workflowDefinition/);
+        }
+        assert.equal(definitionRuntime.calls.length, 0);
+    } finally {
+        await close();
+    }
+});
+
+test("Workflow Run HTTP details are requester-scoped with indistinguishable not-found responses", async () => {
+    const requests = [
+        { method: "GET", path: "/workflow-runs/run-bob" },
+        { method: "GET", path: "/workflow-runs/run-bob/sessions" },
+        { method: "GET", path: "/workflow-runs/run-bob/state-runs" },
+        { method: "GET", path: "/workflow-runs/run-bob/waits" },
+        { method: "GET", path: "/workflow-runs/run-bob/journal" },
+        {
+            method: "POST",
+            path: "/workflow-runs/run-bob/waits/wait-1/condition-overrides",
+            body: { conditionKey: "approved", overridden: true },
+        },
+        { method: "DELETE", path: "/workflow-runs/run-bob" },
+    ];
+    const alicePrincipal = {
+        provider: "dev",
+        subject: "alice",
+        email: "alice@example.test",
+        displayName: "Alice",
+    };
+    const alice = await createHarness({
+        runtime: createWorkflowAuthorizationRuntime(),
+        principal: alicePrincipal,
+    });
+    try {
+        const ownRun = await fetch(`${alice.baseUrl}/api/v1/workflow-runs/run-alice`);
+        assert.equal(ownRun.status, 200);
+        assert.equal((await ownRun.json()).result.workflowRunId, "run-alice");
+
+        for (const request of requests) {
+            const options = {
+                method: request.method,
+                headers: { "content-type": "application/json" },
+                ...(request.body ? { body: JSON.stringify(request.body) } : {}),
+            };
+            const denied = await fetch(`${alice.baseUrl}/api/v1${request.path}`, options);
+            const missing = await fetch(
+                `${alice.baseUrl}/api/v1${request.path.replace("run-bob", "run-missing")}`,
+                options,
+            );
+            assert.equal(denied.status, 404, `${request.method} ${request.path}`);
+            assert.equal(missing.status, 404, `${request.method} missing comparison`);
+            assert.deepEqual(
+                await denied.json(),
+                await missing.json(),
+                `${request.method} ${request.path} must not reveal whether another requester's Run exists`,
+            );
+        }
+    } finally {
+        await alice.close();
+    }
+
+    const resourceAdmin = await createHarness({
+        runtime: createWorkflowAuthorizationRuntime(),
+        principal: {
+            provider: "dev",
+            subject: "admin",
+            email: "admin@example.test",
+            displayName: "Admin",
+        },
+        role: "admin",
+    });
+    try {
+        for (const request of requests) {
+            const response = await fetch(`${resourceAdmin.baseUrl}/api/v1${request.path}`, {
+                method: request.method,
+                headers: { "content-type": "application/json" },
+                ...(request.body ? { body: JSON.stringify(request.body) } : {}),
+            });
+            assert.equal(response.status, 200, `resource admin ${request.method} ${request.path}`);
+        }
+    } finally {
+        await resourceAdmin.close();
+    }
+});
+
+test("session creation routes reject caller credentials before dispatch", async () => {
+    const { baseUrl, calls, close } = await createHarness();
+    try {
+        for (const path of ["/sessions", "/sessions/for-agent"]) {
+            const response = await fetch(`${baseUrl}/api/v1${path}`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    model: "gpt-5",
+                    callerAuth: {
+                        audienceTokens: { "https://example.test": "caller-token" },
+                    },
+                }),
+            });
+            assert.equal(response.status, 400, `${path} rejects callerAuth`);
+            assert.deepEqual(await response.json(), {
+                ok: false,
+                error: {
+                    code: "INVALID_REQUEST",
+                    message:
+                        "callerAuth must not be sent to PilotSwarm; "
+                        + "devbox workers acquire delegated credentials locally.",
+                },
+            });
+        }
+        assert.equal(calls.length, 0, "rejected caller credentials never reach runtime dispatch");
     } finally {
         await close();
     }
@@ -175,8 +449,8 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
         assert.equal(boom.status, 500);
         assert.equal((await boom.json()).error.code, "INTERNAL_ERROR");
 
-        const malformedCursor = await fetch(`${baseUrl}/api/v1/management/sessions?cursor=%7Bnope`);
-        assert.equal(malformedCursor.status, 400, "malformed json query rejected before dispatch");
+        const malformedJsonQuery = await fetch(`${baseUrl}/api/v1/facts?scopeKeys=%7Bnope`);
+        assert.equal(malformedJsonQuery.status, 400, "malformed json query rejected before dispatch");
     } finally {
         await close();
     }
@@ -331,6 +605,9 @@ const VALID_ACCESS_CLASSES = new Set([
     // since copyArtifact stopped being /api/rpc-only.
     "session:copy",
     "group:list", "group:manage",
+    "workflow-definition:list", "workflow-definition:create", "workflow-definition:read",
+    "workflow-generator:list", "workflow-generator:create", "workflow-generator:read", "workflow-generator:manage",
+    "workflow-run:create", "workflow-run:read", "workflow-run:manage",
     "facts:read", "facts:write",
     "fleet:read", "fleet:admin",
     "authz:audit",

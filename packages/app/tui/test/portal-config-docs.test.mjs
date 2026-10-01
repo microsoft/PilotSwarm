@@ -52,3 +52,60 @@ test("the flatter portal.agentPackageGuideUrl spelling works too", () => {
     const { portalConfig } = resolvePortalConfigBundleFromPluginDirs([dir]);
     assert.equal(portalConfig.docs.agentPackageGuideUrl, own);
 });
+
+test("portal footer links are absent by default", () => {
+    const { portalConfig } = resolvePortalConfigBundleFromPluginDirs([]);
+    assert.deepEqual(portalConfig.footer.links, []);
+});
+
+test("a plugin can supply portal footer links", () => {
+    const dir = pluginDirWith({
+        name: "layered",
+        portal: {
+            footer: {
+                links: [{ label: "Deployment policy", url: "https://example.test/policy" }],
+            },
+        },
+    });
+    const { portalConfig } = resolvePortalConfigBundleFromPluginDirs([dir]);
+    assert.deepEqual(portalConfig.footer.links, [{
+        label: "Deployment policy",
+        url: "https://example.test/policy",
+    }]);
+});
+
+test("footer links compose with an earlier plugin that owns the base portal", () => {
+    const baseDir = pluginDirWith({
+        name: "base",
+        portal: { branding: { title: "Layered portal" } },
+    });
+    const footerDir = pluginDirWith({
+        name: "footer",
+        portal: {
+            footer: {
+                links: [{ label: "Deployment policy", url: "https://example.test/policy" }],
+            },
+        },
+    });
+    const { portalConfig } = resolvePortalConfigBundleFromPluginDirs([baseDir, footerDir]);
+    assert.equal(portalConfig.branding.title, "Layered portal");
+    assert.deepEqual(portalConfig.footer.links, [{
+        label: "Deployment policy",
+        url: "https://example.test/policy",
+    }]);
+});
+
+test("portal footer links reject unsafe URLs", () => {
+    const dir = pluginDirWith({
+        name: "unsafe",
+        portal: {
+            footer: {
+                links: [{ label: "Unsafe", url: "javascript:alert(1)" }],
+            },
+        },
+    });
+    assert.throws(
+        () => resolvePortalConfigBundleFromPluginDirs([dir]),
+        /must use https/,
+    );
+});

@@ -20,6 +20,21 @@ Same outcome as the enterprise path: Bicep deployed → image pushed to ACR →
 Kustomize manifests staged with `.env` substitution → tree uploaded to
 the Flux Storage Bucket → rollout verified against the running cluster.
 
+The `worker` service is the platform-owned **generic repo-less worker pool**.
+It advertises `PILOTSWARM_WORKER_TAGS=generic`; repository-pinned workers are
+separate git-hydration DaemonSets. `WORKER_REPLICAS` controls the generic pool
+size and defaults to `3`. Composition repositories may override these settings
+through process environment variables while keeping their private values
+outside PilotSwarm.
+
+The generic Windows worker uses
+[`build-windows-worker.ps1`](build-windows-worker.ps1). It can build the
+platform base and SDK together, or expose the same two boundaries to a
+composition repository: `-BaseOnly` emits the canonical base, and
+`-WorkerBaseImage <image>` places the thin SDK layer on top of an externally
+composed image. PilotSwarm therefore owns the generic image mechanics without
+owning any private layers inserted between those boundaries.
+
 ## Prerequisites
 
 - **Node.js ≥ 20** (already a repo dep — `node --version`)
@@ -100,6 +115,13 @@ of `all` mode, single-service invocations still redeploy their
 dependencies (idempotent, but slower) so a one-off `worker foo` works
 even if BaseInfra hasn't been refreshed in this shell.
 
+BaseInfra accepts an optional
+`KEY_VAULT_PURGE_PROTECTION_ENABLED=true|false` environment setting. The
+setting is omitted from existing environments by default, leaving the Bicep
+default of `true` unchanged. Set it to `false` only for disposable environments
+whose teardown explicitly purges the soft-deleted vault; Azure cannot disable
+purge protection after a protected vault has been created.
+
 The mapping `service → module(s)` is in
 [`deploy/scripts/lib/service-info.mjs`](lib/service-info.mjs)
 (`SERVICE_TO_MODULES` for single-service, `ALL_MODE_MODULES` for `all`).
@@ -108,6 +130,9 @@ The `package.json` wrapper exposes the same CLI:
 
 ```bash
 npm run deploy -- worker foo --steps manifests
+
+# Overlay values owned by another repository or deployment system
+npm run deploy -- worker foo --env-overlay ../org-deployment/worker.env
 ```
 
 > **Note**: when invoking via `npm run deploy`, separate npm flags from
@@ -120,14 +145,18 @@ npm run deploy -- worker foo --steps manifests
 ```
 npm run deploy -- <service> <env> [flags]
 
-Services:  worker | portal | baseinfra | globalinfra | horizondb | all
+Services:  worker | portal | base-infra | global-infra | horizondb | all
 Envs:      a local env name created with `npm run deploy:new-env`
 
 Flags:
   --steps <list>      build,bicep,push,manifests,rollout (or 'noop')
   --region <name>     Override LOCATION from <env>.env
   --image-tag <tag>   Default: <env>-<short-sha>[-dirty]
-  --clean             Wipe deploy/.tmp/<service>-<env>/ before running
+  --instance <name>   Optional instance name for services that support composition
+  --env-overlay <path> Overlay an external KEY=VALUE file on the local env.
+                       Repeat in precedence order; later files win.
+                       Relative paths resolve from the current working directory.
+  --clean             Wipe deploy/.tmp/<service>[-<instance>]-<env>/ before running
   --force             Ignore deploy markers; redeploy every Bicep module even
                       if its template + rendered params are unchanged
   --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,
@@ -146,9 +175,10 @@ Flags:
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
 | `bicep` | Render `deploy/providers/azure/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
-| `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
-| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv`, `overlays/public-letsencrypt` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
-| `rollout` | `flux reconcile kustomization <svc>-<svc> -n flux-system --with-source` (forces the Bucket source to re-pull the just-uploaded blobs and the Kustomization to apply that revision), then `kubectl rollout status deployment/<svc>` in `NAMESPACE`, then verifies live `image` ends with the expected tag. | worker, portal |
+| `workload-group` | Optionally join the stamp's workload UAMI to a shared Entra authorization group (`join`/`create`), so cross-cluster RBAC is anchored on one group instead of per-principal grants. No-op unless the stamp opts in via `WORKLOAD_MI_GROUP_MODE`. See [Workload identity authorization group](#workload-identity-authorization-group). | baseinfra |
+| `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra, horizondb |
+| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>[-<instance>]-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv`, `overlays/public-letsencrypt`, `overlays/port-forward-akv` — private `akv-selfsigned` shares `private-akv`, while port-forward uses its dedicated no-Ingress overlay). | worker, portal |
+| `rollout` | Force the service's Flux Kustomization to reconcile (`flux reconcile kustomization <svc>-<svc> -n flux-system --with-source`, which re-pulls the just-uploaded blobs), verify declared prerequisites, then wait for the declared Deployment or DaemonSet. Platform-built images are checked by tag. | worker, portal |
 
 The default pipeline (no `--steps`) is the full chain. `baseinfra` and
 `horizondb` run Bicep followed by secret seeding; `globalinfra` runs Bicep.
@@ -160,6 +190,27 @@ Every deploy targets a personal local env at `deploy/envs/local/<name>/.env`
 (the entire `local/` directory is gitignored). Local env files are
 **standalone** — `deploy.mjs` reads them directly with no runtime cascade
 onto a shared base file.
+
+Use repeatable `--env-overlay <path>` flags when deployment composition is
+owned outside the PilotSwarm checkout. Each external file uses the same flat
+dotenv syntax and is overlaid without being copied into PilotSwarm. Files are
+applied in command-line order, so a base repository file can be followed by a
+stamp-specific override. Relative paths resolve from the current working
+directory, so automation should prefer absolute paths. The flag is named
+`--env-overlay` because Node.js reserves `--env-file` for its own runtime
+configuration before `deploy.mjs` can parse arguments.
+
+Environment precedence, from lowest to highest, is:
+
+1. `deploy/envs/local/<name>/.env`
+2. external `--env-overlay` files in command-line order
+3. matching process-environment variables
+4. explicit CLI flags such as `--region`
+
+Only keys present in one of the composed files are eligible for process-
+environment overrides; `deploy.mjs` does not import the entire parent process
+environment. This keeps composition explicit while allowing any organization
+to retain versioned deployment values in its own repository.
 
 `deploy/providers/azure/envs/template.env` is a checked-in template consumed only by the
 scaffolder (`npm run deploy:new-env`): it copies the template, substitutes
@@ -179,15 +230,21 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `GLOBAL_RESOURCE_GROUP`, `GLOBAL_RESOURCE_PREFIX` | bicep (globalinfra) | Front Door RG + prefix. |
 | `PORTAL_RESOURCE_NAME` | bicep (portal) | Portal logical name. |
 | `NAMESPACE` | manifests, rollout | Target Kubernetes namespace (`pilotswarm` per A-11). |
-| `EDGE_MODE` | bicep, manifests, rollout | `afd` (default) or `private`. Controls AFD/AppGw/AGIC vs AKS web-app-routing addon. Drives Portal overlay path. |
+| `PILOTSWARM_WORKER_TAGS` | manifests (worker) | Comma-separated routing tags for the repo-less worker pool. Defaults to and must include `generic`; additional platform-neutral capacity tags are allowed. |
+| `WORKER_REPLICAS` | manifests (worker) | Replica count for the Flux-managed generic worker Deployment. Defaults to `3`; it controls agent workers, not Workflow Generator controller placement. |
+| `WORKFLOW_GENERATOR_SOURCE_PROVIDERS_JSON` | manifests (worker) | Deployment-owned remote source-provider registrations projected into the managed Workflow Generator controller. Defaults to `[]`; provider bearer values belong in Secrets and are referenced through `tokenEnv`. |
+| `EDGE_MODE` | bicep, manifests, rollout | `afd` (default), `public`, `private`, or `port-forward`. Selects AFD/AppGw/AGIC, public or private web-app-routing, or local-only ClusterIP access. Drives the Portal overlay path. |
 | `TLS_SOURCE` | bicep, manifests | `letsencrypt` \| `akv` \| `akv-selfsigned`. Drives Portal overlay path and AKV cert issuer. See [docs/developer/deploy/aks.md](../../docs/developer/deploy/aks.md) for the supported `(EDGE_MODE × TLS_SOURCE)` combos. |
 | `HOST`, `PRIVATE_DNS_ZONE` | bicep (portal), rollout (portal) | Required when `EDGE_MODE=private`. Bicep provisions the Private DNS Zone + VNet link; deploy.mjs writes the A record `${HOST}.${PRIVATE_DNS_ZONE}` → internal LB IP after Portal rollout. |
 | `ACME_EMAIL` | bicep (cert-manager-issuers) | Required when `TLS_SOURCE=letsencrypt`. Let's Encrypt registration / renewal-failure notices. |
 | `PORTAL_TLS_ISSUER_NAME` | bicep (portal) | Optional override for the AKV cert issuer name. Defaults to `OneCertV2-PublicCA` (afd) / `OneCertV2-PrivateCA` (private), auto-registered by Portal bicep. |
 | `AZURE_TENANT_ID` | manifests | Workload identity federation tenant. |
-| `PORTAL_HOSTNAME` | manifests (portal) | Public hostname for AFD origin. |
+| `PORTAL_HOSTNAME` | manifests (portal) | Portal TLS hostname: the AFD/private-ingress host or `localhost` for port-forward mode. |
 | `SSL_CERT_DOMAIN_SUFFIX`, `WAF_MODE`, `ACR_SKU`, `APP_GATEWAY_PRIVATE_IP` | bicep | Static infra params. |
 | `IMAGE` | manifests | Auto-composed from `ACR_LOGIN_SERVER` + service image repo + `--image-tag`; do **not** seed manually. |
+| `WORKLOAD_MI_GROUP_MODE` | workload-group | `skip` (default) \| `join` \| `create`. Opt a stamp's workload UAMI into a shared Entra authorization group. See [Workload identity authorization group](#workload-identity-authorization-group). |
+| `WORKLOAD_MI_GROUP_OBJECT_ID` | workload-group | Group objectId. Required when `MODE=join`. |
+| `WORKLOAD_MI_GROUP_NAME` | workload-group | Group displayName. Required when `MODE=create`. |
 
 **Bicep outputs are never seeded.** `ACR_NAME`, `ACR_LOGIN_SERVER`, `KV_NAME`,
 `AKS_CLUSTER_NAME`, `BLOB_CONTAINER_ENDPOINT`, `DEPLOYMENT_STORAGE_ACCOUNT_NAME`,
@@ -200,11 +257,50 @@ split-step runs (e.g. `worker dev --steps manifests` without first running
 `--steps bicep` in the same process) fail fast with a clear "unresolved
 placeholder" error directing you to run a prior `--steps bicep`.
 
+## Workload identity authorization group
+
+By default, each stamp's workload managed identity (the `csiIdentity` UAMI that
+worker and portal pods federate against) is granted resource RBAC directly by
+Bicep — the classic per-principal model. That is fine for a single self-
+contained stamp, but it does not scale when many stamps across different
+clusters and subscriptions all need the same out-of-band grants (for example
+Key Vault, Postgres, ACR, or external systems like a source-control org or a
+telemetry store): every new stamp would have to be individually re-allow-listed
+everywhere.
+
+The optional **workload-group** step lets an operator anchor authorization on a
+single durable Entra ID security group instead. You allow-list that one group
+to the resources the workload needs once; then every stamp you stand up simply
+adds its UAMI to the group, so cluster and subscription churn never requires
+re-allow-listing. The step runs after `bicep` (the UAMI must already exist) and
+before secret seeding.
+
+It is a **no-op unless a stamp opts in**, and it carries no organization-
+specific value in checked-in files — the group identity lives entirely in the
+stamp's local `.env`:
+
+| `WORKLOAD_MI_GROUP_MODE` | Behavior | Required Graph permission |
+|---|---|---|
+| `skip` (default) | Do nothing. UAMI gets per-principal RBAC from Bicep. | none |
+| `join` | Add the UAMI to an **existing** group by `WORKLOAD_MI_GROUP_OBJECT_ID`. | `Group.ReadWrite` on that group, or group ownership |
+| `create` | Resolve `WORKLOAD_MI_GROUP_NAME` to a group (reuse the single cloud-native match if one exists, else create a cloud-native security group), then add the UAMI. | tenant self-service group creation (interactive) or `Group.ReadWrite.All` (SP/CI) |
+
+Both `join` and `create` are idempotent — re-running reuses the same group and
+skips the add when the UAMI is already a member. `create` refuses to act when a
+name is ambiguous (more than one group shares the displayName) or resolves to an
+on-prem-synced group (which cannot hold cloud managed identities); in those
+cases create the group once out of band and switch to `join` with an explicit
+`WORKLOAD_MI_GROUP_OBJECT_ID`.
+
+The UAMI's principalId is taken from the base-infra Bicep output
+`csiIdentityPrincipalId` (aliased to `WORKLOAD_IDENTITY_PRINCIPAL_ID`), so no
+principal id needs to be seeded by hand.
+
 ## How `.env` substitution works (vs. The enterprise path)
 
 | | Enterprise path | OSS path |
 |---|---|---|
-| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env` (standalone, scaffolded from `deploy/providers/azure/envs/template.env`) |
+| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env` (standalone, scaffolded from `deploy/providers/azure/envs/template.env`), optionally overlaid by an external `--env-overlay` |
 | Scope binding | the enterprise orchestrator injects subscription / region / IDs into the parameters JSON | `deploy/scripts/lib/common.mjs` resolves env file → JS Map |
 | `.env` substitution | the enterprise param-substitution helper rewrites overlay `.env` from JSON params | `deploy/scripts/lib/substitute-env.mjs` rewrites overlay `.env` from the env map |
 | Per-service identity | Per-service scope binding | Shared `csiIdentity` UAMI clientId cascades from BaseInfra Bicep output → both worker and portal overlays |

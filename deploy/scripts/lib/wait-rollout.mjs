@@ -1,8 +1,8 @@
 // Rollout verification (Phase 5, FR-010).
 //
-// For app services with a `rollout` block in their deploy.json: forces Flux to
-// pull the just-uploaded Bucket artifact and apply it, waits for the Deployment
-// to roll out, and verifies the live image tag matches what we expected to push.
+// For services with a `rollout` block in their deploy.json: forces Flux to pull
+// the just-uploaded Bucket artifact and apply it, waits for the declared
+// Deployment or DaemonSet, and optionally verifies the live image tag.
 //
 // Why `flux reconcile` instead of `kubectl wait kustomization --for=condition=Ready`:
 // the Ready condition is sticky — it remains True from the prior reconciliation
@@ -24,42 +24,117 @@
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { run, log } from "./common.mjs";
-import { loadDeployManifest } from "./services-manifest.mjs";
+import { loadDeployManifest, resolveEnvTemplate } from "./services-manifest.mjs";
 import { applyPrivateModePostDeploy } from "./private-mode-postdeploy.mjs";
+import { applyAfdModePostDeploy } from "./afd-mode-postdeploy.mjs";
 import { configurePublicModeIngress } from "./public-mode-ingress.mjs";
 
 const FLUX_NAMESPACE = "flux-system";
-const ROLLOUT_TIMEOUT = "10m";
+const DEFAULT_ROLLOUT_TIMEOUT = "10m";
 
 function rolloutFor(service) {
   const m = loadDeployManifest();
   return m.services[service]?.rollout ?? null;
 }
 
-export async function waitRollout({ service, envName, env, imageTag, stagingDir }) {
+export function resolveRolloutSpec({ service, env }) {
   const rollout = rolloutFor(service);
-  if (!rollout) {
-    log("info", `No Deployments for service '${service}'; skipping rollout wait.`);
+  if (!rollout) return null;
+  const resourceName = resolveEnvTemplate(rollout.name, env, `${service} rollout.name`);
+  const resourceKind = rollout.kind.toLowerCase();
+  const namespace = resolveEnvTemplate(rollout.namespace, env, `${service} rollout.namespace`);
+  const fluxConfigName = resolveEnvTemplate(
+    rollout.fluxConfiguration || service,
+    env,
+    `${service} rollout.fluxConfiguration`,
+  );
+  const kustomizationName = rollout.fluxKustomization
+    ? resolveEnvTemplate(
+        rollout.fluxKustomization,
+        env,
+        `${service} rollout.fluxKustomization`,
+      )
+    : `${fluxConfigName}-${fluxConfigName}`;
+  return {
+    resourceName,
+    resourceKind,
+    namespace,
+    kustomizationName,
+    verifyImage: rollout.verifyImage !== false,
+    expectedImage: rollout.expectedImageEnv
+      ? resolveEnvTemplate(
+          `__${rollout.expectedImageEnv}__`,
+          env,
+          `${service} rollout.expectedImageEnv`,
+        )
+      : null,
+    prerequisites: (rollout.prerequisites ?? []).map((prerequisite) => ({
+      kind: resolveEnvTemplate(
+        prerequisite.kind,
+        env,
+        `${service} rollout prerequisite.kind`,
+      ),
+      name: resolveEnvTemplate(
+        prerequisite.name,
+        env,
+        `${service} rollout prerequisite.name`,
+      ),
+      namespace: resolveEnvTemplate(
+        prerequisite.namespace,
+        env,
+        `${service} rollout prerequisite.namespace`,
+      ),
+    })),
+    timeout: rollout.timeout || DEFAULT_ROLLOUT_TIMEOUT,
+  };
+}
+
+export async function waitRollout({ service, envName, env, imageTag, stagingDir }) {
+  const spec = resolveRolloutSpec({ service, env });
+  if (!spec) {
+    log("info", `No rollout resource for service '${service}'; skipping rollout wait.`);
     return;
   }
-  const deployName = rollout.deployment;
-
-  const namespace = env.NAMESPACE;
-  if (!namespace) {
-    throw new Error(
-      `NAMESPACE is empty in the env map; cannot wait for rollout of ${service}.`,
-    );
-  }
+  const {
+    resourceName,
+    resourceKind,
+    namespace,
+    kustomizationName,
+    verifyImage,
+    expectedImage,
+    prerequisites,
+    timeout,
+  } = spec;
 
   const kubeEnv = ensureKubeContext(env, stagingDir);
+  ensureNamespace(namespace, kubeEnv);
   if (service === "portal") configurePublicModeIngress({ env, kubeEnv });
 
-  // Azure FluxConfig wraps each kustomization key as `<configName>-<key>`.
-  // Our `flux-config.bicep` passes `configName` as both the FluxConfig name
-  // and the single kustomization key, so the resulting Kustomization is
-  // named `<service>-<service>` (e.g. `worker-worker`).
-  const kustomizationName = `${service}-${service}`;
+  for (const prerequisite of prerequisites) {
+    const result = run(
+      "kubectl",
+      [
+        "get",
+        prerequisite.kind,
+        prerequisite.name,
+        "-n",
+        prerequisite.namespace,
+        "-o",
+        "name",
+      ],
+      { capture: true, env: kubeEnv, allowFail: true },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `Missing prerequisite for ${service}: ${prerequisite.kind}/${prerequisite.name} ` +
+          `in namespace ${prerequisite.namespace}. Deploy the required service first.`,
+      );
+    }
+  }
 
+  // Azure FluxConfig wraps each kustomization key as `<configName>-<key>`.
+  // Most services use configName as the key, while instance-scoped services
+  // may declare the exact resulting name to stay within Azure naming limits.
   // 1) Force Flux to pull the just-uploaded Bucket artifact and apply it. We
   //    can't trust `kubectl wait kustomization --for=condition=Ready` here:
   //    Ready is sticky from the prior reconcile, so it returns immediately
@@ -69,7 +144,7 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
   //    `status.lastAppliedRevision`).
   log(
     "info",
-    `flux reconcile kustomization ${kustomizationName} -n ${FLUX_NAMESPACE} --with-source --timeout=${ROLLOUT_TIMEOUT}`,
+    `flux reconcile kustomization ${kustomizationName} -n ${FLUX_NAMESPACE} --with-source --timeout=${timeout}`,
   );
   run(
     "flux",
@@ -80,51 +155,69 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
       "-n",
       FLUX_NAMESPACE,
       "--with-source",
-      `--timeout=${ROLLOUT_TIMEOUT}`,
+      `--timeout=${timeout}`,
     ],
     { env: kubeEnv },
   );
 
-  // 2) Now that Flux has applied the manifests, wait for the Deployment to
-  //    finish rolling.
-  log("info", `kubectl rollout status deployment/${deployName} -n ${namespace} --timeout=${ROLLOUT_TIMEOUT}`);
-  run(
-    "kubectl",
-    [
-      "rollout",
-      "status",
-      `deployment/${deployName}`,
-      "-n",
-      namespace,
-      "--timeout",
-      ROLLOUT_TIMEOUT,
-    ],
-    { env: kubeEnv },
-  );
+  const rolloutResources = [
+    { kind: resourceKind, name: resourceName },
+    ...(service === "worker"
+      ? [{ kind: "deployment", name: "pilotswarm-workflow-generator" }]
+      : []),
+  ];
 
-  // 3) Verify live image tag matches what we expected to push.
-  const result = run(
-    "kubectl",
-    [
-      "get",
-      "deployment",
-      deployName,
-      "-n",
-      namespace,
-      "-o",
-      "jsonpath={.spec.template.spec.containers[0].image}",
-    ],
-    { capture: true, env: kubeEnv },
-  );
-  const liveImage = (result.stdout || "").trim();
-  if (!liveImage.endsWith(`:${imageTag}`)) {
-    throw new Error(
-      `Live image tag mismatch for ${service}/${envName}: deployment shows '${liveImage}' but expected tag '${imageTag}'. ` +
-        `The just-pushed image was not applied even after 'flux reconcile --with-source'. ` +
-        `Inspect with: 'kubectl describe kustomization/${kustomizationName} -n ${FLUX_NAMESPACE}' and 'flux get sources bucket -n ${FLUX_NAMESPACE}'.`,
+  // 2) Now that Flux has applied the manifests, wait for every workload
+  //    delivered by the service to finish rolling.
+  for (const resource of rolloutResources) {
+    log("info", `kubectl rollout status ${resource.kind}/${resource.name} -n ${namespace} --timeout=${timeout}`);
+    run(
+      "kubectl",
+      [
+        "rollout",
+        "status",
+        `${resource.kind}/${resource.name}`,
+        "-n",
+        namespace,
+        "--timeout",
+        timeout,
+      ],
+      { env: kubeEnv },
     );
+
+    if (!verifyImage) {
+      log("ok", `Rollout verified: ${resource.kind}/${resource.name}`);
+      continue;
+    }
+
+    // 3) Verify each live workload uses the image that was just pushed.
+    const result = run(
+      "kubectl",
+      [
+        "get",
+        resource.kind,
+        resource.name,
+        "-n",
+        namespace,
+        "-o",
+        "jsonpath={.spec.template.spec.containers[0].image}",
+      ],
+      { capture: true, env: kubeEnv },
+    );
+    const liveImage = (result.stdout || "").trim();
+    const imageMatches = expectedImage
+      ? liveImage === expectedImage
+      : liveImage.endsWith(`:${imageTag}`);
+    if (!imageMatches) {
+      const expected = expectedImage || `an image ending in ':${imageTag}'`;
+      throw new Error(
+        `Live image mismatch for ${service}/${envName}: ${resource.kind}/${resource.name} shows '${liveImage}' but expected ${expected}. ` +
+          `The just-pushed image was not applied even after 'flux reconcile --with-source'. ` +
+          `Inspect with: 'kubectl describe kustomization/${kustomizationName} -n ${FLUX_NAMESPACE}' and 'flux get sources bucket -n ${FLUX_NAMESPACE}'.`,
+      );
+    }
+    log("ok", `Rollout verified: ${resource.kind}/${resource.name} → ${liveImage}`);
   }
-  log("ok", `Rollout verified: ${service} → ${liveImage}`);
 
   // Portal in private mode: patch the web-app-routing addon's default
   // NginxIngressController CR for an internal LB, wait for the ILB IP,
@@ -133,6 +226,26 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
   if (service === "portal" && env.EDGE_MODE === "private") {
     await applyPrivateModePostDeploy({ env, kubeEnv });
   }
+
+  // Portal in afd mode: recover from the AGIC first-boot RBAC race that can
+  // leave the AppGw backend pool empty (→ public AFD endpoint 504) even
+  // though the portal pod is healthy. Verifies a Healthy portal backend and
+  // restarts AGIC to re-program the pool if not. private-mode / non-portal
+  // services no-op. See afd-mode-postdeploy.mjs for the full rationale.
+  if (service === "portal" && env.EDGE_MODE === "afd") {
+    await applyAfdModePostDeploy({ env, kubeEnv });
+  }
+}
+
+function ensureNamespace(namespace, kubeEnv) {
+  const existing = run("kubectl", ["get", "namespace", namespace], {
+    capture: true,
+    env: kubeEnv,
+    allowFail: true,
+  });
+  if (existing.status === 0) return;
+  log("info", `kubectl create namespace ${namespace}`);
+  run("kubectl", ["create", "namespace", namespace], { env: kubeEnv });
 }
 
 // Acquire AKS credentials into a per-env kubeconfig file and return a

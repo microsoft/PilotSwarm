@@ -48,17 +48,28 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74 through 1.0.79 separately and activates 1.0.80", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.80");
+test("registry retains 1.0.74 through 1.0.80 separately and activates 1.0.81", () => {
+    // 1.0.81 composes upstream's workspace-aware 1.0.80 with the fork's
+    // handoff contract and owner-affinity routing without rewriting either
+    // already-shipped history.
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.81");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler.name, "durableSessionOrchestration_1_0_81");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.78").handler.name, "durableSessionOrchestration_1_0_78");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
+    assert.notEqual(
+        DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler,
+        DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler,
+        "the frozen 1.0.79 must not be an alias of the live tree",
+    );
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.77").handler.name, "durableSessionOrchestration_1_0_77");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.76").handler.name, "durableSessionOrchestration_1_0_76");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.74").handler.name, "durableSessionOrchestration_1_0_74");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.75").handler.name, "durableSessionOrchestration_1_0_75");
 });
 
-test("legacy proxy descriptors retain their serialized names, inputs and affinity, without tags", () => {
+test("legacy proxy descriptors retain their serialized names, inputs and affinity", () => {
     const ctx = context();
     const manager = createSessionManagerProxy(ctx);
     const proxy = createSessionProxy(ctx, "child", "affinity", { model: "test" });
@@ -79,11 +90,15 @@ test("legacy proxy descriptors retain their serialized names, inputs and affinit
             type: "activity", name: "listChildSessions", input: '{"parentSessionId":"parent"}',
         });
     }
+    // runTurn is the one exception to "legacy means untagged": repo/owner
+    // isolation is a security boundary that holds for EVERY orchestration
+    // version, so a contract-less turn still carries its affinity tag. A
+    // repo-less session routes to the generic pool, never to a repo fleet.
     assert.deepEqual(wire(proxy.runTurn("work", false, 2)), {
-        type: "activity", name: "runTurn", input: '{"sessionId":"child","prompt":"work","config":{"model":"test"},"turnIndex":2}', sessionId: "affinity",
+        type: "activity", name: "runTurn", input: '{"sessionId":"child","prompt":"work","config":{"model":"test"},"turnIndex":2}', sessionId: "affinity", tag: "generic",
     });
     assert.deepEqual(wire(proxy.runTurn("work", true, 0, { epochStart: true, requiredTool: "initialize" })), {
-        type: "activity", name: "runTurn2", input: '{"sessionId":"child","prompt":"work","config":{"model":"test"},"bootstrap":true,"turnIndex":0,"requiredTool":"initialize","epochStart":true}', sessionId: "affinity",
+        type: "activity", name: "runTurn2", input: '{"sessionId":"child","prompt":"work","config":{"model":"test"},"bootstrap":true,"turnIndex":0,"requiredTool":"initialize","epochStart":true}', sessionId: "affinity", tag: "generic",
     });
 });
 
@@ -103,9 +118,19 @@ test("new handoff proxies route every critical activity with the capability tag"
     const proxy = createSessionProxy(ctx, "child", "affinity", {}, "agent-handoff-v2");
     const tasks = [manager.resolveAgentConfig("analyst"), manager.resolveAgentForRequiredTool("lookup"), manager.spawnChildSession("parent", {}, "work"), proxy.runTurn("work"), proxy.runTurn("work", true, 0, { epochStart: true })];
     assert.deepEqual(tasks.map(t => t.name), ["resolveAgentConfigV2", "resolveAgentForRequiredToolV2", "spawnChildSessionV2", "runTurnV3", "runTurnEpochV3"]);
-    for (const task of tasks) assert.equal(task.tag, AGENT_HANDOFF_CAPABILITY);
+    // Duroxide carries ONE tag per activity. The support activities of the
+    // contract are owner/repo-agnostic and carry the capability tag; the two
+    // runTurn activities carry the affinity tag instead and express the
+    // capability requirement through their versioned names, which a
+    // pre-contract worker never registers.
+    for (const task of tasks.slice(0, 3)) assert.equal(task.tag, AGENT_HANDOFF_CAPABILITY);
+    assert.equal(tasks[3].tag, "generic");
+    assert.equal(tasks[4].tag, "generic");
     assert.equal(tasks[3].sessionId, "affinity");
     assert.equal(tasks[4].sessionId, "affinity");
+    const repoProxy = createSessionProxy(ctx, "child", "affinity", { repo: "sample-repo" }, "agent-handoff-v2");
+    assert.equal(repoProxy.runTurn("work").tag, "repo:sample-repo", "a repo session's turn stays inside its fleet");
+    assert.equal(repoProxy.runTurn("work").name, "runTurnV3", "…without losing the handoff contract's activity name");
     assert.equal(manager.listModels().tag, undefined, "unrelated activities retain their existing routing");
 });
 
@@ -151,6 +176,45 @@ for (const [name, hash] of Object.entries(provenanceFreezeHashes)) {
     });
 }
 
+// Upstream's last live tree, frozen unchanged when the fork opened 1.0.79 for
+// the combined handoff-contract + owner-affinity orchestration. Only the
+// version constant and the entrypoint name differ from what upstream shipped.
+const upstreamLiveFreezeHashes = {
+    "state.ts": "6f696822458e8ae1aa9fdf5a6850c911ed9eb1875f252876c9f5f1e0987afdc7",
+    "lifecycle.ts": "498dfe9c73253058929cfdd5d14185ca16347920ddba42c26c16dd9548a12d42",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+    "agents.ts": "86534cb9ee6083e23abc0a4c4265f4f7180682f6bbc95e2470b7c744049215d7",
+    "runtime.ts": "b73d8644ba2fbdddb971d42c1d07b7bf81e56bf79cceba4edbf3f62f8c796279",
+    "index.ts": "40b9aa0e77bac8414c057100682688e038b0f1ed27d4b42e8ed401a919649c17",
+    "turn.ts": "ff1aea267ac079d9734876572a0ee8cd25999321d545574e8007038262dfe3a8",
+    "queue.ts": "529218aed1877208a144e5cad6acece5b3c4711af5dcc72065231698649c4c3b"
+};
+for (const [name, hash] of Object.entries(upstreamLiveFreezeHashes)) {
+    test(`frozen 1.0.78 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_78/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
+
+// Upstream's timestamp-aware live tree, frozen before composing it with the
+// fork's owner-affinity and system-wait behavior in 1.0.80.
+const upstreamTimestampFreezeHashes = {
+    "state.ts": "6f696822458e8ae1aa9fdf5a6850c911ed9eb1875f252876c9f5f1e0987afdc7",
+    "lifecycle.ts": "498dfe9c73253058929cfdd5d14185ca16347920ddba42c26c16dd9548a12d42",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+    "agents.ts": "04385760ff1d9e465d23b6430217de858579edbeea716fe1ceda984016d5f4d2",
+    "runtime.ts": "483e19f6a3ef9681444007c5078fe5de4b67b5226577b67cd948ba45aa879d02",
+    "index.ts": "e8d3a085b351584f5d9df5cae686e72f949bc35e83442536d7b7b5c8774b0d0a",
+    "turn.ts": "ff1aea267ac079d9734876572a0ee8cd25999321d545574e8007038262dfe3a8",
+    "queue.ts": "529218aed1877208a144e5cad6acece5b3c4711af5dcc72065231698649c4c3b",
+};
+for (const [name, hash] of Object.entries(upstreamTimestampFreezeHashes)) {
+    test(`frozen 1.0.79 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_79/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
+
 test("a workspace session's turns and workspace activities go only to workers that know workspaces", () => {
     const ctx = context();
     const workspace = { schema: 1, root: "a", folder: "repo-x" };
@@ -172,5 +236,5 @@ test("a workspace session's turns and workspace activities go only to workers th
     }
     // A session that never had a workspace keeps the handoff tag.
     const plain = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "agent-handoff-v2");
-    assert.equal(plain.runTurn("work", false, 1).tag, AGENT_HANDOFF_CAPABILITY);
+    assert.equal(plain.runTurn("work", false, 1).tag, "generic");
 });

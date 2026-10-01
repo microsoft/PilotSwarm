@@ -109,6 +109,21 @@ test("the page never scrolls horizontally", async ({ page }) => {
     expect(overflows).toBe(false);
 });
 
+test("deployment plugins can add an always-available portal footer link", async ({ page }) => {
+    await openPortal(page);
+    const link = page.getByRole("link", { name: "Example deployment policy" });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute("href", "https://example.test/deployment-policy");
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(link).toBeVisible();
+    const mobileOverflow = await page.evaluate(() =>
+        document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+    expect(mobileOverflow).toBe(false);
+});
+
 test("full-screen canvas keeps actions in their permanent navigation slot", async ({ page }) => {
     await openPortal(page);
     // The canvas may already be up — the toggle reads "Hide the canvas" then,

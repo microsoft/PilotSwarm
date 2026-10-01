@@ -3,16 +3,51 @@
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
 FROM node:24-trixie-slim
 
-# CA certificates for HTTPS. git for agents that work in session workspaces
-# (docs/proposals/session-workspaces.md, section 5.4: 2.46 or later; trixie
-# ships 2.47). nfs-common gives mount.nfs4 to the workspace attacher, which
-# runs from this image as root (packages/sdk/examples/repo-workspaces/attacher.mjs).
-# Debian installs mount.nfs setuid root for user mounts; nothing here needs
-# that, so the bit goes, and an agent's shell gets no new setuid program.
+# Base runtime deps:
+#   ca-certificates  HTTPS
+#   git              repository lifecycle hooks and tools invoke Git.
+#   git-lfs          some large repos track files with LFS; without the
+#                    binary `git checkout` aborts on the required lfs filter.
+#                    GIT_LFS_SKIP_SMUDGE=1 (below) writes pointer files instead of
+#                    hydrating blobs (the mirror carries no LFS objects).
+#   curl             fetch the PowerShell tarball below (slim has no curl).
+#   libicu-dev       PowerShell's globalization runtime dependency (pulls the
+#                    correct libicu soname for this Debian release).
+#   nfs-common       mount.nfs4 for session workspace attachment.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git nfs-common \
-    && rm -rf /var/lib/apt/lists/* \
-    && chmod u-s /usr/sbin/mount.nfs
+ && apt-get install -y --no-install-recommends ca-certificates git git-lfs curl libicu-dev nfs-common \
+ && rm -rf /var/lib/apt/lists/* \
+ && chmod u-s /usr/sbin/mount.nfs \
+ && git lfs install --system --skip-repo
+
+# Skip LFS blob download on checkout — the shared Git mirror is a bare
+# `--mirror` clone that carries no LFS objects and the worker has no ADO
+# LFS-endpoint credentials, so hydrating would fail. git-lfs still runs as the
+# required filter but writes the pointer files (fast, network-free checkout).
+# Matches deploy/Dockerfile.worker-base.windows.
+ENV GIT_LFS_SKIP_SMUDGE=1
+
+# Shared Git stores can be mounted with ownership that differs from the
+# non-root `node` user (below), so git's "dubious ownership" guard would abort
+# clone/fetch operations. Trust all repo paths in the SYSTEM git config —
+# safe.directory is honored ONLY from system/global config files, never from
+# -c or GIT_CONFIG_* env, so this must be baked into the image.
+RUN git config --system --add safe.directory '*'
+
+# PowerShell (pwsh) — repository-provided skills and tools may invoke `powershell`/`pwsh`, and
+# PowerShell Core runs natively on Linux, so a Linux worker image satisfies the
+# "must run PowerShell" requirement without Windows containers. Installed from the
+# distro-agnostic release tarball (the packages.microsoft.com apt repo lags new
+# Debian releases like trixie). See docs/proposals/windows-worker-image-followup.md
+# for why a native Windows image build was deferred.
+ARG PWSH_VERSION=7.4.6
+RUN curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-x64.tar.gz" -o /tmp/pwsh.tar.gz \
+ && mkdir -p /opt/microsoft/powershell/7 \
+ && tar zxf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7 \
+ && chmod +x /opt/microsoft/powershell/7/pwsh \
+ && ln -s /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh \
+ && rm /tmp/pwsh.tar.gz \
+ && pwsh --version
 
 WORKDIR /app
 
@@ -24,6 +59,7 @@ COPY packages/app/package.json ./packages/app/
 # node_modules/@pilotswarm/horizon-store workspace symlink the SDK's dynamic
 # import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
 COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY packages/workflow-generator/package.json ./packages/workflow-generator/
 COPY scripts/postinstall.js ./scripts/
 # `npm ci` enforces the committed package-lock.json so worker image rebuilds
 # from this SHA are byte-reproducible. Matches deploy/Dockerfile.starter.
@@ -59,11 +95,21 @@ COPY packages/sdk/api/src/ ./packages/sdk/api/src/
 # dist/src/horizon-migrator.js resolves ../../migrations.
 COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
 COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
+COPY packages/workflow-generator/dist/ ./packages/workflow-generator/dist/
 
 # AKS legacy-bootstrap catalog. Never copy the private gitignored local catalog
 # into a released/deployed image; runtime provider state lives in CMS after the
 # one-time compatibility seed.
 COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
+
+# Keep changing build metadata after expensive dependency/source layers so
+# provenance updates do not invalidate the worker image cache.
+ARG PILOTSWARM_SOURCE_COMMIT
+ARG PILOTSWARM_BUILD_ID
+ARG PILOTSWARM_IMAGE_REF
+ENV PILOTSWARM_SOURCE_COMMIT=${PILOTSWARM_SOURCE_COMMIT}
+ENV PILOTSWARM_BUILD_ID=${PILOTSWARM_BUILD_ID}
+ENV PILOTSWARM_IMAGE_REF=${PILOTSWARM_IMAGE_REF}
 
 # Run as the built-in node user (non-root)
 USER node

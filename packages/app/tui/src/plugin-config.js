@@ -71,6 +71,40 @@ function firstAssetUrl(...values) {
     return null;
 }
 
+function resolvePortalFooterLinks(config, fallback = []) {
+    if (config == null) return fallback;
+    if (!Array.isArray(config)) {
+        throw new Error("portal.footer.links must be an array.");
+    }
+    if (config.length > 6) {
+        throw new Error("portal.footer.links supports at most 6 links.");
+    }
+    const seenUrls = new Set();
+    return config.map((entry, index) => {
+        const link = getObject(entry);
+        const label = firstNonEmptyString(link.label);
+        const rawUrl = firstNonEmptyString(link.url);
+        if (!label || !rawUrl) {
+            throw new Error(`portal.footer.links[${index}] requires non-empty label and url strings.`);
+        }
+        let url;
+        try {
+            url = new URL(rawUrl);
+        } catch {
+            throw new Error(`portal.footer.links[${index}].url is not a valid URL.`);
+        }
+        const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+        if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) {
+            throw new Error(`portal.footer.links[${index}].url must use https (http is allowed only for localhost).`);
+        }
+        if (seenUrls.has(url.href)) {
+            throw new Error(`portal.footer.links[${index}].url duplicates an earlier footer link.`);
+        }
+        seenUrls.add(url.href);
+        return { label, url: url.href };
+    });
+}
+
 function resolvePortalAsset(baseDir, { file, url }) {
     const directUrl = firstAssetUrl(url);
     if (directUrl) {
@@ -176,6 +210,9 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             loadingMessage: "Preparing your workspace",
             loadingCopy: "Connecting the shared workspace and live session feeds...",
         },
+        footer: {
+            links: [],
+        },
         // Where "how do I build an agent package?" points. A layered
         // deployment ships its OWN guide - the base instructions plus the
         // skills, tools and MCP servers that exist only on that fleet - so
@@ -193,10 +230,18 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
         },
     };
 
-    for (const pluginDir of pluginDirs) {
-        const absDir = path.resolve(pluginDir);
-        const pluginMeta = readPluginMetadata(absDir);
-        if (!pluginMeta) continue;
+    const plugins = pluginDirs
+        .map((pluginDir) => {
+            const absDir = path.resolve(pluginDir);
+            return { absDir, pluginMeta: readPluginMetadata(absDir) };
+        })
+        .filter(({ pluginMeta }) => Boolean(pluginMeta));
+    const footerLinks = resolvePortalFooterLinks(plugins.flatMap(({ pluginMeta }) => {
+        const footer = getObject(getObject(pluginMeta?.portal).footer);
+        return footer.links == null ? [] : resolvePortalFooterLinks(footer.links);
+    }));
+
+    for (const { absDir, pluginMeta } of plugins) {
 
         const portal = getObject(pluginMeta?.portal);
         const portalBranding = getObject(portal.branding);
@@ -266,6 +311,9 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
                         defaults.docs.agentPackageGuideUrl,
                     ) || defaults.docs.agentPackageGuideUrl,
                 },
+                footer: {
+                    links: footerLinks,
+                },
                 auth: {
                     provider: firstNonEmptyString(portalAuth.provider, portal.provider),
                     providers: getObject(portalAuth.providers),
@@ -279,7 +327,10 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
     }
 
     return {
-        portalConfig: defaults,
+        portalConfig: {
+            ...defaults,
+            footer: { links: footerLinks },
+        },
         assetFiles: {},
     };
 }

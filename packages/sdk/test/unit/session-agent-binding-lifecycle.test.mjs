@@ -501,6 +501,7 @@ for (const source of ["published", "static"]) {
             createSession: async (id, row) => records.set(id, { sessionId: id, state: "pending", ...row }),
             getSession: async id => records.get(id) ?? null,
             getSessionCreationConfig: async id => records.get(id)?.creationConfig ?? null,
+            isSessionActive: async () => true,
             updateSession: async () => {},
         };
         const creator = new PilotSwarmClient({});

@@ -24,6 +24,7 @@ resources:
   - namespace.yaml
   - service-account.yaml
   - deployment.yaml
+  - workflow-generator-deployment.yaml
   - secret-provider-class.yaml
 
 # ConfigMap built from the in-tree GitHub Copilot SDK model catalog

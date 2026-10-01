@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilotswarm-workflow-generator
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: workflow-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: workflow-generator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: workflow-generator
+        azure.workload.identity/use: "true"
+      annotations:
+        pilotswarm.dev/spc-keys-hash: ""
+    spec:
+      serviceAccountName: copilot-runtime-worker
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: workflow-generator
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+            - packages/workflow-generator/dist/cli.js
+          env:
+            - name: WORKFLOW_GENERATOR_COMPUTE
+              value: cluster
+            - name: WORKFLOW_GENERATOR_READY_FILE
+              value: /tmp/pilotswarm/workflow-generator.ready
+            - name: PS_MODEL_PROVIDERS_PATH
+              value: /app/config/model_providers.json
+          envFrom:
+            - configMapRef:
+                name: worker-env
+            - secretRef:
+                name: copilot-worker-secrets
+            - secretRef:
+                name: workflow-generator-provider-auth
+                optional: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -f /tmp/pilotswarm/workflow-generator.ready
+            periodSeconds: 5
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -f /tmp/pilotswarm/workflow-generator.ready
+            periodSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -f /tmp/pilotswarm/workflow-generator.ready
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+            - name: model-providers
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: copilot-worker-secrets
+        - name: model-providers
+          configMap:
+            name: copilot-worker-model-providers
+            items:
+              - key: model_providers.json
+                path: model_providers.json
+      restartPolicy: Always

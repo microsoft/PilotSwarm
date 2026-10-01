@@ -4,7 +4,7 @@
  * The subtle logic gets exhaustive coverage: three-level shallow-merge union
  * with worker > pool > fleet precedence, epoch = SUM (including the
  * coincidentally-equal case where max would miss a bump), uniform prune,
- * write-once vs per-beat fields, canonical worker-row and actuation-uniformity
+ * restart-safe registration refresh, canonical worker-row and actuation-uniformity
  * enforcement, and the agent-packages fold-in shims staying continuous.
  *
  * Run: npx vitest run test/local/worker-registry.test.js
@@ -42,7 +42,7 @@ function beat(catalog, workerNodeId, overrides = {}) {
 }
 
 describe("worker registry", () => {
-    it("heartbeat upsert: info/owner write-once, pool/phase/health per beat", { timeout: TIMEOUT }, async () => {
+    it("heartbeat upsert refreshes owner, routing info, pool, phase, and health", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         try {
@@ -50,7 +50,19 @@ describe("worker registry", () => {
             await beat(catalog, id, {
                 phase: "starting",
                 owner: { provider: "test", subject: "laptop-owner" },
-                info: { sdkVersion: "1.0.0", consumes: ["agent-packages"] },
+                info: {
+                    sdkVersion: "1.0.0",
+                    consumes: ["agent-packages"],
+                    provenance: {
+                        displayName: "Laptop worker",
+                        hostname: "host-a",
+                        processStartedAt: "2026-08-30T01:00:00.000Z",
+                        applicationVersion: "1.0.0",
+                        sourceCommit: "commit-a",
+                        buildId: "build-a",
+                        image: { ref: null, digest: null },
+                    },
+                },
                 health: { uptimeS: 1 },
             });
             let row = (await catalog.listWorkers()).find((w) => w.workerNodeId === id);
@@ -58,20 +70,37 @@ describe("worker registry", () => {
             assertEqual(row.pool, "test-pool");
             assertEqual(row.owner.subject, "laptop-owner");
             assertEqual(row.info.sdkVersion, "1.0.0");
+            assertEqual(row.info.provenance.hostname, "host-a");
+            assertEqual(row.info.provenance.sourceCommit, "commit-a");
 
-            // Second beat: info/owner ignored, pool/phase/health replaced.
+            // A stable worker id may restart under a new owner or routing
+            // contract; every heartbeat refreshes the registration snapshot.
             await beat(catalog, id, {
                 pool: "moved-pool",
                 phase: "ready",
                 owner: { provider: "test", subject: "SOMEONE-ELSE" },
-                info: { sdkVersion: "9.9.9" },
+                info: {
+                    sdkVersion: "9.9.9",
+                    provenance: {
+                        displayName: "Replacement worker",
+                        hostname: "host-b",
+                        processStartedAt: "2026-08-30T02:00:00.000Z",
+                        applicationVersion: "9.9.9",
+                        sourceCommit: "commit-b",
+                        buildId: "build-b",
+                        image: { ref: "registry/worker:build-b", digest: "sha256:bbb" },
+                    },
+                },
                 health: { uptimeS: 60, rssBytes: 123 },
             });
             row = (await catalog.listWorkers()).find((w) => w.workerNodeId === id);
             assertEqual(row.phase, "ready");
             assertEqual(row.pool, "moved-pool", "pool follows the beat (re-targeting)");
-            assertEqual(row.owner.subject, "laptop-owner", "owner is write-once");
-            assertEqual(row.info.sdkVersion, "1.0.0", "info is write-once");
+            assertEqual(row.owner.subject, "SOMEONE-ELSE", "owner follows the current worker registration");
+            assertEqual(row.info.sdkVersion, "9.9.9", "routing/build info follows the current worker registration");
+            assertEqual(row.info.provenance.processStartedAt, "2026-08-30T02:00:00.000Z",
+                "a replacement process refreshes its stable provenance");
+            assertEqual(row.info.provenance.image.digest, "sha256:bbb");
             assertEqual(row.health.rssBytes, 123, "health replaced every beat");
         } finally {
             await catalog.close();

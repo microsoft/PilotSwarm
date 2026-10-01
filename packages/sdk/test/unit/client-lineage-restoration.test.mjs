@@ -11,6 +11,7 @@ function fixture(records) {
         createSession: async (id, record) => { rows.set(id, { sessionId: id, state: "pending", ...record }); },
         getSession: async id => { reads.push(id); return rows.get(id) ?? null; },
         getSessionCreationConfig: async () => ({ boundAgentName: "analyst", boundAgentPackageId: "pkg-selected", toolNames: ["catalog"] }),
+        isSessionActive: async () => true,
         updateSession: async (id, changes) => { updates.push({ id, changes }); },
     };
     client.duroxideClient = {
@@ -71,7 +72,6 @@ test("a cached parent's explicit logical depth does not invent the reopened chil
 });
 
 for (const [label, records, id] of [
-    ["missing session", [ROOT], "missing"],
     ["missing parent", [CHILD], "child"],
     ["missing ancestor", [GRANDCHILD, CHILD], "grandchild"],
     ["self cycle", [{ sessionId: "child", parentSessionId: "child" }], "child"],
@@ -87,6 +87,14 @@ for (const [label, records, id] of [
         assert.equal(h.client.nestingLevels.has(id), false);
     });
 }
+
+test("a missing session fails closed before lineage restoration or durable work", async () => {
+    const h = fixture([ROOT]);
+    await assert.rejects(h.send("missing"), /deleted or does not exist/);
+    assert.equal(h.starts.length, 0);
+    assert.equal(h.messages.length, 0);
+    assert.equal(h.updates.length, 0);
+});
 
 test("an explicit create depth cannot bypass a missing parent or cycle", async () => {
     const h = fixture([CHILD]);
@@ -156,7 +164,10 @@ test("createSessionForAgent persists identity before metadata updates and anothe
     await (await replica.resumeSession(created.sessionId)).send("Begin", { bootstrap: true, requiredTool: "catalog" });
     assert.equal(h.starts[0].input.agentId, "analyst");
     assert.equal(h.starts[0].input.config.boundAgentName, "analyst");
-    assert.deepEqual(h.messages[0].message, { prompt: "Begin", bootstrap: true, requiredTool: "catalog" });
+    assert.equal(h.starts[0].input.prompt, "Begin");
+    assert.equal(h.starts[0].input.bootstrapPrompt, true);
+    assert.equal(h.starts[0].input.requiredTool, "catalog");
+    assert.equal(h.messages.length, 0);
 });
 
 test("transient catalog failures do not cache partial lineage; a later send can reconstruct it", async () => {

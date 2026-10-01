@@ -169,12 +169,15 @@ describe("admin-scope catalog and portal integration", () => {
 
     it("lets an authenticated unrestricted admin request only their viewer-visible catalog", async () => {
         runtime.authz.adminScope = "unrestricted";
-        const fleetPage = await call("listSessionsPage", { limit: 200 });
+        const fleetPage = await call("listSessionsPage", { limit: 200, scope: "fleet" });
         expect(fleetPage.sessions.some(session => session.sessionId === "foreign")).toBe(true);
 
-        const viewerPage = await call("listSessionsPage", { limit: 200, viewerOnly: true });
+        const viewerPage = await call("listSessionsPage", { limit: 200, scope: "visible" });
         expect(viewerPage.sessions.some(session => session.sessionId === "foreign")).toBe(false);
         expect(viewerPage.sessions.map(session => session.sessionId).sort()).toEqual(["own", "shared", "system"]);
+
+        await expect(call("listSessionsPage", { limit: 200, scope: "fleet" }, ALICE, "user"))
+            .rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
     });
 
     it("private packages and all mutation paths do not inherit the admin role", async () => {

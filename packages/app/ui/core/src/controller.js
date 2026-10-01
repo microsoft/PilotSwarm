@@ -52,6 +52,7 @@ import {
     selectSessionRows,
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
+    selectNodeMapView,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
 import { getTheme, listThemes } from "./themes/index.js";
@@ -203,7 +204,7 @@ async function loadSessionCatalogPages(transport, systemFilter) {
             limit: SESSION_REFRESH_PAGE_LIMIT,
             cursor,
             systemFilter,
-            viewerOnly: true,
+            scope: "visible",
         });
         const pageSessions = Array.isArray(page?.sessions) ? page.sessions : [];
         sessions.push(...pageSessions);
@@ -1674,6 +1675,7 @@ export class PilotSwarmUiController {
         this.sessionHistoryLoads = new Map();
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
+        this.workerTimelineRequestVersions = new Map();
         this.outboxFlushPromises = new Map();
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
@@ -2602,7 +2604,7 @@ export class PilotSwarmUiController {
             this._liveTurnIdleTimers?.delete(sessionId);
             const history = this.getState().history.bySessionId.get(sessionId);
             if (history) this.dispatch({ type: "history/set", sessionId, history: {
-                ...history, chat: history.chat.filter((item) => !item.liveTurn),
+                ...history, chat: (history.chat || []).filter((item) => !item.liveTurn),
             } });
         }
         if (this.activeSessionUnsub) {
@@ -3015,6 +3017,9 @@ export class PilotSwarmUiController {
 
     async loadSessionHistory(sessionId, { force = false } = {}) {
         if (!sessionId) return null;
+        if (this.sessionHistoryLoads.has(sessionId)) {
+            return this.sessionHistoryLoads.get(sessionId);
+        }
         const existingHistory = this.getState().history.bySessionId.get(sessionId);
         const requestedLimit = Math.min(
             HISTORY_REENTRY_MAX_EVENTS,
@@ -3026,14 +3031,18 @@ export class PilotSwarmUiController {
         if (!force && existingHistory?.events) {
             return existingHistory;
         }
-
         // Re-entry catch-up: when the expanded window is already in memory,
         // fetch only the delta after lastSeq and append — the user's pulled-in
         // older history (and its cursor) survives switching sessions. Fall
         // back to a full window reload when the delta hits the server's
         // 1000-row page clamp (too far behind to append reliably).
+        //
+        // Only bulk-hydrated history may take this forward-only shortcut. A
+        // live-only seed (bulkHydrated:false) has an unreachable head and an
+        // unset hasOlderEvents, so it MUST fall through to the full window load
+        // below — which rebuilds via buildHistoryModel and reaches the start.
         const catchUpFrom = Number(existingHistory?.lastSeq) || 0;
-        if (force && catchUpFrom > 0 && Array.isArray(existingHistory?.events) && existingHistory.events.length > 0) {
+        if (force && existingHistory?.bulkHydrated && catchUpFrom > 0 && Array.isArray(existingHistory?.events) && existingHistory.events.length > 0) {
             const caughtUp = await this.catchUpSessionHistory(sessionId, existingHistory, catchUpFrom);
             if (caughtUp) return caughtUp;
         }
@@ -4062,8 +4071,9 @@ export class PilotSwarmUiController {
     }
 
     /** Node Map: select a node (toggles off when re-selected). Scopes Activity. */
-    selectNodeMapNode(label) {
+    selectNodeMapNode(label, workerNodeId = null) {
         this.dispatch({ type: "ui/nodeMapSelect", label: label ? String(label) : null });
+        if (workerNodeId) void this.refreshWorkerTimeline(String(workerNodeId));
     }
 
     /** Reload the worker registry (Admin → Workers). Admin-gated server-side. */
@@ -4086,12 +4096,94 @@ export class PilotSwarmUiController {
             ]);
             console.info(`[PilotSwarmUi] worker registry: ${Array.isArray(list) ? list.length : 0} row(s)`);
             this.dispatch({ type: "admin/workers/loaded", list });
+            const nodeMap = selectNodeMapView(this.getState());
+            const selectedWorker = nodeMap.nodes.find((node) => node.label === nodeMap.selected);
+            if (selectedWorker?.workerNodeId) {
+                void this.refreshWorkerTimeline(selectedWorker.workerNodeId);
+            }
         } catch (error) {
             // Loud on purpose: the Node Map silently degrading to
             // activity-derived nodes hid a real fetch failure in prod.
             console.warn(`[PilotSwarmUi] worker-registry fetch failed: ${error?.message || error}`);
             this.dispatch({ type: "admin/workers/loadFailed", error: error?.message || String(error) });
         }
+    }
+
+    async refreshWorkerTimeline(workerNodeId) {
+        const normalizedWorkerNodeId = String(workerNodeId || "").trim();
+        if (!normalizedWorkerNodeId) return;
+        if (typeof this.transport.getWorkerTimeline !== "function") {
+            this.dispatch({
+                type: "admin/workers/timelineLoadFailed",
+                workerNodeId: normalizedWorkerNodeId,
+                error: "Worker timelines are not available on this deployment.",
+            });
+            return;
+        }
+        const requestVersion = (this.workerTimelineRequestVersions.get(normalizedWorkerNodeId) || 0) + 1;
+        this.workerTimelineRequestVersions.set(normalizedWorkerNodeId, requestVersion);
+        this.dispatch({
+            type: "admin/workers/timelineLoading",
+            workerNodeId: normalizedWorkerNodeId,
+            requestVersion,
+        });
+        try {
+            const entries = await Promise.race([
+                this.transport.getWorkerTimeline(normalizedWorkerNodeId, {
+                    since: new Date(Date.now() - (7 * 24 * 60 * 60 * 1_000)).toISOString(),
+                    limit: 1_000,
+                }),
+                new Promise((_, reject) => {
+                    const timer = setTimeout(
+                        () => reject(new Error("request timed out after 10s")),
+                        10_000,
+                    );
+                    if (typeof timer?.unref === "function") timer.unref();
+                }),
+            ]);
+            if (this.workerTimelineRequestVersions.get(normalizedWorkerNodeId) !== requestVersion) return;
+            this.dispatch({
+                type: "admin/workers/timelineLoaded",
+                workerNodeId: normalizedWorkerNodeId,
+                requestVersion,
+                entries,
+            });
+        } catch (error) {
+            if (this.workerTimelineRequestVersions.get(normalizedWorkerNodeId) !== requestVersion) return;
+            this.dispatch({
+                type: "admin/workers/timelineLoadFailed",
+                workerNodeId: normalizedWorkerNodeId,
+                requestVersion,
+                error: error?.message || String(error),
+            });
+        }
+    }
+
+    /**
+     * Temporarily hide (or re-show) a single WorkflowRun's lane in the selected worker's
+     * timeline swimlane. Ephemeral, per-worker, in-memory only — the selector
+     * redraws the swimlane from the visible WorkflowRuns, which also resets the
+     * timestamp boundaries to the remaining set.
+     */
+    toggleWorkerTimelineHiddenWorkflowRun(workerNodeId, workflowRunId) {
+        const normalizedWorkerNodeId = String(workerNodeId || "").trim();
+        const normalizedWorkflowRunId = String(workflowRunId || "").trim();
+        if (!normalizedWorkerNodeId || !normalizedWorkflowRunId) return;
+        this.dispatch({
+            type: "admin/workers/timelineToggleHiddenWorkflowRun",
+            workerNodeId: normalizedWorkerNodeId,
+            workflowRunId: normalizedWorkflowRunId,
+        });
+    }
+
+    /** Clear all hidden WorkflowRuns for a worker's timeline (the "show all" control). */
+    clearWorkerTimelineHiddenWorkflowRuns(workerNodeId) {
+        const normalizedWorkerNodeId = String(workerNodeId || "").trim();
+        if (!normalizedWorkerNodeId) return;
+        this.dispatch({
+            type: "admin/workers/timelineClearHiddenWorkflowRuns",
+            workerNodeId: normalizedWorkerNodeId,
+        });
     }
 
     /** Reload the package list + sources (+ fleet state when permitted). */
@@ -4573,9 +4665,9 @@ export class PilotSwarmUiController {
     async setUsageSummaryFilter({ days, providers, preset } = {}) {
         this.dispatch({ type: "budget/summary/filter", days, providers, preset });
         // One filter drives both ledger views; refresh whichever have data.
-        const jobs = [this.loadUsageSummary()];
-        if (this.getState().budget?.agents?.data || this.getState().budget?.tab === "agents") jobs.push(this.loadUsageAgents());
-        await Promise.all(jobs);
+        const workflowRuns = [this.loadUsageSummary()];
+        if (this.getState().budget?.agents?.data || this.getState().budget?.tab === "agents") workflowRuns.push(this.loadUsageAgents());
+        await Promise.all(workflowRuns);
     }
 
     /** Read the per-agent pivot for the current summary filter. */
@@ -5795,8 +5887,11 @@ export class PilotSwarmUiController {
         }
     }
 
-    async loadSession(sessionId) {
+    async loadSession(sessionId, options = {}) {
         if (!sessionId) return;
+        const detailScope = options.scope === "fleet" ? "fleet" : "visible";
+        if (!this.sessionDetailScopes) this.sessionDetailScopes = new Map();
+        this.sessionDetailScopes.set(sessionId, detailScope);
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
         const active = this.getState().sessions.activeSessionId;
         if (active !== sessionId) {
@@ -5816,7 +5911,7 @@ export class PilotSwarmUiController {
         // Independent reads share one network-latency window. Cached chat stays visible.
         await Promise.all([
             this.ensureSessionHistory(sessionId, { force: true }),
-            this.syncSessionDetail(sessionId).catch(() => {}),
+            this.syncSessionDetail(sessionId, { scope: detailScope }).catch(() => {}),
         ]);
         if (this.navigationGeneration !== navigationGeneration
             || this.getState().sessions.activeSessionId !== sessionId) return;
@@ -5829,6 +5924,19 @@ export class PilotSwarmUiController {
         // one indexed limit-1 row is noise against the burst above.
         this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
         this.ensureCanvasSnapshot(sessionId).catch(() => {});
+    }
+
+    async openUnlistedSession(sessionId) {
+        if (!sessionId || typeof this.transport.getSession !== "function") return;
+        const session = await this.transport.getSession(sessionId, { scope: "fleet" });
+        if (!session?.sessionId) throw new Error(`Session ${sessionId} could not be loaded`);
+        // A visible-scope refresh may already be in flight. Invalidate it and
+        // seed the foreign-but-authorized row before selecting it, otherwise
+        // sessions/loaded can restore the previous visible session while this
+        // session's transcript is still loading.
+        this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
+        this.dispatch({ type: "sessions/merged", session: normalizeSessionListRow(session) });
+        await this.loadSession(sessionId, { scope: "fleet" });
     }
 
     /**
@@ -6360,7 +6468,13 @@ export class PilotSwarmUiController {
     async syncSessionEvents(sessionId) {
         if (!sessionId || typeof this.transport.getSessionEvents !== "function") return;
         const existing = this.getState().history.bySessionId.get(sessionId);
-        if (!existing?.events) {
+        // A history with no events, OR one seeded solely by the live event
+        // stream (bulkHydrated:false), has an unreachable head: paging forward
+        // from lastSeq would never backfill the original prompt and would leave
+        // hasOlderEvents unset (disabling both the "load older" button and the
+        // scroll-to-top auto-expand). Force a real bulk hydrate instead, which
+        // rebuilds via buildHistoryModel and sets hasOlderEvents correctly.
+        if (!existing?.events || !existing.bulkHydrated) {
             await this.ensureSessionHistory(sessionId, { force: true });
             return;
         }
@@ -6414,12 +6528,15 @@ export class PilotSwarmUiController {
         }, Math.max(0, delayMs));
     }
 
-    async syncSessionDetail(sessionId) {
+    async syncSessionDetail(sessionId, options = {}) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
         if (isSessionGroupRowId(sessionId)) return;
+        const scope = options.scope
+            || this.sessionDetailScopes?.get(sessionId)
+            || "visible";
         let session = null;
         try {
-            session = await this.transport.getSession(sessionId);
+            session = await this.transport.getSession(sessionId, { scope });
         } catch (error) {
             if (isSessionGoneError(error)) {
                 this.handleSessionGone(sessionId);
@@ -7196,16 +7313,260 @@ export class PilotSwarmUiController {
         const sessionPolicy = typeof this.transport.getSessionCreationPolicy === "function"
             ? this.transport.getSessionCreationPolicy()
             : null;
-        const allowGeneric = sessionPolicy?.creation?.allowGeneric ?? true;
-        if (allowGeneric) {
-            await this.createSession(options);
+        const repos = Array.isArray(sessionPolicy?.repos)
+            ? sessionPolicy.repos.filter((repo) => typeof repo === "string" && repo.trim())
+            : [];
+        // A deployment that can service repo-bound git workers gets a repo
+        // step first: pick a repo (or the generic default) before the rest of
+        // the flow. With no serviceable repos the picker is pointless, so we
+        // fall straight through to the generic path — the common case.
+        if (repos.length > 0) {
+            this.openRepoPicker(options, repos);
             return;
         }
+        await this._resumeGenericNewSession(options);
+    }
+
+    // The pre-repo new-session behavior, reused when "No repo" is chosen (or
+    // when no repos are serviceable). Generic controls the agent boundary, not
+    // model selection: browser users still need a provider-backed model they
+    // can actually use instead of silently inheriting an unusable deployment
+    // default.
+    async _resumeGenericNewSession(options = {}) {
+        const sessionPolicy = typeof this.transport.getSessionCreationPolicy === "function"
+            ? this.transport.getSessionCreationPolicy()
+            : null;
+        const allowGeneric = sessionPolicy?.creation?.allowGeneric ?? true;
         if (typeof this.transport.listModels === "function") {
             await this.openModelPicker(options);
             return;
         }
+        if (allowGeneric) {
+            await this.createSession(options);
+            return;
+        }
         await this.openSessionAgentPicker(options);
+    }
+
+    // Repo step of the new-session flow (repo-bound worker deployments only).
+    // "No repo" resumes the generic path; any repo advances to the branch step.
+    openRepoPicker(options = {}, repos = [], previousFocusOverride = null) {
+        const previousFocus = previousFocusOverride ?? this.getState().ui.focusRegion;
+        const repoItems = repos.map((repo) => ({
+            id: `repo:${repo}`,
+            kind: "repo",
+            repo,
+            label: repo,
+            description: "Start on a git worker enlisted in this repo.",
+        }));
+        const items = [
+            {
+                id: "__no_repo__",
+                kind: "generic",
+                repo: null,
+                label: "No repo (generic worker)",
+                description: "Open-ended session with no repo enlistment.",
+            },
+            ...repoItems,
+        ];
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "repoPicker",
+                title: "Select a repo for the new session",
+                items,
+                selectedIndex: 0,
+                previousFocus,
+                sessionOptions: options,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Select a repo and press Enter" });
+    }
+
+    // Branch step: free-text gitRef for the chosen repo. Empty = the repo's
+    // default branch (the server resolves origin/HEAD), so the field starts
+    // empty with a placeholder rather than pre-filling a guessed ref. The repo
+    // picker is replaced in one dispatch, so previousFocus is threaded through.
+    openRepoBranchInput(repo, sessionOptions = {}, previousFocus = null) {
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "repoBranchInput",
+                title: `Branch for ${repo}`,
+                repo,
+                value: "",
+                cursorIndex: 0,
+                maxLength: 200,
+                previousFocus,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Enter a branch (blank = default) and press Enter" });
+    }
+
+    // Agent step: optional free-text name of a repo-checked-in agent. Repo
+    // agents are declared in the enlistment, not the registry, so they are not
+    // enumerable — this is a name field, not a picker. Blank = generic session
+    // on the repo worker.
+    openRepoAgentInput(repo, gitRef, sessionOptions = {}, previousFocus = null) {
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "repoAgentInput",
+                title: `Agent for ${repo}`,
+                repo,
+                gitRef: gitRef || null,
+                value: "",
+                cursorIndex: 0,
+                maxLength: 200,
+                previousFocus,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Enter a repo agent name (blank = generic) and press Enter" });
+    }
+
+    updateRepoBranchInputModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setRepoBranchInputValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const safeValue = clampRenameSessionValue(value, modal.maxLength || 200);
+        const safeCursor = clampPromptCursor(safeValue, cursorIndex);
+        this.updateRepoBranchInputModal({ value: safeValue, cursorIndex: safeCursor });
+    }
+
+    updateRepoAgentInputModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setRepoAgentInputValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const safeValue = clampRenameSessionValue(value, modal.maxLength || 200);
+        const safeCursor = clampPromptCursor(safeValue, cursorIndex);
+        this.updateRepoAgentInputModal({ value: safeValue, cursorIndex: safeCursor });
+    }
+
+    // Terminal (ink) callers edit the two repo text modals one keypress at a
+    // time, so they need the same insert/delete/cursor surface the rename and
+    // group-name modals expose. Each delegates to the setter above.
+    insertRepoBranchText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, modal.maxLength || 200));
+        this.setRepoBranchInputValue(next.prompt, next.cursor);
+    }
+
+    deleteRepoBranchChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setRepoBranchInputValue(next.prompt, next.cursor);
+    }
+
+    moveRepoBranchCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        this.setRepoBranchInputValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveRepoBranchCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        this.setRepoBranchInputValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    insertRepoAgentText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, modal.maxLength || 200));
+        this.setRepoAgentInputValue(next.prompt, next.cursor);
+    }
+
+    deleteRepoAgentChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setRepoAgentInputValue(next.prompt, next.cursor);
+    }
+
+    moveRepoAgentCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        this.setRepoAgentInputValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveRepoAgentCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        this.setRepoAgentInputValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    async confirmRepoBranchInputModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const gitRef = String(modal.value || "").trim();
+        // Branch chosen — advance to the optional agent step. The overlay is
+        // replaced in one dispatch by openRepoAgentInput, so it never blinks.
+        this.openRepoAgentInput(modal.repo, gitRef || null, modal.sessionOptions || {}, modal.previousFocus);
+    }
+
+    async confirmRepoAgentInputModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const agentName = String(modal.value || "").trim();
+        const sessionOptions = modal.sessionOptions || {};
+        const repo = modal.repo;
+        const gitRef = modal.gitRef || null;
+        const createOptions = {
+            ...sessionOptions,
+            repo,
+            ...(gitRef ? { gitRef } : {}),
+        };
+        if (typeof this.transport.listModels === "function") {
+            await this.openModelPicker({
+                ...createOptions,
+                repoAgentName: agentName || null,
+            });
+            return;
+        }
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (modal.previousFocus) this.setFocus(modal.previousFocus);
+        // A named repo agent starts via createSessionForAgent; blank keeps the
+        // repo worker but with no agent boundary (generic-on-repo).
+        if (agentName) {
+            await this.createSessionForAgent(agentName, createOptions);
+            return;
+        }
+        await this.createSession(createOptions);
+    }
+
+    async _continueNewSessionAfterModel(sessionOptions = {}, previousFocus = null) {
+        if (!Object.prototype.hasOwnProperty.call(sessionOptions, "repoAgentName")) {
+            await this.openSessionAgentPicker(sessionOptions, previousFocus);
+            return;
+        }
+        const { repoAgentName, ...createOptions } = sessionOptions;
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+        if (repoAgentName) {
+            await this.createSessionForAgent(repoAgentName, createOptions);
+            return;
+        }
+        await this.createSession(createOptions);
     }
 
     // previousFocus rides along the whole chain: each step is left on screen
@@ -7265,7 +7626,7 @@ export class PilotSwarmUiController {
                 await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
                 return;
             }
-            await this.openSessionAgentPicker(sessionOptions, previousFocus);
+            await this._continueNewSessionAfterModel(sessionOptions, previousFocus);
             return;
         }
 
@@ -8937,6 +9298,30 @@ export class PilotSwarmUiController {
             await this.confirmSessionGroupNameModal();
             return;
         }
+        if (modal.type === "repoPicker") {
+            const item = modal.items?.[modal.selectedIndex || 0];
+            const previousFocus = modal.previousFocus;
+            const sessionOptions = modal.sessionOptions || {};
+            if (!item || item.kind === "generic") {
+                // "No repo" — close the picker and resume the generic flow.
+                this.dispatch({ type: "ui/modal", modal: null });
+                if (previousFocus) this.setFocus(previousFocus);
+                await this._resumeGenericNewSession(sessionOptions);
+                return;
+            }
+            // A repo — advance to the branch step. It replaces this modal in
+            // one dispatch, so previousFocus is threaded rather than read back.
+            this.openRepoBranchInput(item.repo, sessionOptions, previousFocus);
+            return;
+        }
+        if (modal.type === "repoBranchInput") {
+            await this.confirmRepoBranchInputModal();
+            return;
+        }
+        if (modal.type === "repoAgentInput") {
+            await this.confirmRepoAgentInputModal();
+            return;
+        }
         if (modal.type === "sessionWorkspace") {
             await this.confirmSetWorkspaceModal();
             return;
@@ -9042,7 +9427,7 @@ export class PilotSwarmUiController {
                 await this.switchSessionModel({ ...nextOptions, model: modal.modelItem?.id || sessionOptions.model });
                 return;
             }
-            await this.openSessionAgentPicker(nextOptions, previousFocus);
+            await this._continueNewSessionAfterModel(nextOptions, previousFocus);
             return;
         }
         if (modal.type === "sessionAgentPicker") {
@@ -10330,6 +10715,10 @@ export class PilotSwarmUiController {
                         loadedEventLimit: combinedEvents.length,
                         loadedEventCount: combinedEvents.length,
                         hasOlderEvents: olderEvents.length >= pageLimit && Number(olderEvents[0]?.seq || 0) > 1,
+                        // Backward paging only runs on already-hydrated history;
+                        // keep the marker so a re-entry catch-up doesn't mistake
+                        // the expanded window for a live-only seed and reload it.
+                        bulkHydrated: true,
                     };
                     if (!history.hasOlderEvents) break;
                 }

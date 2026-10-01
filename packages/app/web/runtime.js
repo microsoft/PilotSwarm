@@ -1,4 +1,5 @@
 import { NodeSdkTransport } from "pilotswarm/host";
+import { isOwnerScopedRoutingTag } from "pilotswarm-sdk";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
@@ -33,11 +34,510 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
+function invalidRequest(message) {
+    return Object.assign(new Error(message), { code: "INVALID_REQUEST", status: 400 });
+}
+
+function objectParam(value, label) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw invalidRequest(`${label} must be an object.`);
+    }
+    return value;
+}
+
+function normalizeWorkflowGeneratorRepo(raw, label) {
+    if (raw == null || raw === "") return raw;
+    const repo = String(raw).trim().toLowerCase();
+    if (!REPO_NAME_RE.test(repo)) {
+        throw invalidRequest(`${label} must be a DNS-safe short name ([a-z0-9-], <=63 chars).`);
+    }
+    return repo;
+}
+
+function normalizeLifecycleSessionRepo(workflowDefinition) {
+    const normalizeSession = (container, label) => {
+        const session = container?.session;
+        if (session == null) return container;
+        const normalizedSession = objectParam(session, label);
+        return {
+            ...container,
+            session: {
+                ...normalizedSession,
+                ...(Object.hasOwn(normalizedSession, "repo")
+                    ? { repo: normalizeWorkflowGeneratorRepo(normalizedSession.repo, `${label}.repo`) }
+                    : {}),
+            },
+        };
+    };
+    let normalized = normalizeSession(workflowDefinition, "definition.workflowDefinition.session");
+    if (normalized.lifecycle != null) {
+        const lifecycle = objectParam(
+            normalized.lifecycle,
+            "definition.workflowDefinition.lifecycle",
+        );
+        normalized = {
+            ...normalized,
+            lifecycle: normalizeSession(
+                lifecycle,
+                "definition.workflowDefinition.lifecycle.session",
+            ),
+        };
+    }
+    return normalized;
+}
+
+function normalizeWorkflowDefinition(definitionParam, createdBy) {
+    const definition = objectParam(definitionParam, "definition");
+    const allowedDefinitionKeys = new Set([
+        "sessionComputeAffinity",
+        "workflowDefinition",
+        "affinities",
+        "validationGates",
+        "guardrails",
+    ]);
+    const unknownDefinitionKey = Object.keys(definition).find(
+        (key) => !allowedDefinitionKeys.has(key),
+    );
+    if (unknownDefinitionKey) {
+        throw invalidRequest(
+            `definition.${unknownDefinitionKey} is not supported. `
+            + "Executable content must be nested under definition.workflowDefinition.",
+        );
+    }
+    const sessionComputeAffinity = normalizeWorkflowComputeAffinity(
+        definition.sessionComputeAffinity,
+        "definition.sessionComputeAffinity",
+    );
+    const workflowDefinition = normalizeLifecycleSessionRepo(
+        objectParam(
+            definition.workflowDefinition ?? {},
+            "definition.workflowDefinition",
+        ),
+    );
+    const affinities = objectParam(definition.affinities ?? {}, "definition.affinities");
+    if (affinities.user != null && String(affinities.user).trim()) {
+        throw invalidRequest(
+            "definition.affinities.user is server-derived from the Workflow Run owner.",
+        );
+    }
+    const { user: _ignoredUserAffinity, ...placementAffinities } = affinities;
+    if (Object.hasOwn(placementAffinities, "repo")) {
+        placementAffinities.repo = normalizeWorkflowGeneratorRepo(
+            placementAffinities.repo,
+            "definition.affinities.repo",
+        );
+    }
+    const validationGates = definition.validationGates ?? [];
+    if (!Array.isArray(validationGates)) {
+        throw invalidRequest("definition.validationGates must be an array.");
+    }
+    const guardrails = objectParam(definition.guardrails ?? {}, "definition.guardrails");
+    return {
+        sessionComputeAffinity,
+        workflowDefinition,
+        affinities: placementAffinities,
+        validationGates,
+        guardrails,
+        createdBy,
+    };
+}
+
+function normalizeWorkflowComputeAffinity(value, label) {
+    if (value == null) return null;
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized !== "cluster" && normalized !== "devbox") {
+        throw invalidRequest(`${label} must be 'cluster', 'devbox', or omitted.`);
+    }
+    return normalized;
+}
+
+function normalizeWorkflowDefinitionCreateParams(params, owner) {
+    const workflowType = String(params.workflowType || "").trim();
+    if (!workflowType) throw invalidRequest("workflowType is required.");
+    const name = String(params.name || "").trim();
+    if (!name) throw invalidRequest("name is required.");
+    return {
+        workflowType,
+        name,
+        owner,
+        ...normalizeWorkflowDefinition(params.definition, owner.subject),
+    };
+}
+
+function normalizeWorkflowGeneratorCreateParams(params, owner) {
+    const name = String(params.name || "").trim();
+    if (!name) throw invalidRequest("name is required.");
+    if (name.length > 120) throw invalidRequest("name must be 120 characters or fewer.");
+    const cadenceSeconds = Number(params.cadenceSeconds);
+    if (!Number.isInteger(cadenceSeconds) || cadenceSeconds < 30 || cadenceSeconds > 86_400) {
+        throw invalidRequest("cadenceSeconds must be an integer from 30 through 86400.");
+    }
+    const workflowDefinitionId = String(params.workflowDefinitionId || "").trim();
+    if (!workflowDefinitionId) throw invalidRequest("workflowDefinitionId is required.");
+    const source = objectParam(params.source, "source");
+    const sourceType = String(source.type || "").trim();
+    if (!WORKFLOW_GENERATOR_SOURCE_PROVIDER_ID_RE.test(sourceType)) {
+        throw invalidRequest(
+            "source.type must start with a lowercase letter and contain only "
+            + "lowercase letters, digits, '.', '_', or '-' (maximum 128 characters).",
+        );
+    }
+    return {
+        name,
+        cadenceSeconds,
+        owner,
+        controllerComputeAffinity: normalizeWorkflowComputeAffinity(
+            params.controllerComputeAffinity,
+            "controllerComputeAffinity",
+        ),
+        workflowDefinitionId,
+        sourceType,
+        sourceConfig: objectParam(source.config ?? {}, "source.config"),
+    };
+}
+
+function normalizeWorkflowRunCreateParams(params, owner) {
+    const workflowDefinitionId = String(params.workflowDefinitionId || "").trim();
+    if (!workflowDefinitionId) throw invalidRequest("workflowDefinitionId is required.");
+    const workflowRunKey = String(params.workflowRunKey || "").trim();
+    if (!workflowRunKey) throw invalidRequest("workflowRunKey is required.");
+    if (workflowRunKey.length > 512) {
+        throw invalidRequest("workflowRunKey must be 512 characters or fewer.");
+    }
+    if (Object.hasOwn(params, "initialState") || Object.hasOwn(params, "affinities")) {
+        throw invalidRequest(
+            "Direct Workflow Runs inherit initialState and affinities from their Workflow Definition.",
+        );
+    }
+    return {
+        workflowDefinitionId,
+        owner,
+        input: objectParam(params.input ?? {}, "input"),
+        workflowRunKey,
+        createdBy: owner.subject,
+    };
+}
+
+// ── Repo-affinity fail-fast (git-hydration) ──────────────────────────────
+// A session may declare a target repo enlistment; turns are then routed only
+// to repository workers tagged for that repo. If the repo is unknown/unserviced
+// the turn would enqueue with a tag no worker matches and hang forever, so we
+// reject at create time instead.
+//
+// The serviceable-repo allowlist is derived at runtime from the live worker
+// registry: a repo is serviceable iff at least one ready worker advertises it
+// (each worker stamps its `repo:<name>` routing tags into its heartbeat, which
+// surfaces as `info.repos` on listWorkers() rows). See PortalRuntime._serviceableRepos.
+//
+// PILOTSWARM_KNOWN_REPOS (comma/space-separated repo short-names) is kept as an
+// optional static SEED that is unioned with the registry-derived set. It lets an
+// operator force a repo serviceable (e.g. during a rollout window before the
+// worker heartbeat lands, or as a break-glass override) without baking enlistment
+// names into source. Leave it unset in steady state — the registry is authoritative.
+const SEED_REPOS = new Set(
+    (process.env.PILOTSWARM_KNOWN_REPOS || "")
+        .split(/[\s,]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+);
+
+// How long a derived serviceable-repo set is trusted before the worker registry
+// is re-scanned. Bounds how stale the allowlist can be against a just-rolled-out
+// (or just-drained) repo worker, while keeping create requests off the
+// per-request registry-scan path.
+const REPO_ALLOWLIST_TTL_MS = 30 * 1000;
+
+const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const WORKFLOW_GENERATOR_SOURCE_PROVIDER_ID_RE = /^[a-z][a-z0-9._-]{0,127}$/;
+
+/**
+ * Validate an optional `repo` create-param against a resolved allowlist.
+ * Returns the normalized repo name (or undefined when unset). Throws
+ * INVALID_REQUEST for malformed or unknown repos so an un-routable turn never
+ * gets enqueued. `serviceableRepos` is the Set derived from the worker
+ * registry (see PortalRuntime._serviceableRepos); kept as a pure param so this
+ * stays trivially testable.
+ */
+function normalizeRepoParam(raw) {
+    if (raw == null || raw === "") return undefined;
+    const repo = String(raw).trim().toLowerCase();
+    if (!REPO_NAME_RE.test(repo)) {
+        throw Object.assign(
+            new Error("repo must be a DNS-safe short name ([a-z0-9-], <=63 chars)"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    return repo;
+}
+
+function validateRepoParam(raw, serviceableRepos) {
+    const repo = normalizeRepoParam(raw);
+    if (!repo) return undefined;
+    if (!serviceableRepos.has(repo)) {
+        throw Object.assign(
+            new Error(`repo "${repo}" is not a known git-hydration enlistment`),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    return repo;
+}
+
+// A git ref (branch/tag/commit-ish) permitted for a session's target
+// enlistment. Unlike `repo` (a routing tag validated against the serviceable
+// allowlist), `gitRef` is a free-form ref string consumed by the worker at
+// turn-0 pin time. We keep it to a conservative, injection-safe charset so a
+// malformed value can never smuggle git option flags or path traversal into
+// the worker's `git rev-parse`/`checkout`.
+const GIT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
+
+/**
+ * Validate the optional `gitRef` create-param — the non-default branch/tag/SHA
+ * a session should pin its git enlistment to. Returns the trimmed ref (or
+ * undefined when unset). Throws INVALID_REQUEST for a malformed ref so a bad
+ * value never reaches the worker. Does NOT resolve the ref (the worker
+ * normalizes bare branch names to `origin/<ref>` and rev-parses at pin time).
+ */
+function validateGitRefParam(raw) {
+    if (raw == null || raw === "") return undefined;
+    const ref = String(raw).trim();
+    if (ref === "") return undefined;
+    if (ref.includes("..") || !GIT_REF_RE.test(ref)) {
+        throw Object.assign(
+            new Error("gitRef must be a valid branch/tag/commit ref ([A-Za-z0-9._/-], no '..', <=200 chars)"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    return ref;
+}
+
+function validateComputeParam(raw) {
+    if (raw == null || raw === "") return "cluster";
+    const compute = String(raw).trim().toLowerCase();
+    if (compute !== "cluster" && compute !== "devbox") {
+        throw Object.assign(
+            new Error("compute must be either 'cluster' or 'devbox'"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    return compute;
+}
+
 function clampInteger(value, defaultValue, min, max) {
     if (value == null) return defaultValue;
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return defaultValue;
     return Math.max(min, Math.min(Math.trunc(numeric), max));
+}
+
+function normalizeCatalogScope(params = {}) {
+    const rawScope = params.scope == null ? null : String(params.scope).trim().toLowerCase();
+    if (rawScope && rawScope !== "visible" && rawScope !== "fleet") {
+        throw invalidRequest("scope must be either 'visible' or 'fleet'");
+    }
+    const legacyScope = params.viewerOnly == null
+        ? null
+        : params.viewerOnly === false ? "fleet" : "visible";
+    if (rawScope && legacyScope && rawScope !== legacyScope) {
+        throw invalidRequest("scope conflicts with the deprecated viewerOnly parameter");
+    }
+    return rawScope || legacyScope || "visible";
+}
+
+function projectFleetOwner(owner) {
+    if (!owner || typeof owner !== "object") return null;
+    return {
+        provider: owner.provider ?? null,
+        subject: owner.subject ?? null,
+        email: owner.email ?? null,
+        displayName: owner.displayName ?? null,
+    };
+}
+
+function projectFleetSession(session) {
+    if (!session || typeof session !== "object") return session;
+    const repository = session.repository
+        ?? session.repo
+        ?? session.routing?.repo
+        ?? null;
+    return {
+        sessionId: session.sessionId,
+        title: session.title,
+        agentId: session.agentId,
+        owner: projectFleetOwner(session.owner),
+        status: session.status,
+        orchestrationStatus: session.orchestrationStatus,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        iterations: session.iterations,
+        parentSessionId: session.parentSessionId,
+        isSystem: session.isSystem,
+        serviceKind: session.serviceKind,
+        serviceOf: session.serviceOf,
+        visibility: session.visibility,
+        rootSessionId: session.rootSessionId,
+        ...(repository ? { repository } : {}),
+    };
+}
+
+function projectFleetWorkflowGenerator(generator) {
+    if (!generator || typeof generator !== "object") return generator;
+    return {
+        workflowGeneratorId: generator.workflowGeneratorId,
+        name: generator.name,
+        owner: projectFleetOwner(generator.owner),
+        controllerComputeAffinity: generator.controllerComputeAffinity,
+        cadenceSeconds: generator.cadenceSeconds,
+        sourceType: generator.sourceType,
+        operationalState: generator.operationalState,
+        activeDefinitionId: generator.activeDefinitionId,
+        nextRunAt: generator.nextRunAt,
+        totalCycles: generator.totalCycles,
+        successfulCycles: generator.successfulCycles,
+        failedCycles: generator.failedCycles,
+        materializedWorkflowRuns: generator.materializedWorkflowRuns,
+        lastCycleAt: generator.lastCycleAt,
+        hasError: Boolean(generator.lastError),
+        createdAt: generator.createdAt,
+        updatedAt: generator.updatedAt,
+    };
+}
+
+function projectFleetWorkflowDefinition(definition) {
+    if (!definition || typeof definition !== "object") return definition;
+    const repository = typeof definition.affinities?.repo === "string"
+        ? definition.affinities.repo
+        : null;
+    return {
+        workflowDefinitionId: definition.workflowDefinitionId,
+        workflowType: definition.workflowType,
+        name: definition.name,
+        owner: projectFleetOwner(definition.owner),
+        version: definition.version,
+        sessionComputeAffinity: definition.sessionComputeAffinity,
+        ...(repository ? { affinities: { repo: repository } } : {}),
+        createdAt: definition.createdAt,
+    };
+}
+
+function projectFleetWorkflowRun(workflowRun) {
+    if (!workflowRun || typeof workflowRun !== "object") return workflowRun;
+    const affinities = workflowRun.effectiveConfig?.affinities;
+    const repository = workflowRun.repository
+        ?? (typeof affinities?.repo === "string" ? affinities.repo : null);
+    const computePlacement = workflowRun.computePlacement
+        ?? workflowRun.sessionComputeAffinity
+        ?? (typeof affinities?.compute === "string" ? affinities.compute : null);
+    return {
+        workflowRunId: workflowRun.workflowRunId,
+        workflowDefinitionId: workflowRun.workflowDefinitionId,
+        workflowType: workflowRun.workflowType,
+        owner: projectFleetOwner(workflowRun.owner),
+        workflowRunKey: workflowRun.workflowRunKey,
+        lifecycleState: workflowRun.lifecycleState,
+        currentState: workflowRun.currentState,
+        stateRevision: workflowRun.stateRevision,
+        currentStateEnteredAt: workflowRun.currentStateEnteredAt,
+        sessionAttempts: workflowRun.sessionAttempts,
+        origin: workflowRun.origin,
+        producerType: workflowRun.producerType,
+        workflowGeneratorId: workflowRun.workflowGeneratorId,
+        requestedBy: projectFleetOwner(workflowRun.requestedBy),
+        ...(repository ? { repository } : {}),
+        ...(computePlacement ? { computePlacement } : {}),
+        createdAt: workflowRun.createdAt,
+        updatedAt: workflowRun.updatedAt,
+    };
+}
+
+function projectFleetWorkflowRunSession(session) {
+    if (!session || typeof session !== "object") return session;
+    return {
+        associationId: session.associationId,
+        workflowRunId: session.workflowRunId,
+        sessionId: session.sessionId,
+        stateRunId: session.stateRunId,
+        ordinal: session.ordinal,
+        isCurrent: session.isCurrent,
+        status: session.status,
+        reservedAt: session.reservedAt,
+        attachedAt: session.attachedAt,
+        endedAt: session.endedAt,
+    };
+}
+
+function projectFleetWorkflowRunStateRun(run) {
+    if (!run || typeof run !== "object") return run;
+    return {
+        stateRunId: run.stateRunId,
+        workflowRunId: run.workflowRunId,
+        workflowDefinitionId: run.workflowDefinitionId,
+        stateName: run.stateName,
+        stateRevision: run.stateRevision,
+        stateOwner: run.stateOwner,
+        status: run.status,
+        sessionId: run.sessionId,
+        sourcePath: run.sourcePath,
+        sourceCommit: run.sourceCommit,
+        terminal: run.terminal,
+        leaseOwner: run.leaseOwner,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+    };
+}
+
+function projectFleetWorkflowRunWait(wait) {
+    if (!wait || typeof wait !== "object") return wait;
+    const predicateKind = typeof wait.predicate?.kind === "string"
+        ? wait.predicate.kind
+        : null;
+    return {
+        waitId: wait.waitId,
+        workflowRunId: wait.workflowRunId,
+        stateRunId: wait.stateRunId,
+        workflowDefinitionId: wait.workflowDefinitionId,
+        sessionId: wait.sessionId,
+        kind: wait.kind,
+        status: wait.status,
+        detectionMode: wait.detectionMode,
+        provider: wait.provider,
+        ...(predicateKind ? { predicate: { kind: predicateKind } } : {}),
+        deadlineAt: wait.deadlineAt,
+        nextCheckAt: wait.nextCheckAt,
+        waitStartedAt: wait.waitStartedAt,
+        waitCompletedAt: wait.waitCompletedAt,
+        satisfiedAt: wait.satisfiedAt,
+        createdAt: wait.createdAt,
+        updatedAt: wait.updatedAt,
+    };
+}
+
+function projectFleetWorkflowRunJournal(entry) {
+    if (!entry || typeof entry !== "object") return entry;
+    return {
+        journalEntryId: entry.journalEntryId,
+        workflowRunId: entry.workflowRunId,
+        sequence: entry.sequence,
+        entryKind: entry.entryKind,
+        workflowDefinitionId: entry.workflowDefinitionId,
+        fromState: entry.fromState,
+        toState: entry.toState,
+        fromRevision: entry.fromRevision,
+        toRevision: entry.toRevision,
+        stateRunId: entry.stateRunId,
+        sessionId: entry.sessionId,
+        outcome: entry.outcome,
+        transitionedAt: entry.transitionedAt,
+    };
+}
+
+function requireCatalogScope(params, resourceAdmin, resourceLabel) {
+    const scope = normalizeCatalogScope(params);
+    if (scope === "fleet" && !resourceAdmin) {
+        throw forbiddenError(`Fleet-wide ${resourceLabel} access requires resource administration.`);
+    }
+    return scope;
 }
 
 function normalizeSessionPageOptions(params) {
@@ -47,25 +547,81 @@ function normalizeSessionPageOptions(params) {
     if (!new Set(["all", "only", "exclude"]).has(systemFilter)) {
         throw new Error("listSessionsPage systemFilter must be one of: all, only, exclude");
     }
-    if (params.cursor != null && typeof params.cursor !== "object") {
-        throw new Error("listSessionsPage cursor must be an object when provided");
-    }
-    const rawCursor = params.cursor ?? null;
+    // The keyset cursor arrives as two scalar query params
+    // (cursorUpdatedAt/cursorSessionId) rather than a JSON blob. Both must be
+    // present together to form a cursor; neither present means the first page.
+    const hasCursor = params.cursorUpdatedAt != null || params.cursorSessionId != null;
     let cursor = null;
 
-    if (rawCursor) {
-        const updatedAt = Number(rawCursor.updatedAt);
-        const sessionId = String(rawCursor.sessionId || "").trim();
+    if (hasCursor) {
+        const updatedAt = Number(params.cursorUpdatedAt);
+        const sessionId = String(params.cursorSessionId ?? "").trim();
         if (!Number.isFinite(updatedAt)) {
-            throw new Error("listSessionsPage cursor.updatedAt must be a finite number");
+            throw new Error("listSessionsPage cursorUpdatedAt must be a finite number");
         }
         if (!sessionId) {
-            throw new Error("listSessionsPage cursor.sessionId must be a non-empty string");
+            throw new Error("listSessionsPage cursorSessionId must be a non-empty string");
         }
         cursor = { updatedAt, sessionId };
     }
 
-    return { limit, cursor, includeDeleted, systemFilter };
+    const updatedAfter = normalizeCatalogUpdatedAfter(params.updatedAfter);
+    return {
+        limit,
+        cursor,
+        includeDeleted,
+        systemFilter,
+        owner: normalizeCatalogFilter(params.owner),
+        status: normalizeCatalogFilter(params.status),
+        updatedAfter,
+    };
+}
+
+function normalizeCatalogFilter(value) {
+    if (value == null) return undefined;
+    return String(value).trim() || undefined;
+}
+
+function normalizeCatalogUpdatedAfter(value) {
+    const normalized = normalizeCatalogFilter(value);
+    if (!normalized) return undefined;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+        throw invalidRequest("updatedAfter must be a valid date.");
+    }
+    return date.toISOString();
+}
+
+function normalizeWorkflowCatalogPageOptions(params, { runs = false } = {}) {
+    const limit = clampInteger(params.limit, 50, 1, 200);
+    const hasCursor = params.cursorUpdatedAt != null || params.cursorId != null;
+    let cursor;
+    if (hasCursor) {
+        const updatedAt = Number(params.cursorUpdatedAt);
+        const id = normalizeCatalogFilter(params.cursorId);
+        if (!Number.isFinite(updatedAt) || !id) {
+            throw invalidRequest("Catalog cursors require a finite cursorUpdatedAt and non-empty cursorId.");
+        }
+        cursor = { updatedAt, id };
+    }
+    const origin = normalizeCatalogFilter(params.origin);
+    if (origin && !new Set(["direct", "workflow_generator"]).has(origin)) {
+        throw invalidRequest("origin must be direct or workflow_generator.");
+    }
+    return {
+        limit,
+        cursor,
+        owner: normalizeCatalogFilter(params.owner),
+        status: normalizeCatalogFilter(params.status),
+        repository: normalizeCatalogFilter(params.repository),
+        placement: normalizeCatalogFilter(params.placement),
+        updatedAfter: normalizeCatalogUpdatedAfter(params.updatedAfter),
+        ...(runs ? {
+            origin,
+            workflow: normalizeCatalogFilter(params.workflow),
+            workflowRunKey: normalizeCatalogFilter(params.workflowRunKey),
+        } : {}),
+    };
 }
 
 function normalizeTopEventEmitterOptions(params) {
@@ -189,6 +745,168 @@ export class PortalRuntime {
         // Last role written per principal, so the sign-in write does not fire
         // on every poll. See noteSignInRole.
         this._signInRoleSeen = new Map(); // key -> { role, at }
+        // TTL-cached serviceable-repo allowlist derived from the worker
+        // registry. See _serviceableRepos. `null` until first resolve.
+        this._repoAllowlist = null; // { at: epochMs, repos: Set<string> }
+    }
+
+    // ── Repo-affinity allowlist ─────────────────────────────────────────
+
+    /**
+     * Resolve the set of git-hydration repos that are currently serviceable,
+     * derived from the live worker registry and unioned with the optional
+     * PILOTSWARM_KNOWN_REPOS seed.
+     *
+     * A repo is serviceable iff at least one ready worker advertises a
+     * `repo:<name>` routing tag; each worker stamps those into its heartbeat,
+     * surfacing as `info.repos` on listWorkers() rows. Draining/starting
+     * workers are ignored — only `ready` workers actually dequeue tagged turns.
+     *
+     * Result is cached for REPO_ALLOWLIST_TTL_MS so the create path does not
+     * scan the worker registry per request. On a registry read failure we fall
+     * back to the last-known-good set (if any) unioned with the seed, so a
+     * transient CMS blip does not spuriously reject every repo-targeted create.
+     */
+    async _serviceableRepos() {
+        const now = Date.now();
+        if (this._repoAllowlist && now - this._repoAllowlist.at < REPO_ALLOWLIST_TTL_MS) {
+            return this._repoAllowlist.repos;
+        }
+        try {
+            const rows = (await this.transport.listWorkers()) ?? [];
+            const repos = new Set(SEED_REPOS);
+            for (const row of rows) {
+                if (row?.phase !== "ready") continue;
+                const advertised = row?.info?.repos;
+                if (!Array.isArray(advertised)) continue;
+                for (const r of advertised) {
+                    if (typeof r === "string" && r) repos.add(r.trim().toLowerCase());
+                }
+            }
+            this._repoAllowlist = { at: now, repos };
+            return repos;
+        } catch (err) {
+            // Registry unavailable: prefer last-known-good, else the bare seed.
+            // Do not cache the fallback — retry on the next request.
+            const fallback = this._repoAllowlist
+                ? new Set([...SEED_REPOS, ...this._repoAllowlist.repos])
+                : new Set(SEED_REPOS);
+            return fallback;
+        }
+    }
+
+    /**
+     * The session-creation policy the transport reports, augmented with the
+     * set of repos this deployment can currently service (sorted). Clients
+     * render the new-session repo picker from `policy.repos`; an empty list
+     * means "generic sessions only" and the picker step is skipped. `repos`
+     * is advisory for the UI — validateRepoParam stays the enforcement point
+     * on create, so a stale list can never widen what the server accepts.
+     */
+    async _sessionCreationPolicyWithRepos() {
+        const base = typeof this.transport.getSessionCreationPolicy === "function"
+            ? this.transport.getSessionCreationPolicy()
+            : null;
+        let repos = [];
+        try {
+            repos = [...(await this._serviceableRepos())].sort();
+        } catch {
+            repos = [];
+        }
+        if (!base && repos.length === 0) return null;
+        return { ...(base || {}), repos };
+    }
+
+    async _modelsForDevbox(owner, repo, isAdmin) {
+        const [catalog, workers] = await Promise.all([
+            this.transport.listModels({ principal: owner, isAdmin }),
+            this.transport.listWorkers(),
+        ]);
+        const now = Date.now();
+        const matching = (workers ?? []).filter((worker) => {
+            const updatedAt = new Date(worker?.updatedAt ?? 0).getTime();
+            const repos = [
+                ...(Array.isArray(worker?.info?.repos) ? worker.info.repos : []),
+                ...(Array.isArray(worker?.info?.ownerScopedRepos) ? worker.info.ownerScopedRepos : []),
+            ];
+            const routingTags = Array.isArray(worker?.info?.routingTags)
+                ? worker.info.routingTags
+                : [];
+            const supportsPlacement = repo
+                ? repos.some((candidate) => String(candidate).toLowerCase() === repo)
+                : routingTags.some((tag) => (
+                    isOwnerScopedRoutingTag(String(tag))
+                    && String(tag).endsWith("|generic")
+                ));
+            return worker?.phase === "ready"
+                && Number.isFinite(updatedAt)
+                && now - updatedAt <= 90_000
+                && worker?.owner?.provider === owner?.provider
+                && worker?.owner?.subject === owner?.subject
+                && supportsPlacement;
+        });
+        const available = new Set();
+        const preferred = [];
+        for (const worker of matching) {
+            const models = worker?.info?.models;
+            if (typeof models?.defaultModel === "string") preferred.push(models.defaultModel);
+            for (const model of Array.isArray(models?.available) ? models.available : []) {
+                if (typeof model === "string" && model) available.add(model);
+            }
+        }
+        const orderedModels = [];
+        for (const model of [...preferred, ...available]) {
+            if (!orderedModels.includes(model)) orderedModels.push(model);
+        }
+        const catalogByName = new Map(
+            (catalog ?? [])
+                .filter((model) => typeof model?.qualifiedName === "string")
+                .map((model) => [model.qualifiedName, model]),
+        );
+        return orderedModels
+            .map((qualifiedName) => ({
+                ...(catalogByName.get(qualifiedName) ?? { qualifiedName }),
+                credentialAvailable: true,
+                availabilitySource: "worker",
+            }));
+    }
+
+    async _resolveDevboxModel(owner, repo, isAdmin, requestedModel) {
+        const models = await this._modelsForDevbox(owner, repo, isAdmin);
+        if (requestedModel && !models.some((candidate) => candidate.qualifiedName === requestedModel)) {
+            throw Object.assign(
+                new Error(`No ready owner-affinitized devbox worker for repo "${repo ?? "generic"}" advertises model "${requestedModel}".`),
+                { code: "MODEL_UNRESOLVED" },
+            );
+        }
+        const model = requestedModel ?? models[0]?.qualifiedName;
+        if (!model) {
+            throw Object.assign(
+                new Error(`No ready owner-affinitized devbox worker for repo "${repo ?? "generic"}" advertises an available model.`),
+                { code: "MODEL_UNRESOLVED" },
+            );
+        }
+        return model;
+    }
+
+    async _resolveSessionModelForPlacement(sessionId, requestedModel) {
+        const model = String(requestedModel || "").trim();
+        if (!model) throw invalidRequest("model is required.");
+        const session = await this.transport.getSession(sessionId);
+        const routing = session?.routing;
+        if (routing?.ownerAffinityRequired !== true) return model;
+        if (!session?.owner) {
+            throw Object.assign(
+                new Error(`Owner-affinitized session ${sessionId} has no persisted owner.`),
+                { code: "SESSION_PLACEMENT_INVALID" },
+            );
+        }
+        return this._resolveDevboxModel(
+            session.owner,
+            normalizeRepoParam(routing.repo),
+            false,
+            model,
+        );
     }
 
     // ── Sign-in role persistence ────────────────────────────────────────
@@ -279,7 +997,18 @@ export class PortalRuntime {
         const spec = getMethodAccess(method);
         const access = spec?.access || "authed";
 
-        if (access === "authed" || access === "session:create" || access === "facts:read" || access === "group:list" || access === "session:list") {
+        if (
+            access === "authed"
+            || access === "session:create"
+            || access === "facts:read"
+            || access === "group:list"
+            || access === "session:list"
+            || access === "workflow-generator:list"
+            || access === "workflow-generator:create"
+            || access === "workflow-definition:list"
+            || access === "workflow-definition:create"
+            || access === "workflow-run:create"
+        ) {
             // List/read scoping happens in the case handlers (viewer-scoped
             // catalog paths); creation stamps owner+visibility there too.
             return { snapshot: null };
@@ -324,6 +1053,27 @@ export class PortalRuntime {
 
         if (access === "group:manage") {
             await this._authorizeGroupManage(method, safeParams, authContext, { owner, isAdmin });
+            return { snapshot: null };
+        }
+
+        if (method === "listWorkflowRuns" || method === "listWorkflowRunsPage") {
+            if (!owner && !isAdmin) requireUserPrincipal(authContext, method);
+            return { snapshot: null };
+        }
+
+        if (access === "workflow-run:read" || access === "workflow-run:manage") {
+            const workflowRun = await this._authorizeWorkflowRunAccess(
+                method,
+                safeParams,
+                authContext,
+                { owner, isAdmin },
+            );
+            return { snapshot: null, workflowRun };
+        }
+
+        if (access === "workflow-generator:read" || access === "workflow-generator:manage"
+            || access === "workflow-definition:read") {
+            await this._authorizeWorkflowGeneratorRead(method, safeParams, authContext, { owner, isAdmin });
             return { snapshot: null };
         }
 
@@ -489,6 +1239,87 @@ export class PortalRuntime {
         }
     }
 
+    async _authorizeWorkflowGeneratorRead(method, safeParams, authContext, { owner, isAdmin }) {
+        const includeDeleted = method === "deleteWorkflowGenerator";
+        let workflowGeneratorId = safeParams.workflowGeneratorId ? String(safeParams.workflowGeneratorId) : null;
+        let resourceOwner = null;
+        let sharedResourceFound = false;
+        if (!workflowGeneratorId && safeParams.workflowDefinitionId) {
+            const definition = await this.transport.getWorkflowDefinition(
+                String(safeParams.workflowDefinitionId),
+            ).catch(() => null);
+            resourceOwner = normalizeOwnerPrincipal(definition?.owner);
+            sharedResourceFound = Boolean(definition);
+        }
+        if (sharedResourceFound && !safeParams.workflowGeneratorId) return;
+        if (!workflowGeneratorId && resourceOwner) {
+            if (isAdmin || (owner
+                && owner.provider === resourceOwner.provider
+                && owner.subject === resourceOwner.subject)) {
+                return;
+            }
+            throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
+        }
+        if (!workflowGeneratorId) {
+            throw Object.assign(new Error("WorkflowGenerator not found."), { code: "NOT_FOUND", status: 404 });
+        }
+        const generator = await this.transport.getWorkflowGenerator(
+            workflowGeneratorId,
+            includeDeleted,
+        ).catch(() => null);
+        if (!generator) {
+            throw Object.assign(new Error("WorkflowGenerator not found."), { code: "NOT_FOUND", status: 404 });
+        }
+        if (isAdmin) return;
+        const generatorOwner = normalizeOwnerPrincipal(generator.owner);
+        const allowed = Boolean(
+            owner
+            && generatorOwner
+            && owner.provider === generatorOwner.provider
+            && owner.subject === generatorOwner.subject,
+        );
+        if (!allowed) {
+            this._recordAudit({
+                actor: this._auditActor(authContext),
+                action: method,
+                target: workflowGeneratorId,
+                decision: "deny",
+                reason: "WorkflowGenerator owner access required.",
+            });
+            throw Object.assign(new Error("WorkflowGenerator not found."), { code: "NOT_FOUND", status: 404 });
+        }
+    }
+
+    async _authorizeWorkflowRunAccess(method, safeParams, authContext, { owner, isAdmin }) {
+        const workflowRunId = safeParams.workflowRunId ? String(safeParams.workflowRunId) : "";
+        const includeDeleted = method === "deleteWorkflowRun";
+        const workflowRun = workflowRunId
+            ? await this.transport.getWorkflowRun(workflowRunId, includeDeleted)
+            : null;
+        if (!workflowRun) {
+            throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
+        }
+        if (this._resourceAdmin(isAdmin)) return workflowRun;
+
+        const requester = normalizeOwnerPrincipal(workflowRun.requestedBy);
+        const allowed = Boolean(
+            owner
+            && requester
+            && owner.provider === requester.provider
+            && owner.subject === requester.subject,
+        );
+        if (allowed) return workflowRun;
+
+        this._recordAudit({
+            actor: this._auditActor(authContext),
+            action: method,
+            target: workflowRunId,
+            decision: "deny",
+            reason: "WorkflowRun requester access required.",
+        });
+        throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
+    }
+
     /**
      * Placement viewer for the CMS placement procs. canRead inside the procs
      * is permissive when ownership enforcement is off (admin OR NOT enforce);
@@ -640,9 +1471,11 @@ export class PortalRuntime {
                 // viewer-scoped union per open via the listCreatableAgents op.
                 ? await this.transport.listCreatableAgents(null, false)
                 : [],
-            sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
-                ? this.transport.getSessionCreationPolicy()
-                : null,
+            // Serviceable-repo list rides along the policy so the portal can
+            // render the new-session repo picker straight from bootstrap
+            // (getSessionCreationPolicy is synchronous on the client and reads
+            // this cached payload).
+            sessionCreationPolicy: await this._sessionCreationPolicyWithRepos(),
             // Ownership/visibility posture (security model) so clients (portal,
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.
@@ -674,10 +1507,193 @@ export class PortalRuntime {
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
-            case "listSessions":
-                return listViewer
-                    ? this.transport.mgmt.listSessionsVisible(listViewer, placementPrincipal(authContext))
+            case "listWorkflowGenerators":
+                if (!owner && !isAdmin) requireUserPrincipal(authContext, method);
+                {
+                    const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Generator");
+                    const generators = await this.transport.listWorkflowGenerators(
+                        scope === "fleet" || (!owner && isAdmin) ? null : owner,
+                    );
+                    return scope === "fleet"
+                        ? generators.map(projectFleetWorkflowGenerator)
+                        : generators;
+                }
+            case "listWorkflowGeneratorsPage":
+                if (!owner && !isAdmin) requireUserPrincipal(authContext, method);
+                {
+                    const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Generator");
+                    const page = await this.transport.listWorkflowGeneratorsPage(
+                        normalizeWorkflowCatalogPageOptions(safeParams),
+                        scope === "fleet" || (!owner && isAdmin) ? null : owner,
+                    );
+                    return scope === "fleet"
+                        ? { ...page, generators: page.generators.map(projectFleetWorkflowGenerator) }
+                        : page;
+                }
+            case "createWorkflowGenerator": {
+                const generatorOwner = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.createWorkflowGenerator(
+                    normalizeWorkflowGeneratorCreateParams(safeParams, generatorOwner),
+                );
+            }
+            case "listWorkflowDefinitions":
+                return this.transport.listWorkflowDefinitions(safeParams.workflowType);
+            case "createWorkflowDefinition": {
+                const definitionOwner = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.createWorkflowDefinition(
+                    normalizeWorkflowDefinitionCreateParams(safeParams, definitionOwner),
+                );
+            }
+            case "createWorkflowRun": {
+                const workflowRunOwner = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.createWorkflowRun(
+                    normalizeWorkflowRunCreateParams(safeParams, workflowRunOwner),
+                );
+            }
+            case "listWorkflowRuns": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
+                const workflowRuns = await this.transport.listWorkflowRuns({
+                    workflowType: safeParams.workflowType == null
+                        ? undefined
+                        : String(safeParams.workflowType).trim(),
+                    workflowRunKey: safeParams.workflowRunKey == null
+                        ? undefined
+                        : String(safeParams.workflowRunKey).trim(),
+                    limit: clampInteger(safeParams.limit, 100, 1, 1000),
+                }, scope === "visible" && owner
+                    ? { provider: owner.provider, subject: owner.subject }
+                    : null);
+                return scope === "fleet"
+                    ? workflowRuns.map(projectFleetWorkflowRun)
+                    : workflowRuns;
+            }
+            case "listWorkflowRunsPage": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
+                const page = await this.transport.listWorkflowRunsPage(
+                    normalizeWorkflowCatalogPageOptions(safeParams, { runs: true }),
+                    scope === "visible" && owner
+                        ? { provider: owner.provider, subject: owner.subject }
+                        : null,
+                );
+                return scope === "fleet"
+                    ? { ...page, workflowRuns: page.workflowRuns.map(projectFleetWorkflowRun) }
+                    : page;
+            }
+            case "getWorkflowGenerator": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Generator");
+                const generator = await this.transport.getWorkflowGenerator(safeParams.workflowGeneratorId);
+                if (!generator) {
+                    throw Object.assign(new Error("WorkflowGenerator not found."), { code: "NOT_FOUND", status: 404 });
+                }
+                return scope === "fleet" ? projectFleetWorkflowGenerator(generator) : generator;
+            }
+            case "deleteWorkflowGenerator": {
+                const actor = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.deleteWorkflowGenerator(
+                    safeParams.workflowGeneratorId,
+                    actor,
+                    isAdmin,
+                );
+            }
+            case "setWorkflowGeneratorDefinition": {
+                const workflowDefinitionId = String(safeParams.workflowDefinitionId || "").trim();
+                if (!workflowDefinitionId) throw invalidRequest("workflowDefinitionId is required.");
+                return this.transport.setWorkflowGeneratorDefinition(
+                    safeParams.workflowGeneratorId,
+                    workflowDefinitionId,
+                );
+            }
+            case "getWorkflowDefinition": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Definition");
+                const definition = await this.transport.getWorkflowDefinition(safeParams.workflowDefinitionId);
+                return scope === "fleet" ? projectFleetWorkflowDefinition(definition) : definition;
+            }
+            case "listWorkflowGeneratorRuns": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
+                const workflowRuns = await this.transport.listWorkflowGeneratorRuns(safeParams.workflowGeneratorId);
+                return scope === "fleet"
+                    ? workflowRuns.map(projectFleetWorkflowRun)
+                    : workflowRuns;
+            }
+            case "listWorkflowGeneratorCycles":
+                return this.transport.listWorkflowGeneratorCycles(
+                    safeParams.workflowGeneratorId,
+                    clampInteger(safeParams.limit, 50, 1, 200),
+                );
+            case "getWorkflowRun": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
+                const workflowRun = gate.workflowRun;
+                if (!workflowRun) {
+                    throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
+                }
+                return scope === "fleet" ? projectFleetWorkflowRun(workflowRun) : workflowRun;
+            }
+            case "deleteWorkflowRun": {
+                const actor = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.deleteWorkflowRun(
+                    safeParams.workflowRunId,
+                    actor,
+                    isAdmin,
+                );
+            }
+            case "listWorkflowRunSessions": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run session");
+                const sessions = await this.transport.listWorkflowRunSessions(safeParams.workflowRunId);
+                return scope === "fleet"
+                    ? sessions.map(projectFleetWorkflowRunSession)
+                    : sessions;
+            }
+            case "listWorkflowRunStateRuns": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run state");
+                const stateRuns = await this.transport.listWorkflowRunStateRuns(safeParams.workflowRunId);
+                return scope === "fleet"
+                    ? stateRuns.map(projectFleetWorkflowRunStateRun)
+                    : stateRuns;
+            }
+            case "listWorkflowRunWaits": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run wait");
+                const waits = await this.transport.listWorkflowRunWaits(safeParams.workflowRunId);
+                return scope === "fleet"
+                    ? waits.map(projectFleetWorkflowRunWait)
+                    : waits;
+            }
+            case "setWorkflowRunWaitConditionOverride":
+                return this.transport.setWorkflowRunWaitConditionOverride(
+                    safeParams.workflowRunId,
+                    safeParams.waitId,
+                    safeParams.conditionKey,
+                    Boolean(safeParams.overridden),
+                );
+            case "listWorkflowRunJournal": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run journal");
+                const journal = await this.transport.listWorkflowRunJournal(safeParams.workflowRunId);
+                return scope === "fleet"
+                    ? journal.map(projectFleetWorkflowRunJournal)
+                    : journal;
+            }
+            case "listSessions": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Session");
+                const sessionViewer = scope === "visible" && owner
+                    ? this._listViewer(owner, isAdmin, true)
+                    : scope === "visible" ? listViewer : null;
+                const sessions = sessionViewer
+                    ? this.transport.mgmt.listSessionsVisible(sessionViewer, placementPrincipal(authContext))
                     : this.transport.mgmt.listSessions(placementPrincipal(authContext));
+                const resolvedSessions = await sessions;
+                return scope === "fleet"
+                    ? resolvedSessions.map(projectFleetSession)
+                    : resolvedSessions;
+            }
             case "listSessionGroups":
                 // Viewer-scoped: everyone (admins included) sees only their
                 // own groups — a group is a user's private organization.
@@ -697,21 +1713,33 @@ export class PortalRuntime {
                 return this.transport.getChildOutcome(safeParams.childSessionId);
             case "listChildOutcomes":
                 return this.transport.listChildOutcomes(safeParams.parentSessionId);
-            case "listSessionsPage":
-                // The portal opts into a personal catalog even when its user
-                // also has unrestricted fleet administration. With no signed-in
-                // principal (trusted no-auth deployments), retain the legacy
-                // unfiltered behavior because there is no "me" to scope to.
-                const pageViewer = safeParams.viewerOnly === true && owner
+            case "listSessionsPage": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Session");
+                // With no signed-in principal (trusted no-auth deployments),
+                // retain the legacy unfiltered behavior because there is no
+                // viewer identity to scope to.
+                const pageViewer = scope === "visible" && owner
                     ? this._listViewer(owner, isAdmin, true)
-                    : listViewer;
-                return this.transport.mgmt.listSessionsPage({
-                    ...normalizeSessionPageOptions(safeParams),
-                    ...(pageViewer ? { viewer: pageViewer } : {}),
-                    placement: placementPrincipal(authContext),
-                });
-            case "getSession":
-                return this.transport.mgmt.getSession(safeParams.sessionId, placementPrincipal(authContext));
+                    : scope === "visible" ? listViewer : null;
+                {
+                    const page = await this.transport.mgmt.listSessionsPage({
+                        ...normalizeSessionPageOptions(safeParams),
+                        ...(pageViewer ? { viewer: pageViewer } : {}),
+                        placement: placementPrincipal(authContext),
+                    });
+                    return scope === "fleet"
+                        ? { ...page, sessions: page.sessions.map(projectFleetSession) }
+                        : page;
+                }
+            }
+            case "getSession": {
+                const scope = requireCatalogScope(safeParams, resourceAdmin, "Session");
+                const session = await this.transport.mgmt.getSession(
+                    safeParams.sessionId,
+                    placementPrincipal(authContext),
+                );
+                return scope === "fleet" ? projectFleetSession(session) : session;
+            }
             case "getOrchestrationStats":
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":
@@ -911,21 +1939,52 @@ export class PortalRuntime {
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const compute = validateComputeParam(safeParams.compute);
+                if (safeParams.callerAuth != null) {
+                    throw invalidRequest(
+                        "callerAuth must not be sent to PilotSwarm; " +
+                        "devbox workers acquire delegated credentials locally.",
+                    );
+                }
+                const repo = compute === "devbox"
+                    ? normalizeRepoParam(safeParams.repo)
+                    : validateRepoParam(safeParams.repo, await this._serviceableRepos());
+                const gitRef = validateGitRefParam(safeParams.gitRef);
+                const model = compute === "devbox"
+                    ? await this._resolveDevboxModel(owner, repo, isAdmin, safeParams.model)
+                    : safeParams.model;
                 const created = await this.transport.createSession({
-                    model: safeParams.model,
+                    model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(repo ? { repo } : {}),
+                    ...(gitRef ? { gitRef } : {}),
+                    ...(compute === "devbox" ? { requireOwnerAffinity: true } : {}),
                     ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
             case "createSessionForAgent": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const compute = validateComputeParam(safeParams.compute);
+                if (safeParams.callerAuth != null) {
+                    throw invalidRequest(
+                        "callerAuth must not be sent to PilotSwarm; " +
+                        "devbox workers acquire delegated credentials locally.",
+                    );
+                }
+                const repo = compute === "devbox"
+                    ? normalizeRepoParam(safeParams.repo)
+                    : validateRepoParam(safeParams.repo, await this._serviceableRepos());
+                const gitRef = validateGitRefParam(safeParams.gitRef);
+                const model = compute === "devbox"
+                    ? await this._resolveDevboxModel(owner, repo, isAdmin, safeParams.model)
+                    : safeParams.model;
                 const created = await this.transport.createSessionForAgent(safeParams.agentName, {
-                    model: safeParams.model,
+                    model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,
                     title: safeParams.title,
@@ -936,6 +1995,9 @@ export class PortalRuntime {
                     owner,
                     isAdmin: resourceAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(repo ? { repo } : {}),
+                    ...(gitRef ? { gitRef } : {}),
+                    ...(compute === "devbox" ? { requireOwnerAffinity: true } : {}),
                     ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
@@ -943,7 +2005,7 @@ export class PortalRuntime {
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents(owner, resourceAdmin);
             case "getSessionCreationPolicy":
-                return this.transport.getSessionCreationPolicy();
+                return this._sessionCreationPolicyWithRepos();
 
             // ── Agent packages (docs/proposals/agent-packages.md) ────
             // access "authed" + creator-or-admin enforcement in the registry
@@ -967,6 +2029,11 @@ export class PortalRuntime {
                 const rows = await this.transport.listWorkers();
                 return resourceAdmin ? rows : rows.map(projectWorker);
             }
+            case "getWorkerTimeline":
+                return this.transport.getWorkerTimeline(safeParams.workerNodeId, {
+                    since: safeParams.since,
+                    limit: safeParams.limit,
+                });
             case "setAgentPackageScope":
                 // `scope` here is the TARGET; the copy selector carries only
                 // the optional admin owner override (source scope is derived
@@ -1240,13 +2307,23 @@ export class PortalRuntime {
                 return this.transport.deleteSession(safeParams.sessionId);
             case "restartSystemSession":
                 return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
-            case "setSessionModel":
-                return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
+            case "setSessionModel": {
+                const options = safeParams.options || {};
+                const model = await this._resolveSessionModelForPlacement(
+                    safeParams.sessionId,
+                    options.model,
+                );
+                return this.transport.setSessionModel(safeParams.sessionId, { ...options, model });
+            }
             case "stopSessionTurn":
                 return this.transport.stopSessionTurn(safeParams.sessionId, safeParams.options || {});
             case "deleteSessionGroup":
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
+                if (validateComputeParam(safeParams.compute) === "devbox") {
+                    const repo = normalizeRepoParam(safeParams.repo);
+                    return this._modelsForDevbox(owner, repo, isAdmin);
+                }
                 return this.transport.listModels({ principal: owner, isAdmin });
             case "listArtifacts":
                 return this.transport.listArtifacts(safeParams.sessionId);

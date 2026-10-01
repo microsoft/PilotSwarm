@@ -3,7 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
-import { buildRuntimeRegistry, loadProviderTypes } from "../../src/provider-catalog.ts";
+import {
+    bootstrapSeedFromConfig,
+    buildRuntimeRegistry,
+    loadProviderTypes,
+} from "../../src/provider-catalog.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -71,6 +75,25 @@ describe("starter docker model config", () => {
 
         const descriptor = new ModelProviderRegistry(config).getDescriptor("github-copilot:claude-opus-4.8");
         expect(descriptor.supportedReasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    });
+
+    it("seeds an ambient Copilot provider for signed-in devbox workers", () => {
+        const config = JSON.parse(readRepoFile("deploy/config/model_providers.ghcp.json"));
+        const ambient = config.providers.find((entry) => entry.id === "github-copilot-ambient");
+
+        expect(ambient).toMatchObject({
+            type: "github-ambient",
+            models: [{ name: "claude-sonnet-5" }],
+        });
+        expect(ambient.githubToken).toBeUndefined();
+
+        const seed = bootstrapSeedFromConfig(config);
+        expect(seed.instances).toContainEqual({
+            name: "github-copilot-ambient",
+            typeId: "github-copilot-ambient",
+            secretRef: { kind: "ambientIdentity", source: "config-file" },
+            baseUrl: null,
+        });
     });
 
     it("persists starter SSH host keys in the data volume", () => {

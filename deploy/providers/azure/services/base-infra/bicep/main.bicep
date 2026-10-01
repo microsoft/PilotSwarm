@@ -58,13 +58,23 @@ param dTime string = utcNow()
 @maxValue(730)
 param logAnalyticsRetentionDays int = 30
 
-@description('Edge topology mode. afd = Front Door + AppGw in a dedicated VNet. private = internal NGINX LoadBalancer in a dedicated VNet. public = public NGINX LoadBalancer with an AKS-managed network and no dedicated VNet, AppGw, or Front Door.')
+@description('Enable purge protection on the stamp Key Vault. Defaults to true; disable only for disposable environments whose teardown explicitly purges the deleted vault.')
+param keyVaultPurgeProtectionEnabled bool = true
+
+@description('Edge topology mode. afd = Front Door + AppGw in a dedicated VNet. private = internal NGINX LoadBalancer in a dedicated VNet. public = public NGINX LoadBalancer with an AKS-managed network. port-forward = ClusterIP-only portal with no ingress.')
 @allowed([
   'afd'
   'private'
   'public'
+  'port-forward'
 ])
 param edgeMode string = 'afd'
+
+@description('Optional override for the Postgres Flexible Server location. Empty (default) provisions Postgres in the stamp `location`. Set to a different Azure region (e.g. `westus2`) when the subscription is governance-restricted from provisioning PostgreSQL Flexible Server in the stamp region — Postgres uses public network access + "allow Azure services" firewall (no VNet integration), so a cross-region control-plane DB works. Backward-compatible: empty = prior behavior.')
+param postgresLocation string = ''
+
+@description('Optional override for the AppGw existence probe. Empty (default) runs the `check-appgw-exists` deployment script to detect a prior AppGw (for AGIC config preservation). Set to `false`/`true` to skip that script and assert existence directly — required on subscriptions where a security policy denies the deployment-script storage account ("Local authentication methods are not allowed"). Backward-compatible: empty = prior behavior.')
+param appGwExistsOverride string = ''
 
 @description('Optional deployment principal object ID for Blob Data Contributor, Key Vault Secrets Officer and AcrPush on stamp resources. Defaults to empty for the enterprise path. The OSS deployer supplies a signed-in user ID or an explicit OIDC service principal ID.')
 param localDeploymentPrincipalId string = ''
@@ -76,6 +86,28 @@ param localDeploymentPrincipalId string = ''
   'ServicePrincipal'
 ])
 param localDeploymentPrincipalType string = 'User'
+
+// CONTROLLED-PREVIEW SECURITY EXCEPTION - NOT AN UPSTREAMABLE DEFAULT.
+// This bypasses application-level owner isolation by granting a developer
+// principal raw durable-store access, including PostgreSQL administrator
+// privileges. It exists only as a temporary bridge for a small trusted group.
+// A production design must use a non-admin runtime role or brokered worker API.
+@description('SECURITY EXCEPTION: optional trusted devbox principal granted secondary PostgreSQL administrator plus raw read/write access to the copilot-sessions container. Keep empty by default. This controlled-preview workaround is not suitable as a general upstream feature.')
+param devboxPrincipalId string = ''
+
+@description('Display name for devboxPrincipalId as registered in Microsoft Entra and PostgreSQL.')
+param devboxPrincipalName string = ''
+
+@description('Principal type for devboxPrincipalId.')
+@allowed([
+  'User'
+  'Group'
+  'ServicePrincipal'
+])
+param devboxPrincipalType string = 'Group'
+
+@description('Allow storage-account shared-key (local auth) access on the deployment storage account. Defaults to false: the bicep-orchestrator path is managed-identity only (PILOTSWARM_USE_MANAGED_IDENTITY=1 + DefaultAzureCredential), and some tenant policies deny allowSharedKeyAccess=true. Set to true only for the legacy scripts/deploy-aks.sh connection-string flow where policy permits it.')
+param allowSharedKeyAccess bool = false
 
 @description('Kubernetes namespace hosting the worker + portal service accounts. MUST match the NAMESPACE env-var that drives the Kustomize overlay (deploy/envs/local/<env>/env). Used to build federated identity credential subjects.')
 param serviceAccountNamespace string = 'pilotswarm'
@@ -105,6 +137,19 @@ param foundrySku string = 'S0'
 
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
+
+@description('Optional Azure region for the Foundry account, decoupled from the stamp `region`. Empty (default) → the Foundry account is co-located with the stamp. Set when the stamp region does not offer the desired model format (e.g. westus2 offers no OpenAI-format models, so a westus2 stamp points its Foundry account at westus3/eastus2). Threaded by the deploy orchestrator via `--parameters foundryLocation=<region>` from FOUNDRY_LOCATION. The AKS worker reaches the account cross-region over its data-plane endpoint. Ignored when foundryEnabled=false.')
+param foundryLocation string = ''
+
+@description('Foundry data-plane auth mode. `entra` (default) runs the account with `disableLocalAuth: true` and grants the worker workload identity the Cognitive Services data-plane role, so the worker mints an AAD bearer token (provider type `foundry-wif`) instead of reading a key. AAD token auth is not policy-gated, so entra works on every subscription and is required where the governing management group bans local/key auth (SFI Safe Secrets). `key` is the explicit opt-out for legacy stamps whose subscription permits key auth: it writes the account key to KV as `azure-oai-key` (back-compat with the existing pss* siblings). Threaded by the deploy orchestrator from FOUNDRY_AUTH_MODE. Ignored when foundryEnabled=false.')
+@allowed([
+  'key'
+  'entra'
+])
+param foundryAuthMode string = 'entra'
+
+@description('Additional AKS agent pools (for example, externally composed repository-fleet pools) appended to the authoritative agentPoolProfiles of the cluster. Threaded by the deploy orchestrator from a per-stamp JSON file via `--parameters additionalAgentPools=@<file>` when AGENT_POOLS_FILE is set. Empty array → only systempool + userpool, so stamps without fleets are unaffected. Declaring the pools here keeps `deploy -- all` idempotent and non-destructive: the managedCluster PUT reconciles the full desired pool set instead of deleting fleet pools it did not create.')
+param additionalAgentPools array = []
 
 // ----- VPN P2S ingress (additive, optional) ---------------------------------
 // All defaults preserve byte-equivalent param shape for non-VPN stamps.
@@ -231,7 +276,7 @@ module ApproverRgReaderRbac './approver-rg-reader-rbac.bicep' = {
 // mode — there is no AppGw.
 // ==============================================================================
 
-module ApplicationGatewayExistsCheck './check-appgw-exists.bicep' = if (edgeMode == 'afd') {
+module ApplicationGatewayExistsCheck './check-appgw-exists.bicep' = if (edgeMode == 'afd' && empty(appGwExistsOverride)) {
   name: '${resourceNamePrefix}-check-appgw-${dTime}'
   params: {
     location: location
@@ -260,7 +305,7 @@ module AppGateway './application-gateway.bicep' = if (edgeMode == 'afd') {
     wafMode: wafMode
     availabilityZones: availabilityZones
     userAssignedIdentityId: Uami.outputs.appGwIdentityResourceId
-    appGwExists: ApplicationGatewayExistsCheck!.outputs.exists
+    appGwExists: empty(appGwExistsOverride) ? ApplicationGatewayExistsCheck!.outputs.exists : (toLower(appGwExistsOverride) == 'true')
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
     appgwWafCustomRules: appgwWafCustomRules
     vpnGatewayEnabled: vpnGatewayEnabled
@@ -425,6 +470,7 @@ module Aks './aks.bicep' = {
     outboundPublicIpId: (edgeMode == 'public' && horizonDbEnabled) ? horizonEgressIp!.id : ''
     availabilityZones: availabilityZones
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
+    additionalAgentPools: additionalAgentPools
     userPoolMinCount: userPoolMinCount
     repoCachePoolEnabled: repoCachePoolEnabled
   }
@@ -489,10 +535,13 @@ module Storage './storage.bicep' = {
   params: {
     location: location
     storageAccountName: storageAccountName
+    allowSharedKeyAccess: allowSharedKeyAccess
     aksKubeletPrincipalId: Uami.outputs.kubeletIdentityPrincipalId
     workerWorkloadPrincipalId: Uami.outputs.csiIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
     localDeploymentPrincipalType: localDeploymentPrincipalType
+    devboxPrincipalId: devboxPrincipalId
+    devboxPrincipalType: devboxPrincipalType
   }
 }
 
@@ -503,11 +552,14 @@ module Storage './storage.bicep' = {
 module Postgres './postgres.bicep' = if (deployPostgres) {
   name: '${resourceNamePrefix}-pg-${dTime}'
   params: {
-    location: location
+    location: empty(postgresLocation) ? location : toLower(postgresLocation)
     serverName: postgresServerName
     aadAdminPrincipalId: Uami.outputs.csiIdentityPrincipalId
     aadAdminPrincipalName: Uami.outputs.csiIdentityName
     aadAdminPrincipalType: 'ServicePrincipal'
+    aadSecondaryAdminPrincipalId: devboxPrincipalId
+    aadSecondaryAdminPrincipalName: devboxPrincipalName
+    aadSecondaryAdminPrincipalType: devboxPrincipalType
     aadOnly: edgeMode == 'public'
   }
 }
@@ -525,7 +577,9 @@ module KeyVault './keyvault.bicep' = {
     appGwPrincipalId: Uami.outputs.appGwIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
     localDeploymentPrincipalType: localDeploymentPrincipalType
+    grantLocalCertificateManagement: edgeMode == 'port-forward'
     templateDeploymentEnabled: horizonDbEnabled
+    purgeProtectionEnabled: keyVaultPurgeProtectionEnabled
   }
 }
 
@@ -542,11 +596,13 @@ module KeyVault './keyvault.bicep' = {
 module Foundry './foundry.bicep' = if (foundryEnabled) {
   name: '${resourceNamePrefix}-foundry-${dTime}'
   params: {
-    location: location
+    location: empty(foundryLocation) ? location : toLower(foundryLocation)
     accountName: foundryAccountName
     sku: foundrySku
     deployments: foundryDeployments
     keyVaultName: KeyVault.outputs.keyVaultName
+    authMode: foundryAuthMode
+    workloadIdentityPrincipalId: Uami.outputs.csiIdentityPrincipalId
   }
 }
 
@@ -661,6 +717,12 @@ output sslCertificateDomainSuffix string = sslCertificateDomainSuffix
 // deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env key
 // WORKLOAD_IDENTITY_CLIENT_ID for downstream overlay `.env` substitution.
 output csiIdentityClientId string = Uami.outputs.csiIdentityClientId
+// Shared `csiIdentity` UAMI principalId (Entra object id of the workload MI).
+// Captured by the OSS deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env
+// key WORKLOAD_IDENTITY_PRINCIPAL_ID, consumed by the `workload-group` deploy
+// step (group-membership.mjs) to join the identity to the shared-cluster
+// Entra authorization group.
+output csiIdentityPrincipalId string = Uami.outputs.csiIdentityPrincipalId
 // Storage account name (consumed by Worker/Portal bicep + OSS deploy script
 // FR-022 alias map). Per-service container names are emitted by each
 // service's own bicep, not BaseInfra.

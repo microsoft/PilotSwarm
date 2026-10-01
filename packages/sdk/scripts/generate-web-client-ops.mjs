@@ -55,6 +55,10 @@ function paramsType(op) {
     return `{\n${fields.join("\n")}\n    }`;
 }
 
+function hasRequiredParams(op) {
+    return Object.values(op.params || {}).some((spec) => spec.in === "path");
+}
+
 function jsdoc(op) {
     const summary = String(op.summary || "").replace(/\*\//g, "*\\/");
     return [
@@ -70,7 +74,8 @@ const sorted = [...OPERATIONS].sort((a, b) => a.name.localeCompare(b.name));
 const methods = sorted
     .map((op) => {
         const params = paramsType(op);
-        const arg = params === "Record<string, never>" ? "params?: Record<string, never>" : `params: ${params}`;
+        const optional = params === "Record<string, never>" || !hasRequiredParams(op);
+        const arg = `params${optional ? "?" : ""}: ${params}`;
         return `${jsdoc(op)}\n    ${op.name}(${arg}): Promise<any>;`;
     })
     .join("\n\n");

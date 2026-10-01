@@ -82,6 +82,18 @@ test("portal: private + akv-selfsigned collapses to private-akv (shared overlay)
   assert.equal(got, "private-akv");
 });
 
+test("portal: port-forward + akv-selfsigned → port-forward-akv", () => {
+  const got = resolveOverlayName({
+    service: "portal",
+    envName: "dev",
+    env: {
+      EDGE_MODE: "port-forward",
+      TLS_SOURCE: "akv-selfsigned",
+    },
+  });
+  assert.equal(got, "port-forward-akv");
+});
+
 test("portal: throws when EDGE_MODE / TLS_SOURCE are absent (FR-001)", () => {
   // The previous silent default (afd-letsencrypt) was a footgun — operators
   // got an unexpected overlay when they forgot to scaffold the env. The
@@ -128,6 +140,52 @@ import { stageManifests } from "../lib/stage-manifests.mjs";
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+test("stageManifests(worker): renders the configured generic-worker replica count", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-worker-"));
+  const stagedRoot = stageManifests({
+    service: "worker",
+    envName: "dev",
+    env: {
+      IMAGE: "stub.azurecr.io/pilotswarm-worker:test",
+      NAMESPACE: "pilotswarm",
+      KV_NAME: "stub-kv",
+      WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+      AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000000",
+      PILOTSWARM_WORKER_TAGS: "generic",
+      WORKER_REPLICAS: "2",
+      WORKFLOW_GENERATOR_SOURCE_PROVIDERS_JSON:
+        '[{"id":"ado_wiql","endpoint":"http://ado-wiql-provider:8080/providers/ado_wiql/evaluate","tokenEnv":"ADO_WIQL_PROVIDER_HOST_TOKEN"}]',
+      AZURE_STORAGE_CONTAINER: "copilot-sessions",
+      PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+      PILOTSWARM_LIVE_TURN: "0",
+      PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+      AZURE_STORAGE_ACCOUNT_URL: "https://stub.blob.core.windows.net",
+      PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u@h:5432/d?sslmode=require",
+      PILOTSWARM_DB_AAD_USER: "stub",
+      DATABASE_URL: "postgresql://u:p@h:5432/d?sslmode=require",
+      SPC_KEYS_HASH: "stub",
+      FOUNDRY_ENDPOINT: "",
+    },
+    stagingDir,
+  });
+  const deployment = readFileSync(join(stagedRoot, "base", "deployment.yaml"), "utf8");
+  assert.match(deployment, /replicas:\s+2/);
+  assert.ok(!deployment.includes("__WORKER_REPLICAS__"));
+  const controller = readFileSync(
+    join(stagedRoot, "base", "workflow-generator-deployment.yaml"),
+    "utf8",
+  );
+  assert.match(controller, /name: worker-env/);
+  assert.match(controller, /name: PS_MODEL_PROVIDERS_PATH\s+value: \/app\/config\/model_providers\.json/);
+  assert.match(controller, /name: model-providers\s+mountPath: \/app\/config/);
+  assert.match(controller, /name: copilot-worker-model-providers/);
+  const workerEnv = readFileSync(
+    join(stagedRoot, "overlays", "default", ".env"),
+    "utf8",
+  );
+  assert.match(workerEnv, /WORKFLOW_GENERATOR_SOURCE_PROVIDERS_JSON=.*ado_wiql/);
+});
 
 test("stageManifests(portal): copies worker base model_providers.json into portal staging tree", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-"));
@@ -178,6 +236,37 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
     "utf8",
   );
   assert.equal(portalContent, workerCatalog, "portal staged catalog must byte-match worker base catalog");
+});
+
+test("stageManifests(portal): stages a deployment-owned portal plugin", (t) => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-portal-plugin-"));
+  t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+  const pluginPath = join(stagingDir, "plugin.json");
+  const plugin = {
+    name: "deployment-portal",
+    version: "1.0.0",
+    portal: {
+      footer: {
+        links: [{ label: "Deployment policy", url: "https://example.test/policy" }],
+      },
+    },
+  };
+  writeFileSync(pluginPath, JSON.stringify(plugin));
+
+  const stagedRoot = stageManifests({
+    service: "portal",
+    envName: "dev",
+    env: makePortalEnv({ PORTAL_PLUGIN_FILE: pluginPath }),
+    stagingDir,
+  });
+
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(stagedRoot, "base", "deployment-plugin.json"), "utf8")),
+    plugin,
+  );
+  const deployment = readFileSync(join(stagedRoot, "base", "deployment.yaml"), "utf8");
+  assert.match(deployment, /\/app\/packages\/app\/tui\/plugins,\/app\/deployment-plugin/);
+  assert.match(deployment, /name: deployment-plugin/);
 });
 
 // ─── FR-013: PORTAL_TLS_CERT_NAME placeholder substitution ───
@@ -233,8 +322,47 @@ for (const [edge, tls, overlay] of [
       env: makePortalEnv({ EDGE_MODE: edge, TLS_SOURCE: tls }) });
     const legacyText = readFileSync(join(legacy, "overlays", overlay, ".env"), "utf8");
     for (const key of Object.keys(policy)) assert.match(legacyText, new RegExp(`^${key}=__PS_UNSET__$`, "m"));
+    assert.match(legacyText, /^PORTAL_AUTH_DEV_ALLOW=__PS_UNSET__$/m);
+    assert.match(legacyText, /^PORTAL_AUTH_DEV_USERS=__PS_UNSET__$/m);
+
+    const dev = stageManifests({ service: "portal", envName: "testenv", stagingDir,
+      env: makePortalEnv({
+        EDGE_MODE: edge,
+        TLS_SOURCE: tls,
+        PORTAL_AUTH_PROVIDER: "dev",
+        PORTAL_AUTH_DEV_ALLOW: "true",
+        PORTAL_AUTH_DEV_USERS: "alice:admin",
+      }) });
+    const devText = readFileSync(join(dev, "overlays", overlay, ".env"), "utf8");
+    assert.match(devText, /^PORTAL_AUTH_DEV_ALLOW=true$/m);
+    assert.match(devText, /^PORTAL_AUTH_DEV_USERS=alice:admin$/m);
   });
 }
+
+test("Foundry-enabled worker and portal fail before publishing an unresolved endpoint", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-foundry-required-"));
+  const env = makePortalEnv({
+    FOUNDRY_ENABLED: "true",
+    FOUNDRY_AUTH_MODE: "entra",
+    FOUNDRY_ENDPOINT: "",
+    AZURE_STORAGE_CONTAINER: "copilot-sessions",
+    PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+    PILOTSWARM_LIVE_TURN: "0",
+    PILOTSWARM_WORKER_TAGS: "generic",
+    WORKER_REPLICAS: "1",
+    WORKFLOW_GENERATOR_SOURCE_PROVIDERS_JSON: "[]",
+  });
+  try {
+    for (const service of ["worker", "portal"]) {
+      assert.throws(
+        () => stageManifests({ service, envName: "test", env: { ...env }, stagingDir }),
+        new RegExp(`${service}/base/model_providers\\.json requires: FOUNDRY_ENDPOINT`),
+      );
+    }
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
+});
 
 test("per-stamp Foundry catalog becomes the worker and portal default", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-foundry-catalog-"));
@@ -344,6 +472,7 @@ for (const [service, edgeMode, tlsSource, overlay] of [
   ["portal", "afd", "letsencrypt", "afd-letsencrypt"],
   ["portal", "afd", "akv", "afd-akv"],
   ["portal", "private", "akv-selfsigned", "private-akv"],
+  ["portal", "port-forward", "akv-selfsigned", "port-forward-akv"],
 ]) {
   test(`password BYO stages ${service}/${overlay} without AAD stubs or credential ConfigMaps`, (t) => {
     const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-stage-"));
@@ -358,12 +487,19 @@ for (const [service, edgeMode, tlsSource, overlay] of [
     assert.match(overlayText, /^PILOTSWARM_BLOB_USE_MANAGED_IDENTITY=1$/m);
     assert.ok(!allFileText(root).includes("byo-password-not-for-configmaps"), "no password in ANY uploaded file");
     const component = JSON.parse(readFileSync(join(root, "components/database-secrets/kustomization.yaml"), "utf8"));
-    const patch = JSON.parse(component.patches[0].patch);
-    const pod = patch.spec.template.spec;
-    assert.equal(pod.containers[0].name, service);
-    assert.deepEqual(pod.containers[0].env.map((entry) => entry.name),
-      ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL"]);
-    assert.ok(pod.containers[0].env.every((entry) => entry.valueFrom.secretKeyRef && !("value" in entry)));
+    const patches = component.patches.map(({ patch }) => JSON.parse(patch));
+    assert.equal(patches.length, service === "worker" ? 2 : 1);
+    const expectedContainers = service === "worker"
+      ? ["worker", "workflow-generator"]
+      : ["portal"];
+    for (const [index, patch] of patches.entries()) {
+      const pod = patch.spec.template.spec;
+      assert.equal(pod.containers[0].name, expectedContainers[index]);
+      assert.deepEqual(pod.containers[0].env.map((entry) => entry.name),
+        ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL"]);
+      assert.ok(pod.containers[0].env.every((entry) => entry.valueFrom.secretKeyRef && !("value" in entry)));
+    }
+    const pod = patches[0].spec.template.spec;
     const spc = JSON.parse(readFileSync(join(root, "components/database-secrets/secret-provider-class.yaml"), "utf8"));
     assert.match(spc.spec.parameters.objects, new RegExp(`objectVersion: ${"a".repeat(32)}`));
     assert.equal(spc.spec.parameters.keyvaultName, env.KV_NAME);

@@ -17,12 +17,16 @@ import {
   resolveOverlayKey,
   getContract,
   validateRequiredEnv,
+  validatePortalAuthCombo,
   validateVpnGatewayCombo,
   applyStubKeys,
   EDGE_MODES,
   TLS_SOURCES,
   DEFAULT_EDGE_MODE,
   DEFAULT_TLS_SOURCE,
+  unsupportedEdgeTlsReason,
+  edgeModeTransitionReason,
+  parseDeployedEdgeModeLookup,
   databaseOverlayOmittedKeys,
 } from "../lib/overlay-contracts.mjs";
 
@@ -54,6 +58,10 @@ test("resolveOverlayKey collapses akv-selfsigned to akv", () => {
     resolveOverlayKey({ edgeMode: "private", tlsSource: "akv-selfsigned" }),
     "private-akv",
   );
+  assert.equal(
+    resolveOverlayKey({ edgeMode: "port-forward", tlsSource: "akv-selfsigned" }),
+    "port-forward-akv",
+  );
 });
 
 test("database overlay contract removes secrets and AAD-only requirements for password BYO", () => {
@@ -71,12 +79,12 @@ test("resolveOverlayKey honors JS defaults when inputs are blank", () => {
 });
 
 test("EDGE_MODES + TLS_SOURCES match the canonical contract universe", () => {
-  assert.deepEqual([...EDGE_MODES].sort(), ["afd", "private", "public"]);
+  assert.deepEqual([...EDGE_MODES].sort(), ["afd", "port-forward", "private", "public"]);
   assert.deepEqual([...TLS_SOURCES].sort(), ["akv", "akv-selfsigned", "letsencrypt"]);
 });
 
 test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", () => {
-  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
+  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt", "port-forward-akv"]) {
     assert.ok(
       OVERLAY_CONTRACTS[overlay],
       `OVERLAY_CONTRACTS missing entry for overlay '${overlay}'`,
@@ -87,7 +95,7 @@ test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", ()
 // Scanner: every literal key in every overlay's .env file must appear in
 // exactly one role bucket. Adding a new key to an overlay .env without
 // adding it to the contract fails this test.
-for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
+for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt", "port-forward-akv"]) {
   test(`overlay-contracts: '${overlay}' projects every declared portal policy key`, () => {
     const envKeys = new Set(readOverlayEnvKeys(overlay));
     assert.deepEqual(PORTAL_CONFIG_KEYS.map(({ env }) => env).filter(key => !envKeys.has(key)), []);
@@ -118,7 +126,7 @@ test("afd-akv requires SSL_CERT_DOMAIN_SUFFIX", () => {
 });
 
 test("PORTAL_HOSTNAME is tracked as a bicep-output on all overlays", () => {
-  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt"]) {
+  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "public-letsencrypt", "port-forward-akv"]) {
     assert.ok(
       OVERLAY_CONTRACTS[overlay].bicepOutputKeys.includes("PORTAL_HOSTNAME"),
       `${overlay} must list PORTAL_HOSTNAME in bicepOutputKeys`,
@@ -148,21 +156,35 @@ test("public ingress requires Entra auth and a valid app registration", () => {
 // === validateRequiredEnv ====================================================
 
 test("validateRequiredEnv passes on a fully-populated afd-akv env", () => {
-  const env = { SSL_CERT_DOMAIN_SUFFIX: "portal.example.com" };
+  const env = {
+    SSL_CERT_DOMAIN_SUFFIX: "portal.example.com",
+    PORTAL_AUTH_PROVIDER: "entra",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "tenant-id",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "client-id",
+    PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "false",
+  };
   const result = validateRequiredEnv({ edgeMode: "afd", tlsSource: "akv", env });
   assert.deepEqual(result.missing, []);
   assert.deepEqual(result.combo, []);
 });
 
 test("validateRequiredEnv reports SSL_CERT_DOMAIN_SUFFIX missing on afd-akv", () => {
-  const env = {};
+  const env = {
+    PORTAL_AUTH_PROVIDER: "entra",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "tenant-id",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "client-id",
+  };
   const { missing, combo } = validateRequiredEnv({ edgeMode: "afd", tlsSource: "akv", env });
   assert.ok(missing.includes("SSL_CERT_DOMAIN_SUFFIX"));
   assert.deepEqual(combo, []);
 });
 
 test("validateRequiredEnv reports ACME_EMAIL missing on afd-letsencrypt", () => {
-  const env = {};
+  const env = {
+    PORTAL_AUTH_PROVIDER: "entra",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "tenant-id",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "client-id",
+  };
   const { missing } = validateRequiredEnv({
     edgeMode: "afd",
     tlsSource: "letsencrypt",
@@ -172,7 +194,12 @@ test("validateRequiredEnv reports ACME_EMAIL missing on afd-letsencrypt", () => 
 });
 
 test("validateRequiredEnv catches malformed ACME_EMAIL", () => {
-  const env = { ACME_EMAIL: "not-an-email" };
+  const env = {
+    ACME_EMAIL: "not-an-email",
+    PORTAL_AUTH_PROVIDER: "entra",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "tenant-id",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "client-id",
+  };
   const { missing } = validateRequiredEnv({
     edgeMode: "afd",
     tlsSource: "letsencrypt",
@@ -181,16 +208,174 @@ test("validateRequiredEnv catches malformed ACME_EMAIL", () => {
   assert.ok(missing.includes("ACME_EMAIL"));
 });
 
-test("validateRequiredEnv requires HOST/PRIVATE_DNS_ZONE/AKS_VNET_ID for private-akv", () => {
+test("private-akv requires user DNS inputs and defers AKS_VNET_ID to bicep", () => {
   const env = {};
   const { missing } = validateRequiredEnv({
     edgeMode: "private",
     tlsSource: "akv",
     env,
   });
-  for (const k of ["HOST", "PRIVATE_DNS_ZONE", "AKS_VNET_ID"]) {
+  for (const k of ["HOST", "PRIVATE_DNS_ZONE"]) {
     assert.ok(missing.includes(k), `expected ${k} missing, got ${missing.join(",")}`);
   }
+  assert.ok(!missing.includes("AKS_VNET_ID"));
+  assert.ok(OVERLAY_CONTRACTS["private-akv"].bicepOutputKeys.includes("AKS_VNET_ID"));
+});
+
+test("port-forward-akv requires no DNS input and only supports akv-selfsigned", () => {
+  const { missing } = validateRequiredEnv({
+    edgeMode: "port-forward",
+    tlsSource: "akv-selfsigned",
+    env: {},
+  });
+  assert.deepEqual(missing, []);
+  assert.equal(unsupportedEdgeTlsReason("port-forward", "akv-selfsigned"), null);
+  assert.match(unsupportedEdgeTlsReason("port-forward", "akv"), /Port-forward mode/);
+  assert.match(unsupportedEdgeTlsReason("port-forward", "letsencrypt"), /Port-forward mode/);
+});
+
+test("edge mode transitions fail closed because ARM deployments are incremental", () => {
+  assert.equal(edgeModeTransitionReason(null, "port-forward"), null);
+  assert.equal(edgeModeTransitionReason("port-forward", "port-forward"), null);
+  assert.match(edgeModeTransitionReason("afd", "port-forward"), /In-place EDGE_MODE transitions/);
+  assert.match(edgeModeTransitionReason("private", "afd"), /decommission the existing stamp/);
+});
+
+test("deployment lookup uses the output and falls back to the legacy parameter", () => {
+  assert.equal(
+    parseDeployedEdgeModeLookup({
+      status: 0,
+      stdout: JSON.stringify({ output: "port-forward", parameter: "private" }),
+      deploymentName: "base-infra-dev-westus2",
+    }),
+    "port-forward",
+  );
+  assert.equal(
+    parseDeployedEdgeModeLookup({
+      status: 0,
+      stdout: JSON.stringify({ output: null, parameter: "private" }),
+      deploymentName: "base-infra-dev-westus2",
+    }),
+    "private",
+  );
+});
+
+test("deployment lookup permits only explicit not-found failures", () => {
+  assert.equal(
+    parseDeployedEdgeModeLookup({
+      status: 3,
+      stderr: "(DeploymentNotFound) Deployment could not be found.",
+      deploymentName: "base-infra-dev-westus2",
+    }),
+    null,
+  );
+  assert.throws(
+    () =>
+      parseDeployedEdgeModeLookup({
+        status: 1,
+        stderr: "(AuthorizationFailed) The client is not authorized.",
+        deploymentName: "base-infra-dev-westus2",
+      }),
+    /Failed to inspect existing deployment/,
+  );
+});
+
+test("deployment lookup rejects malformed or unknown metadata", () => {
+  assert.throws(
+    () =>
+      parseDeployedEdgeModeLookup({
+        status: 0,
+        stdout: "not json",
+        deploymentName: "base-infra-dev-westus2",
+      }),
+    /invalid deployment metadata/,
+  );
+  assert.throws(
+    () =>
+      parseDeployedEdgeModeLookup({
+        status: 0,
+        stdout: JSON.stringify({ output: null, parameter: "legacy" }),
+        deploymentName: "base-infra-dev-westus2",
+      }),
+    /does not contain a recognized EDGE_MODE/,
+  );
+});
+
+// === validatePortalAuthCombo ================================================
+
+test("validatePortalAuthCombo rejects unset auth on a public AFD portal", () => {
+  assert.deepEqual(
+    validatePortalAuthCombo({
+      edgeMode: "afd",
+      env: {
+        PORTAL_AUTH_PROVIDER: "__PS_UNSET__",
+        PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "__PS_UNSET__",
+      },
+    }),
+    ["public-portal-auth-provider-required"],
+  );
+});
+
+test("validatePortalAuthCombo requires complete Entra configuration", () => {
+  assert.deepEqual(
+    validatePortalAuthCombo({
+      edgeMode: "afd",
+      env: {
+        PORTAL_AUTH_PROVIDER: "entra",
+        PORTAL_AUTH_ENTRA_TENANT_ID: "tenant-id",
+      },
+    }),
+    ["public-portal-entra-requires-config"],
+  );
+});
+
+test("validatePortalAuthCombo rejects anonymous access with an authenticated provider", () => {
+  assert.deepEqual(
+    validatePortalAuthCombo({
+      edgeMode: "afd",
+      env: {
+        PORTAL_AUTH_PROVIDER: "entra",
+        PORTAL_AUTH_ENTRA_TENANT_ID: "tenant-id",
+        PORTAL_AUTH_ENTRA_CLIENT_ID: "client-id",
+        PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "true",
+      },
+    }),
+    ["public-portal-auth-allows-anonymous"],
+  );
+});
+
+test("validatePortalAuthCombo requires explicit acknowledgement for a public no-auth sandbox", () => {
+  assert.deepEqual(
+    validatePortalAuthCombo({
+      edgeMode: "afd",
+      env: { PORTAL_AUTH_PROVIDER: "none" },
+    }),
+    ["public-portal-no-auth-not-explicit"],
+  );
+  assert.deepEqual(
+    validatePortalAuthCombo({
+      edgeMode: "afd",
+      env: {
+        PORTAL_AUTH_PROVIDER: "none",
+        PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "true",
+      },
+    }),
+    [],
+  );
+});
+
+test("validatePortalAuthCombo leaves private portals unchanged", () => {
+  assert.deepEqual(validatePortalAuthCombo({ edgeMode: "private", env: {} }), []);
+});
+
+test("validateRequiredEnv can skip portal auth for infrastructure-only deployment", () => {
+  const { combo } = validateRequiredEnv({
+    edgeMode: "afd",
+    tlsSource: "letsencrypt",
+    env: { ACME_EMAIL: "operator@example.com" },
+    enforcePortalAuth: false,
+  });
+  assert.deepEqual(combo, []);
 });
 
 // === applyStubKeys ==========================================================
@@ -200,6 +385,7 @@ test("applyStubKeys stamps `unused` for blank stubKeys on private-akv", () => {
   applyStubKeys({ edgeMode: "private", tlsSource: "akv", env });
   for (const k of [
     "FRONT_DOOR_PROFILE_NAME",
+    "FRONT_DOOR_ID",
     "APPLICATION_GATEWAY_NAME",
     "SSL_CERT_DOMAIN_SUFFIX",
     "ACME_EMAIL",

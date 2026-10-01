@@ -10,7 +10,7 @@ test.afterAll(async () => { await new Promise(resolve => stub.server.close(resol
 for (const mobile of [false, true]) {
     test(`New opens its chat with a stale catalog and a previous deep link (${mobile ? "mobile" : "desktop MoA"})`, async ({ page }) => {
         const errors = [], subscriptions = [];
-        let creations = 0, releaseCreate;
+        let creations = 0, deletions = 0, releaseCreate;
         page.on("pageerror", error => errors.push(error.message));
         await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
         await page.routeWebSocket("**/api/v1/ws", ws => {
@@ -28,6 +28,10 @@ for (const mobile of [false, true]) {
                 if (!mobile) return new Promise(resolve => { releaseCreate = () => resolve(answer({ sessionId: newId })); });
                 return answer({ sessionId: newId });
             }
+            if (path.endsWith(`/sessions/${newId}`) && req.method() === "DELETE") {
+                deletions++;
+                return answer(null);
+            }
             if (path.endsWith(`/sessions/${newId}`)) return answer({ sessionId: newId, title: "Fresh session", status: "idle", events: [], messages: [] });
             // The catalog deliberately never includes newId.
             return route.fallback();
@@ -37,7 +41,7 @@ for (const mobile of [false, true]) {
         if (mobile) {
             await page.getByRole("button", { name: /^Diagnostics/ }).click();
         }
-        await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
+        await page.getByRole("button", { name: "New session", exact: true }).click();
         await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
         await page.keyboard.press("Enter");
         await expect.poll(() => creations).toBe(1);
@@ -54,6 +58,15 @@ for (const mobile of [false, true]) {
         // the rendered surface and accessibility tree when normal chat opens.
         await expect(page.locator(".ps-moa-workspace")).not.toBeVisible();
         await expect.poll(() => subscriptions.some(m => m.sessionId === newId && /^subscribe/.test(m.type))).toBe(true);
+        if (!mobile) {
+            await page.getByRole("button", {
+                name: "Terminate — mark completed, cancel, or delete this session",
+                exact: true,
+            }).click();
+            await page.locator(".ps-modal").getByRole("button", { name: "Delete Session", exact: true }).click();
+            await page.locator(".ps-modal").getByRole("button", { name: "Delete", exact: true }).click();
+            await expect.poll(() => deletions).toBe(1);
+        }
         expect(errors).toEqual([]);
     });
 }

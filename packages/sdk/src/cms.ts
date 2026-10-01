@@ -9,13 +9,30 @@ import { normalizeCapabilityState, type CapabilityState } from "./capability-cat
  * @module
  */
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
+import { assertExternalOperationValidationGatesSatisfied } from "./workflow-run-validation-gates.js";
 import { FeatureStore } from "./feature-store.js";
-import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
+import type { SessionOwnerInfo, SessionSummaryState, GitWorkspaceState } from "./types.js";
+import {
+    RemoteLifecycleStateReader,
+    type LifecycleStateReader,
+    type LifecycleStateSource,
+} from "./lifecycle-state-loader.js";
+import {
+    compileLifecycleStateMachine,
+    validateLifecycleStateMachineSnapshot,
+} from "./lifecycle-state-machine.js";
 
 // ─── Types ───────────────────────────────────────────────────────
+
+/** Immutable execution-routing fields persisted before a session can start. */
+export interface SessionRoutingContract {
+    repo?: string;
+    gitRef?: string;
+    ownerAffinityRequired?: boolean;
+}
 
 /** A persisted session event (non-ephemeral). */
 export interface SessionEvent {
@@ -495,6 +512,25 @@ export interface UserRoleInfo {
     seenAt: Date | null;
 }
 
+/**
+ * Durable git working-tree pointer for a session, used by the pod-side
+ * hydration path (see docs/architecture/aks-git-hydration.md §8.5).
+ *
+ * This is a persistence-layer alias of the platform's canonical
+ * {@link GitWorkspaceState} (declared in `types.ts`) so the hook contract and
+ * the CMS accessors share a single shape.
+ *
+ * - `baseSha` is pinned once at turn 0 and never moves unless the session
+ *   explicitly advances it; all reconciles target it (never live mirror HEAD).
+ * - `headSha` / `branch` describe the session's own committed work.
+ * - `epoch` is a monotonic counter bumped on every dehydrate so hydrate can
+ *   ignore a stale delta-blob set (the row is the commit point).
+ *
+ * An unpinned session reads back `{ baseSha: null, headSha: null,
+ * branch: null, epoch: 0 }`.
+ */
+export type SessionGitState = GitWorkspaceState;
+
 /** Narrow unknown role text to the stored vocabulary. Anything else is no privilege. */
 export function normalizeUserRole(value: unknown): UserRoleValue | null {
     const text = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -919,6 +955,31 @@ export interface WorkerRow {
     state: Record<string, unknown>;
 }
 
+export type WorkerTimelineEntryKind =
+    | "session_event"
+    | "state_transition"
+    | "workflow_run_materialization"
+    | "worker_capacity_wait"
+    | "external_operation";
+
+export interface WorkerTimelineEntry {
+    timelineId: string;
+    at: Date;
+    kind: WorkerTimelineEntryKind;
+    eventType: string;
+    workerNodeId: string;
+    workflowGeneratorId: string | null;
+    generatorName: string | null;
+    workflowRunId: string | null;
+    workflowRunKey: string | null;
+    stateRunId: string | null;
+    stateName: string | null;
+    stateRevision: number | null;
+    sessionId: string;
+    summary: string | null;
+    details: Record<string, unknown>;
+}
+
 export interface WorkerHeartbeatInput {
     workerNodeId: string;
     pool?: string | null;
@@ -947,6 +1008,539 @@ export interface FleetDirectiveRow {
     desired: Record<string, unknown>;
     updatedAt: Date;
     updatedBy: string | null;
+}
+
+/** Opaque source-provider identifier resolved by the WorkflowGenerator runtime registry. */
+export type WorkflowGeneratorSourceType = string;
+export type WorkflowComputeAffinity = "cluster" | "devbox";
+export type WorkflowGeneratorOperationalState = "enabled" | "paused" | "disabled";
+export type WorkflowRunLifecycleState = "pending_session" | "active" | "blocked" | "completed" | "cancelled";
+export type WorkflowRunProducerType = "direct_request" | "workflow_generator";
+export type WorkflowRunSessionStatus = "reserved" | "unacked" | "active" | "failed" | "replaced" | "completed";
+export type WorkflowRunStateRunStatus =
+    | "reserved"
+    | "unacked"
+    | "active"
+    | "waiting"
+    | "input_required"
+    | "completed"
+    | "failed";
+export type WorkflowRunWaitKind = "response" | "observed_condition" | "timer";
+export type WorkflowRunWaitStatus = "pending" | "satisfied" | "failed" | "timed_out" | "cancelled";
+export type WorkflowRunWaitDetectionMode = "direct_submission" | "poll" | "event" | "hybrid" | "timer";
+export type WorkflowRunWaitCheckDisposition = "pending" | "satisfied" | "failed" | "timed_out";
+export type WorkflowRunExternalOperationStatus = "pending" | "succeeded" | "failed";
+export type WorkflowRunExternalOperationSignalStatus = "blocked" | "pending" | "delivering" | "delivered";
+
+function workflowComputeAffinity(
+    value: WorkflowComputeAffinity | null | undefined,
+    label: string,
+): WorkflowComputeAffinity | null {
+    if (value == null) return null;
+    if (value !== "cluster" && value !== "devbox") {
+        throw new Error(`${label} must be 'cluster', 'devbox', or null`);
+    }
+    return value;
+}
+
+export interface WorkflowGeneratorRow {
+    workflowGeneratorId: string;
+    name: string;
+    owner: SessionOwnerInfo;
+    controllerComputeAffinity: WorkflowComputeAffinity | null;
+    cadenceSeconds: number;
+    sourceType: WorkflowGeneratorSourceType | null;
+    sourceConfig: Record<string, unknown>;
+    operationalState: WorkflowGeneratorOperationalState;
+    activeDefinitionId: string | null;
+    nextRunAt: Date;
+    watermark: unknown;
+    totalCycles: number;
+    successfulCycles: number;
+    failedCycles: number;
+    materializedWorkflowRuns: number;
+    lastCycleAt: Date | null;
+    lastError: string | null;
+    leaseOwner: string | null;
+    leaseExpiresAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface WorkflowDefinitionRow {
+    workflowDefinitionId: string;
+    workflowType: string;
+    name: string;
+    owner: SessionOwnerInfo;
+    version: number;
+    definitionHash: string;
+    sessionComputeAffinity: WorkflowComputeAffinity | null;
+    workflowDefinition: Record<string, unknown>;
+    affinities: Record<string, unknown>;
+    validationGates: unknown[];
+    guardrails: Record<string, unknown>;
+    createdBy: string | null;
+    createdAt: Date;
+}
+
+export interface WorkflowGeneratorCycleRow {
+    cycleId: string;
+    workflowGeneratorId: string;
+    workflowDefinitionId: string;
+    status: "running" | "succeeded" | "failed";
+    claimedBy: string;
+    watermarkBefore: unknown;
+    watermarkAfter: unknown;
+    discoveredCount: number;
+    createdCount: number;
+    error: string | null;
+    startedAt: Date;
+    completedAt: Date | null;
+}
+
+export interface WorkflowRunCleanupPlan {
+    aggregateType: "generator" | "workflowRun";
+    aggregateId: string;
+    workflowGeneratorId: string | null;
+    workflowRunId: string | null;
+    alreadyDeleted: boolean;
+    sessionIds: string[];
+}
+
+export interface WorkflowRunCleanupResult {
+    aggregateType: "generator" | "workflowRun";
+    aggregateId: string;
+    alreadyDeleted: boolean;
+    deletedSessionCount: number;
+}
+
+export interface WorkflowRunRow {
+    workflowRunId: string;
+    workflowDefinitionId: string;
+    workflowType: string;
+    owner: SessionOwnerInfo;
+    createdBy: string | null;
+    effectiveConfig: Record<string, unknown>;
+    workflowRunKey: string;
+    input: Record<string, unknown>;
+    lifecycleState: WorkflowRunLifecycleState;
+    currentState: string;
+    stateRevision: number;
+    currentStateEnteredAt: Date;
+    sessionAttempts: number;
+    sessionError: string | null;
+    inductionLeaseOwner: string | null;
+    inductionLeaseExpiresAt: Date | null;
+    origin?: "Direct" | "Workflow Generator";
+    producerType?: WorkflowRunProducerType;
+    workflowGeneratorId?: string | null;
+    requestedBy?: SessionOwnerInfo;
+    sessionComputeAffinity?: WorkflowComputeAffinity;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface WorkflowRunSessionRow {
+    associationId: string;
+    workflowRunId: string;
+    sessionId: string;
+    stateRunId: string | null;
+    ordinal: number;
+    isCurrent: boolean;
+    status: WorkflowRunSessionStatus;
+    error: string | null;
+    reservedAt: Date;
+    attachedAt: Date | null;
+    endedAt: Date | null;
+}
+
+export interface WorkflowRunInductionClaim {
+    workflowRun: WorkflowRunRow;
+    definition: WorkflowDefinitionRow;
+    association: WorkflowRunSessionRow;
+    executionAffinity: SessionOwnerInfo;
+}
+
+export interface WorkflowRunStateOutcome {
+    outcome: string;
+    toState: string;
+}
+
+export interface WorkflowRunStateRunRow {
+    stateRunId: string;
+    workflowRunId: string;
+    workflowDefinitionId: string;
+    stateName: string;
+    stateRevision: number;
+    stateOwner: "user" | "platform" | null;
+    status: WorkflowRunStateRunStatus;
+    sessionId: string | null;
+    predecessorJournalEntryId: string | null;
+    sourceId: string | null;
+    sourcePath: string | null;
+    sourceCommit: string | null;
+    markdownSha256: string | null;
+    allowedOutcomes: WorkflowRunStateOutcome[];
+    terminal: boolean | null;
+    attempt: number;
+    leaseOwner: string | null;
+    leaseExpiresAt: Date | null;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    error: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface WorkflowRunJournalEntryRow {
+    journalEntryId: string;
+    workflowRunId: string;
+    sequence: number;
+    entryKind: "state_transition";
+    workflowDefinitionId: string;
+    fromState: string;
+    toState: string;
+    fromRevision: number;
+    toRevision: number;
+    stateRunId: string;
+    sessionId: string;
+    outcome: string | null;
+    summary: string;
+    idempotencyKey: string;
+    transitionedAt: Date;
+}
+
+export interface WorkflowRunSourceSessionContext {
+    journalEntry: WorkflowRunJournalEntryRow;
+    events: SessionEvent[];
+    hasMore: boolean;
+}
+
+export interface WorkflowRunWaitResponder {
+    kind: "user" | "agent" | "system";
+    provider?: string;
+    subject?: string;
+    display?: string;
+    relation?: "owner" | "collaborator" | "admin";
+    sessionId?: string;
+    origin?: "portal" | "tui" | "mcp" | "api";
+}
+
+export interface WorkflowRunWaitRow {
+    waitId: string;
+    workflowRunId: string;
+    stateRunId: string;
+    workflowDefinitionId: string;
+    sessionId: string;
+    externalOperationId: string | null;
+    waitKey: string;
+    kind: WorkflowRunWaitKind;
+    status: WorkflowRunWaitStatus;
+    detectionMode: WorkflowRunWaitDetectionMode;
+    expectedStateRevision: number;
+    prompt: Record<string, unknown>;
+    responseSchema: Record<string, unknown>;
+    responderPolicy: Record<string, unknown>;
+    provider: string | null;
+    target: Record<string, unknown> | null;
+    predicate: Record<string, unknown> | null;
+    providerCursor: unknown;
+    latestObservation: unknown;
+    conditionOverrides: string[];
+    signalKey: string | null;
+    checkAttempts: number;
+    consecutiveCheckFailures: number;
+    lastCheckedAt: Date | null;
+    checkLeaseOwner: string | null;
+    checkLeaseExpiresAt: Date | null;
+    lastCheckError: string | null;
+    waitStartedAt: Date | null;
+    waitCompletedAt: Date | null;
+    responseId: string | null;
+    response: Record<string, unknown> | null;
+    responseDeliveryStatus: "none" | "pending" | "enqueued";
+    responseEnqueuedAt: Date | null;
+    satisfactionEvidence: Record<string, unknown> | null;
+    satisfiedBy: WorkflowRunWaitResponder | null;
+    deadlineAt: Date | null;
+    nextCheckAt: Date | null;
+    satisfiedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface WorkflowRunExternalOperationRow {
+    operationId: string;
+    workflowRunId: string;
+    stateRunId: string;
+    workflowDefinitionId: string;
+    createdSessionId: string;
+    sessionId: string;
+    provider: string;
+    kind: string;
+    operationKey: string;
+    idempotencyKey: string;
+    correlationId: string;
+    signalKey: string;
+    request: Record<string, unknown>;
+    status: WorkflowRunExternalOperationStatus;
+    result: unknown;
+    evidence: unknown;
+    error: string | null;
+    nextPollAt: Date;
+    pollLeaseOwner: string | null;
+    pollLeaseExpiresAt: Date | null;
+    completedAt: Date | null;
+    waitStartedAt: Date | null;
+    waitCompletedAt: Date | null;
+    signalStatus: WorkflowRunExternalOperationSignalStatus;
+    signalAttempts: number;
+    nextSignalAt: Date | null;
+    signalLeaseOwner: string | null;
+    signalLeaseExpiresAt: Date | null;
+    signalDeliveredAt: Date | null;
+    lastSignalError: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface StartWorkflowRunExternalOperationInput {
+    sessionId: string;
+    provider: string;
+    kind: string;
+    operationKey?: string;
+    request?: Record<string, unknown>;
+    nextPollAt?: Date;
+    deadlineAt?: Date | null;
+    detectionMode?: Extract<WorkflowRunWaitDetectionMode, "poll" | "event" | "hybrid">;
+}
+
+export interface WorkflowRunWaitObserverSelector {
+    provider: string;
+    kind?: string;
+}
+
+export interface StartWorkflowRunResponseWaitInput {
+    sessionId: string;
+    waitKey: string;
+    question: string;
+    choices?: string[];
+    allowFreeform?: boolean;
+    responderPolicy?: Record<string, unknown>;
+    deadlineAt?: Date | null;
+}
+
+export interface AcceptWorkflowRunResponseInput {
+    sessionId: string;
+    answer: string;
+    respondedBy?: WorkflowRunWaitResponder | null;
+}
+
+export interface StartWorkflowRunTimerWaitInput {
+    sessionId: string;
+    waitKey: string;
+    reason: string;
+    dueAt: Date;
+}
+
+export interface CompleteWorkflowRunWaitCheckInput {
+    waitId: string;
+    workerId: string;
+    disposition: WorkflowRunWaitCheckDisposition;
+    observation?: unknown;
+    providerCursor?: unknown;
+    evidence?: unknown;
+    result?: unknown;
+    error?: string | null;
+    nextCheckAt?: Date | null;
+}
+
+export interface CompleteWorkflowRunExternalOperationInput {
+    operationId: string;
+    workerId: string;
+    status: Exclude<WorkflowRunExternalOperationStatus, "pending">;
+    result?: unknown;
+    evidence?: unknown;
+    error?: string | null;
+}
+
+export interface PrepareWorkflowRunStateRunInput {
+    sessionId: string;
+    expectedState: string;
+    expectedRevision: number;
+    stateOwner: "user" | "platform";
+    sourceId: string;
+    sourcePath: string;
+    sourceCommit: string;
+    markdownSha256: string;
+    allowedOutcomes: WorkflowRunStateOutcome[];
+    terminal: boolean;
+}
+
+const WORKFLOW_RUN_STATE_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+const WORKFLOW_GENERATOR_SOURCE_PROVIDER_ID_RE = /^[a-z][a-z0-9._-]{0,127}$/;
+
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value) ?? "null";
+}
+
+function workflowRunWaitEvidence(value: unknown): Record<string, unknown> | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "object" && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    return { value };
+}
+
+function workflowDefinitionConfig(definition: Record<string, unknown>): Record<string, unknown> {
+    const nested = definition.lifecycle;
+    return nested && typeof nested === "object" && !Array.isArray(nested)
+        && Object.keys(nested).length > 0
+        ? nested as Record<string, unknown>
+        : definition;
+}
+
+function validateWorkflowDefinition(definition: Record<string, unknown>): void {
+    const lifecycle = workflowDefinitionConfig(definition);
+    if (lifecycle.initialState === undefined) return;
+    if (typeof lifecycle.initialState !== "string" || !WORKFLOW_RUN_STATE_NAME_RE.test(lifecycle.initialState)) {
+        throw new Error(
+            "WorkflowGenerator lifecycle initialState must start with a letter and contain only letters, digits, hyphens, or underscores",
+        );
+    }
+}
+
+function validateWorkflowRunValidationGates(gates: unknown[]): void {
+    for (const value of gates) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        const gate = value as Record<string, unknown>;
+        if (gate.type !== "external_operation") continue;
+        if (typeof gate.beforeState !== "string" || !WORKFLOW_RUN_STATE_NAME_RE.test(gate.beforeState)) {
+            throw new Error("External operation validation gate beforeState is invalid");
+        }
+        if (typeof gate.kind !== "string" || !/^[a-z][a-z0-9_.-]*$/.test(gate.kind)) {
+            throw new Error("External operation validation gate kind must be a lowercase identifier");
+        }
+        if (gate.provider !== undefined
+            && (typeof gate.provider !== "string"
+                || !/^[a-z][a-z0-9_.-]*$/.test(gate.provider))) {
+            throw new Error("External operation validation gate provider must be a lowercase identifier");
+        }
+        if (gate.requireEvidence !== undefined && typeof gate.requireEvidence !== "boolean") {
+            throw new Error("External operation validation gate requireEvidence must be boolean");
+        }
+    }
+}
+
+export interface CompleteWorkflowRunStateInput {
+    sessionId: string;
+    outcome?: string | null;
+    summary: string;
+    idempotencyKey?: string;
+}
+
+export interface WorkflowRunDiscovery {
+    key: string;
+    payload: Record<string, unknown>;
+}
+
+export interface CreateWorkflowRunInput {
+    workflowRunId?: string;
+    workflowDefinitionId: string;
+    owner: SessionOwnerInfo;
+    input: Record<string, unknown>;
+    workflowRunKey: string;
+    sessionId?: string;
+    createdBy?: string | null;
+}
+
+export interface CreateWorkflowRunResult {
+    workflowRun: WorkflowRunRow;
+    association: WorkflowRunSessionRow;
+    created: boolean;
+}
+
+export interface ListWorkflowRunsOptions {
+    workflowType?: string;
+    workflowRunKey?: string;
+    limit?: number;
+}
+
+export interface WorkflowCatalogPageOptions {
+    limit?: number;
+    cursorUpdatedAt?: Date | null;
+    cursorId?: string | null;
+    ownerQuery?: string;
+    status?: string;
+    repository?: string;
+    placement?: string;
+    updatedAfter?: Date | null;
+}
+
+export interface ListWorkflowGeneratorPageOptions extends WorkflowCatalogPageOptions {}
+
+export interface ListWorkflowRunPageOptions extends WorkflowCatalogPageOptions {
+    workflowQuery?: string;
+    workflowRunKey?: string;
+    origin?: "direct" | "workflow_generator";
+}
+
+interface ResolvedCreateWorkflowRunInput {
+    workflowRunId?: string;
+    workflowDefinitionId: string;
+    workflowRunKey: string;
+    input: Record<string, unknown>;
+    sessionId?: string;
+    createdBy: string | null;
+    executionAffinity: SessionOwnerInfo;
+    producer: {
+        type: WorkflowRunProducerType;
+        id: string;
+        observationId: string | null;
+    };
+}
+
+export interface ReconciledWorkflowRun extends WorkflowRunRow {
+    created: boolean;
+    needsSession: boolean;
+}
+
+export interface CreateWorkflowGeneratorInput {
+    workflowGeneratorId?: string;
+    name: string;
+    owner: SessionOwnerInfo;
+    controllerComputeAffinity?: WorkflowComputeAffinity | null;
+    cadenceSeconds: number;
+    operationalState?: WorkflowGeneratorOperationalState;
+    nextRunAt?: Date;
+    workflowDefinitionId: string;
+    sourceType: WorkflowGeneratorSourceType;
+    sourceConfig: Record<string, unknown>;
+}
+
+export interface CreateWorkflowDefinitionInput {
+    workflowDefinitionId?: string;
+    workflowType: string;
+    name: string;
+    owner: SessionOwnerInfo;
+    sessionComputeAffinity?: WorkflowComputeAffinity | null;
+    workflowDefinition?: Record<string, unknown>;
+    affinities?: Record<string, unknown>;
+    validationGates?: unknown[];
+    guardrails?: Record<string, unknown>;
+    createdBy?: string | null;
+}
+
+export interface CreateWorkflowDefinitionResult {
+    workflowDefinition: WorkflowDefinitionRow;
+    created: boolean;
 }
 
 export interface SessionCatalog {
@@ -1037,6 +1631,10 @@ export interface SessionCatalog {
      */
     workerHeartbeat(input: WorkerHeartbeatInput): Promise<EffectiveDirective[]>;
     listWorkers(): Promise<WorkerRow[]>;
+    getWorkerTimeline(
+        workerNodeId: string,
+        options?: { since?: Date; limit?: number },
+    ): Promise<WorkerTimelineEntry[]>;
     /**
      * Upsert-and-bump a directive row. pool/workerNodeId default '*';
      * worker-scoped rows must use pool '*' (canonical form); desired null
@@ -1050,6 +1648,172 @@ export interface SessionCatalog {
         updatedBy?: string | null;
     }): Promise<number>;
     getFleetDirectives(): Promise<FleetDirectiveRow[]>;
+
+    // ── Workflow Generators (migration 0047) ─────────────────────
+
+    registerWorkflowGenerator(input: {
+        workflowGeneratorId?: string;
+        name: string;
+        owner: SessionOwnerInfo;
+        controllerComputeAffinity?: WorkflowComputeAffinity | null;
+        cadenceSeconds: number;
+        operationalState?: WorkflowGeneratorOperationalState;
+        nextRunAt?: Date;
+    }): Promise<WorkflowGeneratorRow>;
+    createWorkflowGenerator(input: CreateWorkflowGeneratorInput): Promise<{
+        generator: WorkflowGeneratorRow;
+        definition: WorkflowDefinitionRow;
+    }>;
+    listWorkflowGenerators(owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null): Promise<WorkflowGeneratorRow[]>;
+    listWorkflowGeneratorsPage?(
+        options?: ListWorkflowGeneratorPageOptions,
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowGeneratorRow[]>;
+    getWorkflowGenerator(workflowGeneratorId: string, includeDeleted?: boolean): Promise<WorkflowGeneratorRow | null>;
+    createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<CreateWorkflowDefinitionResult>;
+    getWorkflowDefinition(workflowDefinitionId: string): Promise<WorkflowDefinitionRow>;
+    listWorkflowDefinitions(workflowType?: string): Promise<WorkflowDefinitionRow[]>;
+    setWorkflowGeneratorDefinition(
+        workflowGeneratorId: string,
+        workflowDefinitionId: string,
+    ): Promise<{ generator: WorkflowGeneratorRow; definition: WorkflowDefinitionRow }>;
+    listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]>;
+    listWorkflowGeneratorCycles(workflowGeneratorId: string, limit?: number): Promise<WorkflowGeneratorCycleRow[]>;
+    listWorkflowRuns(
+        options?: ListWorkflowRunsOptions,
+        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowRunRow[]>;
+    listWorkflowRunsPage?(
+        options?: ListWorkflowRunPageOptions,
+        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowRunRow[]>;
+    getWorkflowRun(workflowRunId: string, includeDeleted?: boolean): Promise<WorkflowRunRow | null>;
+    createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult>;
+    beginWorkflowGeneratorCleanup(input: {
+        workflowGeneratorId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<WorkflowRunCleanupPlan>;
+    beginWorkflowRunCleanup(input: {
+        workflowRunId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<WorkflowRunCleanupPlan>;
+    recordWorkflowRunCleanupSessions(
+        aggregateType: "generator" | "workflowRun",
+        aggregateId: string,
+        sessionIds: string[],
+    ): Promise<string[]>;
+    completeWorkflowRunCleanup(
+        aggregateType: "generator" | "workflowRun",
+        aggregateId: string,
+        outcome: { status: "completed" | "failed"; error?: string | null; deletedSessionCount?: number },
+    ): Promise<void>;
+    beginSessionTreeDeletion(sessionId: string): Promise<void>;
+    /** True only while the session remains visible and outside a deletion fence. */
+    isSessionActive(sessionId: string): Promise<boolean>;
+    getDescendantSessionIdsIncludingDeleted(sessionId: string): Promise<string[]>;
+    claimDueWorkflowGenerators(
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+        controllerCompute?: WorkflowComputeAffinity,
+    ): Promise<WorkflowGeneratorRow[]>;
+    beginWorkflowGeneratorCycle(workflowGeneratorId: string, workerId: string): Promise<{
+        cycle: WorkflowGeneratorCycleRow;
+        definition: WorkflowDefinitionRow;
+    }>;
+    completeWorkflowGeneratorCycle(input: {
+        cycleId: string;
+        workerId: string;
+        status: "succeeded" | "failed";
+        watermark?: unknown;
+        discoveredCount?: number;
+        createdCount?: number;
+        error?: string | null;
+    }): Promise<void>;
+    reconcileWorkflowGeneratorDiscoveries(cycleId: string, discoveries: WorkflowRunDiscovery[]): Promise<ReconciledWorkflowRun[]>;
+    listWorkflowRunsNeedingSession(workflowGeneratorId: string, limit?: number): Promise<WorkflowRunRow[]>;
+    claimWorkflowRunsForInduction(workerId: string, limit?: number, leaseSeconds?: number): Promise<WorkflowRunInductionClaim[]>;
+    reserveWorkflowRunSession(workflowRunId: string, cycleId: string, workerId: string, sessionId?: string): Promise<WorkflowRunSessionRow>;
+    replaceWorkflowRunSession(workflowRunId: string, sessionId?: string): Promise<WorkflowRunSessionRow>;
+    attachWorkflowRunSession(workflowRunId: string, sessionId: string, cycleId: string | null, workerId: string): Promise<void>;
+    prepareWorkflowRunStateRun(input: PrepareWorkflowRunStateRunInput): Promise<WorkflowRunStateRunRow>;
+    acknowledgeWorkflowRunSession(sessionId: string, workerId?: string): Promise<void>;
+    setWorkflowRunSessionExecutionStatus(
+        sessionId: string,
+        status: "active" | "waiting" | "input_required",
+    ): Promise<void>;
+    failWorkflowRunSession(workflowRunId: string, sessionId: string, cycleId: string | null, workerId: string, error: string): Promise<void>;
+    listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]>;
+    listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]>;
+    listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]>;
+    listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]>;
+    startWorkflowRunResponseWait(input: StartWorkflowRunResponseWaitInput): Promise<WorkflowRunWaitRow | null>;
+    acceptWorkflowRunResponse(input: AcceptWorkflowRunResponseInput): Promise<WorkflowRunWaitRow | null>;
+    markWorkflowRunResponseEnqueued(waitId: string, responseId: string): Promise<void>;
+    reopenWorkflowRunResponseWait(waitId: string, responseId: string): Promise<void>;
+    startWorkflowRunTimerWait(input: StartWorkflowRunTimerWaitInput): Promise<WorkflowRunWaitRow | null>;
+    completeWorkflowRunTimerWait(sessionId: string): Promise<WorkflowRunWaitRow | null>;
+    cancelWorkflowRunTimerWait(sessionId: string): Promise<WorkflowRunWaitRow | null>;
+    claimDueWorkflowRunWaits(
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+        observers?: readonly (string | WorkflowRunWaitObserverSelector)[],
+    ): Promise<WorkflowRunWaitRow[]>;
+    completeWorkflowRunWaitCheck(input: CompleteWorkflowRunWaitCheckInput): Promise<WorkflowRunWaitRow>;
+    setWorkflowRunWaitConditionOverride(
+        workflowRunId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<WorkflowRunWaitRow>;
+    accelerateWorkflowRunWaitCheck(waitId: string, expectedStateRevision: number, checkAt?: Date): Promise<boolean>;
+    accelerateWorkflowRunWaitChecksByTarget(
+        provider: string,
+        kind: string,
+        resourceKey: string,
+        checkAt?: Date,
+    ): Promise<number>;
+    recordWorkflowRunWaitBoundary(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean>;
+    readWorkflowRunSourceSession(
+        currentSessionId: string,
+        sourceSessionId: string,
+        beforeSeq?: number,
+        limit?: number,
+    ): Promise<WorkflowRunSourceSessionContext | null>;
+    completeWorkflowRunState(input: CompleteWorkflowRunStateInput): Promise<WorkflowRunJournalEntryRow>;
+    startWorkflowRunExternalOperation(input: StartWorkflowRunExternalOperationInput): Promise<WorkflowRunExternalOperationRow>;
+    getWorkflowRunExternalOperation(sessionId: string, operationId: string): Promise<WorkflowRunExternalOperationRow | null>;
+    recordWorkflowRunExternalOperationWait(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean>;
+    claimDueWorkflowRunExternalOperations(
+        provider: string,
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+    ): Promise<WorkflowRunExternalOperationRow[]>;
+    completeWorkflowRunExternalOperation(input: CompleteWorkflowRunExternalOperationInput): Promise<WorkflowRunExternalOperationRow>;
+    claimWorkflowRunExternalOperationSignals(
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+    ): Promise<WorkflowRunExternalOperationRow[]>;
+    markWorkflowRunExternalOperationSignalDelivered(operationId: string, workerId: string): Promise<void>;
+    markWorkflowRunExternalOperationSignalFailed(
+        operationId: string,
+        workerId: string,
+        error: string,
+        retryAt: Date,
+    ): Promise<void>;
 
     // ── Agent packages (migration 0038) ──────────────────────
 
@@ -1141,6 +1905,8 @@ export interface SessionCatalog {
         serviceOf?: string | null;
         /** Durable creation config (migration 0072); see getSessionCreationConfig. */
         creationConfig?: Record<string, unknown> | null;
+        /** Immutable execution-routing contract for config-less pending-session recovery. */
+        routing?: SessionRoutingContract | null;
     }): Promise<void>;
 
     /**
@@ -1149,6 +1915,9 @@ export interface SessionCatalog {
      * in-memory map plus the worker-side bound-agent backfill.
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
+
+    /** Read the immutable execution-routing contract stored with the session. */
+    getSessionRouting?(sessionId: string): Promise<SessionRoutingContract | null>;
 
     /** Stamp a session as a service session post-create (migration 0037). */
     markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
@@ -1180,6 +1949,9 @@ export interface SessionCatalog {
         viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
         /** When set, root rows carry this principal's private group placement as groupId. */
         placement?: { provider: string; subject: string } | null;
+        ownerQuery?: string;
+        status?: string;
+        updatedAfter?: Date | null;
     }): Promise<SessionRow[]>;
 
     /** List sessions visible to a principal (non-paged viewer-scoped listing). */
@@ -1382,6 +2154,22 @@ export interface SessionCatalog {
     setUserGitHubCopilotKey(principal: UserPrincipal, key: string | null): Promise<UserProfile>;
 
     /**
+     * Read the durable git working-tree pointer for a session (see
+     * docs/architecture/aks-git-hydration.md §8.5). Returns
+     * `{ baseSha: null, headSha: null, branch: null, epoch: 0 }` for an
+     * unknown or never-pinned session.
+     */
+    getSessionGitState(sessionId: string): Promise<SessionGitState>;
+
+    /**
+     * Persist the durable git working-tree pointer for a session. Called by
+     * the worker's hydration hooks: once at turn 0 to pin `baseSha`, and on
+     * every dehydrate to record `headSha`/`branch` and bump `epoch`. The base
+     * only moves via an explicit-advance transaction.
+     */
+    setSessionGitState(sessionId: string, state: SessionGitState): Promise<SessionGitState>;
+
+    /**
      * Read the last-observed authorization role for a principal.
      *
      * Returns `{ role: null }` for an unknown principal, which callers must
@@ -1509,6 +2297,8 @@ function sqlForSchema(schema: string) {
             getUserGitHubCopilotKey:    `${s}.cms_get_user_github_copilot_key`,
             setUserProfileSettings:     `${s}.cms_set_user_profile_settings`,
             setUserGitHubCopilotKey:    `${s}.cms_set_user_github_copilot_key`,
+            getSessionGitState:         `${s}.cms_get_session_git_state`,
+            setSessionGitState:         `${s}.cms_set_session_git_state`,
             getUserRole:                `${s}.cms_get_user_role`,
             setUserRole:                `${s}.cms_set_user_role`,
             upsertSessionMetricSummary: `${s}.cms_upsert_session_metric_summary`,
@@ -1563,12 +2353,14 @@ export class PgSessionCatalog implements SessionCatalog {
     private initialized = false;
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
+    private lifecycleStateReader?: LifecycleStateReader;
     readonly features: FeatureStore;
 
-    private constructor(pool: any, schema: string) {
+    private constructor(pool: any, schema: string, lifecycleStateReader?: LifecycleStateReader) {
         this.pool = pool;
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
+        this.lifecycleStateReader = lifecycleStateReader;
         this.features = new FeatureStore(pool, schema);
     }
 
@@ -1588,7 +2380,11 @@ export class PgSessionCatalog implements SessionCatalog {
     static async create(
         connectionString: string,
         schema?: string,
-        opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+        opts: {
+            useManagedIdentity?: boolean;
+            aadUser?: string;
+            lifecycleStateReader?: LifecycleStateReader;
+        } = {},
     ): Promise<PgSessionCatalog> {
         const { default: pg } = await import("pg");
         const { buildPgPoolConfig } = await import("./pg-pool-factory.js");
@@ -1618,7 +2414,7 @@ export class PgSessionCatalog implements SessionCatalog {
             console.error('[cms] pool idle client error (non-fatal):', err.message);
         });
 
-        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA, opts.lifecycleStateReader);
     }
 
 
@@ -1626,6 +2422,3685 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this.initialized) return;
         await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
+    }
+
+    // ── Workflow Generators ───────────────────────────────────────
+
+    async registerWorkflowGenerator(input: {
+        workflowGeneratorId?: string;
+        name: string;
+        owner: SessionOwnerInfo;
+        controllerComputeAffinity?: WorkflowComputeAffinity | null;
+        cadenceSeconds: number;
+        operationalState?: WorkflowGeneratorOperationalState;
+        nextRunAt?: Date;
+    }): Promise<WorkflowGeneratorRow> {
+        const workflowGeneratorId = input.workflowGeneratorId ?? randomUUID();
+        const name = input.name.trim();
+        if (!name) throw new Error("WorkflowGenerator name is required");
+        if (!input.owner.provider?.trim() || !input.owner.subject?.trim()) {
+            throw new Error("WorkflowGenerator owner provider and subject are required");
+        }
+        if (!Number.isInteger(input.cadenceSeconds) || input.cadenceSeconds <= 0) {
+            throw new Error("WorkflowGenerator cadenceSeconds must be a positive integer");
+        }
+        const controllerComputeAffinity = workflowComputeAffinity(
+            input.controllerComputeAffinity,
+            "controllerComputeAffinity",
+        );
+        const { rows } = await this.pool.query(
+            `INSERT INTO "${this.sql.schema}".workflow_generators (
+                 workflow_generator_id, name, owner_provider, owner_subject, owner_email,
+                 owner_display_name, controller_compute_affinity, cadence_seconds,
+                 operational_state, next_run_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             ON CONFLICT (workflow_generator_id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 owner_provider = EXCLUDED.owner_provider,
+                 owner_subject = EXCLUDED.owner_subject,
+                 owner_email = EXCLUDED.owner_email,
+                 owner_display_name = EXCLUDED.owner_display_name,
+                 controller_compute_affinity = EXCLUDED.controller_compute_affinity,
+                 cadence_seconds = EXCLUDED.cadence_seconds,
+                 operational_state = EXCLUDED.operational_state,
+                 next_run_at = EXCLUDED.next_run_at,
+                 updated_at = now()
+             RETURNING *`,
+            [
+                workflowGeneratorId,
+                name,
+                input.owner.provider.trim(),
+                input.owner.subject.trim(),
+                input.owner.email ?? null,
+                input.owner.displayName ?? null,
+                controllerComputeAffinity,
+                input.cadenceSeconds,
+                input.operationalState ?? "enabled",
+                input.nextRunAt ?? new Date(),
+            ],
+        );
+        return rowToWorkflowGenerator(rows[0]);
+    }
+
+    async createWorkflowGenerator(input: CreateWorkflowGeneratorInput): Promise<{
+        generator: WorkflowGeneratorRow;
+        definition: WorkflowDefinitionRow;
+    }> {
+        const workflowGeneratorId = input.workflowGeneratorId ?? randomUUID();
+        const name = input.name.trim();
+        if (!name) throw new Error("WorkflowGenerator name is required");
+        if (!input.owner.provider?.trim() || !input.owner.subject?.trim()) {
+            throw new Error("WorkflowGenerator owner provider and subject are required");
+        }
+        if (!Number.isInteger(input.cadenceSeconds) || input.cadenceSeconds <= 0) {
+            throw new Error("WorkflowGenerator cadenceSeconds must be a positive integer");
+        }
+        if (!WORKFLOW_GENERATOR_SOURCE_PROVIDER_ID_RE.test(input.sourceType)) {
+            throw new Error("WorkflowGenerator sourceType is invalid");
+        }
+        const controllerComputeAffinity = workflowComputeAffinity(
+            input.controllerComputeAffinity,
+            "controllerComputeAffinity",
+        );
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const definitionResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                 WHERE workflow_definition_id = $1`,
+                [input.workflowDefinitionId],
+            );
+            const definition = definitionResult.rows[0];
+            if (!definition) throw new Error(`WorkflowDefinition not found: ${input.workflowDefinitionId}`);
+            const generatorResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_generators (
+                     workflow_generator_id, name, owner_provider, owner_subject, owner_email,
+                     owner_display_name, controller_compute_affinity, cadence_seconds,
+                     source_type, source_config,
+                     operational_state, active_workflow_definition_id, next_run_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 RETURNING *`,
+                [
+                    workflowGeneratorId,
+                    name,
+                    input.owner.provider.trim(),
+                    input.owner.subject.trim(),
+                    input.owner.email ?? null,
+                    input.owner.displayName ?? null,
+                    controllerComputeAffinity,
+                    input.cadenceSeconds,
+                    input.sourceType,
+                    JSON.stringify(input.sourceConfig ?? {}),
+                    input.operationalState ?? "enabled",
+                    input.workflowDefinitionId,
+                    input.nextRunAt ?? new Date(),
+                ],
+            );
+            await client.query("COMMIT");
+            return {
+                generator: rowToWorkflowGenerator(generatorResult.rows[0]),
+                definition: rowToWorkflowDefinition(definition),
+            };
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async listWorkflowGenerators(
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowGeneratorRow[]> {
+        const { rows } = owner
+            ? await this.pool.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_generators
+                 WHERE owner_provider = $1 AND owner_subject = $2
+                 ORDER BY created_at, workflow_generator_id`,
+                [owner.provider, owner.subject],
+            )
+            : await this.pool.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_generators ORDER BY created_at, workflow_generator_id`,
+            );
+        return rows.map(rowToWorkflowGenerator);
+    }
+
+    async listWorkflowGeneratorsPage(
+        options: ListWorkflowGeneratorPageOptions = {},
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowGeneratorRow[]> {
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(options.limit ?? 51), 201));
+        const ownerQuery = options.ownerQuery?.trim() || null;
+        const status = options.status?.trim() || null;
+        const repository = options.repository?.trim() || null;
+        const placement = options.placement?.trim() || null;
+        const { rows } = await this.pool.query(
+            `SELECT generator.*
+             FROM "${this.sql.schema}".workflow_generators generator
+             LEFT JOIN "${this.sql.schema}".workflow_definitions definition
+               ON definition.workflow_definition_id = generator.active_workflow_definition_id
+             WHERE generator.deleted_at IS NULL
+               AND (
+                   $1::text IS NULL
+                   OR (
+                       generator.owner_provider = BTRIM($1)
+                       AND generator.owner_subject = BTRIM($2)
+                   )
+               )
+               AND (
+                   $3::text IS NULL
+                   OR generator.owner_display_name ILIKE '%' || $3 || '%'
+                   OR generator.owner_email ILIKE '%' || $3 || '%'
+                   OR generator.owner_subject ILIKE '%' || $3 || '%'
+               )
+               AND ($4::text IS NULL OR generator.operational_state = $4)
+               AND ($5::text IS NULL OR definition.affinities ->> 'repo' ILIKE '%' || $5 || '%')
+               AND ($6::text IS NULL OR COALESCE(generator.controller_compute_affinity, '') = $6)
+               AND ($7::timestamptz IS NULL OR generator.updated_at >= $7)
+               AND (
+                   $8::timestamptz IS NULL
+                   OR date_trunc('milliseconds', generator.updated_at) < date_trunc('milliseconds', $8)
+                   OR (
+                       date_trunc('milliseconds', generator.updated_at) = date_trunc('milliseconds', $8)
+                       AND generator.workflow_generator_id < $9
+                   )
+               )
+             ORDER BY date_trunc('milliseconds', generator.updated_at) DESC,
+                      generator.workflow_generator_id DESC
+             LIMIT $10`,
+            [
+                owner?.provider ?? null,
+                owner?.subject ?? null,
+                ownerQuery,
+                status,
+                repository,
+                placement,
+                options.updatedAfter ?? null,
+                options.cursorUpdatedAt ?? null,
+                options.cursorId ?? null,
+                boundedLimit,
+            ],
+        );
+        return rows.map(rowToWorkflowGenerator);
+    }
+
+    async getWorkflowGenerator(workflowGeneratorId: string, includeDeleted = false): Promise<WorkflowGeneratorRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_generators
+             WHERE workflow_generator_id = $1 AND ($2 OR deleted_at IS NULL)`,
+            [workflowGeneratorId, includeDeleted],
+        );
+        return rows[0] ? rowToWorkflowGenerator(rows[0]) : null;
+    }
+
+    async createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<CreateWorkflowDefinitionResult> {
+        const workflowType = input.workflowType.trim();
+        const name = input.name.trim();
+        if (!workflowType) throw new Error("WorkflowDefinition workflowType is required");
+        if (!name) throw new Error("WorkflowDefinition name is required");
+        if (!input.owner.provider?.trim() || !input.owner.subject?.trim()) {
+            throw new Error("WorkflowDefinition owner provider and subject are required");
+        }
+        const inputWorkflowDefinition = input.workflowDefinition ?? {};
+        validateWorkflowDefinition(inputWorkflowDefinition);
+        validateWorkflowRunValidationGates(input.validationGates ?? []);
+        const lifecycle = workflowDefinitionConfig(inputWorkflowDefinition);
+        const lifecycleSources = Array.isArray(lifecycle.sources)
+            ? lifecycle.sources as LifecycleStateSource[]
+            : [];
+        let workflowDefinition = inputWorkflowDefinition;
+        if (lifecycleSources.length > 0) {
+            const snapshot = await compileLifecycleStateMachine({
+                lifecycleName: typeof lifecycle.name === "string" && lifecycle.name.trim()
+                    ? lifecycle.name.trim()
+                    : name,
+                initialState: typeof lifecycle.initialState === "string" && lifecycle.initialState.trim()
+                    ? lifecycle.initialState.trim()
+                    : "Initial",
+                sources: lifecycleSources,
+                reader: this.lifecycleStateReader ?? new RemoteLifecycleStateReader({
+                    githubToken: process.env.WORKFLOW_GENERATOR_GITHUB_TOKEN || process.env.GITHUB_TOKEN,
+                    adoToken: process.env.WORKFLOW_GENERATOR_ADO_TOKEN,
+                    adoPat: process.env.WORKFLOW_GENERATOR_ADO_PAT || process.env.AZURE_DEVOPS_EXT_PAT,
+                }),
+            });
+            if (lifecycle === inputWorkflowDefinition) {
+                workflowDefinition = {
+                    ...inputWorkflowDefinition,
+                    stateMachineSnapshot: snapshot,
+                };
+            } else {
+                workflowDefinition = {
+                    ...inputWorkflowDefinition,
+                    lifecycle: {
+                        ...lifecycle,
+                        stateMachineSnapshot: snapshot,
+                    },
+                };
+            }
+        }
+        const sessionComputeAffinity = workflowComputeAffinity(
+            input.sessionComputeAffinity,
+            "sessionComputeAffinity",
+        );
+        const definitionDocument = {
+            name,
+            sessionComputeAffinity,
+            workflowDefinition,
+            affinities: input.affinities ?? {},
+            validationGates: input.validationGates ?? [],
+            guardrails: input.guardrails ?? {},
+        };
+        const definitionHash = createHash("sha256")
+            .update(canonicalJson(definitionDocument))
+            .digest("hex");
+        const compatibleDefinitionHashes = [definitionHash];
+        if (sessionComputeAffinity === null) {
+            compatibleDefinitionHashes.push(
+                createHash("sha256")
+                    .update(canonicalJson({
+                        name,
+                        workflowDefinition,
+                        affinities: input.affinities ?? {},
+                        validationGates: input.validationGates ?? [],
+                        guardrails: input.guardrails ?? {},
+                    }))
+                    .digest("hex"),
+            );
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            await client.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                [canonicalJson(["workflow-definition", workflowType])],
+            );
+            const existingResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                 WHERE workflow_type = $1 AND definition_hash = ANY($2::text[])
+                 ORDER BY array_position($2::text[], definition_hash)
+                 LIMIT 1`,
+                [workflowType, compatibleDefinitionHashes],
+            );
+            if (existingResult.rows[0]) {
+                await client.query("COMMIT");
+                return {
+                    workflowDefinition: rowToWorkflowDefinition(existingResult.rows[0]),
+                    created: false,
+                };
+            }
+            const versionResult = await client.query(
+                `SELECT COALESCE(MAX(version), 0) + 1 AS version
+                 FROM "${this.sql.schema}".workflow_definitions WHERE workflow_type = $1`,
+                [workflowType],
+            );
+            const workflowDefinitionId = input.workflowDefinitionId ?? randomUUID();
+            const version = Number(versionResult.rows[0].version);
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_definitions (
+                     workflow_definition_id, workflow_type, name,
+                     owner_provider, owner_subject, owner_email, owner_display_name,
+                     version, definition_hash,
+                     session_compute_affinity, workflow_definition, affinities,
+                     validation_gates, guardrails, created_by
+                 )
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                 RETURNING *`,
+                [
+                    workflowDefinitionId,
+                    workflowType,
+                    name,
+                    input.owner.provider.trim(),
+                    input.owner.subject.trim(),
+                    input.owner.email ?? null,
+                    input.owner.displayName ?? null,
+                    version,
+                    definitionHash,
+                    sessionComputeAffinity,
+                    JSON.stringify(workflowDefinition),
+                    JSON.stringify(input.affinities ?? {}),
+                    JSON.stringify(input.validationGates ?? []),
+                    JSON.stringify(input.guardrails ?? {}),
+                    input.createdBy ?? null,
+                ],
+            );
+            await client.query("COMMIT");
+            return {
+                workflowDefinition: rowToWorkflowDefinition(rows[0]),
+                created: true,
+            };
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async getWorkflowDefinition(workflowDefinitionId: string): Promise<WorkflowDefinitionRow> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_definitions
+             WHERE workflow_definition_id = $1`,
+            [workflowDefinitionId],
+        );
+        if (!rows[0]) throw new Error(`WorkflowDefinition not found: ${workflowDefinitionId}`);
+        return rowToWorkflowDefinition(rows[0]);
+    }
+
+    async listWorkflowDefinitions(workflowType?: string): Promise<WorkflowDefinitionRow[]> {
+        const normalizedType = workflowType?.trim();
+        const { rows } = normalizedType
+            ? await this.pool.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                 WHERE workflow_type = $1
+                 ORDER BY version DESC`,
+                [normalizedType],
+            )
+            : await this.pool.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                 ORDER BY workflow_type, version DESC`,
+            );
+        return rows.map(rowToWorkflowDefinition);
+    }
+
+    async setWorkflowGeneratorDefinition(
+        workflowGeneratorId: string,
+        workflowDefinitionId: string,
+    ): Promise<{ generator: WorkflowGeneratorRow; definition: WorkflowDefinitionRow }> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const definitionResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                 WHERE workflow_definition_id = $1`,
+                [workflowDefinitionId],
+            );
+            const definition = definitionResult.rows[0];
+            if (!definition) throw new Error(`WorkflowDefinition not found: ${workflowDefinitionId}`);
+            const generatorResult = await client.query(
+                `UPDATE "${this.sql.schema}".workflow_generators
+                 SET active_workflow_definition_id = $2,
+                     next_run_at = LEAST(next_run_at, now()),
+                     updated_at = now()
+                 WHERE workflow_generator_id = $1
+                   AND deleted_at IS NULL
+                 RETURNING *`,
+                [workflowGeneratorId, workflowDefinitionId],
+            );
+            const generator = generatorResult.rows[0];
+            if (!generator) throw new Error(`WorkflowGenerator not found: ${workflowGeneratorId}`);
+            await client.query("COMMIT");
+            return {
+                generator: rowToWorkflowGenerator(generator),
+                definition: rowToWorkflowDefinition(definition),
+            };
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT DISTINCT j.*
+             FROM "${this.sql.schema}".workflow_runs j
+             JOIN "${this.sql.schema}".workflow_run_producers producer
+               ON producer.workflow_run_id = j.workflow_run_id
+              AND producer.producer_type = 'workflow_generator'
+              AND producer.producer_id = $1
+             ORDER BY j.first_discovered_at DESC, j.workflow_run_id`,
+            [workflowGeneratorId],
+        );
+        return rows.map(rowToWorkflowRun);
+    }
+
+    async listWorkflowGeneratorCycles(workflowGeneratorId: string, limit = 50): Promise<WorkflowGeneratorCycleRow[]> {
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_generator_cycles
+             WHERE workflow_generator_id = $1
+             ORDER BY started_at DESC, cycle_id
+             LIMIT $2`,
+            [workflowGeneratorId, boundedLimit],
+        );
+        return rows.map(rowToWorkflowGeneratorCycle);
+    }
+
+    async listWorkflowRuns(
+        options: ListWorkflowRunsOptions = {},
+        viewer: Pick<SessionOwnerInfo, "provider" | "subject"> | null = null,
+    ): Promise<WorkflowRunRow[]> {
+        const workflowType = options.workflowType?.trim() || null;
+        const workflowRunKey = options.workflowRunKey?.trim() || null;
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(options.limit ?? 100), 1000));
+        const { rows } = await this.pool.query(
+            `SELECT run.*,
+                    COALESCE(provenance.producer_type, 'direct_request') AS catalog_producer_type,
+                    CASE
+                        WHEN provenance.producer_type = 'workflow_generator'
+                            THEN provenance.producer_id
+                        ELSE NULL
+                    END AS catalog_workflow_generator_id,
+                    run.execution_affinity_provider AS catalog_requester_provider,
+                    run.execution_affinity_subject AS catalog_requester_subject,
+                    run.execution_affinity_email AS catalog_requester_email,
+                    run.execution_affinity_display_name AS catalog_requester_display_name,
+                    definition.session_compute_affinity AS catalog_session_compute_affinity
+             FROM "${this.sql.schema}".workflow_runs run
+             JOIN "${this.sql.schema}".workflow_definitions definition
+               ON definition.workflow_definition_id = run.workflow_definition_id
+             LEFT JOIN LATERAL (
+                 SELECT producer.producer_type, producer.producer_id
+                 FROM "${this.sql.schema}".workflow_run_producers producer
+                 WHERE producer.workflow_run_id = run.workflow_run_id
+                 ORDER BY producer.observed_at, producer.observation_id
+                 LIMIT 1
+             ) provenance ON TRUE
+             WHERE run.deleted_at IS NULL
+               AND ($1::text IS NULL OR run.workflow_type = $1)
+               AND ($2::text IS NULL OR run.workflow_run_key = $2)
+               AND (
+                   $3::text IS NULL
+                   OR (
+                       run.execution_affinity_provider = BTRIM($3)
+                       AND run.execution_affinity_subject = BTRIM($4)
+                   )
+               )
+             ORDER BY run.created_at DESC, run.workflow_run_id
+             LIMIT $5`,
+            [
+                workflowType,
+                workflowRunKey,
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                boundedLimit,
+            ],
+        );
+        return rows.map(rowToWorkflowRun);
+    }
+
+    async listWorkflowRunsPage(
+        options: ListWorkflowRunPageOptions = {},
+        viewer: Pick<SessionOwnerInfo, "provider" | "subject"> | null = null,
+    ): Promise<WorkflowRunRow[]> {
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(options.limit ?? 51), 201));
+        const ownerQuery = options.ownerQuery?.trim() || null;
+        const status = options.status?.trim() || null;
+        const repository = options.repository?.trim() || null;
+        const placement = options.placement?.trim() || null;
+        const workflowQuery = options.workflowQuery?.trim() || null;
+        const workflowRunKey = options.workflowRunKey?.trim() || null;
+        const origin = options.origin ?? null;
+        const { rows } = await this.pool.query(
+            `SELECT run.*,
+                    COALESCE(provenance.producer_type, 'direct_request') AS catalog_producer_type,
+                    CASE
+                        WHEN provenance.producer_type = 'workflow_generator'
+                            THEN provenance.producer_id
+                        ELSE NULL
+                    END AS catalog_workflow_generator_id,
+                    run.execution_affinity_provider AS catalog_requester_provider,
+                    run.execution_affinity_subject AS catalog_requester_subject,
+                    run.execution_affinity_email AS catalog_requester_email,
+                    run.execution_affinity_display_name AS catalog_requester_display_name,
+                    definition.session_compute_affinity AS catalog_session_compute_affinity
+             FROM "${this.sql.schema}".workflow_runs run
+             JOIN "${this.sql.schema}".workflow_definitions definition
+               ON definition.workflow_definition_id = run.workflow_definition_id
+             LEFT JOIN LATERAL (
+                 SELECT producer.producer_type, producer.producer_id
+                 FROM "${this.sql.schema}".workflow_run_producers producer
+                 WHERE producer.workflow_run_id = run.workflow_run_id
+                 ORDER BY producer.observed_at, producer.observation_id
+                 LIMIT 1
+             ) provenance ON TRUE
+             WHERE run.deleted_at IS NULL
+               AND (
+                   $1::text IS NULL
+                   OR (
+                       run.execution_affinity_provider = BTRIM($1)
+                       AND run.execution_affinity_subject = BTRIM($2)
+                   )
+               )
+               AND (
+                   $3::text IS NULL
+                   OR run.execution_affinity_display_name ILIKE '%' || $3 || '%'
+                   OR run.execution_affinity_email ILIKE '%' || $3 || '%'
+                   OR run.execution_affinity_subject ILIKE '%' || $3 || '%'
+               )
+               AND (
+                   $4::text IS NULL
+                   OR run.lifecycle_state = $4
+                   OR run.current_state = $4
+               )
+               AND ($5::text IS NULL OR run.effective_config #>> '{affinities,repo}' ILIKE '%' || $5 || '%')
+               AND (
+                   $6::text IS NULL
+                   OR COALESCE(
+                       run.effective_config #>> '{affinities,compute}',
+                       definition.session_compute_affinity,
+                       ''
+                   ) = $6
+               )
+               AND (
+                   $7::text IS NULL
+                   OR ($7 = 'direct' AND COALESCE(provenance.producer_type, 'direct_request') = 'direct_request')
+                   OR ($7 = 'workflow_generator' AND provenance.producer_type = 'workflow_generator')
+               )
+               AND (
+                   $8::text IS NULL
+                   OR run.workflow_type ILIKE '%' || $8 || '%'
+                   OR definition.name ILIKE '%' || $8 || '%'
+               )
+               AND ($9::text IS NULL OR run.workflow_run_key ILIKE '%' || $9 || '%')
+               AND ($10::timestamptz IS NULL OR run.updated_at >= $10)
+               AND (
+                   $11::timestamptz IS NULL
+                   OR date_trunc('milliseconds', run.updated_at) < date_trunc('milliseconds', $11)
+                   OR (
+                       date_trunc('milliseconds', run.updated_at) = date_trunc('milliseconds', $11)
+                       AND run.workflow_run_id < $12
+                   )
+               )
+             ORDER BY date_trunc('milliseconds', run.updated_at) DESC, run.workflow_run_id DESC
+             LIMIT $13`,
+            [
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                ownerQuery,
+                status,
+                repository,
+                placement,
+                origin,
+                workflowQuery,
+                workflowRunKey,
+                options.updatedAfter ?? null,
+                options.cursorUpdatedAt ?? null,
+                options.cursorId ?? null,
+                boundedLimit,
+            ],
+        );
+        return rows.map(rowToWorkflowRun);
+    }
+
+    async getWorkflowRun(workflowRunId: string, includeDeleted = false): Promise<WorkflowRunRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_runs
+             WHERE workflow_run_id = $1 AND ($2 OR deleted_at IS NULL)`,
+            [workflowRunId, includeDeleted],
+        );
+        return rows[0] ? rowToWorkflowRun(rows[0]) : null;
+    }
+
+    async createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult> {
+        const requesterProvider = input.owner.provider?.trim();
+        const requesterSubject = input.owner.subject?.trim();
+        if (!requesterProvider || !requesterSubject) {
+            throw new Error("WorkflowRun requester provider and subject are required");
+        }
+        const workflowRunKey = input.workflowRunKey.trim();
+        if (!workflowRunKey) throw new Error("WorkflowRun workflowRunKey is required");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const result = await this.createWorkflowRunWithinTransaction(client, {
+                workflowRunId: input.workflowRunId,
+                workflowDefinitionId: input.workflowDefinitionId,
+                workflowRunKey,
+                input: input.input,
+                sessionId: input.sessionId,
+                createdBy: input.createdBy ?? requesterSubject,
+                executionAffinity: {
+                    provider: requesterProvider,
+                    subject: requesterSubject,
+                    email: input.owner.email ?? null,
+                    displayName: input.owner.displayName ?? null,
+                },
+                producer: {
+                    type: "direct_request",
+                    id: `${requesterProvider}:${requesterSubject}`,
+                    observationId: null,
+                },
+            });
+            await client.query("COMMIT");
+            return result;
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    private async createWorkflowRunWithinTransaction(
+        client: any,
+        input: ResolvedCreateWorkflowRunInput,
+    ): Promise<CreateWorkflowRunResult> {
+        const workflowRunKey = input.workflowRunKey.trim();
+        if (!workflowRunKey) throw new Error("WorkflowRun workflowRunKey is required");
+        const definitionResult = await client.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_definitions
+             WHERE workflow_definition_id = $1`,
+            [input.workflowDefinitionId],
+        );
+        const definition = definitionResult.rows[0];
+        if (!definition) throw new Error(`WorkflowDefinition not found: ${input.workflowDefinitionId}`);
+        const workflowType = String(definition.workflow_type || "").trim();
+        if (!workflowType) throw new Error(`WorkflowDefinition has no workflow type: ${input.workflowDefinitionId}`);
+
+        await client.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [canonicalJson(["workflow-run", workflowType, workflowRunKey])],
+        );
+        const existingResult = await client.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_runs
+             WHERE workflow_type = $1
+               AND workflow_run_key = $2
+               AND deleted_at IS NULL
+             FOR UPDATE`,
+            [workflowType, workflowRunKey],
+        );
+        const existing = existingResult.rows[0];
+        if (existing) {
+            await this.recordWorkflowRunProducerObservation(client, existing.workflow_run_id, input);
+            const associationResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_sessions
+                 WHERE workflow_run_id = $1
+                 ORDER BY ordinal DESC LIMIT 1`,
+                [existing.workflow_run_id],
+            );
+            return {
+                workflowRun: rowToWorkflowRun(existingResult.rows[0]),
+                association: rowToWorkflowRunSession(associationResult.rows[0]),
+                created: false,
+            };
+        }
+
+        const lifecycle = workflowDefinitionConfig(definition.workflow_definition ?? {});
+        const configuredInitialState = typeof lifecycle.initialState === "string"
+            ? lifecycle.initialState.trim()
+            : "";
+        const initialState = configuredInitialState || "Initial";
+        if (!WORKFLOW_RUN_STATE_NAME_RE.test(initialState)) {
+            throw new Error("WorkflowRun initialState is invalid");
+        }
+        const effectiveConfig = {
+            workflowDefinition: definition.workflow_definition ?? {},
+            affinities: definition.affinities ?? {},
+            validationGates: definition.validation_gates ?? [],
+            guardrails: definition.guardrails ?? {},
+        };
+        const workflowRunId = input.workflowRunId ?? randomUUID();
+        const executionAffinityProvider = input.executionAffinity.provider?.trim();
+        const executionAffinitySubject = input.executionAffinity.subject?.trim();
+        if (!executionAffinityProvider || !executionAffinitySubject) {
+            throw new Error("WorkflowRun execution affinity provider and subject are required");
+        }
+        const runResult = await client.query(
+            `INSERT INTO "${this.sql.schema}".workflow_runs (
+                 workflow_run_id, workflow_generator_id, workflow_definition_id, workflow_type,
+                 owner_provider, owner_subject, owner_email, owner_display_name,
+                 created_by, execution_affinity_provider, execution_affinity_subject,
+                 execution_affinity_email, execution_affinity_display_name,
+                 effective_config, workflow_run_key, input, current_state
+             ) VALUES (
+                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
+             )
+             RETURNING *`,
+            [
+                workflowRunId,
+                input.producer.type === "workflow_generator" ? input.producer.id : null,
+                input.workflowDefinitionId,
+                workflowType,
+                SYSTEM_USER_PRINCIPAL.provider,
+                SYSTEM_USER_PRINCIPAL.subject,
+                SYSTEM_USER_PRINCIPAL.email,
+                SYSTEM_USER_PRINCIPAL.displayName,
+                input.createdBy,
+                executionAffinityProvider,
+                executionAffinitySubject,
+                input.executionAffinity.email ?? null,
+                input.executionAffinity.displayName ?? null,
+                JSON.stringify(effectiveConfig),
+                workflowRunKey,
+                JSON.stringify(input.input ?? {}),
+                initialState,
+            ],
+        );
+        await this.recordWorkflowRunProducerObservation(client, workflowRunId, input);
+        const stateRunId = randomUUID();
+        await client.query(
+            `INSERT INTO "${this.sql.schema}".workflow_run_state_runs (
+                 state_run_id, workflow_run_id, workflow_definition_id,
+                 state_name, state_revision
+             ) VALUES ($1,$2,$3,$4,1)`,
+            [stateRunId, workflowRunId, input.workflowDefinitionId, initialState],
+        );
+        const associationResult = await client.query(
+            `INSERT INTO "${this.sql.schema}".workflow_run_sessions (
+                 association_id, workflow_run_id, session_id, state_run_id,
+                 ordinal, is_current, status
+             ) VALUES ($1,$2,$3,$4,1,TRUE,'reserved')
+             RETURNING *`,
+            [randomUUID(), workflowRunId, input.sessionId ?? randomUUID(), stateRunId],
+        );
+        return {
+            workflowRun: rowToWorkflowRun(runResult.rows[0]),
+            association: rowToWorkflowRunSession(associationResult.rows[0]),
+            created: true,
+        };
+    }
+
+    private async recordWorkflowRunProducerObservation(
+        client: any,
+        workflowRunId: string,
+        input: ResolvedCreateWorkflowRunInput,
+    ): Promise<void> {
+        await client.query(
+            `INSERT INTO "${this.sql.schema}".workflow_run_producers (
+                 observation_id, workflow_run_id, producer_type, producer_id,
+                 producer_observation_id, payload
+             ) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [
+                randomUUID(),
+                workflowRunId,
+                input.producer.type,
+                input.producer.id,
+                input.producer.observationId,
+                JSON.stringify(input.input ?? {}),
+            ],
+        );
+    }
+
+    async beginWorkflowGeneratorCleanup(input: {
+        workflowGeneratorId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<WorkflowRunCleanupPlan> {
+        return this.beginWorkflowRunCleanupScope("generator", input.workflowGeneratorId, input.actor, input.isAdmin ?? false);
+    }
+
+    async beginWorkflowRunCleanup(input: {
+        workflowRunId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<WorkflowRunCleanupPlan> {
+        return this.beginWorkflowRunCleanupScope("workflowRun", input.workflowRunId, input.actor, input.isAdmin ?? false);
+    }
+
+    private async beginWorkflowRunCleanupScope(
+        aggregateType: "generator" | "workflowRun",
+        aggregateId: string,
+        actor: SessionOwnerInfo,
+        isAdmin: boolean,
+    ): Promise<WorkflowRunCleanupPlan> {
+        const actorProvider = actor.provider?.trim();
+        const actorSubject = actor.subject?.trim();
+        if (!actorProvider || !actorSubject) {
+            throw new Error("WorkflowRun cleanup actor provider and subject are required");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const targetResult = aggregateType === "generator"
+                ? await client.query(
+                    `SELECT g.*, NULL::text AS workflow_run_id, g.deleted_at AS aggregate_deleted_at
+                     FROM "${this.sql.schema}".workflow_generators g
+                     WHERE g.workflow_generator_id = $1
+                     FOR UPDATE`,
+                    [aggregateId],
+                )
+                : await client.query(
+                    `SELECT j.*, j.workflow_run_id, j.deleted_at AS aggregate_deleted_at
+                     FROM "${this.sql.schema}".workflow_runs j
+                     WHERE j.workflow_run_id = $1
+                     FOR UPDATE OF j`,
+                    [aggregateId],
+                );
+            const target = targetResult.rows[0];
+            const ownerMatches = target
+                && target.owner_provider === actorProvider
+                && target.owner_subject === actorSubject;
+            const requesterMatches = target
+                && target.execution_affinity_provider === actorProvider
+                && target.execution_affinity_subject === actorSubject;
+            const actorCanDelete = aggregateType === "generator" ? ownerMatches : requesterMatches;
+            if (!target || (!isAdmin && !actorCanDelete)) {
+                throw Object.assign(new Error(
+                    aggregateType === "generator"
+                        ? "WorkflowGenerator not found."
+                        : "WorkflowRun not found.",
+                ), {
+                    code: "NOT_FOUND",
+                    status: 404,
+                });
+            }
+            const workflowGeneratorId = target.workflow_generator_id as string | null;
+            const workflowRunId = aggregateType === "workflowRun" ? target.workflow_run_id as string : null;
+            const alreadyDeleted = Boolean(target.aggregate_deleted_at);
+
+            const tombstoneResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_run_cleanup_tombstones AS tombstone (
+                     aggregate_type, aggregate_id, workflow_generator_id, workflow_run_id,
+                     owner_provider, owner_subject, actor_provider, actor_subject,
+                     actor_display_name
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE
+                    SET cleanup_status = CASE
+                            WHEN tombstone.cleanup_status = 'completed'
+                                THEN 'completed'
+                            ELSE 'pending'
+                        END,
+                        cleanup_error = CASE
+                            WHEN tombstone.cleanup_status = 'completed'
+                                THEN tombstone.cleanup_error
+                            ELSE NULL
+                        END,
+                        updated_at = now()
+                 RETURNING session_ids`,
+                [
+                    aggregateType,
+                    aggregateId,
+                    workflowGeneratorId,
+                    workflowRunId,
+                    target.owner_provider,
+                    target.owner_subject,
+                    actorProvider,
+                    actorSubject,
+                    actor.displayName ?? null,
+                ],
+            );
+
+            if (aggregateType === "generator") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_generators
+                     SET operational_state = 'disabled', active_workflow_definition_id = NULL,
+                         lease_owner = NULL, lease_expires_at = NULL,
+                         deleted_at = COALESCE(deleted_at, now()), updated_at = now()
+                     WHERE workflow_generator_id = $1`,
+                    [workflowGeneratorId],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_generator_cycles
+                     SET status = 'failed', error = COALESCE(error, 'WorkflowGenerator deleted'),
+                         completed_at = COALESCE(completed_at, now())
+                     WHERE workflow_generator_id = $1 AND status = 'running'`,
+                    [workflowGeneratorId],
+                );
+            }
+
+            const workflowRunIdsResult = aggregateType === "generator"
+                ? { rows: [] }
+                : { rows: [{ workflow_run_id: workflowRunId }] };
+            const workflowRunIds = workflowRunIdsResult.rows.map((row: any) => row.workflow_run_id as string);
+            const sessionsResult = workflowRunIds.length > 0
+                ? await client.query(
+                    `SELECT DISTINCT session_id
+                     FROM "${this.sql.schema}".workflow_run_sessions
+                     WHERE workflow_run_id = ANY($1::text[])
+                     ORDER BY session_id`,
+                    [workflowRunIds],
+                )
+                : { rows: [] };
+            const persistedSessionIds = Array.isArray(tombstoneResult.rows[0]?.session_ids)
+                ? tombstoneResult.rows[0].session_ids
+                    .filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+                : [];
+            const sessionIds = [...new Set([
+                ...persistedSessionIds,
+                ...sessionsResult.rows.map((row: any) => row.session_id as string),
+            ])].sort();
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_cleanup_tombstones
+                 SET session_ids = $3, updated_at = now()
+                 WHERE aggregate_type = $1 AND aggregate_id = $2`,
+                [aggregateType, aggregateId, JSON.stringify(sessionIds)],
+            );
+
+            if (workflowRunIds.length > 0) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_runs
+                     SET lifecycle_state = 'cancelled',
+                         deleted_at = COALESCE(deleted_at, now()),
+                         session_error = COALESCE(session_error, 'WorkflowRun deleted'),
+                         updated_at = now()
+                     WHERE workflow_run_id = ANY($1::text[])`,
+                    [workflowRunIds],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_state_runs
+                     SET status = 'failed', error = COALESCE(error, 'WorkflowRun deleted'),
+                         lease_owner = NULL, lease_expires_at = NULL,
+                         completed_at = COALESCE(completed_at, now()), updated_at = now()
+                     WHERE workflow_run_id = ANY($1::text[])
+                       AND status IN ('reserved', 'unacked', 'active', 'waiting', 'input_required')`,
+                    [workflowRunIds],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_external_operations
+                     SET status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
+                         error = CASE WHEN status = 'pending' THEN COALESCE(error, 'WorkflowRun deleted') ELSE error END,
+                         poll_lease_owner = NULL, poll_lease_expires_at = NULL,
+                         signal_status = CASE
+                             WHEN signal_status IN ('pending', 'delivering') THEN 'blocked'
+                             ELSE signal_status
+                         END,
+                         signal_lease_owner = NULL, signal_lease_expires_at = NULL,
+                         completed_at = CASE
+                             WHEN status = 'pending' THEN COALESCE(completed_at, now())
+                             ELSE completed_at
+                         END,
+                         wait_completed_at = COALESCE(wait_completed_at, now()),
+                         updated_at = now()
+                     WHERE workflow_run_id = ANY($1::text[])`,
+                    [workflowRunIds],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_sessions
+                     SET is_current = FALSE,
+                         status = CASE
+                             WHEN status IN ('completed', 'replaced') THEN status
+                             ELSE 'failed'
+                         END,
+                         error = CASE
+                             WHEN status IN ('completed', 'replaced') THEN error
+                             ELSE COALESCE(error, 'WorkflowRun deleted')
+                         END,
+                         ended_at = COALESCE(ended_at, now())
+                     WHERE workflow_run_id = ANY($1::text[])`,
+                    [workflowRunIds],
+                );
+            }
+
+            await client.query("COMMIT");
+            return {
+                aggregateType,
+                aggregateId,
+                workflowGeneratorId,
+                workflowRunId,
+                alreadyDeleted,
+                sessionIds,
+            };
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async recordWorkflowRunCleanupSessions(
+        aggregateType: "generator" | "workflowRun",
+        aggregateId: string,
+        sessionIds: string[],
+    ): Promise<string[]> {
+        const normalizedSessionIds = [...new Set(
+            sessionIds
+                .map((sessionId) => sessionId.trim())
+                .filter(Boolean),
+        )];
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const tombstoneResult = await client.query(
+                `SELECT session_ids
+                 FROM "${this.sql.schema}".workflow_run_cleanup_tombstones
+                 WHERE aggregate_type = $1 AND aggregate_id = $2
+                 FOR UPDATE`,
+                [aggregateType, aggregateId],
+            );
+            if (!tombstoneResult.rows[0]) {
+                throw new Error(`WorkflowRun cleanup tombstone not found: ${aggregateType}:${aggregateId}`);
+            }
+            const persistedSessionIds = Array.isArray(tombstoneResult.rows[0].session_ids)
+                ? tombstoneResult.rows[0].session_ids
+                    .filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+                : [];
+            const mergedSessionIds = [...new Set([
+                ...persistedSessionIds,
+                ...normalizedSessionIds,
+            ])].sort();
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_cleanup_tombstones
+                 SET session_ids = $3, updated_at = now()
+                 WHERE aggregate_type = $1 AND aggregate_id = $2`,
+                [aggregateType, aggregateId, JSON.stringify(mergedSessionIds)],
+            );
+            await client.query("COMMIT");
+            return mergedSessionIds;
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async completeWorkflowRunCleanup(
+        aggregateType: "generator" | "workflowRun",
+        aggregateId: string,
+        outcome: { status: "completed" | "failed"; error?: string | null; deletedSessionCount?: number },
+    ): Promise<void> {
+        await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_cleanup_tombstones
+             SET cleanup_status = CASE
+                     WHEN cleanup_status = 'completed' THEN 'completed'
+                     ELSE $3
+                 END,
+                 cleanup_error = CASE
+                     WHEN cleanup_status = 'completed' THEN cleanup_error
+                     ELSE $4
+                 END,
+                 final_outcome = CASE
+                     WHEN cleanup_status = 'completed' THEN final_outcome
+                     ELSE $5
+                 END,
+                 updated_at = now()
+             WHERE aggregate_type = $1 AND aggregate_id = $2`,
+            [
+                aggregateType,
+                aggregateId,
+                outcome.status,
+                outcome.error ?? null,
+                JSON.stringify({ deletedSessionCount: outcome.deletedSessionCount ?? 0 }),
+            ],
+        );
+    }
+
+    async beginSessionTreeDeletion(sessionId: string): Promise<void> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const target = await client.query(
+                `SELECT session_id
+                 FROM "${this.sql.schema}".sessions
+                 WHERE session_id = $1
+                 FOR UPDATE`,
+                [sessionId],
+            );
+            if (!target.rows[0]) {
+                await client.query("COMMIT");
+                return;
+            }
+            await client.query(
+                `WITH RECURSIVE tree AS (
+                     SELECT session_id
+                     FROM "${this.sql.schema}".sessions
+                     WHERE session_id = $1
+                     UNION ALL
+                     SELECT child.session_id
+                     FROM "${this.sql.schema}".sessions child
+                     JOIN tree parent ON child.parent_session_id = parent.session_id
+                 )
+                 UPDATE "${this.sql.schema}".sessions session
+                 SET deletion_requested_at = COALESCE(deletion_requested_at, now()),
+                     updated_at = now()
+                 FROM tree
+                 WHERE session.session_id = tree.session_id`,
+                [sessionId],
+            );
+            await client.query("COMMIT");
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async isSessionActive(sessionId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (
+                 SELECT 1
+                 FROM "${this.sql.schema}".sessions
+                 WHERE session_id = $1
+                   AND deleted_at IS NULL
+                   AND deletion_requested_at IS NULL
+             ) AS active`,
+            [sessionId],
+        );
+        return Boolean(rows[0]?.active);
+    }
+
+    async getDescendantSessionIdsIncludingDeleted(sessionId: string): Promise<string[]> {
+        const { rows } = await this.pool.query(
+            `WITH RECURSIVE descendants AS (
+                 SELECT session_id
+                 FROM "${this.sql.schema}".sessions
+                 WHERE parent_session_id = $1
+                 UNION ALL
+                 SELECT child.session_id
+                 FROM "${this.sql.schema}".sessions child
+                 JOIN descendants parent
+                   ON child.parent_session_id = parent.session_id
+             )
+             SELECT session_id FROM descendants`,
+            [sessionId],
+        );
+        return rows.map((row: any) => row.session_id as string);
+    }
+
+    async claimDueWorkflowGenerators(
+        workerId: string,
+        limit = 10,
+        leaseSeconds = 300,
+        controllerCompute?: WorkflowComputeAffinity,
+    ): Promise<WorkflowGeneratorRow[]> {
+        const normalizedWorkerId = workerId.trim();
+        if (!normalizedWorkerId) throw new Error("workerId is required");
+        const normalizedControllerCompute = workflowComputeAffinity(
+            controllerCompute,
+            "controllerCompute",
+        );
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+        const boundedLease = Math.max(30, Math.min(Math.trunc(leaseSeconds), 3600));
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT workflow_generator_id
+                 FROM "${this.sql.schema}".workflow_generators
+                 WHERE operational_state = 'enabled'
+                   AND active_workflow_definition_id IS NOT NULL
+                   AND source_type IS NOT NULL
+                   AND next_run_at <= now()
+                   AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+                   AND (
+                       $4::TEXT IS NULL
+                       OR controller_compute_affinity IS NULL
+                       OR controller_compute_affinity = $4
+                   )
+                 ORDER BY next_run_at, workflow_generator_id
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT $2
+             )
+             UPDATE "${this.sql.schema}".workflow_generators g
+             SET lease_owner = $1,
+                 lease_expires_at = now() + make_interval(secs => $3),
+                 updated_at = now()
+             FROM due
+             WHERE g.workflow_generator_id = due.workflow_generator_id
+             RETURNING g.*`,
+            [normalizedWorkerId, boundedLimit, boundedLease, normalizedControllerCompute],
+        );
+        return rows.map(rowToWorkflowGenerator);
+    }
+
+    async beginWorkflowGeneratorCycle(workflowGeneratorId: string, workerId: string): Promise<{
+        cycle: WorkflowGeneratorCycleRow;
+        definition: WorkflowDefinitionRow;
+    }> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const generatorResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_generators
+                 WHERE workflow_generator_id = $1 FOR UPDATE`,
+                [workflowGeneratorId],
+            );
+            const generator = generatorResult.rows[0];
+            if (!generator) throw new Error(`WorkflowGenerator not found: ${workflowGeneratorId}`);
+            if (generator.lease_owner !== workerId || !generator.lease_expires_at || generator.lease_expires_at <= new Date()) {
+                throw new Error(`WorkflowGenerator lease is not held by ${workerId}`);
+            }
+            if (!generator.active_workflow_definition_id) throw new Error("WorkflowGenerator has no active definition");
+
+            const abandoned = await client.query(
+                `UPDATE "${this.sql.schema}".workflow_generator_cycles
+                 SET status = 'failed', error = COALESCE(error, 'controller lease expired'),
+                     completed_at = COALESCE(completed_at, now())
+                 WHERE workflow_generator_id = $1 AND status = 'running'`,
+                [workflowGeneratorId],
+            );
+            if ((abandoned.rowCount ?? 0) > 0) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_generators
+                     SET failed_cycles = failed_cycles + $2, total_cycles = total_cycles + $2
+                     WHERE workflow_generator_id = $1`,
+                    [workflowGeneratorId, abandoned.rowCount],
+                );
+            }
+
+            const definitionResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                 WHERE workflow_definition_id = $1`,
+                [generator.active_workflow_definition_id],
+            );
+            const cycleId = randomUUID();
+            const cycleResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_generator_cycles (
+                     cycle_id, workflow_generator_id, workflow_definition_id, claimed_by, watermark_before
+                 ) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+                [cycleId, workflowGeneratorId, generator.active_workflow_definition_id, workerId, generator.watermark],
+            );
+            await client.query("COMMIT");
+            return {
+                cycle: rowToWorkflowGeneratorCycle(cycleResult.rows[0]),
+                definition: rowToWorkflowDefinition(definitionResult.rows[0]),
+            };
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async completeWorkflowGeneratorCycle(input: {
+        cycleId: string;
+        workerId: string;
+        status: "succeeded" | "failed";
+        watermark?: unknown;
+        discoveredCount?: number;
+        createdCount?: number;
+        error?: string | null;
+    }): Promise<void> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const cycleResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_generator_cycles
+                 WHERE cycle_id = $1 FOR UPDATE`,
+                [input.cycleId],
+            );
+            const cycle = cycleResult.rows[0];
+            if (!cycle) throw new Error(`WorkflowGenerator cycle not found: ${input.cycleId}`);
+            if (cycle.status !== "running") {
+                await client.query("ROLLBACK");
+                return;
+            }
+            if (cycle.claimed_by !== input.workerId) throw new Error("WorkflowGenerator cycle is owned by another worker");
+            const discoveredCount = Math.max(0, Math.trunc(input.discoveredCount ?? 0));
+            const createdCount = Math.max(0, Math.trunc(input.createdCount ?? 0));
+            const watermark = input.watermark === undefined ? cycle.watermark_before : input.watermark;
+            const serializedWatermark = JSON.stringify(watermark ?? null);
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_generator_cycles
+                 SET status = $2, watermark_after = $3, discovered_count = $4,
+                     created_count = $5, error = $6, completed_at = now()
+                 WHERE cycle_id = $1`,
+                [
+                    input.cycleId,
+                    input.status,
+                    serializedWatermark,
+                    discoveredCount,
+                    createdCount,
+                    input.error ?? null,
+                ],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_generators
+                 SET watermark = CASE WHEN $2 = 'succeeded' THEN $3 ELSE watermark END,
+                     total_cycles = total_cycles + 1,
+                     successful_cycles = successful_cycles + CASE WHEN $2 = 'succeeded' THEN 1 ELSE 0 END,
+                     failed_cycles = failed_cycles + CASE WHEN $2 = 'failed' THEN 1 ELSE 0 END,
+                     materialized_workflow_runs = materialized_workflow_runs + $4,
+                     last_cycle_at = now(),
+                     last_error = CASE WHEN $2 = 'failed' THEN $5 ELSE NULL END,
+                     next_run_at = now() + make_interval(secs => cadence_seconds),
+                     lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+                 WHERE workflow_generator_id = $1 AND lease_owner = $6`,
+                [
+                    cycle.workflow_generator_id,
+                    input.status,
+                    serializedWatermark,
+                    createdCount,
+                    input.error ?? null,
+                    input.workerId,
+                ],
+            );
+            await client.query("COMMIT");
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async reconcileWorkflowGeneratorDiscoveries(cycleId: string, discoveries: WorkflowRunDiscovery[]): Promise<ReconciledWorkflowRun[]> {
+        const unique = new Map<string, Record<string, unknown>>();
+        for (const discovery of discoveries) {
+            const key = String(discovery.key ?? "").trim();
+            if (!key) throw new Error("WorkflowRun discovery key is required");
+            unique.set(key, discovery.payload ?? {});
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const cycleResult = await client.query(
+                `SELECT c.*,
+                        g.owner_provider,
+                        g.owner_subject,
+                        g.owner_email,
+                        g.owner_display_name
+                 FROM "${this.sql.schema}".workflow_generator_cycles c
+                 JOIN "${this.sql.schema}".workflow_generators g
+                   ON g.workflow_generator_id = c.workflow_generator_id
+                 WHERE c.cycle_id = $1
+                   AND c.status = 'running'
+                 FOR UPDATE OF c`,
+                [cycleId],
+            );
+            const cycle = cycleResult.rows[0];
+            if (!cycle) throw new Error(`Running WorkflowGenerator cycle not found: ${cycleId}`);
+            const reconciledByKey = new Map<string, ReconciledWorkflowRun>();
+            const orderedDiscoveries = [...unique.entries()].sort(([left], [right]) => left.localeCompare(right));
+            for (const [sourceKey, payload] of orderedDiscoveries) {
+                const result = await this.createWorkflowRunWithinTransaction(client, {
+                    workflowDefinitionId: cycle.workflow_definition_id,
+                    workflowRunKey: sourceKey,
+                    input: payload,
+                    createdBy: cycle.owner_subject ?? null,
+                    executionAffinity: {
+                        provider: cycle.owner_provider,
+                        subject: cycle.owner_subject,
+                        email: cycle.owner_email ?? null,
+                        displayName: cycle.owner_display_name ?? null,
+                    },
+                    producer: {
+                        type: "workflow_generator",
+                        id: cycle.workflow_generator_id,
+                        observationId: cycleId,
+                    },
+                });
+                reconciledByKey.set(sourceKey, {
+                    ...result.workflowRun,
+                    created: result.created,
+                    needsSession: result.workflowRun.lifecycleState !== "completed"
+                        && result.workflowRun.lifecycleState !== "cancelled",
+                });
+            }
+            await client.query("COMMIT");
+            return [...unique.keys()].map((sourceKey) => reconciledByKey.get(sourceKey)!);
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async listWorkflowRunsNeedingSession(workflowGeneratorId: string, limit = 100): Promise<WorkflowRunRow[]> {
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
+        const { rows } = await this.pool.query(
+            `SELECT j.*
+             FROM "${this.sql.schema}".workflow_runs j
+             WHERE EXISTS (
+                   SELECT 1
+                   FROM "${this.sql.schema}".workflow_run_producers producer
+                   WHERE producer.workflow_run_id = j.workflow_run_id
+                     AND producer.producer_type = 'workflow_generator'
+                     AND producer.producer_id = $1
+               )
+               AND j.lifecycle_state IN ('pending_session', 'blocked')
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM "${this.sql.schema}".workflow_run_sessions js
+                   WHERE js.workflow_run_id = j.workflow_run_id
+                     AND js.is_current
+                     AND js.status IN ('unacked', 'active')
+               )
+             ORDER BY j.first_discovered_at, j.workflow_run_id
+             LIMIT $2`,
+            [workflowGeneratorId, boundedLimit],
+        );
+        return rows.map(rowToWorkflowRun);
+    }
+
+    async claimWorkflowRunsForInduction(
+        workerId: string,
+        limit = 100,
+        leaseSeconds = 300,
+    ): Promise<WorkflowRunInductionClaim[]> {
+        const normalizedWorkerId = workerId.trim();
+        if (!normalizedWorkerId) throw new Error("workerId is required");
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
+        const boundedLeaseSeconds = Math.max(30, Math.min(Math.trunc(leaseSeconds), 3600));
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const { rows } = await client.query(
+                `WITH candidates AS (
+                     SELECT j.workflow_run_id
+                     FROM "${this.sql.schema}".workflow_runs j
+                     JOIN "${this.sql.schema}".workflow_run_sessions js
+                       ON js.workflow_run_id = j.workflow_run_id
+                      AND js.is_current
+                      AND js.status IN ('reserved', 'failed')
+                     WHERE j.lifecycle_state IN ('pending_session', 'blocked')
+                       AND (j.induction_lease_expires_at IS NULL OR j.induction_lease_expires_at <= now())
+                     ORDER BY j.first_discovered_at, j.workflow_run_id
+                     FOR UPDATE OF j SKIP LOCKED
+                     LIMIT $1
+                 )
+                 UPDATE "${this.sql.schema}".workflow_runs j
+                 SET induction_lease_owner = $2,
+                     induction_lease_expires_at = now() + ($3 * interval '1 second'),
+                     session_attempts = session_attempts + 1,
+                     updated_at = now()
+                 FROM candidates
+                 WHERE j.workflow_run_id = candidates.workflow_run_id
+                 RETURNING j.*`,
+                [boundedLimit, normalizedWorkerId, boundedLeaseSeconds],
+            );
+            const claims: WorkflowRunInductionClaim[] = [];
+            for (const row of rows) {
+                const definitionResult = await client.query(
+                    `SELECT * FROM "${this.sql.schema}".workflow_definitions
+                     WHERE workflow_definition_id = $1`,
+                    [row.workflow_definition_id],
+                );
+                const associationResult = await client.query(
+                    `SELECT * FROM "${this.sql.schema}".workflow_run_sessions
+                     WHERE workflow_run_id = $1 AND is_current`,
+                    [row.workflow_run_id],
+                );
+                if (!definitionResult.rows[0] || !associationResult.rows[0]) {
+                    throw new Error(`WorkflowRun induction claim is incomplete: ${row.workflow_run_id}`);
+                }
+                claims.push({
+                    workflowRun: rowToWorkflowRun(row),
+                    definition: rowToWorkflowDefinition(definitionResult.rows[0]),
+                    association: rowToWorkflowRunSession(associationResult.rows[0]),
+                    executionAffinity: rowToWorkflowRunExecutionAffinity(row),
+                });
+            }
+            await client.query("COMMIT");
+            return claims;
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async reserveWorkflowRunSession(
+        workflowRunId: string,
+        cycleId: string,
+        workerId: string,
+        sessionId = randomUUID(),
+    ): Promise<WorkflowRunSessionRow> {
+        return this.createWorkflowRunSessionAssociation(workflowRunId, sessionId, false, { cycleId, workerId });
+    }
+
+    async replaceWorkflowRunSession(workflowRunId: string, sessionId = randomUUID()): Promise<WorkflowRunSessionRow> {
+        return this.createWorkflowRunSessionAssociation(workflowRunId, sessionId, true);
+    }
+
+    private async createWorkflowRunSessionAssociation(
+        workflowRunId: string,
+        sessionId: string,
+        replace: boolean,
+        fence?: { cycleId: string; workerId: string },
+    ): Promise<WorkflowRunSessionRow> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const workflowRun = fence
+                ? await client.query(
+                    `SELECT j.*
+                     FROM "${this.sql.schema}".workflow_runs j
+                     JOIN "${this.sql.schema}".workflow_generator_cycles c
+                       ON c.cycle_id = $2
+                      AND c.workflow_generator_id = j.workflow_generator_id
+                      AND c.status = 'running'
+                      AND c.claimed_by = $3
+                     JOIN "${this.sql.schema}".workflow_generators g
+                       ON g.workflow_generator_id = j.workflow_generator_id
+                      AND g.lease_owner = $3
+                      AND g.lease_expires_at > now()
+                     WHERE j.workflow_run_id = $1
+                     FOR UPDATE OF j`,
+                    [workflowRunId, fence.cycleId, fence.workerId],
+                )
+                : await client.query(
+                    `SELECT * FROM "${this.sql.schema}".workflow_runs WHERE workflow_run_id = $1 FOR UPDATE`,
+                    [workflowRunId],
+                );
+            if (workflowRun.rowCount !== 1) throw new Error(`WorkflowRun not found: ${workflowRunId}`);
+            if (workflowRun.rows[0].lifecycle_state === "completed" || workflowRun.rows[0].lifecycle_state === "cancelled") {
+                throw new Error(`WorkflowRun is terminal: ${workflowRunId}`);
+            }
+            let stateRunResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_state_runs
+                 WHERE workflow_run_id = $1 AND state_revision = $2
+                 FOR UPDATE`,
+                [workflowRunId, workflowRun.rows[0].state_revision],
+            );
+            if (!stateRunResult.rows[0]) {
+                stateRunResult = await client.query(
+                    `INSERT INTO "${this.sql.schema}".workflow_run_state_runs (
+                         state_run_id, workflow_run_id, workflow_definition_id, state_name, state_revision
+                     ) VALUES ($1,$2,$3,$4,$5)
+                     RETURNING *`,
+                    [
+                        randomUUID(),
+                        workflowRunId,
+                        workflowRun.rows[0].workflow_definition_id,
+                        workflowRun.rows[0].current_state,
+                        workflowRun.rows[0].state_revision,
+                    ],
+                );
+            }
+            const stateRun = stateRunResult.rows[0];
+            const current = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_sessions
+                 WHERE workflow_run_id = $1 AND is_current FOR UPDATE`,
+                [workflowRunId],
+            );
+            if (current.rows[0] && !replace) {
+                await client.query("COMMIT");
+                return rowToWorkflowRunSession(current.rows[0]);
+            }
+            if (current.rows[0]) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_sessions
+                     SET is_current = FALSE, status = 'replaced', ended_at = now()
+                     WHERE association_id = $1`,
+                    [current.rows[0].association_id],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_waits
+                     SET status = 'cancelled',
+                         next_check_at = NULL,
+                         check_lease_owner = NULL,
+                         check_lease_expires_at = NULL,
+                         updated_at = now()
+                     WHERE state_run_id = $1
+                       AND status = 'pending'`,
+                    [stateRun.state_run_id],
+                );
+            }
+            const ordinalResult = await client.query(
+                `SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal
+                 FROM "${this.sql.schema}".workflow_run_sessions WHERE workflow_run_id = $1`,
+                [workflowRunId],
+            );
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_run_sessions (
+                     association_id, workflow_run_id, session_id, state_run_id, ordinal, is_current, status
+                 ) VALUES ($1,$2,$3,$4,$5,TRUE,'reserved') RETURNING *`,
+                [randomUUID(), workflowRunId, sessionId, stateRun.state_run_id, Number(ordinalResult.rows[0].ordinal)],
+            );
+            await client.query(
+                // Re-activating a state (a new session taking over a run that a
+                // prior session already owned) mints a fresh attempt: clear the
+                // durable Markdown snapshot so the controller re-resolves the
+                // source branch ref to its latest commit instead of reusing the
+                // commit pinned by the prior session. A same-session resume never
+                // passes through here (the reconcile loop reuses its association),
+                // so an in-flight run keeps its pin for intra-run consistency.
+                `UPDATE "${this.sql.schema}".workflow_run_state_runs
+                 SET attempt = CASE WHEN session_id IS NULL THEN attempt ELSE attempt + 1 END,
+                     session_id = $2, status = 'reserved', lease_owner = NULL,
+                     lease_expires_at = NULL, error = NULL, updated_at = now(),
+                     state_owner      = CASE WHEN session_id IS NULL THEN state_owner      ELSE NULL END,
+                     source_id        = CASE WHEN session_id IS NULL THEN source_id        ELSE NULL END,
+                     source_path      = CASE WHEN session_id IS NULL THEN source_path      ELSE NULL END,
+                     source_commit    = CASE WHEN session_id IS NULL THEN source_commit    ELSE NULL END,
+                     markdown_sha256  = CASE WHEN session_id IS NULL THEN markdown_sha256  ELSE NULL END,
+                     allowed_outcomes = CASE WHEN session_id IS NULL THEN allowed_outcomes ELSE '[]'::jsonb END,
+                     terminal         = CASE WHEN session_id IS NULL THEN terminal         ELSE NULL END
+                 WHERE state_run_id = $1`,
+                [stateRun.state_run_id, sessionId],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_runs
+                 SET lifecycle_state = 'pending_session', session_attempts = session_attempts + 1,
+                     session_error = NULL, updated_at = now()
+                 WHERE workflow_run_id = $1`,
+                [workflowRunId],
+            );
+            await client.query("COMMIT");
+            return rowToWorkflowRunSession(rows[0]);
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async prepareWorkflowRunStateRun(input: PrepareWorkflowRunStateRunInput): Promise<WorkflowRunStateRunRow> {
+        const sourceId = input.sourceId.trim();
+        const sourcePath = input.sourcePath.trim();
+        const markdownSha256 = input.markdownSha256.trim();
+        const sourceCommit = input.sourceCommit?.trim();
+        if (!sourceId || !sourcePath || !sourceCommit || !/^[0-9a-f]{64}$/i.test(markdownSha256)) {
+            throw new Error("Prepared WorkflowRun state requires sourceId, sourcePath, sourceCommit, and a SHA-256 digest");
+        }
+        if (!WORKFLOW_RUN_STATE_NAME_RE.test(input.expectedState)
+            || !Number.isInteger(input.expectedRevision)
+            || input.expectedRevision <= 0) {
+            throw new Error("Prepared WorkflowRun state requires a valid expected state and revision");
+        }
+        if (!Array.isArray(input.allowedOutcomes)) {
+            throw new Error("Prepared WorkflowRun state allowedOutcomes must be an array");
+        }
+        const seen = new Set<string>();
+        const allowedOutcomes = input.allowedOutcomes.map((entry) => {
+            const outcome = String(entry?.outcome ?? "").trim();
+            const toState = String(entry?.toState ?? "").trim();
+            if (!outcome || !toState) throw new Error("Each WorkflowRun state outcome requires outcome and toState");
+            if (seen.has(outcome)) throw new Error(`Duplicate WorkflowRun state outcome: ${outcome}`);
+            seen.add(outcome);
+            return { outcome, toState };
+        });
+        if (input.terminal !== (allowedOutcomes.length === 0)) {
+            throw new Error("Terminal WorkflowRun states must have no allowed outcomes");
+        }
+        const { rows } = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_state_runs sr
+             SET state_owner = $2, source_id = $3, source_path = $4,
+                 source_commit = $5, markdown_sha256 = $6,
+                 allowed_outcomes = $7, terminal = $8, status = 'reserved',
+                 error = NULL, updated_at = now()
+             FROM "${this.sql.schema}".workflow_run_sessions js
+             WHERE js.session_id = $1
+               AND js.is_current
+               AND js.state_run_id = sr.state_run_id
+               AND sr.state_name = $9
+               AND sr.state_revision = $10
+               AND sr.status IN ('reserved', 'unacked', 'failed')
+               AND (
+                    (
+                        sr.state_owner IS NULL
+                        AND sr.source_id IS NULL
+                        AND sr.source_path IS NULL
+                        AND sr.source_commit IS NULL
+                        AND sr.markdown_sha256 IS NULL
+                        AND sr.terminal IS NULL
+                    )
+                    OR (
+                        sr.state_owner = $2
+                        AND sr.source_id = $3
+                        AND sr.source_path = $4
+                        AND sr.source_commit = $5
+                        AND sr.markdown_sha256 = $6
+                        AND sr.allowed_outcomes = $7::jsonb
+                        AND sr.terminal = $8
+                    )
+               )
+             RETURNING sr.*`,
+            [
+                input.sessionId,
+                input.stateOwner,
+                sourceId,
+                sourcePath,
+                sourceCommit,
+                markdownSha256.toLowerCase(),
+                JSON.stringify(allowedOutcomes),
+                input.terminal,
+                input.expectedState,
+                input.expectedRevision,
+            ],
+        );
+        if (!rows[0]) {
+            throw new Error(
+                `Current WorkflowRun state run not found or durable Markdown snapshot differs for session ${input.sessionId}`,
+            );
+        }
+        return rowToWorkflowRunStateRun(rows[0]);
+    }
+
+    async attachWorkflowRunSession(workflowRunId: string, sessionId: string, cycleId: string | null, workerId: string): Promise<void> {
+        const result = await this.pool.query(
+            `WITH attached AS (
+                 UPDATE "${this.sql.schema}".workflow_run_sessions js
+                 SET status = CASE WHEN status = 'active' THEN 'active' ELSE 'unacked' END,
+                     error = NULL, attached_at = COALESCE(attached_at, now())
+                 WHERE js.workflow_run_id = $1 AND js.session_id = $2 AND js.is_current
+                   AND EXISTS (
+                       SELECT 1
+                       FROM "${this.sql.schema}".workflow_runs j
+                       LEFT JOIN "${this.sql.schema}".workflow_generator_cycles c
+                         ON c.cycle_id = $3
+                        AND c.workflow_generator_id = j.workflow_generator_id
+                       LEFT JOIN "${this.sql.schema}".workflow_generators g
+                         ON g.workflow_generator_id = j.workflow_generator_id
+                       WHERE j.workflow_run_id = js.workflow_run_id
+                         AND (
+                             ($3 IS NULL
+                              AND j.induction_lease_owner = $4
+                              AND j.induction_lease_expires_at > now())
+                             OR
+                             ($3 IS NOT NULL
+                              AND c.status = 'running'
+                              AND c.claimed_by = $4
+                              AND g.lease_owner = $4
+                              AND g.lease_expires_at > now())
+                         )
+                   )
+                 RETURNING js.workflow_run_id, js.state_run_id
+             ), attached_run AS (
+                 UPDATE "${this.sql.schema}".workflow_run_state_runs sr
+                 SET status = CASE WHEN status = 'active' THEN 'active' ELSE 'unacked' END,
+                     error = NULL, updated_at = now()
+                 FROM attached
+                 WHERE sr.state_run_id = attached.state_run_id
+                   AND sr.status IN ('reserved', 'unacked', 'active', 'failed')
+                 RETURNING sr.workflow_run_id, sr.status
+             )
+             UPDATE "${this.sql.schema}".workflow_runs j
+             SET lifecycle_state = CASE
+                     WHEN attached_run.status = 'active' THEN 'active'
+                     ELSE 'pending_session'
+                 END,
+                 session_error = NULL, updated_at = now()
+             FROM attached_run WHERE j.workflow_run_id = attached_run.workflow_run_id`,
+            [workflowRunId, sessionId, cycleId, workerId],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("Current WorkflowRun session association not found");
+    }
+
+    async acknowledgeWorkflowRunSession(sessionId: string, workerId?: string): Promise<void> {
+        await this.pool.query(
+            `WITH acknowledged AS (
+                 UPDATE "${this.sql.schema}".workflow_run_sessions
+                 SET status = 'active'
+                 WHERE session_id = $1 AND is_current AND status IN ('reserved', 'unacked', 'active')
+                 RETURNING workflow_run_id, state_run_id
+             ), activated_run AS (
+                 UPDATE "${this.sql.schema}".workflow_run_state_runs sr
+                 SET status = 'active',
+                     lease_owner = COALESCE(NULLIF(BTRIM($2), ''), lease_owner),
+                     lease_expires_at = now() + interval '1 hour',
+                     started_at = COALESCE(started_at, now()),
+                     updated_at = now()
+                 FROM acknowledged
+                 WHERE sr.state_run_id = acknowledged.state_run_id
+                   AND sr.status IN ('reserved', 'unacked', 'active', 'waiting', 'input_required')
+                 RETURNING sr.workflow_run_id
+             )
+             UPDATE "${this.sql.schema}".workflow_runs j
+             SET lifecycle_state = 'active', session_error = NULL, updated_at = now()
+             FROM activated_run
+             WHERE j.workflow_run_id = activated_run.workflow_run_id`,
+            [sessionId, workerId ?? null],
+        );
+    }
+
+    async setWorkflowRunSessionExecutionStatus(
+        sessionId: string,
+        status: "active" | "waiting" | "input_required",
+    ): Promise<void> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const stateRun = await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_state_runs sr
+                 SET status = $2,
+                     lease_owner = CASE WHEN $2 = 'active' THEN lease_owner ELSE NULL END,
+                     lease_expires_at = CASE WHEN $2 = 'active' THEN lease_expires_at ELSE NULL END,
+                     updated_at = now()
+                 FROM "${this.sql.schema}".workflow_run_sessions js
+                 WHERE js.session_id = $1
+                   AND js.is_current
+                   AND js.state_run_id = sr.state_run_id
+                   AND sr.status IN ('active', 'waiting', 'input_required')
+                 RETURNING sr.workflow_run_id`,
+                [sessionId, status],
+            );
+            if (stateRun.rows[0]) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_runs
+                     SET lifecycle_state = $2,
+                         updated_at = now()
+                     WHERE workflow_run_id = $1`,
+                    [
+                        stateRun.rows[0].workflow_run_id,
+                        status === "active" ? "active" : "blocked",
+                    ],
+                );
+                if (status !== "active") {
+                    // Authoritative external-operation wait "started" stamp. This
+                    // transition is the durable "session has parked" signal: it
+                    // runs post-turn, strictly after the producer's
+                    // startWorkflowRunExternalOperation has committed the wait row, and it
+                    // flips the state run to 'waiting'/'input_required' in this very
+                    // transaction. The signal.system_wait_started event that also
+                    // stamps this boundary runs on a decoupled activity and can lose
+                    // a visibility race against wait-row creation; when it does, the
+                    // signal-claim path (which requires wait_started_at IS NOT NULL)
+                    // would never deliver the resume signal and the WorkflowRun would strand.
+                    // Stamping here — atomically with the state-run parking — closes
+                    // that race for good without risking premature delivery, since
+                    // wait_started_at only becomes non-null at the same instant the
+                    // state run becomes claim-eligible.
+                    const stampedWaits = await client.query(
+                        `UPDATE "${this.sql.schema}".workflow_run_waits wait
+                         SET wait_started_at = COALESCE(wait.wait_started_at, now()),
+                             updated_at = now()
+                         FROM "${this.sql.schema}".workflow_run_sessions session
+                         WHERE wait.state_run_id = session.state_run_id
+                           AND session.session_id = $1
+                           AND session.is_current
+                           AND wait.external_operation_id IS NOT NULL
+                           AND wait.wait_started_at IS NULL
+                         RETURNING wait.external_operation_id`,
+                        [sessionId],
+                    );
+                    const stampedOpIds = stampedWaits.rows
+                        .map((row: { external_operation_id: string | null }) => row.external_operation_id)
+                        .filter((id: string | null): id is string => Boolean(id));
+                    if (stampedOpIds.length > 0) {
+                        await client.query(
+                            `UPDATE "${this.sql.schema}".workflow_run_external_operations
+                             SET wait_started_at = COALESCE(wait_started_at, now()),
+                                 updated_at = now()
+                             WHERE operation_id = ANY($1::text[])`,
+                            [stampedOpIds],
+                        );
+                    }
+                }
+            }
+            await client.query("COMMIT");
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async failWorkflowRunSession(
+        workflowRunId: string,
+        sessionId: string,
+        cycleId: string | null,
+        workerId: string,
+        error: string,
+    ): Promise<void> {
+        const result = await this.pool.query(
+            `WITH failed AS (
+                 UPDATE "${this.sql.schema}".workflow_run_sessions js
+                 SET status = 'failed', error = $5
+                 WHERE js.workflow_run_id = $1 AND js.session_id = $2 AND js.is_current
+                   AND EXISTS (
+                       SELECT 1
+                       FROM "${this.sql.schema}".workflow_runs j
+                       LEFT JOIN "${this.sql.schema}".workflow_generator_cycles c
+                         ON c.cycle_id = $3
+                        AND c.workflow_generator_id = j.workflow_generator_id
+                       LEFT JOIN "${this.sql.schema}".workflow_generators g
+                         ON g.workflow_generator_id = j.workflow_generator_id
+                       WHERE j.workflow_run_id = js.workflow_run_id
+                         AND (
+                             ($3 IS NULL
+                              AND j.induction_lease_owner = $4
+                              AND j.induction_lease_expires_at > now())
+                             OR
+                             ($3 IS NOT NULL
+                              AND c.status = 'running'
+                              AND c.claimed_by = $4
+                              AND g.lease_owner = $4
+                              AND g.lease_expires_at > now())
+                         )
+                   )
+                 RETURNING js.workflow_run_id, js.state_run_id
+             ), failed_run AS (
+                 UPDATE "${this.sql.schema}".workflow_run_state_runs sr
+                 SET status = 'failed', error = $5, lease_owner = NULL,
+                     lease_expires_at = NULL, updated_at = now()
+                 FROM failed
+                 WHERE sr.state_run_id = failed.state_run_id
+                   AND sr.status <> 'completed'
+                 RETURNING sr.workflow_run_id, sr.state_run_id
+             ), cancelled_wait AS (
+                 UPDATE "${this.sql.schema}".workflow_run_waits wait
+                 SET status = 'cancelled',
+                     next_check_at = NULL,
+                     check_lease_owner = NULL,
+                     check_lease_expires_at = NULL,
+                     updated_at = now()
+                 FROM failed_run
+                 WHERE wait.state_run_id = failed_run.state_run_id
+                   AND wait.status = 'pending'
+                 RETURNING wait.wait_id
+             )
+             UPDATE "${this.sql.schema}".workflow_runs j
+             SET lifecycle_state = 'blocked',
+                 session_error = $5,
+                 induction_lease_owner = NULL,
+                 induction_lease_expires_at = NULL,
+                 updated_at = now()
+             FROM failed_run WHERE j.workflow_run_id = failed_run.workflow_run_id`,
+            [workflowRunId, sessionId, cycleId, workerId, error],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("Current WorkflowRun session association not found");
+    }
+
+    async listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_run_sessions
+             WHERE workflow_run_id = $1 ORDER BY ordinal`,
+            [workflowRunId],
+        );
+        return rows.map(rowToWorkflowRunSession);
+    }
+
+    async listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_run_state_runs
+             WHERE workflow_run_id = $1 ORDER BY state_revision`,
+            [workflowRunId],
+        );
+        return rows.map(rowToWorkflowRunStateRun);
+    }
+
+    async listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_run_journal_entries
+             WHERE workflow_run_id = $1 ORDER BY sequence`,
+            [workflowRunId],
+        );
+        return rows.map(rowToWorkflowRunJournalEntry);
+    }
+
+    async listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_run_waits
+             WHERE workflow_run_id = $1
+             ORDER BY expected_state_revision, created_at, wait_id`,
+            [workflowRunId],
+        );
+        return rows.map(rowToWorkflowRunWait);
+    }
+
+    async setWorkflowRunWaitConditionOverride(
+        workflowRunId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<WorkflowRunWaitRow> {
+        const workflowRun = workflowRunId.trim();
+        const id = waitId.trim();
+        const key = conditionKey.trim();
+        if (!workflowRun || !id || !key) {
+            throw new Error("Setting a WorkflowRun wait condition override requires workflowRunId, waitId, and conditionKey");
+        }
+        const { rows } = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_waits
+             SET condition_overrides = CASE
+                     WHEN $3::boolean THEN (
+                         SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb)
+                         FROM jsonb_array_elements_text(
+                             COALESCE(condition_overrides, '[]'::jsonb) || to_jsonb($2::text)
+                         ) AS elem
+                     )
+                     ELSE (
+                         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+                         FROM jsonb_array_elements_text(COALESCE(condition_overrides, '[]'::jsonb)) AS elem
+                         WHERE elem <> $2::text
+                     )
+                 END,
+                 next_check_at = now(),
+                 updated_at = now()
+             WHERE wait_id = $1
+               AND workflow_run_id = $4
+               AND kind = 'observed_condition'
+             RETURNING *`,
+            [id, key, overridden, workflowRun],
+        );
+        const row = rows[0];
+        if (!row) {
+            throw new Error(`Observed-condition WorkflowRun wait not found: ${id}`);
+        }
+        return rowToWorkflowRunWait(row);
+    }
+
+    async startWorkflowRunResponseWait(input: StartWorkflowRunResponseWaitInput): Promise<WorkflowRunWaitRow | null> {
+        const sessionId = input.sessionId.trim();
+        const waitKey = input.waitKey.trim();
+        const question = input.question.trim();
+        if (!sessionId || !question) {
+            throw new Error("Response wait requires a sessionId and question");
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(waitKey)) {
+            throw new Error("Response wait key contains unsupported characters");
+        }
+        const choices = (input.choices ?? []).map((choice) => choice.trim());
+        if (choices.some((choice) => !choice) || new Set(choices).size !== choices.length) {
+            throw new Error("Response wait choices must be unique non-empty strings");
+        }
+        const allowFreeform = input.allowFreeform !== false;
+        if (!allowFreeform && choices.length === 0) {
+            throw new Error("A response wait that disallows freeform input requires choices");
+        }
+        const prompt = { question, choices, allowFreeform };
+        const responseSchema = { type: "string", choices, allowFreeform };
+        const responderPolicy = input.responderPolicy ?? { kind: "session_writer" };
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT js.is_current, sr.state_run_id, sr.workflow_run_id, sr.workflow_definition_id,
+                        sr.state_revision, sr.status AS state_run_status,
+                        j.state_revision AS workflow_run_state_revision
+                 FROM "${this.sql.schema}".workflow_run_sessions js
+                 JOIN "${this.sql.schema}".workflow_run_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs j
+                   ON j.workflow_run_id = sr.workflow_run_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) {
+                await client.query("COMMIT");
+                return null;
+            }
+            if (!context.is_current
+                || Number(context.state_revision) !== Number(context.workflow_run_state_revision)
+                || !["active", "input_required"].includes(context.state_run_status)) {
+                throw new Error("Response waits require the active current WorkflowRun state run");
+            }
+            const existingResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_waits
+                 WHERE state_run_id = $1 AND wait_key = $2
+                 FOR UPDATE`,
+                [context.state_run_id, waitKey],
+            );
+            if (existingResult.rows[0]) {
+                const existing = rowToWorkflowRunWait(existingResult.rows[0]);
+                const sameContract = existing.kind === "response"
+                    && existing.sessionId === sessionId
+                    && existing.expectedStateRevision === Number(context.state_revision)
+                    && canonicalJson(existing.prompt) === canonicalJson(prompt)
+                    && canonicalJson(existing.responseSchema) === canonicalJson(responseSchema)
+                    && canonicalJson(existing.responderPolicy) === canonicalJson(responderPolicy);
+                if (!sameContract) {
+                    throw new Error("Response wait key is already bound to a different contract");
+                }
+                await client.query("COMMIT");
+                return existing;
+            }
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_waits
+                 SET status = 'cancelled',
+                     updated_at = now()
+                 WHERE state_run_id = $1
+                   AND kind = 'response'
+                   AND status = 'pending'
+                 RETURNING wait_id`,
+                [context.state_run_id],
+            );
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_run_waits (
+                     wait_id, workflow_run_id, state_run_id, workflow_definition_id, session_id,
+                     wait_key, kind, status, detection_mode, expected_state_revision,
+                     prompt, response_schema, responder_policy, deadline_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,'response','pending','direct_submission',$7,$8,$9,$10,$11)
+                 RETURNING *`,
+                [
+                    randomUUID(),
+                    context.workflow_run_id,
+                    context.state_run_id,
+                    context.workflow_definition_id,
+                    sessionId,
+                    waitKey,
+                    Number(context.state_revision),
+                    JSON.stringify(prompt),
+                    JSON.stringify(responseSchema),
+                    JSON.stringify(responderPolicy),
+                    input.deadlineAt ?? null,
+                ],
+            );
+            await client.query("COMMIT");
+            return rowToWorkflowRunWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async acceptWorkflowRunResponse(input: AcceptWorkflowRunResponseInput): Promise<WorkflowRunWaitRow | null> {
+        const sessionId = input.sessionId.trim();
+        const answer = input.answer.trim();
+        if (!sessionId) throw new Error("WorkflowRun response requires a sessionId");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT js.is_current, sr.state_run_id, sr.state_revision,
+                        sr.status AS state_run_status,
+                        j.state_revision AS workflow_run_state_revision
+                 FROM "${this.sql.schema}".workflow_run_sessions js
+                 JOIN "${this.sql.schema}".workflow_run_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs j
+                   ON j.workflow_run_id = sr.workflow_run_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) {
+                await client.query("COMMIT");
+                return null;
+            }
+            if (!context.is_current
+                || Number(context.state_revision) !== Number(context.workflow_run_state_revision)
+                || !["active", "input_required"].includes(context.state_run_status)) {
+                throw new Error("WorkflowRun response does not target the active current state revision");
+            }
+            const waitResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_waits
+                 WHERE state_run_id = $1
+                   AND kind = 'response'
+                   AND status = 'pending'
+                 LIMIT 1
+                 FOR UPDATE`,
+                [context.state_run_id],
+            );
+            const wait = waitResult.rows[0] ? rowToWorkflowRunWait(waitResult.rows[0]) : null;
+            if (!wait) {
+                const latestResult = await client.query(
+                    `SELECT * FROM "${this.sql.schema}".workflow_run_waits
+                     WHERE state_run_id = $1
+                       AND kind = 'response'
+                     ORDER BY created_at DESC, wait_id DESC
+                     LIMIT 1
+                     FOR UPDATE`,
+                    [context.state_run_id],
+                );
+                const latest = latestResult.rows[0] ? rowToWorkflowRunWait(latestResult.rows[0]) : null;
+                if (latest?.status === "satisfied") {
+                    throw new Error("WorkflowRun response wait is already satisfied");
+                }
+                if (context.state_run_status === "input_required") {
+                    await client.query("COMMIT");
+                    return null;
+                }
+                throw new Error("The current WorkflowRun state run has no response wait");
+            }
+            if (!answer) throw new Error("WorkflowRun response requires a non-empty answer");
+            if (wait.expectedStateRevision !== Number(context.state_revision)) {
+                throw new Error("WorkflowRun response wait targets a stale state revision");
+            }
+            const choices = Array.isArray(wait.responseSchema.choices)
+                ? wait.responseSchema.choices.filter((choice): choice is string => typeof choice === "string")
+                : [];
+            const allowFreeform = wait.responseSchema.allowFreeform !== false;
+            if (!allowFreeform && !choices.includes(answer)) {
+                throw new Error(`WorkflowRun response must be one of: ${choices.join(", ")}`);
+            }
+            const responseId = randomUUID();
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_waits
+                 SET status = 'satisfied',
+                     response_id = $2,
+                     response = $3,
+                     response_delivery_status = 'pending',
+                     response_enqueued_at = NULL,
+                     satisfaction_evidence = $4,
+                     satisfied_by = $5,
+                     satisfied_at = now(),
+                     updated_at = now()
+                 WHERE wait_id = $1
+                   AND status = 'pending'
+                   AND expected_state_revision = $6
+                 RETURNING *`,
+                [
+                    wait.waitId,
+                    responseId,
+                    JSON.stringify({ answer }),
+                    JSON.stringify({ source: "direct_submission", sessionId }),
+                    input.respondedBy ? JSON.stringify(input.respondedBy) : null,
+                    Number(context.state_revision),
+                ],
+            );
+            if (!rows[0]) throw new Error("WorkflowRun response wait was satisfied concurrently");
+            await client.query("COMMIT");
+            return rowToWorkflowRunWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async markWorkflowRunResponseEnqueued(waitId: string, responseId: string): Promise<void> {
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_waits
+             SET response_delivery_status = 'enqueued',
+                 response_enqueued_at = COALESCE(response_enqueued_at, now()),
+                 updated_at = now()
+             WHERE wait_id = $1
+               AND response_id = $2
+               AND status = 'satisfied'
+               AND response_delivery_status IN ('pending', 'enqueued')`,
+            [waitId.trim(), responseId.trim()],
+        );
+        if ((result.rowCount ?? 0) !== 1) {
+            throw new Error("WorkflowRun response wait enqueue acknowledgement is stale");
+        }
+    }
+
+    async reopenWorkflowRunResponseWait(waitId: string, responseId: string): Promise<void> {
+        const normalizedWaitId = waitId.trim();
+        const normalizedResponseId = responseId.trim();
+        if (!normalizedWaitId || !normalizedResponseId) {
+            throw new Error("Reopening a WorkflowRun response wait requires waitId and responseId");
+        }
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_waits wait
+             SET status = 'pending',
+                 response_id = NULL,
+                 response = NULL,
+                 response_delivery_status = 'none',
+                 response_enqueued_at = NULL,
+                 satisfaction_evidence = NULL,
+                 satisfied_by = NULL,
+                 satisfied_at = NULL,
+                 updated_at = now()
+             FROM "${this.sql.schema}".workflow_run_state_runs state_run,
+                  "${this.sql.schema}".workflow_runs workflowRun
+             WHERE wait.wait_id = $1
+               AND wait.response_id = $2
+               AND wait.status = 'satisfied'
+               AND wait.response_delivery_status = 'pending'
+               AND state_run.state_run_id = wait.state_run_id
+               AND workflowRun.workflow_run_id = wait.workflow_run_id
+               AND state_run.state_revision = workflowRun.state_revision
+               AND state_run.status IN ('active', 'input_required')`,
+            [normalizedWaitId, normalizedResponseId],
+        );
+        if ((result.rowCount ?? 0) !== 1) {
+            throw new Error("WorkflowRun response wait cannot be reopened");
+        }
+    }
+
+    async startWorkflowRunTimerWait(input: StartWorkflowRunTimerWaitInput): Promise<WorkflowRunWaitRow | null> {
+        const sessionId = input.sessionId.trim();
+        const waitKey = input.waitKey.trim();
+        const reason = input.reason.trim();
+        const dueAt = input.dueAt;
+        if (!sessionId || !reason || !Number.isFinite(dueAt.getTime())) {
+            throw new Error("Timer wait requires a sessionId, reason, and valid dueAt");
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(waitKey)) {
+            throw new Error("Timer wait key contains unsupported characters");
+        }
+        const prompt = { reason, dueAt: dueAt.toISOString() };
+        const predicate = { dueAt: dueAt.toISOString() };
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT js.is_current, sr.state_run_id, sr.workflow_run_id, sr.workflow_definition_id,
+                        sr.state_revision, sr.status AS state_run_status,
+                        j.state_revision AS workflow_run_state_revision
+                 FROM "${this.sql.schema}".workflow_run_sessions js
+                 JOIN "${this.sql.schema}".workflow_run_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs j
+                   ON j.workflow_run_id = sr.workflow_run_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) {
+                await client.query("COMMIT");
+                return null;
+            }
+            if (!context.is_current
+                || Number(context.state_revision) !== Number(context.workflow_run_state_revision)
+                || !["active", "waiting", "input_required"].includes(context.state_run_status)) {
+                throw new Error("Timer waits require the current WorkflowRun state run");
+            }
+            const existingResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_waits
+                 WHERE state_run_id = $1 AND wait_key = $2
+                 FOR UPDATE`,
+                [context.state_run_id, waitKey],
+            );
+            if (existingResult.rows[0]) {
+                const existing = rowToWorkflowRunWait(existingResult.rows[0]);
+                if (existing.kind !== "timer"
+                    || existing.sessionId !== sessionId
+                    || existing.expectedStateRevision !== Number(context.state_revision)
+                    || canonicalJson(existing.prompt) !== canonicalJson(prompt)
+                    || canonicalJson(existing.predicate) !== canonicalJson(predicate)) {
+                    throw new Error("Timer wait key is already bound to a different contract");
+                }
+                await client.query("COMMIT");
+                return existing;
+            }
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_waits
+                 SET status = 'cancelled', updated_at = now()
+                 WHERE state_run_id = $1
+                   AND kind = 'timer'
+                   AND status = 'pending'`,
+                [context.state_run_id],
+            );
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_run_waits (
+                     wait_id, workflow_run_id, state_run_id, workflow_definition_id, session_id,
+                     wait_key, kind, status, detection_mode, expected_state_revision,
+                     prompt, response_schema, responder_policy, predicate, next_check_at,
+                     wait_started_at
+                 ) VALUES (
+                     $1,$2,$3,$4,$5,$6,'timer','pending','timer',$7,
+                     $8,'{}'::jsonb,'{}'::jsonb,$9,$10,now()
+                 )
+                 RETURNING *`,
+                [
+                    randomUUID(),
+                    context.workflow_run_id,
+                    context.state_run_id,
+                    context.workflow_definition_id,
+                    sessionId,
+                    waitKey,
+                    Number(context.state_revision),
+                    JSON.stringify(prompt),
+                    JSON.stringify(predicate),
+                    dueAt,
+                ],
+            );
+            await client.query("COMMIT");
+            return rowToWorkflowRunWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async completeWorkflowRunTimerWait(sessionId: string): Promise<WorkflowRunWaitRow | null> {
+        const normalizedSessionId = sessionId.trim();
+        if (!normalizedSessionId) throw new Error("Completing a timer wait requires sessionId");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT wait.*
+                 FROM "${this.sql.schema}".workflow_run_waits wait
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = wait.workflow_run_id
+                  AND workflowRun.state_revision = wait.expected_state_revision
+                 JOIN "${this.sql.schema}".workflow_run_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = $1
+                  AND session.is_current
+                 WHERE wait.session_id = $1
+                   AND wait.kind = 'timer'
+                   AND wait.status = 'pending'
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                 ORDER BY wait.created_at DESC, wait.wait_id DESC
+                 LIMIT 1
+                 FOR UPDATE OF wait, state_run, workflowRun, session`,
+                [normalizedSessionId],
+            );
+            if (!contextResult.rows[0]) {
+                await client.query("COMMIT");
+                return null;
+            }
+            const firedAt = new Date();
+            const evidence = {
+                source: "durable_timer",
+                sessionId: normalizedSessionId,
+                firedAt: firedAt.toISOString(),
+            };
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_waits
+                 SET status = 'satisfied',
+                     latest_observation = $2,
+                     satisfaction_evidence = $2,
+                     next_check_at = NULL,
+                     wait_completed_at = now(),
+                     satisfied_at = now(),
+                     updated_at = now()
+                 WHERE wait_id = $1
+                   AND status = 'pending'
+                 RETURNING *`,
+                [contextResult.rows[0].wait_id, JSON.stringify(evidence)],
+            );
+            await client.query("COMMIT");
+            return rowToWorkflowRunWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async cancelWorkflowRunTimerWait(sessionId: string): Promise<WorkflowRunWaitRow | null> {
+        const normalizedSessionId = sessionId.trim();
+        if (!normalizedSessionId) throw new Error("Cancelling a timer wait requires sessionId");
+        const { rows } = await this.pool.query(
+            `WITH current_wait AS (
+                 SELECT wait.wait_id
+                 FROM "${this.sql.schema}".workflow_run_waits wait
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = wait.workflow_run_id
+                  AND workflowRun.state_revision = wait.expected_state_revision
+                 JOIN "${this.sql.schema}".workflow_run_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = $1
+                  AND session.is_current
+                 WHERE wait.session_id = $1
+                   AND wait.kind = 'timer'
+                   AND wait.status = 'pending'
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                 ORDER BY wait.created_at DESC, wait.wait_id DESC
+                 LIMIT 1
+                 FOR UPDATE OF wait, state_run, workflowRun, session
+             )
+             UPDATE "${this.sql.schema}".workflow_run_waits wait
+             SET status = 'cancelled',
+                 next_check_at = NULL,
+                 wait_completed_at = COALESCE(wait_completed_at, now()),
+                 updated_at = now()
+             FROM current_wait
+             WHERE wait.wait_id = current_wait.wait_id
+             RETURNING wait.*`,
+            [normalizedSessionId],
+        );
+        return rows[0] ? rowToWorkflowRunWait(rows[0]) : null;
+    }
+
+    async claimDueWorkflowRunWaits(
+        workerId: string,
+        limit = 25,
+        leaseSeconds = 30,
+        observers?: readonly (string | WorkflowRunWaitObserverSelector)[],
+    ): Promise<WorkflowRunWaitRow[]> {
+        const normalizedWorkerId = workerId.trim();
+        if (!normalizedWorkerId) throw new Error("WorkflowRun wait claim requires workerId");
+        if (!Number.isInteger(limit) || limit <= 0) throw new Error("WorkflowRun wait claim limit must be positive");
+        if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) {
+            throw new Error("WorkflowRun wait leaseSeconds must be positive");
+        }
+        const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
+        const normalizedObservers = observers === undefined
+            ? null
+            : [...new Map(observers.map((observer) => {
+                const selector = typeof observer === "string"
+                    ? { provider: observer }
+                    : observer;
+                const provider = selector.provider.trim().toLowerCase();
+                const kind = selector.kind?.trim().toLowerCase() || undefined;
+                if (!identifierPattern.test(provider)) {
+                    throw new Error("WorkflowRun wait observer provider must be a lowercase identifier");
+                }
+                if (kind !== undefined && !identifierPattern.test(kind)) {
+                    throw new Error("WorkflowRun wait observer kind must be a lowercase identifier");
+                }
+                return [`${provider}\0${kind ?? "*"}`, { provider, ...(kind ? { kind } : {}) }];
+            })).values()];
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT wait.wait_id
+                 FROM "${this.sql.schema}".workflow_run_waits wait
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = wait.workflow_run_id
+                  AND workflowRun.state_revision = wait.expected_state_revision
+                  AND workflowRun.current_state = state_run.state_name
+                  AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')
+                 JOIN "${this.sql.schema}".workflow_run_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = wait.session_id
+                  AND session.is_current
+                 WHERE wait.kind = 'observed_condition'
+                   AND wait.status = 'pending'
+                   AND wait.signal_key IS NOT NULL
+                   AND (
+                       $4::jsonb IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM jsonb_array_elements($4::jsonb) observer
+                           WHERE wait.provider = observer->>'provider'
+                             AND (
+                                 NOT (observer ? 'kind')
+                                 OR wait.predicate->>'kind' = observer->>'kind'
+                             )
+                       )
+                       OR (wait.deadline_at IS NOT NULL AND wait.deadline_at <= now())
+                   )
+                   AND (
+                       wait.next_check_at IS NOT NULL
+                       OR wait.check_lease_expires_at IS NOT NULL
+                   )
+                   AND LEAST(
+                       COALESCE(wait.next_check_at, wait.check_lease_expires_at),
+                       COALESCE(
+                           wait.deadline_at,
+                           wait.next_check_at,
+                           wait.check_lease_expires_at
+                       )
+                   ) <= now()
+                   AND (
+                       wait.check_lease_expires_at IS NULL
+                       OR wait.check_lease_expires_at <= now()
+                   )
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                 ORDER BY LEAST(
+                     COALESCE(wait.next_check_at, wait.check_lease_expires_at),
+                     COALESCE(
+                         wait.deadline_at,
+                         wait.next_check_at,
+                         wait.check_lease_expires_at
+                     )
+                 ), wait.created_at
+                 FOR UPDATE OF wait SKIP LOCKED
+                 LIMIT $2
+             )
+             UPDATE "${this.sql.schema}".workflow_run_waits wait
+             SET check_lease_owner = $1,
+                 check_lease_expires_at = now() + make_interval(secs => $3),
+                 next_check_at = NULL,
+                 check_attempts = check_attempts + 1,
+                 updated_at = now()
+             FROM due
+             WHERE wait.wait_id = due.wait_id
+             RETURNING wait.*`,
+            [
+                normalizedWorkerId,
+                limit,
+                leaseSeconds,
+                normalizedObservers === null ? null : JSON.stringify(normalizedObservers),
+            ],
+        );
+        return rows.map(rowToWorkflowRunWait);
+    }
+
+    async completeWorkflowRunWaitCheck(input: CompleteWorkflowRunWaitCheckInput): Promise<WorkflowRunWaitRow> {
+        const waitId = input.waitId.trim();
+        const workerId = input.workerId.trim();
+        if (!waitId || !workerId) throw new Error("Completing a WorkflowRun wait check requires waitId and workerId");
+        if (!["pending", "satisfied", "failed", "timed_out"].includes(input.disposition)) {
+            throw new Error("WorkflowRun wait check disposition is invalid");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT wait.*,
+                        state_run.status AS state_run_status,
+                        state_run.state_revision AS state_run_revision,
+                        state_run.state_name,
+                        workflowRun.state_revision AS workflow_run_state_revision,
+                        workflowRun.current_state AS workflow_run_current_state,
+                        workflowRun.lifecycle_state,
+                        session.is_current,
+                        wait.check_lease_expires_at > now() AS check_lease_is_valid,
+                        wait.deadline_at IS NOT NULL
+                            AND wait.deadline_at <= now() AS deadline_expired
+                 FROM "${this.sql.schema}".workflow_run_waits wait
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = wait.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_run_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = wait.session_id
+                 WHERE wait.wait_id = $1
+                 FOR UPDATE OF wait, state_run, workflowRun, session`,
+                [waitId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) throw new Error(`WorkflowRun wait not found: ${waitId}`);
+            if (context.kind !== "observed_condition"
+                || context.status !== "pending"
+                || context.check_lease_owner !== workerId
+                || !context.check_lease_expires_at
+                || !context.check_lease_is_valid) {
+                throw new Error("WorkflowRun wait check lease is stale");
+            }
+            if (!context.is_current
+                || Number(context.expected_state_revision) !== Number(context.workflow_run_state_revision)
+                || Number(context.state_run_revision) !== Number(context.workflow_run_state_revision)
+                || context.state_name !== context.workflow_run_current_state
+                || ["completed", "failed"].includes(context.state_run_status)
+                || ["completed", "cancelled"].includes(context.lifecycle_state)) {
+                throw new Error("WorkflowRun wait targets a stale state revision");
+            }
+
+            const disposition: WorkflowRunWaitCheckDisposition = context.deadline_expired
+                && input.disposition === "pending"
+                ? "timed_out"
+                : input.disposition;
+            if (disposition === "pending" && !input.nextCheckAt) {
+                throw new Error("A pending WorkflowRun wait observation requires nextCheckAt");
+            }
+            const requestedNextCheckAt = disposition === "pending"
+                && context.deadline_at
+                && input.nextCheckAt! > new Date(context.deadline_at)
+                ? new Date(context.deadline_at)
+                : input.nextCheckAt!;
+            const acceleratedNextCheckAt = context.next_check_at
+                ? new Date(context.next_check_at)
+                : null;
+            const nextCheckAt = disposition === "pending"
+                ? (
+                    acceleratedNextCheckAt
+                    && acceleratedNextCheckAt < requestedNextCheckAt
+                        ? acceleratedNextCheckAt
+                        : requestedNextCheckAt
+                )
+                : null;
+            const observation = input.observation === undefined
+                ? context.latest_observation
+                : input.observation;
+            const providerCursor = input.providerCursor === undefined
+                ? context.provider_cursor
+                : input.providerCursor;
+            const evidence = input.evidence === undefined
+                ? context.satisfaction_evidence
+                : workflowRunWaitEvidence(input.evidence);
+            const result = input.result === undefined ? observation : input.result;
+            const error = disposition === "pending" || disposition === "failed" || disposition === "timed_out"
+                ? input.error ?? (disposition === "timed_out" ? "WorkflowRun wait deadline elapsed" : null)
+                : null;
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_waits
+                 SET status = $3,
+                     provider_cursor = $4,
+                     latest_observation = $5,
+                     satisfaction_evidence = CASE
+                         WHEN $3 = 'satisfied' THEN $6::jsonb
+                         ELSE NULL
+                     END,
+                     last_checked_at = now(),
+                     consecutive_check_failures = CASE
+                         WHEN $3 = 'pending' AND $7::text IS NOT NULL
+                             THEN consecutive_check_failures + 1
+                         ELSE 0
+                     END,
+                     check_lease_owner = NULL,
+                     check_lease_expires_at = NULL,
+                     last_check_error = $7::text,
+                     next_check_at = $8,
+                     satisfied_at = CASE WHEN $3 = 'satisfied' THEN now() ELSE NULL END,
+                     updated_at = now()
+                 WHERE wait_id = $1
+                   AND check_lease_owner = $2
+                   AND check_lease_expires_at > now()
+                   AND status = 'pending'
+                 RETURNING *`,
+                [
+                    waitId,
+                    workerId,
+                    disposition,
+                    providerCursor === undefined ? null : JSON.stringify(providerCursor),
+                    observation === undefined ? null : JSON.stringify(observation),
+                    evidence === null || evidence === undefined ? null : JSON.stringify(evidence),
+                    error,
+                    nextCheckAt,
+                ],
+            );
+            if (!rows[0]) throw new Error("WorkflowRun wait check lease is stale");
+
+            if (context.external_operation_id) {
+                if (disposition === "pending") {
+                    await client.query(
+                        `UPDATE "${this.sql.schema}".workflow_run_external_operations
+                         SET result = $2,
+                             error = $3,
+                             next_poll_at = $4,
+                             poll_lease_owner = NULL,
+                             poll_lease_expires_at = NULL,
+                             updated_at = now()
+                         WHERE operation_id = $1
+                           AND status = 'pending'`,
+                        [
+                            context.external_operation_id,
+                            observation === undefined ? null : JSON.stringify(observation),
+                            error,
+                            nextCheckAt,
+                        ],
+                    );
+                } else {
+                    await client.query(
+                        `UPDATE "${this.sql.schema}".workflow_run_external_operations
+                         SET status = $2,
+                             result = $3,
+                             evidence = $4,
+                             error = $5,
+                             completed_at = now(),
+                             poll_lease_owner = NULL,
+                             poll_lease_expires_at = NULL,
+                             signal_status = 'pending',
+                             next_signal_at = now(),
+                             updated_at = now()
+                         WHERE operation_id = $1
+                           AND status = 'pending'`,
+                        [
+                            context.external_operation_id,
+                            disposition === "satisfied" ? "succeeded" : "failed",
+                            result === undefined ? null : JSON.stringify(result),
+                            evidence === null || evidence === undefined ? null : JSON.stringify(evidence),
+                            error,
+                        ],
+                    );
+                }
+            }
+            await client.query("COMMIT");
+            return rowToWorkflowRunWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async accelerateWorkflowRunWaitCheck(
+        waitId: string,
+        expectedStateRevision: number,
+        checkAt = new Date(),
+    ): Promise<boolean> {
+        if (!Number.isFinite(checkAt.getTime())) throw new Error("WorkflowRun wait acceleration requires valid checkAt");
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_waits wait
+             SET next_check_at = LEAST(COALESCE(wait.next_check_at, $3), $3),
+                 updated_at = now()
+             FROM "${this.sql.schema}".workflow_run_state_runs state_run,
+                  "${this.sql.schema}".workflow_runs workflowRun
+             WHERE wait.wait_id = $1
+               AND wait.expected_state_revision = $2
+               AND wait.kind = 'observed_condition'
+               AND wait.status = 'pending'
+               AND wait.detection_mode IN ('event', 'hybrid')
+               AND state_run.state_run_id = wait.state_run_id
+               AND state_run.status IN ('active', 'waiting', 'input_required')
+               AND workflowRun.workflow_run_id = wait.workflow_run_id
+               AND workflowRun.state_revision = wait.expected_state_revision
+               AND workflowRun.current_state = state_run.state_name
+               AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')`,
+            [waitId.trim(), expectedStateRevision, checkAt],
+        );
+        return (result.rowCount ?? 0) === 1;
+    }
+
+    async accelerateWorkflowRunWaitChecksByTarget(
+        provider: string,
+        kind: string,
+        resourceKey: string,
+        checkAt = new Date(),
+    ): Promise<number> {
+        const normalizedProvider = provider.trim().toLowerCase();
+        const normalizedKind = kind.trim().toLowerCase();
+        const normalizedResourceKey = resourceKey.trim();
+        const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
+        if (!identifierPattern.test(normalizedProvider) || !identifierPattern.test(normalizedKind)) {
+            throw new Error("WorkflowRun wait acceleration requires valid provider and kind identifiers");
+        }
+        if (!normalizedResourceKey || normalizedResourceKey.length > 2048) {
+            throw new Error("WorkflowRun wait acceleration requires a valid resourceKey");
+        }
+        if (!Number.isFinite(checkAt.getTime())) {
+            throw new Error("WorkflowRun wait acceleration requires valid checkAt");
+        }
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_waits wait
+             SET next_check_at = LEAST(COALESCE(wait.next_check_at, $4), $4),
+                 updated_at = now()
+             FROM "${this.sql.schema}".workflow_run_state_runs state_run,
+                  "${this.sql.schema}".workflow_runs workflowRun
+             WHERE wait.provider = $1
+               AND wait.predicate->>'kind' = $2
+               AND wait.target->>'resourceKey' = $3
+               AND wait.kind = 'observed_condition'
+               AND wait.status = 'pending'
+               AND wait.detection_mode IN ('event', 'hybrid')
+               AND state_run.state_run_id = wait.state_run_id
+               AND state_run.status IN ('active', 'waiting', 'input_required')
+               AND workflowRun.workflow_run_id = wait.workflow_run_id
+               AND workflowRun.state_revision = wait.expected_state_revision
+               AND workflowRun.current_state = state_run.state_name
+               AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')`,
+            [normalizedProvider, normalizedKind, normalizedResourceKey, checkAt],
+        );
+        return result.rowCount ?? 0;
+    }
+
+    async recordWorkflowRunWaitBoundary(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean> {
+        const normalizedSessionId = sessionId.trim();
+        const normalizedSignalKey = signalKey.trim();
+        if (!normalizedSessionId || !normalizedSignalKey) {
+            throw new Error("Recording a WorkflowRun wait boundary requires sessionId and signalKey");
+        }
+        // Best-effort identity stamp driven by the session.system_wait_* event.
+        // This runs on the recordSessionEvent activity, which is decoupled from —
+        // and can lose a visibility race against — the wait-row creation done by
+        // the producer's startWorkflowRunExternalOperation. A no-match here is therefore
+        // EXPECTED and must NOT throw: recordWorkflowRunExternalOperationWait is wrapped in
+        // cmsRetryCritical (swallow:false, no retry on non-transient errors), so a
+        // thrown no-match immediately fails the whole recordSessionEvent activity
+        // and drops the event batch — and, because the boundary event never fires
+        // again, permanently strands the WorkflowRun (the signal-claim path requires
+        // wait_started_at IS NOT NULL, so the resume signal is never delivered).
+        //
+        // The AUTHORITATIVE started stamp is written in setWorkflowRunSessionExecutionStatus
+        // when the session durably parks: that path always runs after the wait-
+        // creating tool has committed and flips the state run to 'waiting' in the
+        // same transaction, so it closes the race regardless of this event's
+        // ordering. This call remains only as a fast-path best-effort stamp.
+        return this.recordWorkflowRunWaitBoundaryOnce(normalizedSessionId, normalizedSignalKey, phase);
+    }
+
+    /**
+     * Single-attempt wait-boundary write. Returns true when a matching wait row
+     * was stamped, false on no-match.
+     *
+     * The `started` phase matches the wait by stable identity — the current
+     * session plus signal key — and deliberately does NOT gate on
+     * workflow_run.state_revision / current_state. Those workflow-run-progress predicates can
+     * transiently differ while the workflowRun row advances, and gating the started
+     * stamp on them previously produced a silent no-match that stranded the WorkflowRun.
+     * The stamp is idempotent (COALESCE), so recording "this session parked on
+     * this wait" is safe regardless of where the workflowRun row is mid-transition.
+     *
+     * The `completed` phase keeps the full workflow-run-progress predicates and the
+     * wait_started_at prerequisite because it delivers the resume signal and must
+     * not fire for a stale state revision or an unstarted wait.
+     */
+    private async recordWorkflowRunWaitBoundaryOnce(
+        normalizedSessionId: string,
+        normalizedSignalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            let rows: Array<{ external_operation_id: string | null }>;
+            if (phase === "started") {
+                ({ rows } = await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_waits wait
+                     SET wait_started_at = COALESCE(wait.wait_started_at, now()),
+                         session_id = $1,
+                         updated_at = now()
+                     FROM "${this.sql.schema}".workflow_run_sessions session
+                     WHERE wait.state_run_id = session.state_run_id
+                       AND session.session_id = $1
+                       AND session.is_current
+                       AND wait.signal_key = $2
+                     RETURNING wait.external_operation_id`,
+                    [normalizedSessionId, normalizedSignalKey],
+                ));
+            } else {
+                ({ rows } = await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_waits wait
+                     SET wait_completed_at = COALESCE(wait.wait_completed_at, now()),
+                         session_id = $1,
+                         updated_at = now()
+                     FROM "${this.sql.schema}".workflow_run_state_runs state_run,
+                          "${this.sql.schema}".workflow_runs workflowRun,
+                          "${this.sql.schema}".workflow_run_sessions session
+                     WHERE wait.state_run_id = state_run.state_run_id
+                       AND wait.workflow_run_id = workflowRun.workflow_run_id
+                       AND wait.state_run_id = session.state_run_id
+                       AND session.session_id = $1
+                       AND session.is_current
+                       AND wait.signal_key = $2
+                       AND wait.expected_state_revision = workflowRun.state_revision
+                       AND workflowRun.current_state = state_run.state_name
+                       AND wait.wait_started_at IS NOT NULL
+                     RETURNING wait.external_operation_id`,
+                    [normalizedSessionId, normalizedSignalKey],
+                ));
+            }
+            if (!rows[0]) {
+                await client.query("COMMIT");
+                return false;
+            }
+            const timestampColumn = phase === "started" ? "wait_started_at" : "wait_completed_at";
+            const signalDeliverySet = phase === "completed"
+                ? `,
+                         signal_status = CASE
+                             WHEN signal_status IN ('pending', 'delivering') THEN 'delivered'
+                             ELSE signal_status
+                         END,
+                         signal_delivered_at = CASE
+                             WHEN signal_status IN ('pending', 'delivering')
+                                 THEN COALESCE(signal_delivered_at, now())
+                             ELSE signal_delivered_at
+                         END,
+                         signal_lease_owner = NULL,
+                         signal_lease_expires_at = NULL,
+                         last_signal_error = NULL`
+                : "";
+            if (rows[0].external_operation_id) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_run_external_operations
+                     SET ${timestampColumn} = COALESCE(${timestampColumn}, now()),
+                         session_id = $1
+                         ${signalDeliverySet},
+                         updated_at = now()
+                     WHERE operation_id = $2`,
+                    [normalizedSessionId, rows[0].external_operation_id],
+                );
+            }
+            await client.query("COMMIT");
+            return true;
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async readWorkflowRunSourceSession(
+        currentSessionId: string,
+        sourceSessionId: string,
+        beforeSeq?: number,
+        limit = 20,
+    ): Promise<WorkflowRunSourceSessionContext | null> {
+        const current = currentSessionId.trim();
+        const source = sourceSessionId.trim();
+        if (!current || !source) throw new Error("Current and source WorkflowRun session IDs are required");
+        if (beforeSeq !== undefined && (!Number.isInteger(beforeSeq) || beforeSeq <= 0)) {
+            throw new Error("WorkflowRun source session beforeSeq must be a positive integer");
+        }
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 50));
+        const { rows } = await this.pool.query(
+            `SELECT journal.*
+             FROM "${this.sql.schema}".workflow_run_sessions current_session
+             JOIN "${this.sql.schema}".workflow_run_journal_entries journal
+               ON journal.workflow_run_id = current_session.workflow_run_id
+              AND journal.session_id = $2
+             WHERE current_session.session_id = $1
+               AND current_session.is_current
+             ORDER BY journal.sequence DESC
+             LIMIT 1`,
+            [current, source],
+        );
+        if (!rows[0]) return null;
+
+        const page = beforeSeq === undefined
+            ? await this.getSessionEvents(source, undefined, boundedLimit + 1)
+            : await this.getSessionEventsBefore(source, beforeSeq, boundedLimit + 1);
+        const hasMore = page.length > boundedLimit;
+        return {
+            journalEntry: rowToWorkflowRunJournalEntry(rows[0]),
+            events: hasMore ? page.slice(1) : page,
+            hasMore,
+        };
+    }
+
+    async startWorkflowRunExternalOperation(
+        input: StartWorkflowRunExternalOperationInput,
+    ): Promise<WorkflowRunExternalOperationRow> {
+        const provider = input.provider.trim().toLowerCase();
+        const kind = input.kind.trim().toLowerCase();
+        const operationKey = input.operationKey?.trim() || "default";
+        const detectionMode = input.detectionMode ?? "poll";
+        const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
+        if (!identifierPattern.test(provider)) {
+            throw new Error("External operation provider must be a lowercase identifier");
+        }
+        if (!identifierPattern.test(kind)) {
+            throw new Error("External operation kind must be a lowercase identifier");
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(operationKey)) {
+            throw new Error("External operation key contains unsupported characters");
+        }
+        if (!["poll", "event", "hybrid"].includes(detectionMode)) {
+            throw new Error("External operation detectionMode must be poll, event, or hybrid");
+        }
+        if (input.deadlineAt && !Number.isFinite(input.deadlineAt.getTime())) {
+            throw new Error("External operation deadlineAt must be valid");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT sr.state_run_id, sr.workflow_run_id, sr.workflow_definition_id, sr.state_revision, sr.status,
+                        js.is_current
+                 FROM "${this.sql.schema}".workflow_run_sessions js
+                 JOIN "${this.sql.schema}".workflow_run_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr`,
+                [input.sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) throw new Error(`WorkflowRun state run not found for session ${input.sessionId}`);
+            if (!context.is_current || context.status !== "active") {
+                throw new Error("External operations require the active current WorkflowRun state run");
+            }
+            const ensureObservedConditionWait = async (
+                operation: any,
+                rebindSession = false,
+            ): Promise<void> => {
+                const waitStatus = operation.status === "succeeded"
+                    ? "satisfied"
+                    : operation.status === "failed"
+                        ? "failed"
+                        : "pending";
+                await client.query(
+                    `INSERT INTO "${this.sql.schema}".workflow_run_waits (
+                         wait_id, workflow_run_id, state_run_id, workflow_definition_id, session_id,
+                         external_operation_id, wait_key, kind, status, detection_mode,
+                         expected_state_revision, prompt, response_schema, responder_policy,
+                         provider, target, predicate, latest_observation,
+                         satisfaction_evidence, signal_key, deadline_at, next_check_at, satisfied_at
+                     ) VALUES (
+                         $1,$2,$3,$4,$5,$6,$7,'observed_condition',$8,$9,
+                         $10,$11,'{}'::jsonb,'{}'::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20
+                     )
+                     ON CONFLICT (state_run_id, wait_key) DO UPDATE
+                     SET session_id = EXCLUDED.session_id,
+                         external_operation_id = EXCLUDED.external_operation_id,
+                         status = EXCLUDED.status,
+                         detection_mode = EXCLUDED.detection_mode,
+                         provider = EXCLUDED.provider,
+                         target = EXCLUDED.target,
+                         predicate = EXCLUDED.predicate,
+                         latest_observation = EXCLUDED.latest_observation,
+                         satisfaction_evidence = EXCLUDED.satisfaction_evidence,
+                         signal_key = EXCLUDED.signal_key,
+                         deadline_at = EXCLUDED.deadline_at,
+                         next_check_at = EXCLUDED.next_check_at,
+                         check_lease_owner = NULL,
+                         check_lease_expires_at = NULL,
+                         last_check_error = NULL,
+                         wait_started_at = NULL,
+                         wait_completed_at = NULL,
+                         satisfied_at = EXCLUDED.satisfied_at,
+                         updated_at = now()
+                     WHERE $21::boolean`,
+                    [
+                        randomUUID(),
+                        context.workflow_run_id,
+                        context.state_run_id,
+                        context.workflow_definition_id,
+                        operation.session_id,
+                        operation.operation_id,
+                        `observed:${provider}:${kind}:${operationKey}`,
+                        waitStatus,
+                        detectionMode,
+                        Number(context.state_revision),
+                        JSON.stringify({ provider, kind, operationKey }),
+                        provider,
+                        JSON.stringify(operation.request ?? {}),
+                        JSON.stringify({ kind }),
+                        operation.result === null || operation.result === undefined
+                            ? null
+                            : JSON.stringify(operation.result),
+                        operation.evidence === null || operation.evidence === undefined
+                            ? null
+                            : JSON.stringify(workflowRunWaitEvidence(operation.evidence)),
+                        operation.signal_key,
+                        input.deadlineAt ?? null,
+                        waitStatus === "pending"
+                            ? (
+                                input.deadlineAt && input.deadlineAt < operation.next_poll_at
+                                    ? input.deadlineAt
+                                    : operation.next_poll_at
+                            )
+                            : null,
+                        waitStatus === "pending" ? null : operation.completed_at,
+                        rebindSession,
+                    ],
+                );
+            };
+            const idempotencyKey = [
+                "workflow-run-state-run",
+                context.state_run_id,
+                "operation",
+                provider,
+                kind,
+                operationKey,
+            ].join(":");
+            const existing = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_external_operations
+                 WHERE idempotency_key = $1`,
+                [idempotencyKey],
+            );
+            if (existing.rows[0]) {
+                const existingOperation = existing.rows[0];
+                if (existingOperation.session_id !== input.sessionId
+                    && existingOperation.wait_completed_at === null) {
+                    const rebound = await client.query(
+                        `UPDATE "${this.sql.schema}".workflow_run_external_operations
+                         SET session_id = $2,
+                             wait_started_at = NULL,
+                             signal_status = CASE
+                                 WHEN status = 'pending' THEN 'blocked'
+                                 ELSE 'pending'
+                             END,
+                             signal_attempts = 0,
+                             next_signal_at = CASE
+                                 WHEN status = 'pending' THEN NULL
+                                 ELSE now()
+                             END,
+                             signal_lease_owner = NULL,
+                             signal_lease_expires_at = NULL,
+                             signal_delivered_at = NULL,
+                             last_signal_error = NULL,
+                             updated_at = now()
+                         WHERE operation_id = $1
+                         RETURNING *`,
+                        [existingOperation.operation_id, input.sessionId],
+                    );
+                    await ensureObservedConditionWait(rebound.rows[0], true);
+                    await client.query("COMMIT");
+                    return rowToWorkflowRunExternalOperation(rebound.rows[0]);
+                }
+                await ensureObservedConditionWait(existingOperation);
+                await client.query("COMMIT");
+                return rowToWorkflowRunExternalOperation(existingOperation);
+            }
+            const operationId = randomUUID();
+            const result = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_run_external_operations (
+                     operation_id, workflow_run_id, state_run_id, workflow_definition_id,
+                     created_session_id, session_id, provider, kind, operation_key,
+                     idempotency_key, correlation_id, signal_key, request, next_poll_at
+                 ) VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 RETURNING *`,
+                [
+                    operationId,
+                    context.workflow_run_id,
+                    context.state_run_id,
+                    context.workflow_definition_id,
+                    input.sessionId,
+                    provider,
+                    kind,
+                    operationKey,
+                    idempotencyKey,
+                    `${provider}:${operationId}`,
+                    `workflow-run-operation:${operationId}`,
+                    JSON.stringify(input.request ?? {}),
+                    input.nextPollAt ?? new Date(),
+                ],
+            );
+            await ensureObservedConditionWait(result.rows[0]);
+            await client.query("COMMIT");
+            return rowToWorkflowRunExternalOperation(result.rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async getWorkflowRunExternalOperation(
+        sessionId: string,
+        operationId: string,
+    ): Promise<WorkflowRunExternalOperationRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT operation.*
+             FROM "${this.sql.schema}".workflow_run_external_operations operation
+             JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+               ON state_run.state_run_id = operation.state_run_id
+             WHERE operation.operation_id = $1
+               AND state_run.session_id = $2`,
+            [operationId, sessionId],
+        );
+        return rows[0] ? rowToWorkflowRunExternalOperation(rows[0]) : null;
+    }
+
+    async recordWorkflowRunExternalOperationWait(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean> {
+        return this.recordWorkflowRunWaitBoundary(sessionId, signalKey, phase);
+    }
+
+    async claimDueWorkflowRunExternalOperations(
+        provider: string,
+        workerId: string,
+        limit = 25,
+        leaseSeconds = 30,
+    ): Promise<WorkflowRunExternalOperationRow[]> {
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT operation.operation_id
+                 FROM "${this.sql.schema}".workflow_run_external_operations operation
+                 JOIN "${this.sql.schema}".workflow_run_waits wait
+                   ON wait.external_operation_id = operation.operation_id
+                  AND wait.status = 'pending'
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                  AND state_run.status IN ('active', 'waiting', 'input_required')
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = operation.workflow_run_id
+                  AND workflowRun.state_revision = wait.expected_state_revision
+                  AND workflowRun.current_state = state_run.state_name
+                  AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')
+                 JOIN "${this.sql.schema}".workflow_run_sessions session
+                   ON session.state_run_id = operation.state_run_id
+                  AND session.session_id = operation.session_id
+                  AND session.is_current
+                 WHERE operation.provider = $1
+                   AND operation.status = 'pending'
+                   AND operation.next_poll_at <= now()
+                   AND (
+                       operation.poll_lease_expires_at IS NULL
+                       OR operation.poll_lease_expires_at <= now()
+                   )
+                 ORDER BY operation.next_poll_at, operation.created_at
+                 FOR UPDATE OF operation SKIP LOCKED
+                 LIMIT $3
+             )
+             UPDATE "${this.sql.schema}".workflow_run_external_operations operation
+             SET poll_lease_owner = $2,
+                 poll_lease_expires_at = now() + make_interval(secs => $4),
+                 updated_at = now()
+             FROM due
+             WHERE operation.operation_id = due.operation_id
+             RETURNING operation.*`,
+            [provider.trim().toLowerCase(), workerId, limit, leaseSeconds],
+        );
+        return rows.map(rowToWorkflowRunExternalOperation);
+    }
+
+    async completeWorkflowRunExternalOperation(
+        input: CompleteWorkflowRunExternalOperationInput,
+    ): Promise<WorkflowRunExternalOperationRow> {
+        const { rows } = await this.pool.query(
+            `WITH completed_operation AS (
+                 UPDATE "${this.sql.schema}".workflow_run_external_operations operation
+                 SET status = $3,
+                     result = $4,
+                     evidence = $5,
+                     error = $6,
+                     completed_at = now(),
+                     poll_lease_owner = NULL,
+                     poll_lease_expires_at = NULL,
+                     signal_status = 'pending',
+                     next_signal_at = now(),
+                     updated_at = now()
+                 FROM "${this.sql.schema}".workflow_run_waits wait,
+                      "${this.sql.schema}".workflow_run_state_runs state_run,
+                      "${this.sql.schema}".workflow_runs workflowRun,
+                      "${this.sql.schema}".workflow_run_sessions session
+                 WHERE operation.operation_id = $1
+                   AND operation.poll_lease_owner = $2
+                   AND operation.poll_lease_expires_at > now()
+                   AND operation.status = 'pending'
+                   AND wait.external_operation_id = operation.operation_id
+                   AND wait.status = 'pending'
+                   AND state_run.state_run_id = operation.state_run_id
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                   AND workflowRun.workflow_run_id = operation.workflow_run_id
+                   AND workflowRun.state_revision = wait.expected_state_revision
+                   AND workflowRun.current_state = state_run.state_name
+                   AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')
+                   AND session.state_run_id = operation.state_run_id
+                   AND session.session_id = operation.session_id
+                   AND session.is_current
+                 RETURNING operation.*
+             ), completed_wait AS (
+                 UPDATE "${this.sql.schema}".workflow_run_waits wait
+                 SET status = CASE WHEN operation.status = 'succeeded' THEN 'satisfied' ELSE 'failed' END,
+                     latest_observation = operation.result,
+                     satisfaction_evidence = CASE
+                         WHEN operation.evidence IS NULL THEN NULL
+                         WHEN jsonb_typeof(operation.evidence) = 'object' THEN operation.evidence
+                         ELSE jsonb_build_object('value', operation.evidence)
+                     END,
+                     next_check_at = NULL,
+                     satisfied_at = operation.completed_at,
+                     updated_at = now()
+                 FROM completed_operation operation,
+                      "${this.sql.schema}".workflow_run_state_runs state_run,
+                      "${this.sql.schema}".workflow_runs workflowRun
+                 WHERE wait.external_operation_id = operation.operation_id
+                   AND wait.status = 'pending'
+                   AND state_run.state_run_id = wait.state_run_id
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                   AND workflowRun.workflow_run_id = wait.workflow_run_id
+                   AND workflowRun.state_revision = wait.expected_state_revision
+                   AND workflowRun.current_state = state_run.state_name
+                   AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')
+                 RETURNING wait.wait_id
+             )
+             SELECT * FROM completed_operation`,
+            [
+                input.operationId,
+                input.workerId,
+                input.status,
+                input.result === undefined ? null : JSON.stringify(input.result),
+                input.evidence === undefined ? null : JSON.stringify(input.evidence),
+                input.error ?? null,
+            ],
+        );
+        if (!rows[0]) throw new Error("External operation completion lease is stale");
+        return rowToWorkflowRunExternalOperation(rows[0]);
+    }
+
+    async claimWorkflowRunExternalOperationSignals(
+        workerId: string,
+        limit = 25,
+        leaseSeconds = 30,
+    ): Promise<WorkflowRunExternalOperationRow[]> {
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT operation.operation_id
+                 FROM "${this.sql.schema}".workflow_run_external_operations operation
+                 JOIN "${this.sql.schema}".workflow_run_waits wait
+                   ON wait.external_operation_id = operation.operation_id
+                  AND wait.status IN ('satisfied', 'failed', 'timed_out')
+                  AND wait.wait_started_at IS NOT NULL
+                  AND wait.wait_completed_at IS NULL
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                  AND state_run.status IN ('waiting', 'input_required', 'active')
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = operation.workflow_run_id
+                  AND workflowRun.state_revision = wait.expected_state_revision
+                  AND workflowRun.current_state = state_run.state_name
+                  AND workflowRun.lifecycle_state NOT IN ('completed', 'cancelled')
+                 JOIN "${this.sql.schema}".workflow_run_sessions session
+                   ON session.state_run_id = operation.state_run_id
+                  AND session.session_id = operation.session_id
+                  AND session.is_current
+                 WHERE operation.status IN ('succeeded', 'failed')
+                   AND operation.signal_status IN ('pending', 'delivering')
+                   AND operation.next_signal_at <= now()
+                   AND (
+                       (
+                           operation.signal_status = 'pending'
+                       )
+                       OR (
+                           operation.signal_status = 'delivering'
+                           AND (
+                               operation.signal_lease_expires_at IS NULL
+                               OR operation.signal_lease_expires_at <= now()
+                           )
+                       )
+                   )
+                 ORDER BY operation.next_signal_at, operation.completed_at
+                 FOR UPDATE OF operation SKIP LOCKED
+                 LIMIT $2
+             )
+             UPDATE "${this.sql.schema}".workflow_run_external_operations operation
+             SET signal_status = 'delivering',
+                 signal_attempts = signal_attempts + 1,
+                 signal_lease_owner = $1,
+                 signal_lease_expires_at = now() + make_interval(secs => $3),
+                 updated_at = now()
+             FROM due
+             WHERE operation.operation_id = due.operation_id
+             RETURNING operation.*`,
+            [workerId, limit, leaseSeconds],
+        );
+        return rows.map(rowToWorkflowRunExternalOperation);
+    }
+
+    async markWorkflowRunExternalOperationSignalDelivered(
+        operationId: string,
+        workerId: string,
+    ): Promise<void> {
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_external_operations
+             SET signal_status = 'delivered',
+                 signal_delivered_at = COALESCE(signal_delivered_at, now()),
+                 signal_lease_owner = NULL,
+                 signal_lease_expires_at = NULL,
+                 last_signal_error = NULL,
+                 updated_at = now()
+             WHERE operation_id = $1
+               AND (
+                   (signal_status = 'delivering' AND signal_lease_owner = $2)
+                   OR signal_status = 'delivered'
+               )`,
+            [operationId, workerId],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("External operation signal lease is stale");
+    }
+
+    async markWorkflowRunExternalOperationSignalFailed(
+        operationId: string,
+        workerId: string,
+        error: string,
+        retryAt: Date,
+    ): Promise<void> {
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".workflow_run_external_operations
+             SET signal_status = 'pending',
+                 next_signal_at = $3,
+                 signal_lease_owner = NULL,
+                 signal_lease_expires_at = NULL,
+                 last_signal_error = $4,
+                 updated_at = now()
+             WHERE operation_id = $1
+               AND signal_status = 'delivering'
+               AND signal_lease_owner = $2`,
+            [operationId, workerId, retryAt, error],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("External operation signal lease is stale");
+    }
+
+    async completeWorkflowRunState(input: CompleteWorkflowRunStateInput): Promise<WorkflowRunJournalEntryRow> {
+        const summary = input.summary.trim();
+        if (!summary) throw new Error("WorkflowRun state transition summary is required");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT sr.*, js.association_id, js.is_current,
+                        j.current_state AS workflow_run_current_state,
+                        j.state_revision AS workflow_run_state_revision,
+                        j.lifecycle_state
+                 FROM "${this.sql.schema}".workflow_run_sessions js
+                 JOIN "${this.sql.schema}".workflow_run_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs j
+                   ON j.workflow_run_id = sr.workflow_run_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [input.sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) throw new Error(`WorkflowRun state run not found for session ${input.sessionId}`);
+            const idempotencyKey = input.idempotencyKey?.trim() || `workflow-run-state-run:${context.state_run_id}`;
+            const existing = await client.query(
+                `SELECT * FROM "${this.sql.schema}".workflow_run_journal_entries
+                 WHERE idempotency_key = $1`,
+                [idempotencyKey],
+            );
+            if (existing.rows[0]) {
+                if (existing.rows[0].state_run_id !== context.state_run_id
+                    || existing.rows[0].session_id !== input.sessionId) {
+                    throw new Error("WorkflowRun state idempotency key is already used by another transition");
+                }
+                await client.query("COMMIT");
+                return rowToWorkflowRunJournalEntry(existing.rows[0]);
+            }
+            if (!context.is_current || context.status !== "active") {
+                throw new Error("WorkflowRun state run is not the active current run");
+            }
+            if (context.workflow_run_current_state !== context.state_name
+                || Number(context.workflow_run_state_revision) !== Number(context.state_revision)) {
+                throw new Error("WorkflowRun state run revision is stale");
+            }
+            if (typeof context.terminal !== "boolean") {
+                throw new Error("WorkflowRun state run has not been prepared with lifecycle instructions");
+            }
+
+            const allowedOutcomes = Array.isArray(context.allowed_outcomes)
+                ? context.allowed_outcomes as WorkflowRunStateOutcome[]
+                : [];
+            const requestedOutcome = input.outcome?.trim() || null;
+            let toState = context.state_name;
+            let toRevision = Number(context.state_revision);
+            if (context.terminal) {
+                if (requestedOutcome) throw new Error("Terminal WorkflowRun state completion must not specify an outcome");
+            } else {
+                if (!requestedOutcome) throw new Error("WorkflowRun state outcome is required");
+                const allowed = allowedOutcomes.find((entry) => entry.outcome === requestedOutcome);
+                if (!allowed) throw new Error(`WorkflowRun state outcome is not allowed: ${requestedOutcome}`);
+                toState = allowed.toState;
+                toRevision += 1;
+            }
+
+            if (!context.terminal) {
+                const definitionResult = await client.query(
+                    `SELECT validation_gates
+                     FROM "${this.sql.schema}".workflow_definitions
+                     WHERE workflow_definition_id = $1`,
+                    [context.workflow_definition_id],
+                );
+                const validationGates = Array.isArray(definitionResult.rows[0]?.validation_gates)
+                    ? definitionResult.rows[0].validation_gates as unknown[]
+                    : [];
+                const operationResult = await client.query(
+                    `SELECT operation.*
+                     FROM "${this.sql.schema}".workflow_run_external_operations operation
+                     WHERE operation.state_run_id = $1
+                     ORDER BY operation.created_at DESC`,
+                    [context.state_run_id],
+                );
+                assertExternalOperationValidationGatesSatisfied(
+                    validationGates,
+                    toState,
+                    operationResult.rows.map((row: any) => ({
+                        status: row.status,
+                        waitCompleted: row.wait_completed_at !== null,
+                        provider: row.provider,
+                        kind: row.kind,
+                        evidence: row.evidence ?? null,
+                    })),
+                );
+            }
+
+            const workflowRunUpdate = context.terminal
+                ? await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_runs
+                     SET lifecycle_state = 'completed', session_error = NULL,
+                         induction_lease_owner = NULL, induction_lease_expires_at = NULL,
+                         updated_at = now()
+                     WHERE workflow_run_id = $1 AND current_state = $2 AND state_revision = $3`,
+                    [context.workflow_run_id, context.state_name, context.state_revision],
+                )
+                : await client.query(
+                    `UPDATE "${this.sql.schema}".workflow_runs
+                     SET current_state = $2, state_revision = $3,
+                         current_state_entered_at = now(), lifecycle_state = 'pending_session',
+                         session_error = NULL,
+                         induction_lease_owner = NULL, induction_lease_expires_at = NULL,
+                         updated_at = now()
+                     WHERE workflow_run_id = $1 AND current_state = $4 AND state_revision = $5`,
+                    [context.workflow_run_id, toState, toRevision, context.state_name, context.state_revision],
+                );
+            if ((workflowRunUpdate.rowCount ?? 0) !== 1) throw new Error("WorkflowRun state transition is stale");
+
+            const sequenceResult = await client.query(
+                `SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
+                 FROM "${this.sql.schema}".workflow_run_journal_entries
+                 WHERE workflow_run_id = $1`,
+                [context.workflow_run_id],
+            );
+            const journalEntryId = randomUUID();
+            const journalResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".workflow_run_journal_entries (
+                     journal_entry_id, workflow_run_id, sequence, workflow_definition_id,
+                     from_state, to_state, from_revision, to_revision,
+                     state_run_id, session_id, outcome, summary, idempotency_key
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 RETURNING *`,
+                [
+                    journalEntryId,
+                    context.workflow_run_id,
+                    Number(sequenceResult.rows[0].sequence),
+                    context.workflow_definition_id,
+                    context.state_name,
+                    toState,
+                    context.state_revision,
+                    toRevision,
+                    context.state_run_id,
+                    input.sessionId,
+                    requestedOutcome,
+                    summary,
+                    idempotencyKey,
+                ],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_state_runs
+                 SET status = 'completed', completed_at = now(), lease_owner = NULL,
+                     lease_expires_at = NULL, updated_at = now()
+                 WHERE state_run_id = $1`,
+                [context.state_run_id],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_waits
+                 SET status = 'cancelled',
+                     next_check_at = NULL,
+                     check_lease_owner = NULL,
+                     check_lease_expires_at = NULL,
+                     updated_at = now()
+                 WHERE state_run_id = $1
+                   AND status = 'pending'`,
+                [context.state_run_id],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".workflow_run_sessions
+                 SET is_current = FALSE,
+                     status = CASE WHEN $2 THEN 'completed' ELSE 'replaced' END,
+                     ended_at = now()
+                 WHERE association_id = $1`,
+                [context.association_id, context.terminal],
+            );
+            if (!context.terminal) {
+                const nextStateRunId = randomUUID();
+                const nextSessionId = randomUUID();
+                await client.query(
+                    `INSERT INTO "${this.sql.schema}".workflow_run_state_runs (
+                         state_run_id, workflow_run_id, workflow_definition_id, state_name,
+                         state_revision, status, session_id, predecessor_journal_entry_id
+                     ) VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7)`,
+                    [
+                        nextStateRunId,
+                        context.workflow_run_id,
+                        context.workflow_definition_id,
+                        toState,
+                        toRevision,
+                        nextSessionId,
+                        journalEntryId,
+                    ],
+                );
+                await client.query(
+                    `INSERT INTO "${this.sql.schema}".workflow_run_sessions (
+                         association_id, workflow_run_id, session_id, state_run_id,
+                         ordinal, is_current, status
+                     )
+                     SELECT $1, $2, $3, $4, COALESCE(MAX(ordinal), 0) + 1, TRUE, 'reserved'
+                     FROM "${this.sql.schema}".workflow_run_sessions
+                     WHERE workflow_run_id = $2`,
+                    [
+                        randomUUID(),
+                        context.workflow_run_id,
+                        nextSessionId,
+                        nextStateRunId,
+                    ],
+                );
+            }
+            await client.query("COMMIT");
+            return rowToWorkflowRunJournalEntry(journalResult.rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 
     // ── Writes ───────────────────────────────────────────────
@@ -1654,6 +6129,7 @@ export class PgSessionCatalog implements SessionCatalog {
          * through the shared getSession row (viewers must not see it).
          */
         creationConfig?: Record<string, unknown> | null;
+        routing?: SessionRoutingContract | null;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
@@ -1662,6 +6138,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
         const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
+        const useRoutingConfig = Boolean(opts?.routing) && await this.supportsRoutingConfig();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
@@ -1702,6 +6179,30 @@ export class PgSessionCatalog implements SessionCatalog {
                     `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
                     [sessionId, JSON.stringify(opts!.creationConfig)],
                 );
+            }
+
+            // Immutable execution-routing contract (owner affinity + repo/gitRef).
+            // Write-once via COALESCE so retries and restarts can never re-home a
+            // session; a divergent re-write surfaces as SESSION_ROUTING_CONFLICT.
+            if (useRoutingConfig) {
+                const routing = {
+                    ...(opts!.routing!.repo ? { repo: opts!.routing!.repo } : {}),
+                    ...(opts!.routing!.gitRef ? { gitRef: opts!.routing!.gitRef } : {}),
+                    ...(opts!.routing!.ownerAffinityRequired ? { ownerAffinityRequired: true } : {}),
+                };
+                const { rows } = await client.query(
+                    `WITH persisted AS (
+                         UPDATE "${this.sql.schema}".sessions
+                            SET routing_config = COALESCE(routing_config, $2::jsonb)
+                          WHERE session_id = $1
+                      RETURNING routing_config
+                     )
+                     SELECT routing_config = $2::jsonb AS matches FROM persisted`,
+                    [sessionId, JSON.stringify(routing)],
+                );
+                if (!rows[0]?.matches) {
+                    throw new Error(`SESSION_ROUTING_CONFLICT: immutable routing differs for session ${sessionId}`);
+                }
             }
 
             // Service columns ride the same transaction as a raw UPDATE — the
@@ -1818,6 +6319,22 @@ export class PgSessionCatalog implements SessionCatalog {
         return this._creationConfigColumnSupported;
     }
 
+    private _routingConfigColumnSupported: boolean | null = null;
+
+    /** Whether the DB has the routing_config column. Cached per catalog instance. */
+    private async supportsRoutingConfig(): Promise<boolean> {
+        if (this._routingConfigColumnSupported !== null) return this._routingConfigColumnSupported;
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = 'sessions' AND column_name = 'routing_config'
+             ) AS supported`,
+            [this.sql.schema],
+        );
+        this._routingConfigColumnSupported = Boolean(rows[0]?.supported);
+        return this._routingConfigColumnSupported;
+    }
+
     private async supportsVisibilityCreate(): Promise<boolean> {
         if (this._visibilityCreateSupported !== null) return this._visibilityCreateSupported;
         const { rows } = await this.pool.query(
@@ -1909,10 +6426,13 @@ export class PgSessionCatalog implements SessionCatalog {
         systemFilter?: "all" | "only" | "exclude";
         viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
         placement?: { provider: string; subject: string } | null;
+        ownerQuery?: string;
+        status?: string;
+        updatedAfter?: Date | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
             `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
-               FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) g
+               FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
                 opts?.limit ?? null,
@@ -1925,6 +6445,9 @@ export class PgSessionCatalog implements SessionCatalog {
                 opts?.placement?.provider ?? null,
                 opts?.placement?.subject ?? null,
                 opts?.systemFilter ?? "all",
+                opts?.ownerQuery?.trim() || null,
+                opts?.status?.trim() || null,
+                opts?.updatedAfter ?? null,
             ],
         );
         return rows.map(rowToSessionRow);
@@ -2009,6 +6532,21 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         const value = rows[0]?.creation_config;
         return value && typeof value === "object" ? value : null;
+    }
+
+    async getSessionRouting(sessionId: string): Promise<SessionRoutingContract | null> {
+        if (!await this.supportsRoutingConfig()) return null;
+        const { rows } = await this.pool.query(
+            `SELECT routing_config FROM "${this.sql.schema}".sessions WHERE session_id = $1`,
+            [sessionId],
+        );
+        const routing = rows[0]?.routing_config;
+        if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+        return {
+            ...(typeof routing.repo === "string" && routing.repo ? { repo: routing.repo } : {}),
+            ...(typeof routing.gitRef === "string" && routing.gitRef ? { gitRef: routing.gitRef } : {}),
+            ...(routing.ownerAffinityRequired === true ? { ownerAffinityRequired: true } : {}),
+        };
     }
 
     async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {
@@ -3216,6 +7754,50 @@ export class PgSessionCatalog implements SessionCatalog {
         return profile;
     }
 
+    async getSessionGitState(sessionId: string): Promise<SessionGitState> {
+        const id = typeof sessionId === "string" ? sessionId.trim() : "";
+        const empty: SessionGitState = { baseSha: null, headSha: null, branch: null, epoch: 0 };
+        if (!id) return empty;
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionGitState}($1)`,
+            [id],
+        );
+        const row = rows[0];
+        if (!row) return empty;
+        const norm = (v: unknown): string | null => {
+            if (v == null) return null;
+            const t = String(v).trim();
+            return t.length === 0 ? null : t;
+        };
+        return {
+            baseSha: norm(row.git_base_sha),
+            headSha: norm(row.git_head_sha),
+            branch: norm(row.git_branch),
+            epoch: Number(row.git_state_epoch ?? 0) || 0,
+        };
+    }
+
+    async setSessionGitState(sessionId: string, state: SessionGitState): Promise<SessionGitState> {
+        const id = typeof sessionId === "string" ? sessionId.trim() : "";
+        if (!id) {
+            throw new Error("setSessionGitState: sessionId is required");
+        }
+        const norm = (v: string | null | undefined): string | null => {
+            if (typeof v !== "string") return null;
+            const t = v.trim();
+            return t.length === 0 ? null : t;
+        };
+        const epoch = Number.isFinite(state?.epoch) ? Math.trunc(state.epoch as number) : 0;
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.setSessionGitState}($1, $2, $3, $4, $5) AS ok`,
+            [id, norm(state?.baseSha), norm(state?.headSha), norm(state?.branch), epoch],
+        );
+        if (rows[0]?.ok !== true) {
+            throw new Error(`setSessionGitState: session not found: ${id}`);
+        }
+        return this.getSessionGitState(id);
+    }
+
     async getUserRole(principal: UserPrincipal): Promise<UserRoleInfo> {
         const provider = principal?.provider?.trim();
         const subject = principal?.subject?.trim();
@@ -3476,6 +8058,515 @@ export class PgSessionCatalog implements SessionCatalog {
             info: row.info ?? {},
             health: row.health ?? {},
             state: row.state ?? {},
+        }));
+    }
+
+    async getWorkerTimeline(
+        workerNodeId: string,
+        options: { since?: Date; limit?: number } = {},
+    ): Promise<WorkerTimelineEntry[]> {
+        const normalizedWorkerNodeId = workerNodeId.trim();
+        if (!normalizedWorkerNodeId) throw new Error("workerNodeId is required");
+        if (options.since && !Number.isFinite(options.since.getTime())) {
+            throw new Error("Worker timeline since must be a valid date");
+        }
+        const limit = Math.min(1_000, Math.max(1, Math.trunc(options.limit ?? 200)));
+        const eventTypes = [
+            "session.turn_started",
+            "session.turn_execution_completed",
+            "session.turn_completed",
+            "session.turn_stopped",
+            "session.worker_capacity_acquired",
+            "session.hydrated",
+            "session.dehydrated",
+            "session.affinity_released",
+            "session.input_required_started",
+            "session.wait_started",
+            "session.wait_completed",
+            "session.system_wait_requested",
+            "session.system_wait_started",
+            "session.system_wait_completed",
+            "session.system_signal_ignored",
+            "session.command_received",
+            "session.command_completed",
+            "session.error",
+            "session.lossy_handoff",
+            "session.snapshot_regressed",
+            "session.snapshot_store_empty",
+            "session.snapshot_unpublished",
+        ];
+        const { rows } = await this.pool.query(
+            `WITH timeline AS (
+                 SELECT
+                     'event:' || event.seq::text AS timeline_id,
+                     CASE
+                         WHEN event.event_type = 'session.turn_execution_completed'
+                              AND NULLIF(event.data->>'executionCompletedAt', '') IS NOT NULL
+                             THEN (event.data->>'executionCompletedAt')::timestamptz
+                         WHEN event.event_type = 'session.worker_capacity_acquired'
+                              AND NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                             THEN (event.data->>'acquiredAt')::timestamptz
+                         ELSE event.created_at
+                     END AS at,
+                     'session_event'::text AS kind,
+                     event.event_type,
+                     event.session_id,
+                     event.worker_node_id,
+                     workflowRun.workflow_generator_id,
+                     generator.name AS generator_name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text AS summary,
+                     COALESCE(event.data, '{}'::jsonb) AS details
+                 FROM "${this.sql.schema}".session_events event
+                 LEFT JOIN "${this.sql.schema}".workflow_run_sessions workflow_run_session
+                   ON workflow_run_session.session_id = event.session_id
+                 LEFT JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = workflow_run_session.state_run_id
+                 LEFT JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = workflow_run_session.workflow_run_id
+                 LEFT JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE event.worker_node_id = $1
+                   AND ($2::timestamptz IS NULL OR event.created_at >= $2)
+                   AND event.event_type = ANY($3::text[])
+
+                 UNION ALL
+
+                 SELECT
+                     'transition:' || journal.journal_entry_id,
+                     journal.transitioned_at,
+                     'state_transition'::text,
+                     CASE
+                         WHEN state_run.terminal IS TRUE THEN 'workflow_run.state_completed'::text
+                         ELSE 'workflow_run.state_transition'::text
+                     END,
+                     journal.session_id,
+                     attribution.worker_node_id,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     journal.state_run_id,
+                     journal.from_state,
+                     journal.from_revision,
+                     journal.summary,
+                     jsonb_build_object(
+                         'fromState', journal.from_state,
+                         'toState', journal.to_state,
+                         'fromRevision', journal.from_revision,
+                         'toRevision', journal.to_revision,
+                         'outcome', journal.outcome,
+                         'terminal', COALESCE(state_run.terminal, FALSE)
+                     )
+                 FROM "${this.sql.schema}".workflow_run_journal_entries journal
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = journal.session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= journal.transitioned_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = journal.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = journal.state_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE $2::timestamptz IS NULL OR journal.transitioned_at >= $2
+
+                 UNION ALL
+
+                 SELECT
+                     'materialized:' || workflowRun.workflow_run_id,
+                     workflowRun.created_at,
+                     'workflow_run_materialization'::text,
+                     'workflow_run.materialized'::text,
+                     attribution.session_id,
+                     $1::text,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     NULL::text,
+                     NULL::text,
+                     NULL::bigint,
+                     NULL::text,
+                     jsonb_build_object(
+                         'materializedAt', workflowRun.created_at,
+                         'firstDiscoveredAt', workflowRun.first_discovered_at
+                     )
+                 FROM "${this.sql.schema}".workflow_runs workflowRun
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 JOIN LATERAL (
+                     SELECT workflow_run_session.session_id
+                     FROM "${this.sql.schema}".workflow_run_sessions workflow_run_session
+                     JOIN "${this.sql.schema}".session_events event
+                       ON event.session_id = workflow_run_session.session_id
+                      AND event.worker_node_id = $1
+                      AND event.event_type IN (
+                          'session.worker_capacity_acquired',
+                          'session.turn_started',
+                          'session.turn_execution_completed',
+                          'session.turn_completed'
+                      )
+                     WHERE workflow_run_session.workflow_run_id = workflowRun.workflow_run_id
+                     ORDER BY workflow_run_session.ordinal ASC, event.created_at ASC, event.seq ASC
+                     LIMIT 1
+                 ) attribution ON TRUE
+                 WHERE $2::timestamptz IS NULL OR workflowRun.created_at >= $2
+
+                 UNION ALL
+
+                 SELECT
+                     'capacity-wait:' || workflow_run_session.association_id,
+                     COALESCE(acquisition.acquired_at, state_run.started_at),
+                     'worker_capacity_wait'::text,
+                     'workflow_run.worker_capacity_wait'::text,
+                     workflow_run_session.session_id,
+                     COALESCE(acquisition.worker_node_id, attribution.worker_node_id),
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'runnableAt', workflow_run_session.attached_at,
+                         'workerAcquiredAt', COALESCE(acquisition.acquired_at, state_run.started_at),
+                         'waitDurationMs',
+                             FLOOR(EXTRACT(EPOCH FROM (
+                                 COALESCE(acquisition.acquired_at, state_run.started_at)
+                                 - workflow_run_session.attached_at
+                             )) * 1000),
+                         'waitSource', 'initial_dispatch'
+                     )
+                 FROM "${this.sql.schema}".workflow_run_sessions workflow_run_session
+                 LEFT JOIN LATERAL (
+                     SELECT
+                         event.worker_node_id,
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END AS acquired_at
+                     FROM "${this.sql.schema}".session_events event
+                     WHERE event.session_id = workflow_run_session.session_id
+                       AND event.worker_node_id IS NOT NULL
+                       AND event.event_type = 'session.worker_capacity_acquired'
+                     ORDER BY
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END ASC,
+                         event.seq ASC
+                     LIMIT 1
+                 ) acquisition ON TRUE
+                 JOIN LATERAL (
+                     SELECT event.worker_node_id
+                     FROM "${this.sql.schema}".session_events event
+                     WHERE event.session_id = workflow_run_session.session_id
+                       AND event.worker_node_id IS NOT NULL
+                     ORDER BY event.created_at ASC, event.seq ASC
+                     LIMIT 1
+                 ) attribution ON TRUE
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = workflow_run_session.state_run_id
+                  AND state_run.session_id = workflow_run_session.session_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = workflow_run_session.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE workflow_run_session.attached_at IS NOT NULL
+                   AND COALESCE(acquisition.worker_node_id, attribution.worker_node_id) = $1
+                   AND COALESCE(acquisition.acquired_at, state_run.started_at) > workflow_run_session.attached_at
+                   AND (
+                       $2::timestamptz IS NULL
+                       OR COALESCE(acquisition.acquired_at, state_run.started_at) >= $2
+                   )
+
+                 UNION ALL
+
+                 SELECT
+                     'capacity-wait:input:' || input_event.seq::text,
+                     acquisition.acquired_at,
+                     'worker_capacity_wait'::text,
+                     'workflow_run.worker_capacity_wait'::text,
+                     input_event.session_id,
+                     acquisition.worker_node_id,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'runnableAt', input_event.created_at,
+                         'workerAcquiredAt', acquisition.acquired_at,
+                         'waitDurationMs',
+                             FLOOR(EXTRACT(EPOCH FROM (
+                                 acquisition.acquired_at - input_event.created_at
+                             )) * 1000),
+                         'waitSource', 'human_input'
+                     )
+                 FROM "${this.sql.schema}".session_events input_event
+                 JOIN LATERAL (
+                     SELECT
+                         event.worker_node_id,
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END AS acquired_at
+                     FROM "${this.sql.schema}".session_events event
+                     WHERE event.session_id = input_event.session_id
+                       AND event.event_type = 'session.worker_capacity_acquired'
+                       AND event.worker_node_id IS NOT NULL
+                       AND CASE
+                               WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                   THEN (event.data->>'acquiredAt')::timestamptz
+                               ELSE event.created_at
+                           END > input_event.created_at
+                     ORDER BY
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END ASC,
+                         event.seq ASC
+                     LIMIT 1
+                 ) acquisition ON acquisition.worker_node_id = $1
+                 JOIN "${this.sql.schema}".workflow_run_sessions workflow_run_session
+                   ON workflow_run_session.session_id = input_event.session_id
+                 JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = workflow_run_session.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = workflow_run_session.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE input_event.event_type = 'session.input_received'
+                   AND acquisition.acquired_at > input_event.created_at
+                   AND ($2::timestamptz IS NULL OR acquisition.acquired_at >= $2)
+
+                 UNION ALL
+
+                 SELECT
+                     'operation:' || operation.operation_id || ':started',
+                     operation.created_at,
+                     'external_operation'::text,
+                     'workflow_run.external_operation_started'::text,
+                     operation.created_session_id,
+                     attribution.worker_node_id,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     operation.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'operationId', operation.operation_id,
+                         'provider', operation.provider,
+                         'operationKind', operation.kind,
+                         'correlationId', operation.correlation_id
+                     )
+                 FROM "${this.sql.schema}".workflow_run_external_operations operation
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = operation.created_session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= operation.created_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = operation.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE $2::timestamptz IS NULL OR operation.created_at >= $2
+
+                 UNION ALL
+
+                 SELECT
+                     'operation:' || operation.operation_id || ':completed',
+                     operation.completed_at,
+                     'external_operation'::text,
+                     'workflow_run.external_operation_completed'::text,
+                     operation.created_session_id,
+                     attribution.worker_node_id,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     operation.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     operation.error,
+                     jsonb_build_object(
+                         'operationId', operation.operation_id,
+                         'provider', operation.provider,
+                         'operationKind', operation.kind,
+                         'correlationId', operation.correlation_id,
+                         'status', operation.status,
+                         'result', operation.result,
+                         'evidence', operation.evidence
+                     )
+                 FROM "${this.sql.schema}".workflow_run_external_operations operation
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = operation.created_session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= operation.created_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = operation.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE operation.completed_at IS NOT NULL
+                   AND ($2::timestamptz IS NULL OR operation.completed_at >= $2)
+
+                 UNION ALL
+
+                 SELECT
+                     'operation:' || operation.operation_id || ':signaled',
+                     operation.signal_delivered_at,
+                     'external_operation'::text,
+                     'workflow_run.external_operation_signal_delivered'::text,
+                     operation.created_session_id,
+                     attribution.worker_node_id,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     operation.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'operationId', operation.operation_id,
+                         'provider', operation.provider,
+                         'operationKind', operation.kind,
+                         'correlationId', operation.correlation_id,
+                         'signalAttempts', operation.signal_attempts
+                     )
+                 FROM "${this.sql.schema}".workflow_run_external_operations operation
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = operation.created_session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= operation.created_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".workflow_run_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = operation.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE operation.signal_delivered_at IS NOT NULL
+                   AND ($2::timestamptz IS NULL OR operation.signal_delivered_at >= $2)
+
+                 UNION ALL
+
+                 -- Currently-queued (unacked) runs: runnable but not yet claimed by any
+                 -- worker, so they have no session and none of the retrospective
+                 -- capacity-wait branches above fire. A runnable+unacked run is queued
+                 -- globally regardless of which worker eventually claims it, so surface it
+                 -- as an open-ended (ends "now") wait in the lane of the worker that already
+                 -- served a prior state of the same workflowRun.
+                 SELECT
+                     'capacity-wait:pending:' || state_run.state_run_id,
+                     now(),
+                     'worker_capacity_wait'::text,
+                     'workflow_run.worker_capacity_wait'::text,
+                     state_run.session_id,
+                     $1::text,
+                     workflowRun.workflow_generator_id,
+                     generator.name,
+                     workflowRun.workflow_run_id,
+                     workflowRun.workflow_run_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'runnableAt', state_run.created_at,
+                         'workerAcquiredAt', NULL,
+                         'waitDurationMs',
+                             FLOOR(EXTRACT(EPOCH FROM (now() - state_run.created_at)) * 1000),
+                         'waitSource', 'runnable_pending',
+                         'pending', true
+                     )
+                 FROM "${this.sql.schema}".workflow_run_state_runs state_run
+                 JOIN "${this.sql.schema}".workflow_runs workflowRun
+                   ON workflowRun.workflow_run_id = state_run.workflow_run_id
+                 JOIN "${this.sql.schema}".workflow_generators generator
+                   ON generator.workflow_generator_id = workflowRun.workflow_generator_id
+                 WHERE state_run.status = 'unacked'
+                   AND state_run.terminal IS NOT TRUE
+                   AND state_run.started_at IS NULL
+                   AND EXISTS (
+                       SELECT 1
+                       FROM "${this.sql.schema}".workflow_run_sessions prior_session
+                       JOIN "${this.sql.schema}".session_events prior_event
+                         ON prior_event.session_id = prior_session.session_id
+                        AND prior_event.worker_node_id = $1
+                       WHERE prior_session.workflow_run_id = state_run.workflow_run_id
+                   )
+                   AND ($2::timestamptz IS NULL OR state_run.created_at >= $2)
+             )
+             SELECT timeline.*
+             FROM timeline
+             LEFT JOIN "${this.sql.schema}".workflow_runs filter_workflowRun
+               ON filter_workflowRun.workflow_run_id = timeline.workflow_run_id
+             LEFT JOIN "${this.sql.schema}".workflow_generators filter_generator
+               ON filter_generator.workflow_generator_id = timeline.workflow_generator_id
+             WHERE (timeline.workflow_run_id IS NULL OR filter_workflowRun.deleted_at IS NULL)
+               AND (timeline.workflow_generator_id IS NULL OR filter_generator.deleted_at IS NULL)
+             ORDER BY at DESC, timeline_id DESC
+             LIMIT $4`,
+            [normalizedWorkerNodeId, options.since ?? null, eventTypes, limit],
+        );
+        return rows.reverse().map((row: any) => ({
+            timelineId: row.timeline_id,
+            at: new Date(row.at),
+            kind: row.kind,
+            eventType: row.event_type,
+            workerNodeId: row.worker_node_id,
+            workflowGeneratorId: row.workflow_generator_id ?? null,
+            generatorName: row.generator_name ?? null,
+            workflowRunId: row.workflow_run_id ?? null,
+            workflowRunKey: row.workflow_run_key ?? null,
+            stateRunId: row.state_run_id ?? null,
+            stateName: row.state_name ?? null,
+            stateRevision: row.state_revision === null || row.state_revision === undefined
+                ? null
+                : Number(row.state_revision),
+            sessionId: row.session_id,
+            summary: row.summary ?? null,
+            details: row.details ?? {},
         }));
     }
 
@@ -3835,6 +8926,295 @@ function rowToSessionRow(row: any): SessionRow {
         owner,
         visibility: row.visibility ?? "private",
         rootSessionId: row.root_session_id ?? row.session_id ?? null,
+    };
+}
+
+function rowToWorkflowGenerator(row: any): WorkflowGeneratorRow {
+    return {
+        workflowGeneratorId: row.workflow_generator_id,
+        name: row.name,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        controllerComputeAffinity: row.controller_compute_affinity ?? null,
+        cadenceSeconds: Number(row.cadence_seconds),
+        sourceType: row.source_type ?? null,
+        sourceConfig: row.source_config ?? {},
+        operationalState: row.operational_state,
+        activeDefinitionId: row.active_workflow_definition_id ?? null,
+        nextRunAt: row.next_run_at,
+        watermark: row.watermark ?? null,
+        totalCycles: Number(row.total_cycles),
+        successfulCycles: Number(row.successful_cycles),
+        failedCycles: Number(row.failed_cycles),
+        materializedWorkflowRuns: Number(row.materialized_workflow_runs),
+        lastCycleAt: row.last_cycle_at ?? null,
+        lastError: row.last_error ?? null,
+        leaseOwner: row.lease_owner ?? null,
+        leaseExpiresAt: row.lease_expires_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToWorkflowDefinition(row: any): WorkflowDefinitionRow {
+    return {
+        workflowDefinitionId: row.workflow_definition_id,
+        workflowType: row.workflow_type,
+        name: row.name,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        version: Number(row.version),
+        definitionHash: row.definition_hash,
+        sessionComputeAffinity: row.session_compute_affinity ?? null,
+        workflowDefinition: row.workflow_definition ?? {},
+        affinities: row.affinities ?? {},
+        validationGates: Array.isArray(row.validation_gates) ? row.validation_gates : [],
+        guardrails: row.guardrails ?? {},
+        createdBy: row.created_by ?? null,
+        createdAt: row.created_at,
+    };
+}
+
+function rowToWorkflowGeneratorCycle(row: any): WorkflowGeneratorCycleRow {
+    return {
+        cycleId: row.cycle_id,
+        workflowGeneratorId: row.workflow_generator_id,
+        workflowDefinitionId: row.workflow_definition_id,
+        status: row.status,
+        claimedBy: row.claimed_by,
+        watermarkBefore: row.watermark_before ?? null,
+        watermarkAfter: row.watermark_after ?? null,
+        discoveredCount: Number(row.discovered_count),
+        createdCount: Number(row.created_count),
+        error: row.error ?? null,
+        startedAt: row.started_at,
+        completedAt: row.completed_at ?? null,
+    };
+}
+
+function rowToWorkflowRun(row: any): WorkflowRunRow {
+    const producerType: WorkflowRunProducerType | null = row.catalog_producer_type != null
+        ? (row.catalog_producer_type === "workflow_generator" ? "workflow_generator" : "direct_request")
+        : row.workflow_generator_id
+            ? "workflow_generator"
+            : null;
+    const requesterProvider = row.catalog_requester_provider ?? row.execution_affinity_provider;
+    const requesterSubject = row.catalog_requester_subject ?? row.execution_affinity_subject;
+    const requestedBy = requesterProvider && requesterSubject
+        ? {
+            provider: requesterProvider,
+            subject: requesterSubject,
+            email: row.catalog_requester_email ?? row.execution_affinity_email ?? null,
+            displayName: row.catalog_requester_display_name ?? row.execution_affinity_display_name ?? null,
+        }
+        : null;
+    return {
+        workflowRunId: row.workflow_run_id,
+        workflowDefinitionId: row.workflow_definition_id,
+        workflowType: row.workflow_type,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        createdBy: row.created_by ?? null,
+        effectiveConfig: row.effective_config ?? {},
+        workflowRunKey: row.workflow_run_key,
+        input: row.input ?? {},
+        lifecycleState: row.lifecycle_state,
+        currentState: row.current_state,
+        stateRevision: Number(row.state_revision),
+        currentStateEnteredAt: row.current_state_entered_at,
+        sessionAttempts: Number(row.session_attempts),
+        sessionError: row.session_error ?? null,
+        inductionLeaseOwner: row.induction_lease_owner ?? null,
+        inductionLeaseExpiresAt: row.induction_lease_expires_at ? new Date(row.induction_lease_expires_at) : null,
+        ...(producerType
+            ? {
+                origin: producerType === "workflow_generator" ? "Workflow Generator" as const : "Direct" as const,
+                producerType,
+                workflowGeneratorId: producerType === "workflow_generator"
+                    ? row.catalog_workflow_generator_id ?? row.workflow_generator_id ?? null
+                    : null,
+            }
+            : {}),
+        ...(requestedBy ? { requestedBy } : {}),
+        ...(row.catalog_session_compute_affinity
+            ? { sessionComputeAffinity: row.catalog_session_compute_affinity as WorkflowComputeAffinity }
+            : {}),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToWorkflowRunExecutionAffinity(row: any): SessionOwnerInfo {
+    const provider = String(row.execution_affinity_provider || "").trim();
+    const subject = String(row.execution_affinity_subject || "").trim();
+    if (!provider || !subject) {
+        throw new Error(`WorkflowRun has no durable execution affinity: ${row.workflow_run_id}`);
+    }
+    return {
+        provider,
+        subject,
+        email: row.execution_affinity_email ?? null,
+        displayName: row.execution_affinity_display_name ?? null,
+    };
+}
+
+function rowToWorkflowRunSession(row: any): WorkflowRunSessionRow {
+    return {
+        associationId: row.association_id,
+        workflowRunId: row.workflow_run_id,
+        sessionId: row.session_id,
+        stateRunId: row.state_run_id ?? null,
+        ordinal: Number(row.ordinal),
+        isCurrent: Boolean(row.is_current),
+        status: row.status,
+        error: row.error ?? null,
+        reservedAt: row.reserved_at,
+        attachedAt: row.attached_at ?? null,
+        endedAt: row.ended_at ?? null,
+    };
+}
+
+function rowToWorkflowRunStateRun(row: any): WorkflowRunStateRunRow {
+    return {
+        stateRunId: row.state_run_id,
+        workflowRunId: row.workflow_run_id,
+        workflowDefinitionId: row.workflow_definition_id,
+        stateName: row.state_name,
+        stateRevision: Number(row.state_revision),
+        status: row.status,
+        sessionId: row.session_id ?? null,
+        stateOwner: row.state_owner ?? null,
+        sourceId: row.source_id ?? null,
+        sourcePath: row.source_path ?? null,
+        sourceCommit: row.source_commit ?? null,
+        markdownSha256: row.markdown_sha256 ?? null,
+        allowedOutcomes: Array.isArray(row.allowed_outcomes) ? row.allowed_outcomes : [],
+        terminal: typeof row.terminal === "boolean" ? row.terminal : null,
+        attempt: Number(row.attempt),
+        predecessorJournalEntryId: row.predecessor_journal_entry_id ?? null,
+        leaseOwner: row.lease_owner ?? null,
+        leaseExpiresAt: row.lease_expires_at ?? null,
+        error: row.error ?? null,
+        startedAt: row.started_at ?? null,
+        completedAt: row.completed_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToWorkflowRunJournalEntry(row: any): WorkflowRunJournalEntryRow {
+    return {
+        journalEntryId: row.journal_entry_id,
+        workflowRunId: row.workflow_run_id,
+        sequence: Number(row.sequence),
+        entryKind: row.entry_kind,
+        workflowDefinitionId: row.workflow_definition_id,
+        fromState: row.from_state,
+        toState: row.to_state,
+        fromRevision: Number(row.from_revision),
+        toRevision: Number(row.to_revision),
+        stateRunId: row.state_run_id,
+        sessionId: row.session_id,
+        outcome: row.outcome ?? null,
+        summary: row.summary,
+        idempotencyKey: row.idempotency_key,
+        transitionedAt: row.transitioned_at,
+    };
+}
+
+function rowToWorkflowRunWait(row: any): WorkflowRunWaitRow {
+    return {
+        waitId: row.wait_id,
+        workflowRunId: row.workflow_run_id,
+        stateRunId: row.state_run_id,
+        workflowDefinitionId: row.workflow_definition_id,
+        sessionId: row.session_id,
+        externalOperationId: row.external_operation_id ?? null,
+        signalKey: row.signal_key ?? null,
+        waitKey: row.wait_key,
+        kind: row.kind,
+        status: row.status,
+        detectionMode: row.detection_mode,
+        expectedStateRevision: Number(row.expected_state_revision),
+        prompt: row.prompt ?? {},
+        responseSchema: row.response_schema ?? {},
+        responderPolicy: row.responder_policy ?? {},
+        provider: row.provider ?? null,
+        target: row.target ?? null,
+        predicate: row.predicate ?? null,
+        providerCursor: row.provider_cursor ?? null,
+        latestObservation: row.latest_observation ?? null,
+        conditionOverrides: Array.isArray(row.condition_overrides)
+            ? (row.condition_overrides as string[])
+            : [],
+        responseId: row.response_id ?? null,
+        response: row.response ?? null,
+        responseDeliveryStatus: row.response_delivery_status ?? "none",
+        responseEnqueuedAt: row.response_enqueued_at ?? null,
+        satisfactionEvidence: row.satisfaction_evidence ?? null,
+        satisfiedBy: row.satisfied_by ?? null,
+        deadlineAt: row.deadline_at ?? null,
+        nextCheckAt: row.next_check_at ?? null,
+        checkAttempts: Number(row.check_attempts ?? 0),
+        consecutiveCheckFailures: Number(row.consecutive_check_failures ?? 0),
+        lastCheckedAt: row.last_checked_at ?? null,
+        checkLeaseOwner: row.check_lease_owner ?? null,
+        checkLeaseExpiresAt: row.check_lease_expires_at ?? null,
+        lastCheckError: row.last_check_error ?? null,
+        waitStartedAt: row.wait_started_at ?? null,
+        waitCompletedAt: row.wait_completed_at ?? null,
+        satisfiedAt: row.satisfied_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToWorkflowRunExternalOperation(row: any): WorkflowRunExternalOperationRow {
+    return {
+        operationId: row.operation_id,
+        workflowRunId: row.workflow_run_id,
+        stateRunId: row.state_run_id,
+        workflowDefinitionId: row.workflow_definition_id,
+        createdSessionId: row.created_session_id,
+        sessionId: row.session_id,
+        provider: row.provider,
+        kind: row.kind,
+        operationKey: row.operation_key,
+        idempotencyKey: row.idempotency_key,
+        correlationId: row.correlation_id,
+        signalKey: row.signal_key,
+        request: row.request ?? {},
+        status: row.status,
+        result: row.result ?? null,
+        evidence: row.evidence ?? null,
+        error: row.error ?? null,
+        nextPollAt: row.next_poll_at,
+        pollLeaseOwner: row.poll_lease_owner ?? null,
+        pollLeaseExpiresAt: row.poll_lease_expires_at ?? null,
+        completedAt: row.completed_at ?? null,
+        waitStartedAt: row.wait_started_at ?? null,
+        waitCompletedAt: row.wait_completed_at ?? null,
+        signalStatus: row.signal_status,
+        signalAttempts: Number(row.signal_attempts),
+        nextSignalAt: row.next_signal_at ?? null,
+        signalLeaseOwner: row.signal_lease_owner ?? null,
+        signalLeaseExpiresAt: row.signal_lease_expires_at ?? null,
+        signalDeliveredAt: row.signal_delivered_at ?? null,
+        lastSignalError: row.last_signal_error ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
     };
 }
 

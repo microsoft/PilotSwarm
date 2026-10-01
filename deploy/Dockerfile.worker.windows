@@ -1,0 +1,100 @@
+# escape=`
+# =============================================================================
+# PilotSwarm Windows worker image (THIN layer — the fast inner loop).
+#
+# FROM the cached base (servercore + Node + MinGit + pwsh + MSVC runtime; see
+# deploy/Dockerfile.worker-base.windows). This layer only runs `npm ci` and
+# `COPY dist/`, so a rebuild after a code change is minutes — not the 10-20 min
+# a from-servercore build costs. The COPY manifest mirrors
+# deploy/Dockerfile.worker 1:1 so the Linux and Windows workers ship the same
+# runtime layout (only the OS base and the git/pwsh provisioning differ).
+#
+# Build context stays a few MB: .dockerignore excludes node_modules/.git and
+# node_modules is built IN-IMAGE by `npm ci` — never shipped in the context.
+# (A pre-staged node_modules made the first Windows context 646 MB / ~40k files
+# and dominated the build; do not reintroduce it.)
+#
+# Build (two phases):
+#   1) base once →  az acr build --platform windows --image pilotswarm-worker-base:<btag> `
+#                     --file deploy/Dockerfile.worker-base.windows .
+#   2) worker →     az acr build --platform windows --image pilotswarm-worker-win:<tag> `
+#                     --file deploy/Dockerfile.worker.windows `
+#                     --build-arg WORKER_BASE_IMAGE=<acr>/pilotswarm-worker-base:<btag> .
+# =============================================================================
+ARG WORKER_BASE_IMAGE
+FROM ${WORKER_BASE_IMAGE}
+
+SHELL ["powershell", "-NoProfile", "-Command", "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"]
+
+# Build-time steps (npm ci, COPY into C:\app) require admin and MUST NOT depend
+# on the trailing USER of WORKER_BASE_IMAGE. The plain worker base leaves the
+# default (ContainerAdministrator), but repository-specific tool bases (for
+# example, a uv/WinDbg tools base) may end on `USER ContainerUser`; without this reset `npm ci`
+# runs unprivileged and fails. The image drops back to ContainerUser at the end
+# for least-privilege runtime, so this only affects build steps.
+USER ContainerAdministrator
+
+WORKDIR C:\app
+
+# Private composed tool images may carry a node_modules tree from an older SDK
+# layer. Remove it before installing the current workspace dependencies.
+RUN if (Test-Path C:\app\node_modules) { Remove-Item C:\app\node_modules -Recurse -Force }
+
+# Workspace root + package manifests first (same order as Dockerfile.worker for
+# layer-cache reuse). The horizon-store manifest MUST be present before `npm ci`
+# so npm creates the node_modules/@pilotswarm/horizon-store workspace symlink
+# the SDK's dynamic import("@pilotswarm/horizon-store") resolves at runtime.
+COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/app/package.json ./packages/app/
+COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY packages/workflow-generator/package.json ./packages/workflow-generator/
+COPY scripts/postinstall.js ./scripts/
+
+# `npm ci` enforces the committed lockfile so Windows rebuilds from a SHA are
+# reproducible. NPM_REGISTRY lets a build behind a proxy that can't reach
+# registry.npmjs.org install from a mirror (defaults to the public registry, so
+# an unset arg behaves exactly as before). Matches deploy/Dockerfile.worker.
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=${NPM_REGISTRY}
+RUN npm ci --omit=dev --force
+
+# Built SDK dist + bundled plugins, worker entrypoints, app plugins.
+COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY packages/sdk/plugins/ ./packages/sdk/plugins/
+COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
+
+# api-client (plain ESM) — dist/web/api-connection.js imports it at load time,
+# so it must be present even though workers use direct { store } mode.
+COPY packages/sdk/api/index.js packages/sdk/api/index.d.ts ./packages/sdk/api/
+COPY packages/sdk/api/src/ ./packages/sdk/api/src/
+
+# horizon-store built output + runtime-read migrations (the migrator reads the
+# numbered migrations/*.sql relative to dist/; the sibling layout matters).
+COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
+COPY packages/workflow-generator/dist/ ./packages/workflow-generator/dist/
+
+# Deployment catalog is explicit and checked in. Never bake the private,
+# gitignored root .model_providers.json into an AKS worker image.
+COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
+
+# Keep changing build metadata after expensive dependency/source layers so
+# provenance updates preserve the thin worker image's cache.
+ARG PILOTSWARM_SOURCE_COMMIT
+ARG PILOTSWARM_BUILD_ID
+ARG PILOTSWARM_IMAGE_REF
+ENV PILOTSWARM_SOURCE_COMMIT=${PILOTSWARM_SOURCE_COMMIT}
+ENV PILOTSWARM_BUILD_ID=${PILOTSWARM_BUILD_ID}
+ENV PILOTSWARM_IMAGE_REF=${PILOTSWARM_IMAGE_REF}
+
+# Least-privilege runtime: run as the built-in low-privilege ContainerUser
+# (the Windows analog of the Linux image's non-root `node` user). All build
+# steps above ran as the default ContainerAdministrator; runtime writes go to
+# mounted enlistment, shared-store, and Copilot-home paths, not C:\app. A
+# deployment may override the image default with
+# securityContext.windowsOptions.runAsUserName.
+USER ContainerUser
+
+ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]

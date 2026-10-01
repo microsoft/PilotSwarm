@@ -25,6 +25,11 @@ replacements:
           name: copilot-runtime-worker
         fieldPaths:
           - spec.template.spec.containers.[name=worker].image
+      - select:
+          kind: Deployment
+          name: pilotswarm-workflow-generator
+        fieldPaths:
+          - spec.template.spec.containers.[name=workflow-generator].image
 
   - source:
       kind: ConfigMap
@@ -77,5 +82,10 @@ replacements:
       - select:
           kind: Deployment
           name: copilot-runtime-worker
+        fieldPaths:
+          - spec.template.metadata.annotations.[pilotswarm.dev/spc-keys-hash]
+      - select:
+          kind: Deployment
+          name: pilotswarm-workflow-generator
         fieldPaths:
           - spec.template.metadata.annotations.[pilotswarm.dev/spc-keys-hash]

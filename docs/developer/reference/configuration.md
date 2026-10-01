@@ -212,6 +212,12 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets Duroxide orchestration concurrency. Default: `2`.
 - `PILOTSWARM_WORKER_CONCURRENCY`
   Sets Duroxide activity/worker concurrency. Default: `2`.
+- `PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS`
+  How often the runtime polls Postgres for ready orchestration/work items.
+  Default: `10` (100 polls/sec), tuned for a co-located in-cluster database.
+  Off-cluster workers (e.g. a remote devbox with tens of ms of DB round-trip)
+  should raise this to relieve connection-pool acquire contention. An explicit
+  `PilotSwarmWorker({ dispatcherPollIntervalMs })` option takes precedence.
 - `PILOTSWARM_TURN_TIMEOUT_MS`
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
@@ -225,8 +231,51 @@ PILOTSWARM_CMS_PG_POOL_MAX=3
 PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
+PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS=10
 PILOTSWARM_TURN_TIMEOUT_MS=1200000
 ```
+
+### Turn Lifecycle Hook Module
+
+The standard headless worker can load process-local hooks without replacing its
+entrypoint:
+
+```bash
+PILOTSWARM_TURN_LIFECYCLE_HOOK_MODULE=./hooks/turn-hooks.mjs
+```
+
+The value may be a relative or absolute file path, a `file:` URL, or an
+installed package specifier. The ESM module must export one or both named
+functions:
+
+```js
+export async function beforeTurn(context) {
+    context.trace(`before session=${context.sessionId}`);
+}
+
+export async function afterTurn(context) {
+    context.trace(`after session=${context.sessionId} status=${context.status}`);
+}
+```
+
+The module loads before `PilotSwarmWorker` construction. Import failures,
+missing exports, and non-function exports fail startup before the worker becomes
+ready.
+
+`beforeTurn` runs once before each complete run-turn activity attempt. If it
+fails, the turn body and `afterTurn` do not run. After a successful pre-hook,
+`afterTurn` runs once for completed, cancelled, stopped, returned-error, and
+thrown-error outcomes. If both the turn and `afterTurn` fail, PilotSwarm reports
+an `AggregateError` preserving the turn error first and hook error second.
+Durable activity retries are new attempts and execute the hooks again, so hook
+implementations must be retry-safe for the same Session and turn index.
+
+Hooks receive `sessionId`, optional `turnIndex`, the serializable Session
+configuration, and `trace(message)`. Hook implementations must keep external
+operations bounded. Hooks execute inside the run-turn activity and do not
+receive a separate cancellation token or probe; the normal worker cancellation
+behavior and `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` drain budget remain
+authoritative.
 
 ### Local Development
 

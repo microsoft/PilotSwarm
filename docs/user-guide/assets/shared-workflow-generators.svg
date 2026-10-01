@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+  <title id="title">Two WorkflowGenerators use the same bug-fixing lifecycle</title>
+  <desc id="desc">User-reported bugs and system-filed anomaly alerts are discovered by separate WorkflowGenerators. Both generators create Workflow Runs that use one shared Bug Fix Workflow Definition. Each Workflow Run is executed through investigation, fix-authoring, and validation Sessions. A correlation policy prevents duplicate Workflow Runs when an alert is linked to a reported bug.</desc>
+
+  <defs>
+    <style>
+      .title { font: 700 28px "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px "Segoe UI", Arial, sans-serif; fill: #526079; }
+      .box-title { font: 700 17px "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .box-text { font: 400 14px "Segoe UI", Arial, sans-serif; fill: #344159; }
+      .small { font: 600 12px "Segoe UI", Arial, sans-serif; fill: #526079; }
+      .pill { font: 600 12px "Segoe UI", Arial, sans-serif; fill: #344159; }
+      .arrow-label { font: 600 12px "Segoe UI", Arial, sans-serif; fill: #526079; }
+      .source { fill: #eaf3ff; stroke: #5b8def; stroke-width: 2; }
+      .generator { fill: #f3edff; stroke: #8b5cf6; stroke-width: 2; }
+      .lifecycle { fill: #fff5d9; stroke: #d69e2e; stroke-width: 2.5; }
+      .workflow run { fill: #eaf8ef; stroke: #3d9b66; stroke-width: 2; }
+      .session { fill: #f4f6f9; stroke: #8a96aa; stroke-width: 1.5; }
+      .note { fill: #fff7ed; stroke: #ea8a2f; stroke-width: 1.5; }
+      .arrow { fill: none; stroke: #637089; stroke-width: 2.25; marker-end: url(#arrow); }
+      .reference { fill: none; stroke: #b17b16; stroke-width: 2; stroke-dasharray: 7 5; marker-end: url(#arrow-gold); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#637089"/>
+    </marker>
+    <marker id="arrow-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b17b16"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="820" fill="#ffffff"/>
+
+  <text x="50" y="48" class="title">Different discovery sources, one shared bug-fixing lifecycle</text>
+  <text x="50" y="76" class="subtitle">Each WorkflowGenerator owns its source and deduplication scope. The Workflow Runs use the same Workflow Definition and execution model.</text>
+
+  <rect x="430" y="105" width="420" height="130" rx="16" class="lifecycle"/>
+  <text x="640" y="140" text-anchor="middle" class="box-title">Bug Fix Workflow Definition</text>
+  <text x="640" y="168" text-anchor="middle" class="box-text">Investigate  -&gt;  ProposeFix  -&gt;  Validate  -&gt;  AwaitReview</text>
+  <text x="640" y="194" text-anchor="middle" class="box-text">Reusable states, transitions, waits, validation, and guardrails</text>
+  <text x="640" y="218" text-anchor="middle" class="small">The definition is shared; the discovered records are not.</text>
+
+  <text x="50" y="270" class="small">DISCOVERY SOURCE</text>
+  <text x="320" y="270" class="small">WORKFLOW_GENERATORERATOR</text>
+  <text x="615" y="270" class="small">JOB</text>
+  <text x="900" y="270" class="small">SESSIONS USED BY THE JOB</text>
+
+  <rect x="50" y="292" width="220" height="130" rx="14" class="source"/>
+  <text x="160" y="327" text-anchor="middle" class="box-title">User-reported bugs</text>
+  <text x="160" y="354" text-anchor="middle" class="box-text">Customer or engineer filed</text>
+  <text x="160" y="377" text-anchor="middle" class="box-text">Repro steps and discussion</text>
+  <text x="160" y="400" text-anchor="middle" class="small">Example key: bug:1423</text>
+
+  <rect x="320" y="292" width="240" height="130" rx="14" class="generator"/>
+  <text x="440" y="327" text-anchor="middle" class="box-title">User bug WorkflowGenerator</text>
+  <text x="440" y="354" text-anchor="middle" class="box-text">Queries ready bugs</text>
+  <text x="440" y="377" text-anchor="middle" class="box-text">Normalizes bug input</text>
+  <text x="440" y="400" text-anchor="middle" class="small">Own cadence, watermark, dedup</text>
+
+  <rect x="615" y="292" width="235" height="130" rx="14" class="workflow run"/>
+  <text x="732.5" y="327" text-anchor="middle" class="box-title">Workflow Run: bug 1423</text>
+  <text x="732.5" y="354" text-anchor="middle" class="box-text">Origin: User bug generator</text>
+  <text x="732.5" y="377" text-anchor="middle" class="box-text">Current state: Investigate</text>
+  <text x="732.5" y="400" text-anchor="middle" class="small">Durable state, waits, journal</text>
+
+  <rect x="900" y="292" width="250" height="130" rx="14" class="session"/>
+  <rect x="920" y="315" width="210" height="25" rx="12" fill="#ffffff" stroke="#a7b0c0"/>
+  <text x="1025" y="332" text-anchor="middle" class="pill">Investigation Session</text>
+  <rect x="920" y="348" width="210" height="25" rx="12" fill="#ffffff" stroke="#a7b0c0"/>
+  <text x="1025" y="365" text-anchor="middle" class="pill">Fix-authoring Session</text>
+  <rect x="920" y="381" width="210" height="25" rx="12" fill="#ffffff" stroke="#a7b0c0"/>
+  <text x="1025" y="398" text-anchor="middle" class="pill">Validation Session</text>
+
+  <path d="M 270 357 L 320 357" class="arrow"/>
+  <text x="295" y="345" text-anchor="middle" class="arrow-label">discovers</text>
+  <path d="M 560 357 L 615 357" class="arrow"/>
+  <text x="587" y="345" text-anchor="middle" class="arrow-label">creates</text>
+  <path d="M 850 357 L 900 357" class="arrow"/>
+  <text x="875" y="345" text-anchor="middle" class="arrow-label">executes via</text>
+  <path d="M 560 310 C 590 250, 610 240, 625 235" class="reference"/>
+
+  <rect x="50" y="505" width="220" height="130" rx="14" class="source"/>
+  <text x="160" y="540" text-anchor="middle" class="box-title">System-filed alerts</text>
+  <text x="160" y="567" text-anchor="middle" class="box-text">Telemetry anomalies</text>
+  <text x="160" y="590" text-anchor="middle" class="box-text">Crash or regression evidence</text>
+  <text x="160" y="613" text-anchor="middle" class="small">Example key: alert:anomaly-77</text>
+
+  <rect x="320" y="505" width="240" height="130" rx="14" class="generator"/>
+  <text x="440" y="540" text-anchor="middle" class="box-title">Alert WorkflowGenerator</text>
+  <text x="440" y="567" text-anchor="middle" class="box-text">Reads anomaly alerts</text>
+  <text x="440" y="590" text-anchor="middle" class="box-text">Normalizes alert input</text>
+  <text x="440" y="613" text-anchor="middle" class="small">Own cadence, watermark, dedup</text>
+
+  <rect x="615" y="505" width="235" height="130" rx="14" class="workflow run"/>
+  <text x="732.5" y="540" text-anchor="middle" class="box-title">Workflow Run: anomaly-77</text>
+  <text x="732.5" y="567" text-anchor="middle" class="box-text">Origin: Alert generator</text>
+  <text x="732.5" y="590" text-anchor="middle" class="box-text">Current state: Investigate</text>
+  <text x="732.5" y="613" text-anchor="middle" class="small">Same lifecycle semantics</text>
+
+  <rect x="900" y="505" width="250" height="130" rx="14" class="session"/>
+  <rect x="920" y="528" width="210" height="25" rx="12" fill="#ffffff" stroke="#a7b0c0"/>
+  <text x="1025" y="545" text-anchor="middle" class="pill">Investigation Session</text>
+  <rect x="920" y="561" width="210" height="25" rx="12" fill="#ffffff" stroke="#a7b0c0"/>
+  <text x="1025" y="578" text-anchor="middle" class="pill">Fix-authoring Session</text>
+  <rect x="920" y="594" width="210" height="25" rx="12" fill="#ffffff" stroke="#a7b0c0"/>
+  <text x="1025" y="611" text-anchor="middle" class="pill">Validation Session</text>
+
+  <path d="M 270 570 L 320 570" class="arrow"/>
+  <text x="295" y="558" text-anchor="middle" class="arrow-label">discovers</text>
+  <path d="M 560 570 L 615 570" class="arrow"/>
+  <text x="587" y="558" text-anchor="middle" class="arrow-label">creates</text>
+  <path d="M 850 570 L 900 570" class="arrow"/>
+  <text x="875" y="558" text-anchor="middle" class="arrow-label">executes via</text>
+  <path d="M 560 525 C 600 460, 650 310, 650 235" class="reference"/>
+
+  <rect x="210" y="700" width="780" height="75" rx="14" class="note"/>
+  <text x="600" y="730" text-anchor="middle" class="box-title">Correlation across sources</text>
+  <text x="600" y="755" text-anchor="middle" class="box-text">If anomaly-77 is linked to bug 1423, use a canonical correlation policy or one routing path to avoid duplicate Workflow Runs.</text>
+</svg>

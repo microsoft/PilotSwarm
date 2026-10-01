@@ -138,6 +138,27 @@ test("the provider-budget suites are reachable from the gate", () => {
     }
 });
 
+test("real-Git integration suites are reachable from full and targeted gates", () => {
+    const vitestConfig = readFileSync(
+        fileURLToPath(new URL("../../vitest.config.js", import.meta.url)), "utf8");
+    assert.match(vitestConfig, /test\/local\/\*\*\/\*\.test\.js/,
+        "the complete Vitest gate must include local integration suites");
+
+    const pkg = JSON.parse(readFileSync(
+        fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8"));
+    const targeted = pkg.scripts["test:local:git-lifecycle"];
+    assert.ok(targeted, "test:local:git-lifecycle script is missing");
+
+    for (const file of [
+        "test/local/git-store.test.js",
+        "test/local/git-workspace-cross-pod.test.js",
+    ]) {
+        readFileSync(fileURLToPath(new URL(`../../${file}`, import.meta.url)), "utf8");
+        assert.match(targeted, new RegExp(file.replaceAll("/", "\\/")),
+            `${file} is missing from test:local:git-lifecycle`);
+    }
+});
+
 test("shared-provider safety switch skips both stale sweeps without disabling test phases", () => {
     const start = live.indexOf("cleanup_test_state() {");
     assert.notEqual(start, -1);
@@ -146,9 +167,9 @@ test("shared-provider safety switch skips both stale sweeps without disabling te
     const program = `${cleanupDefinition}\nnode() { printf 'STALE_SWEEP_CALLED\\n'; }\nREPO_ROOT=/unused\ncleanup_test_state\ntrap cleanup_test_state EXIT\n`;
     const inherited = { ...process.env };
     delete inherited.PS_TEST_SKIP_STALE_CLEANUP;
-    const normal = execFileSync("bash", ["-c", program], { env: inherited, encoding: "utf8" });
+    const normal = execFileSync(bashExecutable(), ["-c", program], { env: inherited, encoding: "utf8" });
     assert.equal((normal.match(/STALE_SWEEP_CALLED/g) ?? []).length, 2);
-    const safe = execFileSync("bash", ["-c", program], { env: { ...inherited, PS_TEST_SKIP_STALE_CLEANUP: "1" }, encoding: "utf8" });
+    const safe = execFileSync(bashExecutable(), ["-c", program], { env: { ...inherited, PS_TEST_SKIP_STALE_CLEANUP: "1" }, encoding: "utf8" });
     assert.doesNotMatch(safe, /STALE_SWEEP_CALLED/);
     assert.equal((safe.match(/Global stale-test cleanup disabled/g) ?? []).length, 2);
     assert.equal((live.match(/\$\{PS_TEST_SKIP_STALE_CLEANUP/g) ?? []).length, 1, "the opt-out must guard only the global cleanup function");

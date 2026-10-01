@@ -5,6 +5,23 @@ import {
     webModeUnsupported,
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
+import type {
+    CreateWorkflowGeneratorInput,
+    CreateWorkflowDefinitionInput,
+    CreateWorkflowDefinitionResult,
+    CreateWorkflowRunInput,
+    CreateWorkflowRunResult,
+    WorkflowGeneratorRow,
+    WorkflowDefinitionRow,
+    WorkflowGeneratorCycleRow,
+    WorkflowRunRow,
+    WorkflowRunSessionRow,
+    WorkflowRunStateRunRow,
+    WorkflowRunWaitRow,
+    WorkflowRunJournalEntryRow,
+    WorkerTimelineEntry,
+} from "../cms.js";
+import type { SessionOwnerInfo } from "../types.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 
 const WAIT_SLICE_MS = 25_000;
@@ -67,18 +84,187 @@ export class WebPilotSwarmManagementClient {
         await this._api.stop();
     }
 
-    // ── Session listing ─────────────────────────────────────────────────
+    // ── Workflow Generators ──────────────────────────────────────────────────
 
-    async listSessions(): Promise<any[]> {
-        return this._api.call("listSessions");
+    async createWorkflowGenerator(input: CreateWorkflowGeneratorInput): Promise<{
+        generator: WorkflowGeneratorRow;
+        definition: WorkflowDefinitionRow;
+    }> {
+        return this._api.call("createWorkflowGenerator", {
+            name: input.name,
+            cadenceSeconds: input.cadenceSeconds,
+            controllerComputeAffinity: input.controllerComputeAffinity,
+            workflowDefinitionId: input.workflowDefinitionId,
+            source: {
+                type: input.sourceType,
+                config: input.sourceConfig,
+            },
+        });
     }
 
-    async listSessionsPage(opts: { limit?: number; cursor?: { updatedAt: number; sessionId: string } | null; includeDeleted?: boolean; systemFilter?: "all" | "only" | "exclude"; viewerOnly?: boolean } = {}): Promise<any> {
+    async listWorkflowGenerators(
+        optionsOrOwner: { scope?: "visible" | "fleet" } | Pick<SessionOwnerInfo, "provider" | "subject"> | null = {},
+    ): Promise<WorkflowGeneratorRow[]> {
+        const scope = optionsOrOwner && "scope" in optionsOrOwner ? optionsOrOwner.scope : undefined;
+        return this._api.call("listWorkflowGenerators", { scope });
+    }
+
+    async listWorkflowGeneratorsPage(
+        options: import("../management-client.js").WorkflowCatalogPageOptions = {},
+        _owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<import("../management-client.js").WorkflowGeneratorPage> {
+        return this._api.call("listWorkflowGeneratorsPage", {
+            ...options,
+            cursor: undefined,
+            cursorUpdatedAt: options.cursor?.updatedAt,
+            cursorId: options.cursor?.id,
+            updatedAfter: options.updatedAfter == null
+                ? undefined
+                : new Date(options.updatedAfter).toISOString(),
+        });
+    }
+
+    async getWorkflowGenerator(workflowGeneratorId: string): Promise<WorkflowGeneratorRow | null> {
+        return this._api.call("getWorkflowGenerator", { workflowGeneratorId });
+    }
+
+    async deleteWorkflowGenerator(workflowGeneratorId: string): Promise<import("../cms.js").WorkflowRunCleanupResult> {
+        return this._api.call("deleteWorkflowGenerator", { workflowGeneratorId });
+    }
+
+    async getWorkflowDefinition(workflowDefinitionId: string): Promise<WorkflowDefinitionRow> {
+        return this._api.call("getWorkflowDefinition", { workflowDefinitionId });
+    }
+
+    async createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult> {
+        return this._api.call("createWorkflowRun", {
+            workflowDefinitionId: input.workflowDefinitionId,
+            input: input.input,
+            workflowRunKey: input.workflowRunKey,
+        });
+    }
+
+    async createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<CreateWorkflowDefinitionResult> {
+        return this._api.call("createWorkflowDefinition", {
+            workflowType: input.workflowType,
+            name: input.name,
+            definition: {
+                sessionComputeAffinity: input.sessionComputeAffinity,
+                workflowDefinition: input.workflowDefinition,
+                affinities: input.affinities,
+                validationGates: input.validationGates,
+                guardrails: input.guardrails,
+            },
+        });
+    }
+
+    async listWorkflowDefinitions(workflowType?: string): Promise<WorkflowDefinitionRow[]> {
+        return this._api.call("listWorkflowDefinitions", { workflowType });
+    }
+
+    async setWorkflowGeneratorDefinition(
+        workflowGeneratorId: string,
+        workflowDefinitionId: string,
+    ): Promise<{ generator: WorkflowGeneratorRow; definition: WorkflowDefinitionRow }> {
+        return this._api.call("setWorkflowGeneratorDefinition", {
+            workflowGeneratorId,
+            workflowDefinitionId,
+        });
+    }
+
+    async listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]> {
+        return this._api.call("listWorkflowGeneratorRuns", { workflowGeneratorId });
+    }
+
+    async listWorkflowGeneratorCycles(workflowGeneratorId: string, limit?: number): Promise<WorkflowGeneratorCycleRow[]> {
+        return this._api.call("listWorkflowGeneratorCycles", { workflowGeneratorId, limit });
+    }
+
+    async listWorkflowRuns(
+        options: import("../cms.js").ListWorkflowRunsOptions & { scope?: "visible" | "fleet"; viewerOnly?: boolean } = {},
+    ): Promise<WorkflowRunRow[]> {
+        return this._api.call("listWorkflowRuns", { ...options });
+    }
+
+    async listWorkflowRunsPage(
+        options: import("../management-client.js").ListWorkflowRunPageOptions = {},
+        _viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<import("../management-client.js").WorkflowRunPage> {
+        return this._api.call("listWorkflowRunsPage", {
+            ...options,
+            cursor: undefined,
+            cursorUpdatedAt: options.cursor?.updatedAt,
+            cursorId: options.cursor?.id,
+            updatedAfter: options.updatedAfter == null
+                ? undefined
+                : new Date(options.updatedAfter).toISOString(),
+        });
+    }
+
+    async getWorkflowRun(workflowRunId: string): Promise<WorkflowRunRow | null> {
+        return this._api.call("getWorkflowRun", { workflowRunId });
+    }
+
+    async deleteWorkflowRun(workflowRunId: string): Promise<import("../cms.js").WorkflowRunCleanupResult> {
+        return this._api.call("deleteWorkflowRun", { workflowRunId });
+    }
+
+    async listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]> {
+        return this._api.call("listWorkflowRunSessions", { workflowRunId });
+    }
+
+    async listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]> {
+        return this._api.call("listWorkflowRunStateRuns", { workflowRunId });
+    }
+
+    async listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]> {
+        return this._api.call("listWorkflowRunWaits", { workflowRunId });
+    }
+
+    async setWorkflowRunWaitConditionOverride(
+        workflowRunId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<WorkflowRunWaitRow> {
+        return this._api.call("setWorkflowRunWaitConditionOverride", { workflowRunId, waitId, conditionKey, overridden });
+    }
+
+    async listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]> {
+        return this._api.call("listWorkflowRunJournal", { workflowRunId });
+    }
+
+    async getWorkerTimeline(
+        workerNodeId: string,
+        options: { since?: Date; limit?: number } = {},
+    ): Promise<WorkerTimelineEntry[]> {
+        return this._api.call("getWorkerTimeline", {
+            workerNodeId,
+            since: options.since?.toISOString(),
+            limit: options.limit,
+        });
+    }
+
+    // ── Session listing ─────────────────────────────────────────────────
+
+    async listSessions(
+        optionsOrPlacement: { scope?: "visible" | "fleet" } | { provider: string; subject: string } | null = {},
+    ): Promise<any[]> {
+        const scope = optionsOrPlacement && "scope" in optionsOrPlacement ? optionsOrPlacement.scope : undefined;
+        return this._api.call("listSessions", { scope });
+    }
+
+    async listSessionsPage(opts: { limit?: number; cursor?: { updatedAt: number; sessionId: string } | null; includeDeleted?: boolean; systemFilter?: "all" | "only" | "exclude"; scope?: "visible" | "fleet"; viewerOnly?: boolean } = {}): Promise<any> {
+        // Send the keyset cursor as two scalar query params (not JSON) so the
+        // request URL has no encoded braces/quotes for an edge WAF to block.
+        const cursor = opts.cursor ?? null;
         return this._api.call("listSessionsPage", {
             limit: opts.limit,
-            cursor: opts.cursor ?? undefined,
+            cursorUpdatedAt: cursor ? cursor.updatedAt : undefined,
+            cursorSessionId: cursor ? cursor.sessionId : undefined,
             includeDeleted: opts.includeDeleted,
             systemFilter: opts.systemFilter,
+            scope: opts.scope,
             viewerOnly: opts.viewerOnly,
         });
     }
@@ -302,6 +488,21 @@ export class WebPilotSwarmManagementClient {
 
     async sendAnswer(sessionId: string, answer: string, options?: { expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         await this._api.call("sendAnswer", { sessionId, answer, options });
+    }
+
+    async sendSystemSignal(sessionId: string, signalKey: string, payload?: unknown): Promise<void> {
+        const normalizedKey = signalKey.trim();
+        if (!normalizedKey) throw new Error("signalKey is required");
+        await this._api.call("sendSessionEvent", {
+            sessionId,
+            eventName: "system_signal",
+            data: {
+                systemSignal: {
+                    signalKey: normalizedKey,
+                    payload: payload ?? null,
+                },
+            },
+        });
     }
 
     async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
@@ -530,8 +731,8 @@ export class WebPilotSwarmManagementClient {
 
     // ── Models (async in web mode — always `await`) ─────────────────────
 
-    async listModels(): Promise<any[]> {
-        return this._api.call("listModels");
+    async listModels(options: { compute?: "cluster" | "devbox"; repo?: string } = {}): Promise<any[]> {
+        return this._api.call("listModels", options);
     }
 
     async getModelsByProvider(): Promise<any[]> {
@@ -861,7 +1062,7 @@ export class WebPilotSwarmManagementClient {
     }
 
     async listRuntimeModels(_viewer?: unknown): Promise<any> {
-        return this.ops.listModels();
+        return this.ops.listModels({});
     }
 
     async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {

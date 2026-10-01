@@ -27,6 +27,13 @@
  *   - "session:share"   owner or admin (visibility + share grants)
  *   - "group:list"      owner-scoped group listing for non-admins
  *   - "group:manage"    group owner or admin
+ *   - "workflow-generator:list"   owner-scoped WorkflowGenerator listing
+ *   - "workflow-generator:create" create with authenticated principal as owner
+ *   - "workflow-generator:read"   WorkflowGenerator owner or admin
+ *   - "workflow-generator:manage" mutate aggregate or publish definitions; owner/admin
+ *   - "workflow-run:create"       create a direct WorkflowRun as the authenticated principal
+ *   - "workflow-run:read"         requester-scoped WorkflowRun collection or resource read; resource admins may read across requesters
+ *   - "workflow-run:manage"       WorkflowRun requester or resource admin
  *   - "facts:read"|"facts:write"  facts data-plane (role/session-scoped)
  *   - "fleet:read"      admin-only observability
  *   - "fleet:admin"     Tier-2 operational surface (admin)
@@ -61,11 +68,34 @@ const body = () => ({ in: "body" });
  * }>}
  */
 export const OPERATIONS = [
+    // ── Workflow Generators ────────────────────────────────────────────────
+    { name: "listWorkflowDefinitions", access: "workflow-definition:list", method: "GET", path: "/workflow-definitions", params: { workflowType: query("string") }, summary: "List immutable Workflow Definitions, optionally filtered by workflow type." },
+    { name: "createWorkflowDefinition", access: "workflow-definition:create", method: "POST", path: "/workflow-definitions", params: { workflowType: body(), name: body(), definition: body() }, summary: "Publish or reuse one immutable Workflow Definition version." },
+    { name: "getWorkflowDefinition", access: "workflow-definition:read", method: "GET", path: "/workflow-definitions/:workflowDefinitionId", params: { workflowDefinitionId: path("workflowDefinitionId"), scope: query("string") }, summary: "Get one immutable Workflow Definition; scope=fleet returns an administrative projection without executable definition content." },
+    { name: "listWorkflowGenerators", access: "workflow-generator:list", method: "GET", path: "/workflow-generators", params: { scope: query("string") }, summary: "List Workflow Generators visible to the caller; scope=fleet requires resource administration." },
+    { name: "listWorkflowGeneratorsPage", access: "workflow-generator:list", method: "GET", path: "/management/workflow-generators", params: { limit: query("number"), cursorUpdatedAt: query("number"), cursorId: query("string"), owner: query("string"), status: query("string"), repository: query("string"), placement: query("string"), updatedAfter: query("string"), scope: query("string") }, summary: "Keyset-paginated Workflow Generator catalog with operational filters; scope=fleet requires resource administration." },
+    { name: "createWorkflowGenerator", access: "workflow-generator:create", method: "POST", path: "/workflow-generators", params: { name: body(), cadenceSeconds: body(), controllerComputeAffinity: body(), workflowDefinitionId: body(), source: body() }, summary: "Register a Workflow Generator that enumerates targets for an immutable Workflow Definition." },
+    { name: "getWorkflowGenerator", access: "workflow-generator:read", method: "GET", path: "/workflow-generators/:workflowGeneratorId", params: { workflowGeneratorId: path("workflowGeneratorId"), scope: query("string") }, summary: "Get a WorkflowGenerator; scope=fleet omits source configuration and operational internals." },
+    { name: "setWorkflowGeneratorDefinition", access: "workflow-generator:manage", method: "PUT", path: "/workflow-generators/:workflowGeneratorId/workflow-definition", params: { workflowGeneratorId: path("workflowGeneratorId"), workflowDefinitionId: body() }, summary: "Select the immutable Workflow Definition used for future Runs requested by a Workflow Generator." },
+    { name: "deleteWorkflowGenerator", access: "workflow-generator:manage", method: "DELETE", path: "/workflow-generators/:workflowGeneratorId", params: { workflowGeneratorId: path("workflowGeneratorId") }, summary: "Logically delete an owned Workflow Generator without deleting shared Workflow Runs." },
+    { name: "listWorkflowRuns", access: "workflow-run:read", method: "GET", path: "/workflow-runs", params: { workflowType: query("string"), workflowRunKey: query("string"), limit: query("number"), scope: query("string"), viewerOnly: query("boolean") }, summary: "List durable Workflow Runs visible to the caller; scope=fleet requires resource administration. viewerOnly is a deprecated compatibility alias." },
+    { name: "listWorkflowRunsPage", access: "workflow-run:read", method: "GET", path: "/management/workflow-runs", params: { limit: query("number"), cursorUpdatedAt: query("number"), cursorId: query("string"), owner: query("string"), status: query("string"), repository: query("string"), placement: query("string"), origin: query("string"), workflow: query("string"), workflowRunKey: query("string"), updatedAfter: query("string"), scope: query("string") }, summary: "Keyset-paginated Workflow Run catalog with operational filters; scope=fleet requires resource administration." },
+    { name: "createWorkflowRun", access: "workflow-run:create", method: "POST", path: "/workflow-runs", params: { workflowDefinitionId: body(), input: body(), workflowRunKey: body() }, summary: "Start one service-owned durable Workflow Run using the immutable Workflow Definition's entry state and affinities." },
+    { name: "listWorkflowGeneratorRuns", access: "workflow-generator:read", method: "GET", path: "/workflow-generators/:workflowGeneratorId/workflow-runs", params: { workflowGeneratorId: path("workflowGeneratorId"), scope: query("string") }, summary: "List durable WorkflowRuns materialized by a WorkflowGenerator; scope=fleet returns reduced administrative rows." },
+    { name: "listWorkflowGeneratorCycles", access: "workflow-generator:read", method: "GET", path: "/workflow-generators/:workflowGeneratorId/cycles", params: { workflowGeneratorId: path("workflowGeneratorId"), limit: query("number") }, summary: "List recent materialization cycles for a WorkflowGenerator." },
+    { name: "getWorkflowRun", access: "workflow-run:read", method: "GET", path: "/workflow-runs/:workflowRunId", params: { workflowRunId: path("workflowRunId"), scope: query("string") }, summary: "Get one durable Workflow Run; scope=fleet omits input and effective configuration." },
+    { name: "deleteWorkflowRun", access: "workflow-run:manage", method: "DELETE", path: "/workflow-runs/:workflowRunId", params: { workflowRunId: path("workflowRunId") }, summary: "Logically delete one authorized Workflow Run and terminate its sessions." },
+    { name: "listWorkflowRunSessions", access: "workflow-run:read", method: "GET", path: "/workflow-runs/:workflowRunId/sessions", params: { workflowRunId: path("workflowRunId"), scope: query("string") }, summary: "List a Workflow Run's PilotSwarm session history; scope=fleet omits errors." },
+    { name: "listWorkflowRunStateRuns", access: "workflow-run:read", method: "GET", path: "/workflow-runs/:workflowRunId/state-runs", params: { workflowRunId: path("workflowRunId"), scope: query("string") }, summary: "List durable lifecycle state runs; scope=fleet returns operational transition metadata only." },
+    { name: "listWorkflowRunWaits", access: "workflow-run:read", method: "GET", path: "/workflow-runs/:workflowRunId/waits", params: { workflowRunId: path("workflowRunId"), scope: query("string") }, summary: "List durable waits; scope=fleet omits prompts, responses, observations, targets, and evidence." },
+    { name: "listWorkflowRunJournal", access: "workflow-run:read", method: "GET", path: "/workflow-runs/:workflowRunId/journal", params: { workflowRunId: path("workflowRunId"), scope: query("string") }, summary: "List the transition journal; scope=fleet omits summaries and idempotency keys." },
+    { name: "setWorkflowRunWaitConditionOverride", access: "workflow-run:manage", method: "POST", path: "/workflow-runs/:workflowRunId/waits/:waitId/condition-overrides", params: { workflowRunId: path("workflowRunId"), waitId: path("waitId"), conditionKey: body(), overridden: body() }, summary: "Set or clear an operator override that mocks a single observed-condition check as satisfied so the wait can resume." },
+
     // ── Sessions (client surface) ───────────────────────────────────────
-    { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },
-    { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder." },
-    { name: "createSessionForAgent", access: "session:create", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), contextTier: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session bound to a named agent. workspace { root, folder? } sets its working folder." },
-    { name: "getSession", access: "session:read", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get one session view (live orchestration status)." },
+    { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", params: { scope: query("string") }, summary: "List Session summaries visible to the caller; scope=fleet requires resource administration." },
+    { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), repo: body(), gitRef: body(), compute: body(), workspace: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. Optional repo pins the session to a repository enlistment. Optional gitRef pins that enlistment to a non-default branch/tag/commit. Optional compute is cluster (default) or devbox; devbox routes turns only to workers owned by the authenticated creator. workspace { root, folder? } selects an upstream session workspace. Caller credentials are never accepted by the API; devbox workers acquire delegated credentials locally." },
+    { name: "createSessionForAgent", access: "session:create", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), contextTier: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body(), visibility: body(), repo: body(), gitRef: body(), compute: body(), workspace: body() }, summary: "Create a session bound to a named agent. Optional repo/gitRef and compute retain fork routing behavior; workspace { root, folder? } selects an upstream session workspace." },
+    { name: "getSession", access: "session:read", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId"), scope: query("string") }, summary: "Get one Session view; scope=fleet returns administrative metadata without summaries, results, pending prompts, context, or routing configuration." },
     { name: "deleteSession", access: "session:destroy", method: "DELETE", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Cancel and soft-delete a session." },
     { name: "sendMessage", access: "session:write", method: "POST", path: "/sessions/:sessionId/messages", params: { sessionId: path("sessionId"), prompt: body(), options: body() }, summary: "Send a prompt (options: { enqueueOnly?, clientMessageIds?, attachments?: [{filename}] } — attachments reference image artifacts already uploaded to the session)." },
     { name: "sendAnswer", access: "session:write", method: "POST", path: "/sessions/:sessionId/answers", params: { sessionId: path("sessionId"), answer: body(), options: body() }, summary: "Answer a pending input-required question; options.expectedQuestion binds to the observed question and iteration." },
@@ -98,7 +128,7 @@ export const OPERATIONS = [
     { name: "setArtifactPinned", access: "session:manage", method: "PUT", path: "/sessions/:sessionId/artifacts/:filename/pinned", params: { sessionId: path("sessionId"), filename: path("filename"), pinned: body() }, summary: "Pin/unpin an artifact (pinned artifacts survive retention sweeps)." },
 
     // ── Management: sessions ────────────────────────────────────────────
-    { name: "listSessionsPage", access: "session:list", method: "GET", path: "/management/sessions", params: { limit: query("number"), cursor: query("json"), includeDeleted: query("boolean"), systemFilter: query("string"), viewerOnly: query("boolean") }, summary: "Keyset-paginated session listing, optionally restricted to the authenticated viewer and to system or regular sessions." },
+    { name: "listSessionsPage", access: "session:list", method: "GET", path: "/management/sessions", params: { limit: query("number"), cursorUpdatedAt: query("number"), cursorSessionId: query("string"), includeDeleted: query("boolean"), systemFilter: query("string"), owner: query("string"), status: query("string"), updatedAfter: query("string"), scope: query("string"), viewerOnly: query("boolean") }, summary: "Keyset-paginated Session listing with operational filters; scope=fleet requires resource administration. viewerOnly is a deprecated compatibility alias." },
     { name: "renameSession", access: "session:manage", method: "PATCH", path: "/management/sessions/:sessionId", params: { sessionId: path("sessionId"), title: body() }, summary: "Rename a session." },
     { name: "cancelSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/cancel", params: { sessionId: path("sessionId") }, summary: "Cancel a session." },
     { name: "completeSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/complete", params: { sessionId: path("sessionId"), reason: body() }, summary: "Mark a session completed." },
@@ -204,7 +234,7 @@ export const OPERATIONS = [
     { name: "deleteGraphNamespace", access: "fleet:admin", method: "DELETE", path: "/graph/namespaces/:namespace", params: { namespace: path("namespace") }, admin: true, summary: "Delete a graph namespace and its data. [admin]" },
 
     // ── Models / agents / policy ────────────────────────────────────────
-    { name: "listModels", access: "authed", method: "GET", path: "/models", summary: "Viewer-usable runtime provider instances (`catalogKind=runtime_provider`). Direct PilotSwarmManagementClient.listModels() is the provider-type template catalog (`catalogKind=provider_type`); use listRuntimeModels(viewer) for direct parity." },
+    { name: "listModels", access: "authed", method: "GET", path: "/models", params: { compute: query("string"), repo: query("string") }, summary: "Models runnable for the requested placement. compute=devbox resolves live owner/repository workers; omitted or cluster returns viewer-usable runtime provider instances." },
     { name: "getModelsByProvider", access: "authed", method: "GET", path: "/models/by-provider", summary: "Model templates grouped by provider type (catalogKind=provider_type); use listModels for viewer-usable runtime provider instances." },
     { name: "getDefaultModel", access: "authed", method: "GET", path: "/models/default", summary: "The deployment default model." },
     { name: "listCreatableAgents", access: "authed", method: "GET", path: "/agents", summary: "Agents sessions can be created for." },
@@ -217,6 +247,7 @@ export const OPERATIONS = [
     { name: "uploadAgentPackage", access: "authed", method: "POST", path: "/agent-packages/upload", params: { files: body(), scope: body() }, summary: "Publish a package from inline files ([{path, contentBase64}], ≤ 2 MB total); validates, canonically packs, and registers as the caller." },
     { name: "listAgentWorkerState", access: "fleet:admin", method: "GET", path: "/agent-packages/worker-state", admin: true, summary: "Per-worker installed package state (fleet adoption). Hard admin gate: the installed map enumerates every package name, including user-scope ones. [admin]" },
     { name: "listWorkers", access: "fleet:admin", method: "GET", path: "/workers", admin: true, summary: "Worker registry (0040): every registered worker with pool, lifecycle phase, liveness, write-once info, health snapshot, and per-domain state. Hard admin gate. [admin]" },
+    { name: "getWorkerTimeline", access: "fleet:admin", method: "GET", path: "/workers/:workerNodeId/timeline", params: { workerNodeId: path("workerNodeId"), since: query("string"), limit: query("number") }, admin: true, summary: "Chronological durable WorkflowRun, session, wait, external-operation, and state-transition activity for one worker. [admin]" },
     // A NAME is not a package: scope shadowing means one name can be a shared
     // package AND one-or-more user-scope copies at once. Every :name op below
     // takes an optional `scope` selector ("shared" | "user") so the caller
@@ -372,12 +403,18 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, diagnostics = undefined, etag = undefined, size = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
         this.status = status;
         if (Array.isArray(candidates)) this.candidates = candidates;
+        // `diagnostics` (edge/infra response headers + a bounded body snippet)
+        // helps callers tell an edge/WAF rejection apart from an application
+        // error. Safe to retain: the API server scrubs 5xx bodies to a generic
+        // message (raw messages/stacks stay in server logs), so captured content
+        // is our own error envelope or edge/infra boilerplate, not app internals.
+        if (diagnostics) this.diagnostics = diagnostics;
         // Workspace files: a conflict's current etag (null: the file is gone)
         // and a too-large file's size.
         if (etag === null || typeof etag === "string") this.etag = etag;

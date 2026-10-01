@@ -1,8 +1,13 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
+import type { TagFilter } from "duroxide";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+// Canonical durable git-IO contracts live in the protocol module; the hooks
+// carry them so the worker's beforeRunTurn/afterRunTurn are thin callers of
+// hydrate/dehydrate. Type-only import (erased at compile) — no runtime cycle.
+import type { GitBlobIO, GitStateIO } from "./git-workspace.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -19,7 +24,8 @@ export interface CycleReport {
 
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
-    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
+    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; resumePrompt?: string; events?: CapturedEvent[] }
+    | { type: "system_wait"; signalKey: string; reason: string; content?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
@@ -81,7 +87,8 @@ type TurnResultVariant =
     // workspace wait carries the failure `code`, the `workerNodeId` that
     // failed, and the provider's `retryAfterMs`; the orchestration picks the
     // wait length, and `seconds` is only a fallback for older handlers.
-    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; resumePrompt?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "system_wait"; signalKey: string; reason: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -501,6 +508,38 @@ export interface SerializableSessionConfig {
      */
     systemContextInPrompt?: boolean;
     workingDirectory?: string;
+    /**
+     * Target repo enlistment this session must run against (git-hydration).
+     * When set, the orchestration stamps a `repo:<repo>` duroxide routing tag
+     * on each runTurn activity so only a repository worker that declares that
+     * tag (via `workerTagFilter`) can dequeue the turn. When OMITTED, the
+     * orchestration instead stamps a `generic` tag so the runTurn routes to the
+     * dedicated generic worker pool (PILOTSWARM_WORKER_TAGS=generic) rather than
+     * being served by any repository worker in `defaultAnd` mode -- which would
+     * run a repo-less turn inside that repo's enlistment. Either way the runTurn
+     * is tagged; only untagged SUPPORT activities are served by any worker.
+     * DNS-safe short name (e.g. "my-repo", "example-service").
+     */
+    repo?: string;
+    /**
+     * Internal authenticated-owner routing boundary. The client derives this
+     * from the session owner when requireOwnerAffinity is requested; callers
+     * must not accept an arbitrary user-supplied value.
+     */
+    ownerAffinity?: Pick<SessionOwnerInfo, "provider" | "subject">;
+    /**
+     * Non-default branch this session's agent lives on (git-hydration). When
+     * set, turn-0 pins the git-workspace base to THIS branch's tip instead of
+     * the repo's default branch (origin/HEAD). Accepts a bare branch name
+     * ("dev/alice/feature"), a remote-tracking ref ("origin/feature"), a
+     * fully-qualified ref ("refs/heads/feature"), or a raw commit SHA; the
+     * worker normalizes a bare name to the enlistment's `origin/<branch>`
+     * remote-tracking ref before resolving. Once turn 0 pins the base, the
+     * branch is frozen durably in the git-workspace pointer row, so later cold
+     * cross-pod resumes replay onto the same branch. Wins over the worker-wide
+     * `GIT_ENLISTMENT_REF`. Omit to use the repo's default branch.
+     */
+    gitRef?: string;
     /**
      * The session's workspace (session workspaces, orchestration 1.0.80+).
      * Present only when set; every workspace behavior keys on its presence.
@@ -962,6 +1001,8 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
+    /** Consecutive automatic waits for caller sign-in, carried across continue-as-new. */
+    callerReauthWaitCount?: number;
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -987,6 +1028,7 @@ export interface OrchestrationInput {
         gate?: "budget" | "workspace";
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
         content?: string;
+        resumePrompt?: string;
         question?: string;
         choices?: string[];
         allowFreeform?: boolean;
@@ -1003,6 +1045,8 @@ export interface OrchestrationInput {
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
     budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string; attachments?: PromptAttachmentRef[]; sender?: import("./message-sender.js").MessageSender }>;
+    /** Platform-owned event wait. Only a matching system signal resumes it. */
+    pendingSystemWait?: { signalKey: string; reason: string };
     // ─── Session workspaces (1.0.80) ─────────────────────────
     /** Rises by one on every workspace set or clear. Absent = 0. */
     workspaceRevision?: number;
@@ -1145,6 +1189,126 @@ export interface SessionPolicy {
 
 // ─── Worker Options ──────────────────────────────────────────────
 
+/**
+ * Pre-turn reconcile hook (git-hydration MVP).
+ *
+ * Invoked at the very top of the `runTurn` activity — BEFORE the session
+ * touches its working directory or spawns the Copilot CLI. A worker that is
+ * collocated with a node-local git-cache mirror (see
+ * docs/architecture/aks-git-hydration.md) uses this to fetch its
+ * reused local enlistment from the mirror and hard-reset it to the target
+ * ref, so every job runs on a tree that matches the latest periodic fetch.
+ *
+ * Concurrency contract: a repository lifecycle module pins
+ * `PILOTSWARM_WORKER_CONCURRENCY`
+ * to 1, so the single job slot IS the mutex — while this hook runs the worker
+ * cannot claim another job (it is briefly "unavailable"), and the tree is
+ * guaranteed idle. The hook also self-serializes internally so bumping
+ * concurrency later degrades to "jobs queue behind a reconcile" rather than a
+ * torn working tree.
+ *
+ * Throwing fails THIS turn cleanly (before any model/tool work) rather than
+ * running a job against a stale or half-synced enlistment. Off by default.
+ */
+/**
+ * Durable git pointer for a session (git-hydration §8.5).
+ *
+ * Persisted in the CMS catalog and read back by the worker's pre-turn
+ * reconcile hook so a resumed session re-hydrates onto the SAME base commit
+ * it started on, independent of where the shared mirror's HEAD has since
+ * moved.
+ *
+ * - `baseSha` is pinned once at turn 0 and never moves unless the session is
+ *   explicitly regenerated (which bumps `epoch`).
+ * - `headSha` / `branch` describe the session's own committed work, recorded
+ *   on each dehydrate.
+ * - An unpinned (turn-0) session reads back
+ *   `{ baseSha: null, headSha: null, branch: null, epoch: 0 }`.
+ */
+export interface GitWorkspaceState {
+    baseSha: string | null;
+    headSha: string | null;
+    branch: string | null;
+    epoch: number;
+}
+
+export type BeforeRunTurnHook = (ctx: {
+    sessionId: string;
+    turnIndex?: number;
+    config: SerializableSessionConfig;
+    /** Activity-scoped trace sink (maps to duroxide `traceInfo`). */
+    trace: (message: string) => void;
+    /**
+     * Durable git pointer (§8.5) the session should reconcile onto, when a CMS
+     * catalog exposing git-state accessors is present. `undefined` for a
+     * non-CMS worker, in which case the hook falls back to live mirror HEAD.
+     */
+    gitState?: GitWorkspaceState;
+    /**
+     * Persist the durable git pointer: pin `baseSha` at turn 0 and record
+     * `headSha`/`branch`/`epoch` on dehydrate. Absent for a non-CMS worker.
+     */
+    persistGitState?: (state: GitWorkspaceState) => Promise<void>;
+    /**
+     * Durable git-state accessor (§8.5) — a fresh CMS read/write of the
+     * session's pinned pointer. Preferred over `gitState`/`persistGitState`:
+     * `hydrateGitWorkspace` reads the pinned base through this at hydrate time.
+     * Present only when the worker has a CMS catalog. When present the hook
+     * should call `hydrateGitWorkspace({ state: gitStateIO, blobs: gitBlobs })`.
+     */
+    gitStateIO?: GitStateIO;
+    /**
+     * Durable, session-scoped blob accessor for the git-workspace artifacts
+     * (bundle / patch / meta). Present only when the worker has a session blob
+     * store. Backs the replay half of `hydrateGitWorkspace`.
+     */
+    gitBlobs?: GitBlobIO;
+}) => void | Promise<void>;
+
+/**
+ * Post-turn dehydrate hook (git-hydration §8.5) — invoked at the END of the
+ * `runTurn` activity on EVERY turn (cold and warm), after the turn body has
+ * finished mutating the working tree. A repository lifecycle module sets it to call
+ * `dehydrateGitWorkspace`, persisting the session's uncommitted git work
+ * (unpushed commits + tracked/untracked edits) to durable blobs + the CMS
+ * pointer so a hard pod kill after any turn preserves it for a cross-pod
+ * resume. Best-effort: a dehydrate failure never fails an otherwise-successful
+ * turn. Only fires when a CMS catalog + session blob store are both present.
+ */
+export type AfterRunTurnHook = (ctx: {
+    sessionId: string;
+    turnIndex?: number;
+    config: SerializableSessionConfig;
+    /** Activity-scoped trace sink (maps to duroxide `traceInfo`). */
+    trace: (message: string) => void;
+    /** The turn's result, for observability (the hook does not consume it). */
+    result?: TurnResult;
+    /** Durable git-state accessor — fresh CMS read/write of the pinned pointer. */
+    gitStateIO: GitStateIO;
+    /** Durable git-workspace blob accessor (bundle / patch / meta). */
+    gitBlobs: GitBlobIO;
+}) => void | Promise<void>;
+
+/**
+ * Process-stable worker identity and build metadata published with every
+ * registry heartbeat. Explicit options override the corresponding
+ * PILOTSWARM_* environment variables.
+ */
+export interface WorkerProvenanceOptions {
+    /** Human-readable fleet label. Env: PILOTSWARM_WORKER_DISPLAY_NAME. */
+    displayName?: string;
+    /** Version of the application hosting the SDK. Env: PILOTSWARM_APPLICATION_VERSION. */
+    applicationVersion?: string;
+    /** Full source revision used to build the worker. Env: PILOTSWARM_SOURCE_COMMIT. */
+    sourceCommit?: string;
+    /** Deployment or image build identifier. Env: PILOTSWARM_BUILD_ID. */
+    buildId?: string;
+    /** Container image repository/tag reference. Env: PILOTSWARM_IMAGE_REF. */
+    imageRef?: string;
+    /** Immutable container image digest when available. Env: PILOTSWARM_IMAGE_DIGEST. */
+    imageDigest?: string;
+}
+
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
@@ -1167,7 +1331,57 @@ export interface PilotSwarmWorkerOptions {
      * exposed and remains the reclaim floor for session-pinned work.)
      */
     workerLockTimeoutMs?: number;
+    /**
+     * Dispatcher poll interval (ms) — how often the runtime polls Postgres
+     * for ready orchestration/work items. Default 10 (100 polls/sec), tuned
+     * for a co-located in-cluster database. Off-cluster workers (e.g. a
+     * remote devbox with tens of ms of DB round-trip) should raise this to
+     * relieve connection-pool acquire contention. Env:
+     * PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS.
+     */
+    dispatcherPollIntervalMs?: number;
     workerNodeId?: string;
+    /**
+     * Pre-turn reconcile hook (git-hydration MVP). See {@link BeforeRunTurnHook}.
+     * Off by default; a repository lifecycle module sets it to reconcile its
+     * local enlistment before each job. The brief time this hook runs is the
+     * window in which the worker is "unavailable" for jobs (guaranteed idle
+     * because worker concurrency is pinned to 1).
+     */
+    beforeRunTurn?: BeforeRunTurnHook;
+    /**
+     * Post-turn dehydrate hook (git-hydration §8.5). See {@link AfterRunTurnHook}.
+     * Off by default; a repository lifecycle module sets it to persist the
+     * session's uncommitted git work to durable storage at the end of every
+     * turn, so a hard pod kill preserves it for a cross-pod resume.
+     */
+    afterRunTurn?: AfterRunTurnHook;
+    /**
+     * Runs once before each complete run-turn activity attempt. A failure
+     * prevents both the specialized preparation hook and the turn body.
+     */
+    beforeTurn?: import("./turn-lifecycle-hooks.js").BeforeTurnHook<SerializableSessionConfig>;
+    /**
+     * Refines provider-neutral Copilot session configuration after specialized
+     * workspace preparation and before the session is created or resumed.
+     */
+    configureSession?: import("./turn-lifecycle-hooks.js").ConfigureSessionHook<SerializableSessionConfig>;
+    /**
+     * Runs once after the complete run-turn activity attempt finishes,
+     * including specialized cleanup. Failures propagate to the runtime.
+     */
+    afterTurn?: import("./turn-lifecycle-hooks.js").AfterTurnHook<SerializableSessionConfig, TurnResult>;
+    /**
+     * Activity routing filter (repo and owner affinity). Restricts which
+     * duroxide activities this worker will dequeue. A workerOwner scopes each
+     * repo/generic tag to that owner before the runtime starts, so repo and
+     * individual-user constraints compose as one exact tag. When omitted the
+     * worker falls back to `PILOTSWARM_WORKER_TAGS`; when neither is set,
+     * duroxide's default
+     * `"defaultOnly"` applies (untagged activities only), so a plain worker
+     * will NOT accidentally serve a repo-tagged turn.
+     */
+    workerTagFilter?: TagFilter;
     /**
      * Dynamically install registry agent packages
      * (docs/proposals/agent-packages.md). When set, the worker materializes
@@ -1190,8 +1404,17 @@ export interface PilotSwarmWorkerOptions {
      * targeting + operator grouping. Default "default".
      */
     workerPool?: string;
-    /** Worker-registry owner principal — user-owned workers (laptops). */
+    /**
+     * Worker-registry and activity-routing owner principal for a personal
+     * worker. Defaults to PILOTSWARM_WORKER_OWNER_PROVIDER/SUBJECT when set.
+     */
     workerOwner?: { provider: string; subject: string } | null;
+    /**
+     * Worker display/build provenance. Hostname, process start time, SDK
+     * version, and owner are supplied independently by the runtime/registry
+     * and cannot be inferred from workerNodeId.
+     */
+    workerProvenance?: WorkerProvenanceOptions;
     /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;
     /** Blob container name for the built-in blob-backed session store. */
@@ -1223,6 +1446,9 @@ export interface PilotSwarmWorkerOptions {
      * (`PostgresProvider.connectWithSchemaAndEntra`, available since
      * duroxide-node 0.1.25), which resolves credentials in Rust via its
      * own chain (WorkloadIdentity → ManagedIdentity → DeveloperTools).
+     *
+     * Blob storage uses this value only when `blobUseManagedIdentity` is
+     * omitted. Set that option explicitly when database and blob auth differ.
      */
     useManagedIdentity?: boolean;
     /**
@@ -1276,6 +1502,13 @@ export interface PilotSwarmWorkerOptions {
      * Default: `~/.copilot/session-state`.
      */
     sessionStateDir?: string;
+
+    /**
+     * Opt into platform-owned per-session working directories under this root.
+     * An explicit session `workingDirectory` remains caller-owned and wins.
+     * Undefined preserves the historical SDK/process working-directory path.
+     */
+    sessionWorkspaceRoot?: string;
 
     /**
      * Optional trace callback for startup diagnostics.
@@ -1442,6 +1675,28 @@ export interface PilotSwarmWorkerOptions {
      * scoped grants.
      */
     mcpServers?: Record<string, any>;
+
+    /**
+     * Resolves worker-owned HTTP headers bound to an MCP server name and its
+     * expected deployment URL. Called for each turn so short-lived credentials
+     * can rotate without following a same-name repository override elsewhere.
+     */
+    mcpServerHeadersProvider?: () => Promise<
+        Record<string, {
+            expectedUrl: string;
+            headers: Record<string, string>;
+        }>
+    >;
+
+    /**
+     * Whether caller-owned repository workspaces may contribute MCP servers.
+     *
+     * Defaults to true for backward compatibility. When false, PilotSwarm
+     * disables native repository configuration discovery and strips inline MCP
+     * definitions from repository-authored agents. Repository instructions and
+     * skills remain enabled through their separate SDK controls.
+     */
+    repositoryMcpEnabled?: boolean;
 
     /**
      * Path to a `model_providers.json` file.

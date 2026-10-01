@@ -8,12 +8,24 @@
 import { loadDeployManifest, pipelineForService } from "./services-manifest.mjs";
 
 // Canonical pipeline order. bicep runs BEFORE push because BaseInfra's outputs
-// (ACR_NAME, ACR_LOGIN_SERVER, etc.) are required by push. seed-secrets runs
+// (ACR_NAME, ACR_LOGIN_SERVER, etc.) are required by push. workload-group runs
+// after bicep (the workload UAMIs it joins to the shared Entra authorization
+// group only exist once bicep has created them) and before seed-secrets so any
+// group-gated RBAC is in place before secrets flow. seed-secrets runs
 // after bicep so the Key Vault exists and the deployer has the role assignment
 // (granted by Bicep at create time), and before rollout so the worker pods
 // can mount the populated secrets via CSI on first start. Real stage modules
 // are wired in Phases 2–5.
-export const PIPELINE = ["build", "bicep", "seed-secrets", "push", "manifests", "rollout"];
+export const PIPELINE = [
+  "build",
+  "bicep",
+  "workload-group",
+  "seed-secrets",
+  "push",
+  "render",
+  "manifests",
+  "rollout",
+];
 
 // Default pipeline for a service (FR-008 / FR-010). Sourced from
 // deploy/providers/azure/services/<svc>/deploy.json (optional `pipeline` override) +
@@ -44,6 +56,26 @@ export function resolveSteps(stepsArg, service) {
         `Unknown step: '${s}'\nValid steps: ${PIPELINE.join(", ")}, or 'noop'.`,
       );
     }
+  }
+  const manifest = loadDeployManifest();
+  const serviceManifest = manifest.services[service];
+  const artifactSteps = requested.filter((step) =>
+    ["build", "push"].includes(step),
+  );
+  // Some app services intentionally deploy an image composed by another
+  // repository. Fail here instead of silently running a meaningless build/push
+  // request and leaving an operator unsure which image reached the cluster.
+  if (
+    artifactSteps.length &&
+    serviceManifest?.kind === "app" &&
+    !serviceManifest.image
+  ) {
+    throw new Error(
+      `Service '${service}' uses an externally composed image and does not support ` +
+        `${artifactSteps.join(", ")} step(s).\n` +
+        "Run the owning composition repository's image recipe, set the service's " +
+        "required image environment value, then deploy bicep,manifests,rollout.",
+    );
   }
   // Order requested steps by canonical pipeline order, dedup.
   return PIPELINE.filter((s) => requested.includes(s));

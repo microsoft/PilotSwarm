@@ -15,9 +15,17 @@
 
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert, assertEqual, assertIncludes, assertIncludesAny, assertNotNull } from "../helpers/assertions.js";
-import { PilotSwarmClient, PilotSwarmManagementClient, createWebFactStore, isEnhancedFactStore } from "pilotswarm-sdk";
-import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
+import {
+    PilotSwarmClient,
+    PilotSwarmManagementClient,
+    PilotSwarmWorker,
+    createWebFactStore,
+    isEnhancedFactStore,
+    runTurnRoutingTag,
+} from "pilotswarm-sdk";
+import { ApiClient, ApiError, HttpApiTransport } from "pilotswarm-sdk/api";
 
 const TIMEOUT = 180_000;
 
@@ -82,6 +90,63 @@ describe("web api e2e", () => {
         assertEqual(bootstrap.ok, true, "bootstrap ok");
         assert(Array.isArray(bootstrap.modelsByProvider), "bootstrap carries models");
         assertNotNull(bootstrap.auth, "bootstrap carries auth context");
+    });
+
+    it("discovers an owner-scoped worker model through heartbeat persistence and HTTP transport", async () => {
+        const transport = new HttpApiTransport({ apiUrl });
+        await transport.start();
+        const clusterModels = await transport.listModels();
+        const advertisedModel = clusterModels.find((model) => model?.qualifiedName)?.qualifiedName;
+        assert(typeof advertisedModel === "string", "deployment exposes a model for the contract probe");
+
+        const api = new ApiClient({ apiUrl });
+        const auth = await api.getAuthContext();
+        const owner = auth.principal;
+        const repo = `webapi-devbox-${env.runId}`;
+        const workerNodeId = `webapi-devbox-worker-${env.runId}`;
+        const catalog = await createCatalog(env);
+        const worker = new PilotSwarmWorker({
+            store: "sqlite::memory:",
+            blobUseManagedIdentity: false,
+            workerOwner: owner,
+            workerNodeId,
+        });
+        worker._workerPhase = "ready";
+        worker._workerTagFilter = {
+            defaultAnd: [runTurnRoutingTag({ repo, ownerAffinity: owner })],
+        };
+        worker.sessionManager.currentWorkerModels = () => ({
+            defaultModel: advertisedModel,
+            available: [advertisedModel],
+        });
+        worker.sessionManager.refreshWorkerModels = async () => (
+            worker.sessionManager.currentWorkerModels()
+        );
+        worker._catalog = catalog;
+
+        try {
+            await worker._reportAgentWorkerState();
+
+            const persisted = (await mgmt.listWorkers())
+                .find((row) => row.workerNodeId === workerNodeId);
+            assertNotNull(persisted, "worker heartbeat persisted");
+            assertEqual(persisted.info.repos, undefined, "owner-scoped repo is not globally advertised");
+            assert(
+                persisted.info.ownerScopedRepos.includes(repo),
+                "owner-scoped repo survived registry serialization",
+            );
+
+            const models = await transport.listModels({
+                compute: "devbox",
+                repo,
+            });
+            assertEqual(models.length, 1, "placement filters to the matching heartbeat");
+            assertEqual(models[0].qualifiedName, advertisedModel, "advertised model crosses the HTTP boundary");
+            assertEqual(models[0].availabilitySource, "worker", "availability is attributed to the worker");
+        } finally {
+            await transport.stop();
+            await catalog.close();
+        }
     });
 
     it("runs a real model turn through the SDK web client", { timeout: TIMEOUT }, async () => {

@@ -108,29 +108,37 @@
                     "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
-                    "defaultReasoningEffort": "medium",
+                    "defaultReasoningEffort": "none",
                     "supportedContextTiers": [
                         "default",
                         "long_context"
                     ],
-                    "defaultContextTier": "default"
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 922000
+                    }
                 },
                 {
                     "name": "gpt-5.6-luna",
                     "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
-                    "defaultReasoningEffort": "medium",
+                    "defaultReasoningEffort": "none",
                     "supportedContextTiers": [
                         "default",
                         "long_context"
@@ -142,12 +150,14 @@
                     "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
-                    "defaultReasoningEffort": "medium",
+                    "defaultReasoningEffort": "none",
                     "supportedContextTiers": [
                         "default",
                         "long_context"
@@ -179,7 +189,31 @@
             "type": "openai",
             "baseUrl": "__FOUNDRY_ENDPOINT__/openai/v1",
             "apiKey": "env:AZURE_OAI_KEY",
+            "wireApi": "responses",
             "models": [
+                {
+                    "name": "gpt-5.6-sol",
+                    "description": "GPT-5.6 Sol via Azure AI Foundry. High-capability GPT-5.6 variant for advanced reasoning and coding. Routed via /v1/responses (provider wireApi) so tools + reasoning work together — the completions wire returns HTTP 400 for gpt-5.6 tools + reasoning_effort. Deployment must be created on the Foundry account (deploy/envs/local/<env>/foundry-deployments.json).",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 922000
+                    }
+                },
                 {
                     "name": "gpt-5.4",
                     "description": "GPT-5.4 via Azure AI Foundry. High reasoning effort, advanced multi-turn and coding tasks. Deployment must be created on the Foundry account (deploy/envs/local/<env>/foundry-deployments.json).",

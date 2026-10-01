@@ -81,6 +81,7 @@ export function parseEnvFile(path) {
 // adds its `sa` suffix. A name like `example-test` is valid.
 export const RESERVED_ENV_NAMES = ["dev", "prod"];
 export const LOCAL_ENV_NAME_RE = /^(?=.{1,15}$)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+export const DEPLOY_INSTANCE_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
 export function validateLocalEnvName(name) {
   if (RESERVED_ENV_NAMES.includes(name)) {
@@ -89,6 +90,7 @@ export function validateLocalEnvName(name) {
         `lowercase, must start with a letter).`,
     );
   }
+
   if (!LOCAL_ENV_NAME_RE.test(name)) {
     throw new Error(
       `Invalid env name: '${name}'.\n` +
@@ -97,10 +99,20 @@ export function validateLocalEnvName(name) {
   }
 }
 
-// Resolve the env file path for an env name. Always
-// `deploy/envs/local/<name>/.env` — there are no canonical OSS env files
-// to deploy from anymore. The template at `deploy/providers/azure/envs/template.env` is
-// only consumed by the scaffolder (new-env.mjs).
+export function validateDeployInstance(name) {
+  if (!DEPLOY_INSTANCE_RE.test(name) || name.includes("--")) {
+    throw new Error(
+      `Invalid deploy instance: '${name}'.\n` +
+        `Must be a lowercase DNS label up to 40 characters: letters, digits, and ` +
+        `single hyphens between alphanumeric characters.`,
+    );
+  }
+}
+
+// Resolve the optional machine-local env file path for an env name. A deploy
+// may instead use a canonical external stamp supplied through process.env
+// STAMP_ENV_FILE. The template at `deploy/providers/azure/envs/template.env`
+// is only consumed by the scaffolder (new-env.mjs).
 export function envFilePath(envName) {
   validateLocalEnvName(envName);
   return join(REPO_ROOT, "deploy", "envs", "local", envName, ".env");
@@ -111,33 +123,115 @@ export function templateEnvPath() {
   return join(REPO_ROOT, "deploy", "providers", "azure", "envs", "template.env");
 }
 
-// Load env map for a given local env name. Reads
-// `deploy/envs/local/<name>/.env` standalone — no cascade onto the
-// template (that file is only used at scaffold time).
-//
-// process.env values override file values key-by-key (so a contributor can
-// `SUBSCRIPTION_ID=... node deploy.mjs ...` for ad-hoc tests). We do NOT
-// merge the entire process environment. Database URL overrides are BYO-only;
-// provisioned stamps use explicit file values or their composed stamp URLs.
-export function loadEnv(envName) {
-  const envFile = envFilePath(envName);
+export function applyProcessEnvOverrides(env, processEnv = process.env) {
+  for (const k of Object.keys(env)) {
+    if (processEnv[k] !== undefined && processEnv[k] !== "") {
+      env[k] = processEnv[k];
+    }
+  }
+  return env;
+}
 
-  if (!existsSync(envFile)) {
+// Load env map for a given env name. When present, the local file remains
+// standalone — no cascade onto the template (that file is only used at
+// scaffold time). A canonical external stamp may also be supplied directly
+// through process.env STAMP_ENV_FILE, allowing checked-in composition config
+// to drive deployments without a pre-existing gitignored local stub.
+//
+// A stamp's non-secret configuration can be versioned in an external
+// composition repository and referenced from the gitignored local stub via a
+// persistent `STAMP_ENV_FILE` pointer (also settable through process.env). When
+// present it composes as the base-most external overlay: it wins over the local
+// stub (so the versioned file is authoritative for shared config, and the stub
+// only carries secrets + machine-specific paths), while explicit
+// `--env-overlay` files and process.env still win over it.
+//
+// process.env values override keys present after file composition (so a
+// contributor can `SUBSCRIPTION_ID=... node deploy.mjs ...` for ad-hoc
+// tests). We do NOT merge the entire process environment.
+//
+// Finally, any value containing the literal token `${STAMP_ENV_DIR}` is
+// expanded to the resolved stamp env file's directory (see expandStampEnvDir),
+// letting an external stamp repo inject param files it owns relative to itself.
+export function loadEnv(
+  envName,
+  { overlayEnvFile = null, overlayEnvFiles = null, processEnv = process.env } = {},
+) {
+  const localEnvFile = envFilePath(envName);
+  const hasLocalEnvFile = existsSync(localEnvFile);
+  const processStampEnvFile = (processEnv.STAMP_ENV_FILE ?? "").trim();
+
+  if (!hasLocalEnvFile && !processStampEnvFile) {
     throw new Error(
-      `Local env '${envName}' not found at ${envFile}.\n` +
-        `Create it with: npm run deploy:new-env -- ${envName}`,
+      `Local env '${envName}' not found at ${localEnvFile}.\n` +
+        `Create it with: npm run deploy:new-env -- ${envName}, or set STAMP_ENV_FILE ` +
+        `to a canonical external stamp env file.`,
     );
   }
 
   // Compatibility defaults for newly introduced switches, not a cascade
   // onto the mutable scaffolding template.
-  const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...WORKSPACES_ENV_DEFAULTS, ...AKS_ENV_DEFAULTS, ...WORKER_ENV_DEFAULTS, ...parseEnvFile(envFile) };
+  const merged = {
+    DEPLOY_PROVIDER: "azure",
+    ...DATABASE_ENV_DEFAULTS,
+    ...WORKSPACES_ENV_DEFAULTS,
+    ...AKS_ENV_DEFAULTS,
+    ...WORKER_ENV_DEFAULTS,
+    ...(hasLocalEnvFile ? parseEnvFile(localEnvFile) : {}),
+  };
+  const requestedOverlays = overlayEnvFiles == null
+    ? (overlayEnvFile == null ? [] : [overlayEnvFile])
+    : overlayEnvFiles;
+  if (!Array.isArray(requestedOverlays)) {
+    throw new Error("overlayEnvFiles must be an array when specified.");
+  }
 
-  // Resolve provisioning intent before allowing any ambient database URL.
-  for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {
+  // Persistent versioned-stamp pointer. process.env wins over the stub so CI
+  // can retarget it; the stub value is the operator default. It is the
+  // base-most external overlay so explicit --env-overlay files still win.
+  const stampEnvPointer = (
+    processStampEnvFile || (merged.STAMP_ENV_FILE ?? "")
+  ).trim();
+  const orderedOverlays = stampEnvPointer
+    ? [stampEnvPointer, ...requestedOverlays]
+    : [...requestedOverlays];
+
+  const resolvedOverlays = [];
+  const seenOverlays = new Set();
+  let resolvedStampEnvFile = null;
+  for (const overlay of orderedOverlays) {
+    const resolvedOverlay = resolve(overlay);
+    if (!existsSync(resolvedOverlay) || !statSync(resolvedOverlay).isFile()) {
+      throw new Error(`External env file not found or not a file: ${resolvedOverlay}`);
+    }
+    if (stampEnvPointer && resolve(stampEnvPointer) === resolvedOverlay) {
+      resolvedStampEnvFile = resolvedOverlay;
+    }
+    if (seenOverlays.has(resolvedOverlay)) {
+      continue;
+    }
+    seenOverlays.add(resolvedOverlay);
+    Object.assign(merged, parseEnvFile(resolvedOverlay));
+    resolvedOverlays.push(resolvedOverlay);
+  }
+
+  // Resolve provisioning intent after all file overlays, then allow ambient
+  // non-secret overrides. Stamp-only deployments may supply machine-local
+  // values through process.env, but only for recognized keys from the
+  // scaffolder template; template values themselves are never cascaded.
+  // Database URL overrides are BYO-only so a provisioned stamp cannot be
+  // silently redirected by the caller's shell environment.
+  const recognizedProcessKeys = hasLocalEnvFile
+    ? []
+    : Object.keys(parseEnvFile(templateEnvPath()));
+  for (const k of new Set([
+    ...Object.keys(merged),
+    ...DATABASE_INPUT_KEYS,
+    ...recognizedProcessKeys,
+  ])) {
     if (DATABASE_URL_KEYS.includes(k)) continue;
-    if (process.env[k] !== undefined && process.env[k] !== "") {
-      merged[k] = process.env[k];
+    if (processEnv[k] !== undefined && processEnv[k] !== "") {
+      merged[k] = processEnv[k];
     }
   }
   if (merged.DEPLOY_PROVIDER !== "azure") {
@@ -148,19 +242,60 @@ export function loadEnv(envName) {
   // A bad value would crash every worker at start; refuse it here instead.
   merged.PILOTSWARM_NATIVE_SUBAGENTS = nativeSubagentsSetting(merged);
   for (const key of DATABASE_URL_KEYS) {
-    if (process.env[key] === undefined || process.env[key] === "") continue;
+    if (processEnv[key] === undefined || processEnv[key] === "") continue;
     if (deployPostgres) {
       log("warn", `Ignoring process.env.${key} while DEPLOY_POSTGRES=true; database URLs must come from the env file or stamp outputs.`);
       continue;
     }
     log("warn", `Using process.env.${key} for the BYO database (value redacted).`);
-    merged[key] = process.env[key];
+    merged[key] = processEnv[key];
   }
+
+  // `${STAMP_ENV_DIR}` expansion. A stamp/composition repo (referenced via
+  // STAMP_ENV_FILE) can inject external param FILES it owns — e.g. WAF custom
+  // rules, agent-pool JSON — colocated with its stamp env file, without hard-
+  // coding a machine-specific absolute path or checking the file into
+  // PilotSwarm. Any value that contains the literal token `${STAMP_ENV_DIR}`
+  // has it replaced with the directory of the resolved stamp env file. This is
+  // the one supported interpolation (parseEnvFile is otherwise literal); it is
+  // opt-in (values without the token are untouched) and fail-closed (using it
+  // with no stamp env file in play throws rather than silently mis-resolving).
+  expandStampEnvDir(merged, resolvedStampEnvFile);
 
   return {
     env: merged,
-    sources: { base: null, local: envFile },
+    sources: {
+      base: null,
+      local: hasLocalEnvFile ? localEnvFile : null,
+      stampEnvFile: resolvedStampEnvFile,
+      overlay: resolvedOverlays.at(-1) ?? null,
+      overlays: resolvedOverlays,
+    },
   };
+}
+
+// Token substituted in env values with the directory of the resolved stamp env
+// file (see loadEnv). Kept as a named constant so the deploy scripts and their
+// tests share one spelling.
+export const STAMP_ENV_DIR_TOKEN = "${STAMP_ENV_DIR}";
+
+// Replace every occurrence of STAMP_ENV_DIR_TOKEN in the env map's values with
+// the stamp env file's directory. Throws a clear, actionable error if the token
+// is used without a stamp env file having been resolved.
+export function expandStampEnvDir(env, stampEnvFile) {
+  const stampEnvDir = stampEnvFile ? dirname(stampEnvFile) : null;
+  for (const key of Object.keys(env)) {
+    const value = env[key];
+    if (typeof value !== "string" || !value.includes(STAMP_ENV_DIR_TOKEN)) continue;
+    if (!stampEnvDir) {
+      throw new Error(
+        `${key} uses ${STAMP_ENV_DIR_TOKEN} but no stamp env file is in play. ` +
+          `Set STAMP_ENV_FILE to the external stamp env file that anchors this path.`,
+      );
+    }
+    env[key] = value.split(STAMP_ENV_DIR_TOKEN).join(stampEnvDir);
+  }
+  return env;
 }
 
 // ───────────────────────── Subprocess wrapper (FR-011) ─────────────────────────
@@ -303,6 +438,11 @@ export function run(name, args, opts = {}) {
     env: env ?? process.env,
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     encoding: "utf8",
+    // Default maxBuffer is 1 MiB; captured `az` calls (e.g. Foundry deployment
+    // validation, `az provider show`) routinely emit multi-MiB JSON and overflow
+    // it, surfacing as `spawnSync cmd.exe ENOBUFS`. Raise to 64 MiB so large
+    // captured output never aborts a deploy step.
+    maxBuffer: 64 * 1024 * 1024,
     ...spawnOpts,
   });
   if (result.error) {
@@ -393,8 +533,9 @@ export function resolveImageTag({ envName, explicit }) {
 
 // Repo-local staging root. Per FR-019: deterministic, repo-local, gitignored.
 //   <repo>/deploy/.tmp/<service>-<env>/
-export function stagingDir(service, envName) {
-  const dir = join(REPO_ROOT, "deploy", ".tmp", `${service}-${envName}`);
+export function stagingDir(service, envName, instance = null) {
+  const qualifier = instance ? `${service}-${instance}` : service;
+  const dir = join(REPO_ROOT, "deploy", ".tmp", `${qualifier}-${envName}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -414,7 +555,11 @@ function loadServices() {
   if (_services) return _services;
   const manifestPath = join(REPO_ROOT, "deploy", "providers", "azure", "services", "deploy-manifest.json");
   const root = JSON.parse(readFileSync(manifestPath, "utf8"));
-  _services = [...(root.infraOrder ?? []), ...(root.services ?? [])];
+  _services = [
+    ...(root.infraOrder ?? []),
+    ...(root.services ?? []),
+    ...(root.standaloneServices ?? []),
+  ];
   return _services;
 }
 

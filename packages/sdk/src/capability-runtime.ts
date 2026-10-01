@@ -87,11 +87,20 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
         // Agents and skills loaded by path stay (section 4.12).
         ...(state.loads?.length ? { loads: state.loads } : {}) } };
 }
+function equivalentMcpConfig(left: any, right: any): boolean {
+    const normalize = (config: any) => {
+        const normalized = structuredClone(config);
+        if (!Array.isArray(normalized?.tools) || normalized.tools.length === 0) normalized.tools = ["*"];
+        return normalized;
+    };
+    return capabilityHash(normalize(left)) === capabilityHash(normalize(right));
+}
 /** Resolve exact exports. Never fall back to a same-named package or the legacy flat registry. */
 export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwner | null, selections: CapabilitySelection[],
     originalTools: Tool<any>[], originalMcp: Record<string, any>, agent: McpAllowlistAgent | null, strict = false) {
     const tools: Tool<any>[] = []; const mcpServers: Record<string, any> = Object.create(null); const unavailable: string[] = [];
     const toolNames = new Set(originalTools.map(t => t.name)); const mcpNames = new Set(Object.keys(originalMcp));
+    const effectiveMcp = new Map(Object.entries(originalMcp));
     const bound: Array<{ sourceId: string; revision: string; tools: string[]; mcpServers: string[] }> = [];
     for (const selection of selections) {
         const source = sources.find(s => s.id === selection.sourceId && visibleCapabilitySource(s, owner));
@@ -122,13 +131,20 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
             }
             const cfg = source.mcpServers[name];
             if (!cfg) { problem = "Selected MCP server unavailable"; break; }
-            if (mcpNames.has(name)) { problem = `MCP server name collision: ${name}`; break; }
             if (cfg.allowedAgents && !mcpAllowlistAdmits(cfg.allowedAgents, agent)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
             const { allowedAgents: _, ...server } = cfg; selectedMcp[name] = server;
+            if (mcpNames.has(name)) {
+                if (!equivalentMcpConfig(effectiveMcp.get(name), server)) {
+                    problem = `MCP server name collision: ${name}`;
+                    break;
+                }
+                delete selectedMcp[name];
+            }
         }
         if (problem) { if (strict) throw new Error(problem); unavailable.push(selection.sourceId); continue; }
         for (const tool of selectedTools) { tools.push(tool); toolNames.add(tool.name); }
         Object.assign(mcpServers, selectedMcp); Object.keys(selectedMcp).forEach(n => mcpNames.add(n));
+        Object.entries(selectedMcp).forEach(([name, config]) => effectiveMcp.set(name, config));
         bound.push({ sourceId: source.id, revision: source.revision,
             tools: [...selection.tools].sort(), mcpServers: [...selection.mcpServers].sort() });
     }

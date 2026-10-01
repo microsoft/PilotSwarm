@@ -103,10 +103,10 @@ sessions return not-found to avoid an existence oracle.
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| listSessions | `GET /api/v1/sessions` | — | List session summaries. |
+| listSessions | `GET /api/v1/sessions` | scope (`visible` \| `fleet`) (query) | List visible Session summaries by default; `scope=fleet` requires resource administration. |
 | createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
 | createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
-| getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
+| getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path), scope (`visible` \| `fleet`) (query) | Get one Session view. `scope=fleet` requires resource administration and returns identity/lifecycle metadata without summaries, results, pending prompts, context usage, or routing configuration. |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
 | sendAnswer | `POST /api/v1/sessions/:sessionId/answers` | sessionId (path), answer (body), options (body) | Answer a pending question. `options.expectedQuestion: { question, iteration? }` binds to the observed `pendingQuestion`; omitted options bind to the current question when enqueued. A stale binding preserves the text as an ordinary message. |
@@ -119,6 +119,10 @@ session's tree root (`null`/absent on child rows and when the caller has not
 placed the tree). The former `groupId` field is **gone** from session DTOs:
 group membership is per-viewer state, not a property of the session. See
 [Management: session groups](#management-session-groups).
+
+Fleet-scoped Session list and detail responses are reduced administrative
+projections. Session transcript events remain a separate, explicitly
+authorized content read and are not embedded in these DTOs.
 
 ### Session sharing
 
@@ -148,7 +152,9 @@ group membership is per-viewer state, not a property of the session. See
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| listSessionsPage | `GET /api/v1/management/sessions` | limit (query: number), cursor (query: json), includeDeleted (query: boolean), systemFilter (query: `all` \| `only` \| `exclude`), viewerOnly (query: boolean) | Keyset-paginated session listing. `systemFilter` defaults to `all`; `viewerOnly` lets an authenticated administrator request the same owner/shared/system-visible catalog as the current viewer. |
+| listSessionsPage | `GET /api/v1/management/sessions` | limit, cursorUpdatedAt, cursorSessionId, includeDeleted, systemFilter, owner, status, updatedAfter, scope (`visible` \| `fleet`) (query) | Keyset-paginated Session listing ordered by `updatedAt DESC, sessionId DESC`. `scope=visible` is the default; `scope=fleet` requires resource administration and otherwise returns 403. |
+| listWorkflowGeneratorsPage | `GET /api/v1/management/workflow-generators` | limit, cursorUpdatedAt, cursorId, owner, status, repository, placement, updatedAfter, scope (`visible` \| `fleet`) (query) | Keyset-paginated Workflow Generator listing ordered by `updatedAt DESC, workflowGeneratorId DESC`. |
+| listWorkflowRunsPage | `GET /api/v1/management/workflow-runs` | limit, cursorUpdatedAt, cursorId, owner, status, repository, placement, origin (`direct` \| `workflow_generator`), workflow, workflowRunKey, updatedAfter, scope (`visible` \| `fleet`) (query) | Keyset-paginated Workflow Run listing ordered by `updatedAt DESC, workflowRunId DESC`; `workflow` matches the Workflow type or Definition name. |
 | renameSession | `PATCH /api/v1/management/sessions/:sessionId` | sessionId (path), title (body) | Rename a session. |
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
@@ -159,6 +165,13 @@ group membership is per-viewer state, not a property of the session. See
 | getSessionStatus | `GET /api/v1/management/sessions/:sessionId/status` | sessionId (path) | Live custom status + orchestration status. |
 | waitForStatusChange | `GET /api/v1/management/sessions/:sessionId/status/wait` | sessionId (path), afterVersion (query: number), timeoutMs (query: number) | Long-poll for a status version change (server-capped timeout). |
 | getLatestResponse | `GET /api/v1/management/sessions/:sessionId/latest-response` | sessionId (path) | Latest turn response payload, if any. |
+
+Catalog page responses contain the resource array (`sessions`, `generators`, or
+`workflowRuns`), `hasMore`, and an optional `nextCursor`. Pass the cursor's two
+scalar fields unchanged on the next request. Scalar cursor parameters avoid
+JSON-shaped query strings at the edge, while millisecond-truncated timestamps
+plus the descending resource ID provide deterministic boundaries for equal
+timestamps.
 | getOrchestrationStats | `GET /api/v1/management/sessions/:sessionId/orchestration-stats` | sessionId (path) | Orchestration runtime stats. |
 | getExecutionHistory | `GET /api/v1/management/sessions/:sessionId/execution-history` | sessionId (path), executionId (query: number) | Raw execution history events. |
 | getSessionEvents | `GET /api/v1/management/sessions/:sessionId/events` | sessionId (path), afterSeq (query: number), limit (query: number), eventTypes (query: json) | Session events after a sequence number (reconnect catch-up). Optional eventTypes (JSON string array) narrows to those event types server-side. |

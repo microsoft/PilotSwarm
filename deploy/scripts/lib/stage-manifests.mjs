@@ -12,14 +12,16 @@
 //       so a per-env directory split adds no value)
 //   portal (Phase 2)
 //     → combo-keyed: `${EDGE_MODE}-${TLS_SOURCE simplified}`
-//       (`afd-letsencrypt`, `afd-akv`, `private-akv`; `akv-selfsigned`
-//       collapses to `akv` because it shares the `private-akv` overlay)
+//       (`afd-letsencrypt`, `afd-akv`, `private-akv`, `port-forward-akv`;
+//       `akv-selfsigned` collapses to `akv`)
 
 import { cpSync, existsSync, rmSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, log } from "./common.mjs";
+import { composeDerivedEnv } from "./compose-env.mjs";
 import { substituteOverlayEnv } from "./substitute-env.mjs";
 import { computeSpcKeysHash } from "./spc-keys-hash.mjs";
+import { loadDeployManifest, resolveEnvTemplate } from "./services-manifest.mjs";
 import { DATABASE_ENV_DEFAULTS, validateDatabaseConfig } from "./database-env.mjs";
 import { databaseOverlayOmittedKeys } from "./overlay-contracts.mjs";
 import { stageDatabaseSecrets } from "./database-secrets.mjs";
@@ -35,15 +37,21 @@ import { WORKER_ENV_DEFAULTS } from "./worker-env.mjs";
 // substitution surface explicit and grep-able. To extend, add a new entry
 // here and a `__PLACEHOLDER__` token in the matching base file.
 //
-// Empty / unset env values are tolerated: the placeholder stays unresolved
-// in the staged file, the catalog provider that references the missing
-// env var fails its own load at runtime, and the stamp degrades to its
-// remaining providers. This matches the worker's `env:VAR` resolver
-// semantics (a referenced-but-unset env var disables the provider).
+// Empty / unset env values are tolerated only for optional integrations.
+// Foundry's endpoint becomes required when FOUNDRY_ENABLED=true; publishing
+// its unresolved placeholder creates an active provider with an invalid
+// relative URL instead of safely disabling the provider.
 const PLACEHOLDER_FILES = {
   worker: [
     {
+      relPath: "base/deployment.yaml",
+      tokens: [
+        { placeholder: "__WORKER_REPLICAS__", envKey: "WORKER_REPLICAS" },
+      ],
+    },
+    {
       relPath: "base/model_providers.json",
+      requiredWhenFoundryEnabled: true,
       tokens: [
         // Foundry data-plane endpoint, emitted by base-infra (see
         // foundry.bicep / FOUNDRY_ENDPOINT alias). Empty when the stamp
@@ -52,7 +60,11 @@ const PLACEHOLDER_FILES = {
         // safety: Foundry's `endpoint` output ends in `/`, the catalog
         // appends `/openai/v1` → we collapse `//` to `/` after
         // substitution.
-        { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
+        {
+          placeholder: "__FOUNDRY_ENDPOINT__",
+          envKey: "FOUNDRY_ENDPOINT",
+          trimTrailingSlash: true,
+        },
       ],
     },
   ],
@@ -64,8 +76,13 @@ const PLACEHOLDER_FILES = {
   portal: [
     {
       relPath: "base/model_providers.json",
+      requiredWhenFoundryEnabled: true,
       tokens: [
-        { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
+        {
+          placeholder: "__FOUNDRY_ENDPOINT__",
+          envKey: "FOUNDRY_ENDPOINT",
+          trimTrailingSlash: true,
+        },
       ],
     },
     // FR-013: Substitute the portal TLS cert name into the tls-akv +
@@ -94,8 +111,65 @@ const PLACEHOLDER_FILES = {
   ],
 };
 
-function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
-  const rules = PLACEHOLDER_FILES[service];
+function appendOverlayEnvMaps({ service, serviceManifest, overlayDst, env }) {
+  const mapKeys = serviceManifest?.gitops?.overlayEnvMaps ?? [];
+  if (mapKeys.length === 0) return;
+
+  const existing = readFileSync(overlayDst, "utf8");
+  const existingKeys = new Set(
+    existing
+      .split(/\r?\n/)
+      .map((line) => line.match(/^([A-Z_][A-Z0-9_]*)=/)?.[1])
+      .filter(Boolean),
+  );
+  const appended = [];
+  for (const mapKey of mapKeys) {
+    const raw = String(env[mapKey] ?? "").trim();
+    if (!raw) continue;
+    for (const pair of raw.split(";")) {
+      const trimmed = pair.trim();
+      if (!trimmed) continue;
+      const separator = trimmed.indexOf("=");
+      if (separator < 1) {
+        throw new Error(
+          `[stage-manifests] ${service} ${mapKey} entry is not NAME=value: '${trimmed}'.`,
+        );
+      }
+      const key = trimmed.slice(0, separator).trim();
+      const value = trimmed.slice(separator + 1);
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+        throw new Error(
+          `[stage-manifests] ${service} ${mapKey} has invalid env name '${key}'.`,
+        );
+      }
+      if (existingKeys.has(key)) {
+        throw new Error(
+          `[stage-manifests] ${service} ${mapKey} cannot override declared overlay key '${key}'.`,
+        );
+      }
+      existingKeys.add(key);
+      appended.push(`${key}=${value}`);
+    }
+  }
+  if (appended.length > 0) {
+    writeFileSync(
+      overlayDst,
+      `${existing.replace(/\s*$/, "")}\n${appended.join("\n")}\n`,
+    );
+    log("ok", `Appended ${appended.length} ${service} deployment-defined env value(s)`);
+  }
+}
+
+function applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, env }) {
+  const manifestRules = (serviceManifest?.gitops?.placeholders ?? []).map((rule) => ({
+    relPath: rule.path,
+    required: rule.required,
+    tokens: rule.envKeys.map((envKey) => ({
+      placeholder: `__${envKey}__`,
+      envKey,
+    })),
+  }));
+  const rules = [...(PLACEHOLDER_FILES[service] ?? []), ...manifestRules];
   if (!rules || rules.length === 0) return;
   for (const fileRule of rules) {
     const abs = join(stagedServiceRoot, fileRule.relPath);
@@ -107,7 +181,7 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
     let body = readFileSync(abs, "utf8");
     let resolved = 0;
     let unresolved = 0;
-    for (const { placeholder, envKey } of fileRule.tokens) {
+    for (const { placeholder, envKey, trimTrailingSlash = false } of fileRule.tokens) {
       if (!body.includes(placeholder)) continue;
       const raw = env[envKey];
       const value = raw == null ? "" : String(raw);
@@ -115,18 +189,88 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
         unresolved++;
         continue;
       }
-      // Strip trailing slash so `<endpoint>/openai/v1` stays clean.
-      const normalized = value.endsWith("/") ? value.slice(0, -1) : value;
+      const normalized = trimTrailingSlash && value.endsWith("/")
+        ? value.slice(0, -1)
+        : value;
       body = body.split(placeholder).join(normalized);
       resolved++;
     }
     writeFileSync(abs, body);
+    const required = fileRule.required ||
+      (fileRule.requiredWhenFoundryEnabled &&
+        String(env.FOUNDRY_ENABLED ?? "").toLowerCase() === "true");
+    if (required && unresolved > 0) {
+      const missing = fileRule.tokens
+        .filter(({ placeholder, envKey }) => body.includes(placeholder) && !env[envKey])
+        .map(({ envKey }) => envKey);
+      throw new Error(
+        `[stage-manifests] ${service}/${fileRule.relPath} requires: ${missing.join(", ")}.`,
+      );
+    }
     log(
       "info",
       `[stage-manifests] ${fileRule.relPath}: substituted ${resolved} placeholder(s)` +
         (unresolved > 0 ? `, ${unresolved} left unresolved (env values empty/unset)` : ""),
     );
   }
+}
+
+// Rewrite the staged model catalog for Entra (workload-identity) Foundry auth.
+//
+// The base catalog declares Azure AI Foundry providers in key mode:
+// `type: "openai"`, `apiKey: "env:AZURE_OAI_KEY"`. Entra (workload-identity)
+// auth is the DEFAULT for stamps that provision Foundry: the account runs
+// `disableLocalAuth: true` and the worker presents a Cognitive Services AAD
+// bearer token minted from its federated identity instead of a stored key.
+// AAD token auth is not policy-gated, so entra works on every subscription and
+// is required where the governing management group bans key auth (SFI Safe
+// Secrets). The SDK expresses this as the PilotSwarm-only provider type
+// `foundry-wif` (openai on the wire, no apiKey — see
+// packages/sdk/src/model-providers.ts + foundry-credentials.ts).
+//
+// `FOUNDRY_AUTH_MODE=key` is the explicit opt-out for legacy stamps whose
+// subscription permits key auth (the existing pss* siblings) — it leaves the
+// providers as-is. The transform is deliberately scoped to the staged copy so
+// the committed base catalog stays key-mode and can serve either path. A
+// provider is a Foundry provider iff it references the AZURE_OAI_KEY sentinel;
+// matching on that (rather than an id list) keeps new Foundry providers covered
+// for free.
+const FOUNDRY_KEY_SENTINEL = "env:AZURE_OAI_KEY";
+const FOUNDRY_CATALOG_SERVICES = new Set(["worker", "portal"]);
+
+function applyFoundryAuthModeTransform({ service, stagedServiceRoot, env }) {
+  // Entra is the default; `key` is the only opt-out. Kept in lock-step with the
+  // bicep `foundryAuthMode` param default (main.bicep / foundry.bicep) so the
+  // account's disableLocalAuth and the catalog's auth shape never disagree.
+  if (String(env.FOUNDRY_AUTH_MODE ?? "").toLowerCase() === "key") return;
+  // Only meaningful when a Foundry account is actually provisioned. When
+  // FOUNDRY_ENABLED is false the bicep module is skipped and the providers are
+  // non-loadable anyway (empty endpoint), so leave the staged file untouched.
+  if (String(env.FOUNDRY_ENABLED ?? "").toLowerCase() !== "true") return;
+  if (!FOUNDRY_CATALOG_SERVICES.has(service)) return;
+
+  const abs = join(stagedServiceRoot, "base", "model_providers.json");
+  if (!existsSync(abs)) return;
+
+  const catalog = JSON.parse(readFileSync(abs, "utf8"));
+  const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+  if (!Array.isArray(providers)) return;
+
+  let rewritten = 0;
+  for (const provider of providers) {
+    if (provider?.apiKey !== FOUNDRY_KEY_SENTINEL) continue;
+    provider.type = "foundry-wif";
+    delete provider.apiKey;
+    rewritten++;
+  }
+  if (rewritten === 0) return;
+
+  writeFileSync(abs, `${JSON.stringify(catalog, null, 2)}\n`);
+  log(
+    "info",
+    `[stage-manifests] ${service}/base/model_providers.json: ` +
+      `rewrote ${rewritten} Foundry provider(s) to workload-identity (foundry-wif) [FOUNDRY_AUTH_MODE=${env.FOUNDRY_AUTH_MODE || "entra (default)"}]`,
+  );
 }
 
 // Resolve which overlay directory under deploy/providers/azure/gitops/<service>/overlays/
@@ -157,10 +301,9 @@ export function resolveOverlayName({ service, envName, env }) {
     }
     const edgeMode = env.EDGE_MODE.toLowerCase();
     const rawTls = env.TLS_SOURCE.toLowerCase();
-    // akv-selfsigned shares the private-akv overlay (the only delta is
-    // the AKV issuer name, set by Portal bicep — kustomize sees nothing
-    // different). Keep this in lock-step with Portal/bicep/main.bicep
-    // `kustomizationPath`.
+    // AKV and AKV self-signed use the same manifest shape; certificate
+    // issuance is handled outside kustomize. Keep this in lock-step with
+    // Portal/bicep/main.bicep `kustomizationPath`.
     const tlsSource = rawTls === "akv-selfsigned" ? "akv" : rawTls;
     return `${edgeMode}-${tlsSource}`;
   }
@@ -172,9 +315,19 @@ export function resolveOverlayName({ service, envName, env }) {
 // Stage <service> into <stagingDir>/gitops/<service>/. Returns the absolute
 // path to the staged service tree (which is what publish-manifests uploads).
 export function stageManifests({ service, envName, env, stagingDir }) {
+  composeDerivedEnv(env, {
+    includeGenericWorkerDefaults: service === "worker",
+  });
   const runtimeService = service === "worker" || service === "portal";
   if (runtimeService) validateDatabaseConfig(env, { requireVersions: true });
-  const srcRoot = join(REPO_ROOT, "deploy", "providers", "azure", "gitops", service);
+  const serviceManifest = loadDeployManifest().services[service];
+  const sourceService = resolveEnvTemplate(
+    serviceManifest?.gitops?.source ?? service,
+    env,
+    `${service} gitops.source`,
+    { SERVICE: service },
+  );
+  const srcRoot = join(REPO_ROOT, "deploy", "providers", "azure", "gitops", sourceService);
   if (!existsSync(srcRoot)) {
     throw new Error(`GitOps tree missing for service '${service}': ${srcRoot}`);
   }
@@ -231,20 +384,50 @@ export function stageManifests({ service, envName, env, stagingDir }) {
     const workerCatalog = catalogOverride
       ? resolve(REPO_ROOT, catalogOverride)
       : join(REPO_ROOT, "deploy", "providers", "azure", "gitops", "worker", "base", "model_providers.json");
-    const portalCatalog = join(stagedServiceRoot, "base", "model_providers.json");
+    const targetCatalog = join(stagedServiceRoot, "base", "model_providers.json");
     if (!existsSync(workerCatalog)) {
       throw new Error(
-        `Cannot stage portal: worker catalog missing at ${workerCatalog}. ` +
-          `Portal model_providers.json is sourced from the worker base.`,
+        `Cannot stage ${service}: worker catalog missing at ${workerCatalog}.`,
       );
     }
-    cpSync(workerCatalog, portalCatalog);
-    log("info", `Staged worker model_providers.json → portal/base/model_providers.json`);
+    cpSync(workerCatalog, targetCatalog);
+    log(
+      "info",
+      `Staged worker model_providers.json → ${service}/base/model_providers.json`,
+    );
+  }
+
+  if (service === "portal") {
+    const pluginOverride = String(env.PORTAL_PLUGIN_FILE || "").trim();
+    if (pluginOverride) {
+      const pluginPath = resolve(REPO_ROOT, pluginOverride);
+      if (!existsSync(pluginPath)) {
+        throw new Error(`PORTAL_PLUGIN_FILE does not exist: ${pluginPath}`);
+      }
+      let plugin;
+      try {
+        plugin = JSON.parse(readFileSync(pluginPath, "utf8"));
+      } catch (error) {
+        throw new Error(`PORTAL_PLUGIN_FILE is not valid JSON: ${pluginPath}: ${error.message}`);
+      }
+      if (!plugin || typeof plugin !== "object" || Array.isArray(plugin)) {
+        throw new Error(`PORTAL_PLUGIN_FILE must contain a JSON object: ${pluginPath}`);
+      }
+      cpSync(pluginPath, join(stagedServiceRoot, "base", "deployment-plugin.json"));
+      log("info", "Staged deployment-owned portal plugin.");
+    }
   }
 
   // Substitute the per-service overlay .env in place inside the staged
   // tree. See `resolveOverlayName` above for the per-service rule.
-  const overlayName = resolveOverlayName({ service, envName, env });
+  const overlayName = serviceManifest?.gitops?.overlay
+    ? resolveEnvTemplate(
+        serviceManifest.gitops.overlay,
+        env,
+        `${service} gitops.overlay`,
+        { SERVICE: service },
+      )
+    : resolveOverlayName({ service, envName, env });
   const overlaySrc = join(srcRoot, "overlays", overlayName, ".env");
   const overlayDst = join(stagedServiceRoot, "overlays", overlayName, ".env");
   if (!existsSync(overlaySrc)) {
@@ -263,7 +446,10 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // and writes it into the Deployment pod-template annotation, forcing
   // a rolling update whenever the SPC's projected key set changes. See
   // deploy/scripts/lib/spc-keys-hash.mjs for the full rationale.
-  if (service === "worker" || service === "portal") {
+  if (
+    service === "worker" ||
+    service === "portal"
+  ) {
     env.SPC_KEYS_HASH = computeSpcKeysHash({ service });
   }
 
@@ -287,7 +473,9 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       HORIZON_EMBED_MODEL: "text-embedding-3-small",
       HORIZON_EMBED_DIM: "1536",
       HORIZON_EMBED_API_KEY_HEADER: "api-key",
-      // Preserve runtime defaults for older stamps that omit optional policy.
+      // Preserve runtime defaults for older stamps that omit optional portal config.
+      PORTAL_AUTH_DEV_ALLOW: "__PS_UNSET__",
+      PORTAL_AUTH_DEV_USERS: "__PS_UNSET__",
       AUTHZ_ENFORCE_OWNERSHIP: "__PS_UNSET__",
       AUTHZ_ADMIN_SCOPE: "__PS_UNSET__",
       SESSIONS_DEFAULT_VISIBILITY: "__PS_UNSET__",
@@ -295,10 +483,12 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       ...WORKER_ENV_DEFAULTS,
       ...env,
     },
+    optionalKeys: serviceManifest?.gitops?.optionalEnvKeys ?? [],
     omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
   });
   log("ok", `Substituted ${substituted.length} overlay .env keys → ${overlayDst}`);
   if (runtimeService) stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayName });
+  appendOverlayEnvMaps({ service, serviceManifest, overlayDst, env });
   // WORKSPACES_ENABLED=true: the worker and portal overlays get the
   // workspaces component (see workspaces.mjs).
   if (stageWorkspacesComponent({ service, env, stagedServiceRoot, overlayName })) {
@@ -307,7 +497,13 @@ export function stageManifests({ service, envName, env, stagingDir }) {
 
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).
-  applyPlaceholderRules({ service, stagedServiceRoot, env });
+  applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, env });
+
+  // In Entra Foundry auth mode, rewrite the staged catalog's key-mode Foundry
+  // providers to workload identity (foundry-wif). No-op for key mode / stamps
+  // without Foundry. Must run after placeholder substitution so the endpoint
+  // is already resolved when the provider is rewritten.
+  applyFoundryAuthModeTransform({ service, stagedServiceRoot, env });
 
   return stagedServiceRoot;
 }

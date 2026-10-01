@@ -67,17 +67,15 @@ az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourc
 ## Core Learnings
 
 - Use `docker buildx build --platform linux/amd64` for AKS images. Do not use a plain `docker build` from Apple Silicon for cluster deploys.
-- **Images build through an npm mirror, not public npm.** Microsoft-managed devices are hard-blocked from `registry.npmjs.org`, and **containers inherit the block** — a Docker build gets no special egress. Proven 2026-07-31: host `curl` → `http=000` (socket not connected), in-container `fetch` → `ECONNRESET`, in-container `fetch` of `https://packagefeedproxy.microsoft.io/npm/` → `200`. Both Dockerfiles take an `NPM_REGISTRY` build arg (`ARG NPM_REGISTRY` + `ENV npm_config_registry`) that `deploy-aks.sh` and `deploy-portal.sh` pass through from `.env.remote`, where `NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/` is set. It defaults to public npm when unset, so unmanaged machines are unaffected. npm's `replace-registry-host` (default `npmjs`) rewrites the lockfile's `resolved` URLs onto the mirror, so `package-lock.json` stays authoritative and integrity hashes still gate every tarball.
-  - **Any hand-rolled `docker buildx build` must pass `--build-arg NPM_REGISTRY="$NPM_REGISTRY"`** or it will fail at `npm ci` on a managed device. The repo scripts do this for you, and the manual recipes in this skill, `pilotswarm-corp-aks-deploy`, and `pilotswarm-aks-reset` carry it. The commands in `docs/developer/deploy/aks.md` do NOT — add the arg if you copy from there.
-  - **`az acr build` is the exact opposite: do NOT pass `NPM_REGISTRY`.** The build runs on an Azure build agent with unrestricted access to public npm, so the corp mirror buys nothing there — and its 7-day quarantine actively breaks the build. Sourcing `.env.remote` into the shell that launches `az acr build` is enough to poison it, because the mirror is set there for the *local* path. Observed 2026-08-02: `npm error 404 … GET https://packagefeedproxy.microsoft.io/npm/vite/-/vite-7.3.6.tgz — Cannot find the file … in feed 'npm-public'`, on a version that was fine on public npm. Rule of thumb: **mirror for local builds, public npm for ACR builds.**
+- **Local images can build through a configurable npm registry.** Both Dockerfiles take an `NPM_REGISTRY` build arg (`ARG NPM_REGISTRY` + `ENV npm_config_registry`) that `deploy-aks.sh` and `deploy-portal.sh` pass through from `.env.remote`. It defaults to public npm when unset. npm's `replace-registry-host` setting rewrites the lockfile's `resolved` URLs onto the configured registry, so `package-lock.json` stays authoritative and integrity hashes still gate every tarball.
+  - **A hand-rolled `docker buildx build` should pass `--build-arg NPM_REGISTRY="$NPM_REGISTRY"` when a registry override is configured.** The repo scripts and manual recipes in this skill carry it automatically.
+  - **Do not pass a workstation-only registry override to `az acr build`.** The remote build environment may not be able to resolve or authenticate to the same registry. Use the registry available to the remote builder instead.
   - A cached `npm ci` layer hides all of this — a build can succeed having never touched the network. Do not read a green build as proof the mirror path works; that only holds on a cold cache (`--no-cache`, a lockfile change, a pruned builder, or a fresh clone).
-  - Reaching the mirror is not the same as finding your package on it. The feed imposes a deliberate **7-day quarantine** on newly published versions, so a same-week `pilotswarm-sdk` release will 404 there regardless of this wiring.
-  - When the deployment must consume the just-published PilotSwarm packages,
-    do not wait out the quarantine and do not quietly fall back to workspace
-    source. Use the three `.tgz` assets attached to the GitHub Release and the
-    release-tarball workflow below. ACR still supplies public-npm access for
-    third-party transitive dependencies; PilotSwarm package bytes come from
-    the downloaded release assets.
+  - Reaching a configured registry is not the same as finding every package on
+    it. When the deployment must consume newly published PilotSwarm packages
+    that are not yet present, do not quietly fall back to workspace source.
+    Use the three `.tgz` assets attached to the GitHub Release and the
+    release-tarball workflow below.
   - `deploy/Dockerfile.starter` still lacks the arg.
 - The deploy target is the AKS cluster, not the local namespace. Use `copilot-runtime`, not the local `pilotswarm` namespace.
 - The deploy script prefers `.env.remote`, then `.env`, and pushes env-backed provider keys into the Kubernetes secret.
@@ -156,11 +154,17 @@ an image-only variant of the deploy, with no data reset or config refresh.
      ```
    - Build and push the image:
      ```bash
+     IMAGE="$ACR_NAME.azurecr.io/copilot-runtime-worker:latest"
+     SOURCE_COMMIT="$(git rev-parse HEAD)"
+     BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
      docker buildx build \
          --platform linux/amd64 \
          -f deploy/Dockerfile.worker \
          --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
-         -t "$ACR_NAME.azurecr.io/copilot-runtime-worker:latest" \
+         --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+         --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+         --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+         -t "$IMAGE" \
          --push .
      ```
    - Apply namespace/deployment manifests and restart the deployment.
@@ -230,8 +234,8 @@ corporate npm mirror. It is a package-source change, not a database reset.
      labels are the cheap pre-rollout proof of package provenance.
 
 3. Build in ACR from inside the temporary context.
-   - Use `az acr build` without `NPM_REGISTRY`; ACR can reach public npm and the
-     corporate mirror would reintroduce quarantine failures.
+   - Use `az acr build` without a workstation-only `NPM_REGISTRY` override;
+     resolve dependencies through a registry available to the remote builder.
    - `az acr build --file` resolves relative to its current source context.
      `pushd` into the temporary context and use `--file Dockerfile.worker .` or
      `--file Dockerfile.portal .`; passing a bare filename while standing at

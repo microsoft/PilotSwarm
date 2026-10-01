@@ -17,25 +17,61 @@ function toWebSocketUrl(apiUrl) {
     return url.toString();
 }
 
+// Response headers most useful for telling an edge/proxy rejection apart from an
+// application-level error. Some are generic (server, content-type,
+// www-authenticate); others are edge-specific examples -- e.g. Azure Front Door
+// stamps x-azure-ref / x-azure-fdid on its own responses (often with an empty or
+// HTML body), whereas the app returns a JSON error envelope with a `code`.
+const DIAGNOSTIC_HEADER_NAMES = ["x-azure-ref", "x-azure-fdid", "server", "content-type", "www-authenticate"];
+
 async function readErrorEnvelope(response) {
-    let message = response.statusText || `HTTP ${response.status}`;
+    let message = response.statusText ? `HTTP ${response.status} ${response.statusText}` : `HTTP ${response.status}`;
     let code = response.status === 401 ? "UNAUTHORIZED" : response.status === 403 ? "FORBIDDEN" : "INTERNAL_ERROR";
     let candidates;
-    let extra = {};
+    // Read the body once as text so a non-JSON error body (e.g. an Azure Front
+    // Door WAF block, which is HTML or empty) is still captured for diagnostics
+    // instead of being silently dropped by response.json().
+    let bodyText = "";
     try {
-        const payload = await response.json();
-        const error = payload?.error;
-        if (typeof error === "string" && error) message = error;
-        else if (error && typeof error === "object") {
-            if (error.message) message = error.message;
-            if (error.code) code = error.code;
-            if (Array.isArray(error.candidates)) candidates = error.candidates;
-            extra = errorExtras(error);
-        } else if (payload?.message) {
-            message = payload.message;
-        }
+        bodyText = await response.text();
     } catch {}
-    return new ApiError(message, { code, status: response.status, candidates, ...extra });
+
+    let extra = {};
+    if (bodyText) {
+        try {
+            const payload = JSON.parse(bodyText);
+            const error = payload?.error;
+            if (typeof error === "string" && error) message = error;
+            else if (error && typeof error === "object") {
+                if (error.message) message = error.message;
+                if (error.code) code = error.code;
+                if (Array.isArray(error.candidates)) candidates = error.candidates;
+                extra = errorExtras(error);
+            } else if (payload?.message) {
+                message = payload.message;
+            }
+        } catch {
+            // Non-JSON body (proxy/WAF/gateway). Keep the status-based message.
+        }
+    }
+
+    // Capture a bounded body snippet + a few edge-attribution headers so callers
+    // can tell an edge/WAF rejection apart from an application error. Safe to keep
+    // always-on: the API server scrubs 5xx responses to a generic "Internal server
+    // error" (raw messages and stacks go only to server logs -- see
+    // web/api/router.js sendError), 4xx bodies are curated non-sensitive messages,
+    // and the only non-JSON bodies that reach here are edge/infra (Front Door /
+    // Application Gateway / WAF) boilerplate. The headers below are benign
+    // diagnostic headers; the body snippet is capped at 500 chars. `status` and
+    // `code` are, as always, safe.
+    const headers = {};
+    for (const name of DIAGNOSTIC_HEADER_NAMES) {
+        const value = response.headers?.get?.(name);
+        if (value) headers[name] = value;
+    }
+    const diagnostics = { headers, bodySnippet: bodyText ? bodyText.slice(0, 500) : "" };
+
+    return new ApiError(message, { code, status: response.status, candidates, diagnostics, ...extra });
 }
 
 /** Workspace files: a conflict's current etag (null: the file is gone) and a too-large file's size. */
@@ -43,7 +79,7 @@ function errorExtras(error) {
     return {
         ...(Object.prototype.hasOwnProperty.call(error, "etag") && (error.etag === null || typeof error.etag === "string") ? { etag: error.etag } : {}),
         ...(Number.isFinite(error.size) ? { size: error.size } : {}),
-    };
+    }
 }
 
 /**

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PilotSwarm SDK local test baseline</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>PilotSwarm SDK local test baseline</h1>
+      <div id="metadata" class="meta">Loading results…</div>
+    </div>
+    <div class="refresh-controls">
+      <label class="inline"><input id="auto-refresh" type="checkbox" checked> Auto-refresh</label>
+      <button id="refresh" type="button">Refresh now</button>
+    </div>
+  </header>
+  <div id="error" class="error" hidden></div>
+  <section id="cards" class="cards" aria-label="Baseline summary"></section>
+  <section class="filters" aria-label="Test filters">
+    <label>Search file or notes
+      <input id="search" type="search" placeholder="e.g. model-selection">
+    </label>
+    <label>Result (select one or more)
+      <select id="result-filter" multiple size="4">
+        <option value="passed">Passed</option>
+        <option value="failed">Failed</option>
+        <option value="interrupted">Interrupted</option>
+        <option value="pending">Pending</option>
+      </select>
+    </label>
+    <label>Stability
+      <select id="stability-filter">
+        <option value="">All stability</option>
+        <option value="Flaky">Flaky</option>
+        <option value="Consistent">Consistent</option>
+        <option value="Single observation">Single observation</option>
+      </select>
+    </label>
+    <label>Minimum duration (seconds)
+      <input id="min-duration" type="number" min="0" step="1" placeholder="0">
+    </label>
+    <label>Maximum duration (seconds)
+      <input id="max-duration" type="number" min="0" step="1" placeholder="300">
+    </label>
+    <label>Minimum attempts
+      <input id="min-attempts" type="number" min="0" step="1" placeholder="1">
+    </label>
+    <button id="clear-filters" type="button">Clear filters</button>
+  </section>
+  <div class="result-line">
+    <strong id="visible-count">0</strong> of <span id="total-count">0</span> files visible ·
+    refreshed <span id="refreshed-at">never</span>
+  </div>
+  <div class="table-wrap">
+    <table id="results-table">
+      <thead><tr id="header-row"></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

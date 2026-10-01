@@ -9,6 +9,7 @@ function jsonResponse(payload, { status = 200 } = {}) {
         status,
         statusText: String(status),
         json: async () => payload,
+        text: async () => (typeof payload === "string" ? payload : JSON.stringify(payload)),
     };
 }
 
@@ -120,6 +121,35 @@ test("structured error envelopes surface code and message", async () => {
         assert.equal(error.code, "SESSION_NOT_FOUND");
         assert.equal(error.status, 404);
         assert.equal(error.message, "nope");
+        return true;
+    });
+});
+
+test("a non-JSON edge/WAF error body is captured into diagnostics", async () => {
+    // Simulate an Azure Front Door / gateway rejection: HTML body, edge headers,
+    // and no parseable JSON envelope. The client must still throw a status-based
+    // ApiError and preserve the body + headers for diagnosis instead of dropping
+    // them on the failed response.json() path.
+    const htmlBody = "<html><head><title>403 Forbidden</title></head><body>WAF blocked</body></html>";
+    const edgeHeaders = { "x-azure-ref": "20260916T000000Z-abc", "content-type": "text/html" };
+    const response = {
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        json: async () => { throw new Error("not JSON"); },
+        text: async () => htmlBody,
+        headers: { get: (name) => edgeHeaders[String(name).toLowerCase()] },
+    };
+    const { client } = createClient({ responses: [response] });
+    await assert.rejects(client.call("listSessions"), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 403);
+        assert.equal(error.code, "FORBIDDEN");
+        // Non-JSON body → status-based message, not a parsed reason.
+        assert.equal(error.message, "HTTP 403 Forbidden");
+        assert.ok(error.diagnostics, "diagnostics should be attached");
+        assert.match(error.diagnostics.bodySnippet, /WAF blocked/);
+        assert.equal(error.diagnostics.headers["x-azure-ref"], "20260916T000000Z-abc");
         return true;
     });
 });

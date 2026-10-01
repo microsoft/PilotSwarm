@@ -59,14 +59,24 @@ await api.call("sendMessage", { sessionId: session.sessionId, prompt: "hello" })
 const systemPage = await api.call("listSessionsPage", {
   limit: 200,
   systemFilter: "only",
-  viewerOnly: true,
+  scope: "visible",
 });
 const regularPage = await api.call("listSessionsPage", {
   limit: 200,
   systemFilter: "exclude",
-  viewerOnly: true,
+  scope: "visible",
 });
 ```
+
+Use `scope: "fleet"` only for an administrative catalog. The server rejects
+that scope with 403 unless the authenticated principal has resource
+administration rights. Pass the same scope when loading a selected Fleet
+resource's canonical detail route. Fleet responses intentionally omit
+executable or content-bearing fields such as Workflow Run input/effective
+configuration, Workflow Generator source configuration, Workflow Definition
+bodies, Session summaries/results, wait prompts/responses, and journal
+summaries. Transcript events are fetched through their separately authorized
+Session event APIs.
 
 ## 3. Subscribe, reduce, replay
 

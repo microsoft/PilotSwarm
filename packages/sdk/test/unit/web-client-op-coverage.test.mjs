@@ -80,6 +80,13 @@ test("the generated file is up to date with the protocol table", () => {
     );
 });
 
+test("operations with only optional fields keep an optional params object", () => {
+    assert.match(
+        normalizeNewlines(readFileSync(GENERATED_FILE, "utf8")),
+        /listModels\(params\?: \{\n\s+compute\?: string;\n\s+repo\?: string;\n\s+\}\): Promise<any>;/,
+    );
+});
+
 test("ops methods forward the operation name and params verbatim", async () => {
     const { client, calls } = clientWithFakeApi();
 
@@ -93,6 +100,9 @@ test("ops methods forward the operation name and params verbatim", async () => {
 
     // A no-params op defaults to an empty object.
     await client.ops.getWorkerCount();
+    // An operation with only optional query params remains callable both ways.
+    await client.ops.listModels();
+    await client.ops.listModels({ compute: "devbox", repo: "sample-repo" });
 
     assert.deepEqual(calls, [
         {
@@ -100,6 +110,11 @@ test("ops methods forward the operation name and params verbatim", async () => {
             params: { sessionId: "s1", user: { provider: "entra", subject: "u1" }, access: "read" },
         },
         { name: "getWorkerCount", params: {} },
+        { name: "listModels", params: {} },
+        {
+            name: "listModels",
+            params: { compute: "devbox", repo: "sample-repo" },
+        },
     ]);
 });
 

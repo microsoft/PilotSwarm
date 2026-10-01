@@ -20,6 +20,8 @@ import { REPO_ROOT } from "../lib/common.mjs";
 import {
   computeTemplateHash,
   computeParamsHash,
+  computeExternalParamsHash,
+  computeInlineParamsHash,
   loadMarker,
   saveMarker,
   shouldSkipDeploy,
@@ -83,6 +85,71 @@ test("computeParamsHash hashes the rendered file", () => {
 
 test("computeParamsHash returns empty string for a missing file", () => {
   assert.equal(computeParamsHash(join(envTmpDir(), "nope.json")), "");
+});
+
+test("computeExternalParamsHash: empty / no-files → empty string", () => {
+  assert.equal(computeExternalParamsHash([]), "");
+  assert.equal(computeExternalParamsHash(undefined), "");
+});
+
+test("computeExternalParamsHash: changes when a file's content changes", () => {
+  const dir = envTmpDir();
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, "pools.json");
+  writeFileSync(p, '[{"name":"sqlai","count":1}]');
+  const h1 = computeExternalParamsHash([{ param: "additionalAgentPools", path: p }]);
+  writeFileSync(p, '[{"name":"sqlai","count":4}]');
+  const h2 = computeExternalParamsHash([{ param: "additionalAgentPools", path: p }]);
+  assert.notEqual(h1, h2);
+  assert.match(h1, /^[a-f0-9]{64}$/);
+});
+
+test("computeExternalParamsHash: stable regardless of entry order", () => {
+  const dir = envTmpDir();
+  mkdirSync(dir, { recursive: true });
+  const a = join(dir, "a.json");
+  const b = join(dir, "b.json");
+  writeFileSync(a, '{"a":1}');
+  writeFileSync(b, '{"b":2}');
+  const h1 = computeExternalParamsHash([
+    { param: "additionalAgentPools", path: a },
+    { param: "foundryDeployments", path: b },
+  ]);
+  const h2 = computeExternalParamsHash([
+    { param: "foundryDeployments", path: b },
+    { param: "additionalAgentPools", path: a },
+  ]);
+  assert.equal(h1, h2);
+});
+
+test("computeExternalParamsHash: missing file busts vs present file", () => {
+  const dir = envTmpDir();
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, "present.json");
+  writeFileSync(p, "[]");
+  const present = computeExternalParamsHash([{ param: "additionalAgentPools", path: p }]);
+  const missing = computeExternalParamsHash([
+    { param: "additionalAgentPools", path: join(dir, "gone.json") },
+  ]);
+  assert.notEqual(present, missing);
+});
+
+test("computeInlineParamsHash: empty values preserve the legacy marker state", () => {
+  assert.equal(computeInlineParamsHash([]), "");
+  assert.equal(computeInlineParamsHash(undefined), "");
+});
+
+test("computeInlineParamsHash: changes with a devbox principal", () => {
+  const first = computeInlineParamsHash([
+    { param: "devboxPrincipalId", value: "group-1" },
+    { param: "devboxPrincipalType", value: "Group" },
+  ]);
+  const second = computeInlineParamsHash([
+    { param: "devboxPrincipalType", value: "Group" },
+    { param: "devboxPrincipalId", value: "group-2" },
+  ]);
+  assert.notEqual(first, second);
+  assert.match(first, /^[a-f0-9]{64}$/);
 });
 
 test("loadMarker / saveMarker round-trip", () => {
@@ -174,6 +241,84 @@ test("shouldSkipDeploy → no skip when outputs cache is missing", () => {
   });
   assert.equal(d.skip, false);
   assert.equal(d.reason, "outputs cache missing");
+});
+
+test("shouldSkipDeploy → no skip when external params hash differs", () => {
+  setupModule("// dummy\n");
+  saveMarker(ENV_NAME, MOD_NAME, {
+    templateHash: "t1",
+    paramsHash: "p1",
+    externalParamsHash: "OLD",
+  });
+  writeFileSync(_internals.bicepOutputsCachePath(ENV_NAME), "{}");
+  const d = shouldSkipDeploy({
+    envName: ENV_NAME,
+    moduleName: MOD_NAME,
+    templateHash: "t1",
+    paramsHash: "p1",
+    externalParamsHash: "NEW",
+    force: false,
+  });
+  assert.equal(d.skip, false);
+  assert.equal(d.reason, "external params changed");
+});
+
+test("shouldSkipDeploy → skip when external params hash matches", () => {
+  setupModule("// dummy\n");
+  saveMarker(ENV_NAME, MOD_NAME, {
+    templateHash: "t1",
+    paramsHash: "p1",
+    externalParamsHash: "e1",
+  });
+  writeFileSync(_internals.bicepOutputsCachePath(ENV_NAME), "{}");
+  const d = shouldSkipDeploy({
+    envName: ENV_NAME,
+    moduleName: MOD_NAME,
+    templateHash: "t1",
+    paramsHash: "p1",
+    externalParamsHash: "e1",
+    force: false,
+  });
+  assert.equal(d.skip, true);
+  assert.equal(d.reason, "marker hit");
+});
+
+test("shouldSkipDeploy → no skip when inline params hash differs", () => {
+  setupModule("// dummy\n");
+  saveMarker(ENV_NAME, MOD_NAME, {
+    templateHash: "t1",
+    paramsHash: "p1",
+    inlineParamsHash: "OLD",
+  });
+  writeFileSync(_internals.bicepOutputsCachePath(ENV_NAME), "{}");
+  const d = shouldSkipDeploy({
+    envName: ENV_NAME,
+    moduleName: MOD_NAME,
+    templateHash: "t1",
+    paramsHash: "p1",
+    inlineParamsHash: "NEW",
+    force: false,
+  });
+  assert.equal(d.skip, false);
+  assert.equal(d.reason, "inline params changed");
+});
+
+test("shouldSkipDeploy → back-compat: old marker (no externalParamsHash) still skips a no-external module", () => {
+  setupModule("// dummy\n");
+  // Marker written before externalParamsHash existed.
+  saveMarker(ENV_NAME, MOD_NAME, { templateHash: "t1", paramsHash: "p1" });
+  writeFileSync(_internals.bicepOutputsCachePath(ENV_NAME), "{}");
+  const d = shouldSkipDeploy({
+    envName: ENV_NAME,
+    moduleName: MOD_NAME,
+    templateHash: "t1",
+    paramsHash: "p1",
+    externalParamsHash: "", // module uses no external @file params
+    inlineParamsHash: "",
+    force: false,
+  });
+  assert.equal(d.skip, true);
+  assert.equal(d.reason, "marker hit");
 });
 
 test("shouldSkipDeploy → no skip when --force is set", () => {

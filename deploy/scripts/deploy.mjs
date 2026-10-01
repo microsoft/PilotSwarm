@@ -19,6 +19,8 @@ import {
   stagingDir,
   validateService,
   validateEnv,
+  validateDeployInstance,
+  run,
 } from "./lib/common.mjs";
 import { resolveSteps, defaultPipelineFor } from "./lib/stages.mjs";
 import { buildImage } from "./lib/build-image.mjs";
@@ -30,9 +32,20 @@ import { stageManifests } from "./lib/stage-manifests.mjs";
 import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
+import { ensureWorkloadGroupMembership } from "./lib/group-membership.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
-import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
+import {
+  EDGE_MODES,
+  TLS_SOURCES,
+  validateRequiredEnv,
+  applyStubKeys,
+  unsupportedEdgeTlsReason,
+  edgeModeTransitionReason,
+  parseDeployedEdgeModeLookup,
+} from "./lib/overlay-contracts.mjs";
+import { configureServiceEnv, loadDeployManifest } from "./lib/services-manifest.mjs";
 import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
+import { ensurePortForwardCertificate } from "./lib/port-forward-certificate.mjs";
 import { WORKSPACES_SERVICE, workspacesEnabled } from "./lib/workspaces.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
@@ -44,9 +57,12 @@ function parseArgs(argv) {
     steps: null,
     region: null,
     imageTag: null,
+    envOverlays: [],
+    instance: null,
     clean: false,
     force: false,
     forceModules: [],
+    replacePools: false,
     help: false,
   };
 
@@ -58,6 +74,8 @@ function parseArgs(argv) {
       flags.clean = true;
     } else if (a === "--force") {
       flags.force = true;
+    } else if (a === "--replace-pools") {
+      flags.replacePools = true;
     } else if (a.startsWith("--force-module=")) {
       const value = a.slice("--force-module=".length);
       if (!value) throw new Error("--force-module requires a module name (got empty value)");
@@ -78,6 +96,30 @@ function parseArgs(argv) {
       flags.imageTag = a.slice("--image-tag=".length);
     } else if (a === "--image-tag") {
       flags.imageTag = args[++i];
+    } else if (a.startsWith("--instance=")) {
+      const value = a.slice("--instance=".length);
+      if (!value) throw new Error("--instance requires a name (got empty value)");
+      if (flags.instance !== null) throw new Error("--instance may be specified only once");
+      flags.instance = value;
+    } else if (a === "--instance") {
+      const value = args[++i];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--instance requires a name (e.g. --instance my-repo)");
+      }
+      if (flags.instance !== null) throw new Error("--instance may be specified only once");
+      flags.instance = value;
+    // Node reserves --env-file for its own runtime, so the deploy CLI uses
+    // --env-overlay for a file that is composed after the script starts.
+    } else if (a.startsWith("--env-overlay=")) {
+      const value = a.slice("--env-overlay=".length);
+      if (!value) throw new Error("--env-overlay requires a path (got empty value)");
+      flags.envOverlays.push(value);
+    } else if (a === "--env-overlay") {
+      const value = args[++i];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--env-overlay requires a path (e.g. --env-overlay ../composition/worker.env)");
+      }
+      flags.envOverlays.push(value);
     } else if (a.startsWith("--")) {
       throw new Error(`Unknown flag: ${a}`);
     } else {
@@ -90,9 +132,9 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | repo-cache | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | repo-cache | portal | base-infra | global-infra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
-        "Flags: --steps, --region, --image-tag, --clean, --force, --help",
+        "Flags: --steps, --region, --image-tag, --instance, --env-overlay, --clean, --force, --replace-pools, --help",
     );
   }
 
@@ -110,28 +152,37 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | repo-cache | portal | baseinfra | globalinfra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | repo-cache | portal | base-infra | global-infra | horizondb | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
-      "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → repo-cache → portal,",
+      "            global-infra → base-infra → horizondb → pls-anchor → cert-manager → cert-manager-issuers → worker → repo-cache → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
-      "            on the EDGE_MODE=private path; cert-manager services are skipped",
+      "            when EDGE_MODE is not afd; cert-manager services are skipped",
       "            on the akv (enterprise) TLS_SOURCE path; repo-cache is skipped",
       "            unless WORKSPACES_ENABLED=true.)",
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
       "Flags:",
-      "  --steps <list>      Comma-separated subset of: build,bicep,seed-secrets,push,manifests,rollout",
+      "  --steps <list>      Comma-separated subset of: build,bicep,seed-secrets,push,render,manifests,rollout",
       "                      (or just 'noop' for env-load + preflight only).",
       "                      Default: full pipeline for service.",
       "  --region <name>     Override LOCATION from <env>.env (e.g. westus3).",
       "  --image-tag <tag>   Explicit image tag. Default: <env>-<short-sha>[-dirty].",
-      "  --clean             Wipe deploy/.tmp/<service>-<env>/ before running.",
+      "  --instance <name>    Instance name for services that deploy repeated resources.",
+      "  --env-overlay <path> Overlay an external KEY=VALUE file on the local env.",
+      "                      Repeat in precedence order; later files win.",
+      "                      Relative paths resolve from the current working directory.",
+      "  --clean             Wipe deploy/.tmp/<service>[-<instance>]-<env>/ before running.",
       "  --force             Ignore deploy markers; redeploy every Bicep module even if",
       "                      its template + rendered params are unchanged since last success.",
       "  --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,",
       "                      pls-anchor). Repeatable. Lighter-touch than --force when only",
       "                      one module needs to retry past its deploy marker (e.g. recover",
       "                      from an out-of-band Bicep tweak or RBAC propagation race).",
+      "  --replace-pools     Allow the base-infra agent-pool preflight to REPLACE a fleet",
+      "                      node pool whose IMMUTABLE shape changed (vmSize, osType/osSKU,",
+      "                      osDisk*). Without it, such a change aborts the deploy with a",
+      "                      warning. DESTRUCTIVE: the pool is deleted (nodes drain +",
+      "                      destroy) and recreated, so its fleet goes down + cold-reseeds.",
       "  --help, -h          Show this help.",
       "",
       "Spec: .paw/work/oss-deploy-script/Spec.md",
@@ -147,7 +198,54 @@ function printHelp() {
   );
 }
 
+function readDeployedEdgeMode({ envName, env }) {
+  if (!env.RESOURCE_GROUP || !env.LOCATION) return null;
+  const deploymentName = `base-infra-${envName}-${env.LOCATION.replace(/[^a-zA-Z0-9-]/g, "")}`;
+  const result = run(
+    "az",
+    [
+      "deployment",
+      "group",
+      "show",
+      "--resource-group",
+      env.RESOURCE_GROUP,
+      "--name",
+      deploymentName,
+      "--query",
+      "{output:properties.outputs.edgeMode.value,parameter:properties.parameters.edgeMode.value}",
+      "--output",
+      "json",
+    ],
+    { capture: true, allowFail: true },
+  );
+  return parseDeployedEdgeModeLookup({ ...result, deploymentName });
+}
+
 // ───────────────────────── Stage runner ─────────────────────────
+
+async function renderServiceManifests(ctx) {
+  if (ctx.service === "worker" || ctx.service === "portal") {
+    resolveDatabaseSecretVersions(ctx.env);
+  }
+  const imageInfo = SERVICE_IMAGE_INFO[ctx.service];
+  if (imageInfo && ctx.env.ACR_LOGIN_SERVER) {
+    ctx.env.IMAGE = `${ctx.env.ACR_LOGIN_SERVER}/${imageInfo.dockerImageRepo}:${ctx.imageTag}`;
+  }
+  await configureServiceEnv({
+    service: ctx.service,
+    env: ctx.env,
+    phase: "manifests",
+    imageTag: ctx.imageTag,
+    imageTagExplicit: ctx.imageTagExplicit,
+    envOverlays: ctx.envOverlays,
+  });
+  return stageManifests({
+    service: ctx.service,
+    envName: ctx.envName,
+    env: ctx.env,
+    stagingDir: ctx.stagingDir,
+  });
+}
 
 // A GitHub Actions run signs in to Azure once, with an OIDC assertion that
 // expires within minutes. The first call to another Azure service (Key
@@ -169,12 +267,14 @@ async function runStage(name, ctx) {
         log("info", `No container image for service '${ctx.service}'; skipping build.`);
         return;
       }
+
       assertCli("docker", "https://docs.docker.com/get-docker/ (must include buildx)");
       await buildImage({
         service: ctx.service,
         envName: ctx.envName,
         imageTag: ctx.imageTag,
         stagingDir: ctx.stagingDir,
+        env: ctx.env,
       });
       return;
     case "push":
@@ -201,6 +301,7 @@ async function runStage(name, ctx) {
         moduleListOverride: ctx.moduleListOverride,
         force: ctx.force,
         forceModules: ctx.forceModules,
+        replacePools: ctx.replacePools,
       });
       // Re-run composition: a fresh `all` run starts with an empty outputs
       // cache, so the startup pass at line ~258 had nothing to compose.
@@ -208,7 +309,12 @@ async function runStage(name, ctx) {
       // BLOB_CONTAINER_ENDPOINT / POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) into
       // the in-process env map, derive DATABASE_URL et al. so the
       // subsequent manifests stage finds them.
-      composeDerivedEnv(ctx.env);
+      composeDerivedEnv(ctx.env, {
+        includeGenericWorkerDefaults: ctx.service === "worker",
+      });
+      if (ctx.service === "portal") {
+        ensurePortForwardCertificate(ctx.env);
+      }
       return;
     case "seed-secrets":
       await seedSecrets({
@@ -217,24 +323,19 @@ async function runStage(name, ctx) {
         env: ctx.env,
       });
       return;
-    case "manifests": {
-      if (ctx.service === "worker" || ctx.service === "portal") {
-        resolveDatabaseSecretVersions(ctx.env);
-      }
-      // Compose the IMAGE env var (the only image-related key consumed by
-      // the overlay `.env`/replacements chain). Derived from build/push
-      // contract: the rendered overlay must point at the tag we pushed
-      // (or `--image-tag` on a manifests-only run).
-      const imageInfo = SERVICE_IMAGE_INFO[ctx.service];
-      if (imageInfo && ctx.env.ACR_LOGIN_SERVER) {
-        ctx.env.IMAGE = `${ctx.env.ACR_LOGIN_SERVER}/${imageInfo.dockerImageRepo}:${ctx.imageTag}`;
-      }
-      const stagedServiceRoot = stageManifests({
-        service: ctx.service,
+    case "workload-group":
+      await ensureWorkloadGroupMembership({
         envName: ctx.envName,
         env: ctx.env,
-        stagingDir: ctx.stagingDir,
       });
+      return;
+    case "render": {
+      const stagedServiceRoot = await renderServiceManifests(ctx);
+      log("ok", `Rendered manifests without publishing: ${stagedServiceRoot}`);
+      return;
+    }
+    case "manifests": {
+      const stagedServiceRoot = await renderServiceManifests(ctx);
       await publishManifests({
         service: ctx.service,
         envName: ctx.envName,
@@ -288,17 +389,47 @@ async function main() {
     return;
   }
 
-  const { service, envName, steps, region, imageTag, clean, force, forceModules } = parsed;
+  const {
+    service,
+    envName,
+    steps,
+    region,
+    imageTag,
+    envOverlays,
+    instance,
+    clean,
+    force,
+    forceModules,
+    replacePools,
+  } = parsed;
 
   // 1) Validate inputs (accepts the virtual `all` aggregate)
   validateService(service);
   validateEnv(envName);
+  if (instance !== null) validateDeployInstance(instance);
+  const serviceManifest = service === "all"
+    ? null
+    : loadDeployManifest().services[service];
+  if (serviceManifest?.instanceRequired && !instance) {
+    throw new Error(`Service '${service}' requires --instance <name>.`);
+  }
+  if (service === "all" && instance) {
+    throw new Error("--instance cannot be used with the 'all' aggregate.");
+  }
 
   // 2) Load env (FR-004) — single shared map so Bicep outputs cascade across
   // services in `all` mode (e.g. BaseInfra → Worker/Portal).
-  const { env, sources } = loadEnv(envName);
+  const { env, sources } = loadEnv(envName, { overlayEnvFiles: envOverlays });
   if (region) env.LOCATION = region; // CLI override
-  log("info", `Loaded env: ${sources.local}`);
+  if (instance) env.DEPLOY_INSTANCE = instance; // explicit CLI input wins over overlays
+  if (sources.local) {
+    log("info", `Loaded local env: ${sources.local}`);
+  } else {
+    log("info", `Loaded canonical stamp env without a local stub: ${sources.stampEnvFile}`);
+  }
+  for (const overlay of sources.overlays) {
+    log("info", `Applied external env overlay: ${overlay}`);
+  }
 
   // 3a) Load any cached Bicep outputs from previous runs in this env. This lets
   // single-service runs (e.g. `worker mytestenv`) re-use upstream
@@ -314,7 +445,16 @@ async function main() {
   // runs the cache starts empty; composeDerivedEnv is invoked again after
   // each successful bicep stage in runStage() so manifests-stage env
   // substitution sees the composed values.
-  composeDerivedEnv(env);
+  composeDerivedEnv(env, {
+    includeGenericWorkerDefaults: service === "worker" || service === "all",
+  });
+  if (service !== "all") {
+    await configureServiceEnv({
+      service,
+      env,
+      envOverlays: sources.overlays,
+    });
+  }
 
   // 4) Preflight CLIs (EC-1)
   assertCli("az", "https://aka.ms/azcli (winget install Microsoft.AzureCLI / brew install azure-cli)");
@@ -331,54 +471,26 @@ async function main() {
   // issuer + the bicep cert deployment script. cert-manager / LE always
   // produces a publicly-trusted cert, which is what AFD+PL requires.
   const edgeMode = (env.EDGE_MODE || "afd").toLowerCase();
-  const VALID_EDGE_MODES = ["afd", "private", "public"];
-  if (!VALID_EDGE_MODES.includes(edgeMode)) {
-    log("err", `EDGE_MODE='${env.EDGE_MODE}' is not one of ${VALID_EDGE_MODES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
+  if (!EDGE_MODES.includes(edgeMode)) {
+    log("err", `EDGE_MODE='${env.EDGE_MODE}' is not one of ${EDGE_MODES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
     process.exit(1);
   }
   env.EDGE_MODE = edgeMode;
 
   const tlsSource = (env.TLS_SOURCE || "letsencrypt").toLowerCase();
-  const VALID_TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
-  if (!VALID_TLS_SOURCES.includes(tlsSource)) {
-    log("err", `TLS_SOURCE='${env.TLS_SOURCE}' is not one of ${VALID_TLS_SOURCES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
+  if (!TLS_SOURCES.includes(tlsSource)) {
+    log("err", `TLS_SOURCE='${env.TLS_SOURCE}' is not one of ${TLS_SOURCES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
     process.exit(1);
   }
   env.TLS_SOURCE = tlsSource;
 
-  // Defense-in-depth: mirror the unsupported-combination matrix from
-  // new-env.mjs. private+letsencrypt has no public IP for HTTP-01 (DNS-01
-  // would require an Azure Public DNS zone we don't provision); afd+akv-
-  // selfsigned won't be trusted by AFD's origin TLS validation.
-  const UNSUPPORTED_COMBOS = [
-    {
-      edgeMode: "private",
-      tlsSource: "letsencrypt",
-      reason: "Let's Encrypt HTTP-01 requires a public IP for ACME validation; private-mode AKS has none. DNS-01 against an Azure Public DNS zone is not in scope.",
-    },
-    {
-      edgeMode: "afd",
-      tlsSource: "akv-selfsigned",
-      reason: "Azure Front Door rejects self-signed origin certs. Use TLS_SOURCE=letsencrypt or TLS_SOURCE=akv with a public CA.",
-    },
-    {
-      edgeMode: "public",
-      tlsSource: "akv",
-      reason: "The public NGINX mode currently supports cert-manager with TLS_SOURCE=letsencrypt.",
-    },
-    {
-      edgeMode: "public",
-      tlsSource: "akv-selfsigned",
-      reason: "The public NGINX mode currently supports cert-manager with TLS_SOURCE=letsencrypt.",
-    },
-  ];
-  const blocked = UNSUPPORTED_COMBOS.find(
-    (c) => c.edgeMode === edgeMode && c.tlsSource === tlsSource,
-  );
-  if (blocked) {
+  // Defense-in-depth: enforce the centralized edge/TLS matrix used by both
+  // the scaffolder and deploy path.
+  const unsupportedReason = unsupportedEdgeTlsReason(edgeMode, tlsSource);
+  if (unsupportedReason) {
     log(
       "err",
-      `Unsupported combination EDGE_MODE='${edgeMode}' + TLS_SOURCE='${tlsSource}': ${blocked.reason}`,
+      `Unsupported combination EDGE_MODE='${edgeMode}' + TLS_SOURCE='${tlsSource}': ${unsupportedReason}`,
     );
     process.exit(1);
   }
@@ -439,7 +551,23 @@ async function main() {
   // off-path keys get auto-stubbed to `unused`. Adding a new overlay key
   // is a one-line change in overlay-contracts.mjs — deploy.mjs picks it
   // up automatically.
-  const { missing: missingRequired, combo: comboErrors } = validateRequiredEnv({ edgeMode, tlsSource, env });
+  const requestedSteps = steps == null
+    ? null
+    : new Set(String(steps).split(",").map((step) => step.trim()).filter(Boolean));
+  const deploysPortalRuntime =
+    (service === "portal" || service === "all")
+    && (
+      requestedSteps === null
+      || requestedSteps.has("manifests")
+      || requestedSteps.has("rollout")
+      || requestedSteps.has("noop")
+    );
+  const { missing: missingRequired, combo: comboErrors } = validateRequiredEnv({
+    edgeMode,
+    tlsSource,
+    env,
+    enforcePortalAuth: deploysPortalRuntime,
+  });
   if (missingRequired.length > 0 || comboErrors.length > 0) {
     if (missingRequired.length > 0) {
       log(
@@ -450,10 +578,8 @@ async function main() {
           `or hand-edit deploy/envs/local/${envName}/.env.`,
       );
     }
-    // Combo errors render as named errors with a hint that points operators
-    // at the env file / docs — NOT at the scaffolder (re-running new-env.mjs
-    // would clobber operator edits, and the underlying problem isn't an
-    // unset key, it's a bad combination).
+    // Combination errors render as named errors with a targeted remediation
+    // hint rather than the generic missing-key scaffolder guidance.
     for (const e of comboErrors) {
       log("err", `[${e.code}] ${e.message} ${e.hint}`);
     }
@@ -502,25 +628,48 @@ async function main() {
 
   // 5) Subscription pin (FR-005)
   assertSubscription(env.SUBSCRIPTION_ID);
+  const deployedEdgeMode = readDeployedEdgeMode({ envName, env });
+  const transitionReason = edgeModeTransitionReason(deployedEdgeMode, edgeMode);
+  if (transitionReason) {
+    throw new Error(transitionReason);
+  }
 
   // 6) Resolve image tag (FR-017) — shared across services in `all` mode so
   // worker and portal end up tagged consistently in one bring-up invocation.
   const resolvedTag = resolveImageTag({ envName, explicit: imageTag });
+  const imageTagExplicit = imageTag !== null;
   log("info", `Image tag: ${resolvedTag}`);
 
   // 7) Branch: `all` aggregates over the canonical sequence; otherwise single service.
   if (service === "all") {
-    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, forceModules, edgeMode });
+    await runAll({
+      envName,
+      env,
+      envOverlays: sources.overlays,
+      instance,
+      steps,
+      imageTag: resolvedTag,
+      imageTagExplicit,
+      clean,
+      force,
+      forceModules,
+      replacePools,
+      edgeMode,
+    });
   } else {
     await runOneService({
       service,
       envName,
       env,
+      envOverlays: sources.overlays,
+      instance,
       steps,
       imageTag: resolvedTag,
+      imageTagExplicit,
       clean,
       force,
       forceModules,
+      replacePools,
       moduleListOverride: null,
     });
   }
@@ -530,14 +679,28 @@ async function main() {
 
 // Single-service execution path. Used directly for explicit `<service> <env>`
 // invocations and as the per-service step inside `runAll`.
-async function runOneService({ service, envName, env, steps, imageTag, clean, force, forceModules, moduleListOverride }) {
+async function runOneService({
+  service,
+  envName,
+  env,
+  envOverlays,
+  instance,
+  steps,
+  imageTag,
+  imageTagExplicit,
+  clean,
+  force,
+  forceModules,
+  replacePools,
+  moduleListOverride,
+}) {
   if (clean) {
     const { rmSync } = await import("node:fs");
-    const dir = stagingDir(service, envName);
+    const dir = stagingDir(service, envName, instance);
     rmSync(dir, { recursive: true, force: true });
     log("info", `Cleaned staging dir: ${dir}`);
   }
-  const stage = stagingDir(service, envName);
+  const stage = stagingDir(service, envName, instance);
 
   const resolvedSteps = resolveSteps(steps, service);
   // In `all` mode, intersect requested steps with this service's default
@@ -563,10 +726,13 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
     env,
     region: env.LOCATION,
     imageTag,
+    imageTagExplicit,
+    envOverlays,
     stagingDir: stage,
     moduleListOverride,
     force,
     forceModules,
+    replacePools,
   };
 
   for (const step of effectiveSteps) {
@@ -576,8 +742,12 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
     } catch (e) {
       log("err", `Failed: ${service} ${step}`);
       process.stderr.write(`${e.message}\n`);
+      const instanceArg = instance ? ` --instance ${JSON.stringify(instance)}` : "";
+      const overlayArg = envOverlays
+        .map((overlay) => ` --env-overlay ${JSON.stringify(overlay)}`)
+        .join("");
       process.stderr.write(
-        `\nRe-run with: npm run deploy -- ${service} ${envName} --steps ${step}\n`,
+        `\nRe-run with: npm run deploy -- ${service} ${envName} --steps ${step}${instanceArg}${overlayArg}\n`,
       );
       process.exit(1);
     }
@@ -589,7 +759,19 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
 // server, deployment storage account) cascade forward. Each service deploys
 // only its own Bicep module (ALL_MODE_MODULES) — dependencies were deployed
 // by an earlier item in the same invocation.
-async function runAll({ envName, env, steps, imageTag, clean, force, forceModules, edgeMode }) {
+async function runAll({
+  envName,
+  env,
+  envOverlays,
+  steps,
+  imageTag,
+  imageTagExplicit,
+  clean,
+  force,
+  forceModules,
+  replacePools,
+  edgeMode,
+}) {
   // Drop globalinfra from the sequence when AFD is disabled — the service is
   // entirely AFD provisioning and would otherwise create an empty RG with no
   // resources. Mirrors the single-service short-circuit above. cert-manager
@@ -614,11 +796,15 @@ async function runAll({ envName, env, steps, imageTag, clean, force, forceModule
       service: svc,
       envName,
       env,
+      envOverlays,
+      instance: null,
       steps,
       imageTag,
+      imageTagExplicit,
       clean,
       force,
       forceModules,
+      replacePools,
       moduleListOverride: ALL_MODE_MODULES[svc],
     });
   }

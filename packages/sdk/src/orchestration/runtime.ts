@@ -43,6 +43,7 @@ function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, voi
         ...(t.shouldRehydrate ? { shouldRehydrate: true } : {}),
         ...(t.waitPlan ? { waitPlan: t.waitPlan } : {}),
         ...(t.content ? { content: t.content } : {}),
+        ...(t.resumePrompt ? { resumePrompt: t.resumePrompt } : {}),
         ...(t.question ? { question: t.question } : {}),
         ...(t.choices ? { choices: t.choices } : {}),
         ...(t.allowFreeform !== undefined ? { allowFreeform: t.allowFreeform } : {}),
@@ -170,7 +171,15 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", { childResultProvenance: true });
+    // Live 1.0.81 combines upstream's 1.0.80 workspace behavior with the
+    // fork's named-agent handoff contract and owner-aware routing. Both
+    // routing options ride the one proxy; the handoff contract wins where the
+    // two would pick different names, and every name resolves to the same
+    // registered handler.
+    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", {
+        childResultProvenance: true,
+        ownerAwareRouting: true,
+    });
     const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };

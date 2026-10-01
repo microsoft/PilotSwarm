@@ -56,6 +56,7 @@ import {
   validateRequiredEnv,
   validateVpnGatewayCombo,
   applyStubKeys,
+  unsupportedEdgeTlsReason,
 } from "./lib/overlay-contracts.mjs";
 
 // Common Azure regions → short name. Sourced from
@@ -81,47 +82,13 @@ const DEFAULT_EDGE_MODE = CONTRACT_DEFAULT_EDGE_MODE;
 //                    script. enterprise / closed-network path.
 //   akv-selfsigned — AKV `Self` issuer; bicep auto-creates a self-signed cert
 //                    in AKV with SAN=${HOST}.${PRIVATE_DNS_ZONE}. Only valid
-//                    with edgeMode=private. OSS private demo path; zero
-//                    external dependencies.
+//                    with edgeMode=private or port-forward. The latter creates
+//                    a localhost certificate from the deployment host.
 const TLS_SOURCES = CONTRACT_TLS_SOURCES;
 const DEFAULT_TLS_SOURCE = CONTRACT_DEFAULT_TLS_SOURCE;
 
-// Combos blocked at validation time. Mirrors the Portal bicep `@allowed`
-// invariants: letsencrypt requires a public IP for HTTP-01 (afd or public);
-// akv-selfsigned has no use case under afd (AFD won't trust a self-signed
-// chain). Both unsupported combos are reported with a clear remediation.
-const UNSUPPORTED_COMBOS = [
-  {
-    edgeMode: "private",
-    tlsSource: "letsencrypt",
-    reason:
-      "Let's Encrypt HTTP-01 requires a public IP, which private mode does not have. " +
-      "Use --tls-source akv (BYO CA via AKV-registered issuer) or akv-selfsigned (AKV Self issuer).",
-  },
-  {
-    edgeMode: "afd",
-    tlsSource: "akv-selfsigned",
-    reason:
-      "Azure Front Door rejects self-signed origin chains. " +
-      "Use --tls-source letsencrypt (OSS) or akv (enterprise) with afd.",
-  },
-  {
-    edgeMode: "public",
-    tlsSource: "akv",
-    reason: "Public NGINX currently supports Let's Encrypt TLS only. Use --tls-source letsencrypt.",
-  },
-  {
-    edgeMode: "public",
-    tlsSource: "akv-selfsigned",
-    reason: "Public NGINX currently supports Let's Encrypt TLS only. Use --tls-source letsencrypt.",
-  },
-];
-
 function unsupportedReason(edgeMode, tlsSource) {
-  const hit = UNSUPPORTED_COMBOS.find(
-    (c) => c.edgeMode === edgeMode && c.tlsSource === tlsSource,
-  );
-  return hit ? hit.reason : null;
+  return unsupportedEdgeTlsReason(edgeMode, tlsSource);
 }
 
 // Normalise a y/n/yes/no/true/false answer to the literal "y" or "n".
@@ -371,7 +338,7 @@ export const INPUTS = [
     argKey: "edgeMode",
     flag: "--edge-mode",
     metavar: "<m>",
-    help: "afd | private | public (default: afd).",
+    help: "afd | private | public | port-forward (default: afd).",
     cliChoices: EDGE_MODES,
     type: "menu",
     prompt: "Edge mode",
@@ -381,6 +348,7 @@ export const INPUTS = [
       afd: "Azure Front Door + AppGw + AGIC (public Internet endpoint, default)",
       private: "Internal LoadBalancer + web-app-routing (NGINX), private DNS zone, no AppGw",
       public: "Public LoadBalancer + web-app-routing (NGINX), AKS-managed network, no custom VNet",
+      "port-forward": "ClusterIP only; localhost access through kubectl port-forward",
     },
   },
   {
@@ -389,10 +357,13 @@ export const INPUTS = [
     metavar: "<s>",
     help: [
       "letsencrypt | akv | akv-selfsigned (default: letsencrypt).",
-      "letsencrypt requires --edge-mode afd or public. akv-selfsigned requires --edge-mode private.",
+      "letsencrypt requires --edge-mode afd or public. port-forward requires akv-selfsigned.",
     ],
     cliChoices: TLS_SOURCES,
-    nonInteractiveDefault: () => DEFAULT_TLS_SOURCE,
+    nonInteractiveDefault: (ctx) => {
+      const valid = TLS_SOURCES.filter((t) => unsupportedReason(ctx.edgeMode, t) === null);
+      return valid.includes(DEFAULT_TLS_SOURCE) ? DEFAULT_TLS_SOURCE : valid[0];
+    },
     type: "menu",
     prompt: "TLS source",
     // Filtered choices + descriptions vary by edge-mode, so use the
@@ -408,7 +379,10 @@ export const INPUTS = [
         ctx.edgeMode === "afd"
           ? "AKV-registered OneCertV2-PublicCA issuer + bicep cert deploy (enterprise public)"
           : "AKV-registered OneCertV2-PrivateCA issuer + bicep cert deploy (AME / enterprise private)",
-      "akv-selfsigned": "AKV `Self` issuer; bicep auto-creates a self-signed cert (OSS private demo)",
+      "akv-selfsigned":
+        ctx.edgeMode === "port-forward"
+          ? "AKV `Self` issuer; deployment creates a localhost certificate from this machine"
+          : "AKV `Self` issuer; bicep auto-creates a self-signed cert (OSS private demo)",
     }),
   },
   // VPN gateway prompts are placed immediately after tlsSource so the
@@ -550,6 +524,58 @@ export const INPUTS = [
     },
     transform: (v) => normaliseYesNo(v),
   },
+  {
+    argKey: "workloadGroupMode",
+    flag: "--workload-group-mode",
+    metavar: "<m>",
+    help: [
+      "Join the stamp's workload managed identity to a shared Entra ID",
+      "authorization group: skip | join | create (default: skip).",
+      "Use a shared group when multiple stamps (across clusters or",
+      "subscriptions) must reuse the same out-of-band grants; a standalone",
+      "stamp should stay on skip.",
+      "  skip   — per-principal RBAC via bicep (OSS default).",
+      "  join   — add the UAMI to an existing group (--workload-group-object-id).",
+      "  create — reuse-or-create a cloud-native group (--workload-group-name).",
+    ],
+    cliChoices: ["skip", "join", "create"],
+    nonInteractiveDefault: () => "skip",
+    type: "menu",
+    prompt: "Workload MI authorization group",
+    default: "skip",
+    choices: ["skip", "join", "create"],
+    choiceDescriptions: {
+      skip: "Standalone stamp: bicep grants RBAC to the UAMI directly (default)",
+      join: "Adding this stamp to an EXISTING shared-cluster group (enter its objectId next)",
+      create: "First stamp of a new shared-cluster group: reuse-or-create it by name (enter a name next)",
+    },
+  },
+  {
+    argKey: "workloadGroupObjectId",
+    flag: "--workload-group-object-id",
+    metavar: "<id>",
+    help: "Entra group objectId. Required when --workload-group-mode join.",
+    prompt: "Existing Entra group objectId (UUID)",
+    promptIf: (ctx) => ctx.workloadGroupMode === "join",
+    validate: (v) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+        ? true
+        : "must be a group objectId (UUID)",
+    transform: "lowercase",
+  },
+  {
+    argKey: "workloadGroupName",
+    flag: "--workload-group-name",
+    metavar: "<name>",
+    help: [
+      "Entra group displayName to reuse-or-create. Required when",
+      "--workload-group-mode create. Must resolve to a cloud-native security",
+      "group (on-prem-synced groups cannot hold managed identities).",
+    ],
+    prompt: "Entra group displayName to reuse or create",
+    promptIf: (ctx) => ctx.workloadGroupMode === "create",
+    validate: (v) => (v && v.trim().length > 0 ? true : "must be a non-empty group name"),
+  },
 ];
 
 // Boolean flags that don't carry a value (and aren't part of INPUTS).
@@ -636,7 +662,7 @@ function usage() {
 
 // Derive deployment-target values from a small set of inputs, matching the enterprise path
 // serviceModel.json naming patterns. Pure function — no I/O.
-export function deriveTargets({ name, subscription, tenantId, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
+export function deriveTargets({ name, subscription, tenantId, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool, workloadGroupMode, workloadGroupObjectId, workloadGroupName }) {
   const prefix = `ps${name}`;
   const globalPrefix = `${prefix}global`;
   const resolvedEdgeMode = edgeMode ?? DEFAULT_EDGE_MODE;
@@ -645,8 +671,9 @@ export function deriveTargets({ name, subscription, tenantId, location, regionSh
   // Zone A record, and PORTAL_HOSTNAME). Caller may override with
   // --portal-hostname for legacy / non-Azure-DNS scenarios. In afd mode
   // PORTAL_HOSTNAME is derived by bicep from the AppGw DNS label and left
-  // empty here.
-  let derivedPortalHostname = portalHostname ?? "";
+  // empty here. Port-forward has no routable host and always uses localhost.
+  let derivedPortalHostname =
+    resolvedEdgeMode === "port-forward" ? "localhost" : (portalHostname ?? "");
   if (!derivedPortalHostname && resolvedEdgeMode === "private" && host && privateDnsZone) {
     derivedPortalHostname = `${host}.${privateDnsZone}`;
   }
@@ -717,6 +744,14 @@ export function deriveTargets({ name, subscription, tenantId, location, regionSh
     // default with the captured value. Other tlsSources don't consume it
     // and the template's empty default flows through unchanged.
     ...(sslCertDomainSuffix ? { SSL_CERT_DOMAIN_SUFFIX: sslCertDomainSuffix } : {}),
+    // Workload MI authorization group (see deploy/scripts/lib/group-membership.mjs
+    // and the `workload-group` deploy step). MODE defaults to skip so OSS stamps
+    // keep the classic per-principal RBAC bicep grants. join consumes OBJECT_ID;
+    // create consumes NAME. All three are always emitted so the local .env is a
+    // complete, self-describing record of the stamp's group posture.
+    WORKLOAD_MI_GROUP_MODE: (workloadGroupMode ?? "skip") || "skip",
+    WORKLOAD_MI_GROUP_OBJECT_ID: workloadGroupObjectId ?? "",
+    WORKLOAD_MI_GROUP_NAME: workloadGroupName ?? "",
   };
 }
 
@@ -831,6 +866,9 @@ export function renderLocalEnv({ name, targets, secrets, portalConfig, templateT
     `# portal-env ConfigMap (envFrom configMapRef in deployment.yaml). Leave`,
     `# blank to render the ${SEED_SECRETS_UNSET_SENTINEL} sentinel — the portal`,
     `# strips sentinel values at startup so the key appears truly unset.`,
+    `# Public EDGE_MODE=afd stamps must configure an auth provider. An intentionally`,
+    `# open sandbox requires the explicit pair PORTAL_AUTH_PROVIDER=none and`,
+    `# PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true; implicit no-auth deploys are rejected.`,
     ``,
   ];
   const publicPortalDefaults = targets.EDGE_MODE === "public" ? {
@@ -854,6 +892,7 @@ async function gatherInputs(args, existingSecrets, existingPortalConfig) {
   const nonInteractiveValue = (i, ctx) => {
     const fromArgs = args[i.argKey];
     if (fromArgs != null && fromArgs !== "") return fromArgs;
+    if (i.promptIf && !i.promptIf(ctx)) return "";
     if (i.nonInteractiveDefault) return i.nonInteractiveDefault(ctx) ?? "";
     if (i.default !== undefined) return resolveField(i.default, ctx) ?? "";
     return "";

@@ -51,6 +51,7 @@ import {
 } from "./snapshot-protocol.js";
 import {
     DEFAULT_SESSION_STATE_DIR,
+    createArtifactError,
     type ArtifactDownloadResult,
     type ArtifactMetadata,
     type SessionMetadata,
@@ -80,6 +81,19 @@ import {
  */
 export function epochSnapshotBlobName(sessionId: string, epoch: number): string {
     return `${sessionId}.e${epoch}.tar.br`;
+}
+
+/** The three platform-owned git-workspace artifacts persisted per session (§8.5). */
+export type GitWorkspaceBlobKind = "bundle" | "patch" | "meta";
+
+/**
+ * Stable, session-scoped blob key for a git-workspace artifact (§8.5). Unlike
+ * snapshot keys these are NOT epoch-versioned — they overwrite in place and are
+ * owned by the whole session (bundle = base..HEAD commits, patch = uncommitted
+ * tracked + untracked manifest, meta = { branch, baseSha, headSha, epoch }).
+ */
+export function gitWorkspaceBlobName(sessionId: string, kind: GitWorkspaceBlobKind): string {
+    return kind === "meta" ? `${sessionId}.git.meta.json` : `${sessionId}.git.${kind}`;
 }
 
 /**
@@ -340,6 +354,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             );
         }
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const hydrateStartMs = Date.now();
         logBlobStore("info", sessionId, "hydrate start", {
             container: this.containerName,
             dir: sessionDir,
@@ -540,6 +555,13 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             if (isLegacyEpoch(epoch)) {
                 await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
                 await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+                // Session-scoped git-workspace blobs (§8.5) live in the same
+                // container but are NOT epoch-versioned — stable overwrite-in-
+                // place keys owned by the whole session. Collect them ONLY here,
+                // on the whole-session delete path, never in the per-epoch branch
+                // (an epoch reset / idle eviction must preserve resumable git
+                // state).
+                await this.deleteGitWorkspaceBlobs(sessionId);
             } else {
                 // One blob per epoch chain, no meta.json mirror — nothing else to collect.
                 await this.containerClient.getBlockBlobClient(epochSnapshotBlobName(sessionId, epoch!)).deleteIfExists();
@@ -576,6 +598,74 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 continue;
             }
             await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
+        }
+    }
+
+    /**
+     * Delete the session's platform-owned git-workspace blobs (§8.5 git
+     * workspace hydration): the bundle (session-authored commits), the
+     * working-tree patch (uncommitted changes), and the meta pointer
+     * ({branch, baseSha, headSha, epoch}). These share the session container
+     * but are session-scoped stable keys — overwritten in place on each
+     * dehydrate, never epoch-versioned and never pushed to the customer
+     * remote — so they leak unless removed on whole-session teardown.
+     * Best-effort per blob; a single failure is logged, not fatal.
+     */
+    private async deleteGitWorkspaceBlobs(sessionId: string): Promise<void> {
+        const kinds: Array<GitWorkspaceBlobKind> = ["bundle", "patch", "meta"];
+        for (const kind of kinds) {
+            const name = gitWorkspaceBlobName(sessionId, kind);
+            try {
+                await this.containerClient.getBlockBlobClient(name).deleteIfExists();
+            } catch (error: unknown) {
+                logBlobStore("warn", sessionId, "git workspace blob delete failed", {
+                    container: this.containerName,
+                    blob: name,
+                    error: errorMessage(error),
+                });
+            }
+        }
+    }
+
+    /**
+     * Upload one platform-owned git-workspace artifact (§8.5 git workspace
+     * hydration), overwrite-in-place under the session-scoped stable key.
+     * Called by the worker's dehydrate hook for each of `bundle` (session
+     * commits, base..HEAD), `patch` (uncommitted tracked + untracked manifest)
+     * and `meta` ({ branch, baseSha, headSha, epoch }). The protocol writes ALL
+     * blobs BEFORE the `sessions` row is updated — the row is the commit point,
+     * so a crash mid-upload leaves the row epoch older than the (partial) blob
+     * set and hydrate simply ignores it.
+     */
+    async putGitWorkspaceBlob(sessionId: string, kind: GitWorkspaceBlobKind, data: Buffer): Promise<void> {
+        const name = gitWorkspaceBlobName(sessionId, kind);
+        logBlobStore("info", sessionId, "git workspace blob put", {
+            container: this.containerName,
+            blob: name,
+            bytes: data.length,
+        });
+        await this.containerClient.getBlockBlobClient(name).uploadData(data);
+    }
+
+    /**
+     * Download one git-workspace artifact (§8.5), returning `null` when the
+     * blob is absent — a base-only session that never dehydrated uncommitted
+     * work has no bundle/patch/meta. Called by the worker's hydrate hook inside
+     * `beforeRunTurn`; the caller epoch-matches `meta` against the session row
+     * before trusting `bundle`/`patch`.
+     */
+    async getGitWorkspaceBlob(sessionId: string, kind: GitWorkspaceBlobKind): Promise<Buffer | null> {
+        const name = gitWorkspaceBlobName(sessionId, kind);
+        try {
+            return await this.containerClient.getBlockBlobClient(name).downloadToBuffer();
+        } catch (error: unknown) {
+            if ((error as { statusCode?: number })?.statusCode === 404) return null;
+            logBlobStore("warn", sessionId, "git workspace blob get failed", {
+                container: this.containerName,
+                blob: name,
+                error: errorMessage(error),
+            });
+            throw error;
         }
     }
 
@@ -763,6 +853,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
 
     async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const startMs = Date.now();
         const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
         const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
 
@@ -797,6 +888,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         logBlobStore("info", sessionId, "versioned hydrate complete", {
             version: probe.version,
             legacy: probe.legacy,
+            elapsedMs: Date.now() - startMs,
+            ...(tarSizeBytes != null ? { tarSizeBytes } : {}),
             ...(isLegacyEpoch(epoch) ? {} : { epoch }),
         });
         return {
@@ -842,6 +935,41 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             uploadedAt,
             ...metadata,
         };
+    }
+
+    async uploadArtifactIfAbsent(
+        sessionId: string,
+        filename: string,
+        content: string | Buffer,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<boolean> {
+        const safeFilename = path.basename(String(filename || "").trim());
+        if (!safeFilename) {
+            throw createArtifactError("ARTIFACT_FILENAME_REQUIRED", "Artifact filename is required.");
+        }
+        const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const uploadedAt = new Date().toISOString();
+        try {
+            await blob.upload(body, body.length, {
+                conditions: { ifNoneMatch: "*" },
+                blobHTTPHeaders: { blobContentType: metadata.contentType },
+                metadata: artifactBlobMetadata(uploadedAt, metadata),
+            });
+            return true;
+        } catch (error: any) {
+            if (
+                error?.code === "BlobAlreadyExists"
+                || error?.code === "ConditionNotMet"
+                || error?.details?.errorCode === "BlobAlreadyExists"
+                || error?.details?.errorCode === "ConditionNotMet"
+            ) {
+                return false;
+            }
+            throw error;
+        }
     }
 
     /**

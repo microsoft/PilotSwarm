@@ -3026,6 +3026,7 @@ function baseReducer(state, action) {
                 admin: {
                     ...state.admin,
                     workers: {
+                        ...state.admin.workers,
                         loading: false,
                         error: null,
                         list: Array.isArray(action.list) ? action.list : [],
@@ -3036,6 +3037,113 @@ function baseReducer(state, action) {
         }
         case "admin/workers/loadFailed": {
             return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: false, error: action.error || "Failed to load workers" } } };
+        }
+        case "admin/workers/timelineLoading": {
+            const workers = state.admin.workers || {};
+            const timelines = workers.timelineByWorkerId || {};
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: {
+                        ...workers,
+                        timelineByWorkerId: {
+                            ...timelines,
+                            [action.workerNodeId]: {
+                                ...(timelines[action.workerNodeId] || {}),
+                                loading: true,
+                                error: null,
+                                requestVersion: action.requestVersion,
+                            },
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/workers/timelineLoaded": {
+            const workers = state.admin.workers || {};
+            const timelines = workers.timelineByWorkerId || {};
+            if (action.requestVersion !== undefined
+                && timelines[action.workerNodeId]?.requestVersion !== action.requestVersion) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: {
+                        ...workers,
+                        timelineByWorkerId: {
+                            ...timelines,
+                            [action.workerNodeId]: {
+                                loading: false,
+                                error: null,
+                                entries: Array.isArray(action.entries) ? action.entries : [],
+                                fetchedAt: Date.now(),
+                                requestVersion: action.requestVersion,
+                            },
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/workers/timelineLoadFailed": {
+            const workers = state.admin.workers || {};
+            const timelines = workers.timelineByWorkerId || {};
+            if (action.requestVersion !== undefined
+                && timelines[action.workerNodeId]?.requestVersion !== action.requestVersion) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: {
+                        ...workers,
+                        timelineByWorkerId: {
+                            ...timelines,
+                            [action.workerNodeId]: {
+                                ...(timelines[action.workerNodeId] || {}),
+                                loading: false,
+                                error: action.error || "Failed to load worker timeline",
+                                requestVersion: action.requestVersion,
+                            },
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/workers/timelineToggleHiddenWorkflowRun": {
+            const workers = state.admin.workers || {};
+            const byWorker = workers.hiddenWorkflowRunIdsByWorker || {};
+            const workerNodeId = String(action.workerNodeId || "").trim();
+            const workflowRunId = String(action.workflowRunId || "").trim();
+            if (!workerNodeId || !workflowRunId) return state;
+            const current = Array.isArray(byWorker[workerNodeId]) ? byWorker[workerNodeId] : [];
+            const next = current.includes(workflowRunId)
+                ? current.filter((id) => id !== workflowRunId)
+                : [...current, workflowRunId];
+            const nextByWorker = { ...byWorker };
+            if (next.length === 0) delete nextByWorker[workerNodeId];
+            else nextByWorker[workerNodeId] = next;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: { ...workers, hiddenWorkflowRunIdsByWorker: nextByWorker },
+                },
+            };
+        }
+        case "admin/workers/timelineClearHiddenWorkflowRuns": {
+            const workers = state.admin.workers || {};
+            const byWorker = workers.hiddenWorkflowRunIdsByWorker || {};
+            const workerNodeId = String(action.workerNodeId || "").trim();
+            if (!workerNodeId || !byWorker[workerNodeId]?.length) return state;
+            const nextByWorker = { ...byWorker };
+            delete nextByWorker[workerNodeId];
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: { ...workers, hiddenWorkflowRunIdsByWorker: nextByWorker },
+                },
+            };
         }
         case "admin/packages/loading": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };

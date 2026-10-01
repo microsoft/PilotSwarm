@@ -31,11 +31,12 @@ param kubernetesVersion string = '1.34'
 @description('AKS node subnet ID. Empty in public mode, where AKS manages its own network.')
 param aksSubnetId string = ''
 
-@description('Edge topology mode. afd uses AGIC/AppGw. private uses managed NGINX on an internal LoadBalancer. public uses managed NGINX on a public LoadBalancer with AKS-managed Azure CNI Overlay networking.')
+@description('Edge topology mode. afd uses AGIC/AppGw. private uses managed NGINX on an internal LoadBalancer. public uses managed NGINX on a public LoadBalancer with AKS-managed Azure CNI Overlay networking. port-forward has no ingress controller.')
 @allowed([
   'afd'
   'private'
   'public'
+  'port-forward'
 ])
 param edgeMode string = 'afd'
 
@@ -86,6 +87,24 @@ param repoCachePoolVmSize string = 'Standard_D4ds_v5'
 @description('Availability zones. Empty array disables zone placement (useful for dev in zone-limited regions).')
 param availabilityZones array = []
 
+@description('Additional agent pools appended to the authoritative agentPoolProfiles array — e.g. externally composed repository-fleet pools. Each entry is a full agentPoolProfile object; this module injects the infra-owned invariants (vnetSubnetID, type) so callers only supply the varying fields (name, count, vmSize, osType, osSKU, osDiskSizeGB, osDiskType, mode, nodeLabels, nodeTaints). Defaults to [] so stamps without fleets are unaffected. At CLUSTER CREATE this PUT creates every pool in one shot; on an EXISTING cluster it only reconciles MUTABLE fields (count/labels/taints) of pools that already exist — Azure forbids ADDING/removing a pool or changing an IMMUTABLE field (vmSize, osType/osSKU, osDisk*) through a managedCluster PUT. The deploy orchestrator (deploy-bicep.mjs reconcileAgentPools) handles those cases out-of-band via the per-pool API BEFORE this PUT, so by the time it runs the live pools already match.')
+param additionalAgentPools array = []
+
+// Infra-owned invariants injected into every additional pool. Placed second in
+// the union so they win over any caller-supplied value for these keys.
+// Deliberately does NOT set orchestratorVersion: like systempool/userpool below,
+// the pools inherit the control-plane version implicitly. Pinning it here would
+// make every `deploy -- all` request "latest patch of <minor>" and could nudge a
+// node reimage on the fleet pools — reconcile must stay churn-free.
+var additionalAgentPoolDefaults = union({
+  type: 'VirtualMachineScaleSets'
+}, edgeMode == 'public' ? {} : {
+  vnetSubnetID: aksSubnetId
+})
+var mergedAdditionalAgentPools = [
+  for pool in additionalAgentPools: union(pool, additionalAgentPoolDefaults)
+]
+
 resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
   name: clusterName
   location: location
@@ -111,7 +130,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
         objectId: kubeletIdentityPrincipalId
       }
     }
-    agentPoolProfiles: [
+    agentPoolProfiles: concat([
       union({
         name: 'systempool'
         mode: 'System'
@@ -149,7 +168,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       }, edgeMode == 'public' ? {} : {
         vnetSubnetID: aksSubnetId
       })
-    ]
+    ], mergedAdditionalAgentPools)
     addonProfiles: edgeMode == 'afd' ? {
       azureKeyvaultSecretsProvider: {
         enabled: true
@@ -192,7 +211,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
     // LoadBalancer annotations after the cluster is ready.
     ingressProfile: {
       webAppRouting: {
-        enabled: edgeMode != 'afd'
+        enabled: edgeMode == 'private' || edgeMode == 'public'
       }
     }
     networkProfile: union({

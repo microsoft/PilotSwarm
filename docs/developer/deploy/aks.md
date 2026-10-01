@@ -13,7 +13,8 @@ This guide walks through deploying PilotSwarm workers to AKS for production mult
 >    Flux-driven cluster manifests, pulled from versioned blob
 >    containers. Modeled on a known-good internal reference
 >    implementation, simplified for PilotSwarm's single-service Node.js
->    shape. This path adds Edge Mode (AFD vs Private AppGw) and TLS
+>    shape. This path adds Edge Mode (AFD, public or private NGINX, or
+>    local port-forward) and TLS
 >    Source (AKV vs Let's Encrypt) topology choices.
 >
 > Choose one. They share the same Kubernetes cluster shape but stamp it
@@ -36,7 +37,7 @@ containers. Public entry points:
 ### Topology Matrix
 
 The IaC path supports an `(EDGE_MODE × TLS_SOURCE)` matrix plus the
-optional `VPN_GATEWAY_ENABLED` axis. Five combinations are supported;
+optional `VPN_GATEWAY_ENABLED` axis. Seven combinations are supported;
 the rest are blocked at preflight (see [Unsupported Combinations](#unsupported-combinations)
 and the named diagnostic codes in [Optional: VPN Gateway P2S](#optional-vpn-gateway-p2s-hybrid-afd--vpn)):
 
@@ -45,8 +46,10 @@ and the named diagnostic codes in [Optional: VPN Gateway P2S](#optional-vpn-gate
 | `afd`       | `letsencrypt`    | AFD → AppGw (Private Link) + AGIC             | cert-manager + Let's Encrypt prod (HTTP-01)            | OSS default. Zero CA setup.                    |
 | `afd`       | `akv`            | AFD → AppGw (Private Link) + AGIC             | OneCertV2-PublicCA via AKV (registered automatically)  | enterprise default. BYO public CA.                    |
 | `afd` + VPN | `akv`            | AFD → AppGw (Private Link) **and** Azure VPN Gateway P2S → same AppGw private FE | OneCertV2-PublicCA via AKV (shared with AFD path) | Hybrid trusted-bypass; opt-in via `VPN_GATEWAY_ENABLED=true`. AKV-only. See [Optional: VPN Gateway P2S](#optional-vpn-gateway-p2s-hybrid-afd--vpn). |
+| `public`    | `letsencrypt`    | AKS web-app-routing addon (NGINX) + public LB | cert-manager + Let's Encrypt prod (HTTP-01)            | Public regional endpoint without AFD or AppGw.        |
 | `private`   | `akv`            | AKS web-app-routing addon (NGINX) + ILB       | OneCertV2-PrivateCA via AKV (registered automatically) | Enterprise / AME. No AFD, no AppGw, no AGIC.   |
 | `private`   | `akv-selfsigned` | AKS web-app-routing addon (NGINX) + ILB       | AKV `Self` issuer (auto-generated, in-place)           | No CA; private-VNet smoke tests.               |
+| `port-forward` | `akv-selfsigned` | ClusterIP only; `kubectl port-forward`       | AKV `Self` issuer with a localhost PEM certificate     | Local developer access; no ingress or DNS resources. |
 
 Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
 `afd` + `akv`.
@@ -64,6 +67,14 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
   Private DNS Zone (`PRIVATE_DNS_ZONE`) and links it to the AKS VNet;
   `deploy.mjs` writes an A record `${HOST}.${PRIVATE_DNS_ZONE}` →
   internal LB IP after the Portal rolls out.
+- **`EDGE_MODE=public`** — No AFD, AppGw, or custom VNet. AKS uses the
+  web-app-routing addon with a public LoadBalancer and Let's Encrypt TLS.
+- **`EDGE_MODE=port-forward`** — No AFD, AppGw, AGIC, web-app-routing,
+  LoadBalancer Service, Ingress, Private DNS, or GlobalInfra resource
+  group. The Portal Service remains ClusterIP and is reachable only with
+  `kubectl port-forward`. The local deployment principal receives Key
+  Vault Certificates Officer only for this mode so `deploy.mjs` can create
+  the localhost certificate.
 - **`TLS_SOURCE=akv`** — Portal cert is issued by an AKV cert issuer.
   The bicep auto-registers `OneCertV2-PublicCA` (afd mode) or
   `OneCertV2-PrivateCA` (private mode) on the Key Vault using the
@@ -73,11 +84,12 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
   CSI; afd mode binds it to AppGw via the `appgw-ssl-certificate` AGIC
   annotation, private mode mounts it directly into the NGINX-fronted
   Portal pod's TLS secret.
-- **`TLS_SOURCE=akv-selfsigned`** *(private only)* — uses the AKV
-  built-in `Self` issuer to mint a self-signed cert. Browsers will
-  warn; only suitable for private-VNet smoke tests where you control
-  the trust store.
-- **`TLS_SOURCE=letsencrypt`** *(afd only)* — `cert-manager` is
+- **`TLS_SOURCE=akv-selfsigned`** *(private or port-forward)* — uses the
+  AKV built-in `Self` issuer. Private mode mints the certificate through
+  Bicep; port-forward mode creates a PEM certificate for `localhost`
+  through the signed-in Azure CLI identity. Browsers will warn unless
+  the certificate is explicitly trusted.
+- **`TLS_SOURCE=letsencrypt`** *(afd or public)* — `cert-manager` is
   installed in-cluster via Flux (HelmRelease pinned to v1.20.2 exact).
   The `letsencrypt-prod` ClusterIssuer (HTTP-01 solver) issues a real
   CA cert and writes it into the K8s Secret named in the Ingress
@@ -86,7 +98,7 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
 
 ### Variant Overlays
 
-`deploy/providers/azure/gitops/portal/overlays/` ships three flavors, one per supported
+`deploy/providers/azure/gitops/portal/overlays/` ships five flavors, one per supported
 combo (`akv` and `akv-selfsigned` share an overlay because the only
 difference is the AKV issuer name, set by Portal bicep, not by
 kustomize):
@@ -95,6 +107,10 @@ kustomize):
 - `afd-akv/` — AFD + AppGw + AGIC + Secret Store CSI (AKV cert).
 - `private-akv/` — web-app-routing NGINX + ILB + Secret Store CSI
   (AKV cert, OneCertV2-PrivateCA or `Self`).
+- `public-letsencrypt/` — web-app-routing NGINX + public LoadBalancer
+  with cert-manager-managed TLS.
+- `port-forward-akv/` — ClusterIP + Secret Store CSI, with the base
+  Ingress explicitly deleted.
 
 Portal bicep selects the overlay automatically:
 
@@ -116,6 +132,15 @@ kustomizationPath: 'overlays/${edgeMode}-${
 
 Both single-service runs (`deploy.mjs <svc>`) and `deploy.mjs all` honor
 these gates.
+
+### Edge-mode transitions
+
+`EDGE_MODE` is immutable for an existing stamp. Azure Resource Manager
+deployments are incremental, so changing modes in place can leave resources
+from the previous ingress topology active. `deploy.mjs` compares the requested
+mode with the existing BaseInfra deployment output and rejects a transition.
+Create a new stamp, or decommission the existing stamp before selecting a
+different edge mode.
 
 ### cert-manager Pinning
 
@@ -169,8 +194,16 @@ zone is **not** publicly resolvable.
   Door rejects self-signed origin certs at the TLS validation step.
   Use `TLS_SOURCE=letsencrypt` (free, public CA) or `TLS_SOURCE=akv`
   with a public CA (e.g. OneCertV2-PublicCA).
+- **`EDGE_MODE=public` with `TLS_SOURCE=akv` or `akv-selfsigned`** —
+  public NGINX currently supports only cert-manager with
+  `TLS_SOURCE=letsencrypt`.
+- **`EDGE_MODE=port-forward` with any source except
+  `TLS_SOURCE=akv-selfsigned`** — the topology has no ingress endpoint for
+  public validation and intentionally uses a localhost certificate stored
+  in Key Vault.
 
-`new-env.mjs` and `deploy.mjs` both refuse these combos at preflight.
+`new-env.mjs` and `deploy.mjs` both enforce the centralized matrix in
+`deploy/scripts/lib/overlay-contracts.mjs`.
 
 ### Optional: VPN Gateway P2S (hybrid AFD + VPN)
 
@@ -220,7 +253,7 @@ below).
   `akv-selfsigned` (code: `vpn-requires-akv`); `letsencrypt` is
   rejected because ACME HTTP-01 cannot reach a VPN-only client. The
   `akv-selfsigned` variant is **also** rejected end-to-end on AFD stamps
-  by `UNSUPPORTED_COMBOS` in `deploy/scripts/deploy.mjs` (AFD rejects
+  by the centralized edge/TLS matrix (AFD rejects
   self-signed origin certs at TLS validation), so the only effective
   combo for the AFD+VPN trusted-bypass is `EDGE_MODE=afd` +
   `TLS_SOURCE=akv`. `private` mode is rejected because the auto-seeded
@@ -562,6 +595,29 @@ access.
 - An Azure Database for PostgreSQL (Flexible Server)
 - An Azure Storage Account (for session blob storage)
 
+### Known limitation: storage account shared-key access
+
+The BaseInfra storage module (`deploy/providers/azure/services/base-infra/bicep/storage.bicep`)
+provisions the `copilot-sessions` account with **`allowSharedKeyAccess`
+defaulting to `true`**, because the legacy `scripts/deploy-aks.sh` flow
+authenticates to blob storage with an `AZURE_STORAGE_CONNECTION_STRING`
+(shared-key). Tenants with policies that prohibit storage shared-key access
+**deny** `allowSharedKeyAccess=true`, and the deployment fails with
+`RequestDisallowedByPolicy`.
+
+The managed-identity worker/portal path (`PILOTSWARM_USE_MANAGED_IDENTITY=1` +
+`DefaultAzureCredential`) does **not** use shared keys, so on a
+policy-enforcing tenant deploy the module with shared-key access disabled:
+
+```bash
+az deployment group create ... \
+  --template-file deploy/providers/azure/services/base-infra/bicep/storage.bicep \
+  --parameters allowSharedKeyAccess=false ...   # managed-identity-only storage access
+```
+
+The `allowSharedKeyAccess` parameter defaults to `true` only to preserve the
+connection-string flow; new MI-based stamps should pass `false`.
+
 ## WARNING: Runaway Deployments
 
 **Before deploying**, always check for old worker pods in other namespaces that may still be connected to the same database:
@@ -744,10 +800,16 @@ az acr login --name <your-acr-name>
 npm run build
 
 # Build and push Docker image
+IMAGE=<your-acr-name>.azurecr.io/copilot-runtime-worker:latest
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
 docker buildx build \
     --platform linux/amd64 \
     -f deploy/Dockerfile.worker \
-    -t <your-acr-name>.azurecr.io/copilot-runtime-worker:latest \
+    --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+    --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+    --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+    -t "$IMAGE" \
     --push .
 ```
 
@@ -945,8 +1007,14 @@ owners/shares/ledgers. Rollback is an explicit operator change to
 ```bash
 # Rebuild and push
 npm run build
+IMAGE=<your-acr-name>.azurecr.io/copilot-runtime-worker:latest
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
 docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
-    -t <your-acr-name>.azurecr.io/copilot-runtime-worker:latest --push .
+    --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+    --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+    --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+    -t "$IMAGE" --push .
 
 # Restart pods (pulls latest image)
 kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime

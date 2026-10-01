@@ -108,7 +108,7 @@ export interface ModelVisionCapability {
  * and the worker mints a short-lived token per request from the identity its
  * own platform issues it. See `wif-credentials.ts`.
  */
-export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif";
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "foundry-wif" | "github-ambient";
 
 /**
  * Types that authenticate as the worker itself, with nothing stored.
@@ -119,7 +119,23 @@ export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "ant
  * token minted at the moment of use.
  */
 export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | undefined | null): boolean {
-    return type === "anthropic-wif";
+    return type === "anthropic-wif" || type === "foundry-wif";
+}
+
+/**
+ * Ambient GitHub Copilot identity: authenticate as the signed-in Copilot user
+ * under the worker's own COPILOT_HOME, with nothing stored.
+ *
+ * Like a workload-identity type it carries no key and seeds keyless, so every
+ * "is there a key?" test must ask this first or it drops the provider. Unlike
+ * one, the credential is not a token this code mints — it is the `copilot` CLI
+ * login already present on the worker. It therefore resolves to a plain
+ * keyless `github` provider (see `resolve` and `resolveProviderCredential`) and
+ * hands off to session-manager's tokenless COPILOT_HOME path; nothing here ever
+ * mints a bearer for it. A worker with no such login cannot serve it.
+ */
+export function providerTypeUsesAmbientIdentity(type: ProviderType | string | undefined | null): boolean {
+    return type === "github-ambient";
 }
 
 /**
@@ -130,6 +146,11 @@ export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | u
 export function toSdkProviderType(type: ProviderType): "openai" | "azure" | "anthropic" {
     if (type === "openai-proxy") return "openai";
     if (type === "anthropic-wif") return "anthropic";
+    // Foundry (Azure AI Foundry / Cognitive Services) exposes an OpenAI-shaped
+    // `/openai/v1` data plane. `foundry-wif` authenticates it with an AAD bearer
+    // token (workload identity) instead of an api-key, but the wire shape is the
+    // SDK's `openai` provider — the token is attached as `bearerTokenProvider`.
+    if (type === "foundry-wif") return "openai";
     return type as "openai" | "azure" | "anthropic";
 }
 
@@ -155,7 +176,30 @@ export interface ModelProviderConfig {
     apiKey?: string;
     /** Azure API version (type=azure only). Defaults to "2024-10-21". */
     apiVersion?: string;
-    /** OpenAI-compatible request format. Defaults to the SDK's Chat Completions API. */
+    /**
+     * OpenAI-compatible request format. Defaults to the SDK's Chat Completions
+     * API. Wire API for OpenAI/Azure BYOK providers: "responses" routes model
+     * traffic to `/v1/responses`, "completions" (the SDK default) to
+     * `/v1/chat/completions`. Ignored for type=github (native CAPI transport)
+     * and type=anthropic.
+     *
+     * WHY THIS EXISTS — gpt-5.6 tools + reasoning bug:
+     * The GPT-5.6 model family (sol/luna/terra) returns HTTP 400 on the
+     * completions wire whenever a request carries BOTH function tools and a
+     * non-`none` `reasoning_effort`:
+     *   "Function tools with reasoning_effort are not supported for
+     *    gpt-5.6-* in /v1/chat/completions. To use function tools, use
+     *    /v1/responses or set reasoning_effort to 'none'."
+     * This is an UPSTREAM OpenAI constraint, not a PilotSwarm or copilot-CLI
+     * regression — it reproduces identically against raw Azure AI Foundry and
+     * against GitHub Copilot CAPI. The API itself states the only two remedies:
+     * call `/v1/responses`, or send `reasoning_effort: none`. `/v1/responses`
+     * accepts tools + reasoning together (verified 200 end-to-end), so setting
+     * `wireApi: "responses"` on a BYOK gpt-5.6 provider is what lets sol keep
+     * its reasoning while using tools. The github/CAPI path cannot be steered
+     * from here (native transport), so gpt-5.6-with-reasoning must be served
+     * through this BYOK route.
+     */
     wireApi?: "completions" | "responses";
     /** Available models. Can be plain strings (legacy) or ModelEntry objects with descriptions. */
     models: (string | ModelEntry)[];
@@ -226,9 +270,14 @@ export interface ResolvedProvider {
     sdkProvider?: {
         type: "openai" | "azure" | "anthropic";
         baseUrl: string;
-        wireApi?: "completions" | "responses";
         apiKey?: string;
         azure?: { apiVersion?: string };
+        /**
+         * Copilot SDK ProviderConfig.wireApi. "responses" routes this BYOK
+         * provider through `/v1/responses` — required for gpt-5.6 models to use
+         * tools together with reasoning (see ModelProviderConfig.wireApi).
+         */
+        wireApi?: "completions" | "responses";
     };
 }
 
@@ -268,7 +317,7 @@ export class ModelProviderRegistry {
         this.providers = opts.keepUncredentialed
             ? config.providers.slice()
             : config.providers.filter(p => {
-                if (p.type === "github") {
+                if (p.type === "github" || providerTypeUsesAmbientIdentity(p.type)) {
                     return true;
                 }
                 // A workload-identity type has no key to find, and looking
@@ -381,12 +430,14 @@ export class ModelProviderRegistry {
         const desc = this.descriptors.get(q);
         if (!provider || !desc) return undefined;
 
-        if (provider.type === "github") {
+        if (provider.type === "github" || provider.type === "github-ambient") {
             return {
                 providerId: provider.id,
                 type: "github",
                 modelName: desc.modelName,
-                githubToken: resolveEnvValue(provider.githubToken),
+                // `github-ambient` stores no token: it resolves keyless and
+                // session-manager authenticates as the signed-in Copilot user.
+                githubToken: provider.githubToken ? resolveEnvValue(provider.githubToken) : undefined,
             };
         }
 
@@ -421,6 +472,10 @@ export class ModelProviderRegistry {
                 ...(provider.type === "azure" && {
                     azure: { apiVersion: provider.apiVersion || "2024-10-21" },
                 }),
+                // Route to /v1/responses when the catalog asks for it. Lets
+                // gpt-5.6 BYOK models use tools + reasoning without the
+                // completions-wire 400 (see ModelProviderConfig.wireApi).
+                ...(provider.wireApi ? { wireApi: provider.wireApi } : {}),
             },
         };
     }
@@ -775,6 +830,56 @@ function normalizeContextWindowSizes(
         }
     }
     return out;
+}
+
+/**
+ * Resolve the concrete prompt-token window for a model at a given context tier.
+ *
+ * Used to inject a window onto BYOK provider sessions: the Copilot runtime has
+ * no model catalog to consult for BYOK, so unless we supply a number its
+ * "Context: X/Y" meter silently pins Y to DEFAULT_TOKEN_LIMIT (128000) even when
+ * the deployment serves far more. Returns the tier's declared
+ * window, or `undefined` when the model declares none (caller must degrade
+ * gracefully — i.e. leave the runtime to its own fallback rather than guess).
+ *
+ * The tier defaults to the descriptor's `defaultContextTier`, then "default".
+ */
+export function resolveContextWindowTokens(
+    descriptor: Pick<ModelDescriptor, "contextWindowSizes" | "defaultContextTier"> | undefined,
+    contextTier?: ContextTier,
+): number | undefined {
+    const sizes = descriptor?.contextWindowSizes;
+    if (!sizes) return undefined;
+    const tier: ContextTier = contextTier ?? descriptor?.defaultContextTier ?? "default";
+    const window = sizes[tier];
+    return typeof window === "number" && window > 0 ? window : undefined;
+}
+
+/**
+ * Pin the resolved context window onto a BYOK provider config so the Copilot
+ * runtime reports the correct context-window max — the "Context: X/Y" meter's Y
+ * (`session.usage_info.tokenLimit`). The runtime resolves that as
+ * `maxPromptTokens || maxContextWindowTokens || DEFAULT_TOKEN_LIMIT (128000)`,
+ * so without an injected window a BYOK session pins to 128000 regardless of the
+ * model's true window. `maxPromptTokens` carries top precedence (it is the
+ * prompt budget the meter's Y should show and the compaction threshold);
+ * `maxContextWindowTokens` is kept consistent as the fallback.
+ *
+ * No-op for GitHub Copilot providers (their window comes from the model catalog at
+ * runtime) and when the model declares no window for the resolved tier. Existing
+ * caller-supplied values are preserved. Mutates `providerConfig` in place.
+ */
+export function applyByokContextWindow(
+    providerConfig: Record<string, unknown> | undefined,
+    providerType: string | undefined,
+    descriptor: Pick<ModelDescriptor, "contextWindowSizes" | "defaultContextTier"> | undefined,
+    contextTier?: ContextTier,
+): void {
+    if (!providerConfig || !providerType || providerType === "github" || providerTypeUsesAmbientIdentity(providerType)) return;
+    const tierWindow = resolveContextWindowTokens(descriptor, contextTier);
+    if (typeof tierWindow !== "number" || tierWindow <= 0) return;
+    if (providerConfig.maxPromptTokens === undefined) providerConfig.maxPromptTokens = tierWindow;
+    if (providerConfig.maxContextWindowTokens === undefined) providerConfig.maxContextWindowTokens = tierWindow;
 }
 
 export function resolveEnvValue(value?: string): string | undefined {

@@ -352,7 +352,7 @@ describe("history pane UI behavior", () => {
                         "[SESSION_MESSAGE_RESPONSE request_id=2891e5d6-d60d-46b9-bae4-69ad24bb6ee4 from=17331007-c3d2-44eb-8a9c-e3f6a5e0edb3 verdict=answered]",
                         "This is the requested cross-session response. Incorporate it into your work; do not ask the target again unless the answer is incomplete.",
                         "",
-                        "Why did the calendar apply for a job? It wanted to make its days count.",
+                        "Why did the calendar apply for a workflowRun? It wanted to make its days count.",
                     ].join("\n"),
                 },
                 createdAt: new Date("2026-05-18T19:14:21.000Z"),
@@ -367,7 +367,7 @@ describe("history pane UI behavior", () => {
         assertIncludes(text, "SESSION REQUEST", "request card title should render in chat");
         assertIncludes(text, "SESSION REPLY", "reply card title should render in chat");
         assertIncludes(text, "Please tell me the joke you sent.", "receiver should see the request body in a card");
-        assertIncludes(text, "Why did the calendar apply for a job?", "sender should see the reply body in a card");
+        assertIncludes(text, "Why did the calendar apply for a workflowRun?", "sender should see the reply body in a card");
         assert(!text.includes("[SESSION_MESSAGE"), "raw session-message protocol headers should not leak into chat");
     });
 

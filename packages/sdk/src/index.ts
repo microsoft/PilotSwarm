@@ -33,6 +33,37 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
+export {
+    runWithTurnLifecycleHooks,
+    validateSessionConfigurationOverrides,
+} from "./turn-lifecycle-hooks.js";
+export type {
+    AfterTurnContext,
+    AfterTurnHook,
+    BeforeTurnHook,
+    ConfigureSessionHook,
+    RunWithTurnLifecycleHooksOptions,
+    SessionConfigurationOverrides,
+    TurnLifecycleContext,
+    TurnLifecycleHooks,
+    TurnLifecycleStatus,
+} from "./turn-lifecycle-hooks.js";
+export {
+    loadTurnLifecycleHooksFromEnv,
+    TURN_LIFECYCLE_HOOK_MODULE_ENV,
+} from "./turn-lifecycle-hook-module.js";
+export type {
+    LoadTurnLifecycleHookModuleOptions,
+} from "./turn-lifecycle-hook-module.js";
+export {
+    loadWorkerStartupModuleFromEnv,
+    WORKER_STARTUP_MODULE_ENV,
+} from "./worker-startup-module.js";
+export type {
+    LoadWorkerStartupModuleOptions,
+    WorkerStartupContext,
+    WorkerStartupResult,
+} from "./worker-startup-module.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -67,7 +98,103 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
+export { SessionWorkspaceManager, discoverRepositoryConfiguration } from "./session-workspace.js";
+export type {
+    RepositoryConfiguration,
+    RepositoryConfigurationDiscoveryOptions,
+    RepositoryConfigurationTrust,
+    SessionWorkspace as LegacySessionWorkspace,
+    SessionWorkspaceOwnership,
+} from "./session-workspace.js";
+export {
+    normalizeStartClientMessageIds,
+    normalizeDurableStartTurn,
+    prepareDurableStartInput,
+} from "./durable-start-input.js";
+export type {
+    DurableStartTurn,
+    DurableStartTurnRequest,
+    DurableStartInputFields,
+    DurableStartMessage,
+    DurableStartDeliveryPlan,
+} from "./durable-start-input.js";
+export {
+    SYSTEM_WAIT_KINDS,
+    SYSTEM_WAIT_STATUSES,
+    SYSTEM_WAIT_TOOL_CONTRACT,
+    SYSTEM_WAIT_MANAGEMENT_CONTRACT,
+    normalizeSystemWaitKey,
+    normalizeSystemWaitKind,
+    normalizeSystemWaitRequest,
+    normalizeSystemWaitCommand,
+    normalizeDurableJsonValue,
+    createStoredSystemWait,
+    reuseStoredSystemWait,
+    applySystemWaitCommand,
+    normalizeStoredSystemWait,
+    serializeStoredSystemWait,
+} from "./system-wait-contracts.js";
+export type {
+    SystemWaitKind,
+    SystemWaitStatus,
+    DurableJsonValue,
+    SystemWaitRequest,
+    SystemWaitSignal,
+    SystemWaitCancellation,
+    SystemWaitManagementCommand,
+    StoredSystemWait,
+} from "./system-wait-contracts.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
+export {
+    AZURE_DEVOPS_MCP_SCOPE,
+    AZURE_DEVOPS_SCOPE,
+    azureDevOpsGitAuthorizationHeader,
+    azureDevOpsGitConfig,
+    azureDevOpsMcpAuthorizationHeader,
+    createAzureDevOpsAccessTokenProvider,
+    createAzureDevOpsMcpAccessTokenProvider,
+    createAzureDevOpsTokenProvider,
+    getAzureDevOpsAccessToken,
+    isAzureDevOpsGitAuthenticationFailure,
+    isAzureDevOpsPatFallbackEnabled,
+    resolveAzureDevOpsCredential,
+    takeAzureDevOpsPatFromEnvironment,
+} from "./azure-devops-auth.js";
+export type {
+    AzureDevOpsAccessToken,
+    AzureDevOpsAccessTokenProvider,
+    AzureDevOpsTokenProvider,
+    AzureDevOpsCredential,
+    AzureDevOpsCredentialSource,
+    ResolveAzureDevOpsCredentialOptions,
+} from "./azure-devops-auth.js";
+export {
+    createMcpWorkloadIdentityHeadersProvider,
+    parseMcpWorkloadIdentityScopes,
+} from "./mcp-workload-identity.js";
+export type {
+    McpServerHeadersProvider,
+    McpWorkloadIdentityScopeBinding,
+    McpWorkloadIdentityServerConfig,
+} from "./mcp-workload-identity.js";
+export { renderNuGetConfig } from "./nuget-auth.js";
+// Git-workspace dehydrate/hydrate protocol (§8.5) — the worker's
+// beforeRunTurn/afterRunTurn hooks call these to make a session's uncommitted
+// git work durable and portable across a cold cross-pod resume.
+export { hydrateGitWorkspace, dehydrateGitWorkspace } from "./git-workspace.js";
+export type {
+    GitBlobIO,
+    GitStateIO,
+    GitWorkspaceMeta,
+    HydrateOptions,
+    HydrateResult,
+    DehydrateOptions,
+    DehydrateResult,
+} from "./git-workspace.js";
+// Shared git enlistment primitives (WRITER GitStore / READER Runner) used by the
+// repo-affinity workers for both the AKS mirror and devbox self-fetch paths.
+export { GitStore, Runner, makeRunGit, normalizeRef, resolveTargetRef } from "./git-store.js";
+export type { RunGit, GitStoreOptions, RunnerOptions } from "./git-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
@@ -81,7 +208,43 @@ export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
-export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue } from "./cms.js";
+export type { WorkflowRunSourceSessionContext } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkerTimelineEntryKind, WorkerTimelineEntry, WorkflowGeneratorSourceType, WorkflowComputeAffinity, WorkflowGeneratorOperationalState, WorkflowRunLifecycleState, WorkflowRunSessionStatus, WorkflowRunStateRunStatus, WorkflowRunWaitKind, WorkflowRunWaitStatus, WorkflowRunWaitDetectionMode, WorkflowRunWaitCheckDisposition, WorkflowRunExternalOperationStatus, WorkflowRunExternalOperationSignalStatus, WorkflowGeneratorRow, WorkflowDefinitionRow, WorkflowGeneratorCycleRow, WorkflowRunRow, WorkflowRunSessionRow, WorkflowRunStateOutcome, WorkflowRunStateRunRow, WorkflowRunJournalEntryRow, WorkflowRunWaitResponder, WorkflowRunWaitRow, WorkflowRunWaitObserverSelector, WorkflowRunExternalOperationRow, WorkflowRunCleanupPlan, WorkflowRunCleanupResult, StartWorkflowRunResponseWaitInput, AcceptWorkflowRunResponseInput, StartWorkflowRunExternalOperationInput, StartWorkflowRunTimerWaitInput, CompleteWorkflowRunWaitCheckInput, CompleteWorkflowRunExternalOperationInput, PrepareWorkflowRunStateRunInput, CompleteWorkflowRunStateInput, WorkflowRunDiscovery, ReconciledWorkflowRun, CreateWorkflowGeneratorInput } from "./cms.js";
+export {
+    AZURE_DEVOPS_WORKFLOW_RUN_WAIT_PROVIDER,
+    AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
+    AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
+    azureDevOpsPullRequestApprovalOperationKey,
+    azureDevOpsPullRequestCompletionOperationKey,
+    azureDevOpsPullRequestResourceKey,
+    normalizeAzureDevOpsOrganization,
+    parseAzureDevOpsPullRequestIdentity,
+    parseAzureDevOpsPullRequestApprovalTarget,
+    parseAzureDevOpsApprovalConditions,
+    type AzureDevOpsPullRequestIdentity,
+    type AzureDevOpsPullRequestApprovalTarget,
+    type AzureDevOpsApprovalConditions,
+    type AzureDevOpsCodeReviewRecommendation,
+} from "./azure-devops-workflow-run-waits.js";
+export { createWorkflowRunLifecycleTools } from "./workflow-run-lifecycle-tools.js";
+export {
+    WorkflowRunWaitScheduler,
+    MockWorkflowRunWaitObserver,
+    MockWorkflowRunExternalOperationProducer,
+    type WorkflowRunWaitSchedulerStore,
+    type WorkflowRunWaitSignalSender,
+    type WorkflowRunWaitObservation,
+    type WorkflowRunWaitObserver,
+    type WorkflowRunWaitSchedulerOptions,
+    type WorkflowRunWaitSchedulerRunResult,
+    type WorkflowRunExternalOperationProducerStore,
+    type WorkflowRunExternalOperationSignalSender,
+    type MockWorkflowRunExternalOperationProducerOptions,
+} from "./workflow-run-external-operation-producer.js";
+export {
+    assertExternalOperationValidationGatesSatisfied,
+    type ExternalOperationGateRecord,
+} from "./workflow-run-validation-gates.js";
 export type {
     FactStore,
     FactRecord,
@@ -144,6 +307,9 @@ export type {
 export type {
     PilotSwarmClientOptions,
     PilotSwarmWorkerOptions,
+    WorkerProvenanceOptions,
+    BeforeRunTurnHook,
+    AfterRunTurnHook,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,
@@ -177,6 +343,16 @@ export type {
     WorkspaceReleaseReason,
     WorkspaceReleaseRequest,
 } from "./types.js";
+/** Duroxide activity routing filter — re-exported for worker `workerTagFilter`. */
+export type { TagFilter } from "duroxide";
+export {
+    isOwnerScopedRoutingTag,
+    ownerAffinityKey,
+    repoFromRoutingTag,
+    runTurnRoutingTag,
+    scopeWorkerTagFilter,
+    workerOwnerFromEnv,
+} from "./activity-routing.js";
 export {
     IMAGE_ATTACHMENT_CONTENT_TYPES,
     ATTACHMENT_MAX_BYTES,
@@ -212,7 +388,8 @@ export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContex
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
-export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames } from "./mcp-loader.js";
+export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames, isRepoMcpEnabled, loadRepoMcpConfig, loadDefaultMcpConfig } from "./mcp-loader.js";
+export type { MCPServerConfig, LoadRepoMcpOptions, LoadDefaultMcpOptions } from "./mcp-loader.js";
 export {
     readCanvasKv, writeCanvasKv, validateCanvasKvKey, canvasKvGlobMatches, resolveCanvasKvViewer, decideCanvasKvWrite,
     CanvasKvError, CANVAS_KV_KEY_MAX, CANVAS_KV_VALUE_MAX_BYTES, CANVAS_KV_MAX_KEYS, CANVAS_KV_MAX_BYTES, CANVAS_KV_LIST_PAGE,
@@ -224,6 +401,31 @@ export { canvasArtifactFilename, normalizeCanvasSlot, latestCanvasEventData, lat
 export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NAME_RE, CANVAS_INTERFACE_MAX_BYTES } from "./canvas-app-manifest.js";
 export type { CanvasAppInterface } from "./canvas-app-manifest.js";
 export type { McpAllowlistAgent } from "./mcp-loader.js";
+export {
+    resolveMcpServerAuth,
+    discoverServerAudience,
+    parseWwwAuthenticate,
+    buildWwwAuthenticate,
+    appIdUriFromScope,
+    normalizeAudience,
+    decodeJwtAudiences,
+    audienceMatches,
+    defaultHttpDeps,
+    multiTokenProvider,
+    McpAuthFastFailError,
+} from "./mcp-auth-discovery.js";
+export type {
+    WwwAuthenticate,
+    BearerChallenge,
+    ProtectedResourceMetadata,
+    DiscoveredAudience,
+    HttpDeps,
+    ProbeResult,
+    ResolveMcpAuthOptions,
+    ResolveMcpAuthResult,
+    CallerTokenProvider,
+    RequiredAudience,
+} from "./mcp-auth-discovery.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
 export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
@@ -323,6 +525,24 @@ export type {
 } from "./transcript-selection.js";
 
 export { SessionDumper } from "./session-dumper.js";
+export {
+    DEFAULT_SESSION_TOOL_EVENT_CATCH_UP_LIMIT,
+    MAX_SESSION_TOOL_EVENT_CATCH_UP_LIMIT,
+    classifySessionToolEvent,
+    SessionToolEventLedger,
+    SessionToolEventTracker,
+} from "./session-tool-events.js";
+export type {
+    SessionEventLike,
+    SessionToolCompleteEvent,
+    SessionToolEvent,
+    SessionToolEventBase,
+    SessionToolEventFinishResult,
+    SessionToolEventSource,
+    SessionToolEventTrackerOptions,
+    SessionToolExecution,
+    SessionToolStartEvent,
+} from "./session-tool-events.js";
 
 // ─── Agent packages (docs/proposals/agent-packages.md) ───────────
 export {
@@ -348,6 +568,45 @@ export type {
     AgentPackageValidation,
     PackedAgentPackage,
 } from "./agent-package-format.js";
+
+// ─── WorkflowRun lifecycle state loading ────────────────────────────────
+export {
+    LifecycleStateLoadError,
+    RemoteLifecycleStateReader,
+    lifecycleStateMarkdownPath,
+    loadLifecycleStateMarkdown,
+    resolveLifecycleStateSources,
+} from "./lifecycle-state-loader.js";
+export type {
+    LifecycleStateOwner,
+    LifecycleStateSourceKind,
+    LifecycleStateSource,
+    LifecycleStateReader,
+    RemoteLifecycleStateReaderOptions,
+    LoadLifecycleStateInput,
+    LoadedLifecycleState,
+    LifecycleStateLoadErrorCode,
+    ResolveLifecycleStateSourcesInput,
+} from "./lifecycle-state-loader.js";
+export {
+    LifecycleStateTransitionError,
+    parseLifecycleStateTransitions,
+} from "./lifecycle-state-transitions.js";
+export type {
+    LifecycleStateOutcome,
+    LifecycleStateTransitionContract,
+} from "./lifecycle-state-transitions.js";
+export {
+    LIFECYCLE_STATE_MACHINE_SNAPSHOT_VERSION,
+    compileLifecycleStateMachine,
+    validateLifecycleStateMachineSnapshot,
+} from "./lifecycle-state-machine.js";
+export type {
+    LifecycleStateMachineSnapshot,
+    LifecycleStateMachineSnapshotState,
+    CompileLifecycleStateMachineInput,
+} from "./lifecycle-state-machine.js";
+
 export {
     publishAgentPackageDir,
     publishPackedAgentPackage,
@@ -364,6 +623,46 @@ export type {
     AgentPackageInstallResult,
     InstalledAgentPackage,
 } from "./agent-package-installer.js";
+// ─── PluginSpec (deployment-configured external plugin sources) ──
+export {
+    parsePluginSpec,
+    installPluginSpecs,
+    fetchKeyVaultSecret,
+    getKeyVaultSecretOptional,
+    putKeyVaultSecret,
+    adoCloneUrl,
+    PLUGIN_SPEC_SCHEMES,
+} from "./plugin-spec.js";
+export type {
+    PluginSpecEntry,
+    PluginSpecScheme,
+    PluginSpecInstallResult,
+    InstallPluginSpecsResult,
+} from "./plugin-spec.js";
+export {
+    parsePluginSpecs,
+    PluginSpecError,
+} from "./plugin-source-spec.js";
+export type {
+    GitPluginSpec,
+    LocalPluginSpec,
+    PluginSpec,
+} from "./plugin-source-spec.js";
+export {
+    installPluginSpecs as installValidatedPluginSpecs,
+    PluginInstallError,
+} from "./plugin-installer.js";
+export type {
+    InstalledPluginSpec,
+    InstallPluginSpecsOptions,
+    PluginFileSystem,
+} from "./plugin-installer.js";
+export { createGitPluginSourceResolver } from "./git-plugin-source.js";
+export type {
+    GitPluginSourceResolver,
+    PluginProcessOptions,
+    PluginProcessRunner,
+} from "./git-plugin-source.js";
 export type {
     WorkerRow,
     WorkerPhase,

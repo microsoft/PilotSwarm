@@ -3,12 +3,8 @@ kind: Kustomization
 
 # Base Kustomize tree for the PilotSwarm portal deployable.
 #
-# This base is intentionally inert — it contains NO env-specific
-# values, NO configMapGenerator, and NO replacements. All env-driven
-# wiring lives in the overlay so that the overlay's freshly-created
-# ConfigMap is the single source of truth for replacements (matches
-# the reference deployment pattern). See the worker
-# base/kustomization.yaml for the full rationale.
+# This base contains only deployment-neutral resources and file-backed
+# ConfigMaps. Environment values and replacements live in the overlay.
 
 resources:
   - service-account.yaml
@@ -33,10 +29,13 @@ resources:
 # will fail to find this file — that is intentional, all builds go
 # through deploy.mjs which runs stage-manifests first.
 #
-# Hash suffix is intentionally enabled (kustomize default): editing
-# the JSON yields a new ConfigMap name, the Deployment spec changes,
-# and Flux rolls the portal pod.
+# Hash suffixes are intentionally enabled (kustomize default): editing either
+# file yields a new ConfigMap name, the Deployment spec changes, and Flux rolls
+# the portal pod.
 configMapGenerator:
   - name: pilotswarm-portal-model-providers
     files:
       - model_providers.json
+  - name: pilotswarm-portal-deployment-plugin
+    files:
+      - plugin.json=deployment-plugin.json

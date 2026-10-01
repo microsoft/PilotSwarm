@@ -180,8 +180,8 @@ test("the upload envelope is enforced during the walk", async () => {
 });
 
 test("ADO org/project/repo parsing covers both host shapes", () => {
-    assert.deepEqual(parseAdoRepoUrl("https://dev.azure.com/msdata/Database%20Systems/_git/markdowns"),
-        { org: "msdata", project: "Database Systems", repo: "markdowns" });
+    assert.deepEqual(parseAdoRepoUrl("https://dev.azure.com/example-org/Example%20Project/_git/sample-repo"),
+        { org: "example-org", project: "Example Project", repo: "sample-repo" });
     assert.deepEqual(parseAdoRepoUrl("https://acme.visualstudio.com/proj/_git/repo"),
         { org: "acme", project: "proj", repo: "repo" });
 });

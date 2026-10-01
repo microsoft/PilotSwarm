@@ -346,7 +346,7 @@ describe("budget-gate resume scenarios (orchestration 1.0.69)", () => {
                 { type: "wait", seconds: 300, reason: "agent asked to nap" }, // interrupted, model said nothing
             ],
             queue: [
-                JSON.stringify({ prompt: "start the long job" }),
+                JSON.stringify({ prompt: "start the long workflowRun" }),
                 { afterTurns: 1, msg: JSON.stringify({ prompt: "are you there?", clientMessageIds: ["cm-3"] }) },
             ],
         });

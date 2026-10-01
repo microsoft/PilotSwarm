@@ -67,7 +67,17 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   // SERVICE_IMAGE_INFO: only app services.
   assert.deepEqual(Object.keys(SERVICE_IMAGE_INFO).sort(), ["portal", "repo-cache", "worker"]);
   assert.equal(SERVICE_IMAGE_INFO.worker.dockerImageRepo, "pilotswarm-worker");
+  assert.deepEqual(SERVICE_IMAGE_INFO.worker.buildWorkspaces, [
+    "packages/sdk",
+    "packages/horizon-store",
+    "packages/workflow-generator",
+  ]);
   assert.equal(SERVICE_IMAGE_INFO.portal.dockerfile, "deploy/Dockerfile.portal");
+  assert.deepEqual(SERVICE_IMAGE_INFO.portal.buildWorkspaces, [
+    "packages/sdk",
+    "packages/horizon-store",
+    "packages/app",
+  ]);
   assert.equal(SERVICE_IMAGE_INFO["repo-cache"].dockerImageRepo, "pilotswarm-repo-cache");
   assert.equal(SERVICE_IMAGE_INFO["repo-cache"].dockerfile, "deploy/Dockerfile.repo-cache");
 
@@ -107,7 +117,9 @@ test("pipelineForService respects defaults by kind", () => {
   assert.deepEqual(pipelineForService(m.services.worker, m.root), [
     "build", "bicep", "push", "manifests", "rollout",
   ]);
-  assert.deepEqual(pipelineForService(m.services["base-infra"], m.root), ["bicep", "seed-secrets"]);
+  assert.deepEqual(pipelineForService(m.services["base-infra"], m.root), [
+    "bicep", "workload-group", "seed-secrets",
+  ]);
   assert.deepEqual(defaultPipelineForKind("infra", m.root), ["bicep"]);
 });
 
@@ -168,7 +180,7 @@ test("validateServiceManifest enforces required fields and cross-rules", () => {
       "x/deploy.json",
     ).some((e) => /kind/.test(e)),
   );
-  // app kind requires image
+  // app kind requires image when it uses the default image pipeline
   assert.ok(
     validateServiceManifest(
       {
@@ -177,6 +189,18 @@ test("validateServiceManifest enforces required fields and cross-rules", () => {
       },
       "x/deploy.json",
     ).some((e) => /requires 'image'/.test(e)),
+  );
+  // manifest-only app may explicitly omit build/push and therefore image
+  assert.equal(
+    validateServiceManifest(
+      {
+        schemaVersion: 1, name: "x", kind: "app",
+        bicep: { modules: [{ name: "x", scope: "group" }] },
+        pipeline: ["bicep", "manifests", "rollout"],
+      },
+      "x/deploy.json",
+    ).length,
+    0,
   );
   // valid infra
   assert.equal(
@@ -207,7 +231,7 @@ test("validateServiceManifest rejects rollout missing namespace (FR-012)", () =>
       schemaVersion: 1, name: "x", kind: "app",
       bicep: { modules: [{ name: "x", scope: "group" }] },
       image: { repo: "x", dockerfile: "x" },
-      rollout: { deployment: "x-dep" },
+      rollout: { kind: "Deployment", name: "x-dep" },
     },
     "x/deploy.json",
   );
@@ -223,7 +247,7 @@ test("validateServiceManifest rejects rollout with empty-string namespace (FR-01
       schemaVersion: 1, name: "x", kind: "app",
       bicep: { modules: [{ name: "x", scope: "group" }] },
       image: { repo: "x", dockerfile: "x" },
-      rollout: { deployment: "x-dep", namespace: "" },
+      rollout: { kind: "Deployment", name: "x-dep", namespace: "" },
     },
     "x/deploy.json",
   );
@@ -232,17 +256,43 @@ test("validateServiceManifest rejects rollout with empty-string namespace (FR-01
   );
 });
 
-test("validateServiceManifest accepts rollout with deployment + namespace (FR-012)", () => {
+test("validateServiceManifest accepts rollout with kind + name + namespace (FR-012)", () => {
   const errs = validateServiceManifest(
     {
       schemaVersion: 1, name: "x", kind: "app",
       bicep: { modules: [{ name: "x", scope: "group" }] },
       image: { repo: "x", dockerfile: "x" },
-      rollout: { deployment: "x-dep", namespace: "x-ns" },
+      rollout: {
+        kind: "DaemonSet",
+        name: "x-dep",
+        namespace: "x-ns",
+        verifyImage: false,
+        timeout: "30m",
+      },
     },
     "x/deploy.json",
   );
   assert.equal(errs.length, 0, `expected no errors, got: ${errs.join("; ")}`);
+});
+
+test("validateServiceManifest rejects an invalid rollout timeout", () => {
+  const errs = validateServiceManifest(
+    {
+      schemaVersion: 1, name: "x", kind: "app",
+      bicep: { modules: [{ name: "x", scope: "group" }] },
+      image: { repo: "x", dockerfile: "x" },
+      rollout: {
+        kind: "DaemonSet",
+        name: "x-dep",
+        namespace: "x-ns",
+        timeout: "eventually",
+      },
+    },
+    "x/deploy.json",
+  );
+  assert.ok(
+    errs.some((e) => /rollout\.timeout must be a positive duration/.test(e)),
+  );
 });
 
 test("validateServiceManifest rejects plural rollouts field outright (FR-012)", () => {
@@ -251,7 +301,7 @@ test("validateServiceManifest rejects plural rollouts field outright (FR-012)", 
       schemaVersion: 1, name: "x", kind: "app",
       bicep: { modules: [{ name: "x", scope: "group" }] },
       image: { repo: "x", dockerfile: "x" },
-      rollout: { deployment: "x-dep", namespace: "x-ns" },
+      rollout: { kind: "Deployment", name: "x-dep", namespace: "x-ns" },
       rollouts: [{ kind: "Deployment", name: "y" }],
     },
     "x/deploy.json",

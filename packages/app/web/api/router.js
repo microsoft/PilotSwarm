@@ -64,6 +64,9 @@ function statusForError(error) {
 function sendError(res, error, fallbackStatus) {
     const status = fallbackStatus || statusForError(error);
     const code = error?.code || (status === 404 ? "NOT_FOUND" : status === 400 ? "INVALID_REQUEST" : status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL_ERROR");
+    if (status >= 500) {
+        console.error("[api][500]", error?.message, "| code:", error?.code, "| cause:", error?.cause?.message || error?.cause, "\n", error?.stack);
+    }
     // 5xx messages stay on the server unless exposed; 4xx keep their
     // message and the fields a client acts on (error-detail.js).
     res.status(status).json({ ok: false, error: errorDetail(error, status, code) });
@@ -117,6 +120,43 @@ function collectParams(op, req) {
         }
     }
     return params;
+}
+
+function assertNoCallerAuth(op, req) {
+    if (
+        (op.name === "createSession" || op.name === "createSessionForAgent")
+        && req.body
+        && Object.prototype.hasOwnProperty.call(req.body, "callerAuth")
+    ) {
+        throw Object.assign(
+            new Error(
+                "callerAuth must not be sent to PilotSwarm; "
+                + "devbox workers acquire delegated credentials locally.",
+            ),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+}
+
+function assertNoUnknownWorkflowDefinitionBodyParams(op, req) {
+    if (op.name !== "createWorkflowDefinition" || !req.body || typeof req.body !== "object") {
+        return;
+    }
+    const allowed = new Set(
+        Object.entries(op.params || {})
+            .filter(([, spec]) => spec.in === "body")
+            .map(([key]) => key),
+    );
+    const unknown = Object.keys(req.body).find((key) => !allowed.has(key));
+    if (unknown) {
+        throw Object.assign(
+            new Error(
+                `${unknown} is not a supported Workflow Definition request property. `
+                + "Executable content must be nested under definition.workflowDefinition.",
+            ),
+            { code: "INVALID_REQUEST" },
+        );
+    }
 }
 
 export function createApiRouter({ runtime, requireAuth }) {
@@ -206,6 +246,18 @@ export function createApiRouter({ runtime, requireAuth }) {
                 if ((op.admin || op.access === "fleet:admin") && !isAdminAuth(req.auth)) {
                     sendError(res, Object.assign(new Error("This operation requires the admin role."), { code: "FORBIDDEN" }), 403);
                     return;
+                }
+                assertNoUnknownWorkflowDefinitionBodyParams(op, req);
+                assertNoCallerAuth(op, req);
+                if (op.name === "createWorkflowRun"
+                    && req.body && typeof req.body === "object"
+                    && (Object.hasOwn(req.body, "initialState") || Object.hasOwn(req.body, "affinities"))) {
+                    throw Object.assign(
+                        new Error(
+                            "Direct Workflow Runs inherit initialState and affinities from their Workflow Definition.",
+                        ),
+                        { code: "INVALID_REQUEST" },
+                    );
                 }
                 const params = collectParams(op, req);
                 assertSafeIdParams(op, params);

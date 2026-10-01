@@ -26,6 +26,7 @@ import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
+import { logPoisonOnce } from "./diagnostics.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
@@ -117,6 +118,11 @@ export function projectSerializableSessionConfig(
     };
 }
 
+function isMissingOrchestrationError(error: unknown): boolean {
+    const message = String((error as any)?.message || error || "");
+    return /not found|no such instance|missing|does not exist/i.test(message);
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -175,15 +181,25 @@ export class PilotSwarmClient {
         parentSessionId?: string;
         /** Nesting level for sub-agent depth tracking. */
         nestingLevel?: number;
+        /** Web API placement. Direct-mode clients must omit this option. */
+        compute?: "cluster" | "devbox";
         /** Agent ID to bind this session to (for policy validation and title prefixing). */
         agentId?: string;
         /** Authenticated owner to associate with the new session. */
         owner?: SessionOwnerInfo | null;
+        /**
+         * Internal: route this session only to a worker advertising the same
+         * authenticated owner. Requires owner and never accepts a free-form key.
+         */
+        requireOwnerAffinity?: boolean;
         /** Optional visual session group assignment. */
         groupId?: string | null;
         /** Sharing level for a new ROOT session (children resolve through their root). */
         visibility?: SessionVisibility | null;
     }): Promise<PilotSwarmSession> {
+        if (config?.compute !== undefined) {
+            throw new Error("createSession({ compute }) is available only when PilotSwarmClient is constructed with apiUrl.");
+        }
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
         const isSubAgent = !!config?.parentSessionId;
@@ -223,6 +239,15 @@ export class PilotSwarmClient {
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
+        const ownerAffinity = config?.requireOwnerAffinity
+            ? config.owner
+            : undefined;
+        if (
+            config?.requireOwnerAffinity
+            && (!ownerAffinity?.provider?.trim() || !ownerAffinity.subject?.trim())
+        ) {
+            throw new Error("Owner-affined session creation requires an authenticated owner");
+        }
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
@@ -235,6 +260,16 @@ export class PilotSwarmClient {
         };
         if (config || resolved) {
             const fullConfig: ManagedSessionConfig = {
+                // Repo-affinity (git-hydration) rides the raw input: the
+                // upstream `resolvedConfig` projection does not carry `repo`.
+                repo: config?.repo,
+                ownerAffinity: ownerAffinity
+                    ? {
+                        provider: ownerAffinity.provider.trim(),
+                        subject: ownerAffinity.subject.trim(),
+                    }
+                    : undefined,
+                gitRef: config?.gitRef,
                 model: resolvedConfig.model,
                 reasoningEffort: resolvedConfig.reasoningEffort,
                 contextTier: resolvedConfig.contextTier,
@@ -275,6 +310,13 @@ export class PilotSwarmClient {
             owner: config?.owner ?? null,
             groupId: config?.groupId ?? null,
             visibility: config?.visibility ?? null,
+            routing: config && (config.repo || config.gitRef || config.requireOwnerAffinity)
+                ? {
+                    ...(config.repo ? { repo: config.repo } : {}),
+                    ...(config.gitRef ? { gitRef: config.gitRef } : {}),
+                    ...(config.requireOwnerAffinity ? { ownerAffinityRequired: true } : {}),
+                }
+                : null,
             creationConfig: configForRow
                 ? {
                     ...JSON.parse(JSON.stringify(projectSerializableSessionConfig(configForRow, this.config.waitThreshold))),
@@ -293,6 +335,7 @@ export class PilotSwarmClient {
         if (config?.parentSessionId) {
             this.parentSessionIds.set(sessionId, config.parentSessionId);
         }
+
         // Track nestingLevel for sub-agent depth enforcement
         if (config?.nestingLevel != null) {
             this.nestingLevels.set(sessionId, config.nestingLevel);
@@ -324,6 +367,12 @@ export class PilotSwarmClient {
         splash?: string;
         splashMobile?: string;
         initialPrompt?: string;
+        /** Repo-affinity routing: target repo enlistment for this session. */
+        repo?: string;
+        /** Web API placement. Direct-mode clients must omit this option. */
+        compute?: "cluster" | "devbox";
+        /** Non-default branch this session's agent lives on (git-hydration). */
+        gitRef?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
@@ -343,6 +392,9 @@ export class PilotSwarmClient {
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
+            repo: opts?.repo,
+            compute: opts?.compute,
+            gitRef: opts?.gitRef,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
@@ -538,31 +590,35 @@ export class PilotSwarmClient {
             throw new Error("Cannot delete system session");
         }
 
-        // Cascade to descendants. Enumerate BEFORE deleting the target: the
-        // descendant walk skips soft-deleted rows, so once the target row is
-        // gone its subtree is unreachable from any ancestor (orphaned).
-        let descendants: string[] = [];
-        try {
-            descendants = await this._catalog.getDescendantSessionIds(sessionId);
-        } catch (err) {
-            console.error(`[PilotSwarmClient] descendant enumeration failed for ${sessionId}:`, err);
-        }
+        await this._catalog.beginSessionTreeDeletion(sessionId);
+        // Include already soft-deleted descendants so a retry can finish
+        // removing any orchestration that survived an earlier attempt.
+        const descendants = await this._catalog.getDescendantSessionIdsIncludingDeleted(sessionId);
+        const failures: Error[] = [];
         for (const descendantId of descendants) {
             try {
                 await this._deleteOneSession(descendantId);
             } catch (err) {
-                // Non-fatal (e.g. a system/service descendant): keep going so
-                // one refusal doesn't strand its siblings.
-                console.error(`[PilotSwarmClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+                failures.push(err instanceof Error ? err : new Error(String(err)));
             }
         }
 
-        await this._deleteOneSession(sessionId);
+        try {
+            await this._deleteOneSession(sessionId);
+        } catch (err) {
+            failures.push(err instanceof Error ? err : new Error(String(err)));
+        }
+        if (failures.length > 0) {
+            throw new AggregateError(
+                failures,
+                `Session ${sessionId} deletion was incomplete`,
+            );
+        }
     }
 
     /**
      * Delete a single session row: CMS soft-delete, session-fact cleanup,
-     * best-effort duroxide cancel. No descendant handling — deleteSession()
+     * strict duroxide removal. No descendant handling — deleteSession()
      * cascades before calling this.
      */
     private async _deleteOneSession(sessionId: string): Promise<void> {
@@ -581,14 +637,62 @@ export class PilotSwarmClient {
             }
         }
 
-        // Duroxide: cancel orchestration (best effort)
-        const orchestrationId = `session-${sessionId}`;
-        if (this.duroxideClient) {
-            try {
-                await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
-            } catch {}
-        }
+        // Duroxide must be absent; CMS-only deletion is not complete because
+        // durable work could continue executing.
+        await this._deleteDuroxideInstanceStrict(sessionId, "Session deleted");
         this.activeOrchestrations.delete(sessionId);
+    }
+
+    private async _assertSessionActive(sessionId: string): Promise<void> {
+        if (!await this._catalog.isSessionActive(sessionId)) {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is fenced for deletion.`),
+                { code: "SESSION_DELETION_FENCE" },
+            );
+        }
+    }
+
+    private async _deleteDuroxideInstanceStrict(sessionId: string, reason: string): Promise<void> {
+        if (!this.duroxideClient) return;
+        const orchestrationId = `session-${sessionId}`;
+        try {
+            await this.duroxideClient.cancelInstance(orchestrationId, reason);
+        } catch {
+            // Final absence verification below is authoritative.
+        }
+        try {
+            await this.duroxideClient.deleteInstance(orchestrationId, true);
+        } catch (error) {
+            if (!isMissingOrchestrationError(error)) {
+                // A concurrent delete may still have won; verify below.
+            }
+        }
+        try {
+            const info = await this.duroxideClient.getInstanceInfo(orchestrationId);
+            if (info) {
+                throw new Error(
+                    `SESSION_ORCHESTRATION_DELETE_INCOMPLETE: ${orchestrationId} still exists (${info.status || "Unknown"})`,
+                );
+            }
+        } catch (error) {
+            if (!isMissingOrchestrationError(error)) throw error;
+        }
+    }
+
+    private async _failSessionSendFence(sessionId: string, error: unknown): Promise<never> {
+        this.activeOrchestrations.delete(sessionId);
+        try {
+            await this._deleteDuroxideInstanceStrict(sessionId, "Session deletion fence won");
+        } catch (cleanupError) {
+            throw new AggregateError(
+                [
+                    error instanceof Error ? error : new Error(String(error)),
+                    cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+                ],
+                `Session ${sessionId} send lost its deletion fence and cleanup was incomplete`,
+            );
+        }
+        throw error;
     }
 
     /**
@@ -657,9 +761,26 @@ export class PilotSwarmClient {
     }
 
     private async _resolveCreationModel(
-        config: Pick<ManagedSessionConfig, "model" | "reasoningEffort" | "contextTier"> & { owner?: SessionOwnerInfo | null },
+        config: Pick<ManagedSessionConfig, "model" | "reasoningEffort" | "contextTier">
+            & { owner?: SessionOwnerInfo | null; requireOwnerAffinity?: boolean },
         system: boolean,
     ): Promise<RuntimeModelSelection | null> {
+        const serviceOwned = config.owner?.provider === "system"
+            && config.owner.subject === "system";
+        if (!system && (config.requireOwnerAffinity || serviceOwned) && config.model) {
+            const model = config.model.trim();
+            const separator = model.indexOf(":");
+            if (separator <= 0 || separator === model.length - 1) {
+                throw new Error("Pre-resolved sessions require an exact provider:model value.");
+            }
+            return {
+                provider: model.slice(0, separator),
+                model,
+                reasoning: config.reasoningEffort ?? null,
+                context: config.contextTier ?? null,
+                source: "explicit",
+            };
+        }
         const store = this._catalog?.providers;
         if (!store) return null;
         if (!this._modelProviderTypes) {
@@ -706,6 +827,22 @@ export class PilotSwarmClient {
     }
 
     // ─── Internal ────────────────────────────────────────────
+
+    private async _recordInputReceived(
+        sessionId: string,
+        data: Record<string, unknown> = {},
+    ): Promise<void> {
+        await this._catalog?.recordEvents(sessionId, [{
+            eventType: "session.input_received",
+            data,
+        }]).catch((error) => {
+            const message =
+                `[client] failed to record session.input_received for ${sessionId}: ` +
+                (error instanceof Error ? error.message : String(error));
+            if (this.config.traceWriter) this.config.traceWriter(message);
+            else console.warn(message);
+        });
+    }
 
     /**
      * Creation and first send may land on different API processes. Restore the
@@ -794,6 +931,10 @@ export class PilotSwarmClient {
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
         const cmsRow = await this._catalog.getSession(sessionId);
+        if (!cmsRow) {
+            throw new Error(`Session ${sessionId.slice(0, 8)} was deleted or does not exist.`);
+        }
+        await this._assertSessionActive(sessionId);
         {
             const stored = this._catalog.getSessionCreationConfig
                 ? await this._catalog.getSessionCreationConfig(sessionId).catch(error => {
@@ -823,10 +964,54 @@ export class PilotSwarmClient {
                 merged.namedAgentToolAdditions = overrides.toolNames ?? [];
             }
             if (merged.waitThreshold == null) merged.waitThreshold = this.config.waitThreshold;
+            // Repo-affinity (git-hydration): the projection above does not
+            // carry `repo`, so thread the in-memory value through explicitly.
+            // A repo persisted on the row (stored) still survives the spread.
+            if (fullConfig?.repo != null) merged.repo = fullConfig.repo;
+        // Per-session non-default git ref (git-hydration): same projection gap
+        // as repo; thread the in-memory value so the worker pins to it.
+        if (fullConfig?.gitRef != null) merged.gitRef = fullConfig.gitRef;
+            // Immutable execution-routing reconstruction (owner affinity + repo/
+            // gitRef). On a cross-process resume the in-memory fullConfig is
+            // absent, and these routing fields are deliberately kept out of the
+            // creation-config projection, so recover them from the durable
+            // routing_config contract and reject any in-memory divergence (a
+            // re-home attempt) instead of silently changing a session's home.
+            const routing = typeof this._catalog.getSessionRouting === "function"
+                ? await this._catalog.getSessionRouting(sessionId)
+                : null;
+            if (routing) {
+                if (routing.ownerAffinityRequired && !cmsRow?.owner) {
+                    throw new Error(`Owner-affined session ${sessionId.slice(0, 8)} has no durable owner`);
+                }
+                if (fullConfig?.repo !== undefined && fullConfig.repo !== routing.repo) {
+                    throw new Error(`SESSION_ROUTING_CONFLICT: repository routing differs for session ${sessionId}`);
+                }
+                if (fullConfig?.gitRef !== undefined && fullConfig.gitRef !== routing.gitRef) {
+                    throw new Error(`SESSION_ROUTING_CONFLICT: Git ref routing differs for session ${sessionId}`);
+                }
+                const durableOwnerAffinity = routing.ownerAffinityRequired && cmsRow?.owner
+                    ? { provider: cmsRow.owner.provider, subject: cmsRow.owner.subject }
+                    : undefined;
+                if (
+                    fullConfig?.ownerAffinity
+                    && (
+                        !durableOwnerAffinity
+                        || fullConfig.ownerAffinity.provider !== durableOwnerAffinity.provider
+                        || fullConfig.ownerAffinity.subject !== durableOwnerAffinity.subject
+                    )
+                ) {
+                    throw new Error(`SESSION_ROUTING_CONFLICT: owner routing differs for session ${sessionId}`);
+                }
+                if (routing.repo != null) merged.repo = routing.repo;
+                if (routing.gitRef != null) merged.gitRef = routing.gitRef;
+                merged.ownerAffinity = durableOwnerAffinity;
+            }
             serializableConfig = merged;
             // A pre-0072 row with no map entry still starts minimal; the
             // worker-side bound-agent backfill remains the safety net there.
         }
+        const wasInputRequired = cmsRow?.state === "input_required";
         // The CMS row's is_system flag is authoritative and durable; the
         // in-memory systemSessions set is not — a worker restart empties it,
         // and a resumed managed system agent (a deterministic system child,
@@ -854,16 +1039,45 @@ export class PilotSwarmClient {
             }
         }
 
+        // A brand-new orchestration's first bootstrap turn rides the durable
+        // start input instead of a separate "messages" event. Starting the
+        // orchestration and delivering its first turn as two non-atomic
+        // duroxide operations (startOrchestrationVersioned, then enqueueEvent)
+        // left the orchestration parked forever whenever the caller died
+        // between them — e.g. a workflow-generator controller restart mid-bootstrap.
+        // The orchestration subscribed to "messages" but the kickoff event was
+        // never enqueued, the reserved WorkflowRunSession stayed `unacked`, and the
+        // controller's compensating cleanup never ran, so the WorkflowRun wedged with
+        // no way to be re-dispatched. Folding the first turn into the start
+        // input makes bootstrap a single durable step: once the orchestration
+        // exists, its first turn is guaranteed. This mirrors how continue-as-new
+        // already carries prompt + bootstrapPrompt in the orchestration input
+        // (see buildContinueInput / state.ts pendingPrompt: input.prompt).
+        const foldFirstTurnIntoStart = !this.activeOrchestrations.has(sessionId)
+            && opts?.bootstrap === true;
+
         if (!this.activeOrchestrations.has(sessionId)) {
             const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow, bootstrapNestingLevel);
             // Explicit local identity keeps its precedence; another process
             // reconstructs the named agent's startup contract from the row.
             const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;
+            const bootstrapAttachments = sanitizePromptAttachmentRefs(opts?.attachments);
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
                 sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
                 iteration: 0,
+                ...(foldFirstTurnIntoStart
+                    ? {
+                        prompt,
+                        bootstrapPrompt: true,
+                        ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+                        ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                            ? { recentClientMessageIds: opts.clientMessageIds }
+                            : {}),
+                        ...(bootstrapAttachments.length > 0 ? { attachments: bootstrapAttachments } : {}),
+                    }
+                    : {}),
                 // Client-created sessions are always durable. The worker's
                 // configured session store determines how that durability is
                 // backed (blob storage or local filesystem state).
@@ -890,7 +1104,18 @@ export class PilotSwarmClient {
                 DURABLE_SESSION_LATEST_VERSION,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
+            try {
+                await this._assertSessionActive(sessionId);
+            } catch (error) {
+                return this._failSessionSendFence(sessionId, error);
+            }
             trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
+        }
+
+        try {
+            await this._assertSessionActive(sessionId);
+        } catch (error) {
+            return this._failSessionSendFence(sessionId, error);
         }
 
         // CMS: update state + orchestration ID
@@ -904,6 +1129,7 @@ export class PilotSwarmClient {
         });
         trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
 
+        if (!foldFirstTurnIntoStart) {
         const enqueueAt = Date.now();
         await this.duroxideClient.enqueueEvent(
             orchestrationId,
@@ -925,7 +1151,18 @@ export class PilotSwarmClient {
                 })(),
             }),
         );
+        if (wasInputRequired) {
+            await this._recordInputReceived(sessionId, {
+                source: "prompt",
+                ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                    ? { clientMessageIds: opts.clientMessageIds }
+                    : {}),
+            });
+        }
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
+        } else {
+            trace("[client] first bootstrap turn folded into durable start input; skipping messages enqueue");
+        }
         trace("[client] ensureOrchestrationAndSend complete");
 
         return orchestrationId;
@@ -1106,6 +1343,7 @@ export class PilotSwarmClient {
                     : (typeof cmsRow.lastError === "string" && cmsRow.lastError.trim())
                         ? cmsRow.lastError.trim()
                         : null;
+            logPoisonOnce(sessionId, failureMessage, "PilotSwarmClient");
             await this._catalog.updateSession(sessionId, {
                 state: "failed",
                 waitReason: null,
@@ -1292,6 +1530,7 @@ export class PilotSwarmClient {
                                 "messages",
                                 JSON.stringify(response),
                             );
+                            await this._recordInputReceived(sessionId, { source: "answer" });
                             continue;
                         }
                     }
@@ -1337,6 +1576,7 @@ export class PilotSwarmClient {
                                 "messages",
                                 JSON.stringify(responseInput),
                             );
+                            await this._recordInputReceived(sessionId, { source: "answer" });
                             continue;
                         }
                     }
@@ -1484,6 +1724,24 @@ export class PilotSwarmSession {
                 JSON.stringify(data),
             );
         }
+    }
+
+    async sendSystemSignal(signalKey: string, payload?: unknown): Promise<void> {
+        const normalizedKey = signalKey.trim();
+        if (!normalizedKey) throw new Error("signalKey is required");
+        const duroxideClient = this.client._getDuroxideClient();
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        if (!duroxideClient) throw new Error("PilotSwarm client is not started");
+        await duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({
+                systemSignal: {
+                    signalKey: normalizedKey,
+                    payload: payload ?? null,
+                },
+            }),
+        );
     }
 
     /**

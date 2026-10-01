@@ -67,8 +67,9 @@ import {
 import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
 import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
 import type {
-    SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
+    SessionCatalog, SessionRow, SessionRoutingContract, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
+    WorkerTimelineEntry,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
@@ -84,6 +85,7 @@ import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import { FeatureFlagError } from "./feature-flags.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
+import { logPoisonOnce } from "./diagnostics.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type {
     SessionMetricSummary,
@@ -114,6 +116,19 @@ import type {
     SessionAccessSnapshot,
     AuthzAuditEntry,
     KnownUserInfo,
+    CreateWorkflowGeneratorInput,
+    CreateWorkflowRunInput,
+    CreateWorkflowRunResult,
+    WorkflowGeneratorRow,
+    WorkflowDefinitionRow,
+    WorkflowGeneratorCycleRow,
+    WorkflowRunRow,
+    WorkflowRunSessionRow,
+    WorkflowRunStateRunRow,
+    WorkflowRunJournalEntryRow,
+    WorkflowRunWaitRow,
+    WorkflowRunCleanupPlan,
+    WorkflowRunCleanupResult,
 } from "./cms.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
@@ -182,6 +197,13 @@ function assertValidDate(value: Date, label: string): void {
     if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
         throw new Error(`${label} must be a valid Date`);
     }
+}
+
+function optionalDate(value: number | string | Date | null | undefined, label: string): Date | null {
+    if (value == null || value === "") return null;
+    const date = value instanceof Date ? value : new Date(value);
+    assertValidDate(date, label);
+    return date;
 }
 
 /**
@@ -419,6 +441,8 @@ export interface PilotSwarmSessionView {
     visibility?: SessionVisibility;
     /** Denormalized session-tree root id (self for top-level sessions). */
     rootSessionId?: string;
+    /** Immutable compute/repository placement used to route this session. */
+    routing?: SessionRoutingContract;
 }
 
 /** Cursor for keyset-paginated session listing. */
@@ -438,6 +462,9 @@ export interface ListSessionsPageOptions {
     viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
     /** When set, root rows carry this principal's private group placement as viewerGroupId. */
     placement?: { provider: string; subject: string } | null;
+    owner?: string;
+    status?: string;
+    updatedAfter?: number | string | Date | null;
 }
 
 /** One bounded page of management session views. */
@@ -445,6 +472,39 @@ export interface PilotSwarmSessionPage {
     sessions: PilotSwarmSessionView[];
     hasMore: boolean;
     nextCursor?: SessionPageCursor;
+}
+
+export interface WorkflowCatalogPageCursor {
+    updatedAt: number;
+    id: string;
+}
+
+export interface WorkflowCatalogPageOptions {
+    limit?: number;
+    cursor?: WorkflowCatalogPageCursor | null;
+    owner?: string;
+    status?: string;
+    repository?: string;
+    placement?: string;
+    updatedAfter?: number | string | Date | null;
+}
+
+export interface ListWorkflowRunPageOptions extends WorkflowCatalogPageOptions {
+    workflow?: string;
+    workflowRunKey?: string;
+    origin?: "direct" | "workflow_generator";
+}
+
+export interface WorkflowGeneratorPage {
+    generators: WorkflowGeneratorRow[];
+    hasMore: boolean;
+    nextCursor?: WorkflowCatalogPageCursor;
+}
+
+export interface WorkflowRunPage {
+    workflowRuns: WorkflowRunRow[];
+    hasMore: boolean;
+    nextCursor?: WorkflowCatalogPageCursor;
 }
 
 /** Model summary for UI display. */
@@ -639,6 +699,7 @@ export interface SessionOrchestrationStats {
 
 /** A single duroxide execution history event. */
 export interface ExecutionHistoryEvent {
+    executionId?: number;
     eventId: number;
     kind: string;
     sourceEventId?: number;
@@ -908,7 +969,19 @@ export class PilotSwarmManagementClient {
 
         try {
             await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
-        } catch {}
+        } catch (error) {
+            if (!isIgnorableCancelError(error)) throw error;
+        }
+        try {
+            const info = await this._duroxideClient.getInstanceInfo(`session-${sessionId}`);
+            if (info) {
+                throw new Error(
+                    `SESSION_ORCHESTRATION_DELETE_INCOMPLETE: session-${sessionId} still exists (${info.status || "Unknown"})`,
+                );
+            }
+        } catch (error) {
+            if (!isIgnorableCancelError(error)) throw error;
+        }
     }
 
     private _getSystemAgentPlans(): SystemAgentSessionPlan[] {
@@ -971,6 +1044,385 @@ export class PilotSwarmManagementClient {
         await this._deleteSystemOrchestrationInstance(sessionId);
     }
 
+    // ─── Workflow Generators ──────────────────────────────────────
+
+    async createWorkflowGenerator(input: CreateWorkflowGeneratorInput): Promise<{
+        generator: WorkflowGeneratorRow;
+        definition: WorkflowDefinitionRow;
+    }> {
+        this._ensureStarted();
+        return this._catalog!.createWorkflowGenerator(input);
+    }
+
+    async listWorkflowGenerators(
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowGeneratorRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowGenerators(owner);
+    }
+
+    async listWorkflowGeneratorsPage(
+        options: WorkflowCatalogPageOptions = {},
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowGeneratorPage> {
+        this._ensureStarted();
+        const limit = clampInteger(options.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
+        const cursor = options.cursor ?? null;
+        const requiresPagedCatalog = Boolean(
+            cursor
+            || options.owner
+            || options.status
+            || options.repository
+            || options.placement
+            || options.updatedAfter != null,
+        );
+        if (!this._catalog!.listWorkflowGeneratorsPage && requiresPagedCatalog) {
+            throw new Error("The configured catalog does not support paged Workflow Generator queries.");
+        }
+        const rows = this._catalog!.listWorkflowGeneratorsPage
+            ? await this._catalog!.listWorkflowGeneratorsPage({
+                limit: limit + 1,
+                cursorUpdatedAt: cursor ? optionalDate(cursor.updatedAt, "cursor.updatedAt") : null,
+                cursorId: cursor?.id ?? null,
+                ownerQuery: options.owner,
+                status: options.status,
+                repository: options.repository,
+                placement: options.placement,
+                updatedAfter: optionalDate(options.updatedAfter, "updatedAfter"),
+            }, owner)
+            : await this._catalog!.listWorkflowGenerators(owner);
+        const visibleRows = rows.slice(0, limit);
+        const hasMore = rows.length > limit;
+        const last = visibleRows[visibleRows.length - 1];
+        return {
+            generators: visibleRows,
+            hasMore,
+            ...(hasMore && last
+                ? { nextCursor: { updatedAt: last.updatedAt.getTime(), id: last.workflowGeneratorId } }
+                : {}),
+        };
+    }
+
+    async getWorkflowGenerator(workflowGeneratorId: string, includeDeleted = false): Promise<WorkflowGeneratorRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowGenerator(workflowGeneratorId, includeDeleted);
+    }
+
+    async getWorkflowDefinition(workflowDefinitionId: string): Promise<WorkflowDefinitionRow> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowDefinition(workflowDefinitionId);
+    }
+
+    async createWorkflowDefinition(
+        input: import("./cms.js").CreateWorkflowDefinitionInput,
+    ): Promise<import("./cms.js").CreateWorkflowDefinitionResult> {
+        this._ensureStarted();
+        return this._catalog!.createWorkflowDefinition(input);
+    }
+
+    async listWorkflowDefinitions(workflowType?: string): Promise<WorkflowDefinitionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowDefinitions(workflowType);
+    }
+
+    async setWorkflowGeneratorDefinition(
+        workflowGeneratorId: string,
+        workflowDefinitionId: string,
+    ): Promise<{ generator: WorkflowGeneratorRow; definition: WorkflowDefinitionRow }> {
+        this._ensureStarted();
+        return this._catalog!.setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId);
+    }
+
+    async listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowGeneratorRuns(workflowGeneratorId);
+    }
+
+    async listWorkflowGeneratorCycles(workflowGeneratorId: string, limit?: number): Promise<WorkflowGeneratorCycleRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowGeneratorCycles(workflowGeneratorId, limit);
+    }
+
+    async listWorkflowRuns(
+        options?: import("./cms.js").ListWorkflowRunsOptions,
+        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowRunRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowRuns(options, viewer);
+    }
+
+    async listWorkflowRunsPage(
+        options: ListWorkflowRunPageOptions = {},
+        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<WorkflowRunPage> {
+        this._ensureStarted();
+        const limit = clampInteger(options.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
+        const cursor = options.cursor ?? null;
+        const requiresPagedCatalog = Boolean(
+            cursor
+            || options.owner
+            || options.status
+            || options.repository
+            || options.placement
+            || options.updatedAfter != null
+            || options.workflow
+            || options.workflowRunKey
+            || options.origin,
+        );
+        if (!this._catalog!.listWorkflowRunsPage && requiresPagedCatalog) {
+            throw new Error("The configured catalog does not support paged Workflow Run queries.");
+        }
+        const rows = this._catalog!.listWorkflowRunsPage
+            ? await this._catalog!.listWorkflowRunsPage({
+                limit: limit + 1,
+                cursorUpdatedAt: cursor ? optionalDate(cursor.updatedAt, "cursor.updatedAt") : null,
+                cursorId: cursor?.id ?? null,
+                ownerQuery: options.owner,
+                status: options.status,
+                repository: options.repository,
+                placement: options.placement,
+                updatedAfter: optionalDate(options.updatedAfter, "updatedAfter"),
+                workflowQuery: options.workflow,
+                workflowRunKey: options.workflowRunKey,
+                origin: options.origin,
+            }, viewer)
+            : await this._catalog!.listWorkflowRuns({
+                workflowRunKey: options.workflowRunKey,
+                limit: limit + 1,
+            }, viewer);
+        const visibleRows = rows.slice(0, limit);
+        const hasMore = rows.length > limit;
+        const last = visibleRows[visibleRows.length - 1];
+        return {
+            workflowRuns: visibleRows,
+            hasMore,
+            ...(hasMore && last
+                ? { nextCursor: { updatedAt: last.updatedAt.getTime(), id: last.workflowRunId } }
+                : {}),
+        };
+    }
+
+    async getWorkflowRun(workflowRunId: string, includeDeleted = false): Promise<WorkflowRunRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowRun(workflowRunId, includeDeleted);
+    }
+
+    async createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult> {
+        this._ensureStarted();
+        return this._catalog!.createWorkflowRun(input);
+    }
+
+    async deleteWorkflowGenerator(
+        workflowGeneratorId: string,
+        actor: SessionOwnerInfo,
+        isAdmin = false,
+    ): Promise<WorkflowRunCleanupResult> {
+        this._ensureStarted();
+        const plan = await this._catalog!.beginWorkflowGeneratorCleanup({
+            workflowGeneratorId,
+            actor,
+            isAdmin,
+        });
+        return this._executeWorkflowRunCleanup(plan);
+    }
+
+    async deleteWorkflowRun(
+        workflowRunId: string,
+        actor: SessionOwnerInfo,
+        isAdmin = false,
+    ): Promise<WorkflowRunCleanupResult> {
+        this._ensureStarted();
+        const plan = await this._catalog!.beginWorkflowRunCleanup({
+            workflowRunId,
+            actor,
+            isAdmin,
+        });
+        return this._executeWorkflowRunCleanup(plan);
+    }
+
+    private async _executeWorkflowRunCleanup(plan: WorkflowRunCleanupPlan): Promise<WorkflowRunCleanupResult> {
+        const allSessionIds = new Set(plan.sessionIds);
+        const failures: string[] = [];
+        const deletionFailures: string[] = [];
+        for (const sessionId of plan.sessionIds) {
+            try {
+                await this._catalog!.beginSessionTreeDeletion(sessionId);
+            } catch (error) {
+                failures.push(
+                    `fence ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
+        if (failures.length > 0) {
+            const error = failures.join("; ");
+            await this._catalog!.completeWorkflowRunCleanup(plan.aggregateType, plan.aggregateId, {
+                status: "failed",
+                error,
+                deletedSessionCount: 0,
+            });
+            throw Object.assign(new Error(`WORKFLOW_RUN_CLEANUP_INCOMPLETE: ${error}`), {
+                code: "WORKFLOW_RUN_CLEANUP_INCOMPLETE",
+                status: 409,
+            });
+        }
+
+        const pendingSessionIds = [...plan.sessionIds];
+        const enumeratedSessionIds = new Set<string>();
+        while (pendingSessionIds.length > 0) {
+            const sessionId = pendingSessionIds.shift()!;
+            if (enumeratedSessionIds.has(sessionId)) continue;
+            enumeratedSessionIds.add(sessionId);
+            try {
+                const descendants = await this._catalog!.getDescendantSessionIdsIncludingDeleted(sessionId);
+                for (const descendantId of descendants) {
+                    if (!allSessionIds.has(descendantId)) {
+                        allSessionIds.add(descendantId);
+                        pendingSessionIds.push(descendantId);
+                    }
+                }
+            } catch (error) {
+                failures.push(
+                    `enumerate ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
+        try {
+            const persistedSessionIds = await this._catalog!.recordWorkflowRunCleanupSessions(
+                plan.aggregateType,
+                plan.aggregateId,
+                [...allSessionIds],
+            );
+            for (const sessionId of persistedSessionIds) allSessionIds.add(sessionId);
+        } catch (error) {
+            const message = `persist session closure: ${error instanceof Error ? error.message : String(error)}`;
+            await this._catalog!.completeWorkflowRunCleanup(plan.aggregateType, plan.aggregateId, {
+                status: "failed",
+                error: message,
+                deletedSessionCount: 0,
+            });
+            throw Object.assign(new Error(`WORKFLOW_RUN_CLEANUP_INCOMPLETE: ${message}`), {
+                code: "WORKFLOW_RUN_CLEANUP_INCOMPLETE",
+                status: 409,
+            });
+        }
+
+        const reason = plan.aggregateType === "generator"
+            ? `WorkflowGenerator ${plan.aggregateId} deleted`
+            : `WorkflowRun ${plan.aggregateId} deleted`;
+        const rootSessionIds = new Set(plan.sessionIds);
+        const deletionOrder = [
+            ...[...allSessionIds].filter((sessionId) => !rootSessionIds.has(sessionId)),
+            ...plan.sessionIds,
+        ];
+        for (const sessionId of deletionOrder) {
+            try {
+                await this.deleteSession(sessionId, reason);
+            } catch (error) {
+                deletionFailures.push(
+                    `delete ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+            try {
+                await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
+            } catch (error) {
+                if (!isIgnorableCancelError(error)) {
+                    deletionFailures.push(
+                        `delete orchestration ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                    );
+                }
+            }
+        }
+
+        const remaining: string[] = [];
+        const remainingOrchestrations: string[] = [];
+        let verifiedDeletedCount = 0;
+        for (const sessionId of allSessionIds) {
+            try {
+                if (await this._catalog!.getSession(sessionId)) remaining.push(sessionId);
+                else verifiedDeletedCount += 1;
+            } catch (error) {
+                failures.push(
+                    `verify ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+            try {
+                const info = await this._duroxideClient.getInstanceInfo(`session-${sessionId}`);
+                if (info) {
+                    remainingOrchestrations.push(`${sessionId} (${info.status || "Unknown"})`);
+                }
+            } catch (error) {
+                if (!isIgnorableCancelError(error)) {
+                    failures.push(
+                        `verify orchestration ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                    );
+                }
+            }
+        }
+        if (remaining.length > 0) {
+            failures.push(`sessions still active: ${remaining.join(", ")}`);
+        }
+        if (remainingOrchestrations.length > 0) {
+            failures.push(`orchestrations still present: ${remainingOrchestrations.join(", ")}`);
+        }
+        if (failures.length > 0 && deletionFailures.length > 0) {
+            failures.push(...deletionFailures);
+        }
+
+        if (failures.length > 0) {
+            const error = failures.join("; ");
+            await this._catalog!.completeWorkflowRunCleanup(plan.aggregateType, plan.aggregateId, {
+                status: "failed",
+                error,
+                deletedSessionCount: verifiedDeletedCount,
+            });
+            throw Object.assign(new Error(`WORKFLOW_RUN_CLEANUP_INCOMPLETE: ${error}`), {
+                code: "WORKFLOW_RUN_CLEANUP_INCOMPLETE",
+                status: 409,
+            });
+        }
+
+        await this._catalog!.completeWorkflowRunCleanup(plan.aggregateType, plan.aggregateId, {
+            status: "completed",
+            deletedSessionCount: allSessionIds.size,
+        });
+        return {
+            aggregateType: plan.aggregateType,
+            aggregateId: plan.aggregateId,
+            alreadyDeleted: plan.alreadyDeleted,
+            deletedSessionCount: allSessionIds.size,
+        };
+    }
+
+    async listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowRunSessions(workflowRunId);
+    }
+
+    async listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowRunStateRuns(workflowRunId);
+    }
+
+    async listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowRunJournal(workflowRunId);
+    }
+
+    async listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowRunWaits(workflowRunId);
+    }
+
+    async setWorkflowRunWaitConditionOverride(
+        workflowRunId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<WorkflowRunWaitRow> {
+        this._ensureStarted();
+        return this._catalog!.setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden);
+    }
+
     // ─── Session Listing ─────────────────────────────────────
 
     /**
@@ -1024,6 +1476,9 @@ export class PilotSwarmManagementClient {
             systemFilter,
             viewer: opts.viewer ?? null,
             placement: opts.placement ?? null,
+            ownerQuery: opts.owner,
+            status: opts.status,
+            updatedAfter: optionalDate(opts.updatedAfter, "updatedAfter"),
         });
         const visibleRows = rows.slice(0, limit);
         const hasMore = rows.length > limit;
@@ -1170,11 +1625,18 @@ export class PilotSwarmManagementClient {
         let customStatus: any = {};
         let statusVersion = 0;
         let latestResponse: SessionResponsePayload | null = null;
+        let orchError: string | undefined;
 
-        const [infoResult, statusResult] = await Promise.allSettled([
+        const [infoResult, statusResult, routingResult] = await Promise.allSettled([
             this._duroxideClient.getInstanceInfo(orchId),
             this._duroxideClient.getStatus(orchId),
+            typeof this._catalog!.getSessionRouting === "function"
+                ? this._catalog!.getSessionRouting(sessionId)
+                : Promise.resolve(null),
         ]);
+        const routing = routingResult.status === "fulfilled"
+            ? routingResult.value ?? undefined
+            : undefined;
 
         if (infoResult.status === "fulfilled") {
             const info = infoResult.value;
@@ -1187,6 +1649,9 @@ export class PilotSwarmManagementClient {
         if (statusResult.status === "fulfilled") {
             const status = statusResult.value;
             statusVersion = status?.customStatusVersion || 0;
+            if (typeof status?.error === "string" && status.error.trim()) {
+                orchError = status.error.trim();
+            }
             if (status?.customStatus) {
                 try {
                     customStatus = typeof status.customStatus === "string"
@@ -1261,11 +1726,14 @@ export class PilotSwarmManagementClient {
             }).catch(() => {});
         } else if (shouldSyncFailedStatus(terminalStatusInput)) {
             const failureMessage =
-                (typeof customStatus?.error === "string" && customStatus.error.trim())
-                    ? customStatus.error.trim()
-                    : (typeof row.lastError === "string" && row.lastError.trim())
-                        ? row.lastError.trim()
-                        : null;
+                (typeof orchError === "string" && orchError.trim())
+                    ? orchError.trim()
+                    : (typeof customStatus?.error === "string" && customStatus.error.trim())
+                        ? customStatus.error.trim()
+                        : (typeof row.lastError === "string" && row.lastError.trim())
+                            ? row.lastError.trim()
+                            : null;
+            logPoisonOnce(sessionId, failureMessage, "ManagementClient");
             await this._catalog!.updateSession(sessionId, {
                 state: "failed",
                 waitReason: null,
@@ -1289,7 +1757,7 @@ export class PilotSwarmManagementClient {
         }
 
         const effectiveError = (liveStatus === "error" || liveStatus === "failed")
-            ? (customStatus.error ?? row.lastError ?? undefined)
+            ? (orchError ?? customStatus.error ?? row.lastError ?? undefined)
             : undefined;
 
         return {
@@ -1334,6 +1802,7 @@ export class PilotSwarmManagementClient {
                     : undefined,
             contextUsage: normalizedContextUsage,
             statusVersion,
+            routing,
         };
     }
 
@@ -1561,14 +2030,15 @@ export class PilotSwarmManagementClient {
     async deleteSession(sessionId: string, reason?: string): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
-        if (!session) return;
-        if (session.isSystem) {
+        if (session?.isSystem) {
             throw new Error("Cannot delete system session");
         }
+        await this._catalog!.beginSessionTreeDeletion(sessionId);
         const deleteReason = reason ?? "Deleted by management client";
 
         if (
-            session.status === "pending"
+            !session
+            || session.status === "pending"
             || session.orchestrationStatus === "Unknown"
             || session.orchestrationStatus == null
             || session.status === "completed"
@@ -1581,22 +2051,23 @@ export class PilotSwarmManagementClient {
             // here. Enumerate BEFORE deleting the target — the descendant
             // walk skips soft-deleted rows, so deleting the target first
             // would orphan its subtree.
-            let descendants: string[] = [];
-            try {
-                descendants = await this._catalog!.getDescendantSessionIds(sessionId);
-            } catch (err) {
-                console.error(`[PilotSwarmManagementClient] descendant enumeration failed for ${sessionId}:`, err);
-            }
+            const descendants = await this._catalog!.getDescendantSessionIdsIncludingDeleted(sessionId);
+            const failures: Error[] = [];
             for (const descendantId of descendants) {
                 try {
                     await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`);
                 } catch (err) {
-                    // Non-fatal (e.g. a system/service descendant): keep
-                    // going so one refusal doesn't strand its siblings.
-                    console.error(`[PilotSwarmManagementClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+                    failures.push(err instanceof Error ? err : new Error(String(err)));
                 }
             }
-            await this._forceDeleteSession(sessionId, deleteReason);
+            try {
+                await this._forceDeleteSession(sessionId, deleteReason);
+            } catch (err) {
+                failures.push(err instanceof Error ? err : new Error(String(err)));
+            }
+            if (failures.length > 0) {
+                throw new AggregateError(failures, `Session ${sessionId} deletion was incomplete`);
+            }
             return;
         }
 
@@ -1611,6 +2082,7 @@ export class PilotSwarmManagementClient {
             (current) => current == null,
             SESSION_COMMAND_SETTLE_TIMEOUT_MS,
         );
+        await this.deleteSession(sessionId, deleteReason);
     }
 
     /**
@@ -2837,6 +3309,7 @@ export class PilotSwarmManagementClient {
                 if (!Array.isArray(executions) || executions.length === 0) return null;
                 execId = executions[executions.length - 1];
             }
+
             const events = await this._duroxideClient.readExecutionHistory(orchId, execId);
             if (!Array.isArray(events)) return null;
             return events.map((e: any) => ({
@@ -2848,6 +3321,52 @@ export class PilotSwarmManagementClient {
             }));
         } catch {
             return null;
+        }
+    }
+
+    /**
+     * Read and merge every durable execution history for a session.
+     */
+    private async _getAllExecutionHistory(sessionId: string): Promise<ExecutionHistoryEvent[] | null> {
+        this._ensureStarted();
+        const orchId = `session-${sessionId}`;
+        const executionIds: number[] = await this._duroxideClient.listExecutions(orchId);
+        if (!Array.isArray(executionIds) || executionIds.length === 0) return null;
+        const histories = await Promise.all(executionIds.map(async (executionId) => {
+            const events = await this._duroxideClient.readExecutionHistory(orchId, executionId);
+            return Array.isArray(events)
+                ? events.map((event: any) => ({
+                    executionId,
+                    eventId: Number(event.eventId) || 0,
+                    kind: String(event.kind || ""),
+                    ...(event.sourceEventId != null ? { sourceEventId: Number(event.sourceEventId) } : {}),
+                    timestampMs: Number(event.timestampMs) || 0,
+                    ...(event.data != null ? { data: String(event.data) } : {}),
+                }))
+                : [];
+        }));
+        return histories.flat().sort((a, b) => (
+            a.timestampMs - b.timestampMs
+            || (a.executionId ?? 0) - (b.executionId ?? 0)
+            || a.eventId - b.eventId
+        ));
+    }
+
+    private async _recordInputReceived(
+        sessionId: string,
+        data: Record<string, unknown>,
+    ): Promise<void> {
+        try {
+            await this._catalog!.recordEvents(sessionId, [{
+                eventType: "session.input_received",
+                data,
+            }]);
+        } catch (error) {
+            const message =
+                `[mgmt] failed to record session.input_received for ${sessionId}: ` +
+                (error instanceof Error ? error.message : String(error));
+            if (this.config.traceWriter) this.config.traceWriter(message);
+            else console.warn(message);
         }
     }
 
@@ -3555,6 +4074,14 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify(payload),
         );
+        if (session.status === "input_required") {
+            await this._recordInputReceived(sessionId, {
+                source: "prompt",
+                ...(options?.clientMessageIds && options.clientMessageIds.length > 0
+                    ? { clientMessageIds: options.clientMessageIds }
+                    : {}),
+            });
+        }
     }
 
     /**
@@ -3610,10 +4137,74 @@ export class PilotSwarmManagementClient {
         const payload: Record<string, unknown> = { answer, wasFreeform: true, expectedQuestion };
         const sender = normalizeMessageSender(options?.sender);
         if (sender) payload.sender = sender;
+        const workflowRunWait = await this._catalog!.acceptWorkflowRunResponse({
+            sessionId,
+            answer,
+            respondedBy: sender ?? null,
+        });
+        if (workflowRunWait?.responseId) {
+            payload.answer = typeof workflowRunWait.response?.answer === "string"
+                ? workflowRunWait.response.answer
+                : answer;
+            payload.workflowRunWaitId = workflowRunWait.waitId;
+            payload.workflowRunWaitResponseId = workflowRunWait.responseId;
+        }
+        try {
+            await this._duroxideClient.enqueueEvent(
+                orchId,
+                "messages",
+                JSON.stringify(payload),
+            );
+        } catch (error) {
+            if (workflowRunWait?.responseId) {
+                try {
+                    await this._catalog!.reopenWorkflowRunResponseWait(workflowRunWait.waitId, workflowRunWait.responseId);
+                } catch (reopenError) {
+                    throw new AggregateError(
+                        [error, reopenError],
+                        `Failed to enqueue WorkflowRun response and reopen wait ${workflowRunWait.waitId}`,
+                    );
+                }
+            }
+            throw error;
+        }
+        if (workflowRunWait?.responseId) {
+            try {
+                await this._catalog!.markWorkflowRunResponseEnqueued(workflowRunWait.waitId, workflowRunWait.responseId);
+            } catch (error) {
+                const message = `[mgmt] failed to mark WorkflowRun response enqueued for ${workflowRunWait.waitId}: `
+                    + (error instanceof Error ? error.message : String(error));
+                if (this.config.traceWriter) this.config.traceWriter(message);
+                else console.warn(message);
+            }
+        }
+        await this._recordInputReceived(sessionId, {
+            source: "answer",
+            ...(workflowRunWait?.responseId
+                ? { workflowRunWaitId: workflowRunWait.waitId, workflowRunWaitResponseId: workflowRunWait.responseId }
+                : {}),
+        });
+    }
+
+    /**
+     * Resume a keyed platform system wait. Signals with a different key are
+     * durably observed but cannot thaw the waiting operation.
+     */
+    async sendSystemSignal(sessionId: string, signalKey: string, payload?: unknown): Promise<void> {
+        this._ensureStarted();
+        const normalizedKey = signalKey.trim();
+        if (!normalizedKey) throw new Error("signalKey is required");
+        const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "sendSystemSignal");
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify(payload),
+            JSON.stringify({
+                systemSignal: {
+                    signalKey: normalizedKey,
+                    payload: payload ?? null,
+                },
+            }),
         );
     }
 
@@ -4607,6 +5198,14 @@ export class PilotSwarmManagementClient {
     async listWorkers(): Promise<WorkerRow[]> {
         this._ensureStarted();
         return this._catalog!.listWorkers();
+    }
+
+    async getWorkerTimeline(
+        workerNodeId: string,
+        options: { since?: Date; limit?: number } = {},
+    ): Promise<WorkerTimelineEntry[]> {
+        this._ensureStarted();
+        return this._catalog!.getWorkerTimeline(workerNodeId, options);
     }
 
     private _requireFeatures(): FeatureStore {

@@ -31,6 +31,10 @@ export const PORTAL_CONFIG_KEYS = [
   // When `true`, allow requests without an authenticated principal. Useful
   // for overlay-mode dev clusters; production should leave this unset.
   { env: "PORTAL_AUTH_ALLOW_UNAUTHENTICATED" },
+  // Explicit opt-in required by the local dev provider.
+  { env: "PORTAL_AUTH_DEV_ALLOW" },
+  // Optional comma-separated `subject:role` roster for the local dev provider.
+  { env: "PORTAL_AUTH_DEV_USERS" },
   // Entra group object ids whose members are admins (legacy provider key).
   { env: "PORTAL_AUTH_ENTRA_ADMIN_GROUPS" },
   // Entra group object ids whose members are users (legacy provider key).

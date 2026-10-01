@@ -9,7 +9,9 @@ import {
 } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
+import { cmsRetryCritical } from "./cms-retry.js";
 import { DEFAULT_DUROXIDE_SCHEMA, type DuroxideStorageConfig, type RuntimeStorageConfig } from "./storage-config.js";
+import { runStartupStage } from "./startup-diagnostics.js";
 
 const require = createRequire(import.meta.url);
 const { PostgresProvider } = require("duroxide");
@@ -53,7 +55,16 @@ async function preflightLegacyDuroxideSchema(args: DuroxideStorageConfig, schema
         max: 1,
     }));
     try {
-        const { rows } = await pool.query(`
+        // The preflight is the FIRST DB touch at worker startup, so it is where
+        // a boot-time connectivity blip surfaces. With the pg-pool timeouts in
+        // place that blip now throws (instead of hanging forever); wrap the
+        // query in the shared critical retry so a transient failure self-heals
+        // (1s/5s/15s/90s) rather than crashing the boot. The deliberate
+        // "refusing to use legacy schema" guard below is OUTSIDE this retry, so
+        // a real misconfiguration still fails fast.
+        const { rows } = await cmsRetryCritical(
+            "duroxide-legacy-schema-preflight",
+            () => pool.query(`
             SELECT
                 EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $2) AS legacy_exists,
                 EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1) AS target_exists,
@@ -70,7 +81,9 @@ async function preflightLegacyDuroxideSchema(args: DuroxideStorageConfig, schema
                     WHERE table_schema = $2
                       AND table_name IN ('instances', 'executions', 'history', 'orchestrator_queue', 'worker_queue')
                 ) AS legacy_has_pilotswarm_tables
-        `, [schema, legacySchema]);
+        `, [schema, legacySchema]),
+            (msg) => console.error(msg),
+        );
         const row = rows[0] ?? {};
         if (row.legacy_exists && row.legacy_has_pilotswarm_tables && !row.legacy_owned_by_pg_durable) {
             throw new Error(
@@ -152,11 +165,19 @@ const postgresDuroxideStorageProvider: DuroxideStorageProvider = {
     async createDuroxideProvider(args) {
         assertPostgresUrl(args.url, "postgres duroxide storage");
         const schema = args.schema ?? DEFAULT_DUROXIDE_SCHEMA;
-        await preflightLegacyDuroxideSchema(args, schema);
-        return createDuroxidePostgresProvider(PostgresProvider, args.url, schema, {
-            useManagedIdentity: args.useManagedIdentity ?? false,
-            aadUser: args.aadDbUser,
-        });
+        await runStartupStage(
+            "duroxide legacy schema preflight",
+            () => preflightLegacyDuroxideSchema(args, schema),
+            { prefix: "[PilotSwarmWorker]" },
+        );
+        return runStartupStage(
+            "duroxide native provider connection",
+            () => createDuroxidePostgresProvider(PostgresProvider, args.url, schema, {
+                useManagedIdentity: args.useManagedIdentity ?? false,
+                aadUser: args.aadDbUser,
+            }),
+            { prefix: "[PilotSwarmWorker]" },
+        );
     },
 };
 

@@ -18,6 +18,7 @@ import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./works
 import { workspaceReleaseReason } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
+import { discoverRepositoryConfiguration, type SessionWorkspaceManager } from "./session-workspace.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -29,6 +30,7 @@ import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { appIdUriFromScope, resolveMcpServerAuth, type CallerTokenProvider } from "./mcp-auth-discovery.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
@@ -46,11 +48,13 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import { hasSignedInCopilotUserConfig, resolveCopilotHome } from "./copilot-login-state.js";
 import { createHash } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { parse as parseYaml } from "yaml";
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEHYDRATE_STORE_MAX_RETRIES = 1;
@@ -59,6 +63,20 @@ const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
 const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
+
+/**
+ * A repo-shipped `.github/agents/<name>.agent.md` agent parsed into the shape
+ * the Copilot SDK expects for an injected `customAgents` entry. Mirrors the
+ * inline element type of `SerializableSessionConfig.customAgents`.
+ */
+export interface RepoAgentDefinition {
+    name: string;
+    prompt: string;
+    description?: string;
+    tools?: string[] | null;
+    skills?: string[];
+    mcpServers?: Record<string, unknown>;
+}
 
 export class SessionLockAcquireTimeoutError extends Error {
     readonly code = SESSION_LOCK_ACQUIRE_TIMEOUT_CODE;
@@ -77,6 +95,17 @@ export class SessionLockAcquireTimeoutError extends Error {
 
 export function isSessionLockAcquireTimeoutError(error: unknown): error is SessionLockAcquireTimeoutError {
     return Boolean(error && typeof error === "object" && (error as any).code === SESSION_LOCK_ACQUIRE_TIMEOUT_CODE);
+}
+
+function normalizedMcpServerUrl(value: unknown): string | null {
+    if (typeof value !== "string" || !value.trim()) return null;
+    try {
+        const url = new URL(value);
+        url.hash = "";
+        return url.href;
+    } catch {
+        return null;
+    }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -213,6 +242,111 @@ export function pickAgentCopyForOwner(
         ?? undefined;
 }
 
+export function delegatedMcpAuthFingerprint(servers: Record<string, any>): string {
+    const material = Object.keys(servers).sort().flatMap((serverName) => {
+        const config = servers[serverName] ?? {};
+        const authorization = typeof config.headers?.Authorization === "string"
+            ? config.headers.Authorization
+            : "";
+        const env = config.env && typeof config.env === "object"
+            ? Object.entries(config.env)
+                .filter(([, value]) => typeof value === "string")
+                .sort(([left], [right]) => left.localeCompare(right))
+            : [];
+        return authorization || env.length > 0
+            ? [{ serverName, authorization, env }]
+            : [];
+    });
+    return createHash("sha256").update(JSON.stringify(material)).digest("hex");
+}
+
+/**
+ * Parse a repo-shipped `.github/agents/<file>.agent.md` into a `customAgents`
+ * entry (name, persona prompt, description, tools, mcp-servers, skills). This is
+ * the only way to bind a `.github/agents` agent: the Copilot runtime's config
+ * discovery does NOT register those files as selectable custom agents, so they
+ * must be materialized explicitly and activated by name.
+ *
+ * Pure over its arguments plus the filesystem — the worker-plugin guard is
+ * injected (rather than read from `workerDefaults`) so the resolver can be
+ * unit-tested without constructing a SessionManager. Returns undefined — leaving
+ * the session on its normal path — when: no agent is bound; the bound name is a
+ * worker-plugin agent (that path owns binding); there is no working directory;
+ * the workspace has no `.github/agents`; or nothing in it matches by file slug
+ * or frontmatter `name:` (case-insensitive).
+ */
+export function resolveRepoAgentDefinition(
+    boundAgentName: string | undefined,
+    workingDirectory: string | undefined,
+    isWorkerPluginAgent?: (name: string) => boolean,
+    allowMcpServers = true,
+): RepoAgentDefinition | undefined {
+    if (!boundAgentName) return undefined;
+    // Worker-plugin agents own their own binding path — never override it.
+    if (isWorkerPluginAgent?.(boundAgentName)) return undefined;
+    if (!workingDirectory) return undefined;
+    const agentsDir = path.join(workingDirectory, ".github", "agents");
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(agentsDir);
+    } catch {
+        // No `.github/agents` in this workspace (or not hydrated yet).
+        return undefined;
+    }
+    const wanted = boundAgentName.trim().toLowerCase();
+    const SUFFIX = ".agent.md";
+    for (const entry of entries) {
+        if (!entry.toLowerCase().endsWith(SUFFIX)) continue;
+        const slug = entry.slice(0, -SUFFIX.length);
+        let content: string;
+        try {
+            content = fs.readFileSync(path.join(agentsDir, entry), "utf-8");
+        } catch {
+            continue;
+        }
+        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+        if (!fmMatch) {
+            // No frontmatter — slug-only match with the whole file as prompt.
+            if (slug.toLowerCase() === wanted) {
+                const body = content.trim();
+                if (body) return { name: slug, prompt: body };
+            }
+            continue;
+        }
+        let fm: Record<string, unknown>;
+        try {
+            const parsed = parseYaml(fmMatch[1]);
+            fm = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+        } catch {
+            fm = {};
+        }
+        const declaredName = typeof fm.name === "string" ? fm.name.trim() : undefined;
+        if (slug.toLowerCase() !== wanted && declaredName?.toLowerCase() !== wanted) continue;
+
+        const name = declaredName || slug;
+        const body = content.slice(fmMatch[0].length).trim();
+        const description = typeof fm.description === "string" ? fm.description : undefined;
+        // CustomAgentConfig requires a non-empty prompt; fall back to the
+        // description (then the name) if the file has no body.
+        const prompt = body || description || name;
+
+        const def: RepoAgentDefinition = { name, prompt };
+        if (description) def.description = description;
+        if (Array.isArray(fm.tools)) def.tools = fm.tools.map((t) => String(t));
+        // Frontmatter authors the map under the hyphenated `mcp-servers` key;
+        // accept a camelCase spelling too for robustness.
+        const mcp = (fm["mcp-servers"] ?? (fm as Record<string, unknown>).mcpServers) as
+            | Record<string, unknown>
+            | undefined;
+        if (allowMcpServers && mcp && typeof mcp === "object") {
+            def.mcpServers = mcp as Record<string, unknown>;
+        }
+        if (Array.isArray(fm.skills)) def.skills = fm.skills.map((s) => String(s));
+        return def;
+    }
+    return undefined;
+}
+
 /** Resolve an already-authorized exact package copy while rechecking owner visibility. */
 export function pickAgentCopyByPackageIdForOwner(
     entry: AgentPromptEntry | undefined,
@@ -280,6 +414,22 @@ export interface WorkerDefaults {
      * opt-ins plus direct worker-config servers (legacy semantics).
      */
     baseMcpServers?: Record<string, any>;
+    /** Fresh worker-owned HTTP headers bound to server name and deployment URL. */
+    mcpServerHeadersProvider?: () => Promise<
+        Record<string, {
+            expectedUrl: string;
+            headers: Record<string, string>;
+        }>
+    >;
+    /**
+     * Whether caller-owned repository workspaces may contribute MCP servers.
+     * Defaults to true. When false, native configuration discovery is disabled
+     * and only explicitly reintroduced repository instructions and skills load.
+     */
+    repositoryMcpEnabled?: boolean;
+    /** Optional caller-token seam. Devbox workers normally select the Azure CLI
+     * cache provider with `CALLER_AUTH_MODE=devbox`; tests may inject one here. */
+    callerTokenProvider?: CallerTokenProvider;
     /**
      * Catalog servers restricted with `allowedAgents` (server name → allowed
      * agent identities). Held BY REFERENCE from the worker, which clears and
@@ -304,6 +454,11 @@ export interface WorkerDefaults {
     turnTimeoutMs?: number;
     /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
     turnInactivityTimeoutMs?: number;
+    /**
+     * Optional platform-owned workspace allocator. When absent, historical
+     * working-directory and repository-discovery behavior is unchanged.
+     */
+    sessionWorkspaceManager?: SessionWorkspaceManager;
 }
 
 /** Resolve every part of a bound agent using the same authorized package copy. */
@@ -377,6 +532,7 @@ export function buildBindingFingerprintInput(parts: {
     boundAgentSource: unknown;
     boundAgentCopy: unknown;
     mcpServers: unknown;
+    enableConfigDiscovery?: unknown;
     excludedTools: unknown;
     tools: unknown;
     workspace?: WorkspaceFingerprintPart;
@@ -389,6 +545,7 @@ export function buildBindingFingerprintInput(parts: {
         boundAgentSource: parts.boundAgentSource,
         boundAgentCopy: parts.boundAgentCopy,
         mcpServers: parts.mcpServers,
+        ...(parts.enableConfigDiscovery !== undefined ? { enableConfigDiscovery: parts.enableConfigDiscovery } : {}),
         excludedTools: parts.excludedTools,
         tools: parts.tools,
         ...(parts.workspace ? {
@@ -784,6 +941,21 @@ export class SessionManager {
     get activeSessionCount(): number {
         return this.sessions.size;
     }
+
+    /** Session-scoped operations currently occupying worker activity slots. */
+    get busyWorkerSlotCount(): number {
+        return this.sessionLocks.size;
+    }
+    /**
+     * True iff a warm ManagedSession for `sessionId` is already resident in
+     * this worker's memory (i.e. the next turn is a WARM turn on a pinned
+     * worker, not a cold acquisition/resume). Used by the runTurn timing
+     * instrumentation to separate one-time acquisition cost (turn 0 / cross-
+     * worker resume, which pays hydrate) from cheap recurring warm turns.
+     */
+    isSessionResident(sessionId: string): boolean {
+        return this.sessions.has(sessionId);
+    }
     /**
      * Records which CopilotClient each warm session is bound to (keyed by
      * the GitHub Copilot token plus native/BYOK transport namespace). When
@@ -794,6 +966,10 @@ export class SessionManager {
      * created/resumed in `_getOrCreateUnlocked`.
      */
     private sessionClientKeys = new Map<string, string>();
+    /** Delegated MCP auth material currently bound to each warm session. */
+    private sessionMcpAuthFingerprints = new Map<string, string>();
+    /** One expiry-aware provider per worker process. */
+    private devboxCallerTokenProvider: CallerTokenProvider | null | undefined;
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -858,6 +1034,25 @@ export class SessionManager {
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
     }
 
+    private async configuredCallerTokenProvider(
+        allowDelegatedAuth: boolean,
+    ): Promise<CallerTokenProvider | null> {
+        if (!allowDelegatedAuth) {
+            return null;
+        }
+        if (this.workerDefaults.callerTokenProvider) {
+            return this.workerDefaults.callerTokenProvider;
+        }
+        if ((process.env.CALLER_AUTH_MODE || "").trim().toLowerCase() !== "devbox") {
+            return null;
+        }
+        if (this.devboxCallerTokenProvider === undefined) {
+            const { createAzureCliCacheCallerTokenProvider } = await import("./devbox-caller-token-provider.js");
+            this.devboxCallerTokenProvider = createAzureCliCacheCallerTokenProvider();
+        }
+        return this.devboxCallerTokenProvider;
+    }
+
     /**
      * Artifact store, assigned by the worker after construction.
      *
@@ -902,6 +1097,158 @@ export class SessionManager {
         if (!registry) return undefined;
         const allowed = await this._allowedModelProviderIds(sessionId);
         return registry.getModelSummaryForLLM(allowed ?? undefined);
+    }
+
+    /**
+     * Models this worker can currently execute. GitHub models are intersected
+     * with the signed-in Copilot account's live entitlement list; configured
+     * BYOK/workload-identity providers are already worker-local capabilities.
+     */
+    configuredWorkerModels(): string[] {
+        if (this.workerModelRoutingUniverse) {
+            return [...this.workerModelRoutingUniverse];
+        }
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) return [];
+        this.workerModelRoutingUniverse = registry.allModels
+            .filter((descriptor) => Boolean(registry.resolve(descriptor.qualifiedName)))
+            .map((descriptor) => descriptor.qualifiedName)
+            .slice(0, 64);
+        return [...this.workerModelRoutingUniverse];
+    }
+
+    currentWorkerModels(): { defaultModel?: string; available: string[] } {
+        return this.workerModelCache?.value ?? { available: [] };
+    }
+
+    async refreshWorkerModels(): Promise<{ defaultModel?: string; available: string[] }> {
+        if (this.workerModelCache && Date.now() - this.workerModelCache.fetchedAt < 300_000) {
+            return this.workerModelCache.value;
+        }
+        if (this.workerModelRefreshPromise) return this.workerModelRefreshPromise;
+        this.workerModelRefreshPromise = this._discoverWorkerModels();
+        try {
+            return await this.workerModelRefreshPromise;
+        } finally {
+            this.workerModelRefreshPromise = null;
+        }
+    }
+
+    private async _discoverWorkerModels(): Promise<{ defaultModel?: string; available: string[] }> {
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) return { available: [] };
+
+        // Routing and advertisement must use the same bounded universe.
+        // Discovery may remove unavailable models, but must never introduce a
+        // model for which this process did not register a routing tag.
+        const configured = this.configuredWorkerModels();
+        const configuredSet = new Set(configured);
+        const available: string[] = [];
+        const githubDescriptors = registry.allModels.filter(
+            (model) => configuredSet.has(model.qualifiedName),
+        ).filter(
+            (model) => model.providerType === "github" || model.providerType === "github-ambient",
+        );
+        const availableGitHubModels = new Set<string>();
+        let githubDiscoveryFailed = false;
+        const ambientAvailable = this._hasSignedInCopilotUser();
+        const discoveryGroups = new Map<string, {
+            token?: string;
+            descriptors: typeof githubDescriptors;
+        }>();
+        for (const descriptor of githubDescriptors) {
+            const resolved = registry.resolve(descriptor.qualifiedName);
+            const token = resolved?.githubToken || this.githubToken;
+            if (!token && !ambientAvailable) continue;
+            const key = token ? `token:${token}` : "ambient";
+            const group = discoveryGroups.get(key) ?? { token, descriptors: [] };
+            group.descriptors.push(descriptor);
+            discoveryGroups.set(key, group);
+        }
+        for (const group of discoveryGroups.values()) {
+            try {
+                const modelIds = await this._discoverGitHubWorkerModelIds(group.token);
+                for (const descriptor of group.descriptors) {
+                    if (modelIds.has(descriptor.modelName)) {
+                        availableGitHubModels.add(descriptor.qualifiedName);
+                    }
+                }
+            } catch (error) {
+                console.warn(
+                    `[PilotSwarmWorker] GitHub Copilot model discovery failed: ${normalizeError(error).message}`,
+                );
+                githubDiscoveryFailed = true;
+            }
+        }
+
+        for (const descriptor of registry.allModels) {
+            if (!configuredSet.has(descriptor.qualifiedName)) continue;
+            const resolved = registry.resolve(descriptor.qualifiedName);
+            if (!resolved) continue;
+            if (resolved.type === "github" || resolved.type === "github-ambient") {
+                if (availableGitHubModels.has(descriptor.qualifiedName)) {
+                    available.push(descriptor.qualifiedName);
+                }
+            } else if (resolved.usesWorkloadIdentity || resolved.sdkProvider?.apiKey) {
+                available.push(descriptor.qualifiedName);
+            }
+        }
+        const bounded = [...new Set(available)];
+        const value = {
+            ...(registry.defaultModel && bounded.includes(registry.defaultModel)
+                ? { defaultModel: registry.defaultModel }
+                : {}),
+            available: bounded,
+        };
+        if (githubDiscoveryFailed && this.workerModelCache) {
+            this.workerModelCache = {
+                fetchedAt: Date.now(),
+                value: this.workerModelCache.value,
+            };
+            return this.workerModelCache.value;
+        }
+        this.workerModelCache = { fetchedAt: Date.now(), value };
+        return value;
+    }
+
+    private async _discoverGitHubWorkerModelIds(token?: string): Promise<Set<string>> {
+        const client = createCopilotClient({
+            ...(token ? { gitHubToken: token } : {}),
+            useLoggedInUser: !token,
+            logLevel: "error",
+            env: {
+                ...process.env,
+                COPILOT_HOME: path.dirname(this.sessionStateDir),
+            },
+        });
+        try {
+            let timeout: ReturnType<typeof setTimeout> | undefined;
+            const discovery = (async () => {
+                await client.start();
+                return client.listModels();
+            })();
+            const models = await Promise.race([
+                discovery,
+                new Promise<never>((_, reject) => {
+                    timeout = setTimeout(
+                        () => reject(new Error("GitHub Copilot model discovery timed out after 30s")),
+                        30_000,
+                    );
+                    timeout.unref?.();
+                }),
+            ]).finally(() => {
+                if (timeout) clearTimeout(timeout);
+            });
+            return new Set(
+                models
+                    .filter((model) => model.id !== "auto")
+                    .filter((model) => model.policy?.state !== "disabled")
+                    .filter((model) => model.policy?.state !== "unconfigured")
+                    .map((model) => model.id),
+            );
+        } finally {
+            await client.stop().catch(() => []);
+        }
     }
 
     async normalizeModelRefForSession(
@@ -985,6 +1332,15 @@ export class SessionManager {
         const normalized = await this.normalizeModelRefForSession(
             sessionId, model, { requireQualified: true },
         );
+        const routing = await this.sessionCatalog?.getSessionRouting?.(sessionId);
+        if (
+            routing?.ownerAffinityRequired === true
+            && !this.currentWorkerModels().available.includes(normalized)
+        ) {
+            throw new Error(
+                `Model ${normalized} is not advertised by this owner-affinitized worker.`,
+            );
+        }
         const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
         if (reasoningEffort) {
             const supported = descriptor?.supportedReasoningEfforts ?? [];
@@ -1003,6 +1359,15 @@ export class SessionManager {
      * cache would leak one identity's catalog onto another's sessions.
      */
     private modelCatalogCaches = new Map<string, { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> }>();
+    private workerModelCache: {
+        fetchedAt: number;
+        value: { defaultModel?: string; available: string[] };
+    } | null = null;
+    private workerModelRoutingUniverse: string[] | null = null;
+    private workerModelRefreshPromise: Promise<{
+        defaultModel?: string;
+        available: string[];
+    }> | null = null;
     /**
      * Resolve whether a session's model can be shown images, plus the
      * provider's vision limits. `modelRef` is the session-config value
@@ -1182,7 +1547,41 @@ export class SessionManager {
      * getOrCreate re-resolves.
      */
     setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null): void {
+        const previousRegistry = this.workerDefaults.modelProviders;
         this.workerDefaults.modelProviders = registry ?? undefined;
+        // The routing universe is process-stable because the runtime's
+        // activity filter is registered once at worker startup. A provider
+        // refresh can remove advertised capabilities immediately, but newly
+        // configured models require a worker restart before they are routable.
+        if (!this.workerModelRoutingUniverse) {
+            this.workerModelCache = null;
+            return;
+        }
+        const resolvableModels = (
+            candidate: import("./model-providers.js").ModelProviderRegistry | null | undefined,
+        ) => this.workerModelRoutingUniverse!.filter((model) => Boolean(candidate?.resolve(model)));
+        const previousModels = resolvableModels(previousRegistry);
+        const nextModels = resolvableModels(registry);
+        if (
+            previousModels.length === nextModels.length
+            && previousModels.every((model, index) => model === nextModels[index])
+        ) {
+            return;
+        }
+        if (this.workerModelCache) {
+            const nextSet = new Set(nextModels);
+            const available = this.workerModelCache.value.available.filter((model) => nextSet.has(model));
+            this.workerModelCache = {
+                fetchedAt: 0,
+                value: {
+                    ...(this.workerModelCache.value.defaultModel
+                        && available.includes(this.workerModelCache.value.defaultModel)
+                        ? { defaultModel: this.workerModelCache.value.defaultModel }
+                        : {}),
+                    available,
+                },
+            };
+        }
     }
 
     setModelProvidersRefresher(refresh: (() => Promise<void>) | null): void {
@@ -1258,6 +1657,24 @@ export class SessionManager {
         } catch {
             return null;
         }
+    }
+
+    /**
+     * True when a Copilot user is already signed in under this worker's
+     * COPILOT_HOME. On a devbox this is the interactive `copilot` login; the
+     * tokenless CopilotClient (ensureClient with no token) reuses it via
+     * COPILOT_HOME. Fleet/CI pods have no such login, so this returns false
+     * and the GHCP_KEY_MISSING guard still fires with a clear error.
+     */
+    private _hasSignedInCopilotUser(): boolean {
+        let raw: string;
+        try {
+            const copilotHome = resolveCopilotHome(this.sessionStateDir);
+            raw = fs.readFileSync(path.join(copilotHome, "config.json"), "utf8");
+        } catch {
+            return false;
+        }
+        return hasSignedInCopilotUserConfig(raw);
     }
 
     /** Ensure the CopilotClient is started. */
@@ -1419,6 +1836,7 @@ export class SessionManager {
         // CopilotClient (= which token) it was bound to; the next
         // getOrCreate will re-resolve.
         this.sessionClientKeys.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -1455,6 +1873,7 @@ export class SessionManager {
         } catch {}
 
         this.sessionClientKeys.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -1615,6 +2034,7 @@ export class SessionManager {
                     }
                     this.sessionLastTouchedAt.delete(sessionId);
                     this.sessionClientKeys.delete(sessionId);
+                    this.sessionMcpAuthFingerprints.delete(sessionId);
                     reclaimed++;
                 });
             } catch (error: unknown) {
@@ -1716,7 +2136,7 @@ export class SessionManager {
     async getOrCreate(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; sessionConfiguration?: import("./turn-lifecycle-hooks.js").SessionConfigurationOverrides },
     ): Promise<ManagedSession> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
@@ -1732,7 +2152,7 @@ export class SessionManager {
     private async _getOrCreateUnlocked(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; sessionConfiguration?: import("./turn-lifecycle-hooks.js").SessionConfigurationOverrides },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
         const turnIndex = options?.turnIndex;
@@ -1809,15 +2229,47 @@ export class SessionManager {
         }
         // Capture MCP grants with the same registry snapshot, before asynchronous
         // provider/catalog work below can allow a package reload to intervene.
+        //
+        // Per-agent MCP (capability-profiles Phase 1): a session gets the
+        // base map (base-agent opt-ins + direct worker-config servers) plus
+        // its bound agent's resolved server map — resolved worker-side at the
+        // same chokepoint as the agent prompt. The deployment catalog is
+        // never applied wholesale.
+        //
+        // Read the MCP map of the copy THIS session actually resolved to.
+        // The worker registers a package agent's MCP under a package-qualified
+        // key only, and reserves the bare name for deployment/inline agents —
+        // so the resolved copy's own packageId is the discriminator:
+        //   • package copy resolved  → its qualified key (never the bare name,
+        //     which another copy of a shadowed name could have written);
+        //   • deployment/inline copy → the bare name (its own MCP);
+        //   • no copy resolved (a foreign-private-only name) → no grants.
+        // Keying off `boundAgentCopy.packageId` rather than "is any copy a
+        // package" is load-bearing: when a deployment agent and a package
+        // share a name and this session resolved the DEPLOYMENT copy, it must
+        // still get the deployment agent's bare-key MCP, not an empty
+        // qualified lookup.
         const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
             ? undefined
             : boundAgentCopy.packageId
                 ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
                 : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
-        const effectiveMcpServers = {
+        // `let`: delegated repo-defined MCP servers (git-hydration) are merged
+        // into this map further down, so it must stay reassignable.
+        let effectiveMcpServers: Record<string, any> = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
-            ...(boundAgentMcpServers ?? {}),
+            ...(options?.sessionConfiguration?.mcpServers ?? {}),
         };
+        const agentMcpOverrides = boundAgentMcpServers ?? {};
+        for (const agentServerName of Object.keys(agentMcpOverrides)) {
+            const agentServerLc = agentServerName.toLowerCase();
+            for (const baseServerName of Object.keys(effectiveMcpServers)) {
+                if (baseServerName !== agentServerName && baseServerName.toLowerCase() === agentServerLc) {
+                    delete effectiveMcpServers[baseServerName];
+                }
+            }
+            effectiveMcpServers[agentServerName] = agentMcpOverrides[agentServerName];
+        }
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
@@ -1997,15 +2449,30 @@ export class SessionManager {
             ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
-            throw Object.assign(
-                new Error(
-                    "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before using GitHub Copilot models.",
-                ),
-                { code: "GHCP_KEY_MISSING", status: 400 },
-            );
+            if (this._hasSignedInCopilotUser()) {
+                // No explicit token, but a Copilot user is signed in under this
+                // worker's COPILOT_HOME. Fall through to the tokenless
+                // CopilotClient (ensureClient below builds it with no token but
+                // exports COPILOT_HOME), which authenticates as that signed-in
+                // user. This is the devbox path; fleet/CI pods have no login and
+                // take the throw below.
+                emitSessionManagerTrace(
+                    sessionId,
+                    `no explicit GitHub Copilot token; using signed-in Copilot user under COPILOT_HOME`,
+                    { trace },
+                );
+            } else {
+                throw Object.assign(
+                    new Error(
+                        "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before using GitHub Copilot models.",
+                    ),
+                    { code: "GHCP_KEY_MISSING", status: 400 },
+                );
+            }
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
-        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
+        const effectiveGithubToken = userGithubToken || resolvedProvider?.githubToken;
+        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (effectiveGithubToken || "")
             + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
@@ -2026,9 +2493,134 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        // Non-MCP delegated-token surfacing — MUST run BEFORE ensureClient() below.
+        // The default CLI transport is stdio: the child runtime's environment is a
+        // SNAPSHOT of process.env taken when the CopilotClient is constructed
+        // (ensureClient passes `env: {...process.env, COPILOT_HOME}`, which REPLACES
+        // the child's env), so a later process.env mutation never reaches the shell
+        // tool. Some tools consume a caller-delegated bearer through a NAMED ENV VAR
+        // rather than an MCP Authorization header (e.g. a CLI or skill that reads its
+        // bearer from a named environment variable instead of an HTTP Authorization
+        // header). The audience -> env-var-name mapping is DEPLOY CONFIG — `CALLER_AUTH_ENV_TOKENS`,
+        // a ";"-delimited list of `NAME=audience` pairs — and is NEVER hardcoded here
+        // (this ships in a public repo; same principle as the no-hardcoded-audience
+        // table MCP path in _getOrCreateUnlocked). The devbox-local provider acquires
+        // each configured audience on demand; an unavailable audience is skipped and
+        // the tool fails closed on its own. This sets the worker process env as a
+        // LEGACY FALLBACK, but that env is a
+        // one-time SNAPSHOT frozen into the cached CopilotClient at construction
+        // (ensureClient, `env: {...process.env}`), so after the FIRST session it
+        // never reaches a later session's stdio child — a stale token from the
+        // pod's first caller would leak into every subsequent session. The
+        // AUTHORITATIVE per-session delivery is injecting each resolved token into
+        // THAT session's `mcpServers[server].env` map (see the stdio injection
+        // after effectiveMcpServers is built below), so the runtime spawns that
+        // session's stdio child with a fresh locally acquired token. Only devbox
+        // fleets that set CALLER_AUTH_ENV_TOKENS pay this cost.
+        // Delegated caller credentials are acquired locally by devbox workers.
+        // They never transit the PilotSwarm API or a deployment credential store.
+        let callerAuthIsDevbox =
+            catalogRow?.routing?.ownerAffinityRequired === true
+            || (process.env.CALLER_AUTH_MODE || "").trim().toLowerCase() === "devbox";
+        if (
+            !callerAuthIsDevbox
+            && this.workerDefaults.callerTokenProvider
+            && this.sessionCatalog?.getSessionRouting
+        ) {
+            try {
+                const sessionRouting =
+                    await this.sessionCatalog.getSessionRouting(sessionId);
+                callerAuthIsDevbox =
+                    sessionRouting?.ownerAffinityRequired === true;
+            } catch (error) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `[caller-auth] routing lookup failed; withholding delegated credentials: ${error instanceof Error ? error.message : String(error)}`,
+                    { trace },
+                );
+            }
+        }
+        const callerAuthEnvTokenSpecs = (process.env.CALLER_AUTH_ENV_TOKENS || "")
+            .split(";")
+            .map((p) => p.trim())
+            .filter(Boolean)
+            .map((pair) => {
+                const eq = pair.indexOf("=");
+                if (eq <= 0) return null;
+                const name = pair.slice(0, eq).trim();
+                const audience = pair.slice(eq + 1).trim();
+                // POSIX-ish env-var name guard; audience must be non-empty.
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !audience) return null;
+                return { name, audience };
+            })
+            .filter((s): s is { name: string; audience: string } => s != null);
+        // Resolved delegated tokens keyed by their target ENV-VAR NAME, captured
+        // for the authoritative per-session stdio-MCP `env` injection below. The
+        // process.env exports in the loop are the legacy fallback only.
+        const callerAuthEnvVars: Record<string, string> = {};
+        if (callerAuthEnvTokenSpecs.length > 0) {
+            const getCallerToken =
+                await this.configuredCallerTokenProvider(callerAuthIsDevbox);
+            if (getCallerToken) {
+                for (const spec of callerAuthEnvTokenSpecs) {
+                    const audience = spec.audience.replace(/\/+$/, "");
+                    const scope = audience.endsWith("/.default")
+                        ? audience
+                        : `${audience}/.default`;
+                    const tok = await getCallerToken({
+                        appIdUri: appIdUriFromScope(scope),
+                        scope,
+                    });
+                    if (tok) {
+                        // NEVER log the token value — only the mapping + length.
+                        // Legacy fallback (frozen into the client env snapshot after
+                        // session 1); the per-session mcpServers[].env injection below
+                        // is what actually reaches each session's stdio child.
+                        process.env[spec.name] = tok;
+                        callerAuthEnvVars[spec.name] = tok;
+                        const msg = `[caller-auth] exported delegated token for audience ${spec.audience} as $${spec.name} (len=${tok.length})`;
+                        console.log(msg);
+                        emitSessionManagerTrace(sessionId, msg, { trace });
+                    } else {
+                        emitSessionManagerTrace(sessionId, `[caller-auth] no delegated token for audience ${spec.audience}; $${spec.name} left unset`, { trace });
+                    }
+                }
+            }
+        }
+        const client = await this.ensureClient(effectiveGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const sessionWorkspace = this.workerDefaults.sessionWorkspaceManager
+            ?.resolve(sessionId, config.workingDirectory);
+        const platformOwnedWorkspace = sessionWorkspace?.ownership === "platform";
+        const repositoryMcpEnabled =
+            options?.sessionConfiguration?.enableConfigDiscovery
+            ?? this.workerDefaults.repositoryMcpEnabled !== false;
+        const repositoryWorkspace = !platformOwnedWorkspace;
+        const effectiveWorkingDirectory =
+            sessionWorkspace?.path ?? config.workingDirectory ?? process.cwd();
+
+        let repositorySkillDirectories: string[] = [];
+        let legacySessionSkillDirectories = this.workerDefaults.skillDirectories ?? [];
+        if (repositoryWorkspace && !repositoryMcpEnabled && fs.existsSync(effectiveWorkingDirectory)) {
+            try {
+                const repositoryConfiguration = discoverRepositoryConfiguration({
+                    repositoryRoot: effectiveWorkingDirectory,
+                    trust: { skills: true },
+                });
+                repositorySkillDirectories = repositoryConfiguration.skillDirectories;
+                legacySessionSkillDirectories = [
+                    ...new Set([
+                        ...legacySessionSkillDirectories,
+                        ...repositorySkillDirectories,
+                    ]),
+                ];
+            } catch (error: unknown) {
+                console.warn(
+                    `[SessionManager] repository skill discovery failed for ${effectiveWorkingDirectory}: ${normalizeError(error).message}`,
+                );
+            }
+        }
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
         // so the LLM sees them at session creation time.
@@ -2404,8 +2996,11 @@ export class SessionManager {
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
         const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
-            ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
-            : this.workerDefaults.skillDirectories ?? [];
+            ? [...new Set([
+                ...(this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []),
+                ...repositorySkillDirectories,
+            ])]
+            : legacySessionSkillDirectories;
         // Session workspaces (section 4.6): the repo agents and skills the
         // provider's adopt allows, filtered for this session. Agents need
         // native tasks; they run as native task children.
@@ -2460,6 +3055,7 @@ export class SessionManager {
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
             mcpServers: effectiveMcpServers,
+            enableConfigDiscovery: repositoryMcpEnabled,
             excludedTools,
             tools: allTools.map(toolDeclarationForFingerprint),
             ...(workspaceAttach ? { workspace: {
@@ -2471,6 +3067,130 @@ export class SessionManager {
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
 
+        // Devbox-local delegated MCP access resolves upstream auth for each remote
+        // server by DISCOVERING its required audience at runtime (RFC 6750
+        // challenge -> RFC 9728 protected-resource-metadata), then asking the local
+        // token provider for that audience. The delegated path never presents the
+        // worker managed identity.
+        // Deployment-owned worker headers may already be attached below by
+        // mcpServerHeadersProvider. A server whose audience the local user cannot
+        // satisfy FAST-FAILS the session (see mcp-auth-discovery.ts, and its phase-2
+        // skip TODO). Credentials are resolved fresh here and never carried in the
+        // durable payload. Traces go to stdout and the session trace sink.
+        //
+        // TODO(perf): this runs PER TURN, before the warm-session reuse check
+        // below (~"const existing = this.sessions.get(sessionId)"). On a warm
+        // reuse turn the probed servers are even discarded (updateConfig carries
+        // no mcpServers), so every turn pays a 401/PRM discovery round-trip per
+        // remote server for nothing, and a transient PRM blip fast-fails an
+        // otherwise-healthy warm turn. The audience a server requires is stable
+        // for a session's lifetime, so memoize the resolved { server -> audience }
+        // once per session tree; only re-resolve on cold create/resume or when the
+        // effective server set changes.
+        const hasRemoteMcp = Object.values(effectiveMcpServers).some(
+            (c: any) => c && (c.type === "http" || c.type === "sse" || (c.url && !c.command)),
+        );
+        if (hasRemoteMcp && this.workerDefaults.mcpServerHeadersProvider) {
+            const runtimeHeaderBindings =
+                await this.workerDefaults.mcpServerHeadersProvider();
+            const injectedServers: string[] = [];
+            const withheldServers: string[] = [];
+            for (const [serverName, binding] of Object.entries(runtimeHeaderBindings)) {
+                const cfg = effectiveMcpServers[serverName] as any;
+                const isRemote = cfg
+                    && (cfg.type === "http" || cfg.type === "sse" || (cfg.url && !cfg.command));
+                if (!isRemote || !binding?.headers
+                    || Object.keys(binding.headers).length === 0) continue;
+                const effectiveUrl = normalizedMcpServerUrl(cfg.url);
+                const expectedUrl = normalizedMcpServerUrl(binding.expectedUrl);
+                if (!effectiveUrl || !expectedUrl || effectiveUrl !== expectedUrl) {
+                    withheldServers.push(serverName);
+                    continue;
+                }
+                effectiveMcpServers[serverName] = {
+                    ...cfg,
+                    headers: {
+                        ...(cfg.headers ?? {}),
+                        ...binding.headers,
+                    },
+                };
+                injectedServers.push(serverName);
+            }
+            if (injectedServers.length > 0) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `[mcp-headers] injected worker-owned runtime headers (servers=[${injectedServers.join(",")}])`,
+                    { trace },
+                );
+            }
+            if (withheldServers.length > 0) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `[mcp-headers] withheld worker-owned runtime headers because the effective server URL did not match its deployment binding (servers=[${withheldServers.join(",")}])`,
+                    { trace },
+                );
+            }
+        }
+        if (hasRemoteMcp) {
+            let getCallerToken =
+                await this.configuredCallerTokenProvider(callerAuthIsDevbox);
+            if (getCallerToken) {
+                const dualTrace = (m: string) => {
+                    console.log(m);
+                    emitSessionManagerTrace(sessionId, m, { trace });
+                };
+                // Discover each server's audience and acquire the matching token
+                // from the devbox-local provider. There is no server-to-audience
+                // table or OBO exchange, and worker identity is never presented
+                // through this delegated path.
+                const result = await resolveMcpServerAuth({
+                    servers: effectiveMcpServers,
+                    getCallerToken,
+                    trace: dualTrace,
+                });
+                effectiveMcpServers = result.servers;
+            }
+        }
+
+        // ── Per-session delegated-token injection for STDIO MCP servers ──────
+        // Caller-delegated tokens (resolved above into callerAuthEnvVars, keyed by
+        // env-var NAME) must reach each stdio MCP server as an ENVIRONMENT VARIABLE
+        // (for example, a command-backed server may read a named service token
+        // instead of receiving an HTTP Authorization header).
+        // The process.env export earlier is a one-time snapshot frozen into the
+        // cached CopilotClient, so it only reaches the FIRST session's child. Here we
+        // instead layer the tokens onto each stdio server's per-session `env` map,
+        // which travels in sessionConfig.mcpServers on EVERY createSession call — so
+        // the runtime spawns each session's shim with THAT session's token, with no
+        // dependence on process.env inheritance (delegated-auth fix).
+        //
+        // We DEEP-CLONE each server's env before writing: effectiveMcpServers entries
+        // are references into the shared workerDefaults template, and mutating them in
+        // place would re-leak one session's token into the next. Only stdio/command
+        // servers get env; http/sse servers carry caller auth via the Authorization
+        // header (resolveMcpServerAuth) above. Tokens are never logged.
+        if (Object.keys(callerAuthEnvVars).length > 0) {
+            const injectedServers: string[] = [];
+            for (const [serverName, serverCfg] of Object.entries(effectiveMcpServers)) {
+                const cfg = serverCfg as any;
+                const isStdio = cfg && typeof cfg.command === "string" && !cfg.url
+                    && cfg.type !== "http" && cfg.type !== "sse";
+                if (!isStdio) continue;
+                const mergedEnv: Record<string, string> = { ...(cfg.env ?? {}) };
+                for (const [name, tok] of Object.entries(callerAuthEnvVars)) {
+                    mergedEnv[name] = tok;
+                }
+                effectiveMcpServers[serverName] = { ...cfg, env: mergedEnv };
+                injectedServers.push(serverName);
+            }
+            emitSessionManagerTrace(
+                sessionId,
+                `[caller-auth] injected ${Object.keys(callerAuthEnvVars).length} delegated token(s) into per-session stdio MCP env (servers=[${injectedServers.join(",")}])`,
+                { trace },
+            );
+        }
+
+        const mcpAuthFingerprint = delegatedMcpAuthFingerprint(effectiveMcpServers);
         const sessionConfig: any = {
             sessionId,
             // Sole chokepoint where tool DECLARATIONS reach the CLI (create and
@@ -2510,18 +3230,21 @@ export class SessionManager {
             // configDir is intentionally omitted: the Copilot CLI does not honor it for
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
-            // Session workspaces: after a clear the folder stays explicit, or
-            // the resume falls back to the checkout the CLI session was
-            // created in (review R1).
-            workingDirectory: workspaceAttach?.path ?? config.workingDirectory
+            workingDirectory: workspaceAttach?.path ?? sessionWorkspace?.path ?? config.workingDirectory
                 ?? (config.workspaceCleared ? process.cwd() : undefined),
-            // Session workspaces (section 4.10): the extra folders attached
-            // for this turn. The CLI lists them to the model and keeps them
-            // only until a cold resume, so they are passed every time. Not in
-            // the fingerprint: a new handle would stop running shells.
             ...(workspaceAttach?.extras?.length
                 ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
                 : {}),
+            // Native config discovery includes executable repository MCP and
+            // cannot be enabled selectively. Shared workers that deny repo MCP
+            // turn it off, then restore the non-MCP capabilities through their
+            // independent controls and explicit confined skill directories.
+            enableConfigDiscovery: repositoryWorkspace && repositoryMcpEnabled,
+            enableSkills: repositoryWorkspace,
+            ...(repositoryWorkspace && !repositoryMcpEnabled ? {
+                skipCustomInstructions: false,
+                enableOnDemandInstructionDiscovery: true,
+            } : {}),
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
@@ -2568,6 +3291,129 @@ export class SessionManager {
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
+        // ── Repo-discovered agent binding (Impl 2: customAgents injection) ───
+        // A bound agent that is NOT a worker-plugin agent may be a repo agent
+        // shipped in the hydrated enlistment as `.github/agents/<name>.agent.md`.
+        // The Copilot runtime's config discovery
+        // (enableConfigDiscovery) loads `.mcp.json`, skills, and instructions —
+        // but it does NOT register `.github/agents/*.agent.md` as SELECTABLE
+        // custom agents. So handing that file's name straight to the CLI as the
+        // session's active agent (`sessionConfig.agent`) fails hard with
+        // "Custom agent '<name>' not found".
+        //
+        // The only working path is to PARSE the agent file ourselves and inject
+        // it as an explicit `customAgents` entry (persona body → prompt, plus its
+        // declared tools / mcp-servers / skills), then activate it by name. The
+        // runtime resolves `agent` against the injected customAgents, so the
+        // persona actually binds and the portal shows the real agent instead of
+        // "agent: --". Worker-plugin agents keep their own binding path
+        // (agentPromptLookup + agentMcpServers, applied above) and are skipped.
+        //
+        // GUARD: `sessionConfig.agent` is set ONLY after the customAgent is
+        // confirmed present in the array — never point `agent` at an unresolved
+        // name (that is exactly the 404 regression this replaces).
+        const repoAgentDef = this._resolveRepoAgentDefinition(
+            effectiveSerializableConfig.boundAgentName,
+            // The git-hydration worker chdir's into the hydrated enlistment and
+            // leaves sessionConfig.workingDirectory UNSET (the CLI then uses
+            // process.cwd()), so `.github/agents` lives at process.cwd() — mirror
+            // the diagnostics' effWorkingDir fallback chain exactly.
+            sessionConfig.workingDirectory ?? config.workingDirectory ?? process.cwd(),
+            repositoryMcpEnabled,
+        );
+        if (repoAgentDef) {
+            // Clone rather than mutate: sessionConfig.customAgents may be the
+            // SAME array reference spread from workerDefaults.customAgents, which
+            // is shared across every session on this worker.
+            const existingCustomAgents = Array.isArray(sessionConfig.customAgents)
+                ? sessionConfig.customAgents
+                : [];
+            const wantedName = repoAgentDef.name.toLowerCase();
+            const alreadyPresent = existingCustomAgents.some(
+                (a: { name?: string }) => typeof a?.name === "string" && a.name.toLowerCase() === wantedName,
+            );
+            const mergedCustomAgents = alreadyPresent
+                ? existingCustomAgents
+                : [...existingCustomAgents, repoAgentDef];
+            sessionConfig.customAgents = mergedCustomAgents;
+            const injected = mergedCustomAgents.some(
+                (a: { name?: string }) => typeof a?.name === "string" && a.name.toLowerCase() === wantedName,
+            );
+            if (injected) {
+                sessionConfig.agent = repoAgentDef.name;
+                emitSessionManagerTrace(
+                    sessionId,
+                    `[bind] injected repo agent "${repoAgentDef.name}" as customAgent and activated it ` +
+                        `(boundAgentName="${effectiveSerializableConfig.boundAgentName}", ` +
+                        `promptChars=${repoAgentDef.prompt.length}, ` +
+                        `mcpServers=${repoAgentDef.mcpServers ? Object.keys(repoAgentDef.mcpServers).length : 0}, ` +
+                        `skills=${repoAgentDef.skills?.length ?? 0}, ` +
+                        `customAgentsCount=${mergedCustomAgents.length}, alreadyPresent=${alreadyPresent})`,
+                    { trace },
+                );
+            }
+        }
+
+        // ── GHCP SDK session-config diagnostics ──────────────────────────────
+        // Log the exact parameters that govern WHERE the Copilot CLI looks for
+        // skills/instructions/agents, plus on-disk existence probes for the
+        // enlistment's `.github` tree. This is the tripwire: if a target repo
+        // checkout succeeds but the CLI still can't see `<repo>/.github`,
+        // this line shows whether it was a working-directory, config-discovery,
+        // or enable-skills problem (the three knobs that gate `.github` skills).
+        // NOTE: PilotSwarm's OWN bundled skills reach the model via
+        // `skillDirectories` + the search_skills knowledge index — the CLI's
+        // `.github` auto-discovery is a SEPARATE path gated by
+        // enableConfigDiscovery (SDK default: false) / enableSkills.
+        try {
+            const effWorkingDir = sessionConfig.workingDirectory ?? process.cwd();
+            const probeGithub = (base: string | undefined) => {
+                if (!base) return { base: "(unset)", github: false, skills: false, agents: false, prompts: false, instructions: false };
+                const p = (sub: string) => { try { return fs.existsSync(path.join(base, sub)); } catch { return false; } };
+                return {
+                    base,
+                    github: p(".github"),
+                    skills: p(path.join(".github", "skills")),
+                    agents: p(path.join(".github", "agents")),
+                    prompts: p(path.join(".github", "prompts")),
+                    instructions: p(path.join(".github", "instructions")),
+                };
+            };
+            const skillDirsProbe = (sessionConfig.skillDirectories ?? []).map((d: string) => ({
+                dir: d,
+                exists: (() => { try { return fs.existsSync(d); } catch { return false; } })(),
+            }));
+            emitSessionManagerTrace(
+                sessionId,
+                "GHCP-SDK createSession params " + JSON.stringify({
+                    sessionId,
+                    model: sessionConfig.model,
+                    turnIndex: turnIndex ?? null,
+                    workingDirectory: sessionConfig.workingDirectory ?? "(unset -> CLI uses process.cwd())",
+                    processCwd: process.cwd(),
+                    copilotHome: process.env.COPILOT_HOME ?? "(unset)",
+                    enableConfigDiscovery: sessionConfig.enableConfigDiscovery ?? "(unset -> SDK default false)",
+                    enableSkills: sessionConfig.enableSkills ?? "(unset -> falls back to enableConfigDiscovery)",
+                    configDirectory: sessionConfig.configDirectory ?? "(unset)",
+                    skillDirectoriesCount: skillDirsProbe.length,
+                    skillDirectories: skillDirsProbe,
+                    customAgentsCount: Array.isArray(sessionConfig.customAgents) ? sessionConfig.customAgents.length : 0,
+                    boundAgentName: effectiveSerializableConfig.boundAgentName ?? "(unset)",
+                    activeAgent: sessionConfig.agent ?? "(unset -> default/generic)",
+                    mcpServerNames: Object.keys(effectiveMcpServers),
+                    githubProbeWorkingDir: probeGithub(effWorkingDir),
+                    githubProbeCwd: probeGithub(process.cwd()),
+                }),
+                { trace },
+            );
+        } catch (probeErr: unknown) {
+            emitSessionManagerTrace(
+                sessionId,
+                `GHCP-SDK createSession params probe failed: ${normalizeError(probeErr).message}`,
+                { trace, level: "warn" },
+            );
+        }
+
         let copilotSession: CopilotSession;
 
         // 1. Check if already in memory (warm) — update config in case
@@ -2596,10 +3442,22 @@ export class SessionManager {
                 await this._cancelWorkspaceShells(sessionId, existing, "a rebind");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
+            } else if (
+                this.sessionMcpAuthFingerprints.has(sessionId)
+                && this.sessionMcpAuthFingerprints.get(sessionId) !== mcpAuthFingerprint
+            ) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    "delegated MCP credentials changed; recycling warm session",
+                    { trace },
+                );
+                await existing.destroy();
+                this._forgetWarmSession(sessionId);
             } else {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                this.sessionMcpAuthFingerprints.set(sessionId, mcpAuthFingerprint);
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
                 if (config.baseAgentPolicy?.version === "v2") {
                     existing.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
@@ -2731,6 +3589,7 @@ export class SessionManager {
             agentId: effectiveSerializableConfig.agentIdentity ?? null,
         }));
         this.sessions.set(sessionId, managed);
+        this.sessionMcpAuthFingerprints.set(sessionId, mcpAuthFingerprint);
         this.sessionAgentCopies.set(sessionId, boundAgentCopy);
         this.sessionBindingFingerprints.set(sessionId, bindingFingerprint);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey, boundAgentCopy ?? null);
@@ -2758,6 +3617,7 @@ export class SessionManager {
         this.sessions.delete(sessionId);
         this.sessionAgentCopies.delete(sessionId);
         this.sessionBindingFingerprints.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
     }
 
     /**
@@ -3263,6 +4123,7 @@ export class SessionManager {
         this._forgetWarmSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
         this.sessionConfigs.delete(sessionId);
+        this.workerDefaults.sessionWorkspaceManager?.remove(sessionId);
     }
 
     /**
@@ -3275,7 +4136,10 @@ export class SessionManager {
             return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
-        if (!session) return;
+        if (!session) {
+            this.sessionMcpAuthFingerprints.delete(sessionId);
+            return;
+        }
         await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
         try {
             await session.destroy();
@@ -3543,6 +4407,47 @@ export class SessionManager {
                     mergePromptSections([currentContent, askBlock, skillBlock, graphBlock]) ?? currentContent);
             },
         };
+    }
+
+    /**
+     * Parse a repo-discovered agent (`<workspace>/.github/agents/<file>.agent.md`)
+     * into a `customAgents` entry (name, persona prompt, description, tools,
+     * mcp-servers, skills) that can be injected into the session config and
+     * activated by name. This is the only way to bind a `.github/agents` agent:
+     * the Copilot runtime's config discovery does NOT register those files as
+     * selectable custom agents, so they must be materialized explicitly.
+     *
+     * Returns undefined — leaving the session on its normal path — when:
+     *   - no agent is bound;
+     *   - the bound name is a worker-plugin agent (that path owns binding via
+     *     agentPromptLookup / agentMcpServers, applied at the create chokepoint);
+     *   - there is no working directory to search;
+     *   - no `.github/agents` file matches the bound name.
+     *
+     * Matching is case-insensitive against BOTH the file slug and the frontmatter
+     * `name:`, so a caller may pass either "my-agent" (slug) or "My-Agent"
+     * (declared name). The returned `name` prefers the declared frontmatter name
+     * (what we then hand to `sessionConfig.agent`), falling back to the slug.
+     *
+     * The frontmatter key `mcp-servers` (hyphenated, as authored) is mapped to
+     * the wire `mcpServers` shape; each server object is passed through as-is
+     * (type/command/args/env/cwd/tools). NOTE: agent files authored for Windows
+     * hosts may carry Windows-style commands/paths that won't spawn on the Linux
+     * worker — they are injected verbatim for a faithful bind and fixed later.
+     */
+    private _resolveRepoAgentDefinition(
+        boundAgentName: string | undefined,
+        workingDirectory: string | undefined,
+        repositoryMcpEnabled: boolean,
+    ): RepoAgentDefinition | undefined {
+        // Delegates to the exported, filesystem-pure resolver; the only
+        // `this`-state it needs is the worker-plugin guard, injected as a fn.
+        return resolveRepoAgentDefinition(
+            boundAgentName,
+            workingDirectory,
+            (name) => Boolean(this.workerDefaults.agentPromptLookup?.[name]),
+            repositoryMcpEnabled,
+        );
     }
 
     private _buildLastInstructionsSection(

@@ -3,6 +3,7 @@
 .env.*
 .git
 .github
+deploy/.tmp
 node_modules
 **/node_modules
 coverage

@@ -7,6 +7,8 @@ import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-sco
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
+import { processIdentity } from "./diagnostics.js";
+import { runStartupStage } from "./startup-diagnostics.js";
 import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
@@ -29,12 +31,24 @@ import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
+import { createWorkflowRunLifecycleTools } from "./workflow-run-lifecycle-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
-import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
+import { DEFAULT_TURN_TIMEOUT_MS, DEFAULT_TURN_INACTIVITY_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
+import {
+    addWorkerModelRoutingTags,
+    isOwnerScopedRoutingTag,
+    repoFromRoutingTag,
+    requireWorkerRoutingTag,
+    scopeWorkerTagFilter,
+    workerOwnerFromEnv,
+} from "./activity-routing.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
+import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
+import { resolveWorkerRuntimeProvenance } from "./worker-provenance.js";
+import { SessionWorkspaceManager } from "./session-workspace.js";
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
@@ -52,8 +66,8 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, Runtime, Client } = require("duroxide");
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
-const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
-const DEFAULT_WORKER_CONCURRENCY = 2;
+const DEFAULT_ORCHESTRATION_CONCURRENCY = 1;
+const DEFAULT_WORKER_CONCURRENCY = 1;
 const DEFAULT_DUROXIDE_PG_POOL_MAX = 10;
 
 function normalizeAgentIdentity(value: unknown): string {
@@ -72,6 +86,48 @@ function parseNonNegativeInt(raw: unknown): number | undefined {
     return Math.floor(normalized);
 }
 
+/**
+ * @internal Resolve the duroxide worker tag filter (activity routing) for
+ * repo-affinity: explicit `workerTagFilter` option > env `PILOTSWARM_WORKER_TAGS`
+ * (comma-separated tags) > undefined. Every active worker also accepts the
+ * named-agent handoff and workspace capability tags; repo/owner tags remain
+ * scoped normally.
+ *
+ * Tag mode (`PILOTSWARM_WORKER_TAG_MODE`, default `"defaultAnd"`):
+ *   - `"defaultAnd"` -> `{ defaultAnd: [...] }` — untagged activities PLUS the
+ *     listed tags. This is the correct mode for repo affinity: a session's
+ *     turn is a mix of the repo-tagged `runTurn`/`runTurn2` activity and many
+ *     UNTAGGED on-session support activities (hydrate/dehydrate/checkpoint/
+ *     updateCmsState/recordSessionEvent/...). A `{ tags: [...] }` worker would
+ *     serve only `runTurn` and hang the turn on every support activity, so a
+ *     repo worker must accept untagged activities too while still rejecting
+ *     OTHER repos' tagged turns.
+ *   - `"tags"` -> `{ tags: [...] }` — strictly the listed tags (e.g. a
+ *     dedicated GPU pool that runs nothing untagged).
+ */
+export function resolveWorkerTagFilter(
+    explicit: PilotSwarmWorkerOptions["workerTagFilter"],
+    envRaw: unknown,
+    modeRaw: unknown = process.env.PILOTSWARM_WORKER_TAG_MODE,
+    workerOwner: PilotSwarmWorkerOptions["workerOwner"] = undefined,
+): PilotSwarmWorkerOptions["workerTagFilter"] | undefined {
+    let filter = explicit;
+    if (filter === undefined && typeof envRaw === "string") {
+        const tags = envRaw.split(",").map((t) => t.trim()).filter(Boolean);
+        if (tags.length > 0) {
+            const mode = (typeof modeRaw === "string" ? modeRaw : "").trim().toLowerCase();
+            filter = mode === "tags" ? { tags } : { defaultAnd: tags };
+        }
+    }
+    return requireWorkerRoutingTag(
+        requireWorkerRoutingTag(
+            scopeWorkerTagFilter(filter, workerOwner),
+            AGENT_HANDOFF_CAPABILITY,
+        ),
+        WORKSPACE_CAPABILITY,
+    );
+}
+
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
 export function resolveWorkerTurnTimeoutMs(
     explicitValue: unknown,
@@ -81,6 +137,26 @@ export function resolveWorkerTurnTimeoutMs(
         return parseNonNegativeInt(explicitValue) ?? DEFAULT_TURN_TIMEOUT_MS;
     }
     return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_TIMEOUT_MS;
+}
+
+/**
+ * @internal Resolve the per-turn inactivity watchdog: explicit option >
+ * deployment env (PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS) > SDK default. The
+ * watchdog fires when the Copilot CLI subprocess emits no events for this long
+ * and is deliberately routed through the connection-closed recovery (release
+ * affinity + retry on a fresh subprocess). A long-running MCP tool call that
+ * legitimately produces no output for an extended period can exceed the
+ * 5-minute default, so this knob lets a fleet raise it. An explicit 0 disables
+ * the watchdog.
+ */
+export function resolveWorkerTurnInactivityTimeoutMs(
+    explicitValue: unknown,
+    envValue: unknown = process.env.PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS,
+): number {
+    if (explicitValue !== undefined) {
+        return parseNonNegativeInt(explicitValue) ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
+    }
+    return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
 }
 
 export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
@@ -255,6 +331,7 @@ export class PilotSwarmWorker {
     private _agentPackagesRefreshMs = 20_000;
     private _agentPackagesEpoch = -1;
     private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
+    private _workerRegistryTimer: ReturnType<typeof setInterval> | null = null;
     private _agentPackagesRefreshing = false;
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
@@ -268,6 +345,12 @@ export class PilotSwarmWorker {
     private _workerPhase: "starting" | "ready" | "draining" = "starting";
     /** Write-once registration info; built on the first heartbeat. */
     private _registrarInfo: Record<string, unknown> | null = null;
+    /**
+     * Resolved duroxide activity-routing tag filter (from `workerTagFilter`
+     * option / `PILOTSWARM_WORKER_TAGS`). Captured at runtime start so the
+     * heartbeat can advertise this worker's repo affinity in the registry row.
+     */
+    private _workerTagFilter: PilotSwarmWorkerOptions["workerTagFilter"] | undefined;
     /** Event-loop delay histogram for health reporting (reset each beat). */
     private _eventLoopHist: IntervalHistogram | null = null;
     /** Last refresh failure — carried in heartbeat state until a clean pass. */
@@ -278,8 +361,12 @@ export class PilotSwarmWorker {
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
             ...options,
+            workerOwner: options.workerOwner !== undefined
+                ? options.workerOwner
+                : workerOwnerFromEnv(process.env),
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
+            turnInactivityTimeoutMs: resolveWorkerTurnInactivityTimeoutMs(options.turnInactivityTimeoutMs),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
@@ -300,8 +387,10 @@ export class PilotSwarmWorker {
         // works the same way as for env-driven callers (CLI transport).
         const blobStore = createSessionBlobStore(
             {
-                PILOTSWARM_BLOB_USE_MANAGED_IDENTITY: options.blobUseManagedIdentity === undefined
-                    ? undefined : String(options.blobUseManagedIdentity),
+                PILOTSWARM_BLOB_USE_MANAGED_IDENTITY:
+                    options.blobUseManagedIdentity === undefined
+                        ? undefined
+                        : options.blobUseManagedIdentity ? "1" : "0",
                 PILOTSWARM_USE_MANAGED_IDENTITY: options.useManagedIdentity ? "1" : undefined,
                 AZURE_STORAGE_ACCOUNT_URL: options.blobAccountUrl,
                 AZURE_STORAGE_CONNECTION_STRING: options.blobConnectionString,
@@ -367,16 +456,64 @@ export class PilotSwarmWorker {
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
+                mcpServerHeadersProvider: options.mcpServerHeadersProvider,
+                repositoryMcpEnabled: options.repositoryMcpEnabled,
                 mcpAllowedAgents: this._mcpAllowedAgents,
                 deploymentMcpNames: this._deploymentMcpNames,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
-                turnInactivityTimeoutMs: options.turnInactivityTimeoutMs,
+                turnInactivityTimeoutMs: this.config.turnInactivityTimeoutMs,
+                sessionWorkspaceManager: options.sessionWorkspaceRoot
+                    ? new SessionWorkspaceManager(options.sessionWorkspaceRoot)
+                    : undefined,
             },
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+        // ── Worker-startup defaults diagnostics ──────────────────────────────
+        // Emit the exact worker-level state that flows into EVERY session the
+        // node serves (skills, custom agents, MCP servers, model catalog, state
+        // dirs). Pairs with the per-session "GHCP-SDK createSession params" line
+        // in SessionManager: this shows what the worker BOOTED with; that shows
+        // what a specific turn RESOLVED to. Together they pinpoint whether a
+        // missing skill/agent is a load-time (worker) or bind-time (session)
+        // problem — the tripwire for `.github`/skills enumeration.
+        const startupTrace = this.config.traceWriter ?? ((m: string) => console.log(m));
+        try {
+            const skillNames = [...this._loadedSkills.keys()];
+            const skillDirsProbe = (this._loadedSkillDirs ?? []).map((d) => ({
+                dir: d,
+                exists: (() => { try { return fs.existsSync(d); } catch { return false; } })(),
+            }));
+            startupTrace(
+                "[PilotSwarmWorker] worker-defaults " + JSON.stringify({
+                    workerNodeId: this.config.workerNodeId ?? "(unset)",
+                    processCwd: process.cwd(),
+                    copilotHome: process.env.COPILOT_HOME ?? "(unset)",
+                    sessionStateDir: effectiveSessionStateDir ?? "(unset)",
+                    skillDirectoriesCount: skillDirsProbe.length,
+                    skillDirectories: skillDirsProbe,
+                    loadedSkillCount: skillNames.length,
+                    loadedSkillNames: skillNames,
+                    customAgentCount: this._loadedAgents.length,
+                    customAgentNames: this._loadedAgents.map((a) => a.name),
+                    mcpServerNames: Object.keys(this._loadedMcpServers),
+                    // These three are not worker-owned options: sessions inherit
+                    // the Copilot SDK defaults. workingDirectory falls back to the
+                    // worker process cwd (chdir the process to root discovery),
+                    // enableConfigDiscovery defaults off, enableSkills defaults on.
+                    sessionWorkingDirectory: "(SDK default -> process.cwd())",
+                    enableConfigDiscovery: "(SDK default -> false)",
+                    enableSkills: "(SDK default -> on)",
+                    defaultModel: this._modelProviders?.defaultModel ?? "(unset)",
+                    modelCatalogCount: this._modelProviders?.allModels.length ?? 0,
+                }),
+            );
+        } catch (defErr) {
+            startupTrace(`[PilotSwarmWorker] worker-defaults diagnostics failed: ${String((defErr as Error)?.message ?? defErr)}`);
+        }
+
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
             ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
         this.config.workerNodeId ?? undefined);
@@ -605,6 +742,13 @@ export class PilotSwarmWorker {
         this._stopRequested = false;
 
         const trace = this.config.traceWriter ?? (() => {});
+        const startupStartedAt = Date.now();
+        const runWorkerStartupStage = <T>(
+            name: string,
+            operation: () => Promise<T>,
+        ): Promise<T> => runStartupStage(name, operation, {
+            prefix: "[PilotSwarmWorker]",
+        });
         const store = this.config.store;
         const storage = resolveStorageConfig({ options: this.config });
         const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
@@ -621,7 +765,10 @@ export class PilotSwarmWorker {
             process.env.DUROXIDE_PG_POOL_MAX = String(DEFAULT_DUROXIDE_PG_POOL_MAX);
         }
 
-        this._provider = await this._createProvider(storage);
+        this._provider = await runWorkerStartupStage(
+            "duroxide provider creation",
+            () => this._createProvider(storage),
+        );
 
         // Initialize CMS catalog and facts store.
         // CMS + facts can use a separate URL when running with AAD/MI
@@ -643,8 +790,14 @@ export class PilotSwarmWorker {
             let lastErr: unknown;
             for (let attempt = 1; attempt <= attempts; attempt += 1) {
                 try {
-                    this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
-                    await this._catalog.initialize();
+                    this._catalog = await runWorkerStartupStage(
+                        `session catalog creation (attempt ${attempt}/${attempts})`,
+                        () => runtimeStorageProvider.createSessionCatalog(storage.runtime),
+                    );
+                    await runWorkerStartupStage(
+                        `session catalog initialization (attempt ${attempt}/${attempts})`,
+                        () => this._catalog!.initialize(),
+                    );
                     lastErr = null;
                     break;
                 } catch (err) {
@@ -663,7 +816,10 @@ export class PilotSwarmWorker {
         if (this._catalog?.features) {
             this._featureFlags = new FeatureFlagCache(this._catalog.features);
             this.sessionManager.setFeatureFlagCache(this._featureFlags);
-            await this._featureFlags.pollRevisionsAndRefresh();
+            await runWorkerStartupStage(
+                "feature flag refresh",
+                () => this._featureFlags!.pollRevisionsAndRefresh(),
+            );
         }
 
         // ── Provider budgets: the one-time deployment seed ──────────────
@@ -694,14 +850,24 @@ export class PilotSwarmWorker {
             } catch (err) {
                 console.warn(`[PilotSwarmWorker] provider seed skipped: ${String((err as Error)?.message ?? err)}`);
             }
-            await this._refreshProviderRegistry();
+            await runWorkerStartupStage(
+                "provider registry refresh",
+                () => this._refreshProviderRegistry(),
+            );
         }
 
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
         //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
         //    worker/client/management in lockstep.
-        this.factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
-        await this.factStore.initialize();
+        const factStore = await runWorkerStartupStage(
+            "fact store creation",
+            () => runtimeStorageProvider.createFactStore(storage.runtime),
+        );
+        this.factStore = factStore;
+        await runWorkerStartupStage(
+            "fact store initialization",
+            () => factStore.initialize(),
+        );
         const enhancedFactStore = runtimeStorageProvider.getEnhancedFactStore?.(this.factStore)
             ?? (isEnhancedFactStore(this.factStore) ? this.factStore : undefined);
 
@@ -744,8 +910,16 @@ export class PilotSwarmWorker {
         if (storage.runtime.graph?.enabled) {
             let candidate: GraphStore | undefined;
             try {
-                candidate = await runtimeStorageProvider.createGraphStore?.(storage.runtime);
-                if (candidate) await candidate.initialize();
+                candidate = await runWorkerStartupStage(
+                    "graph store creation",
+                    async () => runtimeStorageProvider.createGraphStore?.(storage.runtime),
+                );
+                if (candidate) {
+                    await runWorkerStartupStage(
+                        "graph store initialization",
+                        () => candidate!.initialize(),
+                    );
+                }
                 this.graphStore = candidate ?? null;
             } catch (err) {
                 // A failed graph init disables graph tools without taking down
@@ -766,18 +940,41 @@ export class PilotSwarmWorker {
         this.sessionManager.setFactStore(this.factStore);
         this.sessionManager.setGraphStore(this.graphStore);
 
+        // Resolve this worker's activity-routing tag filter BEFORE the first
+        // heartbeat below, because refreshAgentPackages({force}) triggers the
+        // process-stable registrar info build — which advertises repo affinity
+        // (info.repos / info.routingTags) derived from this filter. Resolving
+        // it afterwards permanently locks repos:null into the registry row.
+        const workerModels = this.sessionManager.configuredWorkerModels();
+        const workerTagFilter = addWorkerModelRoutingTags(resolveWorkerTagFilter(
+            this.config.workerTagFilter,
+            process.env.PILOTSWARM_WORKER_TAGS,
+            process.env.PILOTSWARM_WORKER_TAG_MODE,
+            this.config.workerOwner,
+        ), workerModels);
+        // Remember the resolved filter so the heartbeat can surface repo
+        // affinity into the workers row (see _buildRegistrarInfo -> info.repos).
+        this._workerTagFilter = workerTagFilter;
+
         // ── Agent packages: initial install AFTER the stores settle (the
-        //    first heartbeat writes the worker's write-once capability info,
+        //    first heartbeat writes the worker's process registration info,
         //    which reads factStore/graphStore) but BEFORE the runtime exists
         //    so the first session on a fresh pod already sees registry
         //    agents. A registry problem degrades to zero packages, never a
         //    failed boot.
         if (this._agentPackagesCacheDir) {
-            await this.refreshAgentPackages({ force: true });
+            await runWorkerStartupStage(
+                "agent package refresh",
+                () => this.refreshAgentPackages({ force: true }),
+            );
         }
         // Registered + converged (or intentionally package-less): the next
         // heartbeat advertises ready. Draining is set in gracefulShutdown.
         this._workerPhase = "ready";
+        await runWorkerStartupStage(
+            "worker state registration",
+            () => this._reportAgentWorkerState(),
+        );
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
@@ -795,7 +992,9 @@ export class PilotSwarmWorker {
             workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
-            dispatcherPollIntervalMs: 10,
+            dispatcherPollIntervalMs: this.config.dispatcherPollIntervalMs
+                ?? parsePositiveInt(process.env.PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS)
+                ?? 10,
             workerLockTimeoutMs: this.config.workerLockTimeoutMs
                 ?? parsePositiveInt(process.env.PILOTSWARM_WORKER_LOCK_TIMEOUT_MS)
                 ?? 10_000,
@@ -803,6 +1002,7 @@ export class PilotSwarmWorker {
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
             sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
             workerNodeId: this.config.workerNodeId,
+            ...(workerTagFilter !== undefined ? { workerTagFilter } : {}),
         };
 
         this.runtime = new Runtime(this._provider, runtimeOptions);
@@ -813,8 +1013,30 @@ export class PilotSwarmWorker {
             `workerLockTimeoutMs=${runtimeOptions.workerLockTimeoutMs}, ` +
             `maxSessionsPerRuntime=${runtimeOptions.maxSessionsPerRuntime}, ` +
             `sessionIdleTimeoutMs=${runtimeOptions.sessionIdleTimeoutMs}, ` +
-            `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}`,
+            `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}, ` +
+            `workerTagFilter=${workerTagFilter ? JSON.stringify(workerTagFilter) : "(defaultOnly)"}`,
         );
+        // Always-on identity banner. Unlike the trace() above — a no-op unless a
+        // traceWriter is configured — this line is unconditional, so every poison
+        // investigation can answer its first questions (which process/host, which
+        // duroxide build, and the lease/timeout economics that decide whether a
+        // slow turn commit poisons) from the worker log, not by decoding duroxide
+        // history JSON.
+        console.log(
+            "[PilotSwarmWorker] identity " + JSON.stringify(processIdentity({
+                workerNodeId: runtimeOptions.workerNodeId ?? "(unset)",
+                workerOwner: this.config.workerOwner ?? "(unset)",
+                workerTagFilter: workerTagFilter ?? "(defaultOnly)",
+                workerLockTimeoutMs: runtimeOptions.workerLockTimeoutMs,
+                orchestrationConcurrency: runtimeOptions.orchestrationConcurrency,
+                workerConcurrency: runtimeOptions.workerConcurrency,
+                dispatcherPollIntervalMs: runtimeOptions.dispatcherPollIntervalMs,
+                pgConnectionTimeoutMs: process.env.PILOTSWARM_PG_CONNECTION_TIMEOUT_MS ?? "(default)",
+                duroxidePgPoolMax: process.env.DUROXIDE_PG_POOL_MAX ?? "(default)",
+                duroxidePgAcquireTimeoutMs: process.env.DUROXIDE_PG_ACQUIRE_TIMEOUT_MS ?? "(default)",
+            })),
+        );
+
         if (!runtimeOptions.workerNodeId) {
             // Without a stable process-level session identity, duroxide
             // serializes same-session activities, so the stop-turn fast path
@@ -855,7 +1077,16 @@ export class PilotSwarmWorker {
             this._rawLoadedAgents,
             this.factStore,
             this.config.workerNodeId,
+            {
+                beforeTurn: this.config.beforeTurn,
+                afterTurn: this.config.afterTurn,
+                configureSession: this.config.configureSession,
+            },
             this.artifactStore,
+            this.config.beforeRunTurn,
+            // Durable git-workspace blob store + post-turn dehydrate hook (§8.5).
+            this.blobStore,
+            this.config.afterRunTurn,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -877,6 +1108,7 @@ export class PilotSwarmWorker {
                 storeUrl: storage.duroxide.url,
             });
             this.registerTools(sweeperTools);
+            this.registerTools(createWorkflowRunLifecycleTools(this._catalog));
         }
 
         // Auto-register artifact tools (blob storage or local filesystem)
@@ -934,6 +1166,7 @@ export class PilotSwarmWorker {
         }
         if (this._stopRequested) return;
         this._started = true;
+        console.log(`[PilotSwarmWorker] startup completed in ${Date.now() - startupStartedAt}ms`);
         this._startProviderPolling();
 
         // Autonomous eviction clock (lifecycle protocol §3.4): local session
@@ -960,6 +1193,19 @@ export class PilotSwarmWorker {
         // One configuration timer for every CMS worker. Zero still disables
         // package refresh, but cannot disable feature-policy convergence.
         this._startConfigurationPolling();
+        // Owner-affinity registry snapshots must keep flowing even when the
+        // configuration timer never armed (no catalog / already-running timer
+        // paths), so fall back to the dedicated worker-registry heartbeat.
+        if (!this._agentPackagesTimer) {
+            this._startWorkerRegistryHeartbeat();
+        }
+        void this.sessionManager.refreshWorkerModels()
+            .then(() => this._reportAgentWorkerState())
+            .catch((error) => {
+                console.warn(
+                    `[PilotSwarmWorker] worker model capability refresh failed: ${error?.message ?? error}`,
+                );
+            });
 
         await new Promise(r => setTimeout(r, 200));
 
@@ -980,6 +1226,10 @@ export class PilotSwarmWorker {
         if (this._agentPackagesTimer) {
             clearInterval(this._agentPackagesTimer);
             this._agentPackagesTimer = null;
+        }
+        if (this._workerRegistryTimer) {
+            clearInterval(this._workerRegistryTimer);
+            this._workerRegistryTimer = null;
         }
         await this._featureFlags?.stop();
         if (this._eventLoopHist) {
@@ -1054,11 +1304,19 @@ export class PilotSwarmWorker {
         // bounded: a black-holed CMS socket must not eat the drain budget
         // (SIGKILL at grace-period expiry would crash in-flight turns).
         this._workerPhase = "draining";
-        if (this._agentPackagesCacheDir) {
-            await Promise.race([
-                this._reportAgentWorkerState(),
-                new Promise<void>((resolve) => { setTimeout(resolve, 5_000).unref?.(); }),
-            ]);
+        if (this._catalog) {
+            let reportTimeout: ReturnType<typeof setTimeout> | null = null;
+            try {
+                await Promise.race([
+                    this._reportAgentWorkerState(),
+                    new Promise<void>((resolve) => {
+                        reportTimeout = setTimeout(resolve, 5_000);
+                        reportTimeout.unref?.();
+                    }),
+                ]);
+            } finally {
+                if (reportTimeout) clearTimeout(reportTimeout);
+            }
         }
 
         if (this.runtime) {
@@ -1107,6 +1365,22 @@ export class PilotSwarmWorker {
     }
 
     // ─── Internal ────────────────────────────────────────────
+
+    private _startWorkerRegistryHeartbeat(): void {
+        if (this._workerRegistryTimer) return;
+        const rawHeartbeatMs = Number.parseInt(
+            process.env.PILOTSWARM_WORKER_HEARTBEAT_MS || "",
+            10,
+        );
+        const heartbeatMs = Number.isFinite(rawHeartbeatMs)
+            ? rawHeartbeatMs
+            : 20_000;
+        if (heartbeatMs <= 0) return;
+        this._workerRegistryTimer = setInterval(() => {
+            void this._reportAgentWorkerState();
+        }, heartbeatMs);
+        this._workerRegistryTimer.unref?.();
+    }
 
     /**
      * Load plugin contents from SDK bundled plugins + app plugin directories.
@@ -1351,18 +1625,122 @@ export class PilotSwarmWorker {
             || (process.env.KUBERNETES_SERVICE_HOST ? "aks-default" : "default");
     }
 
-    /** Write-once identity/build/capability record for the workers row. */
+    /** Process-stable identity/build/capability record refreshed on each heartbeat. */
     private _buildRegistrarInfo(): Record<string, unknown> {
         if (this._registrarInfo) return this._registrarInfo;
+        const configuredProvenance = this.config.workerProvenance ?? {};
+        const explicitString = (...values: unknown[]): string | null => {
+            for (const value of values) {
+                if (typeof value !== "string") continue;
+                const trimmed = value.trim();
+                if (trimmed) return trimmed;
+            }
+            return null;
+        };
         let sdkVersion = "unknown";
         try {
             sdkVersion = require("../package.json").version ?? "unknown";
         } catch { /* packed layouts without a reachable package.json */ }
+        let bundledApplicationVersion: string | null = null;
+        try {
+            bundledApplicationVersion = explicitString(require("../../app/package.json").version);
+        } catch { /* SDK-only installations do not have a sibling app package. */ }
+        const runtimeProvenance = resolveWorkerRuntimeProvenance({
+            ...configuredProvenance,
+            applicationVersion: explicitString(
+                configuredProvenance.applicationVersion,
+                process.env.PILOTSWARM_APPLICATION_VERSION,
+                bundledApplicationVersion,
+            ) ?? undefined,
+        }, sdkVersion);
+        const hostname = os.hostname();
+        const processStartedAt = new Date(
+            Date.now() - Math.round(process.uptime() * 1000),
+        ).toISOString();
+        const displayName = explicitString(
+            configuredProvenance.displayName,
+            process.env.PILOTSWARM_WORKER_DISPLAY_NAME,
+        );
+        const applicationVersion = runtimeProvenance.applicationVersion ?? null;
+        const sourceCommit = runtimeProvenance.sourceCommit ?? null;
+        const buildId = runtimeProvenance.buildId ?? null;
+        const imageRef = explicitString(
+            configuredProvenance.imageRef,
+            process.env.PILOTSWARM_IMAGE_REF,
+            process.env.IMAGE,
+        );
+        const imageDigest = explicitString(
+            configuredProvenance.imageDigest,
+            process.env.PILOTSWARM_IMAGE_DIGEST,
+        );
+        // Advertise this worker's repo affinity so consumers (e.g. the portal's
+        // serviceable-repo allowlist) can derive which repos have live workers
+        // straight from the registry, instead of a hand-maintained env list.
+        //
+        // The affinity lives only as a duroxide activity-routing tag filter
+        // (workerTagFilter: { defaultAnd: ["repo:<name>"] }) built from
+        // PILOTSWARM_WORKER_TAGS at start — it is NOT otherwise persisted.
+        // Flatten it back into the tag strings and pull out the `repo:` ones so
+        // the row carries both the raw tags and a clean `repos` list.
+        //
+        // TODO(worker-registry): this reverse-derivation (filter -> tags ->
+        // repos) is brittle. Prefer threading the *raw* resolved tag list
+        // (pre-filter, from resolveWorkerTagFilter / PILOTSWARM_WORKER_TAGS)
+        // through to here as first-class state, and/or having the runtime
+        // expose the worker's routing tags via a public accessor so we don't
+        // reconstruct them from the duroxide filter shape. A dedicated
+        // `workers.tags` column (vs. stuffing into the free-form `info` JSON)
+        // would also let consumers query affinity without deserializing info.
+        const tagFilter = this._workerTagFilter;
+        const runtimeRoutingTags =
+            tagFilter && typeof tagFilter === "object"
+                ? [
+                    ...("defaultAnd" in tagFilter ? tagFilter.defaultAnd : []),
+                    ...("tags" in tagFilter ? tagFilter.tags : []),
+                ]
+                : [];
+        // Model-capability variants are runtime routing implementation detail.
+        // Advertise the compact model list separately instead of multiplying
+        // heartbeat payload size by every repo/model combination.
+        const routingTags = runtimeRoutingTags.filter(
+            (tag) => !tag.includes("|model:v1:"),
+        );
+        const repos = routingTags
+            .filter((tag) => !isOwnerScopedRoutingTag(tag))
+            .map(repoFromRoutingTag)
+            .filter((repo): repo is string => Boolean(repo));
+        const ownerScopedRepos = routingTags
+            .filter(isOwnerScopedRoutingTag)
+            .map(repoFromRoutingTag)
+            .filter((repo): repo is string => Boolean(repo));
         this._registrarInfo = {
             sdkVersion,
             authz: { adminScope: loadAdminScope(), policyVersion: ADMIN_SCOPE_POLICY_VERSION },
+            provenance: {
+                displayName,
+                hostname,
+                processStartedAt,
+                ...runtimeProvenance,
+                applicationVersion,
+                sourceCommit,
+                buildId,
+                image: {
+                    ref: imageRef,
+                    digest: imageDigest,
+                },
+            },
+            ...(displayName ? { displayName } : {}),
+            ...(applicationVersion ? { applicationVersion } : {}),
+            ...(sourceCommit ? { sourceCommit } : {}),
+            ...(buildId ? { buildId } : {}),
+            ...(imageRef || imageDigest
+                ? { image: { ref: imageRef, digest: imageDigest } }
+                : {}),
             orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
             consumes: [...(this._agentPackagesCacheDir ? ["agent-packages"] : []), "feature-flags"],
+            ...(routingTags.length ? { routingTags } : {}),
+            ...(repos.length ? { repos } : {}),
+            ...(ownerScopedRepos.length ? { ownerScopedRepos } : {}),
             capabilities: {
                 blobStore: Boolean(this.blobStore),
                 enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
@@ -1370,9 +1748,9 @@ export class PilotSwarmWorker {
             },
             runtime: {
                 substrate: process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "process",
-                hostname: os.hostname(),
+                hostname,
                 pid: process.pid,
-                startedAt: new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString(),
+                startedAt: processStartedAt,
             },
         };
         return this._registrarInfo;
@@ -1395,8 +1773,11 @@ export class PilotSwarmWorker {
             heapUsedBytes: memory.heapUsed,
             eventLoopDelayP99Ms,
             activeSessions: this.sessionManager.activeSessionCount,
-            orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, 2) },
-            workerSlots: { total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, 2) },
+            orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, DEFAULT_ORCHESTRATION_CONCURRENCY) },
+            workerSlots: {
+                busy: this.sessionManager.busyWorkerSlotCount,
+                total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, DEFAULT_WORKER_CONCURRENCY),
+            },
         };
     }
 
@@ -1410,6 +1791,15 @@ export class PilotSwarmWorker {
      */
     private async _reportAgentWorkerState(): Promise<void> {
         if (!this._catalog || this._registryReporting) return;
+        // Heartbeats reuse the current snapshot immediately and trigger a
+        // single-flight refresh when its TTL expires. The next heartbeat
+        // publishes the refreshed value without blocking registry liveness on
+        // an external model-catalog request.
+        void this.sessionManager.refreshWorkerModels().catch((error) => {
+            console.warn(
+                `[PilotSwarmWorker] worker model capability refresh failed: ${error?.message ?? error}`,
+            );
+        });
         this._registryReporting = true;
         try {
             await this._catalog.workerHeartbeat({
@@ -1417,7 +1807,10 @@ export class PilotSwarmWorker {
                 pool: this._workerPool,
                 phase: this._workerPhase,
                 owner: this.config.workerOwner ?? null,
-                info: this._buildRegistrarInfo(),
+                info: {
+                    ...this._buildRegistrarInfo(),
+                    models: this.sessionManager.currentWorkerModels(),
+                },
                 health: this._collectWorkerHealth(),
                 state: {
                     "feature-flags": { ...this._featureFlags?.state,

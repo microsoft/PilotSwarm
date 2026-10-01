@@ -16,8 +16,14 @@ runtime — pick the one you're using:
 
 → **Browser portal** (mouse + keyboard, mobile-friendly): [user-guide/portal.md](./portal.md)
 
+For durable state-machine automation beyond a single Session, see
+[Workflow Runs and Workflow Generators](./workflow-runs-and-generators.md). It explains when to create
+a Session, create one Workflow Run, or register a Workflow Generator.
+
 If you haven't installed PilotSwarm yet, start with the
-[local setup guide](../quickstart/local.md).
+[local setup guide](../quickstart/local.md), or use the
+[Docker Quickstart](../quickstart/docker.md) to get both
+surfaces running with a single command.
 
 ## What both surfaces share
 
@@ -82,6 +88,7 @@ The advanced scenarios deliberately include real durability moments —
 
 ## Reference
 
+- [Workflow Runs and Workflow Generators](./workflow-runs-and-generators.md) — Sessions, Workflow Runs, workflow definitions, and Workflow Generators, with direct and discovery-driven examples
 - [Access, sharing & security](./security-and-sharing.md) — who can see and act on a session, visibility levels, targeted shares, roles, and admin break-glass
 - [Keybindings cheat sheet](./keybindings.md) — every TUI key in one table
 - [Working in folders and repos](./workspaces.md) — repo clones, your own folder, the shared folder, and loading agents and skills from files

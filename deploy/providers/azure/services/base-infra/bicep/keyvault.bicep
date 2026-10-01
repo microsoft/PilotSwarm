@@ -33,13 +33,19 @@ param localDeploymentPrincipalId string = ''
 ])
 param localDeploymentPrincipalType string = 'User'
 
+@description('Grant the local deployment principal certificate data-plane access. Enable only when the deploy CLI creates a localhost certificate for port-forward mode.')
+param grantLocalCertificateManagement bool = false
+
 @description('Allow ARM to resolve a HorizonDB bootstrap password from this vault. Only needed for HorizonDB stamps.')
 param templateDeploymentEnabled bool = false
+
+@description('Enable Key Vault purge protection. Keep enabled for durable environments; disposable development stamps may disable it so teardown can purge the soft-deleted vault and immediately reuse its name.')
+param purgeProtectionEnabled bool = true
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
-  properties: {
+  properties: union({
     sku: {
       family: 'A'
       name: 'standard'
@@ -48,13 +54,14 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableRbacAuthorization: true
     enabledForTemplateDeployment: templateDeploymentEnabled
     enableSoftDelete: true
-    enablePurgeProtection: true
     softDeleteRetentionInDays: 90
     networkAcls: {
       bypass: 'AzureServices'
       defaultAction: 'Allow'
     }
-  }
+  }, purgeProtectionEnabled ? {
+    enablePurgeProtection: true
+  } : {})
 }
 
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
@@ -109,6 +116,27 @@ resource assignKvSecretsOfficerToLocalDeployer 'Microsoft.Authorization/roleAssi
     principalId: localDeploymentPrincipalId
     principalType: localDeploymentPrincipalType
     roleDefinitionId: kvSecretsOfficerDef.id
+  }
+}
+
+// Port-forward deployments create their localhost certificate from the
+// deployment host after BaseInfra completes. Grant the same local principal
+// certificate data-plane access; enterprise deployments leave the principal
+// empty and therefore create neither local-deployer assignment.
+var kvCertificatesOfficerRoleId = 'a4417e6f-fecd-4de8-b567-7b0420556985'
+
+resource kvCertificatesOfficerDef 'Microsoft.Authorization/roleDefinitions@2022-04-01' existing = {
+  scope: keyVault
+  name: kvCertificatesOfficerRoleId
+}
+
+resource assignKvCertificatesOfficerToLocalDeployer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantLocalCertificateManagement && !empty(localDeploymentPrincipalId)) {
+  name: guid(keyVault.id, localDeploymentPrincipalId, kvCertificatesOfficerRoleId)
+  scope: keyVault
+  properties: {
+    principalId: localDeploymentPrincipalId
+    principalType: localDeploymentPrincipalType
+    roleDefinitionId: kvCertificatesOfficerDef.id
   }
 }
 

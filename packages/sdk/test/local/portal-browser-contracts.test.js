@@ -109,12 +109,12 @@ describe("portal browser contracts", () => {
         assertIncludes(httpTransport, "async listSessionsPage(opts = {})", "web transport should expose bounded session paging");
         assertIncludes(httpTransport, 'this.api.call("listSessionsPage"', "web transport should call the bounded session paging operation");
         assertIncludes(httpTransport, "systemFilter: opts?.systemFilter", "web transport should forward the additive system-session page filter");
-        assertIncludes(httpTransport, "viewerOnly: opts?.viewerOnly", "web transport should request a viewer-scoped catalog without changing the legacy API default");
+        assertIncludes(httpTransport, "scope: opts?.scope", "web transport should forward the explicit Session catalog scope");
         assertIncludes(httpTransport, "async getTopEventEmitters(opts = {})", "web transport should expose top event emitter diagnostics");
         assertIncludes(httpTransport, 'this.api.call("getTopEventEmitters"', "web transport should call the top event emitter diagnostics operation");
         assertIncludes(runtime, 'case "listSessionsPage":', "portal runtime should expose bounded session paging RPC");
         assertIncludes(runtime, "normalizeSessionPageOptions(safeParams)", "portal runtime should guard bounded session paging params");
-        assertIncludes(runtime, 'params.cursor != null && typeof params.cursor !== "object"', "portal runtime should reject malformed session page cursors");
+        assertIncludes(runtime, "params.cursorUpdatedAt != null || params.cursorSessionId != null", "portal runtime should read the keyset cursor from scalar params");
         assertIncludes(runtime, 'case "getTopEventEmitters":', "portal runtime should expose top event emitter diagnostics RPC");
         assertIncludes(runtime, "normalizeTopEventEmitterOptions(safeParams)", "portal runtime should guard top emitter diagnostic params");
         assertIncludes(runtime, "params.since == null", "portal runtime should require a since value for top emitter diagnostics");
@@ -124,7 +124,7 @@ describe("portal browser contracts", () => {
         assertIncludes(nodeTransport, "return this.mgmt.getTopEventEmitters(opts);", "node transport should delegate top emitter diagnostics to management");
         assertIncludes(controller, 'loadSessionCatalogPages(transport, "only")', "shared controller should load system sessions through an independent page stream");
         assertIncludes(controller, 'loadSessionCatalogPages(transport, "exclude")', "shared controller should load every regular session through its own page stream");
-        assertIncludes(controller, "viewerOnly: true", "shared controller should request only sessions visible to the signed-in viewer");
+        assertIncludes(controller, 'scope: "visible"', "shared controller should request only sessions visible to the signed-in viewer");
         assertIncludes(nodeTransport, "async uploadArtifactContent(sessionId, filename, content, contentType", "node transport should accept browser-supplied artifact content");
         assertIncludes(nodeTransport, "async deleteArtifact(sessionId, filename)", "node transport should expose single-artifact deletion against the artifact store");
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");
@@ -258,7 +258,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'label: "Download"', "portal files pane should surface a download affordance directly in the files pane (now an icon button)");
         assertIncludes(webApp, 'viewState.fullscreen ? "Exit fullscreen" : "Fullscreen"', "portal files pane should offer a fullscreen toggle (now an icon button with a tooltip label)");
         assertIncludes(webApp, "ps-workspace-full", "portal should render a dedicated fullscreen files workspace");
-        assertIncludes(webApp, 'title: [{ text: searchOverlay ? "Find a session" : "Sessions", color: "yellow", bold: true }]', "portal should name the search overlay while keeping the normal Sessions header");
+        assertIncludes(webApp, 'title: title || [{ text: searchOverlay ? "Find a session" : "Sessions", color: "yellow", bold: true }]', "portal should name the search overlay while allowing the Work Index tabs to supply its header");
         assertIncludes(webApp, "React.createElement(Line, {", "portal file rows should render through the shared line component");
         assertIncludes(webApp, "view.fullscreen\n        ? previewPane", "portal fullscreen files mode should hide the artifact list");
         assertIncludes(webApp, "MarkdownPreviewPanel", "portal should render markdown previews through a dedicated component");

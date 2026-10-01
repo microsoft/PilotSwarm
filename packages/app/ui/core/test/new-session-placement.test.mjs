@@ -10,7 +10,7 @@
  * Selecting the FOLDER ROW itself and pressing New is different: that is the
  * user pointing at the folder, and it still places the session there.
  *
- * The "and stays there" half is the sort's job (session-tree): an unplaced row
+ * The "and stays there" half is the sort's workflowRun (session-tree): an unplaced row
  * sorts after every manually placed one, and the stable order map pins arrival
  * position for the rest of the session. Both are pinned below.
  *
