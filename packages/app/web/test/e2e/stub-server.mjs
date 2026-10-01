@@ -197,7 +197,18 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
+export function startStubServer(port = 0, {
+    sessionCount = 6,
+    transcriptTurns = 0,
+    systemEvery = 0,
+    assistantMarkdown = null,
+    groups = [],
+    themeId = null,
+    groupMembers = {},
+    admin = false,
+    parents = {},
+    externalViews = [],
+} = {}) {
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
@@ -211,6 +222,15 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
+
+        if (pathname === "/external-view-fixture") {
+            res.writeHead(200, {
+                "content-type": "text/html; charset=utf-8",
+                "content-security-policy": "frame-ancestors 'self'",
+            });
+            res.end("<!doctype html><title>External fixture</title><main><h1>SQLmort Workflows</h1><p>External view ready</p></main>");
+            return;
+        }
 
         if (pathname.startsWith("/api/")) {
             // Session groups: list them, and RECORD placement calls so a test
@@ -319,6 +339,15 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                             reason: "stub server",
                             matchedGroups: [],
                         },
+                    },
+                };
+            }
+            if (pathname === "/api/portal-config" && body) {
+                body = {
+                    ...body,
+                    portal: {
+                        ...body.portal,
+                        ...(externalViews.length ? { externalViews } : {}),
                     },
                 };
             }
