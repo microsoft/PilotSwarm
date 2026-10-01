@@ -339,7 +339,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session with optional fork repo/compute routing and an optional upstream workspace.
+     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. Optional repo pins the session to a repository enlistment. Optional gitRef pins that enlistment to a non-default branch/tag/commit. Optional compute is cluster (default) or devbox; devbox routes turns only to workers owned by the authenticated creator. workspace { root, folder? } selects an upstream session workspace. Caller credentials are never accepted by the API; devbox workers acquire delegated credentials locally.
      * @remarks `POST /sessions` — access: `session:create`
      */
     createSession(params?: {
@@ -355,7 +355,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session bound to a named agent with optional fork repo/compute routing and an optional upstream workspace.
+     * Create a session bound to a named agent. Optional repo/gitRef and compute retain fork routing behavior; workspace { root, folder? } selects an upstream session workspace.
      * @remarks `POST /sessions/for-agent` — access: `session:create`
      */
     createSessionForAgent(params?: {
