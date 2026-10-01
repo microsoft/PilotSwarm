@@ -140,6 +140,37 @@ test("compute=devbox trusts owner-worker models absent from the cluster catalog"
     }]);
 });
 
+test("compute=devbox creates a session with an owner-worker ambient model absent from the cluster catalog", async () => {
+    const { runtime, creates } = createRuntime();
+    runtime.transport.listModels = async () => [];
+    runtime.transport.listWorkers = async () => [{
+        phase: "ready",
+        updatedAt: new Date(),
+        owner: alice.principal,
+        info: {
+            ownerScopedRepos: ["sample-repo"],
+            models: {
+                defaultModel: "github-copilot-ambient:claude-sonnet-5",
+                available: ["github-copilot-ambient:claude-sonnet-5"],
+            },
+        },
+    }];
+
+    await runtime.call("createSession", {
+        model: "github-copilot-ambient:claude-sonnet-5",
+        repo: "sample-repo",
+        compute: "devbox",
+    }, alice);
+
+    assert.equal(creates.length, 1);
+    assert.equal(
+        creates[0].model,
+        "github-copilot-ambient:claude-sonnet-5",
+    );
+    assert.deepEqual(creates[0].owner, alice.principal);
+    assert.equal(creates[0].requireOwnerAffinity, true);
+});
+
 test("compute=devbox rejects a model no matching worker advertises", async () => {
     const { runtime } = createRuntime();
 
