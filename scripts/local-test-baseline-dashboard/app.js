@@ -286,11 +286,11 @@ async function refresh() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         rows = normalize(data);
-        const testedRevision = data.lastRunConfig?.testedRevision ?? data.repository ?? {};
+        const testedRevision = data.repository ?? {};
         elements.metadata.textContent = [
             testedRevision.repository ?? "unknown repository",
             `${testedRevision.branch ?? "unknown"} @ `
-                + `${testedRevision.commitId ?? testedRevision.commit ?? "unknown"}`,
+                + `${testedRevision.commitId ?? "unknown"}`,
             `updated ${data.updatedAt ?? "unknown"}`,
         ].join(" · ");
         renderCards(data.summary ?? {});

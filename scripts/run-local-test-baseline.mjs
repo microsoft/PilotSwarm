@@ -14,7 +14,7 @@ const LOCAL_TEST_DIR = path.join(SDK_DIR, "test", "local");
 const DEFAULT_OUTPUT = path.join("test-results", "local-test-validation", "campaign.json");
 const DEFAULT_PROFILE = "sdk-local";
 const DEFAULT_PROVIDER_CONFIG = path.join(SDK_DIR, "test", "fixtures", "model-providers.test.json");
-const STATE_SCHEMA_VERSION = 6;
+export const STATE_SCHEMA_VERSION = 6;
 const MAX_CAPTURED_OUTPUT = 256 * 1024;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const TIMEOUT_CLEANUP_GRACE_MS = 30_000;
@@ -78,31 +78,6 @@ Options:
 
 Legacy aliases remain accepted: --parallelism, --retry-count, and --timeout-per-file.
 `;
-}
-
-export function incompleteRetryPlans(state) {
-    const run = state.currentRun;
-    if (!run || !["interrupted", "failed"].includes(run.status)) return [];
-    const plans = new Map();
-    for (const round of run.rounds ?? []) {
-        if (round.kind !== "retry") continue;
-        const retryTarget = round.retryTarget ?? Math.max(1, round.number);
-        for (const file of round.files ?? []) {
-            const attempt = state.tests[file]?.attempts?.find(
-                (candidate) => candidate.runId === run.runId
-                    && candidate.round === round.number,
-            );
-            if (!attempt || attempt.collectionStatus !== "complete") {
-                const files = plans.get(retryTarget) ?? new Set();
-                files.add(file);
-                plans.set(retryTarget, files);
-            }
-
-        }
-    }
-    return [...plans.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([retryTarget, files]) => ({ retryTarget, files: [...files].sort() }));
 }
 
 export function incompleteRetryTarget(state) {
@@ -628,23 +603,6 @@ function latestTrustedAttempt(entry) {
     return trustedAttempts(entry).at(-1) ?? null;
 }
 
-export function incompletePlannedFiles(state) {
-    const run = state.currentRun;
-    if (!run || !["interrupted", "failed"].includes(run.status)) return [];
-    const files = new Set();
-    for (const round of run.rounds ?? []) {
-        if (round.kind === "retry") continue;
-        for (const file of round.files ?? []) {
-            const attempt = state.tests[file]?.attempts?.find(
-                (candidate) => candidate.runId === run.runId
-                    && candidate.round === round.number,
-            );
-            if (!attempt || attempt.collectionStatus !== "complete") files.add(file);
-        }
-    }
-    return [...files].sort();
-}
-
 export function planDefaultObservationFiles(state, files) {
     return files.filter((file) => {
         const entry = state.tests[file];
@@ -1015,15 +973,6 @@ function gitValue(args, fallback = "unknown") {
 
 export function dirtyWorktreeEntries(porcelain) {
     return String(porcelain ?? "").split(/\r?\n/).filter(Boolean);
-}
-
-export function assertCleanWorktree(porcelain) {
-    const entries = dirtyWorktreeEntries(porcelain);
-    if (entries.length > 0) {
-        throw new Error(
-            `Worktree must be clean before executable validation runs (${entries.length} change(s) found).`,
-        );
-    }
 }
 
 export function repositoryNameFromRemote(remote) {
@@ -2081,8 +2030,6 @@ export function beginAttempt(state, file, {
         processIdentity: null,
         vitestPid: null,
         vitestProcessIdentity: null,
-        vitestPid: null,
-        vitestProcessIdentity: null,
         finishedAt: null,
     };
     entry.attempts.push(attempt);
@@ -2101,15 +2048,6 @@ export function completeAttempt(state, file, attemptNumber, result) {
     entry.lastRunAt = result.finishedAt;
     entry.notes = result.summary;
     return attempt;
-}
-
-export function recordAttempt(state, file, result, metadata) {
-    const attempt = beginAttempt(state, file, {
-        ...metadata,
-        startedAt: result.startedAt,
-        deadlineAt: result.deadlineAt ?? null,
-    });
-    return completeAttempt(state, file, attempt.number, result);
 }
 
 export function reconcileActiveEntries(
@@ -2281,7 +2219,7 @@ function canonicalizePotentialPath(value) {
     return path.resolve(fs.realpathSync(existing), path.relative(existing, resolved));
 }
 
-export function resolveOutputPath(value, repoRoot = REPO_ROOT) {
+export function resolveOutputPath(value, repoRoot = REPO_ROOT, optionName = "--output") {
     const canonicalRepoRoot = fs.realpathSync(repoRoot);
     const resultsRoot = path.join(canonicalRepoRoot, "test-results");
     const requested = path.isAbsolute(value)
@@ -2289,10 +2227,12 @@ export function resolveOutputPath(value, repoRoot = REPO_ROOT) {
         : path.resolve(canonicalRepoRoot, value);
     const candidate = canonicalizePotentialPath(requested);
     if (!pathIsInside(resultsRoot, candidate)) {
-        throw new Error("--output must be a file beneath the repository test-results directory");
+        throw new Error(
+            `${optionName} must be a file beneath the repository test-results directory`,
+        );
     }
     if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-        throw new Error("--output must name a JSON file, not a directory");
+        throw new Error(`${optionName} must name a JSON file, not a directory`);
     }
     if (fs.existsSync(resultsRoot)) {
         const canonicalResultsRoot = fs.realpathSync(resultsRoot);
@@ -2306,7 +2246,9 @@ export function resolveOutputPath(value, repoRoot = REPO_ROOT) {
         if (normalizedPathForComparison(canonicalParent)
             !== normalizedPathForComparison(canonicalResultsRoot)
             && !pathIsInside(canonicalResultsRoot, canonicalParent)) {
-            throw new Error("--output resolves outside test-results through a linked directory");
+            throw new Error(
+                `${optionName} resolves outside test-results through a linked directory`,
+            );
         }
     }
     return candidate;

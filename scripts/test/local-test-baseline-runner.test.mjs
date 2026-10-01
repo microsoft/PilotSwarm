@@ -6,7 +6,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     acquireExecutionLock,
-    assertCleanWorktree,
     assertCompatibleCampaign,
     beginAttempt,
     campaignEvidenceComplete,
@@ -14,13 +13,13 @@ import {
     campaignIdentityHash,
     classifyAttemptEvidence,
     cleanGeneratedBuildOutputs,
+    completeAttempt,
     createCampaignIdentity,
     createRoundState,
     createVitestListArgs,
     dirtyWorktreeEntries,
     fallbackFailureSummary,
     getProcessIdentity,
-    incompleteRetryPlans,
     incompleteRetryTarget,
     markRoundFileCompleted,
     markRoundFileStarted,
@@ -41,7 +40,6 @@ import {
     providerRedactionSecrets,
     reconcileActiveEntries,
     reconcileStaleRun,
-    recordAttempt,
     redactActiveReports,
     redactNativeReport,
     redactSensitiveText,
@@ -833,10 +831,7 @@ test("forced observations do not consume retry targets and interrupted retries r
     };
     assert.deepEqual(planDefaultObservationFiles(state, ["failed.test.js"]), []);
     assert.deepEqual(planRetryTargetFiles(state, ["failed.test.js"], 1), ["failed.test.js"]);
-    assert.deepEqual(incompleteRetryPlans(state), [{
-        retryTarget: 2,
-        files: ["failed.test.js"],
-    }]);
+
     assert.equal(incompleteRetryTarget(state), 3);
 });
 
@@ -961,13 +956,11 @@ test("failed and timed-out outcomes can still form complete campaign evidence", 
     assert.equal(summary.unfinished, 0);
 });
 
-test("rejects dirty worktrees for executable-run enforcement", () => {
+test("parses dirty worktree entries for executable-run enforcement", () => {
     assert.deepEqual(
         dirtyWorktreeEntries(" M source.js\n?? new-file.js\n"),
         [" M source.js", "?? new-file.js"],
     );
-    assert.doesNotThrow(() => assertCleanWorktree(""));
-    assert.throws(() => assertCleanWorktree(" M source.js\n"), /Worktree must be clean/);
 });
 
 test("source validation pins repository and exact SHA but treats branch as metadata", () => {
@@ -1020,7 +1013,15 @@ test("records report provenance and exposes mixed outcomes", () => {
             },
         },
     };
-    recordAttempt(state, "flaky.test.js", {
+    const attempt = beginAttempt(state, "flaky.test.js", {
+        runId: "run-1",
+        testedRevision,
+        roundNumber: 1,
+        reportPath: "reports/campaign/run/attempt.json",
+        startedAt: "2026-09-19T00:01:00.000Z",
+        deadlineAt: null,
+    });
+    completeAttempt(state, "flaky.test.js", attempt.number, {
         startedAt: "2026-09-19T00:01:00.000Z",
         finishedAt: "2026-09-19T00:01:01.000Z",
         durationMs: 1000,
@@ -1031,11 +1032,6 @@ test("records report provenance and exposes mixed outcomes", () => {
         timedOut: false,
         summary: "1 test passed",
         testCounts: { total: 1, passed: 1, failed: 0, skipped: 0, todo: 0 },
-    }, {
-        runId: "run-1",
-        testedRevision,
-        roundNumber: 1,
-        reportPath: "reports/campaign/run/attempt.json",
     });
 
     const summary = summarizeState(state);

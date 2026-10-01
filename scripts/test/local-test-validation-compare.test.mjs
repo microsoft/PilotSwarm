@@ -6,7 +6,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { compareCampaigns, parseComparisonArgs } from "../compare-local-test-validation.mjs";
-import { campaignIdentityHash } from "../run-local-test-baseline.mjs";
+import {
+    campaignIdentityHash,
+    STATE_SCHEMA_VERSION,
+} from "../run-local-test-baseline.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TEST_ROOT = path.join(REPO_ROOT, "test-results", "validation-comparison-unit");
@@ -83,7 +86,7 @@ function campaign(commitId, outcomes, controls = {}) {
         providerModelFingerprint: "sha256:provider",
     };
     return {
-        schemaVersion: 6,
+        schemaVersion: STATE_SCHEMA_VERSION,
         campaignId: campaignIdentityHash(identity),
         status: "complete",
         identity,

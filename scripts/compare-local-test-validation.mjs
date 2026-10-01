@@ -8,6 +8,7 @@ import {
     campaignEvidenceComplete,
     campaignIdentityHash,
     resolveOutputPath,
+    STATE_SCHEMA_VERSION,
     trustedAttempts,
 } from "./run-local-test-baseline.mjs";
 
@@ -236,7 +237,7 @@ function validateCampaign(campaign, label, {
     verifiedArtifacts = null,
 } = {}) {
     if (!campaign || typeof campaign !== "object") throw new Error(`${label} campaign is invalid`);
-    if (campaign.schemaVersion !== 6) {
+    if (campaign.schemaVersion !== STATE_SCHEMA_VERSION) {
         throw new Error(`${label} campaign schema ${campaign.schemaVersion} is not comparable`);
     }
     if (campaign.status !== "complete") {
@@ -447,8 +448,8 @@ async function main() {
         console.log(usage());
         return;
     }
-    const baselinePath = resolveOutputPath(options.baseline);
-    const candidatePath = resolveOutputPath(options.candidate);
+    const baselinePath = resolveOutputPath(options.baseline, undefined, "--baseline");
+    const candidatePath = resolveOutputPath(options.candidate, undefined, "--candidate");
     if (!fs.existsSync(baselinePath)) throw new Error(`Baseline campaign not found: ${options.baseline}`);
     if (!fs.existsSync(candidatePath)) throw new Error(`Candidate campaign not found: ${options.candidate}`);
     const canonicalBaselinePath = fs.realpathSync(baselinePath);

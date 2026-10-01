@@ -405,8 +405,10 @@ Each attempt retains:
 - a bounded, redacted summary for the dashboard.
 
 The campaign manifest is an index and summary, not a replacement for Vitest's
-standard result format. Native reports remain separate so other tools can
-consume them without understanding a PilotSwarm-specific assertion schema.
+standard result format. Native reports are recursively redacted before they are
+retained, and their integrity digest covers that redacted artifact. They remain
+separate so other tools can consume them without understanding a
+PilotSwarm-specific assertion schema.
 
 ## What counts as complete evidence
 
