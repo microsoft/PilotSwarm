@@ -225,3 +225,25 @@ non-secret.
 
 This replaces the waldemort `patch-pilotswarm-dual-session-links.mjs`
 deploy patch: set the env var, delete the patch.
+
+## External Work Index views (PORTAL_EXTERNAL_VIEWS_JSON)
+
+A deployment can add trusted, deployment-owned pages to the Work Index without
+putting product-specific UI in PilotSwarm:
+
+```text
+PORTAL_EXTERNAL_VIEWS_JSON='[{"id":"workflows","label":"Workflows","url":"https://sqlmort.example/workflows"}]'
+```
+
+Each entry adds a tab backed by a sandboxed iframe. `id` must be a unique
+lowercase identifier of at most 40 characters, `label` must be unique and
+1-40 characters, and `url` must be either a same-origin absolute path, an
+HTTPS URL, or an HTTP localhost URL. At most eight views may be configured.
+Malformed, duplicate, or unsafe configuration fails portal startup.
+
+The embedded service owns its authentication and must permit framing through
+its `Content-Security-Policy: frame-ancestors` and `X-Frame-Options` headers.
+Cross-origin cookie authentication must also account for browser third-party
+cookie restrictions; a same-origin reverse-proxy path is preferable when the
+deployment can provide one. External view URLs are returned by the public
+portal-config endpoint and must not contain secrets.

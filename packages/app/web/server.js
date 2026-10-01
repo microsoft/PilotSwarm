@@ -5,7 +5,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
-import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
+import {
+    getPortalAssetFile,
+    getPortalConfig,
+    parsePortalExternalViews,
+    parsePortalLinkOrigins,
+} from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime } from "./runtime.js";
@@ -117,9 +122,11 @@ export async function startServer(opts = {}) {
     // Fail-loud at startup: a malformed PORTAL_LINK_ORIGINS should stop
     // the portal visibly, never silently hand out broken links.
     const linkOrigins = parsePortalLinkOrigins();
+    const externalViews = parsePortalExternalViews();
     const portalConfig = {
         ...getPortalConfig(),
         ...(linkOrigins.length ? { linkOrigins } : {}),
+        ...(externalViews.length ? { externalViews } : {}),
         // The side pane's Workspace tab: only when this portal serves the workspace roots.
         workspaceFiles: Boolean(String(process.env.PORTAL_WORKSPACE_ROOTS || "").trim()),
     };
