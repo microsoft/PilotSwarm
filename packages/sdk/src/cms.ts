@@ -6141,7 +6141,11 @@ export class PgSessionCatalog implements SessionCatalog {
         const useRoutingConfig = Boolean(opts?.routing) && await this.supportsRoutingConfig();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const providerModel = opts?.model ?? null;
-        const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
+        const validateProviderModel = Boolean(
+            providerModel
+            && opts?.modelResolutionSource
+            && !opts?.routing?.ownerAffinityRequired
+        )
             && await this.supportsProviderSessionModelValidation();
         const client = await this.pool.connect();
         try {

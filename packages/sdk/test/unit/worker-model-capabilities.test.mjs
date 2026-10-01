@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionManager } from "../../dist/session-manager.js";
+import { usesWorkerOwnedAmbientAdmission } from "../../dist/session-proxy.js";
 
 function byokRegistry(count) {
     const allModels = Array.from({ length: count }, (_, index) => ({
@@ -28,10 +29,47 @@ function githubRegistry(token) {
     return {
         allModels: [descriptor],
         defaultModel: descriptor.qualifiedName,
+        normalize(qualifiedName) {
+            return qualifiedName === descriptor.qualifiedName
+                ? descriptor.qualifiedName
+                : undefined;
+        },
+        getDescriptor(qualifiedName) {
+            return qualifiedName === descriptor.qualifiedName
+                ? descriptor
+                : undefined;
+        },
         resolve(qualifiedName) {
             return qualifiedName === descriptor.qualifiedName
                 ? { type: "github", ...(token ? { githubToken: token } : {}) }
                 : null;
+        },
+    };
+}
+
+function ambientGithubRegistry() {
+    const descriptor = {
+        qualifiedName: "github-copilot-ambient:claude-sonnet-5",
+        modelName: "claude-sonnet-5",
+        providerType: "github-ambient",
+    };
+    return {
+        allModels: [descriptor],
+        defaultModel: descriptor.qualifiedName,
+        normalize(qualifiedName) {
+            return qualifiedName === descriptor.qualifiedName
+                ? descriptor.qualifiedName
+                : undefined;
+        },
+        getDescriptor(qualifiedName) {
+            return qualifiedName === descriptor.qualifiedName
+                ? descriptor
+                : undefined;
+        },
+        resolve(qualifiedName) {
+            return qualifiedName === descriptor.qualifiedName
+                ? { type: "github", modelName: descriptor.modelName }
+                : undefined;
         },
     };
 }
@@ -179,6 +217,59 @@ test("provider instance credentials take precedence over the worker fallback tok
     await manager.refreshWorkerModels();
 
     assert.deepEqual(tokens, ["provider-token"]);
+});
+
+test("ambient provider admission is worker-owned only for an exact configured model", () => {
+    const manager = new SessionManager(undefined, null, {
+        modelProviders: ambientGithubRegistry(),
+    });
+
+    assert.equal(
+        manager.usesAmbientIdentityForModel(
+            "github-copilot-ambient:claude-sonnet-5",
+        ),
+        true,
+    );
+    assert.equal(manager.usesAmbientIdentityForModel(undefined), false);
+    assert.equal(
+        manager.usesAmbientIdentityForModel("claude-sonnet-5"),
+        false,
+    );
+    assert.equal(
+        usesWorkerOwnedAmbientAdmission(
+            manager,
+            { ownerAffinity: { provider: "entra", subject: "alice" } },
+            "github-copilot-ambient:claude-sonnet-5",
+        ),
+        true,
+    );
+    assert.equal(
+        usesWorkerOwnedAmbientAdmission(
+            manager,
+            { ownerAffinity: undefined },
+            "github-copilot-ambient:claude-sonnet-5",
+        ),
+        false,
+    );
+});
+
+test("centrally credentialed GitHub providers still require central admission", () => {
+    const manager = new SessionManager(undefined, null, {
+        modelProviders: githubRegistry("provider-token"),
+    });
+
+    assert.equal(
+        manager.usesAmbientIdentityForModel("github-copilot:claude-sonnet-5"),
+        false,
+    );
+    assert.equal(
+        usesWorkerOwnedAmbientAdmission(
+            manager,
+            { ownerAffinity: { provider: "entra", subject: "alice" } },
+            "github-copilot:claude-sonnet-5",
+        ),
+        false,
+    );
 });
 
 test("owner-affinitized in-session model switching stays within advertised capabilities", async () => {
