@@ -39,6 +39,7 @@ fixture captures the fuller product-direction contract.
   - [2.5 Result contracts](#25-result-contracts)
   - [2.6 One-edge result propagation](#26-one-edge-result-propagation)
   - [2.7 Durable waiting](#27-durable-waiting)
+    - [Workflow-authored transition function](#workflow-authored-transition-function)
   - [2.8 Nested workflows](#28-nested-workflows)
   - [2.9 Authorization and cancellation](#29-authorization-and-cancellation)
   - [2.10 Observability](#210-observability)
@@ -839,6 +840,114 @@ idempotency key and an authorization bound to the exact accepted input. For
 example, accepting a reviewed publication candidate may authorize a subsequent
 pull-request publication action; it does not make the producing agent
 authoritative for that write.
+
+#### Workflow-authored transition function
+
+Agents, reviewers, providers, and deterministic controller handlers produce
+completion outcomes. The workflow definition author owns the transition
+function that interprets those outcomes and selects the next directive:
+
+```text
+O = executeState(A)
+B = T(definitionVersion, A, O)
+```
+
+State execution may be nondeterministic, particularly when an agent produces
+`O`. PilotSwarm validates and durably records that output before invoking
+`T`. The state producer does not name or enter `B`.
+
+The default transition function is a deterministic finite mapping from the
+current state and accepted outcome to one permitted directive:
+
+```text
+(A, accepted) -> advance to B
+(A, stale)    -> advance to C
+(A, rejected) -> advance to D
+```
+
+A directive either advances to a declared state or, for reviewed correction,
+resumes the producing agent. A deterministic transition function reads only the
+frozen definition, current state, and persisted completion. Replay therefore
+evaluates the same `T(A, O)` and selects the same directive.
+
+Some workflows may require semantic routing that cannot be expressed usefully
+as a fixed outcome table. The author may then declare an explicit agentic
+transition function:
+
+```text
+O = executeState(A)
+R = executeTransitionAgent(A, O, allowedRoutes)
+B = M(definitionVersion, A, R)
+```
+
+The transition agent reasons over the recorded state output and chooses one
+author-declared route. PilotSwarm validates and durably records `R`, then a
+deterministic mapping `M` resolves that route to the next directive. The
+transition agent cannot select an undeclared state or mutate controller state.
+It is an explicit invocation with a result schema, allowed routes, attempt
+bounds, authorization, and observability—not a hidden model call inside the
+controller. Replay consumes the recorded `R`; it never reruns the transition
+agent merely to reconstruct control flow.
+
+Provider-backed states use a common logical contract without requiring
+PilotSwarm to understand the provider's domain:
+
+- PilotSwarm supplies authoritative workflow and invocation correlation.
+- The definition supplies an opaque provider operation and the outcomes that
+  the state permits.
+- The provider may report that it is still waiting, together with opaque
+  durable resumption information, or complete with one declared outcome and
+  structured output.
+- PilotSwarm persists the response, validates correlation and the allowed
+  outcome, then invokes the workflow-authored transition function.
+- The provider interprets domain state but never returns a target workflow
+  state or mutates controller state directly.
+
+Provider implementations expose stable identity and compatibility metadata so
+definition registration can reject missing or incompatible references.
+Malformed, stale, incorrectly correlated, or undeclared provider responses fail
+explicitly.
+
+The exact request/response types, registration mechanism, completion-envelope
+shape, transition-function encoding, and YAML keys remain implementation
+decisions. Deterministic outcome maps should remain the normal case; agentic
+transition functions are an explicit escape hatch for genuinely semantic
+routing, not the default orchestration mechanism. The
+[sqlmort ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md)
+explores one concrete acceptance encoding; it is evidence for evaluating the
+framework design rather than the normative PilotSwarm schema.
+
+##### Open design TODOs
+
+- [ ] Separate producer submissions, reviewed candidate revisions, review
+  decisions, and accepted state outcomes rather than overloading one
+  completion envelope.
+- [ ] Define which identity fields are runtime-bound, including workflow,
+  definition, state, invocation, attempt, candidate revision, producer,
+  causation, and acceptance time.
+- [ ] Define which producer kinds may emit each outcome and how agent,
+  reviewer, provider, action, and controller authority is verified.
+- [ ] Define the normalized transition directives, including advancing to
+  another state and resuming a reviewed producer with feedback.
+- [ ] Specify atomic persistence of the accepted state outcome and selected
+  transition, including compare-and-set behavior for duplicate or racing
+  submissions.
+- [ ] Specify reviewed candidate revision, rejection, resumption, acceptance,
+  abort, and dependency-invalidation semantics.
+- [ ] Define agentic transition-function admission, allowed routes, result
+  schema, attempt bounds, and replay behavior.
+- [ ] Define provider registration, compatibility metadata, wake-up,
+  correlation, checkpoint, and idempotency contracts.
+- [ ] Define how controller-produced outcomes such as timeout, cancellation,
+  retry exhaustion, and loop-bound exhaustion enter the same transition
+  function.
+- [ ] Define compiler checks for undeclared outcomes, incomplete or ambiguous
+  mappings, nonexistent targets, invalid resume directives, unreachable
+  states, and incompatible provider references.
+- [ ] Define transition and completion observability without copying large
+  provider payloads or agent results into orchestration state.
+- [ ] Define versioning and compatibility rules for persisted completion
+  envelopes, transition functions, and provider contracts.
 
 ### 2.8 Nested workflows
 
