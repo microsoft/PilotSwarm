@@ -292,22 +292,27 @@ copying sensitive result content.
 
 ### 2.5 Workflow-authored transition function
 
-The workflow author owns the transition function:
+The workflow author owns both:
+
+- the execution contract for each state, including its pinned agent, provider,
+  action, or other handler and its allowed outputs; and
+- the transition function that maps an accepted output to the next directive.
 
 ```text
-O = executeState(A)
-B = T(definitionVersion, A, O)
+output = executeState(currentState)
+nextDirective = transition(definitionVersion, currentState, output)
 ```
 
 State execution may be nondeterministic. PilotSwarm validates and durably
-records `O` before invoking `T`. The producer never names or enters `B`.
+records `output` before evaluating `transition`. The producer never names or
+applies `nextDirective`.
 
-The default `T` is a deterministic finite mapping:
+The default transition function is a deterministic finite mapping:
 
 ```text
-(A, accepted) -> B
-(A, stale)    -> C
-(A, rejected) -> D
+(currentState, accepted) -> advance(acceptedState)
+(currentState, stale)    -> advance(staleState)
+(currentState, rejected) -> resume(producer)
 ```
 
 A directive either advances to a declared state or resumes a reviewed producer.
@@ -317,14 +322,14 @@ For genuinely semantic routing, the author may declare an explicit agentic
 transition function:
 
 ```text
-O = executeState(A)
-R = executeTransitionAgent(A, O, allowedRoutes)
-B = M(definitionVersion, A, R)
+output = executeState(currentState)
+selectedRoute = executeTransitionAgent(currentState, output, allowedRoutes)
+nextDirective = mapRoute(definitionVersion, currentState, selectedRoute)
 ```
 
 The transition agent is a visible, bounded invocation. It chooses one declared
-route, not an arbitrary state. PilotSwarm persists `R`; replay never reruns the
-agent merely to reconstruct control flow.
+route, not an arbitrary state. PilotSwarm persists `selectedRoute`; replay
+never reruns the agent merely to reconstruct control flow.
 
 Deterministic mappings are the default. Agentic routing is an explicit escape
 hatch, not hidden model execution inside the controller.
