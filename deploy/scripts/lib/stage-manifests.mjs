@@ -474,6 +474,7 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       HORIZON_EMBED_DIM: "1536",
       HORIZON_EMBED_API_KEY_HEADER: "api-key",
       // Preserve runtime defaults for older stamps that omit optional portal config.
+      PORTAL_EXTERNAL_VIEWS_JSON: "__PS_UNSET__",
       PORTAL_AUTH_DEV_ALLOW: "__PS_UNSET__",
       PORTAL_AUTH_DEV_USERS: "__PS_UNSET__",
       AUTHZ_ENFORCE_OWNERSHIP: "__PS_UNSET__",

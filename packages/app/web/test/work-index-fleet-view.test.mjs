@@ -13,21 +13,12 @@ test("Work Index exposes fleet scope only to administrators", () => {
     assert.match(source, /scope === "fleet" \? "Fleet view · read-only" : "My view"/);
 });
 
-test("fleet mode requests fleet collections and keeps their panes read-only", () => {
-    assert.match(source, /listWorkflowRunsPage\(\{/);
-    assert.match(source, /loadPersistedWorkflowGenerators\(transport, catalogScope, \{/);
+test("fleet mode requests the Session collection and keeps participation read-only", () => {
     assert.match(source, /listSessionsPage\(\{/);
     assert.match(source, /CatalogQueryControls/);
-    assert.match(source, /Load more Workflow Runs/);
-    assert.match(source, /Load more Workflow Generators/);
     assert.match(source, /Load more Sessions/);
-    assert.match(source, /const readOnly = catalogScope === "fleet"/);
-    assert.match(source, /getWorkflowDefinition\(workflowRun\.workflowDefinitionId, \{ scope \}\)/);
-    assert.match(source, /listWorkflowRunSessions\(workflowRun\.workflowRunId, \{ scope \}\)/);
-    assert.match(source, /listWorkflowRunStateRuns\(workflowRun\.workflowRunId, \{ scope \}\)/);
-    assert.match(source, /listWorkflowRunJournal\(workflowRun\.workflowRunId, \{ scope \}\)/);
-    assert.match(source, /onOverrideCondition: readOnly \? null : onOverrideCondition/);
-    assert.match(source, /!readOnly \? React\.createElement\("div", \{ className: "ps-workflow-generator-detail-actions" \}/);
+    assert.doesNotMatch(source, /\{ id: "workflowRuns", label: "Workflow Runs" \}/);
+    assert.doesNotMatch(source, /\{ id: "workflowGenerators", label: "Workflow Generators" \}/);
 });
 
 test("fleet Session selection opens the transcript without enabling participation", () => {
@@ -40,15 +31,11 @@ test("fleet Session selection opens the transcript without enabling participatio
     assert.match(source, /await controller\.loadSession\(restoreSessionId\)\.catch/);
 });
 
-test("fleet Workflow transition selection explicitly opens its transcript", () => {
+test("workflow-specific Work Index navigation is absent", () => {
     assert.equal(
         source.match(/onSelectSession: onFleetSessionSelect/g)?.length,
-        3,
-        "All Fleet Session, Workflow Run, and Workflow Generator selections should use the same transcript path",
+        1,
+        "Only Fleet Session selection should use the transcript path",
     );
-    assert.equal(
-        source.match(/await onSelectSession\(transition\.sessionId\)/g)?.length,
-        2,
-        "Both transition trees should open the selected transition Session",
-    );
+    assert.doesNotMatch(source, /await onSelectSession\(transition\.sessionId\)/);
 });
