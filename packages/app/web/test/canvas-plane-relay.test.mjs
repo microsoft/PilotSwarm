@@ -178,3 +178,23 @@ test("connection: null keeps the plane unavailable even when DATABASE_URL is set
         else process.env.DATABASE_URL = saved;
     }
 });
+
+test("a dropped connection (pg fires both error and end) opens one new LISTEN client and closes the old one", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const stub = stubClients();
+    let ended = 0;
+    const createClient = (options) => {
+        const client = stub.createClient(options);
+        client.end = async () => { ended += 1; };
+        return client;
+    };
+    const plane = createCanvasPlane({ connection: { connectionString: "postgresql://u@db.example.test/cms" }, schema: "test", createClient });
+    t.after(() => plane.stop());
+    await plane.start();
+    stub.clients[0].emit("error", new Error("connection lost"));
+    stub.clients[0].emit("end");
+    t.mock.timers.tick(60_000);
+    await settle();
+    assert.equal(stub.clients.length, 2, "one new client, not two");
+    assert.equal(ended, 1, "the dropped client is closed once");
+});

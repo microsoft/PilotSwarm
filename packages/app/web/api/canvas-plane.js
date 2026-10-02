@@ -34,6 +34,7 @@ export function createCanvasPlane({
     let client = null;
     let stopped = false;
     let probeTimer = null;
+    let reconnectTimer = null;
     let reconnectDelay = 1_000;
 
     const clientConfig = connection !== undefined
@@ -91,8 +92,15 @@ export function createCanvasPlane({
                 try { cb(update); } catch { /* one bad socket must not stop the fan-out */ }
             }
         });
+        // pg fires both "error" and "end" when a connection drops: act once,
+        // close the old client, and open one new one (two LISTEN clients
+        // would send every canvas update twice).
+        let gone = false;
         const onGone = () => {
+            if (gone) return;
+            gone = true;
             if (client === next) client = null;
+            next.end().catch(() => { /* already dead */ });
             scheduleReconnect();
         };
         next.on("error", onGone);
@@ -100,10 +108,14 @@ export function createCanvasPlane({
     }
 
     function scheduleReconnect() {
-        if (stopped) return;
+        if (stopped || reconnectTimer) return;
         const delay = reconnectDelay;
         reconnectDelay = Math.min(reconnectDelay * 2, 15_000);
-        setTimeout(() => { void connect(); }, delay);
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            void connect();
+        }, delay);
+        reconnectTimer.unref?.();
     }
 
     return {
@@ -133,6 +145,7 @@ export function createCanvasPlane({
         async stop() {
             stopped = true;
             if (probeTimer) clearInterval(probeTimer);
+            if (reconnectTimer) clearTimeout(reconnectTimer);
             subscribers.clear();
             if (client) {
                 try { await client.end(); } catch { /* going down anyway */ }
