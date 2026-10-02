@@ -57,6 +57,7 @@ import {
     validateSemanticFingerprint,
     validateSourceSnapshot,
     validateExplicitFiles,
+    verifyRetainedCampaignReports,
     waitForProcessIdentity,
 } from "../run-local-test-baseline.mjs";
 
@@ -1002,6 +1003,53 @@ test("failed and timed-out outcomes can still form complete campaign evidence", 
     assert.equal(summary.failed, 1);
     assert.equal(summary.timed_out, 1);
     assert.equal(summary.unfinished, 0);
+});
+
+test("retained reports must exist and match their recorded digest before reuse", (t) => {
+    const directory = scratch(t);
+    const outputPath = path.join(directory, "campaign.json");
+    const reportPath = path.join(directory, "reports", "passed.json");
+    const state = {
+        tests: {
+            "passed.test.js": {
+                attempts: [{
+                    status: "passed",
+                    collectionStatus: "complete",
+                    reportEvidenceValid: true,
+                    reportPath: "reports/passed.json",
+                    reportDigest: `sha256:${"0".repeat(64)}`,
+                }],
+            },
+            "timeout.test.js": {
+                attempts: [{
+                    status: "timed_out",
+                    collectionStatus: "complete",
+                    reportEvidenceValid: false,
+                    reportPath: "reports/timeout.json",
+                    reportDigest: null,
+                }],
+            },
+        },
+    };
+
+    assert.throws(
+        () => verifyRetainedCampaignReports(state, outputPath),
+        /missing or unsafe for passed\.test\.js/,
+    );
+
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, JSON.stringify({ success: true }));
+    state.tests["passed.test.js"].attempts[0].reportDigest = `sha256:${crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(reportPath))
+        .digest("hex")}`;
+    assert.doesNotThrow(() => verifyRetainedCampaignReports(state, outputPath));
+
+    fs.appendFileSync(reportPath, "\ntampered");
+    assert.throws(
+        () => verifyRetainedCampaignReports(state, outputPath),
+        /digest mismatch for passed\.test\.js/,
+    );
 });
 
 test("parses dirty worktree entries for executable-run enforcement", () => {

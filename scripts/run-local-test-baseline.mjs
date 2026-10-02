@@ -534,6 +534,7 @@ function loadState(outputPath, identity, repository, fresh) {
     if (fs.existsSync(outputPath) && !fresh) {
         const parsed = JSON.parse(fs.readFileSync(outputPath, "utf8"));
         assertCompatibleCampaign(parsed, identity, outputPath);
+        verifyRetainedCampaignReports(parsed, outputPath);
         parsed.repository = repository;
         parsed.runs ??= {};
         return parsed;
@@ -594,6 +595,38 @@ export function trustedAttempts(entry) {
         (attempt) => attempt.collectionStatus === "complete"
             && TERMINAL_TEST_STATUSES.has(attempt.status),
     );
+}
+
+export function verifyRetainedCampaignReports(state, outputPath) {
+    for (const [file, entry] of Object.entries(state.tests ?? {})) {
+        for (const attempt of trustedAttempts(entry)) {
+            const requiresReport = attempt.status !== "timed_out";
+            if (!attempt.reportEvidenceValid) {
+                if (requiresReport) {
+                    throw new Error(`Retained report evidence is invalid for ${file}`);
+                }
+                continue;
+            }
+            if (!attempt.reportPath || !/^sha256:[a-f0-9]{64}$/i.test(attempt.reportDigest ?? "")) {
+                throw new Error(`Retained report metadata is invalid for ${file}`);
+            }
+            let retainedPath;
+            try {
+                retainedPath = resolveRetainedReportPath(outputPath, attempt.reportPath);
+            } catch {
+                throw new Error(`Retained report artifact is missing or unsafe for ${file}`);
+            }
+            if (!fs.existsSync(retainedPath) || !fs.statSync(retainedPath).isFile()) {
+                throw new Error(`Retained report artifact is missing or unsafe for ${file}`);
+            }
+            const actualDigest = `sha256:${crypto.createHash("sha256")
+                .update(fs.readFileSync(retainedPath))
+                .digest("hex")}`;
+            if (actualDigest.toLowerCase() !== attempt.reportDigest.toLowerCase()) {
+                throw new Error(`Retained report artifact digest mismatch for ${file}`);
+            }
+        }
+    }
 }
 
 function latestAttempt(entry) {
@@ -2994,6 +3027,18 @@ async function main() {
                     requestCoordinatorStop(
                         "source-validation",
                         `Execution context validation failed before terminal success: ${error.message}`,
+                        state,
+                        outputPath,
+                    );
+                }
+            }
+            if (!abortReason) {
+                try {
+                    verifyRetainedCampaignReports(state, outputPath);
+                } catch (error) {
+                    requestCoordinatorStop(
+                        "collection-failure",
+                        error.message,
                         state,
                         outputPath,
                     );
