@@ -19,8 +19,8 @@ const hashes = {
 };
 for (const [name, expected] of Object.entries(hashes)) {
     test(`frozen 1.0.78 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_78/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), expected);
+        const source = readFileSync(new URL(`../../src/orchestration_1_0_78/${name}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+        assert.equal(createHash("sha256").update(source).digest("hex"), expected);
     });
 }
 

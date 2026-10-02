@@ -72,7 +72,7 @@ describe("repo service: clones", () => {
         assert.equal(made.body.created, true);
         const clone = made.body.path;
         const alternates = fs.readFileSync(path.join(clone, ".git/objects/info/alternates"), "utf8").trim();
-        assert.ok(!path.isAbsolute(alternates) && alternates.includes("repos/app.git/objects"), alternates);
+        assert.ok(!path.isAbsolute(alternates) && alternates.includes(path.join("repos", "app.git", "objects")), alternates);
         assert.equal(await git(["-C", clone, "remote", "get-url", "origin"]), fx.remote);
         // Untrimmed: the first value is the empty helper that clears inherited ones.
         assert.equal((await tryGit(["-C", clone, "config", "--local", "--get-all", "credential.helper"])).stdout, "\n!echo helper\n");
@@ -178,7 +178,7 @@ describe("repo service: leases", () => {
         svc.alive.delete("w2");
         svc.advance(61_000); // and too old, as well as on a missing worker
         const cleared = await lease(svc, "child", "tree-a", "w3");
-        assert.deepEqual(cleared.removedLocks.sort(), [".git/index.lock", ".git/refs/heads/main.lock"]);
+        assert.deepEqual(cleared.removedLocks.sort(), [path.join(".git", "index.lock"), path.join(".git", "refs", "heads", "main.lock")]);
         assert.equal(fs.existsSync(lock) || fs.existsSync(refLock), false);
         assert.deepEqual(svc.service.state().leases["sessions/tree-a/app"].map((e) => [e.sessionId, e.workerNodeId]), [["child", "w3"]],
             "dead entries are dropped");

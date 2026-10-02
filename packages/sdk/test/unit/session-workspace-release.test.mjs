@@ -162,7 +162,7 @@ test("the eviction sweep releases a workspace session before it evicts it", asyn
     assert.equal(h.manager.get("s1"), null);
 });
 
-test("a shell the CLI will not cancel (after an abort) is killed with every process below it", async (t) => {
+test("a shell the CLI will not cancel (after an abort) is killed with every process below it", { skip: process.platform === "win32" && "process-tree cleanup uses Unix process groups" }, async (t) => {
     // CLI 1.0.83, verified: after session.abort(), tasks.cancel answers
     // { cancelled: false }; the reported pid is not a process-group leader;
     // and the task stays "running" after the process dies. This fake does
@@ -188,7 +188,7 @@ test("a shell the CLI will not cancel (after an abort) is killed with every proc
     assert.equal(result.detail, undefined, `a dead pid counts as done although the CLI still says running: ${result.detail}`);
 });
 
-test("a pid that now belongs to another process is never killed; a dead one counts as done (review R4)", async (t) => {
+test("a pid that now belongs to another process is never killed; a dead one counts as done (review R4)", { skip: process.platform === "win32" && "pid reuse detection uses Linux /proc" }, async (t) => {
     // CLI 1.0.83 keeps a finished detached shell listed as running, with its
     // pid. The host may give that pid to another process later: here, one
     // that started a minute after the task did.
