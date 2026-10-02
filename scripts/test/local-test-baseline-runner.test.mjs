@@ -928,6 +928,54 @@ test("--all plans unfinished rounds as distinct recovery work before the new obs
     );
 });
 
+test("repeated recovery preserves the original retry kind and retry accounting", () => {
+    const state = {
+        currentRun: {
+            runId: "run-recovery",
+            status: "interrupted",
+            rounds: [{
+                number: 0,
+                kind: "recovery",
+                retryTarget: 1,
+                recoveryOf: {
+                    runId: "run-retry",
+                    round: 1,
+                    kind: "retry",
+                },
+                files: ["failed.test.js"],
+            }],
+        },
+        tests: {
+            "failed.test.js": {
+                status: "interrupted",
+                collectionStatus: "interrupted",
+                attempts: [{
+                    number: 1,
+                    runId: "run-recovery",
+                    round: 0,
+                    status: "interrupted",
+                    collectionStatus: "interrupted",
+                    attemptKind: "retry",
+                    retryTarget: 1,
+                }],
+            },
+        },
+    };
+
+    const [recovery] = planRecoveryRounds(state);
+    assert.equal(recovery.kind, "retry");
+    assert.equal(recovery.retryTarget, 1);
+
+    state.tests["failed.test.js"].attempts.push({
+        number: 2,
+        status: "failed",
+        collectionStatus: "complete",
+        attemptKind: recovery.kind,
+        retryTarget: recovery.retryTarget,
+    });
+    assert.deepEqual(planRetryTargetFiles(state, ["failed.test.js"], 1), []);
+});
+
 test("failed and timed-out outcomes can still form complete campaign evidence", () => {
     const state = {
         tests: {

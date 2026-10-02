@@ -100,10 +100,11 @@ export function planRecoveryRounds(state) {
             return !attempt || attempt.collectionStatus !== "complete";
         });
         if (files.length === 0) continue;
+        const attemptKind = round.recoveryOf?.kind ?? round.kind;
         plans.push({
             sourceRunId: run.runId,
             sourceRoundNumber: round.number,
-            kind: round.kind,
+            kind: attemptKind,
             retryTarget: round.retryTarget ?? null,
             files,
         });
