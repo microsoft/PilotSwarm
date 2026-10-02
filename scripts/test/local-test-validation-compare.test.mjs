@@ -42,6 +42,16 @@ function attempt(status, durationMs, number = 1) {
         finishedAt: new Date(Date.parse(startedAt) + effectiveDurationMs).toISOString(),
         processDeadlineMs,
         timedOut: status === "timed_out",
+        exitCode: status === "passed" ? 0 : status === "failed" ? 1 : null,
+        testCounts: status === "timed_out"
+            ? null
+            : {
+                total: 1,
+                passed: status === "passed" ? 1 : 0,
+                failed: status === "failed" ? 1 : 0,
+                skipped: 0,
+                todo: 0,
+            },
         processIdentityVerified: true,
         processIdentity: {
             pid: 1234 + number,
@@ -127,11 +137,20 @@ function materializeReports(directory, value) {
             if (!item.reportEvidenceValid) continue;
             const reportPath = path.join(directory, item.reportPath);
             const report = `${JSON.stringify({
+                success: item.status === "passed",
+                numTotalTestSuites: 1,
+                numPassedTestSuites: item.status === "passed" ? 1 : 0,
+                numFailedTestSuites: item.status === "failed" ? 1 : 0,
+                numPendingTestSuites: 0,
                 numTotalTests: 1,
                 numPassedTests: item.status === "passed" ? 1 : 0,
                 numFailedTests: item.status === "failed" ? 1 : 0,
                 numPendingTests: 0,
-                testResults: [],
+                numTodoTests: 0,
+                testResults: [{
+                    status: item.status,
+                    assertionResults: [],
+                }],
             }, null, 2)}\n`;
             fs.mkdirSync(path.dirname(reportPath), { recursive: true });
             fs.writeFileSync(reportPath, report);
@@ -387,4 +406,42 @@ test("comparison CLI rejects missing, tampered, and identical manifest evidence"
     ], { cwd: REPO_ROOT, encoding: "utf8" });
     assert.notEqual(identical.status, 0);
     assert.match(identical.stderr, /manifest paths must be distinct/);
+});
+
+test("comparison CLI rejects manifest outcomes that contradict native reports", (t) => {
+    const directory = scratch(t);
+    const baselineDirectory = path.join(directory, "baseline");
+    const candidateDirectory = path.join(directory, "candidate");
+    fs.mkdirSync(baselineDirectory, { recursive: true });
+    fs.mkdirSync(candidateDirectory, { recursive: true });
+    const baselinePath = path.join(baselineDirectory, "campaign.json");
+    const candidatePath = path.join(candidateDirectory, "campaign.json");
+    const baseline = campaign("base", { "file.test.js": ["passed"] });
+    const candidate = campaign("candidate", { "file.test.js": ["failed"] });
+    materializeReports(baselineDirectory, baseline);
+    materializeReports(candidateDirectory, candidate);
+    fs.writeFileSync(baselinePath, JSON.stringify(baseline));
+
+    candidate.tests["file.test.js"].status = "passed";
+    candidate.tests["file.test.js"].attempts[0].status = "passed";
+    fs.writeFileSync(candidatePath, JSON.stringify(candidate));
+    const statusMismatch = spawnSync(process.execPath, [
+        path.join(REPO_ROOT, "scripts", "compare-local-test-validation.mjs"),
+        "--baseline", baselinePath,
+        "--candidate", candidatePath,
+    ], { cwd: REPO_ROOT, encoding: "utf8" });
+    assert.notEqual(statusMismatch.status, 0);
+    assert.match(statusMismatch.stderr, /outcome does not match its native report/);
+
+    candidate.tests["file.test.js"].status = "failed";
+    candidate.tests["file.test.js"].attempts[0].status = "failed";
+    candidate.tests["file.test.js"].attempts[0].exitCode = 0;
+    fs.writeFileSync(candidatePath, JSON.stringify(candidate));
+    const exitMismatch = spawnSync(process.execPath, [
+        path.join(REPO_ROOT, "scripts", "compare-local-test-validation.mjs"),
+        "--baseline", baselinePath,
+        "--candidate", candidatePath,
+    ], { cwd: REPO_ROOT, encoding: "utf8" });
+    assert.notEqual(exitMismatch.status, 0);
+    assert.match(exitMismatch.stderr, /outcome does not match its native report/);
 });

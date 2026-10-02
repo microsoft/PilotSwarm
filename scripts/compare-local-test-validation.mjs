@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
     campaignEvidenceComplete,
     campaignIdentityHash,
+    isNativeVitestReport,
     resolveOutputPath,
     STATE_SCHEMA_VERSION,
     trustedAttempts,
@@ -190,6 +191,41 @@ export function verifyReportArtifact(attempt, {
     return canonicalReportPath;
 }
 
+function validateAttemptOutcome(attempt, report, label, file) {
+    if (!isNativeVitestReport(report)
+        || typeof report.success !== "boolean"
+        || !Number.isFinite(report.numFailedTestSuites)) {
+        throw new Error(`${label} native report outcome is invalid for ${file}`);
+    }
+    const reportFailed = report.success === false
+        || report.numFailedTests > 0
+        || report.numFailedTestSuites > 0
+        || report.testResults.some((suite) => suite.status === "failed");
+    if (attempt.status === "passed") {
+        if (attempt.exitCode !== 0 || reportFailed) {
+            throw new Error(`${label} attempt outcome does not match its native report for ${file}`);
+        }
+    } else if (attempt.status === "failed") {
+        if (!Number.isInteger(attempt.exitCode)
+            || attempt.exitCode === 0
+            || !reportFailed) {
+            throw new Error(`${label} attempt outcome does not match its native report for ${file}`);
+        }
+    }
+    const expectedCounts = {
+        total: report.numTotalTests,
+        passed: report.numPassedTests,
+        failed: report.numFailedTests,
+        skipped: report.numPendingTests,
+        todo: report.numTodoTests ?? 0,
+    };
+    for (const [key, value] of Object.entries(expectedCounts)) {
+        if (attempt.testCounts?.[key] !== value) {
+            throw new Error(`${label} attempt test counts do not match its native report for ${file}`);
+        }
+    }
+}
+
 function validateTimeoutEvidence(attempt, label, file) {
     const started = Date.parse(attempt.startedAt);
     const deadline = Date.parse(attempt.deadlineAt);
@@ -284,6 +320,15 @@ function validateCampaign(campaign, label, {
                     });
                     if (verifiedPath && verifiedArtifacts) {
                         verifiedArtifacts.add(fs.realpathSync(verifiedPath));
+                    }
+                    if (verifiedPath) {
+                        let report;
+                        try {
+                            report = JSON.parse(fs.readFileSync(verifiedPath, "utf8"));
+                        } catch {
+                            throw new Error(`${label} native report cannot be parsed for ${file}`);
+                        }
+                        validateAttemptOutcome(attempt, report, label, file);
                     }
                 } else if (requireArtifacts) {
                     throw new Error(`${label} report artifacts cannot be verified`);

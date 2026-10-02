@@ -1252,7 +1252,7 @@ export function redactNativeReport(
     return redacted;
 }
 
-function isNativeVitestReport(report) {
+export function isNativeVitestReport(report) {
     return Boolean(report
         && typeof report === "object"
         && Array.isArray(report.testResults)
