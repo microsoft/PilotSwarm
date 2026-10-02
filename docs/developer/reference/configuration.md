@@ -603,6 +603,42 @@ view models never return them. Browser and terminal password drafts are cleared
 on save and cancel; the native UI also removes its draft before awaiting the
 provider create or credential-update request.
 
+### Request Format (`wireApi`)
+
+`wireApi` picks the request format for an OpenAI-shaped endpoint:
+`"completions"` (Chat Completions) or `"responses"` (the Responses API). Set
+it on a provider entry, on a model entry, or both. Only `openai`,
+`openai-proxy` and `azure` types accept it.
+
+Which value a model gets:
+
+```
+1. The model's own wireApi, if set
+2. Else the provider's wireApi, if set
+3. Else none is sent, and the Copilot SDK uses Chat Completions
+```
+
+Example: Azure GPT-5.6 needs Responses when a turn has tools and reasoning
+together. GPT-5.4 models under the same provider stay on Chat Completions:
+
+```json
+{
+  "id": "azure-openai",
+  "type": "azure",
+  "baseUrl": "https://my-resource.openai.azure.com/openai",
+  "models": [
+    { "name": "gpt-5.6", "wireApi": "responses" },
+    { "name": "gpt-5.4" }
+  ]
+}
+```
+
+The value follows shared and personal provider instances of the type. The
+catalog is checked when it loads. A `wireApi` other than `"completions"` or
+`"responses"`, or one on a `github`, `anthropic` or `anthropic-wif` model,
+fails the load with an error that names the `provider:model`. A hot reload
+that fails this way keeps the previous catalog.
+
 ### GPT-6 Astra through GitHub Copilot
 
 The shared `github-copilot` type includes `gpt-6-astra`. Existing personal and
