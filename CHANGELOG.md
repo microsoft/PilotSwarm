@@ -96,6 +96,10 @@ is read-only, except for checkout.
 - Session footprint: `regenEligibility` now says whether a session can be
   regenerated, and why not. `turnsThisEpoch` counts the turns since the
   last regenerate (#111).
+- Token Manager (agent version 1.2.0): it can tell new sessions from old
+  ones. `list_sessions` already gives each session's owner and creation
+  time; the agent's instructions now say how to count, per person, the
+  sessions created in a day.
 - Tests: the database check no longer prints the database password when
   the database cannot be reached.
 
