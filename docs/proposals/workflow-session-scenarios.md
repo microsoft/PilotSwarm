@@ -30,7 +30,7 @@ tool execution.
   - [2.4 Result and lifecycle records](#24-result-and-lifecycle-records)
     - [Lifecycle records for reviewed completion](#lifecycle-records-for-reviewed-completion)
   - [2.5 Workflow-authored transition function](#25-workflow-authored-transition-function)
-  - [2.6 Waiting, providers, and actions](#26-waiting-providers-and-actions)
+  - [2.6 External waits, providers, and actions](#26-external-waits-providers-and-actions)
   - [2.7 Nested workflows and limits](#27-nested-workflows-and-limits)
   - [2.8 Authorization and cancellation](#28-authorization-and-cancellation)
   - [2.9 Observability](#29-observability)
@@ -321,6 +321,11 @@ State execution may be nondeterministic. PilotSwarm validates and durably
 records `output` before evaluating `transition`. The producer never names or
 applies `nextDirective`.
 
+`executeState` is a logical lifecycle, not necessarily one synchronous call. It
+may span durable waits and resumptions while `currentState` remains unchanged.
+The transition function runs only after that lifecycle produces an accepted
+output.
+
 The default transition function is a deterministic finite mapping:
 
 ```text
@@ -348,14 +353,58 @@ never reruns the agent merely to reconstruct control flow.
 Deterministic mappings are the default. Agentic routing is an explicit escape
 hatch, not hidden model execution inside the controller.
 
-### 2.6 Waiting, providers, and actions
+### 2.6 External waits, providers, and actions
 
-Waiting is persisted control-plane state:
+An **external wait** suspends an invocation until progress or a condition outside
+PilotSwarm produces a terminal output. An observed condition only waits; a
+long-running operation starts or attaches to work and then waits. A durable
+wait is the controller mechanism implementing either form.
+
+An external wait is persisted control-plane state:
 
 1. Persist operation and correlation.
 2. Subscribe to an event or create a durable timer.
 3. Release the worker.
 4. Rehydrate on event, cancellation, or timer.
+
+Long-running work uses a durable operation lifecycle:
+
+```text
+begin(input, idempotencyKey)
+  -> completed(outcome, output)
+  -> waiting(operationReference, checkpoint, wakePolicy)
+
+observe(operationReference, checkpoint, observation)
+  -> completed(outcome, output)
+  -> waiting(updatedCheckpoint, wakePolicy)
+```
+
+The invocation remains in the same workflow state while waiting. Intermediate
+observations update durable operation state but do not invoke the transition
+function. A terminal provider response becomes the state output and permits
+transition evaluation.
+
+`begin` must be idempotent so replay cannot start a second external operation.
+The wake policy may use callbacks, events, or durable polling timers without
+changing controller semantics. Cancellation fences further observations and
+requests provider cancellation when supported; it does not assume the external
+operation was reversed.
+
+For push-based wake-up, PilotSwarm issues an opaque wait handle and generic
+authenticated signal endpoint. An external system or provider integration
+submits a signal ID and the wait handle; PilotSwarm validates, deduplicates,
+persists, and wakes the owning invocation. The signal is a wake-up hint, not an
+authoritative completion result. On resumption, the provider validates or
+re-reads authoritative state before returning an outcome.
+
+PilotSwarm owns the generic signal ingress and durable timer fallback. Providers
+own source-specific subscription or callback registration. A source that can
+call the generic endpoint needs no domain-specific PilotSwarm notification API;
+a source without callbacks may rely on durable polling.
+
+An author may represent launch and observation as one long-running operation
+state or as separate action and observed-condition states when that distinction
+is meaningful in the workflow.
 
 Predefined questions follow the same model. An authenticated answer must target
 the exact active question and invocation, satisfy respondent authorization, and
@@ -369,7 +418,8 @@ Provider-backed states use a common logical contract:
   with one declared outcome and structured output.
 - Malformed, stale, superseded, incorrectly correlated, or undeclared provider
   responses fail explicitly.
-- PilotSwarm validates and persists the response, then invokes `T`.
+- PilotSwarm validates and persists terminal output before evaluating the
+  workflow-authored transition function.
 
 External writes are separate action nodes with explicit authorization and
 idempotency. Accepting a reviewed candidate may authorize a later action; it
@@ -448,6 +498,16 @@ being copied into orchestration state.
 - [ ] Define reviewed revision, rejection, acceptance, abort, and invalidation.
 - [ ] Define agentic transition admission, allowed routes, bounds, and replay.
 - [ ] Define provider registration, wake-up, correlation, and idempotency.
+- [ ] Define long-running provider begin, observe, checkpoint, and cancellation
+  contracts.
+- [ ] Define generic wait handles, signal authentication, payload limits,
+  deduplication, expiry, and timer fallback.
+- [ ] Define registration handshakes, lost-wakeup recovery, signal ordering and
+  coalescing, and callback-before-registration behavior.
+- [ ] Define races among completion, timeout, cancellation, supersession, and
+  late signals.
+- [ ] Define provider error classification, retry/backoff, rate limits, and
+  reconciliation after outages.
 - [ ] Define controller outcomes for timeout, cancellation, and exhausted bounds.
 - [ ] Define compiler checks for incomplete, ambiguous, or invalid definitions.
 - [ ] Define minimal transition and completion telemetry.
@@ -626,6 +686,17 @@ Lifecycle:
 - malformed, stale, superseded, and incorrectly correlated provider events
   fail explicitly;
 - provider events and action retries remain idempotent;
+- long-running operations start once, release the worker, tolerate intermediate
+  observations, and transition only after terminal output;
+- callback and polling wake policies produce the same accepted output;
+- duplicate, expired, unauthorized, and incorrectly correlated signals cannot
+  advance an invocation;
+- a signal arriving during registration is not lost;
+- concurrent completion, timeout, cancellation, and late signals produce one
+  authoritative lifecycle result;
+- transient provider failures retry without restarting the external operation;
+- continue-as-new and worker recovery preserve active wait handles,
+  checkpoints, and unconsumed signals;
 - replay consumes recorded agentic routes rather than rerunning the agent;
 - old orchestration versions retain frozen behavior.
 
@@ -686,3 +757,7 @@ boundary used by production integrations.
     normative PilotSwarm schema.
 13. Starts may use registered references or inline definitions; every admitted
     run freezes an immutable compiled definition identity.
+14. Long-running operations remain in the current state across durable waits;
+    only accepted terminal output enables transition evaluation.
+15. PilotSwarm provides generic durable signal ingress; provider integrations
+    arrange source-specific callbacks or use polling.
