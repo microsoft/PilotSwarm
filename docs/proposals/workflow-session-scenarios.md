@@ -37,6 +37,7 @@ fixture captures the fuller product-direction contract.
   - [2.3 Durable workflow creation](#23-durable-workflow-creation)
   - [2.4 Relationship tree versus execution ledgers](#24-relationship-tree-versus-execution-ledgers)
   - [2.5 Result contracts](#25-result-contracts)
+    - [Lifecycle records for reviewed completion](#lifecycle-records-for-reviewed-completion)
   - [2.6 One-edge result propagation](#26-one-edge-result-propagation)
   - [2.7 Durable waiting](#27-durable-waiting)
     - [Workflow-authored transition function](#workflow-authored-transition-function)
@@ -800,6 +801,28 @@ A workflow node submission needs controller-owned correlation:
 The runtime binds `submit_workflow_result` to the current invocation. The agent
 cannot select another workflow or issue a next-node command.
 
+#### Lifecycle records for reviewed completion
+
+PilotSwarm preserves each producer submission, candidate revision, review
+decision, accepted state outcome, and selected transition as a distinct
+immutable fact. A one-shot submission may immediately produce an accepted
+state outcome; a reviewed submission produces only a candidate until an
+authorized decision accepts that exact revision. The physical storage model
+remains an implementation decision.
+
+This separation provides the audit chain:
+
+```text
+submission -> candidate revision -> review decision
+    -> accepted state outcome -> selected transition
+```
+
+It also supports quality measurements without inferring them from overwritten
+state, including first-pass acceptance, revisions per accepted candidate,
+rejection reasons, stale or invalid submission rate, time to acceptance, and
+the rate of human correction. Telemetry should reference immutable records and
+minimal metadata rather than duplicate sensitive result content.
+
 ### 2.6 One-edge result propagation
 
 Results move only to the direct parent:
@@ -995,7 +1018,7 @@ Correlation should include:
 
 ### 2.11 Open workflow-controller design TODOs
 
-- [ ] Separate producer submissions, reviewed candidate revisions, review
+- [x] Separate producer submissions, reviewed candidate revisions, review
   decisions, and accepted state outcomes rather than overloading one
   completion envelope.
 - [ ] Define which identity fields are runtime-bound, including workflow,
