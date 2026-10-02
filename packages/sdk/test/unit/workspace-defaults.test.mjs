@@ -205,7 +205,7 @@ describe("D6-D7 resolveWorkspaceAdoption and linked skills", () => {
         assert.deepEqual(one.customAgents, plain.customAgents);
         assert.deepEqual(one.report, plain.report);
         assert.equal(one.hash, plain.hash);
-        assert.deepEqual(one.skillDirectories, ["/ws/a/c/.github/skills"]);
+        assert.deepEqual(one.skillDirectories, [path.join(repo.attachPath, ".github", "skills")]);
         assert.equal(one.linkSkills, false);
     });
 
@@ -228,7 +228,7 @@ describe("D6-D7 resolveWorkspaceAdoption and linked skills", () => {
         assert.equal(all.linkSkills, true, "skills from several sources are linked");
         assert.deepEqual(all.skillDirectories, []);
         assert.deepEqual(all.skills.map((s) => [s.name, s.path, s.kind]), [
-            ["notes", "/ws/shared/skills/notes", "loaded"], ["build", "/ws/a/c/.github/skills/build", "repo"],
+            ["notes", "/ws/shared/skills/notes", "loaded"], ["build", path.join(repo.attachPath, ".github", "skills", "build"), "repo"],
         ]);
     });
 
@@ -237,7 +237,7 @@ describe("D6-D7 resolveWorkspaceAdoption and linked skills", () => {
         assert.deepEqual(only.report.personal, { agents: ["helper", "reviewer"], skills: ["notes"] });
         assert.deepEqual(only.report.agents, []);
         assert.equal(only.linkSkills, false);
-        assert.deepEqual(only.skillDirectories, ["/ws/home/users/me/.github/skills"]);
+        assert.deepEqual(only.skillDirectories, [path.join(personal.attachPath, ".github", "skills")]);
     });
 
     it("D7 linkSkillFolders: one link per skill; a changed target is replaced; a gone skill is removed", () => {

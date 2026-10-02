@@ -115,7 +115,7 @@ describe("relative alternates", () => {
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "root-move" });
             const alternates = fs.readFileSync(path.join(clone, ".git/objects/info/alternates"), "utf8").trim();
-            assert.equal(alternates, "../../../../../repos/app.git/objects");
+            assert.equal(alternates, path.join("..", "..", "..", "..", "..", "repos", "app.git", "objects"));
             assert.equal(await git(["-C", clone, "remote", "get-url", "origin"]), fixture.remote);
             // Objects come only from the mirror: the clone owns none.
             assert.equal((await countObjects(clone)).total, 0);
@@ -267,7 +267,9 @@ describe("G2 (fixture half): mirror maintenance after an upstream force push", (
 
 describe("G7 (simulated): read-only mirror", () => {
     const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
-    const skip = isRoot ? "running as root: root ignores file permissions, so this cannot fail" : false;
+    const skip = process.platform === "win32"
+        ? "Windows does not enforce Unix chmod-based read-only directory semantics"
+        : isRoot ? "running as root: root ignores file permissions, so this cannot fail" : false;
     let fixture;
     before(async () => { fixture = await createGitFixture(); });
     after(async () => { await fixture?.cleanup(); });
@@ -387,7 +389,7 @@ describe("token-protected git HTTP server: failures never crash it", () => {
         } finally { await server.close(); await fixture.cleanup(); }
     });
 
-    it("close() stops a backend that never answers", async () => {
+    it("close() stops a backend that never answers", { skip: process.platform === "win32" && "requires executable shebang scripts" }, async () => {
         const fixture = await createGitFixture();
         const pidFile = path.join(fixture.root, "hung.pid");
         const script = path.join(fixture.root, "hung-backend.sh");
