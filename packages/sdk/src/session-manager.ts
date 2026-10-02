@@ -19,7 +19,11 @@ import { workspaceReleaseReason } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { discoverRepositoryConfiguration, type SessionWorkspaceManager } from "./session-workspace.js";
-import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
+import {
+    applyReasoningEffortToProviderConfig,
+    providerTypeUsesAmbientIdentity,
+    providerTypeUsesWorkloadIdentity,
+} from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
@@ -1302,6 +1306,23 @@ export class SessionManager {
             );
         }
         return normalized;
+    }
+
+    usesAmbientIdentityForModel(model?: string): boolean {
+        if (!model) return false;
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) return false;
+        try {
+            const normalized = this.normalizeModelRef(model, { requireQualified: true });
+            return providerTypeUsesAmbientIdentity(
+                registry.getDescriptor(normalized)?.providerType,
+            );
+        } catch {
+            // This is only the worker-owned admission predicate. Unknown,
+            // stale, or unqualified references must continue to the central
+            // fail-closed admission path, which owns the actionable error.
+            return false;
+        }
     }
 
     resolveModelSwitchConfig(

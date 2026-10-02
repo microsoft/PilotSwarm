@@ -1019,6 +1019,18 @@ export function childRoutingCreationOptions(config: SerializableSessionConfig) {
     };
 }
 
+export function usesWorkerOwnedAmbientAdmission(
+    sessionManager: SessionManager,
+    config: Pick<ManagedSessionConfig, "ownerAffinity">,
+    model: string | null | undefined,
+): boolean {
+    return Boolean(
+        config.ownerAffinity
+        && model
+        && sessionManager.usesAmbientIdentityForModel(model),
+    );
+}
+
 /**
  * Resolve routing from a session's durable orchestration input without
  * changing the orchestration's scheduled activity payload or replay history.
@@ -2074,7 +2086,22 @@ export function registerActivities(
                 }
             }
         }
-        if (catalog?.providers) {
+        const ownerAmbientAdmission = usesWorkerOwnedAmbientAdmission(
+            sessionManager,
+            runConfig,
+            admissionModel,
+        );
+        if (ownerAmbientAdmission) {
+            // Durable routing placed this session on an owner-affinitized
+            // worker whose local provider catalog identifies the exact model
+            // as ambient. Authentication therefore happens through that
+            // worker's signed-in Copilot identity, with no central provider
+            // credential or budget row.
+            admittedProvider.modelRef = admissionModel;
+            activityCtx.traceInfo(
+                `[runTurn] owner-affinitized ambient model admitted by worker capability: ${admissionModel}`,
+            );
+        } else if (catalog?.providers) {
             try {
                 const admission = await catalog.providers.checkTurn(input.sessionId, admissionModel);
                 admittedProvider.name = admission.providerName;
