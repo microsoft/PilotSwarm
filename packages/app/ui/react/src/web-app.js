@@ -6900,7 +6900,13 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                         workspace?.actions.retry ? React.createElement("button", {
                             className: "ps-mini-button", disabled: busy,
                             onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.RETRY_WORKSPACE).catch(() => {}); },
-                        }, "Retry now") : null),
+                        }, "Retry now") : null,
+                        // The side pane's Workspace tab, also while the pane is hidden.
+                        portalWorkspaceFiles ? React.createElement("button", {
+                            className: "ps-mini-button",
+                            title: "Show the session's folders and files in the side pane",
+                            onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE_FILES).catch(() => {}); },
+                        }, "Files") : null),
                     // Section 4.11: folders the deployment gives every session; not in the record.
                     describeSessionWorkspace(workspace).defaults ? React.createElement("div", { className: "ps-share-section-sub ps-manage-workspace-defaults" },
                         describeSessionWorkspace(workspace).defaults) : null) : null,
@@ -13115,7 +13121,7 @@ function ModalLayer({ controller }) {
 
     if (modal.type === "confirm" && modalState.confirm) {
         const isAlert = Boolean(modal.alert);
-        const isDestructive = !isAlert && modal.action === "deleteSession";
+        const isDestructive = !isAlert && (modal.action === "deleteSession" || modal.action === "removeSystemSession");
         // The regenerate confirm carries distillation inputs: a mode select and
         // an optional distilling-instructions textarea, bound to modal.extras.
         const isRegen = modal.action === "regenerateSession";

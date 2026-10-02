@@ -1199,8 +1199,27 @@ export class PilotSwarmWorker {
         void this._reportAgentWorkerState();
         this._agentPackagesTimer = setInterval(() => {
             void this.refreshWorkerConfiguration();
-        }, this._agentPackagesRefreshMs > 0 ? this._agentPackagesRefreshMs : 20_000);
+        }, this._configurationPollMs());
         this._agentPackagesTimer.unref?.();
+    }
+
+    /**
+     * The session ids this worker creates for its system agents. Left out
+     * when the agents' parent graph cannot be resolved; then the removal
+     * check falls back to the agent ids. Never throws: a failed heartbeat
+     * would make the worker look dead.
+     */
+    private _systemSessionIds(): { sessions?: string[] } {
+        try {
+            return { sessions: resolveSystemAgentSessionPlans(this._loadedSystemAgents).map((plan) => plan.sessionId) };
+        } catch {
+            return {};
+        }
+    }
+
+    /** How often the worker refreshes its configuration and sends its heartbeat. */
+    private _configurationPollMs(): number {
+        return this._agentPackagesRefreshMs > 0 ? this._agentPackagesRefreshMs : 20_000;
     }
 
     async refreshWorkerConfiguration(): Promise<void> {
@@ -1426,6 +1445,18 @@ export class PilotSwarmWorker {
                         epoch: this._agentPackagesEpoch,
                         installed: this._agentPackagesInstalled,
                         ...(this._agentPackagesRefreshError ? { lastError: this._agentPackagesRefreshError } : {}),
+                    },
+                    // The system agents this worker starts, and the session
+                    // ids it creates for them. Removing a system session
+                    // (restartSystemSession, startReplacement: false) is
+                    // refused while a live worker lists its session here.
+                    // heartbeatMs tells how long the worker counts as live.
+                    "system-agents": {
+                        loaded: this._loadedSystemAgents
+                            .map((agent) => agent.id)
+                            .filter((id): id is string => Boolean(id)),
+                        ...this._systemSessionIds(),
+                        heartbeatMs: this._configurationPollMs(),
                     },
                 },
             });

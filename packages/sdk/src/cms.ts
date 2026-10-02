@@ -13,7 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1870,7 +1870,7 @@ export class PgSessionCatalog implements SessionCatalog {
             );
         } catch (err: any) {
             if (err?.message?.includes("Cannot delete system session")) {
-                throw new Error("Cannot delete system session");
+                throw systemSessionProtectedError("delete");
             }
             throw err;
         }

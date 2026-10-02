@@ -269,6 +269,80 @@ const PLUS_FILE = ["M6 3h8l4 4v14H6z", "M12 11v6", "M9 14h6"];
 const PLUS_FOLDER = [FOLDER, "M12 10v6", "M9 13h6"];
 const PENCIL = ["M4 20h4L19 9l-4-4L4 16z"];
 const TRASH = ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13"];
+const BRANCH = ["M6 3v12", "M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M18 9a9 9 0 0 1-9 9"];
+const COPY = ["M8 8h12v12H8z", "M16 8V4H4v12h4"];
+const PLUS_MINUS = ["M12 3v8", "M8 7h8", "M8 18h8"];
+const CLOCK = ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 7v5l3 2"];
+const ARROW_UP = ["M12 19V5", "M5 12l7-7 7 7"];
+const ARROW_DOWN = ["M12 5v14", "M19 12l-7 7-7-7"];
+const OPEN_FILE = ["M14 3h7v7", "M21 3l-9 9", "M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"];
+const CLOSE = ["M6 6l12 12", "M18 6L6 18"];
+const BACK = ["M15 18l-6-6 6-6"];
+
+// The repository picker's value for "none picked".
+const NO_REPO = "\u0000none";
+// A second click on a selected folder within this time opens or closes it.
+const FOLDER_TOGGLE_MS = 8_000;
+// A diff shows side by side only when the viewer is this wide; narrower, inline (as VS Code does).
+const DIFF_SPLIT_MIN_WIDTH = 640;
+// A file bigger than this is not compared (the git side has the same limit).
+const DIFF_MAX_BYTES = 5 * 1024 * 1024;
+const DIFF_LAYOUT_KEY = "pilotswarm.workspace.diffLayout";
+function readDiffLayout() {
+    try { return localStorage.getItem(DIFF_LAYOUT_KEY) === "inline" ? "inline" : "split"; } catch { return "split"; }
+}
+function saveDiffLayout(value) {
+    try { localStorage.setItem(DIFF_LAYOUT_KEY, value); } catch { /* private window: the choice lasts this visit */ }
+}
+
+// ─── Git, for a folder that is a repository ───────────────────────────
+
+const GIT_WORDS = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", U: "Untracked: new, not added to git", C: "Conflict" };
+// A folder's dot shows the change inside it that matters most.
+const GIT_RANK = { C: 5, D: 4, M: 3, R: 2, A: 1, U: 0 };
+
+// A commit's date and time, 24-hour, as the chat shows times.
+let gitDateFormat = null;
+export function gitDateTime(seconds) {
+    gitDateFormat ??= new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    return gitDateFormat.format(new Date(seconds * 1000));
+}
+// A folder dot's tooltip: the change inside that matters most.
+const GIT_DOT_WORDS = { M: "Changed files inside", A: "Added files inside", D: "A file inside was deleted", R: "A renamed file inside", U: "New files inside", C: "A conflict inside" };
+
+/** "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago", then a date. */
+export function gitTimeAgo(seconds, now = Date.now()) {
+    const s = Math.max(0, Math.round(now / 1000 - seconds));
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    const days = Math.floor(s / 86400);
+    if (days < 30) return days === 1 ? "yesterday" : `${days} days ago`;
+    return new Date(seconds * 1000).toLocaleDateString();
+}
+
+/**
+ * The file tree's git marks, from a git status: the letter of a changed
+ * path (a file inside an untracked folder is untracked too), and the dot of
+ * a folder with changes inside.
+ */
+export function gitTreeMarks(files) {
+    const letters = new Map();
+    const dirs = new Map();
+    const untrackedDirs = [];
+    for (const f of files || []) {
+        letters.set(f.path, f.letter);
+        if (f.dir) untrackedDirs.push(`${f.path}/`);
+        for (let at = parentOf(f.path); at; at = parentOf(at)) {
+            const before = dirs.get(at);
+            if (!before || GIT_RANK[f.letter] > GIT_RANK[before]) dirs.set(at, f.letter);
+        }
+    }
+    return {
+        letter: (path) => letters.get(path) ?? (untrackedDirs.some((dir) => path.startsWith(dir)) ? "U" : null),
+        dir: (path) => dirs.get(path) ?? (letters.get(path) === "U" ? "U" : null),
+    };
+}
 
 export function FolderGlyph() {
     return h(Icon, { d: FOLDER });
@@ -344,6 +418,34 @@ function CompareEditor({ theirs, mine, name, onReady, lineSeparator }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     return h("div", { className: "ps-ws-compare", ref });
+}
+
+/** A read-only git diff (CodeMirror's merge view), side by side or inline. */
+function DiffEditor({ original, modified, name, layout, whole, onReady }) {
+    const ref = React.useRef(null);
+    const [failed, setFailed] = React.useState(null);
+    React.useEffect(() => {
+        let cancelled = false;
+        let made = null;
+        loadEditor()
+            .then((module) => module.createDiff(ref.current, { original, modified, name, layout, whole }))
+            .then((created) => {
+                if (cancelled) created.destroy();
+                else {
+                    made = created;
+                    onReady(created);
+                }
+            })
+            .catch((error) => { if (!cancelled) setFailed(error); });
+        return () => {
+            cancelled = true;
+            made?.destroy();
+            onReady(null);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [original, modified, name, layout, whole]);
+    if (failed) return h("div", { className: "ps-ws-message" }, `The diff did not load: ${failed.message || failed}`);
+    return h("div", { className: "ps-ws-compare ps-ws-diff", ref });
 }
 
 /** A path relative to a file's folder, or null when it leaves the folder or is an address. */
@@ -706,6 +808,9 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     // Rows picked for a multiple action (Cmd/Ctrl-click, Shift-click, Select).
     const [picked, setPicked] = React.useState(() => new Set());
     const pickAnchor = React.useRef(null);
+    // The folder clicked last, and when: a second click on it soon after opens
+    // or closes it (a first click only selects).
+    const lastFolderClick = React.useRef(null);
     const visibleRows = React.useRef([]);
     const [selectMode, setSelectMode] = React.useState(false);
     const previousDialog = React.useRef(null);
@@ -744,9 +849,131 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
 
     const call = React.useCallback(async (request) => {
         const result = await transport.sessionWorkspaceFiles(sessionId, request);
-        if (["write", "mkdir", "move", "delete"].includes(request?.op)) announceWorkspaceChange(sessionId, "pane");
+        if (["write", "mkdir", "move", "delete"].includes(request?.op)
+            || (request?.op === "git" && (request.what === "checkout" || request.what === "restore"))) announceWorkspaceChange(sessionId, "pane");
         return result;
     }, [transport, sessionId]);
+
+    // Git, for a folder that is a repository (info.git: this portal runs
+    // git). The side column then shows Files, Changes or History.
+    const [sideTab, setSideTab] = React.useState("files");
+    // What Changes compares the files with: null (the last commit), "main", or a commit id.
+    const [gitSince, setGitSince] = React.useState(null);
+    const [gitStatus, setGitStatus] = React.useState(null);
+    // History and the picked commit, per folder: going to another folder and
+    // back keeps them.
+    const [gitLogs, setGitLogs] = React.useState({});
+    const [gitCommits, setGitCommits] = React.useState({});
+    // "Changes" can also show one commit ("commit:<sha>") or two commits
+    // compared ("range:<from>..<to>"): the list, from git show / compare.
+    const [gitCompare, setGitCompare] = React.useState(null);
+    // Commits picked in History to compare (Ctrl/Cmd- or Shift-click), per repository.
+    const [gitPicks, setGitPicks] = React.useState({});
+    const gitSinceRef = React.useRef(gitSince);
+    // The status itself always compares with HEAD in those two views.
+    gitSinceRef.current = typeof gitSince === "string" && /^(commit|range):/.test(gitSince) ? null : gitSince;
+    const gitOnRef = React.useRef(false);
+    // The repositories in each folder: the folder itself ("") and folders
+    // inside it that hold .git (a clone in the person's own folder):
+    // { [folderId]: { top, repos } }. And the one git shows, per folder.
+    const [gitRepos, setGitRepos] = React.useState({});
+    const [gitRepoOf, setGitRepoOf] = React.useState({});
+    const gitRepoRef = React.useRef(null);
+    const loadGitRepos = React.useCallback(async (fid) => {
+        try {
+            const result = await call({ op: "git", folder: fid, what: "repos" });
+            setGitRepos((latest) => ({ ...latest, [fid]: { top: result.top === true, repos: Array.isArray(result.repos) ? result.repos : [] } }));
+        } catch {
+            setGitRepos((latest) => ({ ...latest, [fid]: { top: false, repos: [], failed: true } }));
+        }
+    }, [call]);
+    const loadGitStatus = React.useCallback(async (fid, since, repo = "") => {
+        try {
+            const result = await call({ op: "git", folder: fid, what: "status", ...(repo ? { repo } : {}), ...(since ? { since } : {}) });
+            setGitStatus({ folderId: fid, repo, since: since ?? null, result });
+            // The open diff's file left its group (it was committed, staged,
+            // unstaged or reverted): close it rather than show a wrong diff.
+            const open = diffRef.current;
+            if (open && open.folderId === fid && (open.repo ?? "") === repo && open.source !== "history" && open.group && open.group !== "commit" && open.group !== "range" && result?.repo) {
+                const f = (result.files || []).find((one) => one.path === open.path);
+                const still = open.group === "since" ? Boolean(f) && (result.since?.sha ?? null) === open.sinceSha
+                    : open.group === "Staged" ? Boolean(f?.staged) : Boolean(f?.unstaged);
+                if (!still) {
+                    diffToken.current += 1;
+                    setDiff(null);
+                }
+            }
+        } catch (error) {
+            setGitStatus((previous) => (previous?.folderId === fid && previous.repo === repo ? { ...previous, error } : { folderId: fid, repo, since: since ?? null, result: null, error }));
+        }
+    }, [call]);
+
+    // A diff in the viewer, as in VS Code: two sides of one file, each
+    // { rev: "HEAD" | "INDEX" | a commit | "WORKTREE", path, label }, or null
+    // for the side where the file does not exist (added, deleted).
+    const [diff, setDiff] = React.useState(null);
+    const diffRef = React.useRef(diff);
+    diffRef.current = diff;
+    const diffToken = React.useRef(0);
+    const diffHandle = React.useRef(null);
+    const [diffLayout, setDiffLayout] = React.useState(readDiffLayout);
+    const chooseDiffLayout = React.useCallback((value) => {
+        setDiffLayout(value);
+        saveDiffLayout(value);
+    }, []);
+    const closeDiff = React.useCallback(() => {
+        diffToken.current += 1;
+        setDiff(null);
+    }, []);
+    const [viewerWidth, setViewerWidth] = React.useState(0);
+    const viewerObserver = React.useRef(null);
+    const viewerRef = React.useCallback((element) => {
+        viewerObserver.current?.disconnect();
+        viewerObserver.current = null;
+        if (!element || typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver(([entry]) => setViewerWidth(Math.round(entry.contentRect.width)));
+        observer.observe(element);
+        viewerObserver.current = observer;
+    }, []);
+    const loadDiffSide = React.useCallback(async (fid, side, repo = "") => {
+        if (!side) return { text: "" };
+        if (side.rev === "WORKTREE") {
+            try {
+                const result = await call({ op: "read", folder: fid, path: repo ? `${repo}/${side.path}` : side.path });
+                if (Number(result.size) > DIFF_MAX_BYTES) return { tooLarge: true };
+                const bytes = bytesFromBase64(result.contentBase64);
+                const read = looksBinary(bytes) ? null : readText(bytes);
+                return read ? { text: read.text } : { binary: true };
+            } catch (error) {
+                if (error?.code === CODES.NOT_FOUND) return { text: "" };
+                if (error?.code === CODES.TOO_LARGE) return { tooLarge: true };
+                throw error;
+            }
+        }
+        const result = await call({ op: "git", folder: fid, what: "file", ...(repo ? { repo } : {}), rev: side.rev, path: side.path });
+        if (result.available === false) throw new Error(result.reason || "git does not run in this folder");
+        if (!result.exists) return { text: "" };
+        if (result.binary) return { binary: true };
+        if (result.tooLarge) return { tooLarge: true };
+        return { text: result.text ?? "" };
+    }, [call]);
+    // `quiet`: the same diff again (a check found the file changed): no
+    // "Loading", and nothing redraws when neither side changed.
+    const openDiff = React.useCallback(async (spec, { quiet = false } = {}) => {
+        const token = ++diffToken.current;
+        if (!quiet) setDiff({ ...spec, loading: true });
+        try {
+            const [before, after] = await Promise.all([loadDiffSide(spec.folderId, spec.left, spec.repo), loadDiffSide(spec.folderId, spec.right, spec.repo)]);
+            if (token !== diffToken.current) return;
+            setDiff((latest) => {
+                if (quiet && (latest?.key !== spec.key || (latest.original?.text === before.text && latest.modified?.text === after.text))) return latest;
+                return { ...spec, loading: false, error: null, original: before, modified: after };
+            });
+        } catch (error) {
+            if (token !== diffToken.current || quiet) return;
+            setDiff({ ...spec, loading: false, error });
+        }
+    }, [loadDiffSide]);
     const say = React.useCallback((text, kind = "info") => setNotice({ text, kind, at: Date.now() }), []);
     const fail = React.useCallback((error) => say(workspaceErrorText(error), "error"), [say]);
     const track = React.useCallback(async (promise) => {
@@ -762,6 +989,40 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
 
     const folders = info?.folders ?? [];
     const folder = folders.find((candidate) => candidate.id === folderId) ?? null;
+    const gitOn = Boolean(info?.git && folder?.available);
+    gitOnRef.current = gitOn;
+
+    // The working folder keeps its id when the session moves it to another
+    // place (Set workspace). Then everything shown for the old place goes:
+    // its listings, git state, open diff and open file.
+    const folderPlace = folder ? `${folder.root}\u0000${folder.folder ?? ""}` : null;
+    const places = React.useRef(new Map());
+    React.useEffect(() => {
+        if (!folderId || folderPlace === null) return;
+        const before = places.current.get(folderId);
+        places.current.set(folderId, folderPlace);
+        if (before === undefined || before === folderPlace) return;
+        const prefix = `${folderId}\u0000`;
+        const keep = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => !key.startsWith(prefix)));
+        const without = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => key !== folderId));
+        setGitSince(null);
+        setGitStatus(null);
+        setGitLogs(keep);
+        setGitCommits(keep);
+        setGitPicks(keep);
+        setGitCompare(null);
+        setGitRepos(without);
+        setGitRepoOf(without);
+        closeDiff();
+        setDirs(keep);
+        setRecent(keep);
+        setExpanded((previous) => new Set([...previous].filter((key) => !key.startsWith(prefix))));
+        if (fileRef.current?.folderId === folderId) {
+            openToken.current += 1;
+            setCompare(null);
+            setFile(null);
+        }
+    }, [folderId, folderPlace, closeDiff]);
 
     // The session's folders: at first sight of the session, then on each poll.
     const loadFolders = React.useCallback(async ({ quiet = false } = {}) => {
@@ -826,6 +1087,14 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         setFound(null);
         setPicked(new Set());
         setSelectMode(false);
+        setSideTab("files");
+        setGitSince(null);
+        setGitStatus(null);
+        setGitLogs({});
+        setGitCommits({});
+        setGitRepos({});
+        setGitRepoOf({});
+        closeDiff();
         setMdMode(view?.folders?.[view?.folderId]?.mdMode === "preview" ? "preview" : "edit");
         loadFolders();
     }, [visible, sessionId, loadedSession, loadFolders]);
@@ -839,6 +1108,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     const openFile = React.useCallback(async (fid, path, { remembered = false } = {}) => {
         const name = baseName(path);
         const token = ++openToken.current;
+        closeDiff();
         setCompare(null);
         setDialog(null);
         setFile({ folderId: fid, path, name, kind: "loading" });
@@ -876,7 +1146,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
             else if (error?.code === CODES.TOO_LARGE) setFile({ folderId: fid, path, name, kind: "toolarge", size: error.size });
             else setFile({ folderId: fid, path, name, kind: "error", error });
         }
-    }, [call, sessionId]);
+    }, [call, sessionId, closeDiff]);
 
     // An image's object URL lives exactly as long as it is the one shown.
     const fileUrl = file?.url;
@@ -958,6 +1228,9 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         setFindText("");
         setFound(null);
         setInline(null);
+        setGitSince(null);
+        setGitStatus(null);
+        closeDiff();
         pendingTreeTop.current = { folderId: nextId, top: Number(entry?.treeTop) || 0 };
         setMdMode(entry?.mdMode === "preview" ? "preview" : "edit");
         if (entry && typeof entry.file === "string") openFile(nextId, entry.file, { remembered: true });
@@ -1110,8 +1383,11 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         await loadFolders({ quiet: true });
         if (!folderId) return;
         const keys = [dirKey(folderId, ""), ...[...expanded].filter((key) => key.startsWith(`${folderId}\u0000`))];
-        await Promise.all([...new Set(keys)].map((key) => loadDir(folderId, key.slice(folderId.length + 1))));
-    }, [loadFolders, folderId, expanded, loadDir]);
+        await Promise.all([
+            ...[...new Set(keys)].map((key) => loadDir(folderId, key.slice(folderId.length + 1))),
+            gitOnRef.current && gitRepoRef.current !== null ? loadGitStatus(folderId, gitSinceRef.current, gitRepoRef.current) : null,
+        ]);
+    }, [loadFolders, folderId, expanded, loadDir, loadGitStatus]);
 
     const downloadEntry = React.useCallback(async (fid, path, isDir) => {
         try {
@@ -1414,6 +1690,9 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     // ── Checking for changes: new folders, changed listings, the open file changed on disk ──
     const checkOnce = React.useCallback(async () => {
         await refresh();
+        const shownDiff = diffRef.current;
+        const live = (side) => side?.rev === "WORKTREE" || side?.rev === "INDEX";
+        if (shownDiff && !shownDiff.loading && !shownDiff.error && (live(shownDiff.left) || live(shownDiff.right))) openDiff(shownDiff, { quiet: true });
         const current = fileRef.current;
         if (!current || current.kind !== "text") return;
         try {
@@ -1437,7 +1716,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         } catch {
             // Gone or unreadable: the next open shows why.
         }
-    }, [refresh, call, say, openFile]);
+    }, [refresh, call, say, openFile, openDiff]);
     // One check at a time: on a folder that hangs, checks would pile up.
     const checking = React.useRef(false);
     const checkNow = React.useCallback(async () => {
@@ -1511,6 +1790,159 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         }
         return keys;
     }, [runningText, folders]);
+
+    // ── Git ──
+    // The folder's repositories, and the one shown: the one picked, else the
+    // folder itself, else the first one inside it. null: no repository.
+    const reposHere = folderId ? gitRepos[folderId] ?? null : null;
+    const repoChoices = reposHere ? [...(reposHere.top ? [""] : []), ...reposHere.repos] : [];
+    const pickedRepo = folderId ? gitRepoOf[folderId] : undefined;
+    // null picked: the person is on something outside every repository.
+    const gitRepo = pickedRepo === null ? null
+        : pickedRepo !== undefined && repoChoices.includes(pickedRepo) ? pickedRepo
+        : (repoChoices[0] ?? null);
+    gitRepoRef.current = gitRepo;
+    const inRepo = (repo, path) => (repo ? `${repo}/${path}` : path);
+    // The repository a folder path is in (the deepest one), or null.
+    const repoFor = (path) => {
+        let best = null;
+        for (const repo of repoChoices) {
+            if (repo === "" ? best === null : (path === repo || path.startsWith(`${repo}/`)) && (best === null || repo.length > best.length)) best = repo;
+        }
+        return best;
+    };
+    React.useEffect(() => {
+        if (visible && gitOn && folderId && !gitRepos[folderId]) loadGitRepos(folderId);
+    }, [visible, gitOn, folderId, gitRepos, loadGitRepos]);
+    const gitHere = gitStatus?.folderId === folderId && gitStatus.repo === gitRepo ? gitStatus : null;
+    const gitResult = gitHere?.result ?? null;
+    // While a repository's status loads (another repository was picked), the
+    // git tabs stay: hiding them moved the tree under the pointer, and the
+    // second click of a double-click landed on another folder.
+    const gitLoading = gitOn && gitRepo !== null && !gitHere;
+    const gitReady = gitOn && gitRepo !== null && (gitLoading || (gitResult?.repo === true && gitResult.available !== false));
+    const gitTab = gitReady ? sideTab : "files";
+    const gitKey = folderId && gitRepo !== null ? `${folderId}\u0000${gitRepo}` : null;
+    const gitLog = gitKey ? gitLogs[gitKey] ?? null : null;
+    const gitCommit = gitKey ? gitCommits[gitKey] ?? null : null;
+    const compareMode = typeof gitSince !== "string" ? null
+        : gitSince.startsWith("commit:") ? { kind: "commit", sha: gitSince.slice(7) }
+        : gitSince.startsWith("range:") ? { kind: "range", from: gitSince.slice(6).split("..")[0], to: gitSince.slice(6).split("..")[1] }
+        : null;
+    const statusSince = compareMode ? null : gitSince;
+    React.useEffect(() => {
+        if (!visible || !gitOn || !folderId || gitRepo === null) return;
+        loadGitStatus(folderId, statusSince, gitRepo);
+    }, [visible, gitOn, folderId, statusSince, gitRepo, loadGitStatus]);
+    const compareKey = gitKey && compareMode ? `${gitKey}\u0000${gitSince}` : null;
+    React.useEffect(() => {
+        if (!visible || !compareKey || !compareMode) return;
+        const key = compareKey;
+        setGitCompare((latest) => (latest?.key === key && !latest.error ? latest : { key, loading: true }));
+        const repo = gitRepo ? { repo: gitRepo } : {};
+        const request = compareMode.kind === "commit"
+            ? { op: "git", folder: folderId, what: "show", ...repo, sha: compareMode.sha }
+            : { op: "git", folder: folderId, what: "compare", ...repo, from: compareMode.from, to: compareMode.to };
+        call(request).then(
+            (result) => setGitCompare((latest) => (latest?.key === key ? { key, loading: false, result } : latest)),
+            (error) => setGitCompare((latest) => (latest?.key === key ? { key, loading: false, error } : latest)),
+        );
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible, compareKey]);
+    // Another repository: its own Changes, History and diff.
+    const chooseRepo = React.useCallback((repo) => {
+        if (!folderId) return;
+        setGitRepoOf((latest) => ({ ...latest, [folderId]: repo }));
+        setGitSince(null);
+        if (diffRef.current && (diffRef.current.repo ?? "") !== (repo ?? "\u0000none")) closeDiff();
+    }, [folderId, closeDiff]);
+    // Git follows what the person opens, as VS Code follows the open editor.
+    // Something outside every repository (a file next to the clones in
+    // home): no repository, until the person picks something inside one.
+    const followRepo = (path) => {
+        if (!reposHere || repoChoices.length === 0) return;
+        const repo = repoFor(path);
+        if (repo !== gitRepo) chooseRepo(repo);
+    };
+    const openPath = file && file.folderId === folderId ? file.path : null;
+    React.useEffect(() => {
+        if (openPath !== null) followRepo(openPath);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openPath, repoChoices.join("\u0001")]);
+    const gitLogsRef = React.useRef(gitLogs);
+    gitLogsRef.current = gitLogs;
+    const loadGitLog = React.useCallback(async (fid, repo, head, { more = false } = {}) => {
+        const key = `${fid}\u0000${repo}`;
+        const before = gitLogsRef.current[key] ?? null;
+        if (more && before?.loading) return;
+        const put = (update) => setGitLogs((latest) => ({ ...latest, [key]: update(latest[key] ?? null) }));
+        put((latest) => ({ ...(latest || { folderId: fid, commits: null }), head, loading: true, error: null }));
+        try {
+            const result = await call({ op: "git", folder: fid, what: "log", ...(repo ? { repo } : {}), skip: more ? before?.commits?.length ?? 0 : 0 });
+            put((latest) => {
+                const kept = more ? latest?.commits ?? [] : [];
+                const seen = new Set(kept.map((c) => c.sha));
+                return { folderId: fid, head, loading: false, more: Boolean(result.more), commits: [...kept, ...(result.commits ?? []).filter((c) => !seen.has(c.sha))] };
+            });
+        } catch (error) {
+            put((latest) => ({ ...(latest || { folderId: fid, commits: null }), head, loading: false, error }));
+        }
+    }, [call]);
+    // History loads when it shows, and again when HEAD moves: a new commit,
+    // or another branch at the same commit (its labels change).
+    const gitHead = gitResult ? `${gitResult.head ?? ""}\u0000${gitResult.branch ?? ""}` : null;
+    React.useEffect(() => {
+        if (!visible || gitTab !== "history" || !gitKey) return;
+        const shown = gitLogsRef.current[gitKey];
+        if (shown && (shown.loading || (shown.commits && shown.head === gitHead))) return;
+        loadGitLog(folderId, gitRepo, gitHead);
+    }, [visible, gitTab, gitKey, gitHead, loadGitLog]);
+    // Older commits load by themselves when the end of the list scrolls into view.
+    const loadOlder = React.useRef(null);
+    loadOlder.current = () => {
+        if (gitKey && gitLog?.more && !gitLog.loading) loadGitLog(folderId, gitRepo, gitHead, { more: true });
+    };
+    const olderObserver = React.useRef(null);
+    const olderRef = React.useCallback((element) => {
+        olderObserver.current?.disconnect();
+        olderObserver.current = null;
+        if (!element || typeof IntersectionObserver === "undefined") return;
+        const observer = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) loadOlder.current?.(); });
+        observer.observe(element);
+        olderObserver.current = observer;
+    }, []);
+    const pickCommit = React.useCallback(async (sha) => {
+        const fid = folderId;
+        const repo = gitRepo ?? "";
+        const key = `${fid}\u0000${repo}`;
+        if (diffRef.current?.source === "history") closeDiff();
+        const put = (value) => setGitCommits((latest) => (latest[key]?.sha === sha ? { ...latest, [key]: value } : latest));
+        setGitCommits((latest) => ({ ...latest, [key]: { folderId: fid, sha, loading: true } }));
+        try {
+            const result = await call({ op: "git", folder: fid, what: "show", ...(repo ? { repo } : {}), sha });
+            put({ folderId: fid, sha, loading: false, result });
+        } catch (error) {
+            put({ folderId: fid, sha, loading: false, error });
+        }
+    }, [call, folderId, gitRepo, closeDiff]);
+    // A turn that ended without a tool call can still have changed files.
+    const wasRunning = React.useRef(turnRunning);
+    React.useEffect(() => {
+        const ended = wasRunning.current && !turnRunning;
+        wasRunning.current = turnRunning;
+        if (!ended || !visible || !supported || infoError) return undefined;
+        // The turn may have cloned a repository: look for them again.
+        if (folderId && gitOnRef.current) loadGitRepos(folderId);
+        const timer = setTimeout(() => { checkNow(); }, 400);
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [turnRunning]);
+    const gitMarks = React.useMemo(
+        () => (gitReady && gitResult ? gitTreeMarks((gitResult.files || []).map((f) => ({ ...f, path: inRepo(gitRepo, f.path) }))) : null),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [gitReady, gitResult, gitRepo],
+    );
+    const repoRoots = new Set(gitOn ? repoChoices.filter(Boolean) : []);
 
     // ── Drag and drop ──
     const dragData = (event) => {
@@ -1667,8 +2099,19 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         }
         setPicked(new Set([row.key]));
         pickAnchor.current = row.key;
-        if (row.dir) toggleDir(row.fid, row.path);
-        else openFile(row.fid, row.path);
+        if (row.fid === folderId) followRepo(row.path);
+        if (!row.dir) {
+            lastFolderClick.current = null;
+            openFile(row.fid, row.path);
+            return;
+        }
+        // A first click on a folder selects it. Another click on it within
+        // FOLDER_TOGGLE_MS opens it, and the next one closes it. Its arrow,
+        // Enter and the arrow keys open and close it at once.
+        const now = Date.now();
+        const last = lastFolderClick.current;
+        lastFolderClick.current = { key: row.key, at: now };
+        if (last && last.key === row.key && now - last.at < FOLDER_TOGGLE_MS) toggleDir(row.fid, row.path);
     };
     const onTreeKeyDown = (event) => {
         if (event.target?.tagName === "INPUT") return;
@@ -1696,12 +2139,20 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         const state = dirs[dirKey(fid, path)];
         const rows = [];
         if (inline && inline.kind !== "rename" && inline.folderId === fid && inline.dir === path) rows.push(h(React.Fragment, { key: "__inline" }, renderInlineInput(depth)));
-        if (!state || (state.loading && !state.entries)) {
+        // A folder that failed keeps its error while each check asks again:
+        // switching to "Loading…" and back made the error blink.
+        if (!state || (state.loading && !state.entries && !state.error)) {
             rows.push(h("div", { key: "__loading", className: "ps-ws-row is-muted", style: { paddingLeft: 8 + depth * 14 } }, "Loading…"));
             return rows;
         }
         if (state.error && !state.entries) {
-            rows.push(h("div", { key: "__error", className: "ps-ws-row is-error", style: { paddingLeft: 8 + depth * 14 } }, workspaceErrorText(state.error)));
+            // The folder itself is gone, not a file in it: say which folder.
+            const gone = !path && state.error?.code === CODES.NOT_FOUND;
+            const place = folders.find((f) => f.id === fid);
+            const text = gone && place
+                ? `This folder is not on disk: ${place.root}${place.folder ? `/${place.folder}` : ""}. It may have been removed; the session's next turn can bring it back.`
+                : workspaceErrorText(state.error);
+            rows.push(h("div", { key: "__error", className: `ps-ws-row is-error${gone ? " is-gone" : ""}`, style: { paddingLeft: 8 + depth * 14 } }, text));
             return rows;
         }
         if (state.entries.length === 0) rows.push(h("div", { key: "__empty", className: "ps-ws-row is-muted", style: { paddingLeft: 22 + depth * 14 } }, "Empty"));
@@ -1717,6 +2168,8 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 continue;
             }
             const readOnly = Boolean(entry.readOnly);
+            const gitLetter = gitMarks && !dir ? gitMarks.letter(entryPath) : null;
+            const gitDot = gitMarks && dir ? gitMarks.dir(entryPath) : null;
             const row = { key, fid, path: entryPath, dir };
             shownRows.push(row);
             const isPicked = picked.has(key);
@@ -1763,14 +2216,26 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 },
                 ...(dir ? dropProps(fid, entryPath) : {}),
             },
-            h("span", { className: "ps-ws-twisty", "aria-hidden": true }, dir ? (open ? "▾" : "▸") : ""),
+            h("span", {
+                className: "ps-ws-twisty",
+                "aria-hidden": true,
+                onClick: dir ? (event) => {
+                    event.stopPropagation();
+                    setPicked(new Set([key]));
+                    pickAnchor.current = key;
+                    toggleDir(fid, entryPath);
+                } : undefined,
+            }, dir ? (open ? "▾" : "▸") : ""),
             h("span", { className: "ps-ws-row-icon", "aria-hidden": true }, h(Icon, { d: dir ? FOLDER : FILE, size: 13 })),
-            h("span", { className: "ps-ws-row-name" }, entry.name),
+            h("span", { className: `ps-ws-row-name${gitLetter ? ` is-git-${gitLetter}` : ""}` }, entry.name),
             hasDraft ? h("span", { className: "ps-ws-draft-dot", title: "Unsaved changes" }) : null,
             agentEditing.has(key)
                 ? h("span", { className: "ps-ws-agent-dot is-live", title: "The agent is editing this" })
                 : (recent[key] && Date.now() - recent[key] < RECENT_MS ? h("span", { className: "ps-ws-agent-dot", title: "Changed in the last minute, not by you" }) : null),
             entry.kind === "link" ? h("span", { className: "ps-ws-row-badge", title: "A link" }, "↗") : null,
+            gitLetter ? h("span", { className: `ps-ws-git-letter is-git-${gitLetter}`, title: GIT_WORDS[gitLetter] }, gitLetter) : null,
+            gitDot ? h("span", { className: `ps-ws-git-dot is-git-${gitDot}`, title: `${GIT_DOT_WORDS[gitDot]}: see the Changes tab` }) : null,
+            dir && fid === folderId && repoRoots.has(entryPath) ? h("span", { className: `ps-ws-repo-mark${entryPath === gitRepo ? " is-shown" : ""}`, title: entryPath === gitRepo ? "A git repository: the one git shows now" : "A git repository: click to show its git" }, h(Icon, { d: BRANCH, size: 11 })) : null,
             readOnly ? h("span", { className: "ps-ws-row-lock", title: "Read-only" }, h(Icon, { d: LOCK, size: 11 })) : null,
             h("span", { className: "ps-ws-row-actions", onClick: (event) => event.stopPropagation() },
                 dir && !readOnly ? h("button", { type: "button", title: "New file here", "aria-label": `New file in ${entry.name}`, onClick: () => { if (!open) toggleDir(fid, entryPath); setInline({ kind: "newFile", folderId: fid, dir: entryPath }); } }, h(Icon, { d: PLUS_FILE, size: 12 })) : null,
@@ -1783,6 +2248,447 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         if (state.truncated) rows.push(h("div", { key: "__more", className: "ps-ws-row is-muted", style: { paddingLeft: 22 + depth * 14 } }, "More files are not shown."));
         return rows;
     };
+
+    // ── Git: the Changes and History lists, and one commit ──
+    const gitCount = (gitResult?.files || []).length;
+    const compareHere = compareKey && gitCompare?.key === compareKey ? gitCompare : null;
+    const changesCount = compareMode ? (compareHere?.result?.files?.length ?? 0) : gitCount;
+    // The tabs stay as long as the folder has a repository, so nothing moves
+    // under the pointer. With none picked, Changes and History wait.
+    const noRepoPicked = gitOn && repoChoices.length > 0 && gitRepo === null;
+    const gitTabs = gitReady || noRepoPicked ? h("div", { className: "ps-ws-sidetabs", role: "tablist", "aria-label": "What the list shows" },
+        [["files", "Files", FILE], ["changes", "Changes", PLUS_MINUS], ["history", "History", CLOCK]].map(([value, label, glyph]) => h("button", {
+            key: value,
+            type: "button",
+            role: "tab",
+            "aria-selected": gitTab === value,
+            "aria-label": value === "changes" && !noRepoPicked ? `Changes: ${changesCount}` : label,
+            title: noRepoPicked && value !== "files" ? `${label}: pick something inside a repository, or pick one above` : label,
+            disabled: noRepoPicked && value !== "files",
+            className: gitTab === value ? "is-on" : "",
+            onClick: () => setSideTab(value),
+        },
+        // A narrow column shows only the glyphs (and the count).
+        h("span", { className: "ps-ws-sidetab-glyph", "aria-hidden": true }, h(Icon, { d: glyph, size: 13 })),
+        h("span", { className: "ps-ws-sidetab-label" }, label),
+        value === "changes" && !noRepoPicked ? h("span", { className: "ps-ws-sidetab-count" }, String(changesCount)) : null))) : null;
+    const gitCounts = (added, removed) => [
+        added > 0 ? h("span", { key: "added", className: "ps-ws-git-count is-added" }, `+${added}`) : null,
+        removed > 0 ? h("span", { key: "removed", className: "ps-ws-git-count is-removed" }, `−${removed}`) : null,
+    ];
+    const gitTotals = (files) => files.reduce((sum, f) => [sum[0] + (f.added || 0), sum[1] + (f.removed || 0)], [0, 0]);
+    // Each tab keeps its own viewer: a diff opened in Changes shows in Changes
+    // (and is still there when the person comes back), Files shows the file
+    // picked in the tree (or a diff from its Open Changes), History its commit.
+    const diffTab = !diff ? null : diff.source === "history" ? "history" : diff.source === "files" ? "files" : "changes";
+    const diffHere = diff && diff.folderId === folderId && diffTab === gitTab ? diff : null;
+    // A list is one Tab stop; the arrow keys, Home and End move inside it (as in the file tree).
+    const onGitListKeys = (event) => {
+        const step = { ArrowDown: 1, ArrowUp: -1, Home: "first", End: "last" }[event.key];
+        if (step === undefined || event.metaKey || event.ctrlKey || event.altKey) return;
+        const rows = [...event.currentTarget.querySelectorAll(":scope > .ps-ws-git-row, :scope > .ps-ws-git-commit, :scope > .ps-ws-git-commit-item > .ps-ws-git-commit")];
+        if (!rows.length) return;
+        const at = rows.indexOf(document.activeElement);
+        const to = step === "first" ? 0 : step === "last" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, at < 0 ? 0 : at + step));
+        event.preventDefault();
+        rows[to].focus();
+    };
+    const tabStopOf = (keys, selectedKey) => (selectedKey && keys.includes(selectedKey) ? selectedKey : keys[0]);
+    const shortPath = (from, to) => (parentOf(from) === parentOf(to) ? baseName(from) : from);
+    const gitFileRow = (f, key, { onOpen, title, selectable = true, counts, tabStop = false }) => {
+        const at = f.path.lastIndexOf("/");
+        const selected = diffHere ? diffHere.rowKey === key : selectable && file && file.folderId === folderId && file.path === inRepo(gitRepo, f.path);
+        const [added, removed] = counts === undefined ? [f.added, f.removed] : [counts?.added ?? null, counts?.removed ?? null];
+        return h("button", {
+            key,
+            type: "button",
+            tabIndex: tabStop ? 0 : -1,
+            "data-row-key": key,
+            className: `ps-ws-row ps-ws-git-row${selected ? " is-selected" : ""}`,
+            title: title ?? `${f.path}: ${GIT_WORDS[f.letter]}${f.from ? ` (was ${f.from})` : ""}`,
+            onClick: () => onOpen(f),
+        },
+        h("span", { className: `ps-ws-row-name${f.letter === "D" ? " is-deleted" : ""}` }, (at < 0 ? f.path : f.path.slice(at + 1)) + (f.dir ? "/" : "")),
+        f.from ? h("span", { className: "ps-ws-git-from" }, `← ${shortPath(f.from, f.path)}`) : null,
+        at > 0 ? h("span", { className: "ps-ws-found-dir" }, f.path.slice(0, at)) : null,
+        agentEditing.has(dirKey(folderId, inRepo(gitRepo, f.path))) ? h("span", { className: "ps-ws-agent-dot is-live", title: "The agent is editing this" }) : null,
+        h("span", { className: "ps-ws-spacer" }),
+        ...gitCounts(added, removed),
+        h("span", { className: `ps-ws-git-letter is-git-${f.letter}`, title: GIT_WORDS[f.letter] }, f.letter));
+    };
+    const diffSpec = (source, rowKey, f, left, right, group = null, sinceSha = null) => ({
+        key: [source, gitRepo ?? "", rowKey, left?.rev ?? "-", right?.rev ?? "-", f.path].join("\u0000"),
+        folderId, repo: gitRepo ?? "", source, rowKey, group, sinceSha, path: f.path, from: f.from ?? null, letter: f.letter, left, right,
+    });
+    const WORKTREE = (path) => ({ rev: "WORKTREE", path, label: "Working Tree" });
+    // As VS Code: a staged file is HEAD ↔ Index, a changed one Index ↔
+    // Working Tree; "Changes since" a commit is that commit ↔ Working Tree.
+    const changeSpec = (f, group, rowKey, source = "changes") => {
+        const since = gitResult?.since ?? null;
+        const before = f.from ?? f.path;
+        if (since) {
+            return diffSpec(source, rowKey, f,
+                f.letter === "A" || f.letter === "U" ? null : { rev: since.sha, path: before, label: since.label },
+                f.letter === "D" ? null : WORKTREE(f.path), "since", since.sha);
+        }
+        if (group === "Staged") {
+            return diffSpec(source, rowKey, f,
+                f.letter === "A" ? null : { rev: "HEAD", path: before, label: "HEAD" },
+                f.letter === "D" ? null : { rev: "INDEX", path: f.path, label: "Index" }, "Staged");
+        }
+        const conflict = f.letter === "C";
+        return diffSpec(source, rowKey, f,
+            f.letter === "U" ? null : { rev: conflict ? "HEAD" : "INDEX", path: f.path, label: conflict ? "HEAD" : "Index" },
+            f.letter === "D" ? null : WORKTREE(f.path), "Changes");
+    };
+    const commitSpec = (c, f, rowKey) => diffSpec("history", rowKey, f,
+        f.letter === "A" || !c.parents.length ? null : { rev: c.parents[0], path: f.from ?? f.path, label: `${c.short}^` },
+        f.letter === "D" ? null : { rev: c.sha, path: f.path, label: c.short });
+    const openChange = (f, group, rowKey) => {
+        if (f.dir) { setSideTab("files"); reveal(folderId, inRepo(gitRepo, f.path), true); return; }
+        openDiff(changeSpec(f, group, rowKey));
+    };
+    // "Changes since" changed: a diff against the old base would now be wrong.
+    const changeSince = (value) => {
+        if (diffRef.current && diffRef.current.source !== "history") closeDiff();
+        setGitSince(value || null);
+    };
+    // Close a diff and put focus back on the list it came from.
+    const closeDiffAndFocus = () => {
+        closeDiff();
+        requestAnimationFrame(() => mainRef.current?.querySelector('.ps-ws-git-list [tabindex="0"]')?.focus());
+    };
+    // The open file's changes (the Files tab's Open Changes).
+    const openChangesFor = (fullPath) => {
+        const path = gitRepo ? fullPath.slice(gitRepo.length + 1) : fullPath;
+        const f = (gitResult?.files || []).find((one) => one.path === path) ?? { path, letter: "U", staged: false, unstaged: true };
+        const group = gitResult?.since ? "since" : f.unstaged ? "Changes" : "Staged";
+        openDiff(changeSpec(f, group, `${group === "since" ? `Since ${gitResult.since.label}` : group}\u0000${f.path}`, "files"));
+    };
+    const short7 = (sha) => String(sha || "").slice(0, 7);
+    const sincePicker = () => h("div", { className: "ps-ws-git-since" },
+        h("select", { className: "ps-ws-git-select", "aria-label": "Show changes since", value: gitSince ?? "", onChange: (event) => changeSince(event.currentTarget.value) },
+            h("option", { value: "" }, "Since the last commit"),
+            h("option", { value: "main" }, "Since the main branch"),
+            gitSince && gitSince !== "main" && !compareMode ? h("option", { value: gitSince }, `Since commit ${short7(gitSince)}`) : null,
+            compareMode?.kind === "commit" ? h("option", { value: gitSince }, `In commit ${short7(compareMode.sha)}`) : null,
+            compareMode?.kind === "range" ? h("option", { value: gitSince }, `Between ${short7(compareMode.from)} and ${short7(compareMode.to)}`) : null));
+    // One commit's changes, or the changes between two commits.
+    const renderCompare = () => {
+        const result = compareHere?.result ?? null;
+        const files = result?.files || [];
+        const commit = compareMode.kind === "commit" ? result?.commit ?? null : null;
+        const newer = compareMode.kind === "commit" ? compareMode.sha : compareMode.to;
+        const title = compareMode.kind === "commit" ? `In commit ${short7(compareMode.sha)}` : `Between ${short7(compareMode.from)} and ${short7(compareMode.to)}`;
+        const leftOf = (f) => (compareMode.kind === "commit"
+            ? (f.letter === "A" || !commit?.parents?.length ? null : { rev: commit.parents[0], path: f.from ?? f.path, label: `${short7(newer)}^` })
+            : (f.letter === "A" ? null : { rev: compareMode.from, path: f.from ?? f.path, label: short7(compareMode.from) }));
+        const rightOf = (f) => (f.letter === "D" ? null : { rev: newer, path: f.path, label: short7(newer) });
+        const keys = files.map((f) => `${title}\u0000${f.path}`);
+        const tabKey = tabStopOf(keys, diffHere?.rowKey);
+        const [added, removed] = gitTotals(files);
+        return h("div", { className: "ps-ws-git-panel" },
+            sincePicker(),
+            h("div", { className: "ps-ws-git-summary" },
+                h("span", null, files.length === 1 ? "1 file" : `${files.length} files`),
+                h("span", { className: "ps-ws-spacer" }),
+                ...gitCounts(added, removed)),
+            commit ? h("div", { className: "ps-ws-git-note is-info" },
+                h("span", { className: "ps-ws-git-note-title" }, commit.subject || "(no message)"),
+                h("span", { className: "ps-ws-git-note-meta" }, `${commit.author} · ${gitDateTime(commit.time)}${commit.parents.length > 1 ? " · against the first parent" : ""}`)) : null,
+            h("div", { className: "ps-ws-git-list", "aria-label": title, onKeyDown: onGitListKeys },
+                !compareHere || compareHere.loading ? h("div", { className: "ps-ws-row is-muted" }, "Loading the changes…") : null,
+                compareHere?.error ? h("div", { className: "ps-ws-row is-error" }, workspaceErrorText(compareHere.error)) : null,
+                result && !files.length ? h("div", { className: "ps-ws-row is-muted" }, "No files changed.") : null,
+                files.length ? h("div", { className: "ps-ws-git-group" }, h("span", null, title), h("span", { className: "ps-ws-git-group-count" }, String(files.length))) : null,
+                files.map((f) => {
+                    const rowKey = `${title}\u0000${f.path}`;
+                    return gitFileRow(f, rowKey, {
+                        onOpen: (one) => openDiff(diffSpec("changes", rowKey, one, leftOf(one), rightOf(one), compareMode.kind)),
+                        selectable: false,
+                        tabStop: rowKey === tabKey,
+                    });
+                }),
+                result?.truncated ? h("div", { className: "ps-ws-row is-muted" }, "More files are not shown.") : null));
+    };
+    // ── Git: put the folder on a commit, go back, put stashed changes back ──
+    const runCheckout = async (target, { stash = false } = {}) => {
+        try {
+            const result = await track(call({ op: "git", folder: folderId, what: "checkout", ...(gitRepo ? { repo: gitRepo } : {}), ...target, stash }));
+            if (result.needsStash) {
+                setDialog({ kind: "checkout", target, changes: result.changes, stash: true });
+                return;
+            }
+            setDialog(null);
+            if (!result.done) {
+                say(result.error || "git did not move the folder", "error");
+                return;
+            }
+            closeDiff();
+            say(result.detached
+                ? `The folder is at commit ${result.to} now${result.stashed ? "; your changes are stashed" : ""}`
+                : `Back on ${result.to}${result.stashed ? "; your changes are stashed" : ""}`);
+            checkNow();
+        } catch (error) {
+            setDialog(null);
+            fail(error);
+        }
+    };
+    // Ask first; with uncommitted changes, offer to stash them.
+    const askCheckout = (target) => {
+        const known = gitResult && gitResult.since === null ? (gitResult.files || []).length : null;
+        if (target.branch && known === 0) {
+            runCheckout(target);
+            return;
+        }
+        setDialog({ kind: "checkout", target, changes: known ?? 0, stash: Boolean(known) });
+    };
+    const runRestore = async () => {
+        try {
+            const result = await track(call({ op: "git", folder: folderId, what: "restore", ...(gitRepo ? { repo: gitRepo } : {}) }));
+            if (!result.done) {
+                say(result.error || "git did not put the changes back", "error");
+                return;
+            }
+            say("Your stashed changes are back");
+            checkNow();
+        } catch (error) {
+            fail(error);
+        }
+    };
+    const busyTitle = "The agent is in a turn in this folder: try again when it is idle";
+    const showCommitChanges = (sha) => {
+        changeSince(`commit:${sha}`);
+        setSideTab("changes");
+    };
+    const renderChanges = () => {
+        if (compareMode) return renderCompare();
+        const files = gitResult?.files || [];
+        const since = gitResult?.since ?? null;
+        const stopped = gitResult?.state ?? null;
+        const conflicts = files.filter((f) => f.letter === "C");
+        // Each group counts its own part of a file that is in two groups.
+        const groups = since
+            ? [{ title: `Since ${since.label}`, kind: "since", files, counts: () => undefined }]
+            : [
+                ...(stopped ? [{ title: stopped === "merge" ? "Merge conflicts" : "Rebase conflicts", kind: "Changes", files: conflicts, counts: () => undefined }] : []),
+                { title: "Staged", kind: "Staged", files: files.filter((f) => f.staged), counts: (f) => (f.staged_counts === undefined ? undefined : f.staged_counts) },
+                { title: "Changes", kind: "Changes", files: files.filter((f) => f.unstaged && !(stopped && f.letter === "C")), counts: (f) => (f.unstaged_counts === undefined ? undefined : f.unstaged_counts) },
+            ];
+        const shown = groups.filter((g) => g.files.length);
+        const keys = shown.flatMap((g) => g.files.map((f) => `${g.title}\u0000${f.path}`));
+        const tabKey = tabStopOf(keys, diffHere?.rowKey);
+        const [added, removed] = gitTotals(files);
+        return h("div", { className: "ps-ws-git-panel" },
+            sincePicker(),
+            h("div", { className: "ps-ws-git-summary" },
+                h("span", null, files.length === 1 ? "1 file" : `${files.length} files`),
+                h("span", { className: "ps-ws-spacer" }),
+                ...gitCounts(added, removed)),
+            gitResult && gitResult.branch === null && gitResult.head ? h("div", { className: "ps-ws-git-note is-info", role: "status" },
+                h("span", null, `The folder is at commit ${gitResult.head.slice(0, 7)} (a detached HEAD).${gitResult.stash ? " Your stashed changes come back after you return." : ""}`),
+                gitResult.previousBranch ? h("button", { type: "button", className: "ps-ws-btn", disabled: turnRunning, title: turnRunning ? busyTitle : undefined, onClick: () => askCheckout({ branch: gitResult.previousBranch }) }, `Return to ${gitResult.previousBranch}`) : null) : null,
+            gitResult?.stash && gitResult.branch ? h("div", { className: "ps-ws-git-note is-info", role: "status" },
+                h("span", null, "Your changes from before a checkout are stashed."),
+                h("button", { type: "button", className: "ps-ws-btn", disabled: turnRunning, title: turnRunning ? busyTitle : gitResult.stash.message, onClick: runRestore }, "Put them back")) : null,
+            stopped ? h("div", { className: "ps-ws-git-note", role: "status" },
+                `${stopped === "merge" ? "A merge" : "A rebase"} stopped: ${conflicts.length === 1 ? "1 file has a conflict" : `${conflicts.length} files have conflicts`}.`) : null,
+            gitResult?.sinceError ? h("div", { className: "ps-ws-row is-error" }, gitResult.sinceError) : null,
+            gitHere?.error ? h("div", { className: "ps-ws-row is-error" }, workspaceErrorText(gitHere.error)) : null,
+            h("div", { className: "ps-ws-git-list", "aria-label": "Changed files", onKeyDown: onGitListKeys },
+                !gitResult ? h("div", { className: "ps-ws-row is-muted" }, "Loading the changes…") : null,
+                gitResult && files.length === 0 && !gitResult?.sinceError
+                    ? h("div", { className: "ps-ws-row is-muted" }, since ? `Nothing changed since ${since.label}.` : "Nothing changed since the last commit.")
+                    : null,
+                shown.map((g) => h(React.Fragment, { key: g.title },
+                    h("div", { className: "ps-ws-git-group" }, h("span", null, g.title), h("span", { className: "ps-ws-git-group-count" }, String(g.files.length))),
+                    g.files.map((f) => {
+                        const rowKey = `${g.title}\u0000${f.path}`;
+                        return gitFileRow(f, rowKey, { onOpen: (one) => openChange(one, g.kind, rowKey), counts: g.counts(f), tabStop: rowKey === tabKey });
+                    }))),
+                gitResult?.truncated ? h("div", { className: "ps-ws-row is-muted" }, "More changed files are not shown.") : null));
+    };
+    const renderHistory = () => {
+        const log = gitLog;
+        const uncommitted = gitResult?.since === null ? gitCount : 0;
+        const commits = log?.commits || [];
+        const keys = [...(uncommitted ? ["wip"] : []), ...commits.map((c) => c.sha)];
+        const tabKey = tabStopOf(keys, gitCommit?.sha);
+        const picks = (gitKey && gitPicks[gitKey]) || [];
+        const setPicks = (next) => setGitPicks((latest) => ({ ...latest, [gitKey]: next }));
+        const togglePick = (sha) => setPicks(picks.includes(sha) ? picks.filter((one) => one !== sha) : [...picks, sha].slice(-2));
+        const comparePicks = () => {
+            // Older first: the list is newest first.
+            const [from, to] = [...picks].sort((a, b) => commits.findIndex((c) => c.sha === b) - commits.findIndex((c) => c.sha === a));
+            setPicks([]);
+            changeSince(`range:${from}..${to}`);
+            setSideTab("changes");
+        };
+        return h("div", { className: "ps-ws-git-panel" },
+            picks.length ? h("div", { className: "ps-ws-git-pickbar", role: "toolbar", "aria-label": "Picked commits" },
+                h("span", { className: "ps-ws-git-pickbar-text" }, picks.length === 2
+                    ? `${short7(picks[0])} and ${short7(picks[1])}`
+                    : `${short7(picks[0])} picked: Ctrl/⌘-click another commit to compare`),
+                h("button", { type: "button", className: "ps-ws-btn is-primary", disabled: picks.length !== 2, onClick: comparePicks }, "Compare"),
+                h("button", { type: "button", className: "ps-ws-btn", onClick: () => setPicks([]) }, "Clear")) : null,
+            h("div", { className: "ps-ws-git-list", "aria-label": "Commits", onKeyDown: onGitListKeys },
+                uncommitted ? h("button", { type: "button", tabIndex: tabKey === "wip" ? 0 : -1, className: "ps-ws-git-commit is-wip", onClick: () => setSideTab("changes") },
+                    h("span", { className: "ps-ws-git-rail", "aria-hidden": true }),
+                    h("span", { className: "ps-ws-git-commit-text" },
+                        h("span", { className: "ps-ws-git-commit-subject" }, "Uncommitted changes"),
+                        h("span", { className: "ps-ws-git-commit-meta" }, uncommitted === 1 ? "1 file" : `${uncommitted} files`))) : null,
+                !log?.commits && !log?.error ? h("div", { className: "ps-ws-row is-muted" }, "Loading the commits…") : null,
+                log?.error ? h("div", { className: "ps-ws-row is-error" }, workspaceErrorText(log.error)) : null,
+                log?.commits && commits.length === 0 ? h("div", { className: "ps-ws-row is-muted" }, "No commits yet.") : null,
+                commits.map((c) => {
+                    const selected = gitCommit?.sha === c.sha;
+                    const picked = picks.includes(c.sha);
+                    return h("div", { key: c.sha, className: `ps-ws-git-commit-item${selected ? " is-selected" : ""}${picked ? " is-picked" : ""}` }, h("button", {
+                        type: "button",
+                        tabIndex: tabKey === c.sha ? 0 : -1,
+                        className: `ps-ws-git-commit${selected ? " is-selected" : ""}${picked ? " is-picked" : ""}`,
+                        "aria-pressed": selected,
+                        title: `${c.subject}\n${c.author} <${c.email}>, ${gitDateTime(c.time)}\n${c.sha}\nCtrl/⌘- or Shift-click to pick two commits and compare them`,
+                        onClick: (event) => {
+                            if (event.metaKey || event.ctrlKey || event.shiftKey) togglePick(c.sha);
+                            else pickCommit(c.sha);
+                        },
+                    },
+                    h("span", { className: "ps-ws-git-rail", "aria-hidden": true }),
+                    h("span", { className: "ps-ws-git-commit-text" },
+                        h("span", { className: "ps-ws-git-commit-subject" }, c.subject || "(no message)"),
+                        h("span", { className: "ps-ws-git-commit-meta" }, h("span", { className: "ps-ws-git-sha" }, c.short), ` · ${c.author} · ${gitTimeAgo(c.time)}`),
+                        c.refs.length ? h("span", { className: "ps-ws-git-refs" }, c.refs.map((ref) => h("span", { key: ref, className: "ps-ws-git-ref" }, ref))) : null)),
+                    h("button", {
+                        type: "button",
+                        tabIndex: -1,
+                        className: "ps-ws-icon-btn ps-ws-git-commit-changes",
+                        title: "Show this commit's changes in the Changes tab",
+                        "aria-label": `Changes in commit ${c.short}`,
+                        onClick: () => showCommitChanges(c.sha),
+                    }, h(Icon, { d: PLUS_MINUS, size: 13 })));
+                }),
+                log?.more ? h("div", { className: "ps-ws-git-more", ref: olderRef },
+                    h("button", { type: "button", className: "ps-ws-btn", disabled: Boolean(log.loading), onClick: () => loadGitLog(folderId, gitRepo, gitHead, { more: true }) }, log.loading ? "Loading…" : "Show older commits")) : null,
+                commits.length && !log.more && !log.loading ? h("div", { className: "ps-ws-row is-muted ps-ws-git-end" }, "No older commits.") : null));
+    };
+    const renderCommit = () => {
+        if (gitCommit.loading) return h("div", { className: "ps-ws-message" }, "Loading the commit…");
+        if (gitCommit.error) return h("div", { className: "ps-ws-message is-error" }, workspaceErrorText(gitCommit.error));
+        const c = gitCommit.result?.commit;
+        if (!c) return h("div", { className: "ps-ws-message" }, gitCommit.result?.reason || "This commit could not be read.");
+        const files = gitCommit.result.files || [];
+        const [added, removed] = gitTotals(files);
+        const keys = files.map((f) => `${c.sha}\u0000${f.path}`);
+        const tabKey = tabStopOf(keys, diffHere?.rowKey);
+        const copy = () => {
+            Promise.resolve(navigator.clipboard?.writeText(c.sha)).then(() => say("Copied the commit id"), () => say("Could not copy the commit id", "error"));
+        };
+        const changed = files.length === 1 ? "1 file changed" : `${files.length} files changed`;
+        return h("div", { className: "ps-ws-git-commit-view" },
+            h("div", { className: "ps-ws-git-commit-head" },
+                h("div", { className: "ps-ws-git-commit-title" }, c.subject || "(no message)"),
+                c.body ? h("pre", { className: "ps-ws-git-commit-body" }, c.body) : null,
+                h("div", { className: "ps-ws-git-commit-facts" },
+                    h("span", { className: "ps-ws-git-commit-author", title: c.email }, c.author),
+                    h("span", null, gitDateTime(c.time)),
+                    h("span", { className: "ps-ws-git-sha", title: c.sha }, c.sha.slice(0, 12)),
+                    h("button", { type: "button", className: "ps-ws-icon-btn", title: "Copy the commit id", "aria-label": "Copy the commit id", onClick: copy }, h(Icon, { d: COPY, size: 13 })),
+                    c.parents.length
+                        ? h("span", null, c.parents.length > 1 ? "parents " : "parent ",
+                            c.parents.map((one) => h("button", { key: one, type: "button", className: "ps-ws-git-sha-link", title: `Open commit ${one.slice(0, 7)}`, onClick: () => pickCommit(one) }, one.slice(0, 7))))
+                        : h("span", null, "the first commit")),
+                c.refs.length ? h("div", { className: "ps-ws-git-refs" }, c.refs.map((ref) => h("span", { key: ref, className: "ps-ws-git-ref" }, ref))) : null,
+                h("div", { className: "ps-ws-git-commit-actions" },
+                    h("button", { type: "button", className: "ps-ws-btn", onClick: () => showCommitChanges(c.sha) }, "Show in Changes"),
+                    gitResult?.head === c.sha
+                        ? h("button", { type: "button", className: "ps-ws-btn", disabled: true, title: "The folder is at this commit" }, "Checked out")
+                        : h("button", {
+                            type: "button",
+                            className: "ps-ws-btn",
+                            disabled: turnRunning,
+                            title: turnRunning ? busyTitle : "Put the folder on this commit, to see and run it as it was",
+                            onClick: () => askCheckout({ sha: c.sha }),
+                        }, "Check out this commit"),
+                    h("button", { type: "button", className: "ps-ws-btn", onClick: () => { changeSince(c.sha); setSideTab("changes"); } }, "Show changes since this commit"))),
+            h("div", { className: "ps-ws-git-summary" },
+                h("span", null, c.parents.length > 1 ? `${changed}, against the first parent` : changed),
+                h("span", { className: "ps-ws-spacer" }),
+                ...gitCounts(added, removed)),
+            h("div", { className: "ps-ws-git-list", onKeyDown: onGitListKeys },
+                files.map((f) => {
+                    const rowKey = `${c.sha}\u0000${f.path}`;
+                    return gitFileRow(f, rowKey, { onOpen: (one) => openDiff(commitSpec(c, one, rowKey)), selectable: false, tabStop: rowKey === tabKey });
+                }),
+                gitCommit.result.truncated ? h("div", { className: "ps-ws-row is-muted" }, "More files are not shown.") : null));
+    };
+    const renderDiff = () => {
+        const d = diffHere;
+        const name = baseName(d.path);
+        const sides = d.left && d.right ? `${d.left.label} ↔ ${d.right.label}` : d.right ? `${d.right.label}, added` : `${d.left.label}, deleted`;
+        // The file on one side only: shown once, whole, tinted.
+        const whole = d.left ? (d.right ? null : "deleted") : "added";
+        const fits = !viewerWidth || viewerWidth >= DIFF_SPLIT_MIN_WIDTH;
+        const layout = fits ? diffLayout : "inline";
+        const back = d.source === "history" && Boolean(gitCommit);
+        const same = !d.loading && !d.error && d.original?.text !== undefined && d.original?.text === d.modified?.text;
+        const message = d.loading ? `Loading the changes in ${name}…`
+            : d.error ? null
+            : d.original?.binary || d.modified?.binary ? `${name} is a binary file: there is no text diff to show.`
+            : d.original?.tooLarge || d.modified?.tooLarge ? `${name} is too large to compare here (over ${formatBytes(DIFF_MAX_BYTES)}).`
+            : same && d.from ? `Renamed from ${d.from}. The content did not change.`
+            : same && whole ? "The file is empty."
+            : same ? "No text changed: only the file's mode or attributes did."
+            : null;
+        const showsDiff = !d.loading && !d.error && message === null;
+        const body = d.error ? h("div", { className: "ps-ws-message is-error" }, workspaceErrorText(d.error))
+            : message !== null ? h("div", { className: "ps-ws-message" }, message)
+            : h(DiffEditor, {
+                key: `${d.key}\u0000${layout}`,
+                original: d.original.text,
+                modified: d.modified.text,
+                name,
+                layout,
+                whole,
+                onReady: (handle) => { diffHandle.current = handle; },
+            });
+        return h(React.Fragment, null,
+            h("div", { className: "ps-ws-viewer-bar ps-ws-diff-bar" },
+                back ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "Back to the commit", "aria-label": "Back to the commit", onClick: closeDiffAndFocus }, h(Icon, { d: BACK })) : null,
+                h("span", { className: `ps-ws-git-letter is-git-${d.letter}`, title: GIT_WORDS[d.letter] }, d.letter),
+                h("span", { className: "ps-ws-crumbs", title: `${d.from ? `${d.from} → ` : ""}${d.path} (${sides})` },
+                    h("span", { className: "ps-ws-crumb-leaf" }, name),
+                    d.from ? h("span", { className: "ps-ws-git-from" }, `← ${shortPath(d.from, d.path)}`) : null,
+                    h("span", { className: "ps-ws-diff-sides" }, ` (${sides})`)),
+                h("span", { className: "ps-ws-spacer" }),
+                showsDiff && !whole ? h("span", { className: "ps-ws-seg", role: "group", "aria-label": "Diff layout" },
+                    h("button", {
+                        type: "button",
+                        className: layout === "split" ? "is-on" : "",
+                        "aria-pressed": layout === "split",
+                        disabled: !fits,
+                        title: fits ? "Side by side" : "Side by side needs a wider viewer",
+                        onClick: () => chooseDiffLayout("split"),
+                    }, "Side by side"),
+                    h("button", { type: "button", className: layout === "inline" ? "is-on" : "", "aria-pressed": layout === "inline", onClick: () => chooseDiffLayout("inline") }, "Inline")) : null,
+                showsDiff && !whole ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "Previous change", "aria-label": "Previous change", onClick: () => diffHandle.current?.previous?.() }, h(Icon, { d: ARROW_UP })) : null,
+                showsDiff && !whole ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "Next change", "aria-label": "Next change", onClick: () => diffHandle.current?.next?.() }, h(Icon, { d: ARROW_DOWN })) : null,
+                d.right ? h("button", {
+                    type: "button",
+                    className: "ps-ws-icon-btn",
+                    title: d.source === "history" ? "Open the file as it is now" : "Open the file",
+                    "aria-label": "Open the file",
+                    onClick: () => {
+                        if (d.source === "history") setSideTab("files");
+                        openFile(folderId, inRepo(d.repo, d.path));
+                    },
+                }, h(Icon, { d: OPEN_FILE })) : null,
+                back ? null : h("button", { type: "button", className: "ps-ws-icon-btn", title: "Close the diff", "aria-label": "Close the diff", onClick: closeDiffAndFocus }, h(Icon, { d: CLOSE }))),
+            h("div", { className: "ps-ws-viewer-body" }, body));
+    };
+    const commitView = gitTab !== "history" ? null
+        : gitCommit ? renderCommit()
+        : h("div", { className: "ps-ws-message" }, "Pick a commit to see what it changed.");
 
     const viewer = (() => {
         if (!file) {
@@ -1868,6 +2774,13 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         file.kind === "text" && isMarkdown(file.name) && !compare ? h("span", { className: "ps-ws-seg", role: "group", "aria-label": "Markdown view" },
             h("button", { type: "button", className: mdMode === "edit" ? "is-on" : "", "aria-pressed": mdMode === "edit", onClick: () => setMdMode("edit") }, "Edit"),
             h("button", { type: "button", className: mdMode === "preview" ? "is-on" : "", "aria-pressed": mdMode === "preview", onClick: () => setMdMode("preview") }, "Preview")) : null,
+        gitMarks && file.kind === "text" && !compare && file.folderId === folderId && gitMarks.letter(file.path) ? h("button", {
+            type: "button",
+            className: "ps-ws-icon-btn",
+            title: "Open Changes: this file's diff",
+            "aria-label": "Open Changes",
+            onClick: () => openChangesFor(file.path),
+        }, h(Icon, { d: PLUS_MINUS })) : null,
         file.kind === "text" && !compare && !(isMarkdown(file.name) && mdMode === "preview") ? h("button", {
             type: "button",
             className: "ps-ws-icon-btn",
@@ -1911,6 +2824,19 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                     h("button", { type: "button", className: "ps-ws-btn", onClick: () => resolveConflict("mine") }, "Keep mine"),
                     h("button", { type: "button", className: "ps-ws-btn", onClick: () => resolveConflict("theirs") }, "Take theirs"),
                     h("button", { type: "button", className: "ps-ws-btn is-primary", onClick: () => resolveConflict("both") }, "Keep both")));
+        }
+        if (dialog.kind === "checkout") {
+            const target = dialog.target;
+            const short = target.sha ? target.sha.slice(0, 7) : "";
+            return h("div", { className: "ps-ws-dialog", role: "dialog", "aria-modal": "true", "aria-label": target.sha ? `Check out commit ${short}` : `Return to ${target.branch}`, ref: focusDialog },
+                h("strong", null, target.sha ? `Check out commit ${short}?` : `Return to ${target.branch}?`),
+                h("p", null, target.sha
+                    ? "The folder will show the files as they were at that commit (a detached HEAD). Your branch stays as it is, and you can return to it."
+                    : "The folder goes back to the branch."),
+                dialog.stash ? h("p", null, `You have ${dialog.changes === 1 ? "1 uncommitted change" : `${dialog.changes} uncommitted changes`}, untracked files included. They will be stashed. After you return, "Put them back" restores them.`) : null,
+                h("div", { className: "ps-ws-dialog-actions" },
+                    h("button", { type: "button", className: "ps-ws-btn is-primary", onClick: () => setDialog(null) }, "Cancel"),
+                    h("button", { type: "button", className: "ps-ws-btn", onClick: () => runCheckout(target, { stash: Boolean(dialog.stash) }) }, dialog.stash ? "Stash and check out" : "Check out")));
         }
         if (dialog.kind === "deleted") {
             return h("div", { className: "ps-ws-dialog", role: "dialog", "aria-modal": "true", "aria-label": "The file was deleted", ref: focusDialog },
@@ -1966,6 +2892,43 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         folder ? h("div", { className: "ps-ws-toolbar" },
             h("span", { className: "ps-ws-folder-path", title: `${folder.root}${folder.folder ? `/${folder.folder}` : ""}` }, `${folder.root}${folder.folder ? `/${folder.folder}` : ""}`),
             rootReadOnly ? h("span", { className: "ps-ws-pill" }, "Read-only") : null,
+            gitOn && (repoChoices.length > 1 || noRepoPicked) ? h("select", {
+                className: `ps-ws-git-repo-select${noRepoPicked ? " is-none" : ""}`,
+                "aria-label": "Repository",
+                title: noRepoPicked ? "Nothing picked is inside a repository" : "The repository git shows",
+                value: gitRepo ?? NO_REPO,
+                onChange: (event) => chooseRepo(event.currentTarget.value === NO_REPO ? null : event.currentTarget.value),
+            },
+                noRepoPicked ? h("option", { value: NO_REPO }, "No repository") : null,
+                repoChoices.map((repo) => h("option", { key: repo, value: repo }, repo || `${folder?.name ?? "this folder"} (the folder itself)`))) : null,
+            gitReady && gitRepo && repoChoices.length === 1 ? h("span", { className: "ps-ws-git-repo-name", title: `The repository in ${gitRepo}` }, baseName(gitRepo)) : null,
+            gitReady && !gitResult ? h("span", { className: "ps-ws-branch is-loading", "aria-busy": true }, h(Icon, { d: BRANCH, size: 12 }), h("span", { className: "ps-ws-branch-name" }, "…"))
+            : gitReady ? h("button", {
+                type: "button",
+                className: "ps-ws-branch",
+                title: [
+                    gitResult.branch ? `Branch ${gitResult.branch}` : `No branch: HEAD is at ${(gitResult.head || "").slice(0, 7)}`,
+                    gitResult.upstream ? `${gitResult.ahead} ahead of ${gitResult.upstream}, ${gitResult.behind} behind` : "No upstream branch",
+                    "Show the commits",
+                ].join("\n"),
+                onClick: () => setSideTab("history"),
+            },
+                h(Icon, { d: BRANCH, size: 12 }),
+                h("span", { className: "ps-ws-branch-name" }, gitResult.branch || `detached at ${(gitResult.head || "").slice(0, 7)}`),
+                gitResult.ahead ? h("span", { className: "ps-ws-branch-ab" }, `↑${gitResult.ahead}`) : null,
+                gitResult.behind ? h("span", { className: "ps-ws-branch-ab" }, `↓${gitResult.behind}`) : null,
+                gitResult.upstream && !gitResult.ahead && !gitResult.behind ? h("span", { className: "ps-ws-branch-ab", "aria-label": `in sync with ${gitResult.upstream}` }, "✓") : null,
+                gitResult.branch && !gitResult.upstream ? h("span", { className: "ps-ws-branch-ab" }, "not pushed") : null)
+            : gitOn && gitResult?.repo && gitResult.available === false ? h("span", { className: "ps-ws-pill", title: gitResult.reason || "" }, "Git off")
+            : null,
+            gitReady && gitResult && gitResult.branch === null && gitResult.previousBranch ? h("button", {
+                type: "button",
+                className: "ps-ws-btn ps-ws-git-return",
+                disabled: turnRunning,
+                title: turnRunning ? busyTitle : `The folder is at commit ${(gitResult.head || "").slice(0, 7)}. Go back to ${gitResult.previousBranch}.`,
+                onClick: () => askCheckout({ branch: gitResult.previousBranch }),
+            }, `Return to ${gitResult.previousBranch}`)
+            : gitOn && reposHere && repoChoices.length === 0 ? h("span", { className: "ps-ws-pill ps-ws-no-git", title: "No git repository in this folder or the folders inside it (3 levels down)." }, "No git") : null,
             h("span", { className: "ps-ws-spacer" }),
             busy > 0 ? h("span", { className: "ps-ws-busy", "aria-live": "polite" }, "Working…") : null,
             !rootReadOnly ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "Upload files", "aria-label": "Upload files", onClick: () => { uploadDir.current = ""; uploadInput.current?.click(); } }, h(Icon, { d: UPLOAD })) : null,
@@ -1980,7 +2943,16 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 onClick: () => { setSelectMode((on) => !on); if (selectMode) setPicked(new Set()); },
             }, h(Icon, { d: CHECKS })),
             h("button", { type: "button", className: "ps-ws-icon-btn", title: "Download the folder as .zip", "aria-label": "Download the folder as .zip", onClick: () => downloadEntry(folder.id, "", true) }, h(Icon, { d: DOWNLOAD })),
-            h("button", { type: "button", className: "ps-ws-icon-btn", title: "Refresh", "aria-label": "Refresh", onClick: refresh }, h(Icon, { d: REFRESH })),
+            h("button", {
+                type: "button",
+                className: "ps-ws-icon-btn",
+                title: "Refresh",
+                "aria-label": "Refresh",
+                onClick: () => {
+                    if (folderId && gitOn) loadGitRepos(folderId);
+                    refresh();
+                },
+            }, h(Icon, { d: REFRESH })),
             h("input", {
                 ref: uploadInput,
                 type: "file",
@@ -2001,6 +2973,8 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
             },
         },
             h("div", { className: "ps-ws-side" },
+                gitTabs,
+                gitTab === "changes" ? renderChanges() : gitTab === "history" ? renderHistory() : h(React.Fragment, null,
                 folder ? h("div", { className: "ps-ws-finder" },
                     h(Icon, { d: SEARCH, size: 12 }),
                     h("input", {
@@ -2078,12 +3052,17 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                             onScroll: onTreeScroll,
                             onKeyDown: onTreeKeyDown,
                             ...(folder && !rootReadOnly ? dropProps(folder.id, "") : {}),
-                        }, folder ? renderDir(folder.id, "", 0) : null))),
+                        }, folder && !folder.available
+                            ? h("div", { className: "ps-ws-message" }, folder.opened === false
+                                ? `${folder.root}${folder.folder ? `/${folder.folder}` : ""} opens at the session's next turn.`
+                                : `This portal does not serve the "${folder.root}" root.`)
+                            : folder ? renderDir(folder.id, "", 0) : null)))),
             h(Splitter, { mainRef, split, stacked, onChange: changeSplit }),
-            h("div", { className: "ps-ws-viewer" },
-                viewerBar,
-                banner,
-                h("div", { className: "ps-ws-viewer-body" }, viewer),
+            h("div", { className: "ps-ws-viewer", ref: viewerRef },
+                diffHere ? renderDiff() : commitView || h(React.Fragment, null,
+                    viewerBar,
+                    banner,
+                    h("div", { className: "ps-ws-viewer-body" }, viewer)),
                 dialogBox)),
         notice ? h("div", { className: `ps-ws-notice${notice.kind === "error" ? " is-error" : ""}`, role: notice.kind === "error" ? "alert" : "status" }, notice.text) : null);
 }

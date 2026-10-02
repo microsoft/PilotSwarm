@@ -18,7 +18,7 @@
  */
 import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
-    ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
+    effectiveWireApi, ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
 } from "./model-providers.js";
 import type { DefaultTuple, ProviderCredential, ProviderStore } from "./provider-store.js";
 import { WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
@@ -420,6 +420,8 @@ export function resolveProviderCredential(
     const apiVersion = typeof credential.secretRef?.apiVersion === "string"
         ? credential.secretRef.apiVersion
         : type.apiVersion;
+    // A model may set its own request format; the type's value is the fallback.
+    const wireApi = effectiveWireApi(type, types.getDescriptor(`${type.id}:${modelName}`));
 
     return {
         providerId: credential.name,
@@ -429,7 +431,7 @@ export function resolveProviderCredential(
         sdkProvider: {
             type: sdkType,
             baseUrl: sdkType === "azure" ? `${baseUrl.replace(/\/$/, "")}/deployments/${modelName}` : baseUrl,
-            ...(type.wireApi ? { wireApi: type.wireApi } : {}),
+            ...(wireApi ? { wireApi } : {}),
             ...(workloadIdentity ? {} : { apiKey }),
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
         },

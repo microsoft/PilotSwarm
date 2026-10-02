@@ -440,7 +440,7 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `restart_system_session` | Bounce a system agent (sweeper, resourcemgr, …) with `disposition: complete \| terminate \| hard_delete` |
+| `restart_system_session` | Bounce a system agent (sweeper, resourcemgr, …) with `disposition: complete \| terminate \| hard_delete`. `start_replacement: false` removes the session and starts nothing: use it for an agent that no worker loads any more. Refused while a live worker loads the agent |
 | `facts_admin` | `action: purge` (tombstoned facts) or `prune_summaries` — destructive housekeeping |
 
 ### External MCP boundary

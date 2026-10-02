@@ -285,7 +285,7 @@ so cross-node tests have two worker nodes:
 ```text
 deploy/Dockerfile.repo-cache                        the repo pod image: git, the NFS server, this folder
 deploy/Dockerfile.worker                            + git, nfs-common, this folder
-deploy/Dockerfile.portal                            + plugin/
+deploy/Dockerfile.portal                            + plugin/, git (canvas commands)
 deploy/providers/azure/services/repo-cache/         the repo-cache service (bicep: manifest container + Flux)
 deploy/providers/azure/services/base-infra/bicep/aks.bicep   the `repocache` node pool: one node, no
                                                     autoscaling, tainted so only the repo pod runs there
@@ -293,7 +293,8 @@ deploy/providers/azure/gitops/repo-cache/           the repo pod: Deployment (in
                                                     privileged nfs), disk, Service (2049, 8080),
                                                     NetworkPolicy (8080 from worker pods only)
 deploy/providers/azure/gitops/worker/components/workspaces/   the attacher DaemonSet and the worker patch
-deploy/providers/azure/gitops/portal/components/workspaces/   the portal's PLUGIN_DIRS
+deploy/providers/azure/gitops/portal/components/workspaces/   the portal's PLUGIN_DIRS, the Workspace tab
+                                                    (the roots at /ws), and canvas commands on
 deploy/scripts/lib/workspaces.mjs                   the switch: deploy repo-cache, and add the two
                                                     components to the staged worker and portal overlays
 ```

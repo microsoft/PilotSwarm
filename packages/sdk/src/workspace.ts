@@ -532,7 +532,9 @@ export function applyWorkspaceDefaults(
  * Section 4.11: the defaults a turn used, for the session.workspace_defaults
  * event. `recordHasWorkingFolder`: the session's own record names a working
  * folder, so the person's folder is not the working folder by default even
- * when it is the same folder. Null when the turn used no defaults.
+ * when it is the same folder. `skipped` lists the defaults left out, and
+ * why. Null when the turn has no folders, or used no defaults and left none
+ * out.
  */
 export function defaultsRecordOf(
     applied: WorkspaceWithDefaults,
@@ -552,7 +554,9 @@ export function defaultsRecordOf(
             ...(name === applied.homeExtra ? { home: true as const } : {}),
         }] : [];
     });
-    return workingFolder || extra.length > 0 ? { workingFolder, extra } : null;
+    const skipped = applied.skipped.map((skip) => ({ name: skip.name, reason: skip.reason }));
+    if (!workingFolder && extra.length === 0 && skipped.length === 0) return null;
+    return { workingFolder, extra, ...(skipped.length > 0 ? { skipped } : {}) };
 }
 
 /** Section 4.11: a stored session.workspace_defaults payload, checked; null when it names nothing. */
@@ -569,17 +573,23 @@ export function readDefaultsRecord(data: unknown): import("./types.js").Workspac
         ...(text(one.folder) ? { folder: one.folder as string } : {}),
         ...(one.home === true ? { home: true as const } : {}),
     }] : []));
-    return working || extra.length > 0 ? { workingFolder: working, extra } : null;
+    const skipped = (Array.isArray(value.skipped) ? value.skipped : []).flatMap((one: any) => (one && text(one.name) && text(one.reason)
+        ? [{ name: one.name as string, reason: one.reason as string }]
+        : []));
+    if (!working && extra.length === 0 && skipped.length === 0) return null;
+    return { workingFolder: working, extra, ...(skipped.length > 0 ? { skipped } : {}) };
 }
 
-/** Section 4.11: two defaults records name the same folders (key order and extra order do not matter). */
+/** Section 4.11: two defaults records name the same folders and skip the same ones (key order and list order do not matter). */
 export function sameDefaultsRecord(
     a: import("./types.js").WorkspaceDefaultsRecord | null,
     b: import("./types.js").WorkspaceDefaultsRecord | null,
 ): boolean {
+    const byName = (x: unknown[], y: unknown[]) => String(x[0]).localeCompare(String(y[0])) || String(x[1]).localeCompare(String(y[1]));
     const canon = (r: import("./types.js").WorkspaceDefaultsRecord | null) => (r ? JSON.stringify([
         r.workingFolder ? [r.workingFolder.root, r.workingFolder.folder ?? ""] : null,
-        r.extra.map((one) => [one.name, one.root, one.folder ?? "", one.home === true]).sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+        r.extra.map((one) => [one.name, one.root, one.folder ?? "", one.home === true]).sort(byName),
+        (r.skipped ?? []).map((one) => [one.name, one.reason]).sort(byName),
     ]) : "null");
     return canon(a) === canon(b);
 }

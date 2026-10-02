@@ -683,7 +683,8 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "Regenerate a session's context in place (epoch rebirth): the transcript is archived, "
                 + "distilled into a resume package, and the underlying Copilot session is rebuilt fresh — "
                 + "same session id; facts, artifacts, children, schedule, and chat history untouched. "
-                + "Use when get_session_metrics footprint reads degraded. Owner/admin only. "
+                + "Use when get_session_metrics footprint reads degraded. Owner or admin only. "
+                + "Under AUTHZ_ADMIN_SCOPE=cluster, admins cannot regenerate other users' sessions; only the owner can. "
                 + "Outcome arrives as session.regenerate_* events (watch get_session_events).",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to regenerate"),
