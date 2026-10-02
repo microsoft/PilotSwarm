@@ -43,6 +43,7 @@ fixture captures the fuller product-direction contract.
   - [2.8 Nested workflows](#28-nested-workflows)
   - [2.9 Authorization and cancellation](#29-authorization-and-cancellation)
   - [2.10 Observability](#210-observability)
+  - [2.11 Open workflow-controller design TODOs](#211-open-workflow-controller-design-todos)
 - [3. How the design solves the scenarios](#3-how-the-design-solves-the-scenarios)
   - [3.1 Top-level workflow](#31-top-level-workflow)
   - [3.2 Conversational parent](#32-conversational-parent)
@@ -917,38 +918,6 @@ routing, not the default orchestration mechanism. The
 explores one concrete acceptance encoding; it is evidence for evaluating the
 framework design rather than the normative PilotSwarm schema.
 
-##### Open design TODOs
-
-- [ ] Separate producer submissions, reviewed candidate revisions, review
-  decisions, and accepted state outcomes rather than overloading one
-  completion envelope.
-- [ ] Define which identity fields are runtime-bound, including workflow,
-  definition, state, invocation, attempt, candidate revision, producer,
-  causation, and acceptance time.
-- [ ] Define which producer kinds may emit each outcome and how agent,
-  reviewer, provider, action, and controller authority is verified.
-- [ ] Define the normalized transition directives, including advancing to
-  another state and resuming a reviewed producer with feedback.
-- [ ] Specify atomic persistence of the accepted state outcome and selected
-  transition, including compare-and-set behavior for duplicate or racing
-  submissions.
-- [ ] Specify reviewed candidate revision, rejection, resumption, acceptance,
-  abort, and dependency-invalidation semantics.
-- [ ] Define agentic transition-function admission, allowed routes, result
-  schema, attempt bounds, and replay behavior.
-- [ ] Define provider registration, compatibility metadata, wake-up,
-  correlation, checkpoint, and idempotency contracts.
-- [ ] Define how controller-produced outcomes such as timeout, cancellation,
-  retry exhaustion, and loop-bound exhaustion enter the same transition
-  function.
-- [ ] Define compiler checks for undeclared outcomes, incomplete or ambiguous
-  mappings, nonexistent targets, invalid resume directives, unreachable
-  states, and incompatible provider references.
-- [ ] Define transition and completion observability without copying large
-  provider payloads or agent results into orchestration state.
-- [ ] Define versioning and compatibility rules for persisted completion
-  envelopes, transition functions, and provider contracts.
-
 ### 2.8 Nested workflows
 
 The design supports two nested-workflow mechanisms:
@@ -1023,6 +992,38 @@ Correlation should include:
 - backing child session ID
 - controller state and wait reason
 - accepted immutable result reference
+
+### 2.11 Open workflow-controller design TODOs
+
+- [ ] Separate producer submissions, reviewed candidate revisions, review
+  decisions, and accepted state outcomes rather than overloading one
+  completion envelope.
+- [ ] Define which identity fields are runtime-bound, including workflow,
+  definition, state, invocation, attempt, candidate revision, producer,
+  causation, and acceptance time.
+- [ ] Define which producer kinds may emit each outcome and how agent,
+  reviewer, provider, action, and controller authority is verified.
+- [ ] Define the normalized transition directives, including advancing to
+  another state and resuming a reviewed producer with feedback.
+- [ ] Specify atomic persistence of the accepted state outcome and selected
+  transition, including compare-and-set behavior for duplicate or racing
+  submissions.
+- [ ] Specify reviewed candidate revision, rejection, resumption, acceptance,
+  abort, and dependency-invalidation semantics.
+- [ ] Define agentic transition-function admission, allowed routes, result
+  schema, attempt bounds, and replay behavior.
+- [ ] Define provider registration, compatibility metadata, wake-up,
+  correlation, checkpoint, and idempotency contracts.
+- [ ] Define how controller-produced outcomes such as timeout, cancellation,
+  retry exhaustion, and loop-bound exhaustion enter the same transition
+  function.
+- [ ] Define compiler checks for undeclared outcomes, incomplete or ambiguous
+  mappings, nonexistent targets, invalid resume directives, unreachable
+  states, and incompatible provider references.
+- [ ] Define transition and completion observability without copying large
+  provider payloads or agent results into orchestration state.
+- [ ] Define versioning and compatibility rules for persisted completion
+  envelopes, transition functions, and provider contracts.
 
 ## 3. How the design solves the scenarios
 
