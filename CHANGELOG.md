@@ -109,9 +109,12 @@ when `WORKSPACES_ENABLED=true`, which also turns on git in the Workspace tab.
   regenerated, and why not. `turnsThisEpoch` counts the turns since the
   last regenerate (#111).
 - Token Manager (agent version 1.2.0): it can tell new sessions from old
-  ones. `list_sessions` already gives each session's owner and creation
-  time; the agent's instructions now say how to count, per person, the
-  sessions created in a day.
+  ones. `list_sessions` gives each session's owner and creation time; the
+  agent's instructions now say how to count, per person, the sessions
+  created in a day. A live-model test checks it.
+- `list_sessions` in a session: the times read "unknown" and `updated_since`
+  dropped every session, because the catalog's times arrive as Date objects
+  and were not read. Both work now.
 - Tests: the database check no longer prints the database password when
   the database cannot be reached.
 
