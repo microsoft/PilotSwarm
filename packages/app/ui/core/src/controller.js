@@ -2693,7 +2693,21 @@ export class PilotSwarmUiController {
         // reducer then refuses fallback selection so the renderer can show
         // the nav error instead of silently landing somewhere else.
         const pendingIntent = preRefreshState.sessions.navigationIntent;
-        if (
+        if (pendingIntent?.status === "pending" && isSessionGroupRowId(pendingIntent.sessionId)) {
+            // A folder link ("group:<uuid>") is not a session: never ask the
+            // server for it. A known folder stays pending, and the reducer
+            // selects it. Any other folder is not found. When the folder fetch
+            // failed, we cannot tell, so the link fails as retryable.
+            const folderRows = pendingGroupRows || preRefreshState.sessions.groupRows || [];
+            if (!folderRows.some((row) => row?.sessionId === pendingIntent.sessionId)) {
+                const folderFetchFailed = !pendingGroupRows && typeof this.transport.listSessionGroups === "function";
+                this.dispatch({
+                    type: "sessions/navigationIntentFailed",
+                    sessionId: pendingIntent.sessionId,
+                    errorKind: folderFetchFailed ? "network" : "not_found",
+                });
+            }
+        } else if (
             pendingIntent?.status === "pending"
             && !sessions.some((session) => session?.sessionId === pendingIntent.sessionId)
             && typeof this.transport.getSession === "function"
