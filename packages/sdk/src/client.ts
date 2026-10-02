@@ -371,6 +371,8 @@ export class PilotSwarmClient {
         repo?: string;
         /** Web API placement. Direct-mode clients must omit this option. */
         compute?: "cluster" | "devbox";
+        /** Internal resolved placement contract supplied by the portal transport. */
+        requireOwnerAffinity?: boolean;
         /** Non-default branch this session's agent lives on (git-hydration). */
         gitRef?: string;
         owner?: SessionOwnerInfo | null;
@@ -394,6 +396,7 @@ export class PilotSwarmClient {
             toolNames: opts?.toolNames,
             repo: opts?.repo,
             compute: opts?.compute,
+            requireOwnerAffinity: opts?.requireOwnerAffinity,
             gitRef: opts?.gitRef,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,

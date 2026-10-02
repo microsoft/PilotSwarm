@@ -58,6 +58,29 @@ test("owner-affinitized creation still requires an exact provider:model value", 
     );
 });
 
+test("agent-bound creation preserves the resolved owner-affinity contract", async () => {
+    const client = Object.create(PilotSwarmClient.prototype);
+    client.config = { allowedAgentNames: ["reviewer"] };
+    let createConfig;
+    client.createSession = async config => {
+        createConfig = config;
+        return { sessionId: "agent-devbox" };
+    };
+    client._catalog = {
+        async updateSession() {},
+    };
+
+    await client.createSessionForAgent("reviewer", {
+        model: "github-copilot-ambient:claude-sonnet-5",
+        repo: "sqltelemetry",
+        requireOwnerAffinity: true,
+    });
+
+    assert.equal(createConfig.requireOwnerAffinity, true);
+    assert.equal(createConfig.model, "github-copilot-ambient:claude-sonnet-5");
+    assert.equal(createConfig.repo, "sqltelemetry");
+});
+
 test("owner-affinitized session persistence defers provider validation to the selected worker", async () => {
     const { catalog, queries } = createCatalogHarness();
 
