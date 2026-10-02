@@ -168,7 +168,7 @@ Required behavior:
 |---|---|---|
 | Author | Definition, schemas, agents, graph, bounds, deadlines, failure behavior, and mappings | Validation and compilation |
 | Publish | Resolvable package and immutable version | Definition identity and source pinning |
-| Start | Definition reference plus schema-valid business inputs | Session and invocation identity |
+| Start | Registered definition reference or inline definition plus schema-valid business inputs | Compilation, immutable definition identity, session, and invocation identity |
 | Run | Review decisions or cancellation when permitted | Durable execution, waits, status, and correlation |
 | Complete | Nothing additional | Terminal result and direct-parent delivery |
 
@@ -267,7 +267,7 @@ Every start path produces the same logical request:
 
 ```text
 startRequest = {
-  definitionReference,
+  definitionSource,
   inputs,
   initiator,
   trigger,
@@ -275,6 +275,11 @@ startRequest = {
   idempotencyKey
 }
 ```
+
+`definitionSource` is either a registered definition reference or an inline
+definition. Inline does not mean mutable: admission validates and compiles the
+definition, persists its source hash and compiled identity, and freezes that
+snapshot for the lifetime of the workflow session.
 
 The request may originate from:
 
@@ -284,17 +289,16 @@ The request may originate from:
 - an agent result that requests one of its allowed workflows;
 - a parent workflow transition that starts a declared subworkflow.
 
-All paths resolve and pin a definition, authorize the initiator and trigger,
-validate and freeze mapped inputs, deduplicate the request, and record
+All paths resolve or compile and pin a definition, authorize the initiator and
+trigger, validate and freeze mapped inputs, deduplicate the request, and record
 provenance before creating the session. Query or agent output may supply inputs
-or select among allowed workflow references; it does not directly create
+or propose an inline definition when authorized; it does not directly create
 controller state or bypass admission.
 
-The first implementation should dynamically instantiate registered immutable
-definitions. Runtime-generated definitions are a separate advanced path: they
-must pass the same compiler, policy, authorization, bounds, and source-hash
-pinning before execution. A generated graph is never executed directly from an
-agent response.
+Registered and inline definitions are both first-class start contracts.
+Dynamically proposed definitions must pass the same compiler, policy,
+authorization, bounds, and source-hash pinning before execution. A generated
+graph is never executed directly from an agent response.
 
 ### 2.4 Result and lifecycle records
 
@@ -728,3 +732,5 @@ boundary used by production integrations.
 11. Packaged and inline definitions use one compiler.
 12. The sqlmort ChangeDelivery PoC is the concrete acceptance workload, not the
     normative PilotSwarm schema.
+13. Starts may use registered references or inline definitions; every admitted
+    run freezes an immutable compiled definition identity.
