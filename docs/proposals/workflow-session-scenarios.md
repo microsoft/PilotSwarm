@@ -27,7 +27,6 @@ tool execution.
   - [2.2 Responsibility boundary](#22-responsibility-boundary)
     - [Runtime layers](#runtime-layers)
   - [2.3 Durable creation and identity](#23-durable-creation-and-identity)
-    - [Dynamic workflow instantiation](#dynamic-workflow-instantiation)
   - [2.4 Result and lifecycle records](#24-result-and-lifecycle-records)
     - [Lifecycle records for reviewed completion](#lifecycle-records-for-reviewed-completion)
   - [2.5 Workflow-authored transition function](#25-workflow-authored-transition-function)
@@ -261,45 +260,6 @@ Node admission follows the same pattern:
 3. Create or reuse the exact child.
 4. Resume the same child after recovery.
 
-#### Dynamic workflow instantiation
-
-Every start path produces the same logical request:
-
-```text
-startRequest = {
-  definitionSource,
-  inputs,
-  initiator,
-  trigger,
-  correlation,
-  idempotencyKey
-}
-```
-
-`definitionSource` is either a registered definition reference or an inline
-definition. Inline does not mean mutable: admission validates and compiles the
-definition, persists its source hash and compiled identity, and freezes that
-snapshot for the lifetime of the workflow session.
-
-The request may originate from:
-
-- an interactive portal, REST, or SDK call;
-- a schedule, webhook, queue event, or provider observation;
-- a durable query whose result satisfies declared start criteria;
-- an agent result that requests one of its allowed workflows;
-- a parent workflow transition that starts a declared subworkflow.
-
-All paths resolve or compile and pin a definition, authorize the initiator and
-trigger, validate and freeze mapped inputs, deduplicate the request, and record
-provenance before creating the session. Query or agent output may supply inputs
-or propose an inline definition when authorized; it does not directly create
-controller state or bypass admission.
-
-Registered and inline definitions are both first-class start contracts.
-Dynamically proposed definitions must pass the same compiler, policy,
-authorization, bounds, and source-hash pinning before execution. A generated
-graph is never executed directly from an agent response.
-
 ### 2.4 Result and lifecycle records
 
 A workflow terminal result has a common shape:
@@ -492,10 +452,6 @@ being copied into orchestration state.
 - [ ] Define compiler checks for incomplete, ambiguous, or invalid definitions.
 - [ ] Define minimal transition and completion telemetry.
 - [ ] Define versioning for persisted outcomes, transitions, and providers.
-- [ ] Define trigger registration, start criteria, input mapping, provenance,
-  deduplication, and failure handling for dynamic instantiation.
-- [ ] Define admission policy for agent-selected and runtime-generated
-  definitions.
 
 ## 3. How the design solves the scenarios
 
@@ -503,7 +459,6 @@ being copied into orchestration state.
 |---|---|
 | Root workflow | Workflow sessions may omit `parentSessionId`; result remains attached |
 | Conversational start | Durable `start_workflow` action with replay-stable child ID |
-| Triggered start | Common admission request with pinned definition, frozen inputs, provenance, and deduplication |
 | Agent creativity | Agents own reasoning and tools inside bounded state contracts |
 | Repeatable process | Frozen definition and workflow-authored transition function |
 | Reviewed correction | Candidate revisions plus exact review decisions |
@@ -680,9 +635,6 @@ Cover:
 
 - root workflow creation and terminal retrieval;
 - conversational start, check, wait, and result delivery;
-- schedule-, event-, query-, and agent-originated starts through the same
-  admission contract;
-- duplicate trigger delivery creates or reuses exactly one workflow session;
 - unauthorized workflow selection and invalid input mapping fail before
   session creation;
 - alternating conversation/workflow nesting;
