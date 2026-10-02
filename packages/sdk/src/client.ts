@@ -33,6 +33,10 @@ import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncComple
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { WorkflowSession } from "./workflow-session.js";
+import {
+    WORKFLOW_SESSION_LATEST_VERSION,
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+} from "./workflow-orchestration-registry.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
 
@@ -169,6 +173,7 @@ export class PilotSwarmClient {
     async createWorkflowSession<TResult = unknown>(
         config: WorkflowSessionConfig,
     ): Promise<WorkflowSession<TResult>> {
+        if (!this.duroxideClient) throw new Error("Not started.");
         const sessionId = config.sessionId ?? crypto.randomUUID();
         await this._catalog.createSession(sessionId, {
             sessionKind: "workflow",
@@ -182,6 +187,26 @@ export class PilotSwarmClient {
                     inputs: config.inputs ?? {},
                 },
             },
+        });
+        const orchestrationId = `session-${sessionId}`;
+        await this.duroxideClient.startOrchestrationVersioned(
+            orchestrationId,
+            WORKFLOW_SESSION_ORCHESTRATION_NAME,
+            {
+                sessionId,
+                ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
+                definition: config.definition,
+                inputs: config.inputs ?? {},
+            },
+            WORKFLOW_SESSION_LATEST_VERSION,
+        );
+        this.activeOrchestrations.set(sessionId, orchestrationId);
+        await this._catalog.updateSession(sessionId, {
+            orchestrationId,
+            state: "running",
+            lastError: null,
+            waitReason: null,
+            lastActiveAt: new Date(),
         });
         return new WorkflowSession<TResult>(
             sessionId,

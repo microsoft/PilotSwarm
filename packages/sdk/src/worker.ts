@@ -11,6 +11,10 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
+import {
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+} from "./workflow-orchestration-registry.js";
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
@@ -861,6 +865,13 @@ export class PilotSwarmWorker {
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
             this.runtime.registerOrchestrationVersioned(
                 DURABLE_SESSION_ORCHESTRATION_NAME,
+                registration.version,
+                registration.handler,
+            );
+        }
+        for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
+            this.runtime.registerOrchestrationVersioned(
+                WORKFLOW_SESSION_ORCHESTRATION_NAME,
                 registration.version,
                 registration.handler,
             );

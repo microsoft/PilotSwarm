@@ -4,10 +4,18 @@ import { PilotSwarmClient } from "../../dist/client.js";
 
 test("createWorkflowSession persists a non-conversational child and returns its durable result", async () => {
     const writes = [];
+    const starts = [];
+    const updates = [];
     const completedAt = new Date("2026-10-02T13:00:00.000Z");
     const client = new PilotSwarmClient({});
+    client.duroxideClient = {
+        startOrchestrationVersioned: async (id, name, input, version) => {
+            starts.push({ id, name, input, version });
+        },
+    };
     client._catalog = {
         createSession: async (sessionId, options) => writes.push({ sessionId, options }),
+        updateSession: async (sessionId, update) => updates.push({ sessionId, update }),
         getChildOutcome: async childSessionId => ({
             childSessionId,
             parentSessionId: "parent-1",
@@ -49,6 +57,22 @@ test("createWorkflowSession persists a non-conversational child and returns its 
             },
         },
     }]);
+    assert.deepEqual(starts, [{
+        id: "session-workflow-1",
+        name: "workflow-session-v1",
+        input: {
+            sessionId: "workflow-1",
+            parentSessionId: "parent-1",
+            definition: { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+            inputs: { target: "staging" },
+        },
+        version: "1.0.0",
+    }]);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].sessionId, "workflow-1");
+    assert.equal(updates[0].update.orchestrationId, "session-workflow-1");
+    assert.equal(updates[0].update.state, "running");
+    assert.ok(updates[0].update.lastActiveAt instanceof Date);
     assert.equal("send" in workflow, false, "workflow handles must not expose chat methods");
     assert.deepEqual(await workflow.waitForResult(), {
         sessionId: "workflow-1",
@@ -63,8 +87,12 @@ test("createWorkflowSession persists a non-conversational child and returns its 
 
 test("root workflow sessions do not pretend to return a child result", async () => {
     const client = new PilotSwarmClient({});
+    client.duroxideClient = {
+        startOrchestrationVersioned: async () => {},
+    };
     client._catalog = {
         createSession: async () => {},
+        updateSession: async () => {},
         getChildOutcome: async () => null,
     };
     const workflow = await client.createWorkflowSession({
