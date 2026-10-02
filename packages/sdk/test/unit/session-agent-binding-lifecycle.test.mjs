@@ -111,6 +111,55 @@ for (const mode of ["create", "hydrate"]) {
     });
 }
 
+test("deployment and repository MCP maps preserve distinct servers with identical tool surfaces", async t => {
+    const h = fixture(t);
+    Object.assign(h.defaults.baseMcpServers, {
+        bluebird: {
+            type: "http",
+            url: "https://deployment.example/mcp",
+            tools: ["code_search"],
+            headers: { "x-repository": "SQLTelemetry" },
+        },
+    });
+
+    await h.manager.getOrCreate(
+        "repo-mcp",
+        { toolNames: [] },
+        {
+            turnIndex: 0,
+            sessionConfiguration: {
+                enableConfigDiscovery: false,
+                mcpServers: {
+                    bluebird_SqlTelemetry: {
+                        type: "http",
+                        url: "https://repository.example/mcp",
+                        tools: ["code_search"],
+                        headers: { "x-repository": "SqlTelemetry", "x-branch": "R2D2" },
+                    },
+                    bluebird_DsMainDev: {
+                        type: "http",
+                        url: "https://repository.example/mcp",
+                        tools: ["code_search"],
+                        headers: { "x-repository": "DsMainDev", "x-branch": "master" },
+                    },
+                },
+            },
+        },
+    );
+
+    const servers = h.calls.at(-1).config.mcpServers;
+    assert.deepEqual(
+        Object.keys(servers).sort(),
+        ["base", "bluebird", "bluebird_DsMainDev", "bluebird_SqlTelemetry"],
+    );
+    assert.equal(servers.bluebird.headers["x-repository"], "SQLTelemetry");
+    assert.equal(servers.bluebird_SqlTelemetry.headers["x-branch"], "R2D2");
+    assert.equal(servers.bluebird_DsMainDev.headers["x-branch"], "master");
+    assert.deepEqual(servers.bluebird.tools, ["code_search"]);
+    assert.deepEqual(servers.bluebird_SqlTelemetry.tools, ["code_search"]);
+    assert.deepEqual(servers.bluebird_DsMainDev.tools, ["code_search"]);
+});
+
 test("private binding rechecks ownership on a different worker; never falls back to the shared copy", async t => {
     const alice = fixture(t);
     const config = { ...named, boundAgentPackageId: "private-package" };
