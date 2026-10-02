@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { createSessionManagerProxy, createSessionProxy } from "../../dist/session-proxy.js";
+import { createSessionManagerProxy, createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
@@ -48,8 +48,26 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74 through 1.0.79 separately and activates 1.0.80", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.80");
+const workflowParentFreezeHashes = {
+    "agents.ts": "0dd393eff03ed0ac56994b3595c33a92eb151b1ef6c3023c5b7a15364c723e1b",
+    "index.ts": "e06fde79e3a1aec37c8662caacde59b69e6c811907af76021f01d27945cf046a",
+    "lifecycle.ts": "b9b272b385f80ce477597b97839d06b4f7677a0991366bfc8b58a0fe3a3bc527",
+    "queue.ts": "3045703385614adc465fb411893ff2c128f886a97eea410e2e6091d1248273e6",
+    "runtime.ts": "30a28ac3576d3603bf9f0be96def8e0ab1a748ceb426a8bd9ee8acafec184526",
+    "state.ts": "5035fdda1cc726bc16e701c58ec8fff52c5262c71c3011be812defd0cb0c5247",
+    "turn.ts": "a3cfca9a7fb6d20f4b48a8c9911db0f062a135f4d9a17d0529940618316ee305",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+};
+for (const [name, hash] of Object.entries(workflowParentFreezeHashes)) {
+    test(`frozen 1.0.80 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_80/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
+
+test("registry freezes 1.0.80 and activates 1.0.81", () => {
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.81");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.78").handler.name, "durableSessionOrchestration_1_0_78");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.77").handler.name, "durableSessionOrchestration_1_0_77");
@@ -70,6 +88,15 @@ test("legacy proxy descriptors retain their serialized names, inputs and affinit
     });
     assert.deepEqual(wire(manager.spawnChildSession("parent", {}, "work", 1, false)), {
         type: "activity", name: "spawnChildSession", input: '{"parentSessionId":"parent","config":{},"task":"work","nestingLevel":1,"isSystem":false}',
+    });
+    assert.deepEqual(wire(manager.spawnWorkflowSession(
+        "parent",
+        { kind: "package", packageName: "ops", workflowName: "deploy", version: "1.0.0" },
+        { target: "staging" },
+    )), {
+        type: "activity",
+        name: "spawnWorkflowSession",
+        input: '{"parentSessionId":"parent","definition":{"kind":"package","packageName":"ops","workflowName":"deploy","version":"1.0.0"},"inputs":{"target":"staging"}}',
     });
     for (const historical of [manager, createSessionManagerProxy(ctx, "agent-handoff-v2")]) {
         assert.deepEqual(wire(historical.getSessionStatus("child")), {
@@ -107,6 +134,43 @@ test("new handoff proxies route every critical activity with the capability tag"
     assert.equal(tasks[3].sessionId, "affinity");
     assert.equal(tasks[4].sessionId, "affinity");
     assert.equal(manager.listModels().tag, undefined, "unrelated activities retain their existing routing");
+});
+
+test("workflow child creation uses its dedicated routed activity contract", () => {
+    const manager = createSessionManagerProxy(context(), "agent-handoff-v2");
+    const task = wire(manager.spawnWorkflowSession(
+        "parent",
+        { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+        {},
+        "workflow-1",
+    ));
+    assert.deepEqual(task, {
+        type: "activity",
+        name: "spawnWorkflowSessionV1",
+        input: '{"parentSessionId":"parent","definition":{"kind":"inline","yaml":"kind: workflow\\nversion: 1\\n"},"inputs":{},"childSessionId":"workflow-1"}',
+        tag: AGENT_HANDOFF_CAPABILITY,
+    });
+    assert.deepEqual(wire(manager.getWorkflowResult("parent", "workflow-1")), {
+        type: "activity",
+        name: "getWorkflowResultV1",
+        input: '{"parentSessionId":"parent","childSessionId":"workflow-1"}',
+        tag: AGENT_HANDOFF_CAPABILITY,
+    });
+});
+
+test("workers register legacy and routed workflow child activities", () => {
+    const handlers = new Map();
+    registerActivities(
+        { registerActivity: (name, handler) => handlers.set(name, handler) },
+        {},
+        null,
+        undefined,
+        null,
+        undefined,
+        "postgres://unused",
+    );
+    assert.equal(typeof handlers.get("spawnWorkflowSession"), "function");
+    assert.equal(typeof handlers.get("spawnWorkflowSessionV1"), "function");
 });
 
 test("routing fails closed if the SDK cannot express capability tags", () => {

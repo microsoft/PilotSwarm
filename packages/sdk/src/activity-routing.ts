@@ -11,6 +11,8 @@ export const HANDOFF_ACTIVITY_NAMES = {
     resolveAgentConfig: "resolveAgentConfigV2",
     resolveAgentForRequiredTool: "resolveAgentForRequiredToolV2",
     spawnChildSession: "spawnChildSessionV2",
+    spawnWorkflowSession: "spawnWorkflowSessionV1",
+    getWorkflowResult: "getWorkflowResultV1",
     getSessionStatus: "getSessionStatusV2",
     listChildSessions: "listChildSessionsV2",
 } as const;

@@ -13,7 +13,7 @@ function workflowError(message: string, code: string): Error {
     return Object.assign(new Error(message), { code });
 }
 
-function toWorkflowResult<TResult>(
+export function toWorkflowResult<TResult>(
     sessionId: string,
     parentSessionId: string,
     row: ChildOutcomeRow,

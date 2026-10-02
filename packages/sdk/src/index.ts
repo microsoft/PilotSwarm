@@ -166,6 +166,7 @@ export type {
     CommandResponse,
     OrchestrationInput,
     SubAgentEntry,
+    SubWorkflowEntry,
     SessionPolicy,
     SendAttachmentInput,
     PromptAttachmentRef,
