@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 — 2026-10-02
+## 0.8.1 — 2026-10-02
 
 **Git in the Workspace tab.** When a session folder is a git repository, or
 holds repositories inside it (for example a clone in the person's own
