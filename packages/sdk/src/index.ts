@@ -186,6 +186,8 @@ export {
     ATTACHMENTS_MAX_TOTAL_BYTES,
     sanitizePromptAttachmentRefs,
     WORKSPACE_ERROR_CODES,
+    SYSTEM_SESSION_PROTECTED,
+    SYSTEM_AGENT_LOADED,
 } from "./types.js";
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";

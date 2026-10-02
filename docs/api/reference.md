@@ -154,7 +154,7 @@ group membership is per-viewer state, not a property of the session. See
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
 | stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
-| restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). |
+| restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). With `startReplacement: false`, remove it and start nothing; refused (409 `SYSTEM_AGENT_LOADED`) while a live worker loads the agent. |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |
 | getSessionStatus | `GET /api/v1/management/sessions/:sessionId/status` | sessionId (path) | Live custom status + orchestration status. |
 | waitForStatusChange | `GET /api/v1/management/sessions/:sessionId/status/wait` | sessionId (path), afterVersion (query: number), timeoutMs (query: number) | Long-poll for a status version change (server-capped timeout). |

@@ -346,6 +346,37 @@ async function main() {
         await client.close();
     }
 
+    // ── 6b. restart_system_session passes start_replacement through ─────
+    {
+        const calls = [];
+        const ctx = makeCtx(calls);
+        ctx.mgmt.restartSystemSession = async (...args) => {
+            calls.push(["restartSystemSession", ...args]);
+            return args[1]?.startReplacement === false ? { sessionId: "s", retired: true } : { sessionId: "s" };
+        };
+        const client = await connect(ctx);
+        const removed = await client.callTool({
+            name: "restart_system_session",
+            arguments: { agent_or_session_id: "gone-agent", disposition: "hard_delete", start_replacement: false },
+        });
+        const removeCall = calls.find(([n]) => n === "restartSystemSession");
+        record("restart_system_session start_replacement:false → startReplacement:false",
+            !removed.isError && removeCall?.[1] === "gone-agent" && removeCall?.[2]?.startReplacement === false
+            && removeCall?.[2]?.disposition === "hard_delete");
+        record("restart_system_session removal → restarted:false, retired:true",
+            parse(removed).restarted === false && parse(removed).retired === true);
+
+        calls.length = 0;
+        const restarted = await client.callTool({
+            name: "restart_system_session",
+            arguments: { agent_or_session_id: "sweeper", disposition: "complete" },
+        });
+        const restartCall = calls.find(([n]) => n === "restartSystemSession");
+        record("restart_system_session without start_replacement → option omitted, restarted:true",
+            !restarted.isError && restartCall && !("startReplacement" in restartCall[2]) && parse(restarted).restarted === true);
+        await client.close();
+    }
+
     // ── 5. create_session preserves structured model ambiguity ─────────
     {
         const calls = [];

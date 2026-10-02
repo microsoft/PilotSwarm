@@ -480,6 +480,32 @@ export const WORKSPACE_ERROR_CODES = {
     BUSY: "WORKSPACE_BUSY",
 } as const;
 
+/**
+ * Error code for a refused delete, cancel, complete or rename of a system
+ * session. Workers create system sessions, so these calls do not apply.
+ */
+export const SYSTEM_SESSION_PROTECTED = "SYSTEM_SESSION_PROTECTED";
+
+/**
+ * Error code for a refused removal of a system session: a live worker still
+ * loads its agent and would create the session again.
+ */
+export const SYSTEM_AGENT_LOADED = "SYSTEM_AGENT_LOADED";
+
+/**
+ * The refusal for a lifecycle call on a system session. It is a 409 with a
+ * fixed code, so the Web API returns the reason instead of a 500. The delete
+ * message keeps the "Cannot delete system session" prefix that the SQL soft
+ * delete raises.
+ */
+export function systemSessionProtectedError(action: "delete" | "cancel" | "complete" | "rename"): Error {
+    const message = action === "rename"
+        ? "System session titles are fixed. The title comes from the system agent definition."
+        : `Cannot ${action} system session. Use restartSystemSession to restart it, or `
+            + "restartSystemSession with startReplacement: false to remove it once no worker loads its agent.";
+    return Object.assign(new Error(message), { code: SYSTEM_SESSION_PROTECTED, status: 409 });
+}
+
 // ─── Session Config ──────────────────────────────────────────────
 
 /** Serializable config — travels through duroxide (no functions). */

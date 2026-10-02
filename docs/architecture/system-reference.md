@@ -677,8 +677,9 @@ ENTRYPOINT ["node", "examples/worker.js"]
 | `getSession(id)` | Merged per-session CMS + orchestration view, including cron/context usage |
 | `getSessionStatus(id)` | Raw live orchestration status + parsed custom status |
 | `waitForStatusChange(id, afterVersion, ...)` | Block until custom status advances |
-| `deleteSession(id)` | Soft-delete + cancel orchestration |
+| `deleteSession(id)` | Soft-delete + cancel orchestration. A system session is refused with 409 `SYSTEM_SESSION_PROTECTED` (so are cancel, complete and rename) |
 | `restartSystemSession(agentOrSessionId, { disposition })` | Privileged system-agent reset: `complete`, `terminate`, or `hard_delete` the current deterministic system session, archive it, clear transcript/metrics/session-scoped facts, and start a fresh replacement |
+| `restartSystemSession(agentOrSessionId, { disposition, startReplacement: false })` | Removes a system session and starts nothing. Use it for the session of an agent that no worker loads any more (an orphan); the agent does not have to be known to the client. Refused with 409 `SYSTEM_AGENT_LOADED` while a worker with a heartbeat in the last 90 s loads the agent, or does not report its loaded agents (older version) |
 | `setSessionModel(id, model, opts?)` | Durable model switch for any active session, including system sessions. Enqueues `/set_model`, records `session.model_changed`, and continues on the selected model at the next turn boundary; it does not restart system sessions. |
 | `renameSession(id, title)` | Update session title in CMS |
 | `listModels()` / `getModelsByProvider()` | List configured models after env filtering |

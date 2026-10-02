@@ -1296,7 +1296,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Restart a system session (complete | terminate | hard_delete).
+     * Restart a system session (complete | terminate | hard_delete). With startReplacement: false, remove it and start nothing; refused (409 SYSTEM_AGENT_LOADED) while a live worker loads the agent.
      * @remarks `POST /management/sessions/:agentIdOrSessionId/restart-system` — access: `fleet:admin`
      */
     restartSystemSession(params: {

@@ -1427,6 +1427,14 @@ export class PilotSwarmWorker {
                         installed: this._agentPackagesInstalled,
                         ...(this._agentPackagesRefreshError ? { lastError: this._agentPackagesRefreshError } : {}),
                     },
+                    // The system agents this worker starts. Removing a system
+                    // session (restartSystemSession, startReplacement: false)
+                    // is refused while a live worker lists its agent here.
+                    "system-agents": {
+                        loaded: this._loadedSystemAgents
+                            .map((agent) => agent.id)
+                            .filter((id): id is string => Boolean(id)),
+                    },
                 },
             });
         } catch (error: any) {

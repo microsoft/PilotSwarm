@@ -11,6 +11,7 @@
  */
 
 import { describe, it } from "vitest";
+import { PilotSwarmWorker } from "../../src/worker.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
@@ -237,6 +238,39 @@ describe("worker registry", () => {
             const d = directives.find((x) => x.domain === domain);
             assertEqual(d.desired.mine, true, "worker-scoped row outlives the worker and re-applies");
             assertEqual(d.epoch, 2, "fleet(1) + worker(1)");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a worker's heartbeat reports the system agents it loads", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        try {
+            const id = `wr-system-agents-${env.runId}`;
+            // The real heartbeat method on a worker shell: no runtime, no plugins.
+            const worker = Object.assign(Object.create(PilotSwarmWorker.prototype), {
+                config: { workerNodeId: id, workerPool: "test-pool" },
+                _catalog: catalog,
+                _workerPhase: "ready",
+                _loadedSystemAgents: [
+                    { id: "sweeper", name: "sweeper" },
+                    { id: "facts-manager", name: "facts-manager" },
+                    { name: "no-id" },
+                ],
+                _agentPackagesInstalled: {},
+                _buildRegistrarInfo: () => ({}),
+                _collectWorkerHealth: () => ({}),
+            });
+            await worker._reportAgentWorkerState();
+
+            const row = (await catalog.listWorkers()).find((w) => w.workerNodeId === id);
+            assert(row, "the heartbeat registered the worker");
+            assertEqual(
+                JSON.stringify(row.state["system-agents"]),
+                JSON.stringify({ loaded: ["sweeper", "facts-manager"] }),
+                "state lists the loaded system agent ids (agents without an id have no system session)",
+            );
         } finally {
             await catalog.close();
         }

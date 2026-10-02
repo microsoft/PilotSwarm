@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { PilotSwarmManagementClient } from "../../src/management-client.js";
-import { systemAgentUUID } from "../../src/agent-loader.js";
+import { PilotSwarmClient } from "../../src/client.js";
+import { systemAgentUUID, systemChildAgentUUID } from "../../src/agent-loader.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
+import { useSuiteEnv } from "../helpers/local-env.js";
+import { createCatalog } from "../helpers/cms-helpers.js";
 
 function makeRow(sessionId, overrides = {}) {
     return {
@@ -47,6 +50,8 @@ function createRestartHarness() {
     const sessionId = systemAgentUUID(agent.id);
     const rows = new Map([[sessionId, makeRow(sessionId)]]);
     const calls = [];
+    // Worker registry rows (migration 0040). Empty: no worker is live.
+    const workers = [];
 
     const catalog = {
         providers: {
@@ -104,6 +109,12 @@ function createRestartHarness() {
                 updatedAt: new Date(3_000),
             });
             calls.push({ type: "updateSession", id, updates });
+        },
+        async listWorkers() {
+            return workers;
+        },
+        async listSessionsPage(opts = {}) {
+            return [...rows.values()].filter((row) => !row.deletedAt && (opts.systemFilter !== "only" || row.isSystem));
         },
         async archiveSystemSessionForRestart(id, state, lastError) {
             const row = rows.get(id);
@@ -182,7 +193,22 @@ function createRestartHarness() {
     };
     mgmt._systemAgents = [agent];
 
-    return { mgmt, rows, calls, agent, sessionId };
+    return { mgmt, rows, calls, agent, sessionId, workers };
+}
+
+function liveWorker(workerNodeId, state) {
+    return { workerNodeId, pool: "default", phase: "ready", updatedAt: new Date(), info: {}, health: {}, state };
+}
+
+async function expectCodedRefusal(promise, code, status) {
+    try {
+        await promise;
+    } catch (error) {
+        assertEqual(error?.code, code, `refusal code (message: ${error?.message})`);
+        assertEqual(error?.status, status, "refusal status");
+        return error;
+    }
+    throw new Error(`expected a ${code} refusal, but the call succeeded`);
 }
 
 function callTypes(calls) {
@@ -309,5 +335,154 @@ describe("system session restart management", () => {
         assertEqual(commandCall.command.cmd, "done", "complete disposition command");
         assert(callTypes(calls).includes("startOrchestrationVersioned"), "complete disposition should start a replacement");
         assert(!callTypes(calls).includes("cancelInstance"), "complete disposition should not force-cancel first");
+    });
+});
+
+describe("system session removal (startReplacement: false)", () => {
+    it("removes an orphaned system session by agent id and starts nothing", async () => {
+        const { mgmt, rows, calls, sessionId, workers } = createRestartHarness();
+        // The agent was removed from the deployment: this client no longer knows it.
+        mgmt._systemAgents = [];
+        // A live worker that loads other agents, and a worker silent past the 90 s window.
+        workers.push(liveWorker("w-live", { "system-agents": { loaded: ["sweeper"] } }));
+        workers.push({ ...liveWorker("w-gone", {}), updatedAt: new Date(Date.now() - 5 * 60_000) });
+
+        await expect(mgmt.restartSystemSession("restartable", { disposition: "hard_delete" }))
+            .rejects.toThrow(/not known to this management client/);
+
+        const result = await mgmt.restartSystemSession("restartable", {
+            disposition: "hard_delete",
+            startReplacement: false,
+            reason: "agent retired",
+        });
+
+        assertEqual(result.retired, true, "result says the session was removed");
+        assertEqual(result.sessionId, sessionId, "result names the orphan's session");
+        assertEqual(result.agentId, "restartable", "agent id comes from the session row");
+        assertEqual(result.previousSessionExisted, true, "the orphan row existed");
+        assertEqual(result.startResults.length, 0, "nothing was started");
+        assert(rows.get(sessionId).deletedAt, "the row is archived (soft-deleted)");
+        const archive = calls.find((call) => call.type === "archiveSystemSessionForRestart");
+        assert(archive, "removal archives the row");
+        assertIncludes(archive.lastError, "agent retired", "the reason is recorded");
+        assert(callTypes(calls).includes("deleteInstance"), "hard_delete removes the orchestration instance");
+        assert(callTypes(calls).includes("deleteSessionFactsForSession"), "removal clears session facts");
+        assert(!callTypes(calls).includes("startOrchestrationVersioned"), "no replacement orchestration");
+        assert(!callTypes(calls).includes("createSession"), "no replacement row");
+    });
+
+    it("removes an orphan by session id with the terminate disposition", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+        mgmt._systemAgents = [];
+
+        const result = await mgmt.restartSystemSession(sessionId, {
+            disposition: "terminate",
+            startReplacement: false,
+        });
+
+        assertEqual(result.retired, true, "removal by session id");
+        assertEqual(result.disposition, "terminate", "disposition is reported");
+        assert(callTypes(calls).includes("cancelInstance"), "terminate cancels the orchestration first");
+        assertEqual(rows.get(sessionId).state, "cancelled", "terminate archives as cancelled");
+        assert(rows.get(sessionId).deletedAt, "the row is archived");
+        assert(!callTypes(calls).includes("startOrchestrationVersioned"), "no replacement orchestration");
+    });
+
+    it("finds an orphaned child system session by its agent id", async () => {
+        const { mgmt, rows, calls, sessionId, workers } = createRestartHarness();
+        mgmt._systemAgents = [];
+        // A child agent's session id derives from its parent's, not from its own id alone.
+        const childId = systemChildAgentUUID(sessionId, "child-agent");
+        rows.set(childId, makeRow(childId, { agentId: "child-agent", parentSessionId: sessionId }));
+        workers.push(liveWorker("w-live", { "system-agents": { loaded: ["restartable"] } }));
+
+        const result = await mgmt.restartSystemSession("child-agent", {
+            disposition: "hard_delete",
+            startReplacement: false,
+        });
+
+        assertEqual(result.retired, true, "the child orphan is removed");
+        assertEqual(result.sessionId, childId, "the child's own session is the one removed");
+        assert(rows.get(childId).deletedAt, "the child row is archived");
+        assertEqual(rows.get(sessionId).deletedAt, null, "the parent, still loaded by a worker, is untouched");
+        assert(!callTypes(calls).includes("startOrchestrationVersioned"), "no replacement orchestration");
+    });
+
+    it("refuses with 409 while a live worker loads the agent", async () => {
+        for (const knownToClient of [true, false]) {
+            const { mgmt, rows, calls, sessionId, workers } = createRestartHarness();
+            if (!knownToClient) mgmt._systemAgents = [];
+            workers.push(liveWorker("w-old-config", { "system-agents": { loaded: ["restartable"] } }));
+
+            const error = await expectCodedRefusal(mgmt.restartSystemSession("restartable", {
+                disposition: "hard_delete",
+                startReplacement: false,
+            }), "SYSTEM_AGENT_LOADED", 409);
+
+            assertIncludes(error.message, "w-old-config", "the refusal names the worker");
+            assertEqual(rows.get(sessionId).deletedAt, null, "the live session row is untouched");
+            assertEqual(calls.length, 0, "nothing is stopped, archived or started");
+        }
+    });
+
+    it("refuses with 409 while a live worker does not report its system agents", async () => {
+        const { mgmt, rows, calls, sessionId, workers } = createRestartHarness();
+        mgmt._systemAgents = [];
+        // An older worker: it heartbeats, but has no "system-agents" state.
+        workers.push(liveWorker("w-older", { "agent-packages": { epoch: 1, installed: {} } }));
+
+        const error = await expectCodedRefusal(mgmt.restartSystemSession(sessionId, {
+            disposition: "hard_delete",
+            startReplacement: false,
+        }), "SYSTEM_AGENT_LOADED", 409);
+
+        assertIncludes(error.message, "w-older", "the refusal names the worker");
+        assertIncludes(error.message, "does not report", "the refusal says why the worker blocks");
+        assertEqual(rows.get(sessionId).deletedAt, null, "the session row is untouched");
+        assertEqual(calls.length, 0, "nothing is stopped or archived");
+    });
+});
+
+describe("system session refusals", () => {
+    const getEnv = useSuiteEnv(import.meta.url);
+
+    it("management delete, cancel, complete and rename refuse with 409 SYSTEM_SESSION_PROTECTED", async () => {
+        const { mgmt, rows, sessionId } = createRestartHarness();
+        const cases = [
+            ["deleteSession", () => mgmt.deleteSession(sessionId)],
+            ["cancelSession", () => mgmt.cancelSession(sessionId)],
+            ["completeSession", () => mgmt.completeSession(sessionId)],
+            ["renameSession", () => mgmt.renameSession(sessionId, "New title")],
+        ];
+        for (const [name, call] of cases) {
+            const error = await expectCodedRefusal(call(), "SYSTEM_SESSION_PROTECTED", 409);
+            if (name !== "renameSession") {
+                assertIncludes(error.message, "startReplacement: false", `${name} names the supported alternative`);
+            }
+        }
+        assertEqual(rows.get(sessionId).deletedAt, null, "the system session is untouched");
+    });
+
+    it("PilotSwarmClient.deleteSession refuses with 409 SYSTEM_SESSION_PROTECTED", async () => {
+        const client = Object.create(PilotSwarmClient.prototype);
+        client._catalog = { getSession: async (id) => makeRow(id) };
+
+        const error = await expectCodedRefusal(client.deleteSession("system-1"), "SYSTEM_SESSION_PROTECTED", 409);
+        assertIncludes(error.message, "Cannot delete system session", "message keeps its prefix");
+    });
+
+    it("the CMS soft delete refuses with 409 SYSTEM_SESSION_PROTECTED", { timeout: 120_000 }, async () => {
+        const env = getEnv();
+        const catalog = await createCatalog(env);
+        try {
+            const id = systemAgentUUID(`refusal-${env.runId}`);
+            await catalog.createSession(id, { isSystem: true, agentId: "refusal", model: "test:model" });
+
+            const error = await expectCodedRefusal(catalog.softDeleteSession(id), "SYSTEM_SESSION_PROTECTED", 409);
+            assertIncludes(error.message, "Cannot delete system session", "message keeps the prefix the SQL raises");
+            assert(await catalog.getSession(id), "the system row is still there");
+        } finally {
+            await catalog.close();
+        }
     });
 });

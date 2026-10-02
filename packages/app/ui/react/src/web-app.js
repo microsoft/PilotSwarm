@@ -13115,7 +13115,7 @@ function ModalLayer({ controller }) {
 
     if (modal.type === "confirm" && modalState.confirm) {
         const isAlert = Boolean(modal.alert);
-        const isDestructive = !isAlert && modal.action === "deleteSession";
+        const isDestructive = !isAlert && (modal.action === "deleteSession" || modal.action === "removeSystemSession");
         // The regenerate confirm carries distillation inputs: a mode select and
         // an optional distilling-instructions textarea, bound to modal.extras.
         const isRegen = modal.action === "regenerateSession";

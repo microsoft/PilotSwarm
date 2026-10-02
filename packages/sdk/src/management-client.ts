@@ -16,6 +16,8 @@ import {
     commandResponseKey,
     stopTurnQueueName,
     sanitizePromptAttachmentRefs,
+    systemSessionProtectedError,
+    SYSTEM_AGENT_LOADED,
 } from "./types.js";
 import type {
     PilotSwarmSessionStatus,
@@ -136,7 +138,7 @@ import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelec
 import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
-import type { AgentConfig } from "./agent-loader.js";
+import { systemAgentUUID, type AgentConfig } from "./agent-loader.js";
 import {
     loadSystemAgentConfigs,
     resolveSystemAgentSessionPlans,
@@ -311,6 +313,15 @@ export interface RestartSystemSessionOptions {
     modelResolutionSource?: string;
     /** Stable id for an idempotent multi-agent rollout; omitted for a new manual restart. */
     operationId?: string;
+    /**
+     * Default true. false removes the system session and starts nothing in
+     * its place. This is how an operator removes the session of an agent
+     * that no worker loads any more. The agent may be unknown to this
+     * client; the session row is then found by session id or agent id.
+     * Refused with SYSTEM_AGENT_LOADED (409) while a live worker loads the
+     * agent, because that worker would create the session again.
+     */
+    startReplacement?: boolean;
 }
 
 export interface RestartSystemSessionResult {
@@ -321,7 +332,12 @@ export interface RestartSystemSessionResult {
     previousSessionExisted: boolean;
     startResults: SystemAgentStartResult[];
     skippedReason?: "busy" | "complete";
+    /** True when the session was removed with startReplacement: false. */
+    retired?: boolean;
 }
+
+/** A worker counts as live while its last heartbeat is younger than this. */
+const LIVE_WORKER_HEARTBEAT_MS = 90_000;
 
 function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisposition): "complete" | "terminate" | "hard_delete" {
     if (disposition === "complete") return "complete";
@@ -887,7 +903,7 @@ export class PilotSwarmManagementClient {
     private async _forceDeleteSession(sessionId: string, reason?: string): Promise<void> {
         const session = await this._catalog!.getSession(sessionId);
         if (session?.isSystem) {
-            throw new Error("Cannot delete system session");
+            throw systemSessionProtectedError("delete");
         }
 
         // Set terminal state in CMS before soft-delete so any last read picks it up
@@ -1483,7 +1499,7 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
-            throw new Error("Cannot complete system session");
+            throw systemSessionProtectedError("complete");
         }
         if (session.status === "completed") return;
         if (session.status === "cancelled" || session.status === "failed") return;
@@ -1512,7 +1528,7 @@ export class PilotSwarmManagementClient {
             throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
         }
         if (session.isSystem) {
-            throw new Error("System session titles are fixed");
+            throw systemSessionProtectedError("rename");
         }
 
         const storedTitle = buildStoredSessionTitle(session, title);
@@ -1535,7 +1551,7 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
-            throw new Error("Cannot cancel system session");
+            throw systemSessionProtectedError("cancel");
         }
         if (session.status === "cancelled" || session.status === "failed" || session.status === "completed") {
             return;
@@ -1564,7 +1580,7 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
-            throw new Error("Cannot delete system session");
+            throw systemSessionProtectedError("delete");
         }
         const deleteReason = reason ?? "Deleted by management client";
 
@@ -2484,6 +2500,11 @@ export class PilotSwarmManagementClient {
         };
     }
 
+    /**
+     * Restart a system session: dispose of the current one as the
+     * disposition says, then start a fresh one for the same agent.
+     * With startReplacement: false, remove the session and start nothing.
+     */
     async restartSystemSession(
         agentIdOrSessionId: string,
         options: RestartSystemSessionOptions,
@@ -2500,6 +2521,9 @@ export class PilotSwarmManagementClient {
         }
 
         const disposition = normalizeSystemRestartDisposition(options.disposition);
+        if (options.startReplacement === false) {
+            return this._removeSystemSession(agentIdOrSessionId, disposition, options);
+        }
         const plan = this._resolveSystemAgentPlan(agentIdOrSessionId);
         const sessionId = plan.sessionId;
         const reason = options.reason ?? `Restarting system session ${plan.agent.id}`;
@@ -2590,33 +2614,7 @@ export class PilotSwarmManagementClient {
 
         try {
         if (existingRow) {
-            if (disposition === "complete") {
-                const view = await this.getSession(sessionId).catch(() => null);
-                if (view && view.status !== "completed" && view.status !== "failed" && view.status !== "cancelled") {
-                    try {
-                        await this.sendCommand(sessionId, {
-                            cmd: "done",
-                            id: buildLifecycleCommandId("done-system-restart"),
-                            args: { reason },
-                        });
-                        await this._waitForSession(
-                            sessionId,
-                            (current) => current != null && (current.status === "completed" || current.status === "failed" || current.status === "cancelled"),
-                            options.timeoutMs ?? SESSION_COMMAND_SETTLE_TIMEOUT_MS,
-                        );
-                    } catch (err) {
-                        if (!isIgnorableRestartCommandError(err)) throw err;
-                    }
-                }
-                await this._deleteSystemOrchestrationInstance(sessionId);
-                await this._archiveSystemSessionForRestart(sessionId, "completed", reason);
-            } else if (disposition === "terminate") {
-                await this._terminateSystemOrchestrationInstance(sessionId, reason);
-                await this._archiveSystemSessionForRestart(sessionId, "cancelled", `Terminated for restart: ${reason}`);
-            } else {
-                await this._deleteSystemOrchestrationInstance(sessionId);
-                await this._archiveSystemSessionForRestart(sessionId, "failed", `Hard-deleted for restart: ${reason}`);
-            }
+            await this._disposeSystemSession(sessionId, disposition, reason, "restart", options.timeoutMs);
         }
 
         const startResults = await startSystemAgents({
@@ -2656,6 +2654,164 @@ export class PilotSwarmManagementClient {
             await providerStore?.finishSystemRestart(plan.agent.id, claimId, error?.message || String(error));
             throw error;
         }
+    }
+
+    /**
+     * End the current lifetime of a system session. The disposition says how
+     * the orchestration stops; then the CMS row and its facts are archived.
+     * A missing orchestration instance is not an error.
+     */
+    private async _disposeSystemSession(
+        sessionId: string,
+        disposition: "complete" | "terminate" | "hard_delete",
+        reason: string,
+        purpose: "restart" | "removal",
+        timeoutMs?: number,
+    ): Promise<void> {
+        if (disposition === "complete") {
+            const view = await this.getSession(sessionId).catch(() => null);
+            if (view && view.status !== "completed" && view.status !== "failed" && view.status !== "cancelled") {
+                try {
+                    await this.sendCommand(sessionId, {
+                        cmd: "done",
+                        id: buildLifecycleCommandId(`done-system-${purpose}`),
+                        args: { reason },
+                    });
+                    await this._waitForSession(
+                        sessionId,
+                        (current) => current != null && (current.status === "completed" || current.status === "failed" || current.status === "cancelled"),
+                        timeoutMs ?? SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+                    );
+                } catch (err) {
+                    if (!isIgnorableRestartCommandError(err)) throw err;
+                }
+            }
+            await this._deleteSystemOrchestrationInstance(sessionId);
+            await this._archiveSystemSessionForRestart(sessionId, "completed", reason);
+        } else if (disposition === "terminate") {
+            await this._terminateSystemOrchestrationInstance(sessionId, reason);
+            await this._archiveSystemSessionForRestart(sessionId, "cancelled", `Terminated for ${purpose}: ${reason}`);
+        } else {
+            await this._deleteSystemOrchestrationInstance(sessionId);
+            await this._archiveSystemSessionForRestart(sessionId, "failed", `Hard-deleted for ${purpose}: ${reason}`);
+        }
+    }
+
+    /**
+     * restartSystemSession with startReplacement: false. Removes a system
+     * session and starts nothing in its place:
+     *
+     *   1. Find the session. A known agent gives its session id. An agent
+     *      this client does not know (an orphan) is found by its session
+     *      row: by session id, then by the id derived from the agent id,
+     *      then by the agent id on the system rows (child agents).
+     *   2. Refuse while a live worker loads the agent, or does not report
+     *      which agents it loads. That worker would create it again.
+     *   3. Stop the orchestration as the disposition says, then archive the
+     *      row (it is soft-deleted, like on a restart).
+     *
+     * It does not take the rollout claim of a restart: there is no model to
+     * roll out, and archiving a row twice is harmless.
+     */
+    private async _removeSystemSession(
+        agentIdOrSessionId: string,
+        disposition: "complete" | "terminate" | "hard_delete",
+        options: RestartSystemSessionOptions,
+    ): Promise<RestartSystemSessionResult> {
+        let plan: SystemAgentSessionPlan | null = null;
+        try {
+            plan = this._resolveSystemAgentPlan(agentIdOrSessionId);
+        } catch (err: any) {
+            if (err?.code !== "NOT_FOUND") throw err;
+        }
+
+        let row: SessionRow | null = null;
+        if (plan) {
+            row = await this._catalog!.getSession(plan.sessionId);
+        } else {
+            const target = String(agentIdOrSessionId).trim();
+            const candidates = [...new Set([target, target.replace(/^session-/, ""), systemAgentUUID(target)])];
+            for (const candidate of candidates) {
+                row = await this._catalog!.getSession(candidate);
+                if (row) break;
+            }
+            if (!row) {
+                // A child system agent's session id also depends on its
+                // parent's, so look for the agent id among the system rows.
+                const systemRows = await this._catalog!.listSessionsPage({ systemFilter: "only", limit: 200 });
+                const matches = systemRows.filter((candidate) => candidate.isSystem && candidate.agentId === target);
+                if (matches.length > 1) {
+                    throw Object.assign(
+                        new Error(
+                            `Several system sessions have agent id "${target}": `
+                            + `${matches.map((match) => match.sessionId).join(", ")}. Pass the session id.`,
+                        ),
+                        { code: "INVALID_REQUEST" },
+                    );
+                }
+                row = matches[0] ?? null;
+            }
+            if (!row) {
+                throw Object.assign(new Error(`No system session found for "${target}".`), { code: "NOT_FOUND" });
+            }
+        }
+
+        const sessionId = plan?.sessionId ?? row!.sessionId;
+        if (row && !row.isSystem) {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is not a system session. Use deleteSession to remove it.`),
+                { code: "INVALID_REQUEST" },
+            );
+        }
+        const agentId = plan?.agent.id ?? row?.agentId ?? null;
+
+        const blocking = await this._workersThatWouldRecreate(agentId, sessionId);
+        if (blocking.length > 0) {
+            throw Object.assign(
+                new Error(
+                    `Cannot remove system session ${sessionId.slice(0, 8)} (agent ${agentId ?? "unknown"}): `
+                    + `a live worker would create it again: ${blocking.join(", ")}. `
+                    + "Remove the agent from those workers and restart them, then try again.",
+                ),
+                { code: SYSTEM_AGENT_LOADED, status: 409 },
+            );
+        }
+
+        const reason = options.reason ?? `Removing system session ${agentId ?? sessionId}`;
+        if (row) {
+            await this._disposeSystemSession(sessionId, disposition, reason, "removal", options.timeoutMs);
+        }
+        return {
+            agentId: agentId ?? sessionId,
+            agentName: plan?.agent.name ?? agentId ?? sessionId,
+            sessionId,
+            disposition,
+            previousSessionExisted: Boolean(row),
+            startResults: [],
+            retired: true,
+        };
+    }
+
+    /**
+     * Live workers (heartbeat in the last 90 s) that would create this system
+     * session again: the ones that report its agent as loaded, and the ones
+     * that do not report their loaded agents at all (older versions).
+     */
+    private async _workersThatWouldRecreate(agentId: string | null, sessionId: string): Promise<string[]> {
+        const cutoff = Date.now() - LIVE_WORKER_HEARTBEAT_MS;
+        const blocking: string[] = [];
+        for (const worker of await this._catalog!.listWorkers()) {
+            if (new Date(worker.updatedAt).getTime() < cutoff) continue;
+            const loaded = (worker.state?.["system-agents"] as { loaded?: unknown } | undefined)?.loaded;
+            if (!Array.isArray(loaded)) {
+                blocking.push(`${worker.workerNodeId} (does not report its system agents)`);
+                continue;
+            }
+            const loadsAgent = loaded.some((id) =>
+                typeof id === "string" && (id === agentId || systemAgentUUID(id) === sessionId));
+            if (loadsAgent) blocking.push(worker.workerNodeId);
+        }
+        return blocking;
     }
 
     // ─── Session Events ──────────────────────────────────────
