@@ -5,7 +5,7 @@ export type NativeTaskName = typeof NATIVE_TASK_NAMES[number];
 /** Exact external tool names; MCP entries use server/tool. No wildcards. */
 export type NativeTaskTools = Partial<Record<NativeTaskName, string[]>>;
 const forbidden = new Set([
-    "task", "spawn_agent", "create_agent_session", "message_agent_session", "manage_agent_session",
+    "task", "spawn_agent", "start_workflow", "create_agent_session", "message_agent_session", "manage_agent_session",
     "send_session_message", "reply_session_message", "complete_agent", "wait", "ask_user",
     "create_session", "send_message", "send_and_wait", "stop_session", "delete_session", "restart_session", "fork_session",
     "write_agent", "manage_schedule", "run_factory", "factories_manage", "schedule", "cron",

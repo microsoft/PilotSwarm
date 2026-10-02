@@ -565,7 +565,6 @@ export function buildContinueInput(
         ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
         ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),
         subAgents: state.subAgents,
-        subWorkflows: state.subWorkflows,
         ...(state.reportedFirstCompletionToParent ? { reportedFirstCompletionToParent: true } : {}),
         ...(state.pendingToolActions.length > 0 ? { pendingToolActions: state.pendingToolActions } : {}),
         // Session regeneration (1.0.67): epoch + in-flight pipeline state ride
@@ -585,7 +584,6 @@ export function buildContinueInput(
         retryCount: state.workspaceStatus?.state === "unavailable" ? state.retryCount : 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
-        ...(state.waitingForWorkflowIds ? { waitingForWorkflowIds: state.waitingForWorkflowIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
         // A queued-while-blocked prompt must survive the epoch boundary too,
         // or continue-as-new becomes one more way to destroy it.
@@ -650,7 +648,6 @@ export function* versionedContinueAsNew(
             ...(state.activeTimer.choices ? { choices: state.activeTimer.choices } : {}),
             ...(state.activeTimer.allowFreeform !== undefined ? { allowFreeform: state.activeTimer.allowFreeform } : {}),
             ...(state.activeTimer.agentIds ? { agentIds: state.activeTimer.agentIds } : {}),
-            ...(state.activeTimer.workflowIds ? { workflowIds: state.activeTimer.workflowIds } : {}),
             // 1.0.80: before this, a budget timer lost its flag at every
             // continue-as-new, so a message after the boundary re-armed it.
             ...(timerGate(state.activeTimer) ? { gate: timerGate(state.activeTimer) } : {}),
@@ -1102,11 +1099,6 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
         case "input-grace":
         case "workspace_retry":
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
-            runtime.state.activeTimer = null;
-            return;
-        case "workflow-poll":
-            runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active workflow wait`);
-            runtime.state.waitingForWorkflowIds = null;
             runtime.state.activeTimer = null;
             return;
     }

@@ -72,3 +72,11 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     const code = sql.split("\n").filter((ln) => !ln.trimStart().startsWith("--")).join("\n");
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
+
+test("0081: workflow sessions are additive and existing rows remain agent sessions", () => {
+    const migration = migrations.find((m) => m.version === "0081");
+    assert.ok(migration, "migration 0081 must be registered");
+    assert.equal(migration.name, "workflow_session_kind");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent'/);
+    assert.match(migration.sql, /CHECK \(session_kind IN \('agent', 'workflow'\)\)/);
+});

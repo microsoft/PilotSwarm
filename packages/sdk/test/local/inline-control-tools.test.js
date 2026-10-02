@@ -201,6 +201,40 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned one and continuing.");
     });
+
+    it("returns start_workflow as a durable orchestration action", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{
+            name: "start_workflow",
+            args: {
+                definition: {
+                    kind: "inline",
+                    yaml: "name: durable-start\nversion: 1\nsteps: []",
+                },
+                inputs: { target: "staging" },
+            },
+        }];
+        fakeSession.assistantContent = "";
+
+        const managed = new ManagedSession("durable-workflow-start", fakeSession, {});
+        const result = await managed.runTurn("start the workflow", {
+            controlToolBridge: {
+                startWorkflow: vi.fn(() => {
+                    throw new Error("start_workflow must not execute inline");
+                }),
+            },
+        });
+
+        expect(result).toMatchObject({
+            type: "start_workflow",
+            definition: {
+                kind: "inline",
+                yaml: "name: durable-start\nversion: 1\nsteps: []",
+            },
+            inputs: { target: "staging" },
+        });
+    });
+
     it("keeps sub-agent stub schemas aligned with live schemas", () => {
         const spawnTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent");
         const completeTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "complete_agent");

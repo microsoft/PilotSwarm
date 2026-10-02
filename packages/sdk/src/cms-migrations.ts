@@ -402,7 +402,31 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0078", name: "native_tasks_default_policy", sql: nativeTasksDefaultPolicyMigration(schema) },
         { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
+        { version: "0081", name: "workflow_session_kind", sql: migration_0081_workflow_session_kind(schema) },
     ];
+}
+
+/** Additive discriminator; every pre-existing and omitted value remains an agent session. */
+function migration_0081_workflow_session_kind(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'sessions_session_kind_check'
+           AND conrelid = '${schema}.sessions'::regclass
+    ) THEN
+        ALTER TABLE ${s}.sessions
+            ADD CONSTRAINT sessions_session_kind_check
+            CHECK (session_kind IN ('agent', 'workflow'));
+    END IF;
+END $$;
+`;
 }
 
 /** Additive page filter used by the portal's independent system-session load. */

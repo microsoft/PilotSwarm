@@ -1,7 +1,6 @@
 import type { OrchestrationInput } from "../types.js";
 import { COMMAND_VERSION_KEY, RESPONSE_VERSION_KEY, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionManagerProxy, createSessionProxy } from "../session-proxy.js";
-import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 import { advanceRegenPipeline,
     continueInput,
     publishStatus,
@@ -18,7 +17,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.80";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -47,7 +46,6 @@ function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, voi
         ...(t.choices ? { choices: t.choices } : {}),
         ...(t.allowFreeform !== undefined ? { allowFreeform: t.allowFreeform } : {}),
         ...(t.agentIds ? { agentIds: t.agentIds } : {}),
-        ...(t.workflowIds ? { workflowIds: t.workflowIds } : {}),
         // 1.0.80: a gate wait keeps its gate across continue-as-new.
         ...(t.gate === "workspace" ? { gate: "workspace" as const } : {}),
         ...(t.gate === "budget" ? { gate: "budget" as const, budget: true } : {}),

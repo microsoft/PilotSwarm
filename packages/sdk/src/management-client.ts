@@ -336,6 +336,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
     const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
     return {
         sessionId: row.sessionId,
+        sessionKind: row.sessionKind ?? "agent",
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
@@ -371,6 +372,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
 /** Merged view of a session for management UIs. */
 export interface PilotSwarmSessionView {
     sessionId: string;
+    sessionKind: import("./types.js").SessionKind;
     title?: string;
     agentId?: string;
     splash?: string;
@@ -1294,6 +1296,7 @@ export class PilotSwarmManagementClient {
 
         return {
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
@@ -2236,6 +2239,12 @@ export class PilotSwarmManagementClient {
         if ((session as any).serviceKind) {
             throw Object.assign(
                 new Error("Service sessions are runtime machinery and are excluded from regeneration"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions are controller-backed and cannot be regenerated as conversations"),
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
@@ -3513,6 +3522,12 @@ export class PilotSwarmManagementClient {
                 `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is a workflow session and does not accept chat messages.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -3603,6 +3618,13 @@ export class PilotSwarmManagementClient {
      */
     async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
+        const session = await this.getSession(sessionId);
+        if (session?.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; controller questions require a workflow decision API.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined
