@@ -15,6 +15,8 @@
  *   D12  the person's folder cannot attach: when it is optional the turn
  *        runs without folders and the model is told; when the provider
  *        marks it required the turn is held
+ *   D15  an extra folder inside the person's folder leaves the home
+ *        default out; the event and getSessionWorkspace say why
  *
  * Run: npx vitest run test/local/workspace-defaults.test.js
  */
@@ -105,6 +107,41 @@ describe("default folders (section 4.11)", () => {
                 const [unavailable] = await waitForEventCount(catalog, heldId, "session.workspace_unavailable", 1, 60_000);
                 assertEqual(unavailable.data.code, "WORKSPACE_NOT_MOUNTED", "a required home folder holds the turn");
                 assertEqual(model.sessionRequests("d12 home is required").length, 0, "and calls no model");
+            });
+        } finally {
+            await catalog.close?.();
+            fx.cleanup();
+        }
+    });
+
+    it("an extra folder inside the person's folder leaves the home default out, and get_session_workspace says why (D15)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const fx = fixture();
+        fs.mkdirSync(path.join(fx.me, "notes"), { recursive: true });
+        const catalog = await createCatalog(env);
+        try {
+            await withScriptedModel(env, { respond: scriptTurns([[{ content: "inside done" }]]), worker: { workspaceProvider: fx.provider } }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                const session = await client.createSession({
+                    sessionId, model: qualifiedModel,
+                    workspace: { root: "repo", folder: "app", extra: { notes: { root: "home", folder: "users/_anon/notes" } } },
+                });
+                assertEqual(await session.sendAndWait("inside the person's folder", TIMEOUT), "inside done");
+                const reason = "it overlaps extra folder \"notes\"";
+                const [recorded] = (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "session.workspace_defaults");
+                assert(recorded, "the defaults event is recorded");
+                assertEqual(JSON.stringify(recorded.data.skipped), JSON.stringify([{ name: "home", reason }]), "the event names the skipped default");
+                const mgmt = await createManagementClient(env);
+                try {
+                    const view = await mgmt.getSessionWorkspace(sessionId);
+                    assertEqual(JSON.stringify(view.defaults), JSON.stringify({
+                        workingFolder: null,
+                        extra: [{ name: "shared", root: "shared" }],
+                        skipped: [{ name: "home", reason }],
+                    }), "the view says the person's folder was left out, and why");
+                } finally {
+                    await mgmt.stop();
+                }
             });
         } finally {
             await catalog.close?.();

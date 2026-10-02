@@ -1721,6 +1721,8 @@ export class PilotSwarmManagementClient {
      * Resolves with the orchestration's answer. Rejects with an error whose
      * `code` names the reason (WORKSPACE_REVISION_CONFLICT, WORKSPACE_PATH_INVALID,
      * WORKSPACE_ROOT_UNKNOWN, WORKSPACE_FOLDER_MISSING, a provider code ...).
+     * Before the session's first turn it rejects with
+     * WORKSPACE_SESSION_NOT_STARTED (409): pass the workspace at create time.
      * If no answer arrives in time, resolves with `{ status: "pending" }`.
      */
     async setSessionWorkspace(
@@ -1748,7 +1750,7 @@ export class PilotSwarmManagementClient {
         const extraMode = input.workspace && typeof input.workspace === "object"
             && Object.prototype.hasOwnProperty.call(input.workspace, "extra") ? "replace" : "keep";
         const id = buildLifecycleCommandId("set-workspace");
-        await this.sendCommand(sessionId, {
+        await this._sendWorkspaceCommand(sessionId, {
             cmd: "set_workspace",
             id,
             args: { expectedRevision: input.expectedRevision, workspace, extraMode, source: "external" },
@@ -1776,18 +1778,40 @@ export class PilotSwarmManagementClient {
      * Session workspaces: the session's workspace, read from its latest
      * workspace events (no CMS migration in v1): the record, revision and
      * path of the last change, whether prompts are held and why, and the
-     * repo content adopted at the last resume.
+     * repo content adopted at the last resume. `turnRevision` is the
+     * revision the last turn ran under: the adopted content and the default
+     * folders are as of that revision.
      */
     async getSessionWorkspace(sessionId: string): Promise<SessionWorkspaceView> {
         this._ensureStarted();
         const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted", "session.workspace_defaults", "session.workspace_opened"];
-        const events = (await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, types))
+        const WINDOW = 200;
+        const [fetched, turnStarted] = await Promise.all([
+            this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, WINDOW, types),
+            this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.turn_started"]),
+        ]);
+        const events = fetched
             .slice()
             .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
         const latest = (type: string) => [...events].reverse().find((e: any) => e.eventType === type) as any;
         const changed = latest("session.workspace_changed");
         const workspace = (changed?.data?.workspace ?? null) as SessionWorkspace | null;
         const revision = Number(changed?.data?.revision ?? 0) || 0;
+        // The revision the last turn ran under: the newest change before
+        // that turn started. `adopted` and `defaults` are written by turns,
+        // so a change from outside shows in `revision` before they follow.
+        let turnRevision: number | null = null;
+        const lastTurn = turnStarted.find((e: any) => e.eventType === "session.turn_started") as any;
+        if (lastTurn) {
+            const turnSeq = Number(lastTurn.seq);
+            let before = [...events].reverse().find((e: any) => e.eventType === "session.workspace_changed" && Number(e.seq) < turnSeq) as any;
+            if (!before && fetched.length >= WINDOW) {
+                // The window may not reach back to that turn: ask for the one event.
+                const [older] = await this._catalog!.getSessionEventsBefore(sessionId, turnSeq, 1, ["session.workspace_changed"]);
+                before = older?.eventType === "session.workspace_changed" ? older : undefined;
+            }
+            turnRevision = Number(before?.data?.revision ?? 0) || 0;
+        }
         const unavailable = latest("session.workspace_unavailable");
         const available = latest("session.workspace_available");
         const boundary = Math.max(Number(available?.seq ?? 0), Number(changed?.seq ?? 0));
@@ -1856,6 +1880,7 @@ export class PilotSwarmManagementClient {
         return {
             workspace,
             revision,
+            turnRevision,
             path: workspace ? path : null,
             ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
             status: !workspace ? "none" : held ? "unavailable" : "ready",
@@ -1881,21 +1906,22 @@ export class PilotSwarmManagementClient {
 
     /**
      * Session workspace files (the portal's Workspace pane): the session's
-     * folders, whether this process serves them, and the size limit.
+     * folders, whether this process serves them, the size limit, and the
+     * names of the roots this process serves (the Set dialog lists them).
      * `enabled` is false when no `workspaceFiles` config was given.
      */
-    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; git: boolean; folders: WorkspaceFileFolder[] }> {
+    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; git: boolean; folders: WorkspaceFileFolder[]; roots: string[] }> {
         this._ensureStarted();
         const config = this.config.workspaceFiles ?? null;
         // Git info in the Workspace tab runs on the canvas commands' runner.
         const git = Boolean(this.config.canvasCommands?.allow?.includes("git"));
-        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, git: false, folders: [] };
+        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, git: false, folders: [], roots: [] };
         const view = await this.getSessionWorkspace(sessionId);
         const folders = workspaceFileFolders(view, config).map((folder) => {
             if (!folder.available) return folder;
             return { ...folder, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
         });
-        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders };
+        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders, roots: config.roots.map((root) => root.name) };
     }
 
     /**
@@ -2290,11 +2316,28 @@ export class PilotSwarmManagementClient {
     async retrySessionWorkspace(sessionId: string, opts?: { timeoutMs?: number }): Promise<{ retried: boolean } | { status: "pending"; commandId: string }> {
         this._ensureStarted();
         const id = buildLifecycleCommandId("retry-workspace");
-        await this.sendCommand(sessionId, { cmd: "retry_workspace", id });
+        await this._sendWorkspaceCommand(sessionId, { cmd: "retry_workspace", id });
         const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 60_000));
         if (!resp) return { status: "pending", commandId: id };
         if (resp.error) throw new Error(resp.error);
         return { retried: Boolean((resp.result as any)?.retried) };
+    }
+
+    /**
+     * Session workspaces: send a set or retry command. A session that has not
+     * run its first turn has no orchestration to answer it yet; that is a
+     * WORKSPACE_SESSION_NOT_STARTED error (409) that says what to do instead.
+     */
+    private async _sendWorkspaceCommand(sessionId: string, command: { cmd: string; id: string; args?: Record<string, unknown> }): Promise<void> {
+        try {
+            await this.sendCommand(sessionId, command);
+        } catch (error: any) {
+            if (error?.orchestrationNotStarted !== true) throw error;
+            throw Object.assign(new Error(
+                "WORKSPACE_SESSION_NOT_STARTED: the session has not run its first turn; pass workspace at create time "
+                + "(createSession `workspace`, MCP create_session workspace_root/workspace_folder), or set it after the first turn",
+            ), { code: "WORKSPACE_SESSION_NOT_STARTED", status: 409 });
+        }
     }
 
     private async _awaitCommandResponse(sessionId: string, id: string, timeoutMs: number): Promise<SessionCommandResponse | null> {
@@ -3826,10 +3869,10 @@ export class PilotSwarmManagementClient {
             return;
         }
         if (!status || status === "NotFound" || status === "Unknown") {
-            throw new Error(
+            throw Object.assign(new Error(
                 `Cannot ${operation} for session ${sessionId.slice(0, 8)}: orchestration ${orchId} is not started (status=${status ?? "missing"}). ` +
                 `Use PilotSwarmSession.send (which starts the orchestration on the first turn) instead of the management enqueue path.`,
-            );
+            ), { orchestrationNotStarted: true });
         }
     }
 

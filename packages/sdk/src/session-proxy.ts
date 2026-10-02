@@ -1309,7 +1309,8 @@ export function registerActivities(
     /**
      * Section 4.11: compare the default folders this turn used with the last
      * session.workspace_defaults event, and record a new one when they
-     * changed. The portal shows them: they are never in the record.
+     * changed. The portal shows them: they are never in the record. The
+     * event also names the defaults the turn left out, and why.
      */
     const noteWorkspaceDefaults = async (
         session: any,
@@ -1335,7 +1336,12 @@ export function registerActivities(
                 `runTurn.recordEvent workspace-defaults session=${sessionId}`,
                 () => catalog!.recordEvents(sessionId, [{
                     eventType: "session.workspace_defaults",
-                    data: { revision, workingFolder: current?.workingFolder ?? null, extra: current?.extra ?? [] },
+                    data: {
+                        revision,
+                        workingFolder: current?.workingFolder ?? null,
+                        extra: current?.extra ?? [],
+                        ...(current?.skipped?.length ? { skipped: current.skipped } : {}),
+                    },
                 }], workerNodeId),
                 trace,
             );
@@ -4901,9 +4907,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             skipWorkingFolder: sameFolderKept,
         });
         // A kept working folder was not checked; report the path this worker
-        // attached it at, when the session is here.
+        // attached it at, when the session is here. Only when the handle's
+        // last turn ran under the revision before this one: then it attached
+        // the record's own working folder. A set with no turn since the last
+        // one, or a turn that ran in the person's own folder, attached some
+        // other folder. Then the path stays null, and getSessionWorkspace
+        // keeps the path an earlier change reported for the same folder.
         if (checked.ok && checked.path === null && sameFolderKept) {
-            (checked as { path: string | null }).path = sessionManager.getWorkspaceAttachPath(input.sessionId) ?? null;
+            const attach = sessionManager.getWorkspaceAttach(input.sessionId);
+            if (attach && attach.revision === input.revision - 1 && !attach.homeIsWorkingFolder) {
+                (checked as { path: string | null }).path = attach.path;
+            }
         }
         activityCtx.traceInfo?.(`[checkWorkspace] session=${input.sessionId} ok=${checked.ok}${checked.ok ? ` path=${checked.path} extras=${checked.extras.length}` : ` code=${checked.code}`}`);
         return checked;

@@ -909,7 +909,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * The session's workspace: record, revision, path, status, last error, held-prompt count, and adopted repo agents and skills.
+     * The session's workspace: record, revision, path, status, last error, held-prompt count, adopted repo agents and skills, and the default folders used or left out. turnRevision is the revision the last turn ran under; adopted and defaults are as of it.
      * @remarks `GET /management/sessions/:sessionId/workspace` — access: `session:read`
      */
     getSessionWorkspace(params: {
@@ -1139,7 +1139,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * The session's folders for the Workspace pane (working folder, then extra folders), whether this deployment serves each one, and the file size limit. The session's owner only.
+     * The session's folders for the Workspace pane (working folder, then extra folders), whether this deployment serves each one, the file size limit, the names of the roots this deployment serves (roots), and whether the Workspace tab may show git (git). The session's owner only.
      * @remarks `GET /management/sessions/:sessionId/workspace/folders` — access: `session:files`
      */
     listSessionWorkspaceFolders(params: {
@@ -1387,7 +1387,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. { op: git, folder, what: status|log|show|file|compare|repos } reads the folder's git changes and commits (read-only; only where the deployment runs git for canvas commands). The session's owner only.
+     * One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. { op: git, folder, what: status|log|show|file|compare|repos|checkout|restore } reads the folder's git changes and commits, or checks out a commit with an optional stash (checkout and restore are refused while a turn runs; only where the deployment runs git for canvas commands). The session's owner only.
      * @remarks `POST /management/sessions/:sessionId/workspace/files` — access: `session:files`
      */
     sessionWorkspaceFiles(params: {

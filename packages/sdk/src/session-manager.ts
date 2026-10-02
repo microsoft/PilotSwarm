@@ -3215,9 +3215,19 @@ export class SessionManager {
         return "released";
     }
 
-    /** Session workspaces: the working folder's path the session's warm handle on this worker attached, if any. */
-    getWorkspaceAttachPath(sessionId: string): string | undefined {
-        return this.sessions.get(sessionId)?.getWorkspaceState().attach?.path;
+    /**
+     * Session workspaces: the working folder the session's warm handle on
+     * this worker attached at its last turn, if any: the path, the revision
+     * that turn ran under, and whether it was the person's own folder.
+     */
+    getWorkspaceAttach(sessionId: string): { path: string; revision?: number; homeIsWorkingFolder: boolean } | undefined {
+        const attach = this.sessions.get(sessionId)?.getWorkspaceState().attach;
+        if (!attach) return undefined;
+        return {
+            path: attach.path,
+            ...(attach.revision !== undefined ? { revision: attach.revision } : {}),
+            homeIsWorkingFolder: attach.homeIsWorkingFolder === true,
+        };
     }
 
     /** Session workspaces: the folders held on this worker for a session. */

@@ -6769,13 +6769,24 @@ export class PilotSwarmUiController {
         return { sessionId, session, view, revision: Number.isInteger(view?.revision) ? view.revision : 0 };
     }
 
+    /**
+     * The portal's Workspace tab on request (Manage session → Workspace →
+     * Files): show the side pane (the canvas column), then pick its
+     * Workspace tab. Nothing opens the pane by itself.
+     */
+    openWorkspaceFiles() {
+        const sessionId = this.getState().sessions.activeSessionId || null;
+        this.dispatch({ type: "ui/canvasOpen", open: true, ...(sessionId ? { sessionId } : {}) });
+        this.dispatch({ type: "ui/sidePaneTab", tab: "workspace" });
+    }
+
     async _afterWorkspaceChange(sessionId, text) {
         this.dispatch({ type: "ui/status", text });
         await this.ensureSessionStats({ force: true });
         this.scheduleSessionDetailSync?.(sessionId, 100);
     }
 
-    openSetWorkspaceModal() {
+    async openSetWorkspaceModal() {
         if (typeof this.transport.setSessionWorkspace !== "function") {
             this.dispatch({ type: "ui/status", text: "Workspaces are not supported by this deployment" });
             return;
@@ -6798,6 +6809,19 @@ export class PilotSwarmUiController {
                 maxLength: 1200,
             },
         });
+        // The roots the deployment serves, so the dialog can list them. The
+        // call is for the session's owner only: anyone else sees no list.
+        if (typeof this.transport.listSessionWorkspaceFolders !== "function") return;
+        let roots = [];
+        try {
+            const listed = await this.transport.listSessionWorkspaceFolders(target.sessionId);
+            roots = Array.isArray(listed?.roots) ? listed.roots.filter((root) => typeof root === "string" && root) : [];
+        } catch {
+            return;
+        }
+        const modal = this.getState().ui.modal;
+        if (roots.length === 0 || modal?.type !== "sessionWorkspace" || modal.sessionId !== target.sessionId) return;
+        this.updateSetWorkspaceModal({ roots });
     }
 
     updateSetWorkspaceModal(updater) {
@@ -8732,7 +8756,12 @@ export class PilotSwarmUiController {
         if (modal.previousFocus) {
             this.setFocus(modal.previousFocus);
         }
-        this.dispatch({ type: "ui/status", text: "Connected" });
+        // Closing the Clear confirm (a click outside, Escape, Cancel)
+        // cancels it: say so, or the person may think it was cleared.
+        const text = modal.type === "confirm" && modal.action === "clearSessionWorkspace"
+            ? "Workspace not cleared (cancelled)"
+            : "Connected";
+        this.dispatch({ type: "ui/status", text });
     }
 
     /**
@@ -11307,13 +11336,16 @@ export class PilotSwarmUiController {
                 await this.regenerateActiveSession();
                 return;
             case UI_COMMANDS.OPEN_SET_WORKSPACE:
-                this.openSetWorkspaceModal();
+                await this.openSetWorkspaceModal();
                 return;
             case UI_COMMANDS.CLEAR_WORKSPACE:
                 await this.clearActiveSessionWorkspace();
                 return;
             case UI_COMMANDS.RETRY_WORKSPACE:
                 await this.retryActiveSessionWorkspace();
+                return;
+            case UI_COMMANDS.OPEN_WORKSPACE_FILES:
+                this.openWorkspaceFiles();
                 return;
             case UI_COMMANDS.PIN_SESSION:
                 this.togglePinActiveSession();
