@@ -7,6 +7,8 @@ result.
 
 The design motivation and intended execution model are tracked in
 [PilotSwarm issue #28](https://github.com/microsoft/PilotSwarm/issues/28).
+Concrete root, conversational-parent, and mixed-nesting examples are developed
+in the [workflow session composition scenarios proposal](../../proposals/workflow-session-scenarios.md).
 
 The caller-side protocol is implemented, but the workflow controller is still a
 scaffold. Starting a workflow currently creates the real durable child session
