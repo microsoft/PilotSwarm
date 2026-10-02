@@ -21,6 +21,8 @@
 // breaks deploys.
 
 export const PORTAL_CONFIG_KEYS = [
+  // Deployment-owned tabs rendered through the generic external-view seam.
+  { env: "PORTAL_EXTERNAL_VIEWS_JSON" },
   // Auth provider selector. `none` (or unset) → unauthenticated. `entra` →
   // requires the PORTAL_AUTH_ENTRA_* keys below.
   { env: "PORTAL_AUTH_PROVIDER" },
