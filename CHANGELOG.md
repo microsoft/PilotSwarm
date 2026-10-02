@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.9.0 — 2026-10-02
+
+**Git in the Workspace tab.** When a session folder is a git repository, or
+holds repositories inside it (for example a clone in the person's own
+folder), the Workspace tab shows git, as VS Code's Source Control does. It
+is read-only, except for checkout.
+
+- The toolbar shows the branch (ahead, behind, in sync, not pushed) and,
+  when a folder holds several repositories, a repository picker. Git
+  follows the folder or file the person picks. A file outside every
+  repository shows no git.
+- Three tabs: **Files**, **Changes** and **History**. The tree marks changed
+  files (M A D R U C) at the right edge, and folders with changes inside.
+  Changes lists staged and unstaged files, with line counts per group.
+- **Changes since**: the last commit, the main branch, or a commit. Changes
+  can also show one commit's files, or two commits compared.
+- A read-only diff, side by side or inline (always inline under 640 px):
+  HEAD ↔ Index, Index ↔ Working Tree, or a commit's files. Unchanged lines
+  fold; previous and next change. A file added or deleted shows once.
+- **History**: commits with their branches and tags, and a commit's message
+  and files. Ctrl/⌘-click two commits to compare them.
+- **Check out this commit.** Uncommitted changes, untracked files included,
+  are stashed when the person agrees. **Return to <branch>** and **Put them
+  back** undo it. Refused while a turn runs. The agent is told at its next
+  turn.
+- A folder row opens on a second click within 8 s; the first click only
+  picks it. Each tab keeps its own viewer.
+- Read-only editors take the keyboard focus, so keys typed there never
+  reach the session shortcuts. Before, Shift+D in a diff could delete the
+  session.
+- Git runs on the canvas commands' local runner: no shell, settings that
+  start programs refused, no network, never above the session folder.
+  Diffs ignore nested repositories, whose own settings could start a
+  program. The tab shows git only where the deployment runs git for canvas
+  commands (`canvasCommands.allow` includes `git`).
+- No new Web API operation: git is a `{ op: "git" }` call inside
+  `sessionWorkspaceFiles` (status, log, show, file, compare, repos,
+  checkout, restore). `listSessionWorkspaceFolders` says whether git is on
+  (`git`).
+
+**Workspaces (#103).**
+
+- `getSessionWorkspace` returns `turnRevision`: the revision the last turn
+  ran under. `adopted` and `defaults` describe that turn, so a change that
+  waits for the next turn no longer looks applied.
+- A set no longer reports the wrong path for the working folder.
+- The `session.workspace_defaults` event names the defaults a turn left
+  out, and why (`skipped`).
+- `listSessionWorkspaceFolders` returns the names of the roots this
+  deployment serves (`roots`). The Set dialog lists them.
+- A workspace command to a session that has not started yet answers
+  `WORKSPACE_SESSION_NOT_STARTED`.
+- MCP `set_session_workspace` errors share one shape.
+- Portal: a **Files** button in Manage → Workspace opens the Workspace tab.
+  A cancelled clear shows as cancelled.
+
+**System sessions (#99).**
+
+- An admin can remove a system session whose agent no worker loads any
+  more: `restartSystemSession(id, { startReplacement: false })`. It finds
+  the session by session id or agent id, child system agents included,
+  and starts nothing.
+- The removal is refused (409 `SYSTEM_AGENT_LOADED`) while a live worker
+  would create the session again, or does not report what it loads.
+  Workers report the system agents they load, the session ids they create
+  for them, and how often they send a heartbeat. A worker counts as live
+  for 90 s, or for 3 of its heartbeats when they are further apart.
+- An id that is not a system session gets the same answer as a missing id
+  (`NOT_FOUND`), so an admin limited to the cluster scope cannot learn
+  that a person's session exists.
+- Delete, cancel, complete and rename of a system session answer 409
+  `SYSTEM_SESSION_PROTECTED` and name the supported way, instead of a 500.
+  This now also holds for the portal's complete call, which before sent
+  the done command without the check.
+- MCP `restart_system_session` takes `start_replacement`. The portal and
+  the TUI offer **Remove Orphaned System Session** when **Hard Delete &
+  Restart** finds no agent.
+
+**Other fixes.**
+
+- MCP: a 403 returns the server's own reason, with its status and code,
+  instead of claiming a missing admin role (#112).
+- Portal: a deep link to a session-list folder (`?session=group:<id>`) no
+  longer calls `getSession`, which wrote a denied-access row and a 404.
+- The portal's live-update and canvas listeners (Postgres LISTEN/NOTIFY)
+  connect the way the session catalog does: its database, its TLS rules,
+  and a fresh managed-identity token on each reconnect. Before, they used
+  `DATABASE_URL` as is, and failed with `SELF_SIGNED_CERT_IN_CHAIN` on
+  Azure. New SDK function `buildSessionCatalogPgClientConfig`.
+- The canvas listener opens one new connection per dropped connection.
+  Before, a drop opened two, and every canvas update went out twice.
+- Model catalog: a model can set `wireApi` (`completions` or `responses`),
+  as a provider already could. The model's value wins.
+- Session footprint: `regenEligibility` now says whether a session can be
+  regenerated, and why not. `turnsThisEpoch` counts the turns since the
+  last regenerate (#111).
+- Tests: the database check no longer prints the database password when
+  the database cannot be reached.
+
+**Docs.** A proposal for letting the agent see what the person views in the
+Workspace tab, and point the tab at a place:
+`docs/proposals/workspace-agent-bridge.md`.
+
+No database migration. No new orchestration version (still 1.0.80).
+
 ## 0.8.0 — 2026-09-30
 
 **The Workspace tab.** The portal's side pane has two tabs: **Canvas** and
