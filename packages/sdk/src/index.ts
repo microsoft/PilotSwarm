@@ -74,6 +74,8 @@ export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFact
 export { horizonConfigFromEnv } from "./horizon-env.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";
 export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
+// The pg.Client config for LISTEN connections to the session catalog database.
+export { buildSessionCatalogPgClientConfig } from "./pg-pool-factory.js";
 export type { StorageConfig, RuntimeStorageConfig, DuroxideStorageConfig, StorageConfigLegacyOptions } from "./storage-config.js";
 export { runtimeStorageProviders, duroxideStorageProviders, getRuntimeStorageProvider, getDuroxideStorageProvider } from "./storage-providers.js";
 export type { RuntimeStorageProvider, DuroxideStorageProvider } from "./storage-providers.js";
