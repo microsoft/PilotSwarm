@@ -192,7 +192,7 @@ test("the tab, the tree, open, edit and save", async ({ page }) => {
     await expect(tree(page).locator(":scope > .ps-ws-row .ps-ws-row-name")).toHaveText([".git", "src", "README.md"]);
     await expect(row(page, ".git").locator(".ps-ws-row-lock")).toHaveCount(1);
 
-    await row(page, "src").click();
+    await row(page, "src").dblclick();
     await row(page, "a.ts").click();
     await expect(editor(page)).toHaveText("export const a = 1;");
     const opened = etagOf(Buffer.from("export const a = 1;\n"));
@@ -241,8 +241,8 @@ test("a save conflict: Compare shows both with the file name in view, then Save 
     const folder = new Folder({ [name]: "one\ntwo\n" });
     await routeWorkspace(page, folder);
     await openWorkspace(page);
-    await row(page, "docs").click();
-    await row(page, "guides").click();
+    await row(page, "docs").dblclick();
+    await row(page, "guides").dblclick();
     await row(page, "a-long-file-name-for-compare.txt").click();
     await expect(editor(page)).toContainText("two");
     folder.set(name, "ONE\ntwo\n");
@@ -356,7 +356,7 @@ test("move by dragging, rename, delete, new file and new folder", async ({ page 
     await expect.poll(() => folder.text("docs/notes.md")).toBe("notes\n");
     expect(folder.nodes.has("notes.md")).toBe(false);
 
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").hover();
     await page.getByRole("button", { name: "Rename guide.md" }).click();
     const newName = page.getByRole("textbox", { name: "New name" });
@@ -459,7 +459,7 @@ test("on a phone the viewer bar keeps its buttons whole; the path gives way", as
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
         await page.getByRole("button", { name: "Show canvas" }).click();
         await page.getByRole("tab", { name: "The session's folders and files" }).click();
-        await row(page, "notes").click();
+        await row(page, "notes").dblclick();
         await row(page, "long-phone-name.md").click();
         await expect(page.locator(".ps-ws-viewer .cm-content")).toContainText("# N");
         const layout = await page.locator(".ps-ws-viewer-bar").evaluate((bar) => {
@@ -641,7 +641,7 @@ test("markdown preview links: #heading scrolls, a file link opens the file, a we
     const guide = `# Guide\n\n[Jump](#install-it) [License](../LICENSE) [Web](https://example.com/x) [Out](../../x.md)\n\n${"filler\n\n".repeat(80)}## Install it\n\nsteps\n`;
     await routeWorkspace(page, new Folder({ "docs/guide.md": guide, "LICENSE": "MIT License\n" }));
     await openWorkspace(page);
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").click();
     await page.getByRole("button", { name: "Preview" }).click();
     const body = page.locator(".ps-ws-md-body");
@@ -923,7 +923,7 @@ test("each session's view is remembered, and a file that is gone leaves the defa
     const folder = new Folder({ "docs/guide.md": "# Guide\n", "README.md": "# App\n" });
     await routeWorkspace(page, folder);
     await openWorkspace(page);
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").click();
     await page.getByRole("button", { name: "Preview" }).click();
     await expect(page.locator(".ps-ws-md-preview").getByRole("heading", { name: "Guide" })).toBeVisible();
@@ -1015,7 +1015,7 @@ for (const theme of listThemes()) {
         await routeWorkspace(page, folder);
         await openWorkspace(page);
         await expect(page.locator("html")).toHaveAttribute("data-ps-theme", theme.id);
-        await row(page, "src").click();
+        await row(page, "src").dblclick();
         await row(page, "app.js").click();
         await expect(page.locator(".ps-ws-viewer .cm-content")).toContainText("return 42");
         await editor(page).click();
@@ -1133,7 +1133,7 @@ test("pick several: Cmd/Ctrl-click, Shift-click, download, drag, delete, Escape"
     await row(page, "c.txt").dragTo(row(page, "box"));
     await expect.poll(() => ["a.txt", "c.txt", "d.txt"].map((n) => folder.nodes.has(`box/${n}`))).toEqual([true, true, true]);
 
-    await row(page, "box").click();
+    await row(page, "box").dblclick();
     await row(page, "keep.txt").click();
     await row(page, "b.txt").click({ modifiers: ["ControlOrMeta"] });
     await tree(page).press("Delete");
@@ -1170,7 +1170,7 @@ test("renaming the folder of the open file: the file follows, and saving works",
     const folder = new Folder({ "docs/guide.md": "guide\n" });
     await routeWorkspace(page, folder);
     await openWorkspace(page);
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").click();
     await editor(page).click();
     await page.keyboard.press("ControlOrMeta+End");
@@ -1212,3 +1212,62 @@ test("an image button in markdown loads nothing either", async ({ page }) => {
     expect(remote).toEqual([]);
 });
 
+
+test("a folder that is not on disk keeps its message while each check asks again (no blinking)", async ({ page }) => {
+    await routeWorkspace(page, new Folder({}));
+    let delay = 0;
+    await page.route(`**/management/sessions/${sessionId}/workspace/files`, async (route) => {
+        const call = route.request().postDataJSON().call;
+        if (call.op !== "list" || call.path) return route.fallback();
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        return route.fulfill({ status: 404, json: { ok: false, error: { code: "WORKSPACE_FILES_NOT_FOUND", message: "no such file or folder" } } });
+    });
+    await openWorkspace(page);
+    const gone = tree(page).locator(".ps-ws-row.is-error");
+    await expect(gone).toHaveText("This folder is not on disk: a/sessions/s1/app. It may have been removed; the session's next turn can bring it back.");
+    // A check (here: Refresh) asks again, slowly. Every state the tree goes
+    // through is recorded: the message must never give way to "Loading…".
+    await page.evaluate(() => {
+        window.__treeTexts = [];
+        const tree = document.querySelector(".ps-ws-tree");
+        new MutationObserver(() => window.__treeTexts.push(tree.textContent)).observe(tree, { childList: true, subtree: true, characterData: true });
+    });
+    delay = 1_000;
+    let lists = 0;
+    page.on("request", (request) => { if (request.url().endsWith("/workspace/files") && request.postDataJSON()?.call?.op === "list") lists += 1; });
+    await page.locator(".ps-ws-toolbar").getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect.poll(() => lists).toBeGreaterThan(0);
+    await page.waitForTimeout(1_500);
+    await expect(gone).toBeVisible();
+    const texts = await page.evaluate(() => window.__treeTexts);
+    expect(texts.filter((text) => text.includes("Loading…"))).toEqual([]);
+});
+
+test("a first click selects a folder; a second click within 8 s opens it, the next closes it; its arrow opens at once", async ({ page }) => {
+    await page.clock.install();
+    await routeWorkspace(page, new Folder({ "docs/guide.md": "# Guide\n", "README.md": "# App\n" }));
+    await openWorkspace(page);
+    const docs = row(page, "docs");
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+    await expect(docs).toHaveClass(/is-picked/);
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "true");
+    await expect(row(page, "guide.md")).toBeVisible();
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+    // Later than 8 s: the click only selects again; the next one opens.
+    await page.clock.fastForward(9_000);
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "true");
+    // Clicking another row starts over.
+    await row(page, "README.md").click();
+    await expect(editor(page)).toContainText("# App");
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "true");
+    // The arrow opens and closes at once.
+    await docs.locator(".ps-ws-twisty").click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+});

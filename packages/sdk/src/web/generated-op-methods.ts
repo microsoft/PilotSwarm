@@ -1387,7 +1387,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. The session's owner only.
+     * One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. { op: git, folder, what: status|log|show|file|compare|repos } reads the folder's git changes and commits (read-only; only where the deployment runs git for canvas commands). The session's owner only.
      * @remarks `POST /management/sessions/:sessionId/workspace/files` — access: `session:files`
      */
     sessionWorkspaceFiles(params: {

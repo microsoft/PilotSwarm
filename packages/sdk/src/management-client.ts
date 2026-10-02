@@ -65,6 +65,7 @@ import {
     type CanvasWorkspaceDeclaration,
 } from "./canvas-workspace.js";
 import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
+import { workspaceGit } from "./workspace-git.js";
 import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
@@ -1867,16 +1868,18 @@ export class PilotSwarmManagementClient {
      * folders, whether this process serves them, and the size limit.
      * `enabled` is false when no `workspaceFiles` config was given.
      */
-    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; folders: WorkspaceFileFolder[] }> {
+    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; git: boolean; folders: WorkspaceFileFolder[] }> {
         this._ensureStarted();
         const config = this.config.workspaceFiles ?? null;
-        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, folders: [] };
+        // Git info in the Workspace tab runs on the canvas commands' runner.
+        const git = Boolean(this.config.canvasCommands?.allow?.includes("git"));
+        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, git: false, folders: [] };
         const view = await this.getSessionWorkspace(sessionId);
         const folders = workspaceFileFolders(view, config).map((folder) => {
             if (!folder.available) return folder;
             return { ...folder, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
         });
-        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, folders };
+        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders };
     }
 
     /**
@@ -1896,6 +1899,7 @@ export class PilotSwarmManagementClient {
         const codes = WORKSPACE_FILE_ERROR_CODES;
         if (!config) throw workspaceFileError(codes.DISABLED, "workspace files are not set up here (PORTAL_WORKSPACE_ROOTS)");
         const op = (call as any)?.op;
+        if (op === "git") return this._sessionWorkspaceGit(sessionId, call as any, config);
         if (!(WORKSPACE_FILE_OPS as readonly string[]).includes(op)) {
             throw workspaceFileError(codes.PATH_INVALID, `unknown workspace file call "${String(op)}"`);
         }
@@ -1936,6 +1940,81 @@ export class PilotSwarmManagementClient {
                 path: String(request.path),
                 ...(op === "write" ? { created: result?.created === true } : {}),
                 ...(op === "move" ? { toFolder: String(request.toName), toPath: String(request.toPath) } : {}),
+            };
+            await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: change }]).catch(() => {});
+        }
+        return result;
+    }
+
+    /**
+     * Git for the Workspace tab, read-only: `{ op: "git", folder, what:
+     * "status" | "log" | "show" | "file", repo?, since?, skip?, sha?, rev?, path? }`
+     * (see workspace-git.ts), and `what: "repos"`: is the folder itself a
+     * repository, and which folders inside it are (a clone in the person's
+     * own folder, say), up to 3 levels down.
+     *
+     * `repo` is a folder inside the session folder that holds `.git`; empty
+     * is the folder itself. Git runs there on the canvas commands' local
+     * runner and never looks above the session folder, so a deployment
+     * without that runner answers `{ repo: false, enabled: false }`.
+     */
+    private async _sessionWorkspaceGit(sessionId: string, call: Record<string, unknown>, config: WorkspaceFilesConfig): Promise<Record<string, any>> {
+        const commands = this.config.canvasCommands ?? null;
+        if (!commands || !commands.allow.includes("git")) return { repo: false, enabled: false };
+        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        const from = resolveWorkspaceFileFolder(folders, call.folder, config);
+        const at = { base: from.base, rootPath: from.rootPath };
+        const isRepo = async (dir: string) => {
+            try {
+                await runWorkspaceFileCall({ op: "stat", ...at, path: dir ? `${dir}/.git` : ".git" }, config);
+                return true;
+            } catch (error: any) {
+                if (error?.code === WORKSPACE_FILE_ERROR_CODES.NOT_FOUND || error?.code === WORKSPACE_FILE_ERROR_CODES.NOT_A_FOLDER) return false;
+                throw error;
+            }
+        };
+        if (call.what === "repos") {
+            const top = await isRepo("");
+            // Inside a repository, nested ones are not searched (as git itself treats them).
+            const found = top ? { repos: [], truncated: false } : await runWorkspaceFileCall({ op: "repos", ...at, path: "" }, config);
+            return { top, repos: found.repos ?? [], truncated: Boolean(found.truncated) };
+        }
+        const repo = checkWorkspaceFilePath(call.repo ?? "");
+        if (repo.split("/").some((part) => part === "." || part === "..")) {
+            throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.PATH_INVALID, "repo must be a folder inside the session folder");
+        }
+        if (!(await isRepo(repo))) return { repo: false };
+        // The repository's folder must be a real folder inside the session
+        // folder (a link out of it is refused by the stat).
+        if (repo) {
+            const place = await runWorkspaceFileCall({ op: "stat", ...at, path: repo, noLinks: true }, config);
+            if (place.kind !== "dir") return { repo: false };
+        }
+        const cwd = repo ? `${from.base.replace(/\/+$/, "")}/${repo}` : from.base;
+        // The two calls that change the repository: never under a running
+        // turn (the agent works in the same folder), and a stash is the
+        // owner's, so git needs their name.
+        const writes = call.what === "checkout" || call.what === "restore";
+        let author: { name: string; email: string } | null = null;
+        if (writes) {
+            const row: any = await this._catalog!.getSession(sessionId).catch(() => null);
+            if (row?.state === "running") throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.BUSY, "the agent is in a turn in this folder; try again when it is idle");
+            const owner = row?.owner ?? null;
+            author = owner?.email ? { name: String(owner.displayName || owner.email), email: String(owner.email) } : { name: "PilotSwarm Workspace tab", email: "workspace@pilotswarm.invalid" };
+        }
+        const result = await workspaceGit(
+            (args, maxOutputBytes) => runCanvasCommandLocally({ program: "git", args }, cwd, { top: from.base, timeoutSeconds: writes ? 60 : 15, maxOutputBytes, author }),
+            call,
+        );
+        // The agent is told at its next turn, as for files the owner changed.
+        if (writes && result?.done) {
+            const change: WorkspaceFileChange = {
+                op: "git",
+                folder: from.folder.name,
+                path: repo,
+                git: call.what === "checkout"
+                    ? { action: "checkout", to: result.to, from: result.from, detached: Boolean(result.detached), stashed: Boolean(result.stashed) }
+                    : { action: "restore" },
             };
             await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: change }]).catch(() => {});
         }
