@@ -105,7 +105,7 @@
         "@types/pg": "^8.16.0",
         "pilotswarm-horizon-store": "0.8.1",
         "typescript": "^5.0.0",
-        "vitest": "^4.1.0"
+        "vitest": "^4.1.11"
     },
     "engines": {
         "node": ">=24.0.0"
