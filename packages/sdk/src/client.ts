@@ -20,6 +20,7 @@ import type {
     SessionOwnerInfo,
     PromptAttachmentRef,
     SessionWorkspace,
+    WorkflowSessionConfig,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
@@ -31,6 +32,7 @@ import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage
 import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
+import { WorkflowSession } from "./workflow-session.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
 
@@ -163,6 +165,30 @@ export class PilotSwarmClient {
     }
 
     // ─── Session Management ──────────────────────────────────
+
+    async createWorkflowSession<TResult = unknown>(
+        config: WorkflowSessionConfig,
+    ): Promise<WorkflowSession<TResult>> {
+        const sessionId = config.sessionId ?? crypto.randomUUID();
+        await this._catalog.createSession(sessionId, {
+            sessionKind: "workflow",
+            parentSessionId: config.parentSessionId,
+            owner: config.owner ?? null,
+            groupId: config.groupId ?? null,
+            visibility: config.visibility ?? null,
+            creationConfig: {
+                workflow: {
+                    definition: config.definition,
+                    inputs: config.inputs ?? {},
+                },
+            },
+        });
+        return new WorkflowSession<TResult>(
+            sessionId,
+            config.parentSessionId,
+            childSessionId => this._catalog.getChildOutcome(childSessionId),
+        );
+    }
 
     async createSession(config?: Omit<ManagedSessionConfig, "workspace"> & {
         /** Session workspaces: the working folder. `schema` may be left out; the folder-text check normalizes it. */
@@ -444,6 +470,13 @@ export class PilotSwarmClient {
     async resumeSession(sessionId: string, config?: ManagedSessionConfig & {
         onUserInputRequest?: UserInputHandler;
     }): Promise<PilotSwarmSession> {
+        const persisted = await this._catalog.getSession(sessionId).catch(() => null);
+        if (persisted?.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId} is a workflow session and has no LLM conversation to resume.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         if (config) {
             this.sessionConfigs.set(sessionId, config);
         }
@@ -512,6 +545,7 @@ export class PilotSwarmClient {
         const rows = await this._catalog.listSessions();
         return rows.map(row => ({
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
             owner: row.owner ?? undefined,
@@ -1142,6 +1176,7 @@ export class PilotSwarmClient {
 
         return {
             sessionId,
+            sessionKind: cmsRow?.sessionKind ?? "agent",
             status,
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,

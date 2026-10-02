@@ -482,6 +482,39 @@ export const WORKSPACE_ERROR_CODES = {
 
 // ─── Session Config ──────────────────────────────────────────────
 
+/** Runtime implementation behind a session. Omitted persisted values mean "agent". */
+export type SessionKind = "agent" | "workflow";
+
+/**
+ * Immutable source supplied when a workflow session is created.
+ * Validation and compilation belong to the future workflow controller.
+ */
+export type WorkflowDefinitionSource =
+    | { kind: "package"; packageName: string; workflowName: string; version?: string }
+    | { kind: "inline"; yaml: string };
+
+/** Additive creation contract for a controller-backed, non-conversational session. */
+export interface WorkflowSessionConfig {
+    definition: WorkflowDefinitionSource;
+    inputs?: Record<string, unknown>;
+    sessionId?: string;
+    parentSessionId?: string;
+    owner?: SessionOwnerInfo | null;
+    groupId?: string | null;
+    visibility?: "private" | "shared_read" | "shared_write" | null;
+}
+
+/** Terminal result returned by a child workflow session to its caller. */
+export interface WorkflowSessionResult<TResult = unknown> {
+    sessionId: string;
+    parentSessionId: string;
+    outcome: "succeeded" | "blocked" | "failed" | "cancelled";
+    summary: string;
+    result?: TResult;
+    completedAt: string;
+    metadata?: Record<string, unknown>;
+}
+
 /** Serializable config — travels through duroxide (no functions). */
 export interface SerializableSessionConfig {
     model?: string;
@@ -764,6 +797,8 @@ export interface ChildSessionResult {
 
 export interface PilotSwarmSessionInfo {
     sessionId: string;
+    /** Runtime implementation. Existing sessions default to "agent". */
+    sessionKind: SessionKind;
     status: PilotSwarmSessionStatus;
     /** LLM model used for this session. */
     model?: string;

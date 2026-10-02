@@ -13,7 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
+import type { SessionKind, SessionOwnerInfo, SessionSummaryState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -110,6 +110,7 @@ export interface HourlyTokenBucketRow {
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
+    sessionKind: SessionKind;
     orchestrationId: string | null;
     title: string | null;
     titleLocked: boolean;
@@ -1123,6 +1124,7 @@ export interface SessionCatalog {
 
     /** Insert a new session. No-op if session already exists. */
     createSession(sessionId: string, opts?: {
+        sessionKind?: SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1631,6 +1633,7 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Writes ───────────────────────────────────────────────
 
     async createSession(sessionId: string, opts?: {
+        sessionKind?: SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1701,6 +1704,13 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
                     [sessionId, JSON.stringify(opts!.creationConfig)],
+                );
+            }
+
+            if (opts?.sessionKind === "workflow") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET session_kind = 'workflow' WHERE session_id = $1`,
+                    [sessionId],
                 );
             }
 
@@ -1893,7 +1903,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // Service columns join the raw table (same reasoning as getSession —
         // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessions}($1, $2) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
@@ -1911,7 +1921,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
@@ -1935,7 +1945,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
@@ -1962,7 +1972,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
+                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
                     s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
@@ -2202,7 +2212,9 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1, $2, $3)`,
+            `SELECT g.*, s.session_kind
+               FROM ${this.sql.fn.listGroupSessions}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [groupId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -3801,6 +3813,7 @@ function rowToSessionRow(row: any): SessionRow {
         : null;
     return {
         sessionId: row.session_id,
+        sessionKind: row.session_kind === "workflow" ? "workflow" : "agent",
         orchestrationId: row.orchestration_id ?? null,
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,

@@ -4,7 +4,9 @@ import type {
     PilotSwarmSessionInfo,
     SessionResponsePayload,
     UserInputHandler,
+    WorkflowSessionConfig,
 } from "../types.js";
+import type { WorkflowSession } from "../workflow-session.js";
 import {
     PilotSwarmWebOptions,
     createApiClientFromOptions,
@@ -53,6 +55,15 @@ export class WebPilotSwarmClient {
     async stop(): Promise<void> {
         this.started = false;
         await this._api.stop();
+    }
+
+    async createWorkflowSession<TResult = unknown>(
+        _config: WorkflowSessionConfig,
+    ): Promise<WorkflowSession<TResult>> {
+        throw webModeUnsupported(
+            "createWorkflowSession()",
+            "workflow controller and authenticated parent-child creation are not implemented yet",
+        );
     }
 
     async createSession(config?: {
@@ -108,6 +119,12 @@ export class WebPilotSwarmClient {
     async resumeSession(sessionId: string, config?: { onUserInputRequest?: UserInputHandler }): Promise<WebPilotSwarmSession> {
         const view = await this._api.call("getSession", { sessionId });
         if (!view) throw new Error(`Session not found: ${sessionId}`);
+        if (view.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId} is a workflow session and has no LLM conversation to resume.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         return new WebPilotSwarmSession(sessionId, this._api, config?.onUserInputRequest);
     }
 

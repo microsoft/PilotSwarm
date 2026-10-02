@@ -31,6 +31,8 @@
  */
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
+export { WorkflowSession } from "./workflow-session.js";
+export type { WorkflowResultWaitOptions } from "./workflow-session.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
@@ -146,7 +148,11 @@ export type {
     PilotSwarmWorkerOptions,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
+    SessionKind,
     PilotSwarmSessionInfo,
+    WorkflowDefinitionSource,
+    WorkflowSessionConfig,
+    WorkflowSessionResult,
     SessionOwnerInfo,
     SessionContextUsage,
     SessionCompactionSnapshot,
