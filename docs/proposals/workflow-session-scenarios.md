@@ -11,10 +11,10 @@ layer for repeatable multi-agent processes while continuing to use ordinary
 conversational sessions for the work that requires model reasoning.
 
 **Concrete acceptance scenario:** sqlmort's
-[ChangeDelivery MVP workflow-session contract](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-mvp/README.md&version=GBmain&_a=preview)
+[ChangeDelivery PoC workflow-session contract](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md&version=GBmain&_a=preview)
 applies this abstract design to a draft-pull-request delivery state machine.
 The
-[`change-delivery-mvp.workflow.yaml`](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-mvp/change-delivery-mvp.workflow.yaml&version=GBmain&_a=contents)
+[`change-delivery-poc.workflow.yaml`](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/change-delivery-poc.workflow.yaml&version=GBmain&_a=contents)
 fixture defines the initial platform acceptance milestone; the
 [`change-delivery-v1.workflow.yaml`](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-v1/change-delivery-v1.workflow.yaml&version=GBmain&_a=contents)
 fixture captures the fuller product-direction contract.
@@ -1337,9 +1337,9 @@ Use generator/harness tests to prove:
 - Verify all-settled correlation uses session IDs.
 - Verify every result is delivered once.
 
-#### ChangeDelivery MVP
+#### ChangeDelivery PoC
 
-- Register the sqlmort ChangeDelivery MVP definition and its referenced agents
+- Register the sqlmort ChangeDelivery PoC definition and its referenced agents
   at one immutable version.
 - Start it as a root workflow using only its declared business inputs.
 - Exercise five `one-shot` agent states and one `reviewed` publication state.
@@ -1426,7 +1426,7 @@ Use exact result tokens and small schemas so tests assert structural invariants
 rather than model prose.
 
 The cross-repository
-[sqlmort ChangeDelivery MVP](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-mvp/README.md)
+[sqlmort ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md)
 is the concrete platform acceptance fixture. Its checked-in YAML and agent
 contracts must pass through the production package resolver, compiler,
 controller, provider, review, and action paths rather than a test-only
@@ -1446,7 +1446,7 @@ the ChangeDelivery platform acceptance contract.
 
 ### 5.9 ChangeDelivery acceptance milestone
 
-- The registered sqlmort MVP runs without altering or weakening its checked-in
+- The registered sqlmort PoC runs without altering or weakening its checked-in
   workflow semantics.
 - Package-local and GitRef-backed agent references resolve to immutable source.
 - Aggregate external gate waits survive worker restart and reject stale or
