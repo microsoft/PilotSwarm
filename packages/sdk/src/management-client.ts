@@ -336,7 +336,10 @@ export interface RestartSystemSessionResult {
     retired?: boolean;
 }
 
-/** A worker counts as live while its last heartbeat is younger than this. */
+/**
+ * A worker counts as live while its last heartbeat is younger than this, or
+ * than 3 of its own heartbeat intervals when it reports a longer one.
+ */
 const LIVE_WORKER_HEARTBEAT_MS = 90_000;
 
 function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisposition): "complete" | "terminate" | "hard_delete" {
@@ -1494,7 +1497,12 @@ export class PilotSwarmManagementClient {
 
     // ─── Session Actions ─────────────────────────────────────
 
-    async completeSession(sessionId: string, reason?: string): Promise<void> {
+    /**
+     * Complete a session: send it the done command. Refuses a system session
+     * (409 SYSTEM_SESSION_PROTECTED). With wait: false, return once the
+     * command is sent, without waiting for the session to finish.
+     */
+    async completeSession(sessionId: string, reason?: string, options: { wait?: boolean } = {}): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
         if (!session) return;
@@ -1510,6 +1518,7 @@ export class PilotSwarmManagementClient {
             id: buildLifecycleCommandId("done"),
             args: { reason: doneReason },
         });
+        if (options.wait === false) return;
 
         await this._waitForSession(
             sessionId,
@@ -2794,9 +2803,12 @@ export class PilotSwarmManagementClient {
                 }
                 row = matches[0] ?? null;
             }
-            if (!row) {
-                throw Object.assign(new Error(`No system session found for "${target}".`), { code: "NOT_FOUND" });
-            }
+        }
+        // A session that is not a system session gets the same answer as a
+        // missing one: an admin whose scope is the cluster must not learn
+        // that a person's private session exists.
+        if (!plan && (!row || !row.isSystem)) {
+            throw Object.assign(new Error(`No system session found for "${String(agentIdOrSessionId).trim()}".`), { code: "NOT_FOUND" });
         }
 
         const sessionId = plan?.sessionId ?? row!.sessionId;
@@ -2836,23 +2848,37 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * Live workers (heartbeat in the last 90 s) that would create this system
-     * session again: the ones that report its agent as loaded, and the ones
-     * that do not report their loaded agents at all (older versions).
+     * Live workers that would create this system session again: the ones
+     * that report its session (or, for older workers, its agent) as loaded,
+     * and the ones that do not report their loaded agents at all.
+     *
+     * A worker is live while its last heartbeat is younger than 90 s, or
+     * than 3 of its own heartbeat intervals when it reports a longer one.
      */
     private async _workersThatWouldRecreate(agentId: string | null, sessionId: string): Promise<string[]> {
-        const cutoff = Date.now() - LIVE_WORKER_HEARTBEAT_MS;
+        const now = Date.now();
         const blocking: string[] = [];
         for (const worker of await this._catalog!.listWorkers()) {
-            if (new Date(worker.updatedAt).getTime() < cutoff) continue;
-            const loaded = (worker.state?.["system-agents"] as { loaded?: unknown } | undefined)?.loaded;
+            const reported = (worker.state?.["system-agents"] ?? undefined) as
+                { loaded?: unknown; sessions?: unknown; heartbeatMs?: unknown } | undefined;
+            const heartbeatMs = typeof reported?.heartbeatMs === "number" && Number.isFinite(reported.heartbeatMs) && reported.heartbeatMs > 0
+                ? reported.heartbeatMs
+                : 0;
+            const liveWindowMs = Math.max(LIVE_WORKER_HEARTBEAT_MS, 3 * heartbeatMs);
+            if (new Date(worker.updatedAt).getTime() < now - liveWindowMs) continue;
+            const loaded = reported?.loaded;
             if (!Array.isArray(loaded)) {
                 blocking.push(`${worker.workerNodeId} (does not report its system agents)`);
                 continue;
             }
-            const loadsAgent = loaded.some((id) =>
-                typeof id === "string" && (id === agentId || systemAgentUUID(id) === sessionId));
-            if (loadsAgent) blocking.push(worker.workerNodeId);
+            // The session ids the worker would create. A child agent's id
+            // depends on its parent's, so the agent id alone matches rows
+            // the worker would not create (after the agent moved).
+            const sessions = reported?.sessions;
+            const wouldCreate = Array.isArray(sessions)
+                ? sessions.includes(sessionId)
+                : loaded.some((id) => typeof id === "string" && (id === agentId || systemAgentUUID(id) === sessionId));
+            if (wouldCreate) blocking.push(worker.workerNodeId);
         }
         return blocking;
     }

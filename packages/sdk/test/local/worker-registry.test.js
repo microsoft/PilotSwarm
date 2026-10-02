@@ -12,6 +12,7 @@
 
 import { describe, it } from "vitest";
 import { PilotSwarmWorker } from "../../src/worker.ts";
+import { systemAgentUUID, systemChildAgentUUID } from "../../src/agent-loader.js";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
@@ -256,9 +257,11 @@ describe("worker registry", () => {
                 _loadedSystemAgents: [
                     { id: "sweeper", name: "sweeper" },
                     { id: "facts-manager", name: "facts-manager" },
+                    { id: "sweeper-child", name: "sweeper-child", parent: "sweeper" },
                     { name: "no-id" },
                 ],
                 _agentPackagesInstalled: {},
+                _agentPackagesRefreshMs: 45_000,
                 _buildRegistrarInfo: () => ({}),
                 _collectWorkerHealth: () => ({}),
             });
@@ -266,10 +269,35 @@ describe("worker registry", () => {
 
             const row = (await catalog.listWorkers()).find((w) => w.workerNodeId === id);
             assert(row, "the heartbeat registered the worker");
+            const reported = row.state["system-agents"];
             assertEqual(
-                JSON.stringify(row.state["system-agents"]),
-                JSON.stringify({ loaded: ["sweeper", "facts-manager"] }),
+                JSON.stringify(reported.loaded),
+                JSON.stringify(["sweeper", "facts-manager", "sweeper-child"]),
                 "state lists the loaded system agent ids (agents without an id have no system session)",
+            );
+            // The session ids the worker creates: a child's id comes from its parent's.
+            assertEqual(
+                JSON.stringify([...reported.sessions].sort()),
+                JSON.stringify([
+                    systemAgentUUID("sweeper"),
+                    systemAgentUUID("facts-manager"),
+                    systemChildAgentUUID(systemAgentUUID("sweeper"), "sweeper-child"),
+                ].sort()),
+                "state lists the session ids the worker would create",
+            );
+            assertEqual(reported.heartbeatMs, 45_000, "state says how often the worker beats");
+
+            // A parent graph that cannot be resolved must not stop the heartbeat.
+            worker._loadedSystemAgents = [
+                { id: "loop-a", name: "loop-a", parent: "loop-b" },
+                { id: "loop-b", name: "loop-b", parent: "loop-a" },
+            ];
+            await worker._reportAgentWorkerState();
+            const again = (await catalog.listWorkers()).find((w) => w.workerNodeId === id);
+            assertEqual(
+                JSON.stringify(again.state["system-agents"]),
+                JSON.stringify({ loaded: ["loop-a", "loop-b"], heartbeatMs: 45_000 }),
+                "a cyclic parent graph leaves out the session ids, and the heartbeat still lands",
             );
         } finally {
             await catalog.close();

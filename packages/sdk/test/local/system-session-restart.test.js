@@ -5,6 +5,7 @@ import { systemAgentUUID, systemChildAgentUUID } from "../../src/agent-loader.js
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 
 function makeRow(sessionId, overrides = {}) {
     return {
@@ -440,6 +441,111 @@ describe("system session removal (startReplacement: false)", () => {
         assertIncludes(error.message, "does not report", "the refusal says why the worker blocks");
         assertEqual(rows.get(sessionId).deletedAt, null, "the session row is untouched");
         assertEqual(calls.length, 0, "nothing is stopped or archived");
+    });
+});
+
+describe("system session removal: review fixes", () => {
+    it("a person's session gets the same answer as a missing id, and nothing is touched", async () => {
+        const { mgmt, rows, calls } = createRestartHarness();
+        mgmt._systemAgents = [];
+        const userId = "0a0a0a0a-1111-2222-3333-444444444444";
+        rows.set(userId, makeRow(userId, { isSystem: false, agentId: null, title: "Private work" }));
+
+        const answer = async (id) => {
+            try {
+                await mgmt.restartSystemSession(id, { disposition: "hard_delete", startReplacement: false });
+            } catch (error) {
+                return { code: error?.code, message: error?.message };
+            }
+            throw new Error("expected a refusal");
+        };
+        const forUser = await answer(userId);
+        const forMissing = await answer("0b0b0b0b-1111-2222-3333-444444444444");
+        assertEqual(forUser.code, "NOT_FOUND", "a person's session answers NOT_FOUND");
+        assertEqual(forMissing.code, "NOT_FOUND", "a missing id answers NOT_FOUND");
+        assertEqual(
+            forUser.message.replace(userId, "<id>"),
+            forMissing.message.replace("0b0b0b0b-1111-2222-3333-444444444444", "<id>"),
+            "the two answers cannot be told apart",
+        );
+        assertEqual(rows.get(userId).deletedAt, null, "the person's session is untouched");
+        assertEqual(calls.length, 0, "nothing is stopped or archived");
+    });
+
+    it("a worker that beats less often than every 90 s still blocks within 3 of its intervals", async () => {
+        const { mgmt, rows, calls, sessionId, workers } = createRestartHarness();
+        mgmt._systemAgents = [];
+        const slow = {
+            ...liveWorker("w-slow", { "system-agents": { loaded: ["restartable"], sessions: [sessionId], heartbeatMs: 120_000 } }),
+            updatedAt: new Date(Date.now() - 100_000),
+        };
+        workers.push(slow);
+
+        const error = await expectCodedRefusal(mgmt.restartSystemSession(sessionId, {
+            disposition: "hard_delete",
+            startReplacement: false,
+        }), "SYSTEM_AGENT_LOADED", 409);
+        assertIncludes(error.message, "w-slow", "the slow worker blocks 100 s after its last beat");
+        assertEqual(calls.length, 0, "nothing is stopped or archived");
+
+        // Past 3 of its intervals (6 min), the worker is gone.
+        slow.updatedAt = new Date(Date.now() - 400_000);
+        const result = await mgmt.restartSystemSession(sessionId, {
+            disposition: "hard_delete",
+            startReplacement: false,
+        });
+        assertEqual(result.retired, true, "the session is removed once the worker is gone");
+        assert(rows.get(sessionId).deletedAt, "the row is archived");
+    });
+
+    it("the old row of a moved child agent can go; the child's current row cannot", async () => {
+        const { mgmt, rows, calls, sessionId, workers } = createRestartHarness();
+        mgmt._systemAgents = [];
+        // child-agent moved from "restartable" to another parent.
+        const otherParentId = systemAgentUUID("other-parent");
+        const oldChildId = systemChildAgentUUID(sessionId, "child-agent");
+        const newChildId = systemChildAgentUUID(otherParentId, "child-agent");
+        rows.set(oldChildId, makeRow(oldChildId, { agentId: "child-agent", parentSessionId: sessionId }));
+        rows.set(newChildId, makeRow(newChildId, { agentId: "child-agent", parentSessionId: otherParentId }));
+        workers.push(liveWorker("w-live", { "system-agents": {
+            loaded: ["restartable", "other-parent", "child-agent"],
+            sessions: [sessionId, otherParentId, newChildId],
+            heartbeatMs: 20_000,
+        } }));
+
+        await expectCodedRefusal(mgmt.restartSystemSession(newChildId, {
+            disposition: "hard_delete",
+            startReplacement: false,
+        }), "SYSTEM_AGENT_LOADED", 409);
+        assertEqual(calls.length, 0, "the child's current row is untouched");
+
+        const result = await mgmt.restartSystemSession(oldChildId, {
+            disposition: "hard_delete",
+            startReplacement: false,
+        });
+        assertEqual(result.retired, true, "the old row is removed");
+        assert(rows.get(oldChildId).deletedAt, "the old row is archived");
+        assertEqual(rows.get(newChildId).deletedAt, null, "the current row stays");
+    });
+
+    it("the portal's complete call refuses a system session, and does not wait on a person's session", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+        const transport = Object.create(NodeSdkTransport.prototype);
+        transport.mgmt = mgmt;
+
+        await expectCodedRefusal(transport.completeSession(sessionId), "SYSTEM_SESSION_PROTECTED", 409);
+        assertEqual(calls.length, 0, "no done command reaches the system session");
+        assertEqual(rows.get(sessionId).state, "running", "the system session keeps running");
+
+        const userId = "0c0c0c0c-1111-2222-3333-444444444444";
+        rows.set(userId, makeRow(userId, { isSystem: false, agentId: null, title: "Mine" }));
+        const sent = [];
+        mgmt.sendCommand = async (id, command) => { sent.push({ id, command }); };
+        await transport.completeSession(userId, "Finished here");
+        assertEqual(sent.length, 1, "one done command for the person's session");
+        assertEqual(sent[0].id, userId, "it goes to that session");
+        assertEqual(sent[0].command.cmd, "done", "it is the done command");
+        assertEqual(sent[0].command.args.reason, "Finished here", "the reason is passed on");
     });
 });
 
