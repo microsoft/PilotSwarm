@@ -9,6 +9,7 @@
 //   move by dragging, rename, delete, new file, new folder
 //   the divider: drag, keys, reset, kept across a reload; stacked on a phone
 //   no Workspace tab when the portal serves no folders; the empty states
+//   Win95: a raised window with a title bar and white wells; other themes unchanged
 import crypto from "node:crypto";
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
@@ -635,6 +636,95 @@ test("full screen: the Workspace tab is solid, nothing shows through", async ({ 
     const background = await page.locator(".ps-side-pane-layer:not(.is-parked) .ps-ws-pane").evaluate((el) => getComputedStyle(el).backgroundColor);
     const alpha = /rgba\([^)]*,\s*([\d.]+)\)/.exec(background)?.[1];
     expect(background === "transparent" || (alpha !== undefined && Number(alpha) < 1), `background ${background}`).toBe(false);
+});
+
+const computed = (locator, ...names) => locator.evaluate((el, names) => {
+    const style = getComputedStyle(el);
+    return Object.fromEntries(names.map((name) => [name, style[name]]));
+}, names);
+
+async function useTheme(page, themeId) {
+    await page.route("**/api/v1/me/profile**", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: { themeId } } } }));
+}
+
+test("Win95: the side pane is a raised window with a navy title bar, white wells and navy selection", async ({ page }) => {
+    await useTheme(page, "win95");
+    await routeWorkspace(page, new Folder({ "src/a.ts": "export const a = 1;\n", "README.md": "# App\n" }));
+    await openWorkspace(page);
+    await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "win95");
+
+    // The title bar has the panel header's gradient; the chosen tab is pressed in.
+    expect((await computed(page.locator(".ps-canvas-pane > .ps-artifact-pane-bar"), "backgroundImage")).backgroundImage)
+        .toMatch(/^linear-gradient\(90deg, rgb\(0, 0, 128\)/);
+    expect(await computed(page.getByRole("tab", { name: "Workspace" }), "borderTopColor", "borderBottomColor"))
+        .toEqual({ borderTopColor: "rgb(0, 0, 0)", borderBottomColor: "rgb(255, 255, 255)" });
+    expect(await computed(page.getByRole("tab", { name: "Canvas" }), "borderTopColor", "backgroundColor"))
+        .toEqual({ borderTopColor: "rgb(255, 255, 255)", backgroundColor: "rgb(192, 192, 192)" });
+
+    // The tree and the viewer are white wells; the open file's row is navy with white text.
+    expect((await computed(tree(page), "backgroundColor")).backgroundColor).toBe("rgb(255, 255, 255)");
+    await row(page, "README.md").click();
+    await expect(row(page, "README.md")).toHaveClass(/is-selected/);
+    expect(await computed(row(page, "README.md"), "backgroundColor", "color")).toEqual({ backgroundColor: "rgb(0, 0, 128)", color: "rgb(255, 255, 255)" });
+    expect((await computed(page.locator(".ps-ws-viewer-body"), "backgroundColor")).backgroundColor).toBe("rgb(255, 255, 255)");
+    expect((await computed(page.locator(".ps-ws-chip.is-on"), "backgroundColor", "color"))).toEqual({ backgroundColor: "rgb(0, 0, 128)", color: "rgb(255, 255, 255)" });
+    await page.screenshot({ path: test.info().outputPath("win95-workspace.png") });
+
+    // The find field removes the browser's focus ring, so focus shows as a navy outline.
+    await page.getByPlaceholder("Find files").click();
+    expect(await computed(page.locator(".ps-ws-finder"), "outlineStyle", "outlineColor")).toEqual({ outlineStyle: "solid", outlineColor: "rgb(0, 0, 128)" });
+});
+
+test("Win95: a disabled primary button, such as Save while it saves, is grey, not navy", async ({ page }) => {
+    await useTheme(page, "win95");
+    await routeWorkspace(page, new Folder({ "notes.txt": "n\n" }), { writeDelayMs: 1500 });
+    await openWorkspace(page);
+    await row(page, "notes.txt").click();
+    await editor(page).click();
+    await page.keyboard.type("x");
+    const save = page.getByRole("button", { name: "Save", exact: true });
+    await expect(save).toHaveClass(/is-primary/);
+    expect((await computed(save, "backgroundColor")).backgroundColor).toBe("rgb(0, 0, 128)");
+    await save.click();
+    await expect(save).toBeDisabled();
+    await expect(save).toHaveClass(/is-primary/);
+    expect(await computed(save, "backgroundColor", "color")).toEqual({ backgroundColor: "rgb(192, 192, 192)", color: "rgb(128, 128, 128)" });
+});
+
+test("Win95 on a phone: the list and the file fit the screen, and the thin top strip keeps its look", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    try {
+        await useTheme(page, "win95");
+        await routeWorkspace(page, new Folder({ "README.md": "# App\n", "src/a.ts": "export const a = 1;\n" }));
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+        await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "win95");
+        await page.getByRole("button", { name: "Show canvas" }).click();
+        await page.getByRole("tab", { name: "The session's folders and files" }).click();
+        await row(page, "README.md").click();
+        await expect(page.locator(".ps-ws-viewer .cm-content")).toHaveText("# App");
+
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+        for (const selector of [".ps-ws-pane", ".ps-ws-toolbar", ".ps-ws-viewer-bar", ".ps-ws-tree", ".ps-ws-viewer-body"]) {
+            const b = await page.locator(selector).boundingBox();
+            expect(b.x + b.width, selector).toBeLessThanOrEqual(391);
+        }
+        expect((await computed(tree(page), "backgroundColor")).backgroundColor).toBe("rgb(255, 255, 255)");
+        const strip = page.locator(".ps-canvas-pane > .ps-artifact-pane-bar.is-rev-strip");
+        await expect(strip).toHaveCount(1);
+        expect((await computed(strip, "backgroundImage")).backgroundImage).toBe("none");
+        await page.screenshot({ path: test.info().outputPath("win95-workspace-phone.png") });
+    } finally {
+        await context.close();
+    }
+});
+
+test("other themes keep their own side pane: no title bar gradient, no white wells", async ({ page }) => {
+    await routeWorkspace(page, new Folder({ "README.md": "# App\n" }));
+    await openWorkspace(page);
+    await expect(page.locator("html")).not.toHaveAttribute("data-ps-theme", "win95");
+    expect((await computed(page.locator(".ps-canvas-pane > .ps-artifact-pane-bar"), "backgroundImage")).backgroundImage).toBe("none");
+    expect((await computed(tree(page), "backgroundColor")).backgroundColor).not.toBe("rgb(255, 255, 255)");
 });
 
 test("markdown preview links: #heading scrolls, a file link opens the file, a web link opens a new tab", async ({ page }) => {
