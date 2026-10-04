@@ -66,6 +66,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
+import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
+import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -1426,6 +1428,9 @@ export function registerActivities(
         // WITHOUT them (suspected work-item redelivery after eviction/lock
         // churn). This line makes the executed input's truth visible.
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} attachments=${Array.isArray(input.attachments) ? input.attachments.length : "absent"}`);
+        const traceWarn = (message: string) => typeof activityCtx.traceWarn === "function"
+            ? activityCtx.traceWarn(message)
+            : activityCtx.traceInfo(message);
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
         const turnTelemetry = {
@@ -3787,21 +3792,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (!promise || typeof (promise as Promise<unknown>).then !== "function") return;
                 pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
             };
+            // The CLI's model.* trace events are recorded only while the
+            // debug.enable_model_event_logging feature is on for the session
+            // owner. Resolved once per turn from the in-memory feature cache.
+            const recordModelEvents = modelEventLoggingEnabled(
+                sessionManager.getFeatureFlagCache?.() ?? null,
+                catalogSessionRow?.owner ?? null,
+            );
             const EPHEMERAL_TYPES = new Set([
-                "assistant.live_tick",
-                "session.native_tasks_tick",
-                "session.background_tasks_changed",
-                "native.session.background_tasks_changed",
-                "assistant.message_delta",
-                "assistant.streaming_delta",
-                "assistant.reasoning_delta",
-                "reasoning_delta",
-                // Tool-call argument streaming fragments — the same transient
-                // per-token class as the other *_delta events. The assembled
-                // call is persisted separately as tool.execution_start, so
-                // recording these only bloats the CMS stream and floods the
-                // client event buffer (starving the milestone-only sequence view).
-                "assistant.tool_call_delta",
+                // Streaming fragments and live ticks (shared with the turn
+                // result filter in managed-session.ts). Tool-call argument
+                // fragments are among them: the assembled call is persisted
+                // separately as tool.execution_start, so recording them only
+                // bloats the CMS stream and floods the client event buffer
+                // (starving the milestone-only sequence view).
+                ...STREAMING_EVENT_TYPES,
                 "user.message", // Already recorded explicitly above — skip the SDK's duplicate
                 // Persisted ATOMICALLY by the drawCanvas bridge method (derive
                 // + write + record in one awaited, serialized section). The
@@ -3852,6 +3857,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return;
                     }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
+                    if (!recordModelEvents && MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING.has(event.eventType)) return;
                     const persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
                         ? { ...event, data: { ...(event.data as Record<string, unknown>), ...(input.turnIndex != null ? { questionIteration: input.turnIndex + 1 } : {}) } }
                         : event);
@@ -4177,6 +4183,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 return await targetSession.runTurn(prompt, {
                     onEvent,
+                    trace: traceWarn,
                     liveTurn: liveTurnEnabled,
                     modelSummary,
                     bootstrap: input.bootstrap,
@@ -4480,9 +4487,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         // Session workspaces: every result from here on comes from a turn
         // that got past the workspace check (see WorkspaceAttachCarrier).
-        const bodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
+        const fullBodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
             ? { ...(await executeTurnBody()), workspaceAttached: true }
             : await executeTurnBody();
+
+        // The result is stored durably twice: as this activity's result (the
+        // orchestration history) and in .ps-turn-commit.json (the session
+        // snapshot). Keep only the events the orchestration reads; the CMS
+        // already has every event from onEvent (issue #121).
+        const bodyResult: TurnResult = keepOrchestrationTurnEvents(fullBodyResult);
+        const sizeWarning = turnResultSizeWarning(bodyResult);
+        if (sizeWarning) traceWarn(`[runTurn] session=${input.sessionId} ${sizeWarning}`);
 
         // ── Session lifecycle protocol commit (proposal §3.2) ───────────
         // The turn and its snapshot durability are one activity completion:
@@ -4552,7 +4567,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     `adopting its stored result`,
                 );
                 return {
-                    ...(committed.storedResult as TurnResult),
+                    ...keepOrchestrationTurnEvents(committed.storedResult as TurnResult),
                     snapshotVersion: committed.version,
                     ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
                 };
