@@ -5481,10 +5481,7 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] .portal-header-status,
 :root[data-ps-theme="win95"] .portal-header-meta,
 :root[data-ps-theme="win95"] .portal-header-version,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-rev,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-btn,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-level {
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-rev {
   color: #ffffff;
   opacity: 1;
 }
@@ -10732,6 +10729,175 @@ textarea.ps-link-input {
 }
 .ps-ws-git-sha-link + .ps-ws-git-sha-link { margin-left: 4px; }
 .ps-ws-diff > .cm-editor { height: 100%; }
+
+/* ── Win95: the side pane (Canvas and Workspace tabs) ──────────────────────
+   The side pane kept the base theme's look under Win95: rounded pills, flat
+   grey lists, thin flat borders. These rules give it the look of the rest of
+   the theme: a raised window with a navy title bar, raised grey buttons,
+   white inset wells for the file tree, the git lists and the file viewer,
+   and navy selection. Scoped to [data-ps-theme="win95"] like the rest. */
+
+/* The pane is a raised window, like .ps-panel. On a phone it fills the
+   screen, so it keeps no frame. */
+:root[data-ps-theme="win95"] .ps-canvas-pane {
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+  background: var(--w95-face);
+}
+:root[data-ps-theme="win95"] .ps-mobile-canvas-layer .ps-canvas-pane {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* Its top bar is a title bar: the navy gradient of .ps-panel-header. When the
+   pane is full screen, the same controls move into the portal header, which
+   has the same gradient, so they get the same buttons there. On a phone the
+   bar is a thin strip with small buttons (.is-rev-strip); it keeps its look. */
+:root[data-ps-theme="win95"] .ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip) {
+  background: linear-gradient(90deg, #000080, #1084d0);
+  border-bottom: 0;
+  color: #ffffff;
+  padding: 3px 3px 3px 4px;
+}
+:root[data-ps-theme="win95"] .ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip) :is(.ps-artifact-pane-name, .ps-artifact-pane-type) {
+  color: #ffffff;
+  opacity: 1;
+}
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tabs, .ps-html-zoom) {
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Raised grey buttons, like every other Win95 control. */
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab, .ps-artifact-pane-btn, .ps-canvas-max-btn, .ps-html-zoom-btn, .ps-html-zoom-level),
+:root[data-ps-theme="win95"] :is(.ps-ws-chip, .ps-ws-icon-btn, .ps-ws-btn, .ps-ws-branch, .ps-ws-seg button, .ps-ws-sidetabs button, .ps-ws-find-btn) {
+  background: var(--w95-face);
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+}
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab, .ps-artifact-pane-btn, .ps-canvas-max-btn, .ps-html-zoom-btn, .ps-html-zoom-level):disabled,
+:root[data-ps-theme="win95"] :is(.ps-ws-chip, .ps-ws-icon-btn, .ps-ws-btn, .ps-ws-branch, .ps-ws-seg button, .ps-ws-sidetabs button, .ps-ws-find-btn):disabled {
+  background: var(--w95-face);
+  color: var(--w95-shadow);
+  opacity: 1;
+}
+
+/* Pressed while clicked, and for a tab or toggle that is on: the inset,
+   dithered look of the active toolbar toggle. */
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab, .ps-artifact-pane-btn, .ps-canvas-max-btn, .ps-html-zoom-btn, .ps-html-zoom-level):active:not(:disabled),
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab.is-on, .ps-artifact-pane-btn.is-active),
+:root[data-ps-theme="win95"] :is(.ps-ws-chip, .ps-ws-icon-btn, .ps-ws-btn, .ps-ws-branch, .ps-ws-seg button, .ps-ws-sidetabs button, .ps-ws-find-btn):active:not(:disabled),
+:root[data-ps-theme="win95"] .ps-ws-icon-btn.is-on {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+  background: repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+  color: var(--w95-dark);
+}
+
+/* A chosen folder, view or list tab: navy and white, like a selected row. */
+:root[data-ps-theme="win95"] :is(.ps-ws-chip.is-on, .ps-ws-seg button.is-on, .ps-ws-sidetabs button.is-on, .ps-ws-find-btn[aria-pressed="true"]) {
+  background: #000080;
+  color: #ffffff;
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+}
+:root[data-ps-theme="win95"] .ps-ws-btn.is-primary { background: #000080; color: #ffffff; }
+:root[data-ps-theme="win95"] .ps-ws-btn.is-danger { color: #800000; }
+/* The branch name's loading placeholder is a label, not a button. */
+:root[data-ps-theme="win95"] .ps-ws-branch.is-loading {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--ps-muted);
+}
+:root[data-ps-theme="win95"] :is(.ps-ws-seg, .ps-ws-sidetabs) {
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Toolbars on the button face, split by an etched line. */
+:root[data-ps-theme="win95"] .ps-ws-pane { background: var(--w95-face); }
+:root[data-ps-theme="win95"] :is(.ps-ws-chips, .ps-ws-toolbar, .ps-ws-viewer-bar, .ps-ws-compare-bar) {
+  border-bottom: 1px solid var(--w95-shadow);
+  box-shadow: 0 1px 0 var(--w95-light);
+}
+:root[data-ps-theme="win95"] .ps-ws-folder-path { color: var(--w95-dark); }
+:root[data-ps-theme="win95"] .ps-ws-pill {
+  border-radius: 0;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  color: var(--w95-dark);
+}
+
+/* Text fields are white inset wells, like the composer. */
+:root[data-ps-theme="win95"] :is(.ps-ws-finder, .ps-ws-find-input, .ps-ws-inline-input, .ps-ws-git-repo-select, .ps-ws-git-select),
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) .ps-canvas-slot-select {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-radius: 0;
+}
+/* The two find fields remove the browser's focus ring; show focus with a navy
+   outline. The repo picker's "No repository" stays grey. */
+:root[data-ps-theme="win95"] :is(.ps-ws-finder:focus-within, .ps-ws-find-input:focus) {
+  outline: 1px solid #000080;
+  outline-offset: 0;
+}
+:root[data-ps-theme="win95"] .ps-ws-git-repo-select.is-none { color: var(--ps-muted); }
+
+/* The file tree, the git lists and the file viewer are white inset wells,
+   like the session list. Folders are yellow, as in Explorer. */
+:root[data-ps-theme="win95"] :is(.ps-ws-tree, .ps-ws-found, .ps-ws-git-list) {
+  margin: 4px 8px 8px;
+  background: #ffffff;
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+}
+:root[data-ps-theme="win95"] .ps-ws-viewer-body {
+  margin: 6px 8px 8px;
+  background: #ffffff;
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+}
+:root[data-ps-theme="win95"] .ps-ws-row[aria-expanded] .ps-ws-row-icon svg { fill: #ffff00; }
+:root[data-ps-theme="win95"] .ps-ws-git-rail::after { background: #ffffff; }
+:root[data-ps-theme="win95"] .ps-ws-splitter::after { background: transparent; }
+:root[data-ps-theme="win95"] :is(.ps-ws-splitter:hover, .ps-ws-splitter:focus-visible, .ps-ws-splitter.is-dragging)::after {
+  background: #000080;
+  box-shadow: 0 0 0 1px #000080;
+}
+
+/* Square corners for the rest. */
+:root[data-ps-theme="win95"] :is(.ps-ws-git-ref, .ps-ws-sidetab-count, .ps-ws-picked-bar, .ps-ws-git-pickbar, .ps-ws-git-note, .ps-ws-frontmatter, .ps-ws-md-images, .ps-ws-img-blocked, .ps-ws-row-actions button, .ps-ws-md-body code, .ps-ws-md-body pre) {
+  border-radius: 0;
+}
+
+/* Dialogs and notices are raised grey boxes; a warning banner is tooltip
+   yellow. */
+:root[data-ps-theme="win95"] :is(.ps-ws-dialog, .ps-ws-notice) {
+  background: var(--w95-face);
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow), 2px 2px 0 rgba(0, 0, 0, 0.35);
+}
+:root[data-ps-theme="win95"] .ps-ws-notice.is-error { border-left: 4px solid #800000; }
+:root[data-ps-theme="win95"] .ps-ws-banner:not(.is-agent) {
+  background: #ffffe1;
+  border-bottom: 1px solid var(--w95-shadow);
+  color: var(--w95-dark);
+}
 
 /* Phone toolbar: all eight buttons on one row at any phone width. Each one
    gives up a few pixels (never under 34px) instead of the last action sliding
