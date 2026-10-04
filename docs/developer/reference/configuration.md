@@ -216,6 +216,21 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
+- Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
+  (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
+  `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,
+  `sessionLockRenewalBufferMs`), which takes precedence over the env var.
+  A running item renews its lock this many ms before the lock expires, so the
+  renewal buffer is the longest stall (a blocked event loop, a paused
+  database) it survives without losing the lock. An unset buffer defaults to
+  75% of its lock timeout. Locks under 15 s renew at half their timeout and
+  ignore the buffer.
+  - `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`: activity lock timeout. Default: `10000`.
+  - `PILOTSWARM_WORKER_LOCK_RENEWAL_BUFFER_MS`: activity lock renewal buffer.
+  - `PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS`: orchestration lock timeout. Default: `60000`.
+  - `PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS`: orchestration lock renewal buffer. Default: `45000`.
+  - `PILOTSWARM_SESSION_LOCK_TIMEOUT_MS`: session lock timeout. Default: duroxide's.
+  - `PILOTSWARM_SESSION_LOCK_RENEWAL_BUFFER_MS`: session lock renewal buffer.
 
 Example:
 
@@ -226,6 +241,9 @@ PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
 PILOTSWARM_TURN_TIMEOUT_MS=1200000
+PILOTSWARM_WORKER_LOCK_TIMEOUT_MS=10000
+PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS=60000
+PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS=45000
 ```
 
 ### Local Development

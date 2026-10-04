@@ -1202,13 +1202,45 @@ export interface PilotSwarmWorkerOptions {
     maxSessionsPerRuntime?: number;
     sessionIdleTimeoutMs?: number;
     /**
-     * Duroxide work-item lock timeout (ms). Governs how fast a crashed
-     * worker's in-flight activities are re-dispatched elsewhere. Default
-     * 10 000; fault-injection tests shrink it so kill/recovery cycles run
-     * in seconds. (The duroxide SESSION lock timeout — ~30s — is not
-     * exposed and remains the reclaim floor for session-pinned work.)
+     * Duroxide work-item (activity) lock timeout (ms). Governs how fast a
+     * crashed worker's in-flight activities are re-dispatched elsewhere.
+     * Default 10 000; fault-injection tests shrink it so kill/recovery cycles
+     * run in seconds. Env: `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`.
+     *
+     * Every lock below works the same way. A running item renews its lock
+     * `renewal buffer` ms before the lock expires, so the buffer is the
+     * longest stall (a blocked event loop, a paused database) the item
+     * survives without losing its lock. Locks of 15 s or more use the buffer;
+     * shorter locks renew at half their timeout and ignore it.
      */
     workerLockTimeoutMs?: number;
+    /**
+     * Activity lock renewal buffer (ms). Default: 75% of a lock timeout of
+     * 15 s or more, otherwise unset. Env: `PILOTSWARM_WORKER_LOCK_RENEWAL_BUFFER_MS`.
+     */
+    workerLockRenewalBufferMs?: number;
+    /**
+     * Orchestration lock timeout (ms): how long an orchestration turn may hold
+     * its instance before another worker can take it. Default 60 000.
+     * Env: `PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS`.
+     */
+    orchestratorLockTimeoutMs?: number;
+    /**
+     * Orchestration lock renewal buffer (ms). Default: 75% of the timeout
+     * (45 000 for the default timeout). Env: `PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS`.
+     */
+    orchestratorLockRenewalBufferMs?: number;
+    /**
+     * Duroxide session lock timeout (ms), the reclaim floor for session-pinned
+     * work. Default: duroxide's. Env: `PILOTSWARM_SESSION_LOCK_TIMEOUT_MS`.
+     */
+    sessionLockTimeoutMs?: number;
+    /**
+     * Session lock renewal buffer (ms). Default: 75% of a configured session
+     * lock timeout of 15 s or more, otherwise duroxide's.
+     * Env: `PILOTSWARM_SESSION_LOCK_RENEWAL_BUFFER_MS`.
+     */
+    sessionLockRenewalBufferMs?: number;
     workerNodeId?: string;
     /**
      * Dynamically install registry agent packages
