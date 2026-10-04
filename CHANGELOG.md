@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.2 — 2026-10-04
+
+**Upgrade note: roll every worker and portal together.** This release moves
+from duroxide-node 0.1.29 to 0.2.0, which brings duroxide-pg 0.1.35. Its
+first start adds a database migration, and processes on the older
+duroxide-pg refuse to start against the migrated schema. Do not roll workers
+alone, and do not roll back one tier on its own.
+
+**Turn results stay small (#121).** The `runTurn` activity result is stored in
+the orchestration history and in `.ps-turn-commit.json`. One tool call with a
+large argument used to make it 100–400 MB: thousands of
+`assistant.tool_call_delta` pieces, some arriving after the tool started,
+each given the call's full arguments.
+
+- The activity result keeps only the event types the orchestration reads:
+  `session.usage_info`, `assistant.usage`, `session.compaction_start`,
+  `session.compaction_complete` and `tool.execution_complete`. The CMS and
+  live viewers still get every event.
+- A turn result still over 4 MiB is logged as a warning with its largest
+  event types. Nothing is dropped.
+- The `arguments` copy rule no longer copies a call's arguments into
+  streaming pieces.
+- Argument pieces that arrive after their call started are logged once per
+  call: count, delay of the first and last piece, bytes.
+
+**Model trace events behind a debug flag.** New feature flag
+`debug.enable_model_event_logging`: off for the cluster, and users may turn it
+on for their own sessions. While it is off, the session event log skips
+`model.message`, `model.messages_snapshot`, `model.tool_execution` and
+`model.model_call_success`. They copy the conversation (the snapshot holds
+the whole message list on every turn), nothing reads them, and the same
+content is in `user.message`, `assistant.message` and the `tool.execution_*`
+events. Migration 0081 adds the flag.
+
+**One CLI process per pooled Copilot client.** Concurrent first sessions on
+one pooled client each started a Copilot CLI process. Every event and tool
+call then reached a session once per process, and the extra processes
+outlived shutdown. Sessions now share one start per client; a failed start
+drops the client from the pool.
+
+**duroxide 0.2.0 and lock settings.**
+
+- duroxide-node 0.2.0 is installed from its GitHub release by URL until it is
+  on npm.
+- `ctx.race()` now throws when the winning task failed. The turn loop
+  reaches the same `catch` with the same message as before, so running
+  sessions replay unchanged.
+- New worker options and `PILOTSWARM_*` env vars for every duroxide lock
+  setting. The orchestration lock goes from duroxide's 5 s to 60 s, with a
+  45 s renewal buffer: it now survives a 45 s stall instead of 2 s. An unset
+  renewal buffer defaults to 75% of its lock timeout. See the
+  [configuration reference](docs/developer/reference/configuration.md).
+
+**Win95 theme.** The side pane gets the theme's look.
+
 ## 0.8.1 — 2026-10-02
 
 **Git in the Workspace tab.** When a session folder is a git repository, or
