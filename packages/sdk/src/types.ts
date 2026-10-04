@@ -114,6 +114,8 @@ export interface TurnOptions {
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
     onEvent?: (event: CapturedEvent) => void;
+    /** Worker log line for problems seen during the turn (the runTurn activity trace). */
+    trace?: (message: string) => void;
     /** Emit coalesced assistant.live_tick events for the ephemeral live plane. */
     liveTurn?: boolean;
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
