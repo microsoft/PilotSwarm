@@ -67,6 +67,7 @@ import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycl
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
+import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -3791,6 +3792,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (!promise || typeof (promise as Promise<unknown>).then !== "function") return;
                 pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
             };
+            // The CLI's model.* trace events are recorded only while the
+            // debug.enable_model_event_logging feature is on for the session
+            // owner. Resolved once per turn from the in-memory feature cache.
+            const recordModelEvents = modelEventLoggingEnabled(
+                sessionManager.getFeatureFlagCache?.() ?? null,
+                catalogSessionRow?.owner ?? null,
+            );
             const EPHEMERAL_TYPES = new Set([
                 // Streaming fragments and live ticks (shared with the turn
                 // result filter in managed-session.ts). Tool-call argument
@@ -3849,6 +3857,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return;
                     }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
+                    if (!recordModelEvents && MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING.has(event.eventType)) return;
                     const persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
                         ? { ...event, data: { ...(event.data as Record<string, unknown>), ...(input.turnIndex != null ? { questionIteration: input.turnIndex + 1 } : {}) } }
                         : event);

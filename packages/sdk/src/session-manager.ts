@@ -1175,6 +1175,11 @@ export class SessionManager {
         for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
     }
 
+    /** The worker's feature flag cache, or null when the worker has no CMS. */
+    getFeatureFlagCache(): FeatureFlagCache | null {
+        return this.featureFlags;
+    }
+
     /**
      * Hot-swap the model-provider registry after a config-file change on
      * disk (ConfigMap update). Applies to all subsequent model resolution;

@@ -6,7 +6,7 @@ import { registerActivities } from "../../src/session-proxy.ts";
  * `turn(opts)` plays the Copilot turn: it can call `opts.onEvent` and returns
  * the ManagedSession turn result.
  */
-export function makeRunTurnHarness({ turn } = {}) {
+export function makeRunTurnHarness({ turn, owner = null, featureFlagCache = null } = {}) {
     const handlers = {};
     const runtime = { registerActivity(name, handler) { handlers[name] = handler; } };
     const session = {
@@ -20,6 +20,7 @@ export function makeRunTurnHarness({ turn } = {}) {
         getOrCreate: vi.fn(async () => session),
         getModelSummary: vi.fn(() => undefined),
         getWorkspaceProvider: vi.fn(() => null),
+        getFeatureFlagCache: vi.fn(() => featureFlagCache),
         invalidateWarmSession: vi.fn(async () => {}),
         resetSessionState: vi.fn(async () => {}),
         dehydrate: vi.fn(async () => {}),
@@ -28,7 +29,7 @@ export function makeRunTurnHarness({ turn } = {}) {
     };
     const recordedEvents = [];
     const catalog = {
-        getSession: vi.fn(async (sessionId) => ({ sessionId })),
+        getSession: vi.fn(async (sessionId) => ({ sessionId, owner })),
         recordEvents: vi.fn(async (_sessionId, events) => { recordedEvents.push(...events); }),
         upsertSessionMetricSummary: vi.fn(async () => {}),
         updateSession: vi.fn(async () => {}),
