@@ -9,8 +9,26 @@ concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  sdk-unit-windows:
+    name: Repository build and SDK unit tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install public model catalog for unit tests
+        shell: pwsh
+        run: Copy-Item .model_providers.example.json .model_providers.json
+      - shell: bash
+        run: npm run test:unit --workspace=pilotswarm-sdk
+
   basic:
-    name: Basic checks
+    name: Repository policy, build, and unit tests (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

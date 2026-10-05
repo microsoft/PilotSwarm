@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PilotSwarmWorker } from "../../dist/worker.js";
 import { SessionManager, agentOwnerKey } from "../../dist/session-manager.js";
 import { ManagedSession } from "../../dist/managed-session.js";
@@ -261,7 +262,7 @@ test("every bundled skill's description fits the index whole (240 characters)", 
     // The index clips a description at 240 characters (clipDescription). A
     // clipped one loses its end, which is where "Read this before …" usually
     // is. Read with the loader the index uses: block scalars too.
-    const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../plugins");
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../plugins");
     const long = [];
     let checked = 0;
     for (const plugin of fs.readdirSync(root)) {

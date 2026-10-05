@@ -53,9 +53,10 @@ function parseCgiHead(buffer) {
  * receive-pack, which runs the repo's pre-receive hook; nothing here sets an
  * env that would skip it.
  *
- * `backendPath` replaces git-http-backend; only the server's own tests use it.
+ * `backendPath` and `backendArgs` replace git-http-backend; only the server's
+ * own tests use them.
  */
-export async function startGitTokenServer({ projectRoot, backendPath } = {}) {
+export async function startGitTokenServer({ projectRoot, backendPath, backendArgs = [] } = {}) {
     const backend = backendPath ?? httpBackendPath();
     const tokens = new Map();
     const log = [];
@@ -113,7 +114,7 @@ export async function startGitTokenServer({ projectRoot, backendPath } = {}) {
             ...(req.headers["content-encoding"] ? { HTTP_CONTENT_ENCODING: req.headers["content-encoding"] } : {}),
             ...(req.headers["git-protocol"] ? { GIT_PROTOCOL: req.headers["git-protocol"] } : {}),
         });
-        const child = spawn(backend, [], { env, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(backend, backendArgs, { env, stdio: ["pipe", "pipe", "pipe"] });
         // The client went away, or close() dropped the connection, before the
         // backend finished: stop the backend.
         res.on("close", () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
