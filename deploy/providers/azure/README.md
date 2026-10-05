@@ -38,6 +38,11 @@ file in the environment secret `AZURE_DEPLOY_ENV`; put its Foundry deployments
 array and model-provider catalog in `AZURE_FOUNDRY_DEPLOYMENTS_JSON` and
 `AZURE_MODEL_PROVIDERS_JSON`. Set `"type": "openai"` and `"wireApi": "responses"`
 on its Foundry provider so Terra can use tools with reasoning enabled.
+A model entry can set its own `wireApi`, and the model's value wins. So a
+GPT-5.4 deployment next to Terra can stay on Chat Completions with
+`{ "name": "gpt-5.4", "wireApi": "completions" }`. The same works the other
+way: a provider on Chat Completions can list
+`{ "name": "gpt-5.6", "wireApi": "responses" }`.
 Nothing about the stamp's subscription, tenant,
 resource names, endpoint, app registration, access lists, or contact address
 is checked in. The Action writes these files only into the runner's ignored

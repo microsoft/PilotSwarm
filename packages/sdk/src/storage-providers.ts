@@ -9,7 +9,7 @@ import {
 } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
-import { DEFAULT_DUROXIDE_SCHEMA, type DuroxideStorageConfig, type RuntimeStorageConfig } from "./storage-config.js";
+import { DEFAULT_DUROXIDE_SCHEMA, resolveSessionCatalogUrl, type DuroxideStorageConfig, type RuntimeStorageConfig } from "./storage-config.js";
 
 const require = createRequire(import.meta.url);
 const { PostgresProvider } = require("duroxide");
@@ -87,7 +87,7 @@ const postgresRuntimeStorageProvider: RuntimeStorageProvider = {
     id: "postgres",
     capabilities: {},
     async createSessionCatalog(args) {
-        const url = args.sessionCatalogUrl ?? args.url;
+        const url = resolveSessionCatalogUrl(args);
         assertPostgresUrl(url, "postgres runtime session catalog");
         return PgSessionCatalog.create(url, args.cmsSchema, {
             useManagedIdentity: args.useManagedIdentity,
@@ -112,7 +112,7 @@ const horizondbRuntimeStorageProvider: RuntimeStorageProvider = {
         embeddingSupport: true,
     },
     async createSessionCatalog(args) {
-        const url = args.sessionCatalogUrl ?? args.url;
+        const url = resolveSessionCatalogUrl(args);
         assertPostgresUrl(url, "horizondb runtime session catalog");
         return PgSessionCatalog.create(url, args.cmsSchema, {
             useManagedIdentity: args.useManagedIdentity,

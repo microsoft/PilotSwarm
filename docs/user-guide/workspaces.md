@@ -42,6 +42,20 @@ durable storage: they survive turns, moves to other workers, and restarts.
 The agent is told so. Everything else on the worker (`/tmp`, the home
 folder) is scratch and can be gone at the next turn.
 
+**What loads agents and skills.** Only the working folder and your own
+folder do. An extra folder never adds its repo agents, skills or
+instructions, even when it is a repo clone.
+
+**Set it at create time.** A workspace can be set from outside only after
+the session's first turn. Before that, the change is refused with
+`WORKSPACE_SESSION_NOT_STARTED`. Pass the workspace when you create the
+session instead (`workspace` on `createSession`, or `workspace_root` and
+`workspace_folder` on the MCP `create_session` tool).
+
+**Right after a change.** `get_session_workspace` shows the new record and
+`revision` at once. Its `adopted` and `defaults` come from the last turn,
+whose revision is `turnRevision`. They catch up at the next turn.
+
 ## Working in a repo
 
 Ask for it in plain words, for example "clone duroxide and fix the typo in
@@ -101,6 +115,12 @@ users/<you>/
 - Agents run as native tasks, so your deployment must have native tasks on.
 - Your folder is named from your email, for example `ada_example.com`. A
   deployment without sign-in has one folder for everyone: `_anon`.
+- An extra folder inside your folder (for example `users/<you>/notes`)
+  replaces extra folder `home` while it is set. Your agents, skills and
+  instructions do not load then. `get_session_workspace` says so under
+  `defaults.skipped`.
+- A session that uses only the default folders writes no
+  `session.workspace_released` event when it goes idle: it holds nothing.
 
 **Who can see it.** Sessions are refused when they try to use another
 person's folder as a workspace. That is a rule against mistakes, not a
@@ -162,7 +182,9 @@ The one that lost is listed under `skipped`, with the reason.
 ## The Workspace tab: see and change the files yourself
 
 The portal's side pane has two tabs: **Canvas** and **Workspace**. Open the
-side pane with the toolbar's canvas button, then pick **Workspace**.
+side pane with the toolbar's canvas button, then pick **Workspace**. Or use
+**Manage session** → **Workspace** → **Files**: it shows the side pane on
+the Workspace tab.
 
 ```
 Workspace tab
@@ -245,5 +267,6 @@ turn them on.
 | `WORKSPACE_FOLDER_MISSING` | The folder is gone, for example a clone you removed | Make it again, or set another workspace |
 | `WORKSPACE_PATH_INVALID` | The folder is not allowed, for example another person's folder, or a link out of the root | Use your own folder, or a folder you are allowed to use |
 | `WORKSPACE_BUSY` | A background shell or agent task is running, and the change would stop it | Wait for it, or stop it, then ask again |
+| `WORKSPACE_SESSION_NOT_STARTED` | A change from outside reached a session that has not run its first turn | Pass the workspace when you create the session, or set it after the first turn |
 | `WORKSPACE_NOT_MOUNTED` | The deployment's storage is not reachable from this worker | It retries by itself; tell the deployment's admins if it lasts |
 | The agent says your own folder is not available | A session with no workspace could not reach your folder. The turn ran anyway, in a temporary folder on the worker | Files written in that turn are not kept. Ask again later for work that needs your folder |

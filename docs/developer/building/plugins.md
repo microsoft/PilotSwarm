@@ -519,6 +519,22 @@ Completions. The setting follows shared and personal provider instances.
 For Foundry's `/openai/v1` endpoint, use `"type": "openai"`. Terra requires
 Responses when combining function tools with reasoning.
 
+A model entry can set its own `wireApi`. The model's value wins; a model
+without one uses the provider's. For example, Azure GPT-5.6 needs Responses
+for tools with reasoning, while GPT-5.4 under the same provider stays on Chat
+Completions:
+
+```json
+"models": [
+  { "name": "gpt-5.6", "wireApi": "responses" },
+  { "name": "gpt-5.4" }
+]
+```
+
+Only `openai`, `openai-proxy` and `azure` models accept `wireApi`. Any other
+value or type fails the catalog load, naming the `provider:model`. See
+[Configuration](../reference/configuration.md#request-format-wireapi).
+
 Credentials are write-only runtime provider data. Create shared/personal
 instances through Admin Console or `PilotSwarmManagementClient`; never check
 credentials into the model catalog. `env:VAR_NAME` references in legacy local

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { processStartTimeMs, taskProcessAlive } from "../../dist/process-tree.js";
 
-test("a process's start time is read from the host, to within a couple of seconds", async (t) => {
+test("a process's start time is read from the host, to within a couple of seconds", { skip: process.platform === "win32" && "process start times use Linux /proc" }, async (t) => {
     const before = Date.now();
     const child = spawn("sleep", ["30"], { stdio: "ignore" });
     t.after(() => { try { process.kill(child.pid, "SIGKILL"); } catch {} });
@@ -18,7 +18,7 @@ test("a process's start time is read from the host, to within a couple of second
     assert.ok(Math.abs(started - before) < 2_500, `${started - before} ms off`);
 });
 
-test("a task's pid counts only while it runs the process the task started (review R4)", async (t) => {
+test("a task's pid counts only while it runs the process the task started (review R4)", { skip: process.platform === "win32" && "process start times use Linux /proc" }, async (t) => {
     const child = spawn("sleep", ["30"], { stdio: "ignore" });
     t.after(() => { try { process.kill(child.pid, "SIGKILL"); } catch {} });
     await new Promise((resolve) => setTimeout(resolve, 100));

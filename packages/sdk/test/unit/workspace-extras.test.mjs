@@ -292,7 +292,7 @@ describe("combineWorkspaceProviders", () => {
         assert.deepEqual(await combined.listRoots(), [{ name: "repos", path: "/ws/repos" }, { name: "logs", path: "/ws/logs" }]);
 
         const toLogs = await combined.ensureAttached({ ...REQ, workspace: { schema: 1, root: "logs", folder: "svc" }, attachment: "logs" });
-        assert.deepEqual(toLogs, { ok: true, path: "/ws/logs/svc" });
+        assert.deepEqual(toLogs, { ok: true, path: path.join("/ws/logs", "svc") });
         assert.equal(logs.callsFor("ensureAttached").length, 1);
         assert.equal(logs.callsFor("ensureAttached")[0].req.attachment, "logs");
         assert.equal(repos.callsFor("ensureAttached").length, 0);

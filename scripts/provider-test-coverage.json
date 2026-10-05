@@ -145,6 +145,7 @@
     "test/local/system-agent-bootstrap.test.js",
     "test/local/system-agent-cron-contracts.test.js",
     "test/local/system-agents.test.js",
+    "test/local/token-manager-new-sessions.test.js",
     "test/local/system-child-propagation.test.js",
     "test/local/system-copilot-key.test.js",
     "test/local/system-session-restart.test.js",

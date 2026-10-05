@@ -1,6 +1,7 @@
 import {
     RESPONSE_LATEST_KEY,
     sanitizePromptAttachmentRefs,
+    systemSessionProtectedError,
 } from "./types.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
@@ -535,7 +536,7 @@ export class PilotSwarmClient {
         // Guard: refuse to delete system sessions (CMS will also throw)
         const session = await this._catalog.getSession(sessionId);
         if (session?.isSystem) {
-            throw new Error("Cannot delete system session");
+            throw systemSessionProtectedError("delete");
         }
 
         // Cascade to descendants. Enumerate BEFORE deleting the target: the

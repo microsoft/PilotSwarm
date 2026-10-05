@@ -15,7 +15,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
 import { SearchQuery, closeSearchPanel, findNext, findPrevious, getSearchQuery, openSearchPanel, search, setSearchQuery } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
-import { MergeView, diff } from "@codemirror/merge";
+import { MergeView, diff, goToNextChunk, goToPreviousChunk, unifiedMergeView } from "@codemirror/merge";
 
 const code = (role) => `var(--ps-code-${role}, var(--ps-foreground))`;
 
@@ -42,6 +42,13 @@ const highlight = HighlightStyle.define([
     { tag: t.monospace, color: code("string") },
     { tag: t.quote, color: code("comment"), fontStyle: "italic" },
 ]);
+
+// The text can take focus even when it is read-only (a diff, a read-only
+// file, the left side of Compare). Otherwise a click there leaves focus on
+// the page, and a key typed next runs the portal's session shortcuts
+// (D deletes the session). Focus inside the pane ([data-own-keys]) keeps
+// keys there; keyboard users can also scroll the text.
+const focusable = EditorView.contentAttributes.of({ tabindex: "0" });
 
 const theme = EditorView.theme({
     "&": { height: "100%", fontSize: "13px", backgroundColor: "transparent", color: "var(--ps-foreground)" },
@@ -221,6 +228,7 @@ export async function createEditor(parent, { doc = "", name = "", readOnly = fal
                 syntaxHighlighting(highlight),
                 language ?? [],
                 isMarkdownName(name) ? EditorView.lineWrapping : [],
+                focusable,
                 editable.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
                 EditorView.updateListener.of((update) => {
                     // sliceDoc, not doc.toString(): it joins lines with the file's own line end.
@@ -277,7 +285,7 @@ export async function createEditor(parent, { doc = "", name = "", readOnly = fal
  */
 export async function createCompare(parent, { theirs, mine, name = "", lineSeparator = null } = {}) {
     const language = await languageFor(name, mine);
-    const shared = [lineSeparator ? EditorState.lineSeparator.of(lineSeparator) : [], basicSetup, findInFile, theme, syntaxHighlighting(highlight), language ?? [], EditorView.lineWrapping];
+    const shared = [lineSeparator ? EditorState.lineSeparator.of(lineSeparator) : [], basicSetup, focusable, findInFile, theme, syntaxHighlighting(highlight), language ?? [], EditorView.lineWrapping];
     const merge = new MergeView({
         parent,
         a: { doc: theirs, extensions: [...shared, EditorState.readOnly.of(true), EditorView.editable.of(false)] },
@@ -288,6 +296,84 @@ export async function createCompare(parent, { theirs, mine, name = "", lineSepar
     });
     return {
         getMine: () => merge.b.state.sliceDoc(),
+        destroy: () => merge.destroy(),
+    };
+}
+
+// ─── A git diff, like VS Code's ───────────────────────────────────────
+// Removed lines red, added lines green (the theme's code colours, tinted),
+// the changed words inside a line stronger. Unchanged runs fold away.
+
+const removed = (percent) => `color-mix(in srgb, var(--ps-code-deleted, #f85149) ${percent}%, transparent)`;
+const added = (percent) => `color-mix(in srgb, var(--ps-code-inserted, #3fb950) ${percent}%, transparent)`;
+const diffTheme = EditorView.theme({
+    "&.cm-merge-a .cm-changedLine, .cm-deletedChunk": { backgroundColor: removed(16) },
+    "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": { backgroundColor: added(16) },
+    // The changed words: a line under them, so the code on top stays readable.
+    "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText": { background: `linear-gradient(${removed(85)}, ${removed(85)}) bottom/100% 2px no-repeat` },
+    "&.cm-merge-b .cm-changedText": { background: `linear-gradient(${added(85)}, ${added(85)}) bottom/100% 2px no-repeat` },
+    "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--ps-code-deleted, #f85149)" },
+    "&.cm-merge-b .cm-changedLineGutter, .cm-inlineChangedLineGutter": { background: "var(--ps-code-inserted, #3fb950)" },
+    ".cm-collapsedLines": { color: "var(--ps-muted)", background: "color-mix(in srgb, var(--ps-foreground) 6%, transparent)", fontFamily: "inherit" },
+    // A whole file added or deleted: one editor, every line tinted.
+    "&.ps-ws-whole-added .cm-line": { backgroundColor: added(16) },
+    "&.ps-ws-whole-deleted .cm-line": { backgroundColor: removed(16) },
+    "&.ps-ws-whole-added .cm-lineNumbers .cm-gutterElement": { boxShadow: `inset -3px 0 0 ${added(85)}` },
+    "&.ps-ws-whole-deleted .cm-lineNumbers .cm-gutterElement": { boxShadow: `inset -3px 0 0 ${removed(85)}` },
+});
+const DIFF_CONFIG = { scanLimit: 5000, timeout: 1500 };
+const COLLAPSE = { margin: 3, minSize: 6 };
+
+/**
+ * A read-only diff in `parent`: `original` (before) and `modified` (after),
+ * side by side ("split") or in one column ("inline", the removed lines
+ * above the added ones). `whole` ("added" or "deleted"): the file exists on
+ * one side only, so it shows once, with line numbers, every line tinted.
+ * Returns next/previous change (none for a whole file) and destroy.
+ */
+export async function createDiff(parent, { original = "", modified = "", name = "", layout = "split", whole = null } = {}) {
+    const language = await languageFor(name, modified || original);
+    const shared = [basicSetup, focusable, findInFile, theme, diffTheme, syntaxHighlighting(highlight), language ?? [], EditorView.lineWrapping, EditorState.readOnly.of(true), EditorView.editable.of(false)];
+    if (whole === "added" || whole === "deleted") {
+        const view = new EditorView({
+            parent,
+            state: EditorState.create({
+                doc: whole === "added" ? modified : original,
+                extensions: [...shared, EditorView.editorAttributes.of({ class: `ps-ws-whole-${whole}` })],
+            }),
+        });
+        return { next: null, previous: null, destroy: () => view.destroy() };
+    }
+    const move = (view, command) => {
+        command(view);
+        view.focus();
+    };
+    if (layout === "inline") {
+        const view = new EditorView({
+            parent,
+            state: EditorState.create({
+                doc: modified,
+                extensions: [...shared, unifiedMergeView({ original, mergeControls: false, gutter: true, highlightChanges: true, syntaxHighlightDeletions: true, collapseUnchanged: COLLAPSE, diffConfig: DIFF_CONFIG })],
+            }),
+        });
+        return {
+            next: () => move(view, goToNextChunk),
+            previous: () => move(view, goToPreviousChunk),
+            destroy: () => view.destroy(),
+        };
+    }
+    const merge = new MergeView({
+        parent,
+        a: { doc: original, extensions: shared },
+        b: { doc: modified, extensions: shared },
+        highlightChanges: true,
+        gutter: true,
+        collapseUnchanged: COLLAPSE,
+        diffConfig: DIFF_CONFIG,
+    });
+    return {
+        next: () => move(merge.b, goToNextChunk),
+        previous: () => move(merge.b, goToPreviousChunk),
         destroy: () => merge.destroy(),
     };
 }

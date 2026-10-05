@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../../../../scripts/run-tests.sh", import.meta.url));
 const EXTERNAL_FIXTURE = "packages/sdk/test/fixtures/external-vitest";
-const raw = readFileSync(SCRIPT, "utf8");
+const raw = readFileSync(SCRIPT, "utf8").replace(/\r\n/g, "\n");
 
 function bashExecutable() {
     if (process.platform !== "win32") return "bash";

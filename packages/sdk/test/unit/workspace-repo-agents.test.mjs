@@ -271,7 +271,7 @@ describe("resolveRepoAdoption", () => {
         const result = resolveRepoAdoption(base({ nativeTasks: false, scan: scanOf({ ".github/agents/a.agent.md": agentFile("a") }, ["build"]) }));
         assert.deepEqual(result.customAgents, []);
         assert.match(result.report.skipped[0].reason, /native tasks are off/);
-        assert.deepEqual(result.skillDirectories, ["/ws/a/repo/.github/skills"], "the clone root's skills folder");
+        assert.deepEqual(result.skillDirectories, [path.join("/ws/a/repo", ".github", "skills")], "the clone root's skills folder");
         assert.deepEqual(result.report.skills, ["build"]);
     });
 

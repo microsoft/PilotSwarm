@@ -166,18 +166,23 @@ test("manual navigation releases the latch and the filter exception", () => {
     assert.equal(state.sessions.filterExceptionId, null);
 });
 
-function makeDeepLinkController({ getSessionError }) {
+function makeDeepLinkController({ getSessionError, groups = [] }) {
     const sessions = [
         { sessionId: "s1", title: "S1", status: "idle", owner: ME },
         { sessionId: "s2", title: "S2", status: "idle", owner: BOB },
     ];
+    const getSessionCalls = [];
     const transport = {
         start: async () => {},
         stop: async () => {},
         getAuthContext: () => ({ principal: ME, authorization: { role: "user" } }),
         listSessions: async () => sessions.map((session) => ({ ...session })),
-        listSessionGroups: async () => [],
+        listSessionGroups: async () => {
+            if (groups instanceof Error) throw groups;
+            return groups.map((group) => ({ ...group }));
+        },
         getSession: async (sessionId) => {
+            getSessionCalls.push(sessionId);
             if (sessionId === "missing") throw getSessionError;
             return sessions.find((session) => session.sessionId === sessionId) || null;
         },
@@ -186,7 +191,7 @@ function makeDeepLinkController({ getSessionError }) {
     };
     const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
-    return { controller, store };
+    return { controller, store, getSessionCalls };
 }
 
 test("deep-link target rejected by the server fails the intent as not_found with no fallback selection", async () => {
@@ -225,6 +230,60 @@ test("deep-link network failure keeps the retryable flavor", async () => {
     const navError = selectNavigationError(state);
     assert.equal(navError.errorKind, "network");
     assert.equal(navError.retryable, true);
+});
+
+// A folder row id ("group:<uuid>") is not a session. Asking the server for
+// one wrote an authz "deny" audit row and failed the link with a 404.
+test("a deep link to a folder selects the folder without asking the server for a session", async () => {
+    const { controller, store, getSessionCalls } = makeDeepLinkController({
+        getSessionError: new Error("unused"),
+        groups: [{ groupId: "g1", title: "G1" }],
+    });
+
+    await controller.start({ initialSessionId: "group:g1" });
+    await controller.stop();
+
+    const state = store.getState();
+    assert.equal(getSessionCalls.includes("group:g1"), false, "getSession must not see a folder id");
+    assert.deepEqual(selectNavigationIntent(state), { sessionId: "group:g1", status: "resolved" });
+    assert.equal(state.sessions.activeSessionId, "group:g1");
+});
+
+test("a deep link to an unknown folder fails as not_found without asking the server", async () => {
+    const { controller, store, getSessionCalls } = makeDeepLinkController({
+        getSessionError: new Error("unused"),
+        groups: [{ groupId: "g1", title: "G1" }],
+    });
+
+    await controller.start({ initialSessionId: "group:gone" });
+    await controller.stop();
+
+    const state = store.getState();
+    assert.equal(getSessionCalls.includes("group:gone"), false, "getSession must not see a folder id");
+    assert.deepEqual(state.sessions.navigationIntent, {
+        sessionId: "group:gone",
+        status: "failed",
+        errorKind: "not_found",
+    });
+});
+
+test("a deep link to a folder fails as retryable when the folder list could not be fetched", async () => {
+    const { controller, store, getSessionCalls } = makeDeepLinkController({
+        getSessionError: new Error("unused"),
+        groups: new TypeError("fetch failed"),
+    });
+
+    await controller.start({ initialSessionId: "group:g1" });
+    await controller.stop();
+
+    const state = store.getState();
+    assert.equal(getSessionCalls.includes("group:g1"), false, "getSession must not see a folder id");
+    assert.deepEqual(state.sessions.navigationIntent, {
+        sessionId: "group:g1",
+        status: "failed",
+        errorKind: "network",
+    });
+    assert.equal(selectNavigationError(state).retryable, true);
 });
 
 test("setNavigationIntent latches onto an already-loaded session away from the default selection", async () => {
