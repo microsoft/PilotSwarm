@@ -1,7 +1,8 @@
 /**
  * Pg pool factory — feature-switched between connection-string auth and
  * Microsoft Entra (AAD) token auth for the bicep-deploy flow on AKS with
- * workload identity. Used by the CMS + facts pg.Pool paths.
+ * workload identity. Used by the CMS + facts pg.Pool paths, and by the
+ * portal's LISTEN connections through `buildSessionCatalogPgClientConfig`.
  *
  * The duroxide orchestration store has its own Entra path
  * (`PostgresProvider.connectWithSchemaAndEntra`, available in
@@ -12,8 +13,13 @@
  *
  * @internal
  */
-import type { PoolConfig } from "pg";
+import type { ClientConfig, PoolConfig } from "pg";
 import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
+import {
+    resolveSessionCatalogUrl,
+    resolveStorageConfig,
+    type StorageConfigLegacyOptions,
+} from "./storage-config.js";
 
 /**
  * AAD scope for Azure Database for PostgreSQL Flexible Server. Constant
@@ -190,6 +196,41 @@ export function buildPgPoolConfig(opts: PgPoolFactoryOptions): PoolConfig {
         max,
         ...sslConfig,
     };
+}
+
+/**
+ * Build the config for one `pg.Client` that connects to the session
+ * catalog (CMS) database the same way the CMS pool does:
+ *
+ * 1. The same storage resolution picks the URL (`cmsFactsDatabaseUrl` or
+ *    `PILOTSWARM_SESSION_CATALOG_URL` first, then the runtime URL).
+ * 2. `buildPgPoolConfig` applies the sslmode fix and, in managed-identity
+ *    mode, the AAD `password` callback. pg calls it on each new
+ *    connection, so a reconnect gets a fresh token.
+ * 3. Pool-only fields are dropped.
+ *
+ * The portal's LISTEN connections use this. NOTIFY from the CMS only
+ * reaches listeners on the same database.
+ *
+ * Throws when the URL is not a PostgreSQL URL, or when managed identity
+ * has no Postgres user. Error messages never include the URL.
+ */
+export function buildSessionCatalogPgClientConfig(
+    options: StorageConfigLegacyOptions = {},
+    env: Record<string, string | undefined> = process.env,
+): ClientConfig {
+    const storage = resolveStorageConfig({ env, options });
+    const url = resolveSessionCatalogUrl(storage.runtime);
+    if (!(url.startsWith("postgres://") || url.startsWith("postgresql://"))) {
+        throw new Error("The session catalog URL is not a PostgreSQL URL.");
+    }
+    const config: PoolConfig = buildPgPoolConfig({
+        connectionString: url,
+        useManagedIdentity: storage.runtime.useManagedIdentity,
+        aadUser: storage.runtime.aadDbUser,
+    });
+    delete config.max;
+    return config;
 }
 
 /**

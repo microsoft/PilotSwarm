@@ -14,6 +14,13 @@ export const FEATURE_FLAGS = {
         defaultAllowUserOverride: true,
         requiredCapability: "agents.base_v2",
     },
+    "debug.enable_model_event_logging": {
+        displayName: "Model event logging",
+        description: "Record the Copilot CLI's model trace events (model.message, model.messages_snapshot, model.tool_execution, model.model_call_success) in the session event log. They repeat the whole conversation on every turn and are large; turn on only for debugging.",
+        defaultEnabled: false,
+        defaultAllowUserOverride: true,
+        requiredCapability: null,
+    },
 } as const;
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
 export type ResolveOptions = { fallback: boolean; required?: never } | { required: true; fallback?: never };

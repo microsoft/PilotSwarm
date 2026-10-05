@@ -1,4 +1,5 @@
 import pg from "pg";
+import { pgErrorCode } from "./pg-error-code.js";
 
 /**
  * The canvas-plane relay: one LISTEN connection to the CMS primary, fanned
@@ -15,27 +16,42 @@ import pg from "pg";
  * client, a 30 s liveness probe, and reconnect-with-backoff. Subscriptions
  * live in process memory, so a reconnect needs no re-reads — browsers detect
  * any missed seq and resync themselves.
+ *
+ * `connection` is the pg client config for the session catalog database,
+ * from buildSessionCatalogPgClientConfig in pilotswarm-sdk. It follows the
+ * CMS rules: the same database, the sslmode fix, and the managed-identity
+ * password callback. `null` means no database, so the plane is unavailable.
+ * Without `connection`, a plain `connectionString` is used as before.
  */
 export function createCanvasPlane({
+    connection,
     connectionString = process.env.DATABASE_URL,
     schema = process.env.PILOTSWARM_CMS_SCHEMA || "copilot_sessions",
     channel = "pilotswarm_canvas_live",
+    createClient = (options) => new pg.Client(options),
 } = {}) {
     const subscribers = new Map(); // sessionId -> Set<cb>
     let client = null;
     let stopped = false;
     let probeTimer = null;
+    let reconnectTimer = null;
     let reconnectDelay = 1_000;
 
-    const available = Boolean(connectionString);
+    const clientConfig = connection !== undefined
+        ? connection
+        : (connectionString ? { connectionString } : null);
+    const available = Boolean(clientConfig);
 
     async function connect() {
         if (stopped || !available) return;
-        const next = new pg.Client({ connectionString, keepAlive: true });
+        const next = createClient({ ...clientConfig, keepAlive: true });
         try {
             await next.connect();
             await next.query(`LISTEN ${channel}`);
-        } catch {
+        } catch (error) {
+            // One line with the error code only. The backoff caps it at
+            // one line per 15 s.
+            console.warn(`[canvas-plane] LISTEN connect failed (${pgErrorCode(error)}); retrying`);
             try { await next.end(); } catch { /* already dead */ }
             scheduleReconnect();
             return;
@@ -76,8 +92,15 @@ export function createCanvasPlane({
                 try { cb(update); } catch { /* one bad socket must not stop the fan-out */ }
             }
         });
+        // pg fires both "error" and "end" when a connection drops: act once,
+        // close the old client, and open one new one (two LISTEN clients
+        // would send every canvas update twice).
+        let gone = false;
         const onGone = () => {
+            if (gone) return;
+            gone = true;
             if (client === next) client = null;
+            next.end().catch(() => { /* already dead */ });
             scheduleReconnect();
         };
         next.on("error", onGone);
@@ -85,10 +108,14 @@ export function createCanvasPlane({
     }
 
     function scheduleReconnect() {
-        if (stopped) return;
+        if (stopped || reconnectTimer) return;
         const delay = reconnectDelay;
         reconnectDelay = Math.min(reconnectDelay * 2, 15_000);
-        setTimeout(() => { void connect(); }, delay);
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            void connect();
+        }, delay);
+        reconnectTimer.unref?.();
     }
 
     return {
@@ -118,6 +145,7 @@ export function createCanvasPlane({
         async stop() {
             stopped = true;
             if (probeTimer) clearInterval(probeTimer);
+            if (reconnectTimer) clearTimeout(reconnectTimer);
             subscribers.clear();
             if (client) {
                 try { await client.end(); } catch { /* going down anyway */ }

@@ -3,7 +3,8 @@
  *
  * Covers the assessment thresholds and their exact definitions
  * (docs/proposals/session-regen-and-footprint.md §11), the TTL-only cache
- * contract, optional-axis failure isolation, and the 0035 migration shape.
+ * contract, optional-axis failure isolation, the 0035 migration shape, and
+ * the regen eligibility read model with its per-epoch turn count.
  *
  * Run: node --test test/unit/footprint.test.mjs   (requires a prior build)
  */
@@ -266,4 +267,175 @@ test("migration 0035 registers both footprint procs with session-scoped predicat
     for (const body of bodies) {
         assert.ok(body.includes("session_id = p_session_id"), "aggregate must be session-scoped");
     }
+});
+
+// ── Regen eligibility read model (issue #111) ───────────────────
+
+/** Six hours: the regenerate command's cooldown for agent and parent requests. */
+const REGEN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * A fake event log read the way the CMS proc reads it: only the asked-for
+ * types, only rows before `beforeSeq`, the newest `limit` rows, returned in
+ * seq order.
+ */
+function eventLog(events) {
+    return async (_id, beforeSeq, limit = 1000, eventTypes) => events
+        .filter((e) => e.seq < beforeSeq && (!eventTypes || eventTypes.includes(e.eventType)))
+        .sort((a, b) => b.seq - a.seq)
+        .slice(0, limit)
+        .reverse();
+}
+
+/** `session.turn_started` rows at consecutive seqs, one per iteration given. */
+function turnsStarted(firstSeq, iterations) {
+    return iterations.map((iteration, i) => ({
+        seq: firstSeq + i, eventType: "session.turn_started", data: { iteration },
+    }));
+}
+
+const range = (from, count) => Array.from({ length: count }, (_, i) => from + i);
+const event = (seq, eventType, data = {}) => ({ seq, eventType, data });
+const degraded = async () => compactions({ starts: 3, completes: 3, tokensRemoved: 90_000 });
+
+test("a degraded session with 12 turns at epoch 0 can be regenerated", async () => {
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            getSessionCompactionStats: degraded,
+            getSessionEventsBefore: eventLog(turnsStarted(1, range(0, 12))),
+        }),
+        SESSION,
+    );
+    assert.equal(fp.assessment.level, "degraded");
+    assert.equal(fp.assessment.recommendation, "regenerate");
+    assert.equal(fp.turnsThisEpoch, 12);
+    assert.deepEqual(fp.regenEligibility, { eligible: true });
+});
+
+test("system and service sessions are never eligible", async () => {
+    for (const [extra, reason] of [[{ isSystem: true }, "is_system"], [{ serviceKind: "distiller" }, "is_service"]]) {
+        const fp = await computeSessionFootprint(
+            fakeSources({
+                getSession: async () => ({ createdAt: Date.now() - 86_400_000, currentIteration: 12, ...extra }),
+                getSessionCompactionStats: degraded,
+                getSessionEventsBefore: eventLog(turnsStarted(1, range(0, 12))),
+            }),
+            SESSION,
+        );
+        assert.deepEqual(fp.regenEligibility, { eligible: false, reason });
+    }
+});
+
+test("a requested regeneration reads already_pending until it fails", async () => {
+    const turns = turnsStarted(1, range(0, 12));
+    const pending = await computeSessionFootprint(
+        fakeSources({
+            getSessionEventsBefore: eventLog([...turns, event(20, "session.regenerate_requested")]),
+        }),
+        SESSION,
+    );
+    assert.deepEqual(pending.regenEligibility, { eligible: false, reason: "already_pending" });
+
+    // The newest regen event decides: a failure clears the pending attempt.
+    const failed = await computeSessionFootprint(
+        fakeSources({
+            getSessionEventsBefore: eventLog([
+                ...turns,
+                event(20, "session.regenerate_requested"),
+                event(21, "session.regenerate_failed", { stage: "cancelled" }),
+            ]),
+        }),
+        SESSION,
+    );
+    assert.deepEqual(failed.regenEligibility, { eligible: true });
+});
+
+test("a flipped epoch reads epoch_unsettled until its first turn proves it", async () => {
+    const lastRegeneratedAt = Date.now() - 7 * HOUR_MS;
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            getSession: async () => ({ createdAt: Date.now() - 86_400_000, transcriptEpoch: 1, lastRegeneratedAt }),
+            getEpochBoundarySeq: async () => 30,
+            getSessionEventsBefore: eventLog([
+                ...turnsStarted(1, range(0, 12)),
+                event(20, "session.regenerate_requested"),
+                event(30, "session.epoch_committed", { fromEpoch: 0, toEpoch: 1 }),
+                ...turnsStarted(31, [12]),
+            ]),
+        }),
+        SESSION,
+    );
+    assert.deepEqual(fp.regenEligibility, { eligible: false, reason: "epoch_unsettled" });
+    assert.equal(fp.turnsThisEpoch, 1);
+});
+
+test("an epoch with fewer than 5 turns reads too_young, which an operator can force", async () => {
+    const lastRegeneratedAt = Date.now() - 7 * HOUR_MS;
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            // current_iteration counts every turn of the session; it must not be used.
+            getSession: async () => ({
+                createdAt: Date.now() - 86_400_000, currentIteration: 41, transcriptEpoch: 3, lastRegeneratedAt,
+            }),
+            getEpochBoundarySeq: async () => 100,
+            getSessionEventsBefore: eventLog([
+                ...turnsStarted(1, range(0, 40)),
+                event(100, "session.epoch_committed", { fromEpoch: 2, toEpoch: 3 }),
+                ...turnsStarted(101, [40]),
+                event(102, "session.regenerated", { epoch: 3 }),
+                // Iteration 41 started twice (a retry): one turn.
+                ...turnsStarted(103, [41, 41]),
+            ]),
+        }),
+        SESSION,
+    );
+    assert.equal(fp.turnsThisEpoch, 2);
+    assert.deepEqual(fp.regenEligibility, { eligible: false, reason: "too_young", forceable: true });
+});
+
+test("a recent regeneration adds cooldownUntil but stays eligible", async () => {
+    const lastRegeneratedAt = Date.now() - HOUR_MS;
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            getSession: async () => ({ createdAt: Date.now() - 86_400_000, transcriptEpoch: 1, lastRegeneratedAt }),
+            getEpochBoundarySeq: async () => 30,
+            getSessionEventsBefore: eventLog([
+                ...turnsStarted(1, range(0, 12)),
+                event(30, "session.epoch_committed", { fromEpoch: 0, toEpoch: 1 }),
+                ...turnsStarted(31, [12]),
+                event(32, "session.regenerated", { epoch: 1 }),
+                ...turnsStarted(33, range(13, 5)),
+            ]),
+        }),
+        SESSION,
+    );
+    assert.equal(fp.turnsThisEpoch, 6);
+    assert.deepEqual(fp.regenEligibility, { eligible: true, cooldownUntil: lastRegeneratedAt + REGEN_COOLDOWN_MS });
+});
+
+test("an epoch longer than the turn read window still counts every turn", async () => {
+    // 250 turns is more than the newest-turns window the footprint reads.
+    const epoch0 = await computeSessionFootprint(
+        fakeSources({ getSessionEventsBefore: eventLog(turnsStarted(1, range(0, 250))) }),
+        SESSION,
+    );
+    assert.equal(epoch0.turnsThisEpoch, 250);
+
+    const epoch2 = await computeSessionFootprint(
+        fakeSources({
+            getSession: async () => ({ createdAt: Date.now(), transcriptEpoch: 2, lastRegeneratedAt: Date.now() - 7 * HOUR_MS }),
+            getEpochBoundarySeq: async () => 1000,
+            getSessionEventsBefore: eventLog([
+                ...turnsStarted(1, range(0, 300)),
+                event(1000, "session.epoch_committed", { fromEpoch: 1, toEpoch: 2 }),
+                ...turnsStarted(1001, [300]),
+                event(1002, "session.regenerated", { epoch: 2 }),
+                ...turnsStarted(1003, range(301, 249)),
+            ]),
+        }),
+        SESSION,
+    );
+    assert.equal(epoch2.turnsThisEpoch, 250);
+    assert.deepEqual(epoch2.regenEligibility, { eligible: true });
 });

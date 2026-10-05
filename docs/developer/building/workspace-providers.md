@@ -322,14 +322,21 @@ PORTAL_CANVAS_COMMANDS_RUNNER=local     run them as a child process of the porta
 PORTAL_CANVAS_COMMANDS_ALLOW=git        the programs a command may run (default: git)
 ```
 
-`local` is for development: the program runs as the portal's own user, with
-a clean environment and no shell. For git it turns off hooks, fsmonitor,
-pagers, editors, credential helpers and the network, stops at the session
-folder when it looks for a repository, and refuses a repository whose own
-settings start programs (a diff textconv, a filter, an alias with `!`). The
-portal's user still reaches the portal's own files, so a shared deployment
-needs a sandboxed runner (a pod with the worker image, the roots, and no
-secrets) before it turns commands on.
+`local` runs the program as the portal's own user, in the portal's
+container, with a clean environment and no shell. For git it turns off
+hooks, fsmonitor, pagers, editors, credential helpers and the network, stops
+at the session folder when it looks for a repository, and refuses a
+repository whose own settings start programs (a diff textconv, a filter, an
+alias with `!`). The program still runs next to the portal's own files and
+secrets. So turn commands on only where you trust the people who sign in.
+A sandboxed runner (a pod with the worker image, the roots, and no secrets)
+would remove that limit; it does not exist yet. The portal image needs the
+programs too: `deploy/Dockerfile.portal` installs git.
+
+The Azure GitOps deployment turns commands on when `WORKSPACES_ENABLED=true`:
+its workspaces portal component sets `PORTAL_CANVAS_COMMANDS_RUNNER=local`
+(`deploy/providers/azure/gitops/portal/components/workspaces/portal-patch.yaml`).
+Remove that entry to keep commands off.
 
 ## Testing your provider
 

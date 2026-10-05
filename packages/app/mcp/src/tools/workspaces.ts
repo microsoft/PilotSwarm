@@ -22,7 +22,9 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
             title: "Get Session Workspace",
             description:
                 "Read a session's workspace: root and folder, revision, attach path, status (none, ready or "
-                + "unavailable), the last error, how many prompts are held, and the repo agents and skills adopted.",
+                + "unavailable), the last error, how many prompts are held, the repo agents and skills adopted, and the "
+                + "default folders used or left out. turnRevision is the revision the last turn ran under; adopted and "
+                + "defaults are as of it.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to read"),
             },
@@ -54,21 +56,36 @@ export function registerWorkspaceTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ session_id, expected_revision, root, folder, extra, clear, timeout_ms }) => {
-            // The same merge rules as the agent's tool, on the record read
-            // now: nothing the caller leaves out is dropped. The revision
-            // check catches a change made in between.
-            const current = await ctx.mgmt.getSessionWorkspace(session_id);
-            const merged = mergeWorkspaceChange(current.workspace, { root, folder, extra, clear });
-            if (!merged.ok) return errorResult(`${merged.code}: ${merged.message}`, { session_id });
-            // The merged record names `extra`, even when empty, so the session
-            // sets exactly these folders.
-            const workspace = merged.next ? { ...merged.next, extra: merged.next.extra ?? {} } : null;
-            const result = await ctx.mgmt.setSessionWorkspace(
-                session_id,
-                { expectedRevision: expected_revision, workspace },
-                { ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) },
-            );
-            return jsonResult(result);
+            try {
+                // The same merge rules as the agent's tool, on the record read
+                // now: nothing the caller leaves out is dropped. The revision
+                // check catches a change made in between.
+                const current = await ctx.mgmt.getSessionWorkspace(session_id);
+                const merged = mergeWorkspaceChange(current.workspace, { root, folder, extra, clear });
+                if (!merged.ok) {
+                    return errorResult(`${merged.code}: ${merged.message}`, { code: merged.code, session_id, revision: current.revision });
+                }
+                // The merged record names `extra`, even when empty, so the session
+                // sets exactly these folders.
+                const workspace = merged.next ? { ...merged.next, extra: merged.next.extra ?? {} } : null;
+                const result = await ctx.mgmt.setSessionWorkspace(
+                    session_id,
+                    { expectedRevision: expected_revision, workspace },
+                    { ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) },
+                );
+                return jsonResult(result);
+            } catch (err: any) {
+                // Every refusal with a code (a bad folder, an unknown root, a
+                // stale revision, a session with no turn yet) answers in the
+                // same JSON shape as the check above. A bare 403 keeps the
+                // standard answer.
+                if (typeof err?.code !== "string" || err.status === 403) throw err;
+                return errorResult(err.message, {
+                    code: err.code,
+                    session_id,
+                    ...(Number.isInteger(err.revision) ? { revision: err.revision } : {}),
+                });
+            }
         }),
     );
 

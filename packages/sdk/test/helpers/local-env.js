@@ -23,6 +23,17 @@ function looksLocalDatabaseUrl(value) {
     return /@(localhost|127\.0\.0\.1)(:\d+)?\//i.test(String(value || ""));
 }
 
+/** The URL with its password hidden, for error messages and logs. */
+function withoutPassword(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.password) parsed.password = "***";
+        return parsed.toString();
+    } catch {
+        return "(a database URL that does not parse)";
+    }
+}
+
 function resolveDatabaseUrl() {
     if (process.env.PS_TEST_DATABASE_URL) return process.env.PS_TEST_DATABASE_URL;
     if (process.env.TEST_DATABASE_URL) return process.env.TEST_DATABASE_URL;
@@ -267,7 +278,7 @@ export async function preflightChecks() {
         await client.query("SELECT 1");
     } catch (err) {
         throw new Error(
-            `PostgreSQL is not reachable at ${DATABASE_URL} (${err.message}). ` +
+            `PostgreSQL is not reachable at ${withoutPassword(DATABASE_URL)} (${err.message}). ` +
             `Start Postgres first: docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=pilotswarm -p 5432:5432 postgres:16`,
         );
     } finally {
