@@ -5,20 +5,14 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-    campaignProgress,
-    createDashboardServer,
-    isLoopbackAuthority,
-    isLoopbackHost,
-    parseDashboardArgs,
-} from "../serve-local-test-baseline.mjs";
+import { createDashboardServer } from "../serve-local-test-baseline.mjs";
 
 const TEST_ROOT = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
     "..",
     "test-results",
-    "validation-dashboard-unit",
+    "validation-dashboard-regression",
 );
 
 function scratch(t) {
@@ -62,44 +56,6 @@ function campaign() {
         },
     };
 }
-
-test("parses loopback-only dashboard options and default campaign path", () => {
-    assert.deepEqual(
-        parseDashboardArgs(["--host=localhost", "--port", "0"]),
-        {
-            results: "test-results/local-test-validation/campaign.json",
-            host: "localhost",
-            port: 0,
-            help: false,
-        },
-    );
-    assert.equal(isLoopbackHost("127.0.0.2"), true);
-    assert.equal(isLoopbackHost("::1"), true);
-    assert.equal(isLoopbackHost("0.0.0.0"), false);
-    assert.equal(isLoopbackAuthority("127.0.0.1:4310"), true);
-    assert.equal(isLoopbackAuthority("[::1]:4310"), true);
-    assert.equal(isLoopbackAuthority("localhost.attacker.example"), false);
-    assert.throws(() => parseDashboardArgs(["--host", "0.0.0.0"]), /loopback/);
-    assert.throws(() => parseDashboardArgs(["--port", "-1"]), /between 0 and 65535/);
-});
-
-test("derives live round, active file, and liveness progress", () => {
-    const progress = campaignProgress(campaign(), Date.parse("2026-09-30T16:34:22.000Z"));
-    assert.equal(progress.phase, "retry");
-    assert.equal(progress.roundProgress.remaining, 2);
-    assert.equal(progress.unfinished, 2);
-    assert.deepEqual(progress.outcomes, {
-        passed: 1,
-        failed: 1,
-        timed_out: 1,
-        mixed: 1,
-    });
-    assert.equal(progress.heartbeatAgeMs, 2000);
-    assert.equal(progress.lastProgressAgeMs, 12_000);
-    assert.equal(progress.lastTransitionAgeMs, 7000);
-    assert.equal(progress.activeFiles[0].elapsedMs, 22_000);
-    assert.equal(progress.activeFiles[0].deadlineRemainingMs, 278_000);
-});
 
 test("serves live results, private health, progress API, and assets", async (t) => {
     const dir = scratch(t);
