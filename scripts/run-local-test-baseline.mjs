@@ -864,6 +864,111 @@ export function getProcessIdentity(pid) {
     }
 }
 
+function listPosixProcessRelations() {
+    if (process.platform === "win32") return [];
+    if (process.platform === "linux" && fs.existsSync("/proc")) {
+        const processes = [];
+        for (const entry of fs.readdirSync("/proc", { withFileTypes: true })) {
+            if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+            const pid = Number(entry.name);
+            try {
+                const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+                const commandEnd = stat.lastIndexOf(")");
+                if (commandEnd < 0) continue;
+                const fields = stat.slice(commandEnd + 2).split(" ");
+                const parentPid = Number(fields[1]);
+                const processGroupId = Number(fields[2]);
+                if (!Number.isInteger(parentPid) || !Number.isInteger(processGroupId)) continue;
+                let executable = null;
+                try {
+                    executable = fs.realpathSync(`/proc/${pid}/exe`);
+                } catch {}
+                processes.push({
+                    pid,
+                    parentPid,
+                    processGroupId,
+                    processIdentity: {
+                        pid,
+                        startedAt: fields[19],
+                        executable,
+                    },
+                });
+            } catch {}
+        }
+        return processes;
+    }
+    const result = spawnSync(
+        "ps",
+        ["-axo", "pid=", "-o", "ppid=", "-o", "pgid="],
+        { encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+        throw new Error("Could not enumerate POSIX processes for attempt cleanup");
+    }
+    return result.stdout.split(/\r?\n/).flatMap((line) => {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)$/);
+        if (!match) return [];
+        return [{
+            pid: Number(match[1]),
+            parentPid: Number(match[2]),
+            processGroupId: Number(match[3]),
+        }];
+    });
+}
+
+export function discoverRecordedDescendants(records, {
+    listProcesses = listPosixProcessRelations,
+    inspectProcess = getProcessIdentity,
+    isProcessAlive = processAppearsAlive,
+} = {}) {
+    if (process.platform === "win32") return [];
+    const processTable = listProcesses();
+    const childrenByParent = new Map();
+    for (const processRecord of processTable) {
+        const children = childrenByParent.get(processRecord.parentPid) ?? [];
+        children.push(processRecord);
+        childrenByParent.set(processRecord.parentPid, children);
+    }
+    const roots = records.flatMap((record) => {
+        if (!Number.isInteger(record?.pid) || record.pid < 1 || !record.processIdentity) {
+            return [];
+        }
+        const actual = inspectProcess(record.pid);
+        return processIdentitiesMatch(record.processIdentity, actual) ? [record.pid] : [];
+    });
+    const queue = roots.map((pid) => ({ pid, depth: 0 }));
+    const visited = new Set(roots);
+    const descendants = [];
+    while (queue.length > 0) {
+        const parent = queue.shift();
+        for (const child of childrenByParent.get(parent.pid) ?? []) {
+            if (visited.has(child.pid)) continue;
+            visited.add(child.pid);
+            const processIdentity = child.processIdentity ?? inspectProcess(child.pid);
+            const actual = inspectProcess(child.pid);
+            if (!processIdentity || !processIdentitiesMatch(processIdentity, actual)) {
+                if (isProcessAlive(child.pid)) {
+                    throw new Error(
+                        `Descendant PID ${child.pid} changed or lacks a verifiable process identity`,
+                    );
+                }
+                continue;
+            }
+            const record = {
+                role: "descendant",
+                pid: child.pid,
+                parentPid: child.parentPid,
+                processGroupId: child.processGroupId,
+                processIdentity,
+                depth: parent.depth + 1,
+            };
+            descendants.push(record);
+            queue.push({ pid: child.pid, depth: record.depth });
+        }
+    }
+    return descendants;
+}
+
 export async function waitForProcessIdentity(pid, {
     inspectProcess = getProcessIdentity,
     attempts = 10,
@@ -1386,9 +1491,19 @@ $ids | Sort-Object -Descending -Unique | ForEach-Object {
     } catch (error) {
         if (error.code !== "ESRCH") throw error;
     }
+    try {
+        process.kill(pid, "SIGTERM");
+    } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000));
     try {
         process.kill(-pid, "SIGKILL");
+    } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+    }
+    try {
+        process.kill(pid, "SIGKILL");
     } catch (error) {
         if (error.code !== "ESRCH") throw error;
     }
@@ -1453,14 +1568,54 @@ export async function terminateRecordedProcessTrees(records, {
     terminate = terminateProcessTree,
     inspectProcess = getProcessIdentity,
     isProcessAlive = processAppearsAlive,
+    discoverDescendants = discoverRecordedDescendants,
+    freezeProcess = (pid, signal) => process.kill(pid, signal),
     cleanupGraceMs = TIMEOUT_CLEANUP_GRACE_MS,
     pollIntervalMs = 25,
 } = {}) {
-    const unique = [...new Map(
+    const roots = [...new Map(
         records
             .filter((record) => Number.isInteger(record?.pid) && record.pid > 0)
             .map((record) => [record.pid, record]),
     ).values()];
+    const processRecords = new Map(roots.map((record) => [record.pid, record]));
+    if (process.platform !== "win32") {
+        let stable = false;
+        let priorSize = -1;
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const descendants = discoverDescendants([...processRecords.values()], {
+                inspectProcess,
+                isProcessAlive,
+            });
+            for (const descendant of descendants) {
+                processRecords.set(descendant.pid, descendant);
+            }
+            for (const record of processRecords.values()) {
+                const actual = inspectProcess(record.pid);
+                if (!record.processIdentity
+                    || !processIdentitiesMatch(record.processIdentity, actual)) {
+                    continue;
+                }
+                try {
+                    if (record.treeRoot) freezeProcess(-record.pid, "SIGSTOP");
+                    freezeProcess(record.pid, "SIGSTOP");
+                } catch (error) {
+                    if (error.code !== "ESRCH") throw error;
+                }
+            }
+            if (processRecords.size === priorSize) {
+                stable = true;
+                break;
+            }
+            priorSize = processRecords.size;
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        }
+        if (!stable) {
+            throw new Error("Attempt process inventory did not stabilize before cleanup");
+        }
+    }
+    const unique = [...processRecords.values()]
+        .sort((left, right) => (right.depth ?? 0) - (left.depth ?? 0));
     const terminatePromises = [];
     for (const record of unique) {
         const actual = inspectProcess(record.pid);

@@ -99,6 +99,11 @@ profile.
 The campaign's process deadline is an outer guard for a hung test-file process;
 Vitest still owns individual test and hook timeouts. Its manifest indexes
 attempt provenance and native reports; it does not replace those reports.
+Before a timed-out, interrupted, or stale POSIX attempt is terminated, the
+runner inventories and freezes its attributable descendants, including children
+that created a separate process group. It terminates and identity-verifies every
+captured process before recording cleanup as complete. If discovery or
+verification is incomplete, evidence collection fails closed.
 
 The harness supports a merge or publication protocol; it does not define one.
 Create the candidate commit and decide whether to publish or roll it back
