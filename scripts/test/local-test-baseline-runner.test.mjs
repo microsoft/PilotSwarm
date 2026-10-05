@@ -12,10 +12,13 @@ import {
     campaignEvidenceComplete,
     campaignIdentitiesMatch,
     campaignIdentityHash,
+    campaignRunControls,
+    campaignRoundConcurrency,
     classifyAttemptEvidence,
     cleanGeneratedBuildOutputs,
     completeAttempt,
     createCampaignIdentity,
+    configureCampaignRound,
     createRoundState,
     createVitestListArgs,
     dirtyWorktreeEntries,
@@ -83,7 +86,6 @@ test("parses user-facing runner controls, aliases, and default path", () => {
     assert.deepEqual(
         parseArgs([
             "--workers=12",
-            "--retry-workers", "3",
             "--retries", "2",
             "--timeout", "5m",
             "--file", "test/local/smoke-basic.test.js",
@@ -93,7 +95,6 @@ test("parses user-facing runner controls, aliases, and default path", () => {
         ]),
         {
             workers: 12,
-            retryWorkers: 3,
             retries: 2,
             timeoutMs: 300_000,
             output: "test-results/local-test-validation/campaign.json",
@@ -113,12 +114,27 @@ test("parses user-facing runner controls, aliases, and default path", () => {
         "--timeout-per-file", "30s",
     ]);
     assert.equal(aliases.workers, 4);
+    assert.equal(campaignRoundConcurrency(aliases), 4);
+    assert.deepEqual(campaignRunControls(aliases), {
+        workers: 4,
+        retryWorkers: 4,
+        retries: 1,
+        timeoutMs: 30_000,
+        all: false,
+    });
+    for (const kind of ["initial", "observation", "retry", "recovery"]) {
+        assert.deepEqual(
+            configureCampaignRound(aliases, { kind, files: ["a.test.js"] }),
+            { kind, files: ["a.test.js"], concurrency: 4 },
+        );
+    }
     assert.equal(aliases.retries, 1);
     assert.equal(aliases.timeoutMs, 30_000);
     assert.throws(
         () => parseArgs(["--skip-build"]),
         /campaign evidence must be built from the tested commit/,
     );
+    assert.throws(() => parseArgs(["--retry-workers", "2"]), /Unknown option/);
 });
 
 test("normalizes Vitest file-list JSON to test/local-relative IDs", (t) => {
@@ -1692,7 +1708,6 @@ test("normalizes repository names from common remote URL formats", () => {
 
 test("rejects invalid runner controls", () => {
     assert.throws(() => parseArgs(["--workers", "0"]), /positive integer/);
-    assert.throws(() => parseArgs(["--retry-workers", "0"]), /positive integer/);
     assert.throws(() => parseArgs(["--retries", "-1"]), /non-negative integer/);
     assert.throws(() => parseArgs(["--timeout", "soon"]), /Invalid duration/);
     assert.throws(() => parseArgs(["--unknown"]), /Unknown option/);

@@ -61,8 +61,7 @@ function usage() {
   npm run test:campaign -- [options]
 
 Options:
-  --workers <n>          Concurrent files in the initial round (default: 8)
-  --retry-workers <n>    Concurrent files in retry rounds (default: 2)
+  --workers <n>          Concurrent files in every round (default: 8)
   --retries <n>          Retry rounds after the initial round (default: 0)
   --timeout <duration>   Per-file process deadline, e.g. 120s or 5m (default: 5m)
   --output <path>        Campaign manifest beneath test-results
@@ -152,7 +151,6 @@ function takeOptionValue(args, index, name) {
 export function parseArgs(args) {
     const options = {
         workers: 8,
-        retryWorkers: 2,
         retries: 0,
         timeoutMs: 300_000,
         output: DEFAULT_OUTPUT.replaceAll("\\", "/"),
@@ -172,9 +170,6 @@ export function parseArgs(args) {
         if ((parsed = takeOptionValue(args, index, "--workers"))
             || (parsed = takeOptionValue(args, index, "--parallelism"))) {
             options.workers = Number(parsed.value);
-            index += parsed.consumed;
-        } else if ((parsed = takeOptionValue(args, index, "--retry-workers"))) {
-            options.retryWorkers = Number(parsed.value);
             index += parsed.consumed;
         } else if ((parsed = takeOptionValue(args, index, "--retries"))
             || (parsed = takeOptionValue(args, index, "--retry-count"))) {
@@ -219,9 +214,6 @@ export function parseArgs(args) {
     if (!Number.isInteger(options.workers) || options.workers < 1) {
         throw new Error("--workers must be a positive integer");
     }
-    if (!Number.isInteger(options.retryWorkers) || options.retryWorkers < 1) {
-        throw new Error("--retry-workers must be a positive integer");
-    }
     if (!Number.isInteger(options.retries) || options.retries < 0) {
         throw new Error("--retries must be a non-negative integer");
     }
@@ -235,6 +227,29 @@ export function parseArgs(args) {
     }
     options.files = [...new Set(options.files)].sort();
     return options;
+}
+
+export function campaignRoundConcurrency(options) {
+    return options.workers;
+}
+
+export function campaignRunControls(options) {
+    return {
+        workers: options.workers,
+        // Preserve the schema-6 evidence field for existing readers.
+        // It is derived from --workers and is no longer configurable.
+        retryWorkers: campaignRoundConcurrency(options),
+        retries: options.retries,
+        timeoutMs: options.timeoutMs,
+        all: options.all,
+    };
+}
+
+export function configureCampaignRound(options, round) {
+    return {
+        ...round,
+        concurrency: campaignRoundConcurrency(options),
+    };
 }
 
 function normalizeExplicitFile(value) {
@@ -2940,13 +2955,7 @@ async function main() {
             heartbeatAt: now,
             lastProgressAt: now,
             lastTransitionAt: now,
-            controls: {
-                workers: options.workers,
-                retryWorkers: options.retryWorkers,
-                retries: options.retries,
-                timeoutMs: options.timeoutMs,
-                all: options.all,
-            },
+            controls: campaignRunControls(options),
             recovery: lockHandle.recoveredLock ? {
                 staleLockRunId: lockHandle.recoveredLock.runId ?? null,
                 staleLockPid: lockHandle.recoveredLock.processIdentity?.pid ?? null,
@@ -2985,13 +2994,12 @@ async function main() {
                 if (!abortReason) {
                     console.log(
                         `Collecting campaign evidence: workers=${options.workers}, `
-                        + `retryWorkers=${options.retryWorkers}, retries=${options.retries}, `
-                        + `timeout=${formatDuration(options.timeoutMs)}`,
+                        + `retries=${options.retries}, timeout=${formatDuration(options.timeoutMs)}`,
                     );
                     let roundNumber = 0;
                     for (const recovery of recoveryPlans) {
                         if (abortReason) break;
-                        await executeRound({
+                        await executeRound(configureCampaignRound(options, {
                             state,
                             outputPath,
                             files: recovery.files,
@@ -3004,9 +3012,6 @@ async function main() {
                                 round: recovery.sourceRoundNumber,
                                 kind: recovery.kind,
                             },
-                            concurrency: recovery.kind === "retry"
-                                ? options.retryWorkers
-                                : options.workers,
                             timeoutMs: options.timeoutMs,
                             env,
                             runId,
@@ -3015,7 +3020,7 @@ async function main() {
                             expectedSource: testedRevision,
                             expectedFingerprint: semanticFingerprint,
                             redactionSecrets,
-                        });
+                        }));
                         roundNumber++;
                     }
                     for (
@@ -3025,14 +3030,13 @@ async function main() {
                     ) {
                         const retryFiles = planRetryTargetFiles(state, campaignFiles, retry);
                         if (retryFiles.length === 0) continue;
-                        await executeRound({
+                        await executeRound(configureCampaignRound(options, {
                             state,
                             outputPath,
                             files: retryFiles,
                             roundNumber,
                             kind: "retry",
                             retryTarget: retry,
-                            concurrency: options.retryWorkers,
                             timeoutMs: options.timeoutMs,
                             env,
                             runId,
@@ -3041,7 +3045,7 @@ async function main() {
                             expectedSource: testedRevision,
                             expectedFingerprint: semanticFingerprint,
                             redactionSecrets,
-                        });
+                        }));
                         roundNumber++;
                     }
                     const observationFiles = options.all
@@ -3049,13 +3053,12 @@ async function main() {
                         : planDefaultObservationFiles(state, campaignFiles);
                     let priorRoundFiles = observationFiles;
                     if (observationFiles.length > 0 && !abortReason) {
-                        await executeRound({
+                        await executeRound(configureCampaignRound(options, {
                             state,
                             outputPath,
                             files: observationFiles,
                             roundNumber,
                             kind: options.all ? "observation" : "initial",
-                            concurrency: options.workers,
                             timeoutMs: options.timeoutMs,
                             env,
                             runId,
@@ -3064,7 +3067,7 @@ async function main() {
                             expectedSource: testedRevision,
                             expectedFingerprint: semanticFingerprint,
                             redactionSecrets,
-                        });
+                        }));
                         roundNumber++;
                     }
                     for (
@@ -3080,14 +3083,13 @@ async function main() {
                             continue;
                         }
                         priorRoundFiles = retryFiles;
-                        await executeRound({
+                        await executeRound(configureCampaignRound(options, {
                             state,
                             outputPath,
                             files: retryFiles,
                             roundNumber,
                             kind: "retry",
                             retryTarget: retry,
-                            concurrency: options.retryWorkers,
                             timeoutMs: options.timeoutMs,
                             env,
                             runId,
@@ -3096,7 +3098,7 @@ async function main() {
                             expectedSource: testedRevision,
                             expectedFingerprint: semanticFingerprint,
                             redactionSecrets,
-                        });
+                        }));
                         roundNumber++;
                     }
                 }
