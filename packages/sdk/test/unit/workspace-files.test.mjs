@@ -211,8 +211,8 @@ describe("file calls in a folder", () => {
         assert.ok(!names.some((name) => name.startsWith(".git/")), names.join(", "));
         assert.deepEqual(answer.skipped, [".git"], "the answer names what was left out");
         const modes = zipModes(bytes);
+        assert.equal(modes["run.sh"].os, 3, "made by Unix");
         if (process.platform !== "win32") {
-            assert.equal(modes["run.sh"].os, 3, "made by Unix");
             assert.equal(modes["run.sh"].mode & 0o777, 0o755, "a script stays executable");
             assert.equal(modes["AGENTS.md"].mode & 0o111, 0, "a plain file is not made executable");
         }

@@ -389,12 +389,16 @@ describe("token-protected git HTTP server: failures never crash it", () => {
         } finally { await server.close(); await fixture.cleanup(); }
     });
 
-    it("close() stops a backend that never answers", { skip: process.platform === "win32" && "requires executable shebang scripts" }, async () => {
+    it("close() stops a backend that never answers", async () => {
         const fixture = await createGitFixture();
         const pidFile = path.join(fixture.root, "hung.pid");
-        const script = path.join(fixture.root, "hung-backend.sh");
-        fs.writeFileSync(script, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 60\n`, { mode: 0o755 });
-        const server = await startGitTokenServer({ projectRoot: fixture.root, backendPath: script });
+        const script = path.join(fixture.root, "hung-backend.mjs");
+        fs.writeFileSync(script, `import fs from "node:fs";\nfs.writeFileSync(process.argv[2], String(process.pid));\nsetInterval(() => {}, 60_000);\n`);
+        const server = await startGitTokenServer({
+            projectRoot: fixture.root,
+            backendPath: process.execPath,
+            backendArgs: [script, pidFile],
+        });
         try {
             const pending = fetch(`${server.baseUrl}/remotes/app.git/info/refs`, { headers: auth(server.mintToken()) }).catch(error => error);
             const deadline = Date.now() + 5_000;

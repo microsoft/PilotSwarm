@@ -9,7 +9,13 @@ import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
 const context = () => new OrchestrationContext({ instanceId: "parent", executionId: "1", orchestrationName: "test", orchestrationVersion: "1.0.74" });
 const wire = (value) => JSON.parse(JSON.stringify(value));
-const sourceHash = (url) => createHash("sha256").update(readFileSync(url, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+const sourceHash = (url) => {
+    const bytes = readFileSync(url);
+    const checkoutBytes = process.platform === "win32"
+        ? Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"))
+        : bytes;
+    return createHash("sha256").update(checkoutBytes).digest("hex");
+};
 
 // Immutable snapshot of the shipped 1.0.74 generator tree. The only change
 // from the former live tree was pinning its own version constant, as with
