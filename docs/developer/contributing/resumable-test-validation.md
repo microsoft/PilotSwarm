@@ -188,13 +188,12 @@ reviewing it for private paths, hosts, test data, and failure output.
 ## Continue after triage
 
 After investigating the failures, rerun the same campaign with different
-operational controls. For example, allow a longer deadline while limiting the
-retry fleet to two workers:
+operational controls. For example, allow a longer deadline while using four
+workers for every round:
 
 ```bash
 npm run test:campaign -- \
   --workers 4 \
-  --retry-workers 2 \
   --retries 1 \
   --timeout 15m
 ```
@@ -209,12 +208,12 @@ Retries are separate rounds:
 2. interrupted or unfinished attempts are recovered in a distinct recovery
    round before new observations are scheduled,
 3. configured non-passing terminal results enter the first retry round,
-4. each retry round uses `--retry-workers`, and
+4. each retry round uses the same `--workers` concurrency as the initial round, and
 5. a file leaves later rounds as soon as it passes.
 
-This prevents a few slow failures from occupying every initial worker with
-immediate retries. Vitest still controls concurrency inside each file; the
-campaign manager does not force tests within a file to run sequentially.
+Retries remain breadth-first, so a file does not retry until the prior round
+finishes. Vitest still controls concurrency inside each file; the campaign
+manager does not force tests within a file to run sequentially.
 When the configured rounds finish, the run is complete even if some tests
 remain failed or timed out.
 
