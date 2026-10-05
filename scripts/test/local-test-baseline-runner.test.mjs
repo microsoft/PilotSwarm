@@ -535,6 +535,7 @@ test("reconciles stale active attempts while preserving fixed round counts and r
             terminated.push(pid);
             live.delete(pid);
         },
+        freezeProcess: () => {},
         now: "2026-09-30T16:01:00.000Z",
     });
     assert.deepEqual(terminated, [42, 43]);
@@ -584,6 +585,7 @@ test("stale-run recovery fails when recorded child cleanup cannot be verified", 
             inspectProcess: () => identity,
             isProcessAlive: () => true,
             terminate: async () => {},
+            freezeProcess: () => {},
             cleanupGraceMs: 10,
         }),
         /remained live/,
@@ -593,6 +595,7 @@ test("stale-run recovery fails when recorded child cleanup cannot be verified", 
             inspectProcess: () => null,
             isProcessAlive: () => true,
             terminate: async () => {},
+            freezeProcess: () => {},
             cleanupGraceMs: 10,
         }),
         /cannot be resolved safely/,

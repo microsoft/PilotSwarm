@@ -1907,6 +1907,7 @@ export async function runTestFile(
         inspectProcess = getProcessIdentity,
         isProcessAlive = processAppearsAlive,
         terminate = terminateProcessTree,
+        freezeProcess = (pid, signal) => process.kill(pid, signal),
         identityAttempts = 10,
         cleanupGraceMs = TIMEOUT_CLEANUP_GRACE_MS,
     },
@@ -2094,6 +2095,7 @@ export async function runTestFile(
             terminate,
             inspectProcess,
             isProcessAlive,
+            freezeProcess,
             cleanupGraceMs,
         },
     );
@@ -2311,6 +2313,7 @@ export async function reconcileStaleRun(state, reason, {
     inspectProcess = getProcessIdentity,
     isProcessAlive = processAppearsAlive,
     terminate = terminateProcessTree,
+    freezeProcess = (pid, signal) => process.kill(pid, signal),
     redactReport = null,
     now = new Date().toISOString(),
     cleanupGraceMs = TIMEOUT_CLEANUP_GRACE_MS,
@@ -2349,6 +2352,7 @@ export async function reconcileStaleRun(state, reason, {
             terminate,
             inspectProcess,
             isProcessAlive,
+            freezeProcess,
             cleanupGraceMs,
         });
         const disposition = recordedProcesses.length > 0
