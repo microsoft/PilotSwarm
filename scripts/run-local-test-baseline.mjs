@@ -58,7 +58,7 @@ const TERMINAL_TEST_STATUSES = new Set(["passed", "failed", "timed_out"]);
 
 function usage() {
     return `Usage:
-  npm run test:validation -- [options]
+  npm run test:campaign -- [options]
 
 Options:
   --workers <n>          Concurrent files in the initial round (default: 8)

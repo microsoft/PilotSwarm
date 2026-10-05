@@ -144,7 +144,7 @@ The normal initial run uses eight file workers, a five-minute process deadline
 per file, and no retries:
 
 ```bash
-npm run test:validation -- --workers 8 --timeout 5m
+npm run test:campaign -- --workers 8 --timeout 5m
 ```
 
 The runner:
@@ -177,7 +177,7 @@ Use `--output` to keep independent campaign manifests when validating different
 commits:
 
 ```bash
-npm run test:validation -- \
+npm run test:campaign -- \
   --output test-results/candidate/campaign.json
 ```
 
@@ -192,7 +192,7 @@ operational controls. For example, allow a longer deadline while limiting the
 retry fleet to two workers:
 
 ```bash
-npm run test:validation -- \
+npm run test:campaign -- \
   --workers 4 \
   --retry-workers 2 \
   --retries 1 \
@@ -222,15 +222,15 @@ Useful controls:
 
 ```bash
 # Run or continue only named files.
-npm run test:validation -- \
+npm run test:campaign -- \
   --file smoke-basic.test.js \
   --file reliability-crash.test.js
 
 # Explicitly rerun current passes as well as non-passes.
-npm run test:validation -- --all
+npm run test:campaign -- --all
 
 # Start over intentionally rather than continuing compatible evidence.
-npm run test:validation -- --fresh
+npm run test:campaign -- --fresh
 ```
 
 `--file` changes the resolved selection and therefore identifies a different
@@ -362,7 +362,7 @@ and flaky tests can produce different observations for identical source.
 Write a machine-readable comparison record after both campaigns complete:
 
 ```bash
-npm run test:validation:compare -- \
+npm run test:campaign:compare -- \
   --baseline test-results/baseline/campaign.json \
   --candidate test-results/candidate/campaign.json \
   --output test-results/comparisons/baseline-to-candidate.json
@@ -373,7 +373,7 @@ npm run test:validation:compare -- \
 Start the loopback-only dashboard in another terminal:
 
 ```bash
-npm run test:validation:dashboard
+npm run test:campaign:dashboard
 ```
 
 Then open `http://127.0.0.1:4310`. The dashboard reads the campaign manifest and

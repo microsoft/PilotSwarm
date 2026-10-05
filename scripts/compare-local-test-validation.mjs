@@ -20,7 +20,7 @@ const NONPASSING = new Set(["failed", "timed_out"]);
 
 function usage() {
     return `Usage:
-  npm run test:validation:compare -- --baseline <campaign.json> --candidate <campaign.json> [options]
+  npm run test:campaign:compare -- --baseline <campaign.json> --candidate <campaign.json> [options]
 
 Options:
   --baseline <path>   Complete baseline campaign beneath test-results

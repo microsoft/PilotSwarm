@@ -11,7 +11,7 @@ const ASSET_DIR = path.join(SCRIPT_DIR, "local-test-baseline-dashboard");
 
 function usage() {
     return `Usage:
-  npm run test:validation:dashboard -- [options]
+  npm run test:campaign:dashboard -- [options]
 
 Options:
   --results <path>  Campaign JSON (default: test-results/local-test-validation/campaign.json)
