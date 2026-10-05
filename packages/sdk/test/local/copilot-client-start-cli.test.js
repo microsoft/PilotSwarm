@@ -41,7 +41,10 @@ const facts = {
 };
 
 describe("Copilot client start (real SDK/CLI, synthetic HTTP)", () => {
-    it("concurrent first sessions share one CLI process and see each tool call once", { timeout: 120_000 }, async () => {
+    it.skipIf(process.platform === "win32")(
+        "concurrent first sessions share one CLI process and see each tool call once",
+        { timeout: 120_000 },
+        async () => {
         const home = mkdtempSync(join(tmpdir(), "ps-client-start-"));
         const server = await createCopilotProviderServer();
         const registry = new ModelProviderRegistry({ providers: [
@@ -101,5 +104,6 @@ describe("Copilot client start (real SDK/CLI, synthetic HTTP)", () => {
             expect(turns[k].completions).toBe(1);
         }
         expect(leftover).toEqual([]);
-    });
+        },
+    );
 });

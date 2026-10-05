@@ -285,7 +285,8 @@ export function buildPgPoolConfig(opts: PgPoolFactoryOptions): PoolConfig {
  * 2. `buildPgPoolConfig` applies the sslmode fix and, in managed-identity
  *    mode, the AAD `password` callback. pg calls it on each new
  *    connection, so a reconnect gets a fresh token.
- * 3. Pool-only fields are dropped.
+ * 3. Pool resiliency fields are dropped so existing LISTEN client behavior
+ *    remains unchanged.
  *
  * The portal's LISTEN connections use this. NOTIFY from the CMS only
  * reaches listeners on the same database.
@@ -308,6 +309,13 @@ export function buildSessionCatalogPgClientConfig(
         aadUser: storage.runtime.aadDbUser,
     });
     delete config.max;
+    delete config.min;
+    delete config.idleTimeoutMillis;
+    delete config.connectionTimeoutMillis;
+    delete config.keepAlive;
+    delete config.keepAliveInitialDelayMillis;
+    delete config.query_timeout;
+    delete config.statement_timeout;
     return config;
 }
 

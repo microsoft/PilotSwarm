@@ -293,6 +293,10 @@ describe("worker registry", () => {
                 _agentPackagesRefreshMs: 45_000,
                 _buildRegistrarInfo: () => ({}),
                 _collectWorkerHealth: () => ({}),
+                sessionManager: {
+                    refreshWorkerModels: async () => ({ available: [] }),
+                    currentWorkerModels: () => ({ available: [] }),
+                },
             });
             await worker._reportAgentWorkerState();
 

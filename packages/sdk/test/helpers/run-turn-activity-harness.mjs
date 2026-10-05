@@ -30,6 +30,7 @@ export function makeRunTurnHarness({ turn, owner = null, featureFlagCache = null
     const recordedEvents = [];
     const catalog = {
         getSession: vi.fn(async (sessionId) => ({ sessionId, owner })),
+        acknowledgeWorkflowRunSession: vi.fn(async () => {}),
         recordEvents: vi.fn(async (_sessionId, events) => { recordedEvents.push(...events); }),
         upsertSessionMetricSummary: vi.fn(async () => {}),
         updateSession: vi.fn(async () => {}),

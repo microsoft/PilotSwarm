@@ -35,9 +35,20 @@ async function cmsPoolConfig(options, env = {}) {
     return seen[0];
 }
 
-/** Drop the fields only a pool has, and the CMS pool's own connect timeout. */
+/** Drop the pool's resiliency fields, which are not applied to LISTEN clients. */
 function connectionPart(config) {
-    const { max: _max, connectionTimeoutMillis: _timeout, password: _password, ...rest } = config;
+    const {
+        max: _max,
+        min: _min,
+        idleTimeoutMillis: _idleTimeout,
+        connectionTimeoutMillis: _connectionTimeout,
+        keepAlive: _keepAlive,
+        keepAliveInitialDelayMillis: _keepAliveDelay,
+        query_timeout: _queryTimeout,
+        statement_timeout: _statementTimeout,
+        password: _password,
+        ...rest
+    } = config;
     return rest;
 }
 
