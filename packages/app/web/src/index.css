@@ -6537,10 +6537,7 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] .portal-header-status,
 :root[data-ps-theme="win95"] .portal-header-meta,
 :root[data-ps-theme="win95"] .portal-header-version,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-rev,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-btn,
-:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-level {
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-rev {
   color: #ffffff;
   opacity: 1;
 }
@@ -11974,7 +11971,7 @@ textarea.ps-link-input {
 .ps-ws-icon-btn:hover { color: var(--ps-foreground); background: color-mix(in srgb, var(--ps-foreground) 8%, transparent); }
 .ps-ws-main { flex: 1; min-height: 0; display: flex; }
 .ps-ws-side {
-  flex: 0 0 var(--ps-ws-tree-width, min(38%, 340px));
+  flex: 0 0 var(--ps-ws-tree-width, clamp(260px, 38%, 340px));
   min-width: 120px;
   max-width: calc(100% - 200px);
   min-height: 0;
@@ -12336,6 +12333,8 @@ textarea.ps-link-input {
   .ps-ws-find-btn { min-width: 34px; min-height: 34px; }
   .ps-ws-main { flex-direction: column; }
   .ps-ws-side { flex: 0 0 var(--ps-ws-tree-height, 40%); min-width: 0; max-width: none; min-height: 80px; max-height: calc(100% - 120px); }
+  /* The git tabs, the picker and the summary take about 90 px: leave room for rows. */
+  .ps-ws-side:has(.ps-ws-sidetabs) { min-height: min(260px, calc(100% - 120px)); }
   .ps-ws-splitter { flex-basis: 13px; margin: -6px 0; cursor: row-resize; }
   .ps-ws-splitter::after { top: 6px; bottom: auto; left: 0; right: 0; width: auto; height: 1px; }
   .ps-ws-main:has(.ps-ws-splitter.is-dragging) { cursor: row-resize; }
@@ -12365,6 +12364,519 @@ textarea.ps-link-input {
 .ps-ws-agent-dot.is-live { background: var(--ps-warning); animation: ps-ws-pulse 1.1s ease-in-out infinite; }
 @keyframes ps-ws-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
 .ps-ws-banner.is-agent { border-bottom-color: color-mix(in srgb, var(--ps-accent) 45%, transparent); background: color-mix(in srgb, var(--ps-accent) 12%, transparent); }
+
+/* ── Git, for a folder that is a repository: the branch in the toolbar, the
+   Files | Changes | History switch, letters in the tree, the two lists and
+   one commit. Letter colours are the theme's code colours, which are
+   readable on the pane (4.5:1); on a selected row they take its colour. */
+.ps-ws-branch {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  margin-left: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ps-ws-branch:hover { border-color: var(--ps-accent); }
+.ps-ws-branch.is-loading { color: var(--ps-muted); cursor: default; }
+/* On a commit (detached): the way back to the branch. */
+.ps-ws-btn.ps-ws-git-return { flex: none; height: 22px; margin-left: 6px; padding: 0 8px; font-size: 11.5px; }
+.ps-ws-git-note.is-info > .ps-ws-btn { align-self: flex-start; margin-top: 4px; }
+/* A repository inside the folder: its name before the branch, or a picker when there are several. */
+.ps-ws-git-repo-name { flex: 0 1 auto; min-width: 0; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ps-mono); font-size: 11.5px; font-weight: 700; }
+.ps-ws-git-repo-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 30%;
+  height: 22px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font: inherit;
+  font-family: var(--ps-mono);
+  font-size: 11.5px;
+}
+.ps-ws-git-repo-select.is-none { color: var(--ps-muted); }
+.ps-ws-sidetabs button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* A folder in the tree that is a git repository. */
+.ps-ws-repo-mark { flex: none; display: inline-grid; place-items: center; color: var(--ps-muted); }
+.ps-ws-repo-mark.is-shown { color: var(--ps-accent, var(--ps-foreground)); }
+.ps-ws-row.is-selected .ps-ws-repo-mark { color: inherit; }
+.ps-ws-branch svg { flex: none; }
+.ps-ws-branch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ps-mono); }
+.ps-ws-branch-ab { flex: none; color: var(--ps-muted); }
+.ps-ws-sidetabs {
+  flex: none;
+  display: flex;
+  margin: 6px 8px 2px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ps-ws-sidetabs button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ps-ws-sidetabs button + button { border-left: 1px solid var(--ps-border); }
+.ps-ws-sidetabs button:hover { color: var(--ps-foreground); }
+.ps-ws-sidetabs button.is-on {
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+  font-weight: 700;
+}
+.ps-ws-sidetab-glyph { display: none; }
+.ps-ws-sidetab-glyph svg { display: block; }
+/* A narrow file column: the three tabs show only their glyphs. */
+.ps-ws-side { container-type: inline-size; }
+@container (max-width: 250px) {
+  .ps-ws-sidetabs button { padding: 0 3px; gap: 3px; }
+  .ps-ws-sidetab-glyph { display: inline-flex; }
+  .ps-ws-sidetab-label { display: none; }
+}
+.ps-ws-sidetab-count {
+  min-width: 10px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  font-size: 11px;
+  line-height: 16px;
+}
+.ps-ws-git-letter {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  font-family: var(--ps-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ps-ws-git-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* In the tree, the letter and the dot sit at the row's right edge. */
+.ps-ws-tree .ps-ws-git-letter,
+.ps-ws-tree .ps-ws-git-dot { margin-left: auto; }
+.ps-ws-tree .ps-ws-git-dot { margin-right: 3px; }
+.ps-ws-tree .ps-ws-git-letter ~ .ps-ws-row-actions,
+.ps-ws-tree .ps-ws-git-dot ~ .ps-ws-row-actions { margin-left: 0; }
+.is-git-M { color: var(--ps-code-number, var(--ps-foreground)); }
+.is-git-A, .is-git-U { color: var(--ps-code-inserted, var(--ps-foreground)); }
+.is-git-D, .is-git-C { color: var(--ps-code-deleted, var(--ps-foreground)); }
+.is-git-R { color: var(--ps-code-function, var(--ps-foreground)); }
+.ps-ws-row.is-selected [class*="is-git-"],
+.ps-ws-row.is-picked [class*="is-git-"] { color: inherit; }
+.ps-ws-row-name.is-deleted { text-decoration: line-through; }
+.ps-ws-git-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ps-ws-git-since {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px 0;
+  color: var(--ps-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ps-ws-git-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: 12px;
+}
+.ps-ws-git-summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  color: var(--ps-muted);
+  font-size: 11.5px;
+}
+.ps-ws-git-list { flex: 1; min-height: 0; overflow: auto; padding: 2px 0 24px; }
+.ps-ws-git-group {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px 4px;
+  color: var(--ps-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ps-ws-git-group-count { font-weight: 400; }
+.ps-ws-git-row .ps-ws-row-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ps-ws-git-row .ps-ws-found-dir { flex: 0 1 auto; }
+.ps-ws-twisty { cursor: pointer; }
+.ps-ws-git-row > .ps-ws-git-letter { margin-left: 2px; }
+.ps-ws-git-row {
+  width: 100%;
+  box-sizing: border-box;
+  padding-left: 12px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+.ps-ws-git-count { flex: none; font-family: var(--ps-mono); font-size: 11px; }
+.ps-ws-git-count.is-added { color: var(--ps-code-inserted, var(--ps-foreground)); }
+.ps-ws-git-count.is-removed { color: var(--ps-code-deleted, var(--ps-foreground)); }
+.ps-ws-row.is-selected .ps-ws-git-count { color: inherit; }
+.ps-ws-git-commit {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ps-ws-git-commit:hover { background: color-mix(in srgb, var(--ps-foreground) 6%, transparent); }
+/* A commit row: the commit, then a button that shows its changes. */
+.ps-ws-git-commit-item { position: relative; display: flex; align-items: stretch; }
+.ps-ws-git-commit-item > .ps-ws-git-commit { flex: 1; min-width: 0; padding-right: 34px; }
+.ps-ws-git-commit-changes { position: absolute; top: 4px; right: 6px; }
+.ps-ws-git-commit-item.is-selected > .ps-ws-git-commit-changes { color: var(--ps-highlight-foreground, var(--ps-foreground)); }
+/* Commits picked to compare. */
+.ps-ws-git-commit.is-picked { box-shadow: inset 3px 0 0 var(--ps-accent, var(--ps-foreground)); background: color-mix(in srgb, var(--ps-accent, var(--ps-foreground)) 12%, transparent); }
+.ps-ws-git-pickbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 8px 0;
+  padding: 4px 6px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ps-ws-git-pickbar-text { flex: 1 1 140px; min-width: 0; color: var(--ps-muted); font-family: var(--ps-mono); font-size: 11.5px; }
+.ps-ws-git-commit:focus-visible { outline: 1px solid var(--ps-accent); outline-offset: -1px; }
+.ps-ws-git-commit.is-selected {
+  background: var(--ps-highlight-background, color-mix(in srgb, var(--ps-accent) 18%, transparent));
+  color: var(--ps-highlight-foreground, var(--ps-foreground));
+}
+.ps-ws-git-rail { position: relative; flex: none; width: 14px; align-self: stretch; }
+.ps-ws-git-rail::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: -6px;
+  bottom: -6px;
+  width: 2px;
+  background: color-mix(in srgb, var(--ps-border) 60%, transparent);
+}
+.ps-ws-git-rail::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px solid var(--ps-accent, var(--ps-foreground));
+  border-radius: 50%;
+  background: var(--ps-surface);
+}
+.ps-ws-git-commit.is-wip .ps-ws-git-rail::after { border-style: dashed; border-color: var(--ps-muted); }
+.ps-ws-git-commit.is-selected .ps-ws-git-rail::after { border-color: currentColor; }
+.ps-ws-git-commit-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ps-ws-git-commit-subject {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+.ps-ws-git-commit.is-wip .ps-ws-git-commit-subject { font-weight: 700; }
+.ps-ws-git-commit-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ps-muted); font-size: 11px; }
+.ps-ws-git-commit.is-selected .ps-ws-git-commit-meta { color: inherit; }
+.ps-ws-git-sha { font-family: var(--ps-mono); }
+.ps-ws-git-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.ps-ws-git-ref {
+  padding: 0 6px;
+  border: 1px solid var(--ps-border);
+  border-radius: 9px;
+  color: var(--ps-muted);
+  font-family: var(--ps-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+.ps-ws-git-commit.is-selected .ps-ws-git-ref { color: inherit; border-color: currentColor; }
+.ps-ws-git-more { display: flex; justify-content: center; padding: 8px; }
+.ps-ws-git-commit-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ps-ws-git-commit-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-ws-git-commit-title { font-size: 14px; font-weight: 700; line-height: 1.35; }
+.ps-ws-git-commit-body {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: inherit;
+  line-height: 1.45;
+  color: var(--ps-foreground);
+}
+.ps-ws-git-commit-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--ps-muted); font-size: 12px; }
+.ps-ws-git-commit-author { color: var(--ps-foreground); }
+.ps-ws-git-commit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* A diff in the viewer: which two versions it compares, after the name. */
+.ps-ws-diff-bar .ps-ws-git-letter { margin-right: -2px; }
+.ps-ws-diff-sides { color: var(--ps-muted); font-weight: 400; }
+/* The file name keeps its room; the "(Index ↔ Working Tree)" label shrinks first. */
+.ps-ws-diff-bar .ps-ws-crumbs > .ps-ws-crumb-leaf { flex-shrink: 0; max-width: 100%; }
+/* A renamed file's old name, after the new one. */
+.ps-ws-git-from { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ps-muted); font-size: 11px; white-space: nowrap; }
+.ps-ws-diff-bar .ps-ws-git-from { padding-left: 6px; }
+.ps-ws-row.is-selected .ps-ws-git-from { color: inherit; }
+/* Messages in a list wrap instead of being cut. */
+.ps-ws-git-list > .ps-ws-row.is-muted,
+.ps-ws-git-list > .ps-ws-row.is-error { white-space: normal; height: auto; min-height: 24px; padding: 4px 12px; line-height: 1.4; }
+.ps-ws-git-end { justify-content: center; font-size: 11.5px; }
+/* The folder itself is missing: a sentence, not a row. */
+.ps-ws-tree > .ps-ws-row.is-gone { white-space: normal; height: auto; padding-top: 6px; padding-bottom: 6px; padding-right: 12px; line-height: 1.4; cursor: default; }
+/* A merge or rebase that stopped on conflicts. */
+.ps-ws-git-note {
+  flex: none;
+  margin: 4px 8px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--ps-code-deleted, var(--ps-border)) 55%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ps-code-deleted, var(--ps-foreground)) 10%, transparent);
+  color: var(--ps-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+}
+/* The commit a "Changes" list shows. */
+.ps-ws-git-note.is-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-color: var(--ps-border);
+  background: color-mix(in srgb, var(--ps-foreground) 5%, transparent);
+}
+.ps-ws-git-note-title { font-weight: 700; overflow-wrap: anywhere; }
+.ps-ws-git-note-meta { color: var(--ps-muted); font-size: 11px; }
+/* A parent commit, as a link to that commit. */
+.ps-ws-git-sha-link {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ps-code-link, var(--ps-foreground));
+  font: inherit;
+  font-family: var(--ps-mono);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ps-ws-git-sha-link + .ps-ws-git-sha-link { margin-left: 4px; }
+.ps-ws-diff > .cm-editor { height: 100%; }
+
+/* ── Win95: the side pane (Canvas and Workspace tabs) ──────────────────────
+   The side pane kept the base theme's look under Win95: rounded pills, flat
+   grey lists, thin flat borders. These rules give it the look of the rest of
+   the theme: a raised window with a navy title bar, raised grey buttons,
+   white inset wells for the file tree, the git lists and the file viewer,
+   and navy selection. Scoped to [data-ps-theme="win95"] like the rest. */
+
+/* The pane is a raised window, like .ps-panel. On a phone it fills the
+   screen, so it keeps no frame. */
+:root[data-ps-theme="win95"] .ps-canvas-pane {
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+  background: var(--w95-face);
+}
+:root[data-ps-theme="win95"] .ps-mobile-canvas-layer .ps-canvas-pane {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* Its top bar is a title bar: the navy gradient of .ps-panel-header. When the
+   pane is full screen, the same controls move into the portal header, which
+   has the same gradient, so they get the same buttons there. On a phone the
+   bar is a thin strip with small buttons (.is-rev-strip); it keeps its look. */
+:root[data-ps-theme="win95"] .ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip) {
+  background: linear-gradient(90deg, #000080, #1084d0);
+  border-bottom: 0;
+  color: #ffffff;
+  padding: 3px 3px 3px 4px;
+}
+:root[data-ps-theme="win95"] .ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip) :is(.ps-artifact-pane-name, .ps-artifact-pane-type) {
+  color: #ffffff;
+  opacity: 1;
+}
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tabs, .ps-html-zoom) {
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Raised grey buttons, like every other Win95 control. */
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab, .ps-artifact-pane-btn, .ps-canvas-max-btn, .ps-html-zoom-btn, .ps-html-zoom-level),
+:root[data-ps-theme="win95"] :is(.ps-ws-chip, .ps-ws-icon-btn, .ps-ws-btn, .ps-ws-branch, .ps-ws-seg button, .ps-ws-sidetabs button, .ps-ws-find-btn) {
+  background: var(--w95-face);
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+}
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab, .ps-artifact-pane-btn, .ps-canvas-max-btn, .ps-html-zoom-btn, .ps-html-zoom-level):disabled,
+:root[data-ps-theme="win95"] :is(.ps-ws-chip, .ps-ws-icon-btn, .ps-ws-btn, .ps-ws-branch, .ps-ws-seg button, .ps-ws-sidetabs button, .ps-ws-find-btn):disabled {
+  background: var(--w95-face);
+  color: var(--w95-shadow);
+  opacity: 1;
+}
+
+/* Pressed while clicked, and for a tab or toggle that is on: the inset,
+   dithered look of the active toolbar toggle. */
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab, .ps-artifact-pane-btn, .ps-canvas-max-btn, .ps-html-zoom-btn, .ps-html-zoom-level):active:not(:disabled),
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) :is(.ps-side-pane-tab.is-on, .ps-artifact-pane-btn.is-active),
+:root[data-ps-theme="win95"] :is(.ps-ws-chip, .ps-ws-icon-btn, .ps-ws-btn, .ps-ws-branch, .ps-ws-seg button, .ps-ws-sidetabs button, .ps-ws-find-btn):active:not(:disabled),
+:root[data-ps-theme="win95"] .ps-ws-icon-btn.is-on {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+  background: repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+  color: var(--w95-dark);
+}
+
+/* A chosen folder, view or list tab: navy and white, like a selected row. */
+:root[data-ps-theme="win95"] :is(.ps-ws-chip.is-on, .ps-ws-seg button.is-on, .ps-ws-sidetabs button.is-on, .ps-ws-find-btn[aria-pressed="true"]) {
+  background: #000080;
+  color: #ffffff;
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+}
+:root[data-ps-theme="win95"] .ps-ws-btn.is-primary { background: #000080; color: #ffffff; }
+:root[data-ps-theme="win95"] .ps-ws-btn.is-danger { color: #800000; }
+/* The branch name's loading placeholder is a label, not a button. */
+:root[data-ps-theme="win95"] .ps-ws-branch.is-loading {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--ps-muted);
+}
+:root[data-ps-theme="win95"] :is(.ps-ws-seg, .ps-ws-sidetabs) {
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Toolbars on the button face, split by an etched line. */
+:root[data-ps-theme="win95"] .ps-ws-pane { background: var(--w95-face); }
+:root[data-ps-theme="win95"] :is(.ps-ws-chips, .ps-ws-toolbar, .ps-ws-viewer-bar, .ps-ws-compare-bar) {
+  border-bottom: 1px solid var(--w95-shadow);
+  box-shadow: 0 1px 0 var(--w95-light);
+}
+:root[data-ps-theme="win95"] .ps-ws-folder-path { color: var(--w95-dark); }
+:root[data-ps-theme="win95"] .ps-ws-pill {
+  border-radius: 0;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  color: var(--w95-dark);
+}
+
+/* Text fields are white inset wells, like the composer. */
+:root[data-ps-theme="win95"] :is(.ps-ws-finder, .ps-ws-find-input, .ps-ws-inline-input, .ps-ws-git-repo-select, .ps-ws-git-select),
+:root[data-ps-theme="win95"] :is(.ps-canvas-pane > .ps-artifact-pane-bar:not(.is-rev-strip), .ps-toolbar-canvas-slot) .ps-canvas-slot-select {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-radius: 0;
+}
+/* The two find fields remove the browser's focus ring; show focus with a navy
+   outline. The repo picker's "No repository" stays grey. */
+:root[data-ps-theme="win95"] :is(.ps-ws-finder:focus-within, .ps-ws-find-input:focus) {
+  outline: 1px solid #000080;
+  outline-offset: 0;
+}
+:root[data-ps-theme="win95"] .ps-ws-git-repo-select.is-none { color: var(--ps-muted); }
+
+/* The file tree, the git lists and the file viewer are white inset wells,
+   like the session list. Folders are yellow, as in Explorer. */
+:root[data-ps-theme="win95"] :is(.ps-ws-tree, .ps-ws-found, .ps-ws-git-list) {
+  margin: 4px 8px 8px;
+  background: #ffffff;
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+}
+:root[data-ps-theme="win95"] .ps-ws-viewer-body {
+  margin: 6px 8px 8px;
+  background: #ffffff;
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+}
+:root[data-ps-theme="win95"] .ps-ws-row[aria-expanded] .ps-ws-row-icon svg { fill: #ffff00; }
+:root[data-ps-theme="win95"] .ps-ws-git-rail::after { background: #ffffff; }
+:root[data-ps-theme="win95"] .ps-ws-splitter::after { background: transparent; }
+:root[data-ps-theme="win95"] :is(.ps-ws-splitter:hover, .ps-ws-splitter:focus-visible, .ps-ws-splitter.is-dragging)::after {
+  background: #000080;
+  box-shadow: 0 0 0 1px #000080;
+}
+
+/* Square corners for the rest. */
+:root[data-ps-theme="win95"] :is(.ps-ws-git-ref, .ps-ws-sidetab-count, .ps-ws-picked-bar, .ps-ws-git-pickbar, .ps-ws-git-note, .ps-ws-frontmatter, .ps-ws-md-images, .ps-ws-img-blocked, .ps-ws-row-actions button, .ps-ws-md-body code, .ps-ws-md-body pre) {
+  border-radius: 0;
+}
+
+/* Dialogs and notices are raised grey boxes; a warning banner is tooltip
+   yellow. */
+:root[data-ps-theme="win95"] :is(.ps-ws-dialog, .ps-ws-notice) {
+  background: var(--w95-face);
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow), 2px 2px 0 rgba(0, 0, 0, 0.35);
+}
+:root[data-ps-theme="win95"] .ps-ws-notice.is-error { border-left: 4px solid #800000; }
+:root[data-ps-theme="win95"] .ps-ws-banner:not(.is-agent) {
+  background: #ffffe1;
+  border-bottom: 1px solid var(--w95-shadow);
+  color: var(--w95-dark);
+}
 
 /* Phone toolbar: all eight buttons on one row at any phone width. Each one
    gives up a few pixels (never under 34px) instead of the last action sliding

@@ -73,26 +73,26 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
 
-test("0088: stable worker identities refresh owner and routing registration", () => {
-    const migration = migrations.find((m) => m.version === "0088");
-    assert.ok(migration, "migration 0088 must be registered");
+test("0089: stable worker identities refresh owner and routing registration", () => {
+    const migration = migrations.find((m) => m.version === "0089");
+    assert.ok(migration, "migration 0089 must be registered");
     assert.equal(migration.name, "worker_registration_refresh");
     assert.match(migration.sql, /owner_provider = EXCLUDED\.owner_provider/);
     assert.match(migration.sql, /owner_subject = EXCLUDED\.owner_subject/);
     assert.match(migration.sql, /info = EXCLUDED\.info/);
 });
 
-test("0089: sessions persist an immutable routing contract", () => {
-    const migration = migrations.find((m) => m.version === "0089");
-    assert.ok(migration, "migration 0089 must be registered");
+test("0090: sessions persist an immutable routing contract", () => {
+    const migration = migrations.find((m) => m.version === "0090");
+    assert.ok(migration, "migration 0090 must be registered");
     assert.equal(migration.name, "session_routing_contract");
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS routing_config JSONB/);
     assert.match(migration.sql, /jsonb_typeof\(routing_config\) = 'object'/);
 });
 
-test("0090: WorkflowRuns use logical deletion with durable cleanup tombstones", () => {
-    const migration = migrations.find((m) => m.version === "0090");
-    assert.ok(migration, "migration 0090 must be registered");
+test("0091: WorkflowRuns use logical deletion with durable cleanup tombstones", () => {
+    const migration = migrations.find((m) => m.version === "0091");
+    assert.ok(migration, "migration 0091 must be registered");
     assert.equal(migration.name, "workflow_run_cleanup_tombstones");
     assert.match(migration.sql, /ALTER TABLE "shape_check"\.workflow_generators\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
     assert.match(migration.sql, /ALTER TABLE "shape_check"\.workflow_runs\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
@@ -110,9 +110,9 @@ test("0090: WorkflowRuns use logical deletion with durable cleanup tombstones", 
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_cleanup_tombstones_status/i);
 });
 
-test("0091: WorkflowRun waits use one durable taxonomy with response fencing", () => {
-    const migration = migrations.find((m) => m.version === "0091");
-    assert.ok(migration, "migration 0091 must be registered");
+test("0092: WorkflowRun waits use one durable taxonomy with response fencing", () => {
+    const migration = migrations.find((m) => m.version === "0092");
+    assert.ok(migration, "migration 0092 must be registered");
     assert.equal(migration.name, "workflow_run_waits");
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_run_waits/i);
     assert.match(migration.sql, /kind IN \('response', 'observed_condition', 'timer'\)/i);
@@ -126,8 +126,8 @@ test("0091: WorkflowRun waits use one durable taxonomy with response fencing", (
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_due/i);
 });
 
-test("0092: observed-condition waits persist scheduling leases and delivery boundaries", () => {
-    const migration = migrations.find((m) => m.version === "0092");
+test("0093: observed-condition waits persist scheduling leases and delivery boundaries", () => {
+    const migration = migrations.find((m) => m.version === "0093");
     assert.ok(migration, "migration 0092 must be registered");
     assert.equal(migration.name, "workflow_run_wait_scheduling");
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS signal_key TEXT/i);
@@ -144,8 +144,8 @@ test("0092: observed-condition waits persist scheduling leases and delivery boun
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_check_lease/i);
 });
 
-test("0094: WorkflowGenerator source providers use opaque identifiers", () => {
-    const migration = migrations.find((m) => m.version === "0094");
+test("0095: WorkflowGenerator source providers use opaque identifiers", () => {
+    const migration = migrations.find((m) => m.version === "0095");
     assert.ok(migration, "migration 0094 must be registered");
     assert.equal(migration.name, "workflow_generator_source_provider_ids");
     assert.match(

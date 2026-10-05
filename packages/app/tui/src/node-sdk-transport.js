@@ -1728,11 +1728,9 @@ export class NodeSdkTransport {
     }
 
     async completeSession(sessionId, reason = "Completed by user") {
-        await this.mgmt.sendCommand(sessionId, {
-            cmd: "done",
-            id: `done-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            args: { reason },
-        });
+        // The management call refuses a system session (409
+        // SYSTEM_SESSION_PROTECTED). Do not wait for the session to finish.
+        await this.mgmt.completeSession(sessionId, reason, { wait: false });
     }
 
     async completeSessionGroup(groupId, options = {}) {

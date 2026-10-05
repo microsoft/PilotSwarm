@@ -4,15 +4,15 @@ import { readFile } from "node:fs/promises";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 
 const migrations = CMS_MIGRATIONS("workflow_generator_test");
-const migration = migrations.find((entry) => entry.version === "0083");
-const acknowledgementMigration = migrations.find((entry) => entry.version === "0084");
-const cleanupMigration = migrations.find((entry) => entry.version === "0090");
-const cutoverMigration = migrations.find((entry) => entry.version === "0095");
-const sharedIdentityCutoverMigration = migrations.find((entry) => entry.version === "0096");
-const neutralRunContractMigration = migrations.find((entry) => entry.version === "0097");
-const computeAffinityMigration = migrations.find((entry) => entry.version === "0098");
-const versionCollisionCompatibilityMigration = migrations.find((entry) => entry.version === "0099");
-const executionAffinityMigration = migrations.find((entry) => entry.version === "0100");
+const migration = migrations.find((entry) => entry.version === "0084");
+const acknowledgementMigration = migrations.find((entry) => entry.version === "0085");
+const cleanupMigration = migrations.find((entry) => entry.version === "0091");
+const cutoverMigration = migrations.find((entry) => entry.version === "0096");
+const sharedIdentityCutoverMigration = migrations.find((entry) => entry.version === "0097");
+const neutralRunContractMigration = migrations.find((entry) => entry.version === "0098");
+const computeAffinityMigration = migrations.find((entry) => entry.version === "0099");
+const versionCollisionCompatibilityMigration = migrations.find((entry) => entry.version === "0100");
+const executionAffinityMigration = migrations.find((entry) => entry.version === "0101");
 
 test("WorkflowGenerator migration defines durable aggregate and history tables", () => {
     assert.ok(migration);

@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-horizon-store",
-    "version": "0.8.0",
+    "version": "0.8.2",
     "type": "module",
     "description": "HorizonDB-backed enhanced facts and graph providers for PilotSwarm.",
     "main": "./dist/src/index.js",

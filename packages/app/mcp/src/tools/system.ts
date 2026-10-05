@@ -128,19 +128,30 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                 title: "Restart System Session",
                 description:
                     "Restart a system session (sweeper, resourcemgr, ...) by agent id or session id. disposition "
-                    + "controls what happens to the old session: complete (graceful), terminate, or hard_delete. [admin]",
+                    + "controls what happens to the old session: complete (graceful), terminate, or hard_delete. "
+                    + "start_replacement: false removes the session and starts nothing: use it for the session of an "
+                    + "agent that no worker loads any more. It is refused while a live worker loads the agent. [admin]",
                 inputSchema: {
                     agent_or_session_id: z.string().min(1).describe("System agent id (e.g. 'sweeper') or its session id"),
                     disposition: z.enum(["complete", "terminate", "hard_delete"]).describe("How to dispose of the old session"),
                     reason: z.string().optional().describe("Reason recorded on the restart"),
+                    start_replacement: z.boolean().optional()
+                        .describe("Default true. false removes the session and starts no new one"),
                 },
             },
-            withToolErrors(async ({ agent_or_session_id, disposition, reason }) => {
-                const result = await ctx.mgmt.restartSystemSession(agent_or_session_id, { disposition, reason } as any);
+            withToolErrors(async ({ agent_or_session_id, disposition, reason, start_replacement }) => {
+                const result = await ctx.mgmt.restartSystemSession(agent_or_session_id, {
+                    disposition,
+                    reason,
+                    ...(start_replacement !== undefined ? { startReplacement: start_replacement } : {}),
+                } as any);
                 // The system-agent set may have changed identity; refresh the
                 // dynamic resource registrations' source of truth.
                 await ctx.refreshSystemAgentIds();
-                return jsonResult({ restarted: true, ...(result && typeof result === "object" ? result : {}) });
+                return jsonResult({
+                    restarted: result?.retired !== true,
+                    ...(result && typeof result === "object" ? result : {}),
+                });
             }),
         );
 

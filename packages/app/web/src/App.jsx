@@ -531,8 +531,10 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                             onClick: () => window.location.reload(),
                         }, "↻ New build — reload")
                         : null,
+                    // The header cuts a long status off; the tooltip shows all
+                    // of it (a failed workspace change names its reason last).
                     statusText
-                        ? React.createElement("span", { className: "portal-header-status" }, statusText)
+                        ? React.createElement("span", { className: "portal-header-status", title: statusText }, statusText)
                         : null)
                 : null;
             const signOutNode = authEnabled

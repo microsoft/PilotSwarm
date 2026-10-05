@@ -1,5 +1,184 @@
 # Changelog
 
+## 0.8.2 — 2026-10-04
+
+**Upgrade note: roll every worker and portal together.** This release moves
+from duroxide-node 0.1.29 to 0.2.0, which brings duroxide-pg 0.1.35. Its
+first start adds a database migration, and processes on the older
+duroxide-pg refuse to start against the migrated schema. Do not roll workers
+alone, and do not roll back one tier on its own.
+
+**Turn results stay small (#121).** The `runTurn` activity result is stored in
+the orchestration history and in `.ps-turn-commit.json`. One tool call with a
+large argument used to make it 100–400 MB: thousands of
+`assistant.tool_call_delta` pieces, some arriving after the tool started,
+each given the call's full arguments.
+
+- The activity result keeps only the event types the orchestration reads:
+  `session.usage_info`, `assistant.usage`, `session.compaction_start`,
+  `session.compaction_complete` and `tool.execution_complete`. The CMS and
+  live viewers still get every event.
+- A turn result still over 4 MiB is logged as a warning with its largest
+  event types. Nothing is dropped.
+- The `arguments` copy rule no longer copies a call's arguments into
+  streaming pieces.
+- Argument pieces that arrive after their call started are logged once per
+  call: count, delay of the first and last piece, bytes.
+
+**Model trace events behind a debug flag.** New feature flag
+`debug.enable_model_event_logging`: off for the cluster, and users may turn it
+on for their own sessions. While it is off, the session event log skips
+`model.message`, `model.messages_snapshot`, `model.tool_execution` and
+`model.model_call_success`. They copy the conversation (the snapshot holds
+the whole message list on every turn), nothing reads them, and the same
+content is in `user.message`, `assistant.message` and the `tool.execution_*`
+events. Migration 0081 adds the flag.
+
+**One CLI process per pooled Copilot client.** Concurrent first sessions on
+one pooled client each started a Copilot CLI process. Every event and tool
+call then reached a session once per process, and the extra processes
+outlived shutdown. Sessions now share one start per client; a failed start
+drops the client from the pool.
+
+**duroxide 0.2.0 and lock settings.**
+
+- duroxide-node 0.2.0 is installed from its GitHub release by URL until it is
+  on npm.
+- `ctx.race()` now throws when the winning task failed. The turn loop
+  reaches the same `catch` with the same message as before, so running
+  sessions replay unchanged.
+- New worker options and `PILOTSWARM_*` env vars for every duroxide lock
+  setting. The orchestration lock goes from duroxide's 5 s to 60 s, with a
+  45 s renewal buffer: it now survives a 45 s stall instead of 2 s. An unset
+  renewal buffer defaults to 75% of its lock timeout. See the
+  [configuration reference](docs/developer/reference/configuration.md).
+
+**Win95 theme.** The side pane gets the theme's look.
+
+## 0.8.1 — 2026-10-02
+
+**Git in the Workspace tab.** When a session folder is a git repository, or
+holds repositories inside it (for example a clone in the person's own
+folder), the Workspace tab shows git, as VS Code's Source Control does. It
+is read-only, except for checkout.
+
+- The toolbar shows the branch (ahead, behind, in sync, not pushed) and,
+  when a folder holds several repositories, a repository picker. Git
+  follows the folder or file the person picks. A file outside every
+  repository shows no git.
+- Three tabs: **Files**, **Changes** and **History**. The tree marks changed
+  files (M A D R U C) at the right edge, and folders with changes inside.
+  Changes lists staged and unstaged files, with line counts per group.
+- **Changes since**: the last commit, the main branch, or a commit. Changes
+  can also show one commit's files, or two commits compared.
+- A read-only diff, side by side or inline (always inline under 640 px):
+  HEAD ↔ Index, Index ↔ Working Tree, or a commit's files. Unchanged lines
+  fold; previous and next change. A file added or deleted shows once.
+- **History**: commits with their branches and tags, and a commit's message
+  and files. Ctrl/⌘-click two commits to compare them.
+- **Check out this commit.** Uncommitted changes, untracked files included,
+  are stashed when the person agrees. **Return to <branch>** and **Put them
+  back** undo it. Refused while a turn runs. The agent is told at its next
+  turn.
+- A folder row opens on a second click within 8 s; the first click only
+  picks it. Each tab keeps its own viewer.
+- Read-only editors take the keyboard focus, so keys typed there never
+  reach the session shortcuts. Before, Shift+D in a diff could delete the
+  session.
+- Git runs on the canvas commands' local runner: no shell, settings that
+  start programs refused, no network, never above the session folder.
+  Diffs ignore nested repositories, whose own settings could start a
+  program. The tab shows git only where the deployment runs git for canvas
+  commands (`canvasCommands.allow` includes `git`).
+- No new Web API operation: git is a `{ op: "git" }` call inside
+  `sessionWorkspaceFiles` (status, log, show, file, compare, repos,
+  checkout, restore). `listSessionWorkspaceFolders` says whether git is on
+  (`git`).
+
+**Canvas commands and git on the Azure deployment.** 0.8.0 left canvas
+commands off on deployments. The Azure GitOps deployment now turns them on
+when `WORKSPACES_ENABLED=true`, which also turns on git in the Workspace tab.
+
+- `deploy/Dockerfile.portal` installs git. Before, a command failed with
+  "git is not installed here".
+- The workspaces portal component sets `PORTAL_CANVAS_COMMANDS_RUNNER=local`.
+  Canvas apps run the git commands their manifest declares, for the
+  session's owner only. The program runs as the portal's own user, so turn
+  commands on only where you trust the people who sign in. To keep them
+  off, remove that entry from the component.
+
+**Workspaces (#103).**
+
+- `getSessionWorkspace` returns `turnRevision`: the revision the last turn
+  ran under. `adopted` and `defaults` describe that turn, so a change that
+  waits for the next turn no longer looks applied.
+- A set no longer reports the wrong path for the working folder.
+- The `session.workspace_defaults` event names the defaults a turn left
+  out, and why (`skipped`).
+- `listSessionWorkspaceFolders` returns the names of the roots this
+  deployment serves (`roots`). The Set dialog lists them.
+- A workspace command to a session that has not started yet answers
+  `WORKSPACE_SESSION_NOT_STARTED`.
+- MCP `set_session_workspace` errors share one shape.
+- Portal: a **Files** button in Manage → Workspace opens the Workspace tab.
+  A cancelled clear shows as cancelled.
+
+**System sessions (#99).**
+
+- An admin can remove a system session whose agent no worker loads any
+  more: `restartSystemSession(id, { startReplacement: false })`. It finds
+  the session by session id or agent id, child system agents included,
+  and starts nothing.
+- The removal is refused (409 `SYSTEM_AGENT_LOADED`) while a live worker
+  would create the session again, or does not report what it loads.
+  Workers report the system agents they load, the session ids they create
+  for them, and how often they send a heartbeat. A worker counts as live
+  for 90 s, or for 3 of its heartbeats when they are further apart.
+- An id that is not a system session gets the same answer as a missing id
+  (`NOT_FOUND`), so an admin limited to the cluster scope cannot learn
+  that a person's session exists.
+- Delete, cancel, complete and rename of a system session answer 409
+  `SYSTEM_SESSION_PROTECTED` and name the supported way, instead of a 500.
+  This now also holds for the portal's complete call, which before sent
+  the done command without the check.
+- MCP `restart_system_session` takes `start_replacement`. The portal and
+  the TUI offer **Remove Orphaned System Session** when **Hard Delete &
+  Restart** finds no agent.
+
+**Other fixes.**
+
+- MCP: a 403 returns the server's own reason, with its status and code,
+  instead of claiming a missing admin role (#112).
+- Portal: a deep link to a session-list folder (`?session=group:<id>`) no
+  longer calls `getSession`, which wrote a denied-access row and a 404.
+- The portal's live-update and canvas listeners (Postgres LISTEN/NOTIFY)
+  connect the way the session catalog does: its database, its TLS rules,
+  and a fresh managed-identity token on each reconnect. Before, they used
+  `DATABASE_URL` as is, and failed with `SELF_SIGNED_CERT_IN_CHAIN` on
+  Azure. New SDK function `buildSessionCatalogPgClientConfig`.
+- The canvas listener opens one new connection per dropped connection.
+  Before, a drop opened two, and every canvas update went out twice.
+- Model catalog: a model can set `wireApi` (`completions` or `responses`),
+  as a provider already could. The model's value wins.
+- Session footprint: `regenEligibility` now says whether a session can be
+  regenerated, and why not. `turnsThisEpoch` counts the turns since the
+  last regenerate (#111).
+- Token Manager (agent version 1.2.0): it can tell new sessions from old
+  ones. `list_sessions` gives each session's owner and creation time; the
+  agent's instructions now say how to count, per person, the sessions
+  created in a day. A live-model test checks it.
+- `list_sessions` in a session: the times read "unknown" and `updated_since`
+  dropped every session, because the catalog's times arrive as Date objects
+  and were not read. Both work now.
+- Tests: the database check no longer prints the database password when
+  the database cannot be reached.
+
+**Docs.** A proposal for letting the agent see what the person views in the
+Workspace tab, and point the tab at a place:
+`docs/proposals/workspace-agent-bridge.md`.
+
+No database migration. No new orchestration version (still 1.0.80).
+
 ## 0.8.0 — 2026-09-30
 
 **The Workspace tab.** The portal's side pane has two tabs: **Canvas** and

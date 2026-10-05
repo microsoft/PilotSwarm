@@ -42,12 +42,65 @@ export const FOOTPRINT_CACHE_TTL_MS = 15_000;
 export const FOOTPRINT_STUCK_COMPACTION_MS = 10 * 60 * 1000;
 /** Sweep threshold: entries are pruned on write once the cache exceeds this. */
 export const FOOTPRINT_CACHE_SWEEP_SIZE = 512;
+/**
+ * The regenerate command refuses an epoch with fewer turns than this
+ * (`too_young`). Same value as the command handler in orchestration/lifecycle.ts.
+ */
+export const FOOTPRINT_REGEN_MIN_TURNS = 5;
+/**
+ * After a regeneration, requests from the agent itself or its parent are
+ * refused for this long (`cooldown`). Same value as the command handler.
+ */
+export const FOOTPRINT_REGEN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+/** How many of the newest `session.turn_started` events the turn count reads. */
+export const FOOTPRINT_TURN_WINDOW = 100;
 
 /** Sentinel "after everything" seq for reverse event reads. */
 const MAX_SEQ = Number.MAX_SAFE_INTEGER;
 
+/** The events that move a regeneration along. The newest one says where it is. */
+const REGEN_PROGRESS_EVENTS = [
+    "session.regenerate_requested",
+    "session.regenerate_failed",
+    "session.epoch_committed",
+    "session.regenerated",
+];
+
 export type FootprintLevel = "ok" | "elevated" | "degraded" | "rebuilding";
 export type FootprintRecommendation = "none" | "regenerate" | "prune-events";
+
+/**
+ * Why a regenerate request would be refused now.
+ *
+ * - `is_system`, `is_service`: this kind of session is never regenerated.
+ * - `already_pending`: a regeneration is running.
+ * - `epoch_unsettled`: the last regeneration has not finished its first turn.
+ * - `too_young`: fewer than FOOTPRINT_REGEN_MIN_TURNS turns in this epoch.
+ *   An operator can force past this one.
+ */
+export type RegenIneligibleReason =
+    | "is_system"
+    | "is_service"
+    | "already_pending"
+    | "epoch_unsettled"
+    | "too_young";
+
+/**
+ * Regen eligibility read model (§10.2). It reads only durable state, so it
+ * cannot see a session that is shutting down. The command handler decides.
+ */
+export interface RegenEligibility {
+    eligible: boolean;
+    reason?: RegenIneligibleReason;
+    /** True when an operator can force the request anyway (`too_young` only). */
+    forceable?: boolean;
+    /**
+     * Epoch ms. Until then a request from the agent itself or its parent is
+     * refused as `cooldown`. Operator requests are not affected, so this
+     * does not change `eligible`.
+     */
+    cooldownUntil?: number;
+}
 
 export interface SessionFootprint {
     sessionId: string;
@@ -87,7 +140,7 @@ export interface SessionFootprint {
         orchestrationVersion?: string;
     } | null;
     /** Regen eligibility read model (§10.2). Advisory; the cmd handler is the authority. */
-    regenEligibility: { eligible: boolean; reason?: string };
+    regenEligibility: RegenEligibility;
     assessment: {
         level: FootprintLevel;
         reasons: string[];
@@ -104,6 +157,10 @@ export interface FootprintSources {
               currentIteration?: number | null;
               transcriptEpoch?: number | null;
               lastRegeneratedAt?: number | Date | null;
+              /** System sessions are never regenerated. */
+              isSystem?: boolean | null;
+              /** Set on service sessions (runtime machinery), which are never regenerated. */
+              serviceKind?: string | null;
           }
         | null
     >;
@@ -115,7 +172,7 @@ export interface FootprintSources {
         beforeSeq: number,
         limit?: number,
         eventTypes?: string[],
-    ): Promise<Array<{ seq: number; data?: unknown }>>;
+    ): Promise<Array<{ seq: number; eventType?: string; data?: unknown }>>;
     getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null>;
     getDescendantSessionIds?(sessionId: string): Promise<string[]>;
     getSessionFactsStats?(
@@ -137,6 +194,81 @@ function toEpochMs(value: number | Date | null | undefined): number | null {
 
 function finite(value: unknown): number | null {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** `data.iteration` of a `session.turn_started` event, or null. */
+function turnIteration(event: { data?: unknown }): number | null {
+    return finite((event.data as Record<string, unknown> | null | undefined)?.iteration);
+}
+
+/**
+ * Turns started in the current epoch: the distinct `data.iteration` values of
+ * the `session.turn_started` events after the epoch boundary. A retried turn
+ * starts again with the same iteration, so it counts once.
+ *
+ * Only the newest FOOTPRINT_TURN_WINDOW events are read. When all of them are
+ * after the boundary, the epoch's older turns are out of view. Iterations only
+ * go up, so the count is then the newest iteration minus the epoch's first.
+ */
+async function countTurnsThisEpoch(
+    sources: FootprintSources,
+    sessionId: string,
+    boundarySeq: number,
+): Promise<number> {
+    const TURN = "session.turn_started";
+    const window = await sources.getSessionEventsBefore(sessionId, MAX_SEQ, FOOTPRINT_TURN_WINDOW, [TURN]);
+    const turns = window.filter((e) => e.eventType === TURN);
+    const iterations = turns
+        .filter((e) => e.seq > boundarySeq)
+        .map(turnIteration)
+        .filter((n): n is number => n != null);
+    const reachedBoundary = window.length < FOOTPRINT_TURN_WINDOW || turns.some((e) => e.seq <= boundarySeq);
+    if (reachedBoundary || iterations.length === 0) return new Set(iterations).size;
+
+    // The epoch's first iteration follows the last turn before the boundary.
+    // Epoch 0 has no boundary, and its first iteration is 0.
+    let firstIteration = 0;
+    if (boundarySeq > 0) {
+        const before = await sources.getSessionEventsBefore(sessionId, boundarySeq, 1, [TURN]);
+        const last = before.find((e) => e.eventType === TURN);
+        const iteration = last ? turnIteration(last) : null;
+        if (iteration != null) firstIteration = iteration + 1;
+    }
+    return Math.max(0, Math.max(...iterations) - firstIteration + 1);
+}
+
+/**
+ * Predict the regenerate command's answer from durable state. The checks and
+ * their order match ManagementClient.regenerateSession (system, service) and
+ * then the command handler in orchestration/lifecycle.ts.
+ */
+function regenEligibilityFor(input: {
+    isSystem: boolean;
+    serviceKind: string | null;
+    /** Type of the newest REGEN_PROGRESS_EVENTS event, if any. */
+    regenProgress: string | null;
+    turnsThisEpoch: number;
+    lastRegenMs: number | null;
+    nowMs: number;
+}): RegenEligibility {
+    const cooldownUntil = input.lastRegenMs != null && input.nowMs - input.lastRegenMs < FOOTPRINT_REGEN_COOLDOWN_MS
+        ? input.lastRegenMs + FOOTPRINT_REGEN_COOLDOWN_MS
+        : null;
+    const cooldown = cooldownUntil != null ? { cooldownUntil } : {};
+    if (input.isSystem) return { eligible: false, reason: "is_system", ...cooldown };
+    if (input.serviceKind) return { eligible: false, reason: "is_service", ...cooldown };
+    // Requested, and not yet failed or flipped: the pipeline is still running.
+    if (input.regenProgress === "session.regenerate_requested") {
+        return { eligible: false, reason: "already_pending", ...cooldown };
+    }
+    // Flipped, but the new epoch's first turn has not proven it yet.
+    if (input.regenProgress === "session.epoch_committed") {
+        return { eligible: false, reason: "epoch_unsettled", ...cooldown };
+    }
+    if (input.turnsThisEpoch < FOOTPRINT_REGEN_MIN_TURNS) {
+        return { eligible: false, reason: "too_young", forceable: true, ...cooldown };
+    }
+    return { eligible: true, ...cooldown };
 }
 
 /**
@@ -172,7 +304,7 @@ export async function computeSessionFootprint(
     }
     const afterSeq = boundarySeq > 0 ? boundarySeq : undefined;
 
-    const [eventStatsAll, eventStatsEpoch, compaction, usageEvents, summary] = await Promise.all([
+    const [eventStatsAll, eventStatsEpoch, compaction, usageEvents, summary, turnsThisEpoch, regenEvents] = await Promise.all([
         sources.getSessionEventStats(sessionId),
         afterSeq != null
             ? sources.getSessionEventStats(sessionId, afterSeq)
@@ -182,6 +314,10 @@ export async function computeSessionFootprint(
             "session.usage_info",
         ]),
         sources.getSessionMetricSummary(sessionId),
+        // Counted from turn events, not the CMS current_iteration: that one
+        // counts every turn of the session and is never reset by a regeneration.
+        countTurnsThisEpoch(sources, sessionId, boundarySeq),
+        sources.getSessionEventsBefore(sessionId, MAX_SEQ, 1, REGEN_PROGRESS_EVENTS),
     ]);
 
     // Optional axes degrade independently — a failure in one never sinks the rest.
@@ -280,6 +416,21 @@ export async function computeSessionFootprint(
     const epochAgeDays =
         epochStartMs != null ? (Date.now() - epochStartMs) / (24 * 60 * 60 * 1000) : null;
 
+    const latestRegenEvent = regenEvents
+        .filter((e) => typeof e.eventType === "string" && REGEN_PROGRESS_EVENTS.includes(e.eventType))
+        .reduce<{ seq: number; eventType?: string } | null>(
+            (newest, e) => (newest == null || e.seq > newest.seq ? e : newest),
+            null,
+        );
+    const regenEligibility = regenEligibilityFor({
+        isSystem: session.isSystem === true,
+        serviceKind: session.serviceKind ?? null,
+        regenProgress: latestRegenEvent?.eventType ?? null,
+        turnsThisEpoch,
+        lastRegenMs,
+        nowMs: Date.now(),
+    });
+
     const facts =
         factsResult.status === "fulfilled" && factsResult.value
             ? { count: factsResult.value.totalCount, bytes: factsResult.value.totalBytes }
@@ -311,7 +462,7 @@ export async function computeSessionFootprint(
         transcriptEpoch,
         regenCount: (summary as any)?.regenCount ?? transcriptEpoch,
         epochAgeDays,
-        turnsThisEpoch: finite(session.currentIteration as number),
+        turnsThisEpoch,
         context: {
             tokenLimit: latest?.tokenLimit ?? null,
             currentTokens: latest?.currentTokens ?? null,
@@ -336,8 +487,7 @@ export async function computeSessionFootprint(
         facts,
         children: descendants,
         orchestration,
-        // Regeneration ships in M1; until then the read model reports it plainly.
-        regenEligibility: { eligible: false, reason: "not_available" },
+        regenEligibility,
         assessment: { level, reasons, recommendation },
         computedAt: Date.now(),
     };

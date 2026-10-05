@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -11,10 +11,10 @@ const ASSET_DIR = path.join(SCRIPT_DIR, "local-test-baseline-dashboard");
 
 function usage() {
     return `Usage:
-  npm run test:local:baseline:dashboard -- [options]
+  npm run test:campaign:dashboard -- [options]
 
 Options:
-  --results <path>  Results JSON (default: pilotswarm-local-test-baseline.json)
+  --results <path>  Campaign JSON (default: test-results/local-test-validation/campaign.json)
   --host <host>     Listen host (default: 127.0.0.1)
   --port <port>     Listen port (default: 4310)
   --help            Show this help
@@ -33,7 +33,7 @@ function takeValue(args, index, name) {
 
 export function parseDashboardArgs(args) {
     const options = {
-        results: "pilotswarm-local-test-baseline.json",
+        results: "test-results/local-test-validation/campaign.json",
         host: "127.0.0.1",
         port: 4310,
         help: false,
@@ -60,7 +60,27 @@ export function parseDashboardArgs(args) {
         throw new Error("--port must be an integer between 0 and 65535");
     }
     if (!options.host.trim()) throw new Error("--host must not be empty");
+    if (!isLoopbackHost(options.host)) {
+        throw new Error("--host must be a loopback host (localhost, 127.0.0.1, or ::1)");
+    }
     return options;
+}
+
+export function isLoopbackHost(host) {
+    const normalized = String(host ?? "").trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+    return normalized === "localhost"
+        || normalized === "::1"
+        || /^127(?:\.\d{1,3}){3}$/.test(normalized)
+            && normalized.split(".").every((part) => Number(part) <= 255);
+}
+
+export function isLoopbackAuthority(authority) {
+    if (!authority) return false;
+    try {
+        return isLoopbackHost(new URL(`http://${authority}`).hostname);
+    } catch {
+        return false;
+    }
 }
 
 function sendJson(response, status, value) {
@@ -81,9 +101,71 @@ function sendFile(response, filePath, contentType) {
         response.end(content);
     } catch (error) {
         sendJson(response, error.code === "ENOENT" ? 404 : 500, {
-            error: error.message,
+            error: error.code === "ENOENT"
+                ? "Dashboard asset is not available"
+                : "Dashboard asset could not be read",
         });
     }
+}
+
+function readCampaign(resultsPath) {
+    return JSON.parse(fs.readFileSync(resultsPath, "utf8"));
+}
+
+function ageMs(value, nowMs) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? Math.max(0, nowMs - parsed) : null;
+}
+
+export function campaignProgress(campaign, nowMs = Date.now()) {
+    const run = campaign.currentRun ?? null;
+    const round = run?.rounds?.find((entry) => entry.number === run.round) ?? null;
+    const activeFiles = Object.entries(run?.activeFiles ?? {}).map(([file, entry]) => ({
+        file,
+        slot: entry.slot,
+        round: entry.round,
+        startedAt: entry.startedAt,
+        deadlineAt: entry.deadlineAt,
+        elapsedMs: ageMs(entry.startedAt, nowMs),
+        deadlineRemainingMs: entry.deadlineAt
+            ? Math.max(0, Date.parse(entry.deadlineAt) - nowMs)
+            : null,
+    }));
+    const heartbeatAgeMs = ageMs(run?.heartbeatAt, nowMs);
+    return {
+        campaignId: campaign.campaignId ?? null,
+        status: campaign.status ?? "unknown",
+        terminalReason: campaign.terminalReason ?? run?.terminalReason ?? null,
+        phase: run?.phase ?? null,
+        round: run?.round ?? null,
+        heartbeatAt: run?.heartbeatAt ?? null,
+        heartbeatAgeMs,
+        heartbeatStale: run?.status === "running"
+            && heartbeatAgeMs !== null
+            && heartbeatAgeMs > 15_000,
+        lastProgressAt: run?.lastProgressAt ?? null,
+        lastProgressAgeMs: ageMs(run?.lastProgressAt, nowMs),
+        lastTransitionAt: run?.lastTransitionAt ?? null,
+        lastTransitionAgeMs: ageMs(run?.lastTransitionAt, nowMs),
+        unfinished: campaign.summary?.unfinished ?? null,
+        outcomes: {
+            passed: campaign.summary?.passed ?? 0,
+            failed: campaign.summary?.failed ?? 0,
+            timed_out: campaign.summary?.timed_out ?? 0,
+            mixed: campaign.summary?.mixed ?? 0,
+        },
+        roundProgress: round ? {
+            number: round.number,
+            kind: round.kind,
+            status: round.status,
+            total: round.total,
+            queued: round.queued,
+            active: round.active,
+            completed: round.completed,
+            remaining: round.remaining,
+        } : null,
+        activeFiles,
+    };
 }
 
 export function createDashboardServer({
@@ -99,6 +181,10 @@ export function createDashboardServer({
     ]);
 
     return http.createServer((request, response) => {
+        if (!isLoopbackAuthority(request.headers.host)) {
+            sendJson(response, 403, { error: "Loopback Host header required" });
+            return;
+        }
         const url = new URL(request.url ?? "/", "http://localhost");
         if (request.method !== "GET") {
             response.writeHead(405, { Allow: "GET" });
@@ -107,22 +193,33 @@ export function createDashboardServer({
         }
         if (url.pathname === "/api/results") {
             try {
-                const parsed = JSON.parse(fs.readFileSync(resultsPath, "utf8"));
+                const parsed = readCampaign(resultsPath);
                 sendJson(response, 200, parsed);
             } catch (error) {
                 sendJson(response, error.code === "ENOENT" ? 404 : 500, {
                     error: error.code === "ENOENT"
-                        ? `Results file not found: ${resultsPath}`
-                        : `Could not read results: ${error.message}`,
+                        ? "Campaign results are not available"
+                        : "Campaign results could not be read",
                 });
             }
             return;
         }
-        if (url.pathname === "/api/health") {
+        if (url.pathname === "/api/status" || url.pathname === "/api/health") {
+            const available = fs.existsSync(resultsPath);
+            let progress = null;
+            let error = null;
+            if (available) {
+                try {
+                    progress = campaignProgress(readCampaign(resultsPath));
+                } catch {
+                    error = "Campaign results could not be read";
+                }
+            }
             sendJson(response, 200, {
-                ok: true,
-                resultsPath,
-                resultsAvailable: fs.existsSync(resultsPath),
+                ok: error === null,
+                resultsAvailable: available,
+                ...(progress ? { progress } : {}),
+                ...(error ? { error } : {}),
             });
             return;
         }
@@ -159,7 +256,8 @@ async function main() {
 }
 
 const invokedDirectly = process.argv[1]
-    && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+    && fs.realpathSync(path.resolve(process.argv[1])).toLowerCase()
+        === fs.realpathSync(fileURLToPath(import.meta.url)).toLowerCase();
 if (invokedDirectly) {
     main().catch((error) => {
         console.error(`ERROR: ${error.stack || error.message || error}`);

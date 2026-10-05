@@ -892,6 +892,19 @@ export class SessionManager {
 
     private clients = new Map<string, CopilotClient>();
     /**
+     * The start in progress for each pooled client.
+     *
+     * The Copilot SDK starts a client on its first createSession or
+     * resumeSession. Its `start()` returns early only when the client is
+     * already connected, so concurrent first calls each spawn a CLI process.
+     * Every session then ends up on the last process, the other processes keep
+     * running after `client.stop()`, and every event and tool call reaches a
+     * session once per process. So sessions are created and resumed only
+     * through `_createCopilotSession` / `_resumeCopilotSession`, which share
+     * one start per client (`_startClient`).
+     */
+    private clientStarts = new WeakMap<CopilotClient, Promise<void>>();
+    /**
      * Backward-compat accessor for the default-token CopilotClient.
      *
      * The internal pool is keyed by transport and GitHub Copilot token (so
@@ -1561,6 +1574,11 @@ export class SessionManager {
         for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
     }
 
+    /** The worker's feature flag cache, or null when the worker has no CMS. */
+    getFeatureFlagCache(): FeatureFlagCache | null {
+        return this.featureFlags;
+    }
+
     /**
      * Hot-swap the model-provider registry after a config-file change on
      * disk (ConfigMap update). Applies to all subsequent model resolution;
@@ -1698,7 +1716,11 @@ export class SessionManager {
         return hasSignedInCopilotUserConfig(raw);
     }
 
-    /** Ensure the CopilotClient is started. */
+    /**
+     * The pooled CopilotClient for this token, transport and workspace root.
+     * It may not be started yet: create and resume sessions on it through
+     * `_createCopilotSession` / `_resumeCopilotSession`.
+     */
     private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
@@ -1745,6 +1767,55 @@ export class SessionManager {
         }, byokOpenAi ? { type: "openai" } : undefined);
         this.clients.set(clientKey, created);
         return created;
+    }
+
+    /**
+     * Start a pooled client. Concurrent callers share the start in progress
+     * (see `clientStarts`).
+     *
+     * - Already connected: `start()` returns at once.
+     * - The CLI exited: the next call restarts it, and concurrent callers
+     *   share that restart too.
+     * - The start failed: the client leaves the pool, so the next call
+     *   creates a fresh one.
+     *
+     * Returns null for an injected test stub that has no `start()`.
+     */
+    private _startClient(client: CopilotClient): Promise<void> | null {
+        if (typeof client.start !== "function") return null;
+        const inFlight = this.clientStarts.get(client);
+        if (inFlight) return inFlight;
+        const starting: Promise<void> = Promise.resolve()
+            .then(() => client.start())
+            .catch((error: unknown) => {
+                for (const [key, pooled] of this.clients) {
+                    if (pooled === client) this.clients.delete(key);
+                }
+                throw error;
+            })
+            .finally(() => {
+                if (this.clientStarts.get(client) === starting) this.clientStarts.delete(client);
+            });
+        this.clientStarts.set(client, starting);
+        return starting;
+    }
+
+    /** `client.createSession`, after the client's shared start. */
+    private _createCopilotSession(client: CopilotClient, config: SessionConfig): Promise<CopilotSession> {
+        const starting = this._startClient(client);
+        return starting ? starting.then(() => client.createSession(config)) : client.createSession(config);
+    }
+
+    /** `client.resumeSession`, after the client's shared start. */
+    private _resumeCopilotSession(
+        client: CopilotClient,
+        sessionId: string,
+        config: Parameters<CopilotClient["resumeSession"]>[1],
+    ): Promise<CopilotSession> {
+        const starting = this._startClient(client);
+        return starting
+            ? starting.then(() => client.resumeSession(sessionId, config))
+            : client.resumeSession(sessionId, config);
     }
 
     /**
@@ -3516,7 +3587,7 @@ export class SessionManager {
                 await this._resetSessionState(sessionId);
             }
 
-            copilotSession = await client.createSession(sessionConfig);
+            copilotSession = await this._createCopilotSession(client, sessionConfig);
         } else if (epochStart) {
             // Session regeneration: first turn of a fresh epoch whose chain is
             // empty (the caller verified via the lifecycle preamble). Epoch-
@@ -3528,7 +3599,7 @@ export class SessionManager {
                 { trace },
             );
             await this._resetSessionStateForEpoch(sessionId, transcriptEpoch);
-            copilotSession = await client.createSession(sessionConfig);
+            copilotSession = await this._createCopilotSession(client, sessionConfig);
             // Birth marker: the preamble's epoch invariant refuses to trust a
             // markerless dir under epoch >= 1, so stamp the incarnation the
             // moment it exists (version 0 = no commit yet).
@@ -3540,7 +3611,7 @@ export class SessionManager {
         } else if (turnIndex != null && turnIndex > 0) {
             if (fs.existsSync(sessionDir)) {
                 emitSessionManagerTrace(sessionId, "turn>0 resuming from local session directory", { trace });
-                copilotSession = await client.resumeSession(sessionId, sessionConfig);
+                copilotSession = await this._resumeCopilotSession(client, sessionId, sessionConfig);
             } else if (this.sessionStore && storedExists) {
                 emitSessionManagerTrace(sessionId, "turn>0 hydrating from session store before resume", { trace });
                 try {
@@ -3562,7 +3633,7 @@ export class SessionManager {
                     throw this._missingSessionStateError(sessionId, turnIndex, " Hydration completed but no local session directory was restored.");
                 }
                 emitSessionManagerTrace(sessionId, "turn>0 hydrate restored local session directory; resuming session", { trace });
-                copilotSession = await client.resumeSession(sessionId, sessionConfig);
+                copilotSession = await this._resumeCopilotSession(client, sessionId, sessionConfig);
             } else {
                 emitSessionManagerTrace(
                     sessionId,
@@ -3574,20 +3645,20 @@ export class SessionManager {
         } else {
             // Backward-compatible permissive path for older orchestration versions.
             if (fs.existsSync(sessionDir)) {
-                copilotSession = await client.resumeSession(sessionId, sessionConfig);
+                copilotSession = await this._resumeCopilotSession(client, sessionId, sessionConfig);
             } else if (this.sessionStore) {
                 try {
                     await this.sessionStore.hydrate(sessionId);
                     if (fs.existsSync(sessionDir)) {
-                        copilotSession = await client.resumeSession(sessionId, sessionConfig);
+                        copilotSession = await this._resumeCopilotSession(client, sessionId, sessionConfig);
                     } else {
-                        copilotSession = await client.createSession(sessionConfig);
+                        copilotSession = await this._createCopilotSession(client, sessionConfig);
                     }
                 } catch {
-                    copilotSession = await client.createSession(sessionConfig);
+                    copilotSession = await this._createCopilotSession(client, sessionConfig);
                 }
             } else {
-                copilotSession = await client.createSession(sessionConfig);
+                copilotSession = await this._createCopilotSession(client, sessionConfig);
             }
         }
 
@@ -3762,7 +3833,7 @@ export class SessionManager {
                         try {
                             const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
-                            const copilotSession = await client.resumeSession(sessionId, {
+                            const copilotSession = await this._resumeCopilotSession(client, sessionId, {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: approvePermissionForSession,
                             });
@@ -4096,9 +4167,19 @@ export class SessionManager {
         return "released";
     }
 
-    /** Session workspaces: the working folder's path the session's warm handle on this worker attached, if any. */
-    getWorkspaceAttachPath(sessionId: string): string | undefined {
-        return this.sessions.get(sessionId)?.getWorkspaceState().attach?.path;
+    /**
+     * Session workspaces: the working folder the session's warm handle on
+     * this worker attached at its last turn, if any: the path, the revision
+     * that turn ran under, and whether it was the person's own folder.
+     */
+    getWorkspaceAttach(sessionId: string): { path: string; revision?: number; homeIsWorkingFolder: boolean } | undefined {
+        const attach = this.sessions.get(sessionId)?.getWorkspaceState().attach;
+        if (!attach) return undefined;
+        return {
+            path: attach.path,
+            ...(attach.revision !== undefined ? { revision: attach.revision } : {}),
+            homeIsWorkingFolder: attach.homeIsWorkingFolder === true,
+        };
     }
 
     /** Session workspaces: the folders held on this worker for a session. */
@@ -4208,6 +4289,7 @@ export class SessionManager {
         // must never clear clients/configuration installed by a later start.
         const clients = [...new Set(this.clients.values())];
         this.clients.clear();
+        this.clientStarts = new WeakMap();
         this.sessions.clear();
         this.sessionAgentCopies.clear();
         this.sessionBindingFingerprints.clear();

@@ -13,6 +13,9 @@
  *   - default folders (section 4.11), which are not in the record: the
  *     person's own folder when the session has none, and default extra
  *     folders, in the stats tab and in the portal's Workspace row
+ *   - issue #103: the clear hint says it asks first, and a cancelled
+ *     confirm says so; the Set dialog lists the roots for the owner; the
+ *     Workspace tab opens from Manage session while the side pane is hidden
  *
  * Run: node --test test/session-workspace-ui.test.mjs
  */
@@ -271,4 +274,63 @@ test("the portal's Workspace row names the person's folder and the default extra
         { current: "a/repo-x · unavailable (WORKSPACE_FOLDER_MISSING)", defaults: null });
     assert.deepEqual(describeSessionWorkspace(selectSessionWorkspace((await seeded(NONE)).state())), { current: "none", defaults: null });
     assert.deepEqual(describeSessionWorkspace(null), { current: "none", defaults: null });
+});
+
+// ── Small gaps from an end-to-end test (issue #103) ──────────────
+
+test("the clear hint says it asks first, and cancelling the confirm says the workspace was not cleared", async () => {
+    const h = await seeded(HELD);
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    h.controller.setSetWorkspaceValue("");
+    const hint = selectSessionWorkspaceModal(h.state()).helpLines.map(lineText).join("\n");
+    assert.match(hint, /Enter clear \(asks first\)/);
+    assert.match(selectStatusBar(h.state()).right, /empty clears \(asks first\)/);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(h.state().ui.modal?.action, "clearSessionWorkspace");
+    // A click outside the confirm, Escape or Cancel: all close the modal.
+    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.equal(h.state().ui.modal, null);
+    assert.equal(h.state().ui.statusText, "Workspace not cleared (cancelled)");
+    assert.equal(h.calls.filter((c) => c[0] === "set").length, 0, "nothing was cleared");
+
+    // Closing any other modal still says Connected.
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.equal(h.state().ui.statusText, "Connected");
+});
+
+test("the Set dialog lists the roots when the folder list answers; none when it fails", async () => {
+    const listed = [];
+    const owner = await seeded(READY, {
+        listSessionWorkspaceFolders: async (id) => { listed.push(id); return { enabled: true, maxBytes: 1, folders: [], roots: ["a", "shared"] }; },
+    });
+    await owner.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    assert.deepEqual(listed, [SID]);
+    const help = selectSessionWorkspaceModal(owner.state()).helpLines.map(lineText).join("\n");
+    assert.match(help, /\nRoots: a, shared\n/);
+    assert.equal(owner.state().ui.modal.value, "a/repo-x", "the value is kept");
+
+    // Not the owner: the call is refused, and the dialog lists none.
+    const viewer = await seeded(READY, {
+        listSessionWorkspaceFolders: async () => { throw Object.assign(new Error("Forbidden"), { status: 403 }); },
+    });
+    await viewer.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    assert.equal(viewer.state().ui.modal?.type, "sessionWorkspace", "the dialog still opens");
+    assert.doesNotMatch(selectSessionWorkspaceModal(viewer.state()).helpLines.map(lineText).join("\n"), /Roots:/);
+
+    // No folder list at all (the TUI without workspace files): none.
+    const plain = await seeded(READY);
+    await plain.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    assert.doesNotMatch(selectSessionWorkspaceModal(plain.state()).helpLines.map(lineText).join("\n"), /Roots:/);
+});
+
+test("the Workspace tab can be opened from Manage session while the side pane is hidden", async () => {
+    const h = await seeded(READY);
+    assert.notEqual(h.state().ui.canvasOpen, true, "the pane starts hidden");
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE_FILES);
+    assert.equal(h.state().ui.canvasOpen, true, "the side pane shows");
+    assert.equal(h.state().ui.sidePaneTab, "workspace", "on its Workspace tab");
+    const web = readFileSync(fileURLToPath(new URL("../../react/src/web-app.js", import.meta.url)), "utf8");
+    assert.match(web, /portalWorkspaceFiles \? React\.createElement\("button", \{[\s\S]{0,300}UI_COMMANDS\.OPEN_WORKSPACE_FILES/,
+        "the Manage dialog's Workspace row has the Files button");
 });

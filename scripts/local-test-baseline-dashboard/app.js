@@ -5,6 +5,7 @@ const columns = [
     { key: "attempts", label: "Attempts", type: "number" },
     { key: "passed", label: "Passed", type: "number" },
     { key: "failed", label: "Failed", type: "number" },
+    { key: "timedOut", label: "Timed out", type: "number" },
     { key: "interrupted", label: "Interrupted", type: "number" },
     { key: "stability", label: "Stability", type: "string" },
     { key: "lastRunAt", label: "Last run", type: "date" },
@@ -26,13 +27,16 @@ const elements = {
     refreshedAt: document.getElementById("refreshed-at"),
     autoRefresh: document.getElementById("auto-refresh"),
     table: document.getElementById("results-table"),
+    liveStatus: document.getElementById("live-status"),
+    liveCards: document.getElementById("live-cards"),
+    activeFiles: document.getElementById("active-files"),
 };
 
 let rows = [];
 let sort = { key: "file", direction: "ascending" };
 
 function historyCounts(entry) {
-    const counts = { passed: 0, failed: 0, interrupted: 0 };
+    const counts = { passed: 0, failed: 0, timed_out: 0, interrupted: 0 };
     for (const attempt of entry.attempts ?? []) {
         if (attempt.status in counts) counts[attempt.status]++;
     }
@@ -40,7 +44,9 @@ function historyCounts(entry) {
 }
 
 function stability(entry, counts) {
-    if (counts.passed > 0 && counts.failed + counts.interrupted > 0) return "Flaky";
+    if ([counts.passed, counts.failed, counts.timed_out].filter((count) => count > 0).length > 1) {
+        return "Mixed";
+    }
     if ((entry.attempts?.length ?? 0) < 2) return "Single observation";
     return "Consistent";
 }
@@ -65,6 +71,7 @@ function normalize(data) {
             durationText: formatDuration(entry.latestDurationMs),
             attempts: entry.attempts?.length ?? 0,
             ...counts,
+            timedOut: counts.timed_out,
             stability: stability(entry, counts),
             lastRunAt: entry.lastRunAt ?? "",
             notes: entry.notes ?? "",
@@ -158,7 +165,8 @@ function renderRows() {
         const result = createCell("");
         const status = document.createElement("span");
         status.className = `status status-${row.status}`;
-        status.textContent = row.status[0].toUpperCase() + row.status.slice(1);
+        status.textContent = (row.status[0].toUpperCase() + row.status.slice(1))
+            .replaceAll("_", " ");
         result.append(status);
         tr.append(result);
 
@@ -166,6 +174,7 @@ function renderRows() {
         tr.append(createCell(String(row.attempts), "number"));
         tr.append(createCell(String(row.passed), "number"));
         tr.append(createCell(String(row.failed), "number"));
+        tr.append(createCell(String(row.timedOut), "number"));
         tr.append(createCell(String(row.interrupted), "number"));
         tr.append(createCell(row.stability));
         tr.append(createCell(row.lastRunAt ? row.lastRunAt.slice(0, 10) : "—"));
@@ -183,9 +192,10 @@ function renderCards(summary) {
         ["Total files", summary.total],
         ["Passed", summary.passed],
         ["Failed", summary.failed],
+        ["Timed out", summary.timed_out],
         ["Interrupted", summary.interrupted],
         ["Pending", summary.pending],
-        ["Mixed history", summary.flaky],
+        ["Mixed history", summary.mixed ?? summary.flaky],
         ["Total attempts", summary.attempts],
     ];
     elements.cards.replaceChildren(...cards.map(([label, value]) => {
@@ -200,6 +210,71 @@ function renderCards(summary) {
     }));
 }
 
+function formatAge(milliseconds) {
+    if (milliseconds == null) return "unknown";
+    return `${formatDuration(milliseconds)} ago`;
+}
+
+function currentRound(data) {
+    const run = data.currentRun;
+    return run?.rounds?.find((round) => round.number === run.round) ?? null;
+}
+
+function renderLive(data) {
+    const run = data.currentRun;
+    const round = currentRound(data);
+    const now = Date.now();
+    const heartbeatAge = run?.heartbeatAt ? Math.max(0, now - Date.parse(run.heartbeatAt)) : null;
+    const progressAge = run?.lastProgressAt ? Math.max(0, now - Date.parse(run.lastProgressAt)) : null;
+    const transitionAge = run?.lastTransitionAt
+        ? Math.max(0, now - Date.parse(run.lastTransitionAt))
+        : null;
+    elements.liveStatus.textContent = [
+        `campaign ${data.status ?? "unknown"}`,
+        run?.phase ? `${run.phase} round ${run.round ?? "—"}` : "no run",
+        data.terminalReason ?? run?.terminalReason,
+    ].filter(Boolean).join(" · ");
+    if (run?.status === "running" && heartbeatAge > 15_000) {
+        elements.liveStatus.classList.add("warning");
+    } else {
+        elements.liveStatus.classList.remove("warning");
+    }
+    const cards = [
+        ["Round progress", round ? `${round.completed}/${round.total}` : "—"],
+        ["Unfinished jobs", round?.remaining ?? 0],
+        ["Queued / active", round ? `${round.queued} / ${round.active}` : "—"],
+        ["Campaign unfinished", data.summary?.unfinished ?? 0],
+        ["Last progress", formatAge(progressAge)],
+        ["Last transition", formatAge(transitionAge)],
+        ["Heartbeat", formatAge(heartbeatAge)],
+    ];
+    elements.liveCards.replaceChildren(...cards.map(([label, value]) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const strong = document.createElement("strong");
+        strong.textContent = String(value);
+        const span = document.createElement("span");
+        span.textContent = label;
+        card.append(strong, span);
+        return card;
+    }));
+    const active = Object.entries(run?.activeFiles ?? {});
+    elements.activeFiles.replaceChildren();
+    if (active.length === 0) {
+        elements.activeFiles.textContent = "No active files.";
+        return;
+    }
+    for (const [file, entry] of active) {
+        const row = document.createElement("div");
+        row.className = "active-file";
+        const elapsed = Math.max(0, now - Date.parse(entry.startedAt));
+        const deadline = Math.max(0, Date.parse(entry.deadlineAt) - now);
+        row.textContent = `slot ${entry.slot} · ${file} · elapsed ${formatDuration(elapsed)}`
+            + ` · deadline in ${formatDuration(deadline)}`;
+        elements.activeFiles.append(row);
+    }
+}
+
 function render() {
     renderHeader();
     renderRows();
@@ -211,14 +286,15 @@ async function refresh() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         rows = normalize(data);
-        const testedRevision = data.lastRunConfig?.testedRevision ?? data.repository ?? {};
+        const testedRevision = data.repository ?? {};
         elements.metadata.textContent = [
             testedRevision.repository ?? "unknown repository",
             `${testedRevision.branch ?? "unknown"} @ `
-                + `${testedRevision.commitId ?? testedRevision.commit ?? "unknown"}`,
+                + `${testedRevision.commitId ?? "unknown"}`,
             `updated ${data.updatedAt ?? "unknown"}`,
         ].join(" · ");
         renderCards(data.summary ?? {});
+        renderLive(data);
         render();
         elements.error.hidden = true;
         elements.refreshedAt.textContent = new Date().toLocaleTimeString();

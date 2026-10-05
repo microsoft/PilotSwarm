@@ -18,6 +18,14 @@ spec:
             # workers' PS_WORKSPACE_ROOTS, PS_PLAIN_ROOTS and PS_HOME_ROOT.
             - name: PORTAL_WORKSPACE_ROOTS
               value: a=/ws/a,shared=/ws/shared,home=/ws/home
+            # Canvas apps may run the git commands their manifest declares
+            # (canvas-ws), for the session's owner only. The program runs as
+            # the portal's own user, in this container, with a clean
+            # environment, no shell and no network
+            # (packages/sdk/src/canvas-workspace.ts). This reference
+            # deployment turns commands on; remove this entry to keep them off.
+            - name: PORTAL_CANVAS_COMMANDS_RUNNER
+              value: local
           # A file call that carries a whole file (up to 20 MB) holds it
           # several times over while it runs; two run at once
           # (packages/sdk/src/workspace-files.ts), next to everything else

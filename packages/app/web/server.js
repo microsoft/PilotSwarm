@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
+import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
@@ -94,6 +95,22 @@ export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
     app.use(express.json({ limit: "2mb" }));
 }
 
+/**
+ * The pg client config for the canvas and live LISTEN relays. It follows
+ * the session catalog rules: the same database, the sslmode fix, and the
+ * managed-identity token. If the config cannot be built, it returns null:
+ * the relays are then unavailable and the portal still starts.
+ */
+export function buildListenConnection(storageOptions, env = process.env) {
+    try {
+        return buildSessionCatalogPgClientConfig(storageOptions, env);
+    } catch (error) {
+        // The builder's messages never include the URL.
+        console.warn(`[portal] live relays unavailable: ${String(error?.message || error).slice(0, 200)}`);
+        return null;
+    }
+}
+
 function sendSpaIndex(res) {
     res.set("Cache-Control", "no-store, max-age=0");
     res.sendFile(path.join(DIST_DIR, "index.html"));
@@ -127,13 +144,15 @@ export async function startServer(opts = {}) {
     const useManagedIdentity = ["1", "true", "yes", "on"].includes(
         String(process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").toLowerCase(),
     );
-    const runtime = new PortalRuntime({
+    // The runtime and the live-update listeners must use the same settings,
+    // so both reach the session catalog database the same way.
+    const storageOptions = {
         store: process.env.DATABASE_URL || "sqlite::memory:",
-        mode,
         useManagedIdentity,
         cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
         aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
-    });
+    };
+    const runtime = new PortalRuntime({ ...storageOptions, mode });
 
     const app = express();
     app.set("trust proxy", true);
@@ -356,11 +375,14 @@ export async function startServer(opts = {}) {
     // ticks (docs/proposals/canvas-data-plane.md). In-process hosting phase;
     // the module is deployment-agnostic and lifts out unchanged. Degrades to
     // "unavailable" (browsers fall back to durable events) without a DB URL.
-    const canvasPlane = createCanvasPlane();
+    // Both relays get one connection config, built from the runtime's settings.
+    const listenConnection = buildListenConnection(storageOptions);
+    const canvasPlane = createCanvasPlane({ connection: listenConnection });
     runtime.canvasPlane = canvasPlane;
     canvasPlane.start().catch(() => { /* reconnect loop owns retries */ });
 
     const livePlane = createLivePlane({
+        connection: listenConnection,
         getLive: (sessionId, topics) => runtime.getLive(sessionId, topics),
     });
     runtime.livePlane = livePlane;

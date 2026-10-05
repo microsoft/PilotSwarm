@@ -201,6 +201,44 @@ describe("session confirm modal behavior", () => {
         assertEqual(calls[0].options.disposition, "hard_delete", "hard delete restart disposition");
     });
 
+    it("offers to remove an orphaned system session when its agent is not loaded any more", async () => {
+        const removalError = Object.assign(new Error("a live worker would create it again: w1"), { code: "SYSTEM_AGENT_LOADED" });
+        for (const removalFails of [false, true]) {
+            const { controller, store, calls } = createController({
+                restartSystemSession: async (agentIdOrSessionId, options) => {
+                    calls.push({ type: "restartSystem", agentIdOrSessionId, options });
+                    if (options.startReplacement !== false) {
+                        throw Object.assign(new Error('System agent "sweeper" is not known'), { code: "NOT_FOUND" });
+                    }
+                    if (removalFails) throw removalError;
+                    return { retired: true };
+                },
+            });
+            const sessionId = seedSystemSession(store);
+
+            await controller.handleCommand(UI_COMMANDS.DELETE_SESSION);
+            await controller.confirmModal();
+
+            const modal = store.getState().ui.modal;
+            assertNotNull(modal, "a refused restart of an orphan offers removal");
+            assertEqual(modal.title, "Remove Orphaned System Session", "removal modal title");
+            assertEqual(modal.action, "removeSystemSession", "removal modal action");
+            assertEqual(calls.length, 1, "only the refused restart ran before confirmation");
+
+            await controller.confirmModal();
+
+            assertEqual(calls.length, 2, "removal runs after confirmation");
+            assertEqual(calls[1].agentIdOrSessionId, sessionId, "removal targets the session id");
+            assertEqual(calls[1].options.startReplacement, false, "removal starts no replacement");
+            assertEqual(calls[1].options.disposition, "hard_delete", "removal disposition");
+            assertEqual(
+                store.getState().ui.statusText,
+                removalFails ? `Remove system session failed: ${removalError.message}` : `Removed system session ${sessionId.slice(0, 8)}`,
+                "removal outcome is shown",
+            );
+        }
+    });
+
     it("opens a bulk disposition picker with complete cancel and hard delete options", async () => {
         const cases = [
             ["complete", "Complete Sessions", "complete"],

@@ -80,6 +80,21 @@ describe("list_sessions timestamps", () => {
         expect(PilotSwarmClient.prototype.stop).toHaveBeenCalledTimes(1);
     });
 
+    it("reads the Date objects the real catalog returns: times shown, and updated_since keeps the new ones", async () => {
+        // PilotSwarmClient.listSessions hands over the catalog's Date objects
+        // as they are. Before the fix they read as "unknown", and updated_since
+        // dropped every session.
+        const text = await harness([
+            row("current", { createdAt: new Date(createdAt), updatedAt: new Date(updatedAt) }),
+            row("old", { createdAt: new Date(createdAt), updatedAt: new Date(updatedAt - 60_000) }),
+        ]).inline({ updated_since: "2026-09-17T09:32:04Z" });
+        expect(text).toContain("Active sessions (1)");
+        expect(text).toContain("current (this session)");
+        expect(text).toContain("Created: 2026-09-15T23:22:58.181Z");
+        expect(text).toContain("Updated: 2026-09-17T09:32:04.000Z");
+        expect(text).not.toContain("  - old\n");
+    });
+
     it("updated_since compares epoch milliseconds, retaining the inclusive boundary and ISO rows", async () => {
         const text = await harness([
             row("before", { updatedAt: updatedAt - 1 }),

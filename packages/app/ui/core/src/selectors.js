@@ -7047,7 +7047,7 @@ export function selectStatusBar(state) {
     if (state.ui.modal?.type === "sessionWorkspace") {
         return {
             left: "Set the session's workspace",
-            right: "type root/folder · empty clears · enter apply · esc cancel",
+            right: "type root/folder · empty clears (asks first) · enter apply · esc cancel",
         };
     }
     if (state.ui.modal?.type === "logFilter") {
@@ -9005,6 +9005,8 @@ export function selectSessionWorkspaceModal(state, maxWidth = 80) {
     const folder = slash < 0 ? "" : trimmed.slice(slash + 1);
     const current = formatSessionWorkspace(modal.current);
     const extras = Object.keys(modal.current?.extra && typeof modal.current.extra === "object" ? modal.current.extra : {});
+    // Filled in after the dialog opens, for the session's owner only.
+    const roots = Array.isArray(modal.roots) ? modal.roots.filter((name) => typeof name === "string" && name) : [];
     return {
         title: modal.title || "Workspace",
         value,
@@ -9015,12 +9017,13 @@ export function selectSessionWorkspaceModal(state, maxWidth = 80) {
         helpLines: [
             [
                 { text: "Enter", color: "cyan", bold: true },
-                { text: trimmed ? " set  " : " clear  ", color: "gray" },
+                { text: trimmed ? " set  " : " clear (asks first)  ", color: "gray" },
                 { text: "Esc", color: "cyan", bold: true },
                 { text: " cancel", color: "gray" },
             ],
             [{ text: "", color: "gray" }],
             [{ text: "The first part is a root the deployment serves; the rest is a folder in it.", color: "gray" }],
+            ...(roots.length > 0 ? [[{ text: "Roots: ", color: "gray" }, { text: roots.join(", "), color: "white" }]] : []),
             [{ text: "Leave it empty to clear the workspace. No files are deleted.", color: "gray" }],
         ],
         detailsLines: [

@@ -127,8 +127,8 @@ export const WORKSPACE_FILE_OPS = ["list", "stat", "read", "zip", "find", "mkdir
 
 /** A change the session's owner made through a file call (list, stat, read and zip change nothing). */
 export interface WorkspaceFileChange {
-    /** "run": a canvas app ran one of its declared commands (it may have changed files). */
-    op: "write" | "mkdir" | "move" | "delete" | "run";
+    /** "run": a canvas app ran one of its declared commands (it may have changed files). "git": the Workspace tab moved the repository. */
+    op: "write" | "mkdir" | "move" | "delete" | "run" | "git";
     /** The folder's name, as the pane shows it ("home", "shared", the repo's name). */
     folder: string;
     path: string;
@@ -138,6 +138,8 @@ export interface WorkspaceFileChange {
     toPath?: string;
     /** run: the command's name in the canvas app's manifest. */
     command?: string;
+    /** git: what the tab did in the repository (`path` is the repository's folder). */
+    git?: { action: "checkout" | "restore"; to?: string; from?: string; detached?: boolean; stashed?: boolean };
 }
 
 /** Recorded by the file calls that change something. */
@@ -183,6 +185,9 @@ export function workspaceFileChangesNote(changes: WorkspaceFileChange[]): string
             : change.op === "move" ? `moved ${target} to ${where(change.toFolder ?? change.folder, change.toPath)}`
             : change.op === "delete" ? `deleted ${target}`
             : change.op === "run" ? `ran the canvas command "${change.command ?? "?"}" in ${target}`
+            : change.op === "git" && change.git?.action === "checkout"
+                ? `${change.git.detached ? `checked out commit ${change.git.to} in ${target} (detached HEAD; it was on ${change.git.from})` : `switched ${target} back to branch ${change.git.to}`}${change.git.stashed ? "; their uncommitted changes are stashed" : ""}`
+            : change.op === "git" && change.git?.action === "restore" ? `put their stashed changes back in ${target}`
             : null;
         if (!phrase) continue;
         const index = phrases.indexOf(phrase);
@@ -367,6 +372,7 @@ function run(q) {
     case "delete": return remove(loc, q);
     case "zip": return zip(loc, q);
     case "find": return find(loc, q);
+    case "repos": return repos(loc, q);
     default: throw err(C.PATH_INVALID, "unknown operation");
   }
 }
@@ -557,6 +563,33 @@ function zip(loc, q) {
     }
   }
 }
+// Git repositories inside the folder (a folder that holds ".git", a folder
+// or a file), breadth first, up to maxDepth levels down. A repository's own
+// folders are not searched (no repositories inside repositories), nor are
+// links, ".git" or node_modules.
+function repos(loc, q) {
+  if (!fs.statSync(loc.target).isDirectory()) throw err(C.NOT_A_FOLDER, "not a folder");
+  const found = [];
+  let visited = 0, truncated = false;
+  const queue = [{ rel: "", depth: 0 }];
+  while (queue.length) {
+    const { rel, depth } = queue.shift();
+    let dirents;
+    try { dirents = fs.readdirSync(path.join(loc.target, rel), { withFileTypes: true }); } catch { continue; }
+    if (rel && dirents.some((d) => d.name === ".git" && (d.isDirectory() || d.isFile()))) {
+      found.push(rel);
+      if (found.length >= q.maxResults) { truncated = true; break; }
+      continue;
+    }
+    if (depth >= q.maxDepth) continue;
+    for (const d of dirents) {
+      if (++visited > q.maxVisited) { truncated = true; queue.length = 0; break; }
+      if (!d.isDirectory() || d.name === ".git" || d.name === "node_modules") continue;
+      queue.push({ rel: rel ? rel + "/" + d.name : d.name, depth: depth + 1 });
+    }
+  }
+  return { ok: true, repos: found.sort(), truncated };
+}
 // Files and folders whose name holds the words, in any case, breadth first.
 // A word with a "/" matches the path. Best first: the whole name, then the
 // start of the name, then anywhere; nearer the top first.
@@ -637,6 +670,7 @@ export async function runWorkspaceFileCall(request: Record<string, unknown>, con
         maxEntries: config.maxEntries ?? MAX_WORKSPACE_DIR_ENTRIES,
         ...(request.op === "zip" ? { fflatePath: resolveFflate(), skipGit: true } : {}),
         ...(request.op === "find" ? { maxVisited: 50_000, maxResults: 200 } : {}),
+        ...(request.op === "repos" ? { maxVisited: 5_000, maxResults: 50, maxDepth: 3 } : {}),
     });
     // Base64 grows content by a third; leave room for the rest of the answer.
     const maxAnswerBytes = Math.ceil(maxBytes * 1.4) + 4 * 1024 * 1024;

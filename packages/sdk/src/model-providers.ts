@@ -62,6 +62,15 @@ export interface ModelEntry {
      * into a provider error, so state it only where it is true.
      */
     vision?: ModelVisionCapability;
+    /**
+     * Request format for this model only. It wins over the provider's
+     * `wireApi`. Leave it out to use the provider's value.
+     *
+     * Allowed only on `openai`, `openai-proxy` and `azure` providers. Azure
+     * GPT-5.6 needs "responses" when it gets tools and reasoning together,
+     * while GPT-5.4 models under the same provider stay on "completions".
+     */
+    wireApi?: "completions" | "responses";
 }
 
 /** What a BYOK model accepts when it can see images. Limits are optional. */
@@ -180,8 +189,8 @@ export interface ModelProviderConfig {
      * OpenAI-compatible request format. Defaults to the SDK's Chat Completions
      * API. Wire API for OpenAI/Azure BYOK providers: "responses" routes model
      * traffic to `/v1/responses`, "completions" (the SDK default) to
-     * `/v1/chat/completions`. Ignored for type=github (native CAPI transport)
-     * and type=anthropic.
+     * `/v1/chat/completions`. A model's own `wireApi` wins over this one.
+     * Ignored for type=github (native CAPI transport) and type=anthropic.
      *
      * WHY THIS EXISTS — gpt-5.6 tools + reasoning bug:
      * The GPT-5.6 model family (sol/luna/terra) returns HTTP 400 on the
@@ -238,6 +247,8 @@ export interface ModelDescriptor {
     contextWindowSizes?: Partial<Record<ContextTier, number>>;
     /** Declared vision support — see ModelEntry.vision. */
     vision?: ModelVisionCapability;
+    /** The model's own request format — see ModelEntry.wireApi. */
+    wireApi?: "completions" | "responses";
 }
 
 /** Resolved provider info for a specific model — ready to use. */
@@ -279,6 +290,42 @@ export interface ResolvedProvider {
          */
         wireApi?: "completions" | "responses";
     };
+}
+
+// ─── Request format ──────────────────────────────────────────────
+
+const WIRE_APIS = new Set(["completions", "responses"]);
+
+/**
+ * The request format for one model. The model's own `wireApi` wins, then the
+ * provider's. Undefined when neither is set: the caller then leaves the key
+ * out, and the Copilot SDK uses its default.
+ */
+export function effectiveWireApi(
+    provider: Pick<ModelProviderConfig, "wireApi">,
+    descriptor: Pick<ModelDescriptor, "wireApi"> | undefined,
+): "completions" | "responses" | undefined {
+    return descriptor?.wireApi ?? provider.wireApi;
+}
+
+/**
+ * Check a model's `wireApi` once, when the registry is built. A bad value
+ * fails here, by name, instead of on the first request.
+ */
+function validateModelWireApi(provider: ModelProviderConfig, qualified: string, wireApi: unknown): void {
+    if (typeof wireApi !== "string" || !WIRE_APIS.has(wireApi)) {
+        throw new Error(
+            `Invalid wireApi ${JSON.stringify(wireApi)} on model ${qualified}: use "completions" or "responses".`,
+        );
+    }
+    // Only an OpenAI-shaped endpoint has a choice of request format.
+    const sdkType = toSdkProviderType(provider.type);
+    if (sdkType !== "openai" && sdkType !== "azure") {
+        throw new Error(
+            `Invalid wireApi on model ${qualified}: provider type "${provider.type}" does not support it. ` +
+            `Only openai, openai-proxy and azure providers do.`,
+        );
+    }
 }
 
 // ─── Registry ────────────────────────────────────────────────────
@@ -347,6 +394,7 @@ export class ModelProviderRegistry {
                     : undefined;
                 const contextWindowSizes = normalizeContextWindowSizes(entry.contextWindowSizes, supportedContextTiers);
                 const qualified = `${p.id}:${entry.name}`;
+                if (entry.wireApi !== undefined) validateModelWireApi(p, qualified, entry.wireApi);
                 const desc: ModelDescriptor = {
                     qualifiedName: qualified,
                     modelName: entry.name,
@@ -360,6 +408,7 @@ export class ModelProviderRegistry {
                     ...(defaultContextTier ? { defaultContextTier } : {}),
                     ...(Object.keys(contextWindowSizes).length > 0 ? { contextWindowSizes } : {}),
                     ...(entry.vision ? { vision: entry.vision } : {}),
+                    ...(entry.wireApi !== undefined ? { wireApi: entry.wireApi } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
@@ -455,6 +504,7 @@ export class ModelProviderRegistry {
         // encoding and the credential decision below read.
         const sdkProviderType = toSdkProviderType(provider.type);
         const usesWorkloadIdentity = providerTypeUsesWorkloadIdentity(provider.type);
+        const wireApi = effectiveWireApi(provider, desc);
 
         return {
             providerId: provider.id,
@@ -464,7 +514,7 @@ export class ModelProviderRegistry {
             sdkProvider: {
                 type: sdkProviderType,
                 baseUrl: resolvedUrl,
-                ...(provider.wireApi ? { wireApi: provider.wireApi } : {}),
+                ...(wireApi ? { wireApi } : {}),
                 // Omitted rather than undefined for a workload-identity
                 // provider: an `apiKey` key present with no value reads as a
                 // broken credential to everything downstream that tests it.
@@ -472,10 +522,6 @@ export class ModelProviderRegistry {
                 ...(provider.type === "azure" && {
                     azure: { apiVersion: provider.apiVersion || "2024-10-21" },
                 }),
-                // Route to /v1/responses when the catalog asks for it. Lets
-                // gpt-5.6 BYOK models use tools + reasoning without the
-                // completions-wire 400 (see ModelProviderConfig.wireApi).
-                ...(provider.wireApi ? { wireApi: provider.wireApi } : {}),
             },
         };
     }

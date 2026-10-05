@@ -93,6 +93,9 @@ test("images carry what the session-workspaces manifests name", () => {
 
   const portal = stripComments(readDockerfile("Dockerfile.portal"));
   assert.match(portal, /COPY packages\/sdk\/examples\/repo-workspaces\/plugin\/ \.\/packages\/sdk\/examples\/repo-workspaces\/plugin\//);
+  // The portal component sets PORTAL_CANVAS_COMMANDS_RUNNER=local; without
+  // git in the image every canvas command fails with "git is not installed".
+  assert.match(portal, /apt-get install(?:[^\n]*\\\n)*[^\n]*\bgit\b/, "git for canvas commands");
 
   const repoCache = stripComments(readDockerfile("Dockerfile.repo-cache"));
   assert.match(repoCache, /apt-get install[^\n]*\bgit\b[^\n]*\bnfs-kernel-server\b/);

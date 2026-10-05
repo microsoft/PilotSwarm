@@ -21,6 +21,7 @@ body {
 main { max-width: 1800px; margin: 0 auto; padding: 24px; }
 header { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
 h1 { margin: 0 0 4px; font-size: 24px; }
+h2 { margin: 0 0 4px; font-size: 18px; }
 code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .meta, .result-line { color: var(--muted); }
 .refresh-controls { display: flex; gap: 10px; align-items: center; }
@@ -39,6 +40,17 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
   gap: 10px;
   margin: 18px 0;
 }
+.live-panel {
+  margin: 18px 0;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.live-cards { margin: 12px 0; }
+.active-files { display: grid; gap: 6px; color: var(--muted); }
+.active-file { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.warning { color: var(--interrupt); font-weight: 600; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
 .card strong { display: block; font-size: 22px; }
 .card span { color: var(--muted); }
@@ -88,6 +100,7 @@ td:last-child { min-width: 280px; max-width: 520px; }
 .status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
 .status-passed { color: var(--pass); background: color-mix(in srgb, var(--pass) 15%, transparent); }
 .status-failed { color: var(--fail); background: color-mix(in srgb, var(--fail) 15%, transparent); }
+.status-timed_out { color: var(--interrupt); background: color-mix(in srgb, var(--interrupt) 15%, transparent); }
 .status-interrupted { color: var(--interrupt); background: color-mix(in srgb, var(--interrupt) 15%, transparent); }
 .status-pending { color: var(--pending); background: color-mix(in srgb, var(--pending) 15%, transparent); }
 [hidden] { display: none !important; }

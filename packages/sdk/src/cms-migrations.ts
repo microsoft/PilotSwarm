@@ -10,6 +10,7 @@ import { baseAgentV2Migration } from "./migrations/base-agent-v2-0079.js";
 
 import type { MigrationEntry } from "./pg-migrator.js";
 import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
+import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 
 /**
@@ -420,118 +421,123 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         },
         {
             version: "0081",
-            name: "session_git_state_pinning",
-            sql: migration_0081_session_git_state_pinning(schema),
+            name: "model_event_logging_flag",
+            sql: modelEventLoggingFlagMigration(schema),
         },
         {
             version: "0082",
-            name: "fix_session_git_state_setter",
-            sql: migration_0082_fix_session_git_state_setter(schema),
+            name: "session_git_state_pinning",
+            sql: migration_0082_session_git_state_pinning(schema),
         },
         {
             version: "0083",
-            name: "workflow_generators",
-            sql: migration_0083_workflow_generators(schema),
+            name: "fix_session_git_state_setter",
+            sql: migration_0083_fix_session_git_state_setter(schema),
         },
         {
             version: "0084",
-            name: "workflow_run_session_acknowledgement",
-            sql: migration_0084_workflow_run_session_acknowledgement(schema),
+            name: "workflow_generators",
+            sql: migration_0084_workflow_generators(schema),
         },
         {
             version: "0085",
-            name: "workflow_run_lifecycle_state_runs_and_journal",
-            sql: migration_0085_workflow_run_lifecycle_state_runs_and_journal(schema),
+            name: "workflow_run_session_acknowledgement",
+            sql: migration_0085_workflow_run_session_acknowledgement(schema),
         },
         {
             version: "0086",
-            name: "workflow_run_external_operations",
-            sql: migration_0086_workflow_run_external_operations(schema),
+            name: "workflow_run_lifecycle_state_runs_and_journal",
+            sql: migration_0086_workflow_run_lifecycle_state_runs_and_journal(schema),
         },
         {
             version: "0087",
-            name: "worker_timeline_index",
-            sql: migration_0087_worker_timeline_index(schema),
+            name: "workflow_run_external_operations",
+            sql: migration_0087_workflow_run_external_operations(schema),
         },
         {
             version: "0088",
-            name: "worker_registration_refresh",
-            sql: migration_0088_worker_registration_refresh(schema),
+            name: "worker_timeline_index",
+            sql: migration_0088_worker_timeline_index(schema),
         },
         {
             version: "0089",
-            name: "session_routing_contract",
-            sql: migration_0089_session_routing_contract(schema),
+            name: "worker_registration_refresh",
+            sql: migration_0089_worker_registration_refresh(schema),
         },
         {
             version: "0090",
-            name: "workflow_run_cleanup_tombstones",
-            sql: migration_0090_workflow_run_cleanup_tombstones(schema),
+            name: "session_routing_contract",
+            sql: migration_0090_session_routing_contract(schema),
         },
         {
             version: "0091",
-            name: "workflow_run_waits",
-            sql: migration_0091_workflow_run_waits(schema),
+            name: "workflow_run_cleanup_tombstones",
+            sql: migration_0091_workflow_run_cleanup_tombstones(schema),
         },
         {
             version: "0092",
-            name: "workflow_run_wait_scheduling",
-            sql: migration_0092_workflow_run_wait_scheduling(schema),
+            name: "workflow_run_waits",
+            sql: migration_0092_workflow_run_waits(schema),
         },
         {
             version: "0093",
-            name: "workflow_run_wait_condition_overrides",
-            sql: migration_0093_workflow_run_wait_condition_overrides(schema),
+            name: "workflow_run_wait_scheduling",
+            sql: migration_0093_workflow_run_wait_scheduling(schema),
         },
         {
             version: "0094",
-            name: "workflow_generator_source_provider_ids",
-            sql: migration_0094_workflow_generator_source_provider_ids(schema),
+            name: "workflow_run_wait_condition_overrides",
+            sql: migration_0094_workflow_run_wait_condition_overrides(schema),
         },
         {
             version: "0095",
-            name: "workflow_terminology_cutover",
-            sql: migration_0095_workflow_terminology_cutover(schema),
+            name: "workflow_generator_source_provider_ids",
+            sql: migration_0095_workflow_generator_source_provider_ids(schema),
         },
         {
             version: "0096",
-            name: "shared_workflow_run_identity",
-            sql: migration_0096_shared_workflow_run_identity(schema),
+            name: "workflow_terminology_cutover",
+            sql: migration_0096_workflow_terminology_cutover(schema),
         },
         {
             version: "0097",
-            name: "neutral_workflow_run_contract",
-            sql: migration_0097_neutral_workflow_run_contract(schema),
+            name: "shared_workflow_run_identity",
+            sql: migration_0097_shared_workflow_run_identity(schema),
         },
         {
             version: "0098",
-            name: "workflow_compute_affinity",
-            sql: migration_0098_workflow_compute_affinity(schema),
+            name: "neutral_workflow_run_contract",
+            sql: migration_0098_neutral_workflow_run_contract(schema),
         },
         {
             version: "0099",
-            name: "workflow_0096_collision_compatibility",
-            sql: migration_0099_workflow_0096_collision_compatibility(schema),
+            name: "workflow_compute_affinity",
+            sql: migration_0099_workflow_compute_affinity(schema),
         },
         {
             version: "0100",
-            name: "workflow_run_execution_affinity",
-            sql: migration_0100_workflow_run_execution_affinity(schema),
+            name: "workflow_0096_collision_compatibility",
+            sql: migration_0100_workflow_0096_collision_compatibility(schema),
         },
         {
             version: "0101",
-            name: "workflow_run_viewer_index",
-            sql: migration_0101_workflow_run_viewer_index(schema),
+            name: "workflow_run_execution_affinity",
+            sql: migration_0101_workflow_run_execution_affinity(schema),
         },
         {
             version: "0102",
+            name: "workflow_run_viewer_index",
+            sql: migration_0102_workflow_run_viewer_index(schema),
+        },
+        {
+            version: "0103",
             name: "catalog_query_pages",
-            sql: migration_0102_catalog_query_pages(schema),
+            sql: migration_0103_catalog_query_pages(schema),
         },
     ];
 }
 
-function migration_0102_catalog_query_pages(schema: string): string {
+function migration_0103_catalog_query_pages(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE INDEX IF NOT EXISTS ix_workflow_generators_catalog_updated
@@ -15221,10 +15227,10 @@ $$ LANGUAGE plpgsql;
 // scalar get/set procs follow the users.github_copilot_key precedent (0010)
 // rather than widening the shared cms_get_session read shape.
 
-function migration_0081_session_git_state_pinning(schema: string): string {
+function migration_0082_session_git_state_pinning(schema: string): string {
     const s = `"${schema}"`;
     return `
--- 0081_session_git_state_pinning:
+-- 0082_session_git_state_pinning:
 --   - git_base_sha    TEXT: the pinned base commit, captured once at turn 0.
 --                     All future reconciles target this, never origin/HEAD.
 --   - git_head_sha    TEXT: the session branch tip (session's own commits).
@@ -15313,7 +15319,7 @@ $$ LANGUAGE plpgsql;
 // pin never persisted. This is a forward-only, idempotent CREATE OR REPLACE that
 // repairs the function on DBs already advanced past 0079; fresh DBs get the
 // corrected body directly from 0079.
-function migration_0082_fix_session_git_state_setter(schema: string): string {
+function migration_0083_fix_session_git_state_setter(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE OR REPLACE FUNCTION ${s}.cms_set_session_git_state(
@@ -15348,7 +15354,7 @@ $$ LANGUAGE plpgsql;
 
 // ─── Migration 0081: durable WorkflowGenerator registry ──────────────
 
-function migration_0083_workflow_generators(schema: string): string {
+function migration_0084_workflow_generators(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TABLE IF NOT EXISTS ${s}.workflow_generators (
@@ -15525,7 +15531,7 @@ CREATE TRIGGER trg_workflow_generator_definition_immutable
 
 // ─── Migration 0082: WorkflowRun session acknowledgement ───────────────
 
-function migration_0084_workflow_run_session_acknowledgement(schema: string): string {
+function migration_0085_workflow_run_session_acknowledgement(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_run_sessions
@@ -15538,7 +15544,7 @@ ALTER TABLE ${s}.workflow_run_sessions
 
 // ─── Migration 0083: durable WorkflowRun lifecycle execution ───────────
 
-function migration_0085_workflow_run_lifecycle_state_runs_and_journal(schema: string): string {
+function migration_0086_workflow_run_lifecycle_state_runs_and_journal(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_runs
@@ -15667,7 +15673,7 @@ WHERE js.workflow_run_id = sr.workflow_run_id
 
 // ─── Migration 0084: durable external operations ────────────────
 
-function migration_0086_workflow_run_external_operations(schema: string): string {
+function migration_0087_workflow_run_external_operations(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TABLE IF NOT EXISTS ${s}.workflow_run_external_operations (
@@ -15732,7 +15738,7 @@ CREATE INDEX IF NOT EXISTS ix_workflow_run_external_operations_state_run
 
 // ─── Migration 0085: worker timeline query index ─────────────────
 
-function migration_0087_worker_timeline_index(schema: string): string {
+function migration_0088_worker_timeline_index(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
@@ -15743,7 +15749,7 @@ CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
 
 // ─── Migration 0086: refresh worker registration identity ───────
 
-function migration_0088_worker_registration_refresh(schema: string): string {
+function migration_0089_worker_registration_refresh(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
@@ -15803,7 +15809,7 @@ $$ LANGUAGE plpgsql;
 
 // ─── Migration 0087: immutable session routing contract ─────────
 
-function migration_0089_session_routing_contract(schema: string): string {
+function migration_0090_session_routing_contract(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.sessions
@@ -15819,7 +15825,7 @@ ALTER TABLE ${s}.sessions
 
 // ─── Migration 0088: owner-managed logical WorkflowRun cleanup ──────────
 
-function migration_0090_workflow_run_cleanup_tombstones(schema: string): string {
+function migration_0091_workflow_run_cleanup_tombstones(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_generators
@@ -15874,7 +15880,7 @@ CREATE INDEX IF NOT EXISTS ix_workflow_run_cleanup_tombstones_status
 
 // ─── Migration 0089: canonical durable WorkflowRun waits ────────────────
 
-function migration_0091_workflow_run_waits(schema: string): string {
+function migration_0092_workflow_run_waits(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TABLE IF NOT EXISTS ${s}.workflow_run_waits (
@@ -15940,7 +15946,7 @@ CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_due
 
 // ─── Migration 0090: durable WorkflowRun wait scheduling ────────────────
 
-function migration_0092_workflow_run_wait_scheduling(schema: string): string {
+function migration_0093_workflow_run_wait_scheduling(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_run_waits
@@ -15987,7 +15993,7 @@ CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_check_lease
 // "reviewer:<id>") the observer honors by treating the matching condition as
 // satisfied when it rebuilds its live snapshot. Additive and inert by default:
 // an empty array changes nothing for any existing wait.
-function migration_0093_workflow_run_wait_condition_overrides(schema: string): string {
+function migration_0094_workflow_run_wait_condition_overrides(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_run_waits
@@ -15997,7 +16003,7 @@ ALTER TABLE ${s}.workflow_run_waits
 
 // ─── Migration 0092: opaque WorkflowGenerator source-provider IDs ─────────────
 
-function migration_0094_workflow_generator_source_provider_ids(schema: string): string {
+function migration_0095_workflow_generator_source_provider_ids(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_generators
@@ -16016,7 +16022,7 @@ ALTER TABLE ${s}.workflow_generators
 // objects, while fresh installations create the workflow_* objects directly.
 // Remove only the legacy subsystem and then converge both cases on the current
 // workflow schema.
-function migration_0095_workflow_terminology_cutover(schema: string): string {
+function migration_0096_workflow_terminology_cutover(schema: string): string {
     const s = `"${schema}"`;
     return `
 DROP TABLE IF EXISTS
@@ -16045,15 +16051,15 @@ CASCADE;
 
 DROP FUNCTION IF EXISTS ${s}.cms_job_generator_definition_immutable();
 
-${migration_0083_workflow_generators(schema)}
-${migration_0084_workflow_run_session_acknowledgement(schema)}
-${migration_0085_workflow_run_lifecycle_state_runs_and_journal(schema)}
-${migration_0086_workflow_run_external_operations(schema)}
-${migration_0090_workflow_run_cleanup_tombstones(schema)}
-${migration_0091_workflow_run_waits(schema)}
-${migration_0092_workflow_run_wait_scheduling(schema)}
-${migration_0093_workflow_run_wait_condition_overrides(schema)}
-${migration_0094_workflow_generator_source_provider_ids(schema)}
+${migration_0084_workflow_generators(schema)}
+${migration_0085_workflow_run_session_acknowledgement(schema)}
+${migration_0086_workflow_run_lifecycle_state_runs_and_journal(schema)}
+${migration_0087_workflow_run_external_operations(schema)}
+${migration_0091_workflow_run_cleanup_tombstones(schema)}
+${migration_0092_workflow_run_waits(schema)}
+${migration_0093_workflow_run_wait_scheduling(schema)}
+${migration_0094_workflow_run_wait_condition_overrides(schema)}
+${migration_0095_workflow_generator_source_provider_ids(schema)}
 `;
 }
 
@@ -16062,7 +16068,7 @@ ${migration_0094_workflow_generator_source_provider_ids(schema)}
 // Preserve workflow state when upgrading from the generator-owned 0095 schema.
 // Fresh schemas already have this shape because 0095 composes the latest table
 // definitions; every statement below is therefore additive and idempotent.
-function migration_0096_shared_workflow_run_identity(schema: string): string {
+function migration_0097_shared_workflow_run_identity(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_generators
@@ -16314,7 +16320,7 @@ ALTER TABLE ${s}.workflow_run_cleanup_tombstones
 }
 
 // ─── Migration 0097: neutral Workflow Run public contract ──────────────
-function migration_0097_neutral_workflow_run_contract(schema: string): string {
+function migration_0098_neutral_workflow_run_contract(schema: string): string {
     const s = `"${schema}"`;
     return `
 DO $$
@@ -16348,7 +16354,7 @@ ALTER TABLE ${s}.workflow_runs
 }
 
 // ─── Migration 0098: independent controller and Session placement ──────
-function migration_0098_workflow_compute_affinity(schema: string): string {
+function migration_0099_workflow_compute_affinity(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_generators
@@ -16382,7 +16388,7 @@ ALTER TABLE ${s}.workflow_definitions
 // migrator skips by version alone. Detect that exact historical record while
 // the generator-owned Definition column still exists, then rerun the additive,
 // idempotent shared conversion and its dependent normalization migrations.
-function migration_0099_workflow_0096_collision_compatibility(schema: string): string {
+function migration_0100_workflow_0096_collision_compatibility(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TEMP TABLE workflow_0096_compatibility_state
@@ -16403,9 +16409,9 @@ SELECT
           AND column_name = 'workflow_generator_id'
     ) AS feature_0096_collision;
 
-${migration_0096_shared_workflow_run_identity(schema)}
-${migration_0097_neutral_workflow_run_contract(schema)}
-${migration_0098_workflow_compute_affinity(schema)}
+${migration_0097_shared_workflow_run_identity(schema)}
+${migration_0098_neutral_workflow_run_contract(schema)}
+${migration_0099_workflow_compute_affinity(schema)}
 
 UPDATE ${s}.workflow_run_producers producer
 SET payload = run.input
@@ -16424,7 +16430,7 @@ WHERE compatibility.feature_0096_collision
 // Workflow Runs remain publicly service-owned. These columns preserve the
 // principal whose devbox worker may execute an induced Session without
 // exposing or overloading the public resource owner.
-function migration_0100_workflow_run_execution_affinity(schema: string): string {
+function migration_0101_workflow_run_execution_affinity(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.workflow_runs
@@ -16509,7 +16515,7 @@ ALTER TABLE ${s}.workflow_runs
 }
 
 // ─── Migration 0101: Workflow Run viewer-scoped catalog index ─────────
-function migration_0101_workflow_run_viewer_index(schema: string): string {
+function migration_0102_workflow_run_viewer_index(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE INDEX IF NOT EXISTS ix_workflow_runs_execution_affinity
