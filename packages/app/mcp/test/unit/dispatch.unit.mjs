@@ -8,7 +8,7 @@
 //      tree variants, per-axis error isolation.
 //   3. get_session_events: before_seq/after_seq mutual exclusion; before_seq
 //      routes to getSessionEventsBefore.
-//   4. 403 error mapping → actionable admin-role text.
+//   4. 403 error mapping → the server's reason, never a guessed admin-role claim.
 //
 // Usage:  node packages/app/mcp/test/unit/dispatch.unit.mjs
 
@@ -292,15 +292,42 @@ async function main() {
     }
 
     // ── 5. 403 error mapping ─────────────────────────────────────────────
+    // A 403 keeps the server's reason. It never claims a missing admin role.
     {
-        const calls = [];
-        const ctx = makeCtx(calls);
-        ctx.mgmt.stopSessionTurn = async () => { throw Object.assign(new Error("Forbidden"), { status: 403 }); };
-        const client = await connect(ctx);
-        const res = await client.callTool({ name: "stop_turn", arguments: { session_id: UUID } });
-        record("403 from mgmt → actionable admin-role error",
-            res.isError === true && /admin role/i.test(res.content[0].text));
-        await client.close();
+        const stopTurnWith = async (error) => {
+            const ctx = makeCtx([]);
+            ctx.mgmt.stopSessionTurn = async () => { throw error; };
+            const client = await connect(ctx);
+            const res = await client.callTool({ name: "stop_turn", arguments: { session_id: UUID } });
+            await client.close();
+            return res;
+        };
+
+        const reason = "Only the session owner (alice) can do this.";
+        const res = await stopTurnWith(Object.assign(new Error(reason), { status: 403, code: "FORBIDDEN" }));
+        const text = res.content[0].text;
+        record("403 with a reason → server reason kept, no admin-role claim",
+            res.isError === true && text.includes(reason) && !/admin role/i.test(text),
+            text);
+
+        const res2 = await stopTurnWith(Object.assign(new Error("Forbidden"), { status: 403 }));
+        const text2 = res2.content[0].text;
+        record("bare 403 → server gave no reason, no admin-role claim",
+            res2.isError === true && /gave no reason/i.test(text2) && !/admin role/i.test(text2),
+            text2);
+
+        const named = "AGENT_PACKAGE_FORBIDDEN: only the package creator, an editor, or an admin can do this.";
+        const res3 = await stopTurnWith(Object.assign(new Error(named), { status: 403, code: "FORBIDDEN" }));
+        record("403 with a named rule → message unchanged",
+            res3.isError === true
+                && res3.content[0].text === JSON.stringify({ error: named, status: 403, code: "FORBIDDEN" }),
+            res3.content[0].text);
+
+        const notA403 = "worker crashed while reading forbidden-words.txt";
+        const res4 = await stopTurnWith(Object.assign(new Error(notA403), { status: 500 }));
+        record("500 whose text says forbidden → not treated as a 403",
+            res4.isError === true && res4.content[0].text === `Error: ${notA403}`,
+            res4.content[0].text);
     }
 
     // ── 6. facts_admin dispatch ──────────────────────────────────────────
@@ -316,6 +343,37 @@ async function main() {
 
         const res3 = await client.callTool({ name: "facts_admin", arguments: { action: "purge", cutoff: "not-a-date" } });
         record("facts_admin invalid cutoff → isError", res3.isError === true);
+        await client.close();
+    }
+
+    // ── 6b. restart_system_session passes start_replacement through ─────
+    {
+        const calls = [];
+        const ctx = makeCtx(calls);
+        ctx.mgmt.restartSystemSession = async (...args) => {
+            calls.push(["restartSystemSession", ...args]);
+            return args[1]?.startReplacement === false ? { sessionId: "s", retired: true } : { sessionId: "s" };
+        };
+        const client = await connect(ctx);
+        const removed = await client.callTool({
+            name: "restart_system_session",
+            arguments: { agent_or_session_id: "gone-agent", disposition: "hard_delete", start_replacement: false },
+        });
+        const removeCall = calls.find(([n]) => n === "restartSystemSession");
+        record("restart_system_session start_replacement:false → startReplacement:false",
+            !removed.isError && removeCall?.[1] === "gone-agent" && removeCall?.[2]?.startReplacement === false
+            && removeCall?.[2]?.disposition === "hard_delete");
+        record("restart_system_session removal → restarted:false, retired:true",
+            parse(removed).restarted === false && parse(removed).retired === true);
+
+        calls.length = 0;
+        const restarted = await client.callTool({
+            name: "restart_system_session",
+            arguments: { agent_or_session_id: "sweeper", disposition: "complete" },
+        });
+        const restartCall = calls.find(([n]) => n === "restartSystemSession");
+        record("restart_system_session without start_replacement → option omitted, restarted:true",
+            !restarted.isError && restartCall && !("startReplacement" in restartCall[2]) && parse(restarted).restarted === true);
         await client.close();
     }
 

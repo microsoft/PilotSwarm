@@ -79,6 +79,8 @@ export const UI_COMMANDS = {
     OPEN_SET_WORKSPACE: "openSetWorkspace",
     CLEAR_WORKSPACE: "clearWorkspace",
     RETRY_WORKSPACE: "retryWorkspace",
+    // The portal's Workspace tab: show the side pane on it.
+    OPEN_WORKSPACE_FILES: "openWorkspaceFiles",
     PIN_SESSION: "pinSession",
     CYCLE_SESSION_VISIBILITY: "cycleSessionVisibility",
     OPEN_SHARE_SESSION: "openShareSession",

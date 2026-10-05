@@ -118,6 +118,15 @@ function embeddingFromEnv(env: Record<string, string | undefined>, prefix: "PILO
     return embedding;
 }
 
+/**
+ * The URL the session catalog (CMS) connects to. The CMS pool and the
+ * portal's LISTEN connections both read it here, so they always reach the
+ * same database. NOTIFY only reaches listeners on that database.
+ */
+export function resolveSessionCatalogUrl(runtime: Pick<RuntimeStorageConfig, "url" | "sessionCatalogUrl">): string {
+    return runtime.sessionCatalogUrl ?? runtime.url;
+}
+
 function normalizeRuntimeProvider(raw: string | undefined): string | undefined {
     if (!raw) return undefined;
     if (raw === "pg") return "postgres";

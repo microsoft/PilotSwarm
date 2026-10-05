@@ -23,10 +23,12 @@ export function errorResult(message: string, extra?: Record<string, unknown>): T
     };
 }
 
+/** A 403 message that carries no reason: empty, "Forbidden", or "HTTP 403". */
+const BARE_403_MESSAGE = /^(?:forbidden|http 403|403(?: forbidden)?)?\.?$/i;
+
 /**
- * Map a thrown error to a tool error result. Recognizes the Web API's 403
- * (admin-gated operation hit without the admin role) and shapes it into
- * actionable text instead of a bare status line.
+ * Map a thrown error to a tool error result. A Web API 403 keeps the
+ * server's own reason. A 403 with no reason says so and does not guess one.
  */
 export function errorToResult(err: unknown): ToolResult {
     const message = err instanceof Error ? err.message : String(err);
@@ -37,18 +39,24 @@ export function errorToResult(err: unknown): ToolResult {
             candidates: Array.isArray((err as any)?.candidates) ? (err as any).candidates : [],
         });
     }
-    if (status === 403 || /\b403\b|forbidden/i.test(message)) {
+    // Match the text only when the error has no numeric status. A 404 or
+    // 500 whose message says "forbidden" is not a 403.
+    const forbidden = status === 403
+        || (typeof status !== "number" && /\b403\b|forbidden/i.test(message));
+    if (forbidden) {
         // A 403 that names its rule (AGENT_PACKAGE_FORBIDDEN: only the
         // package creator, an editor, or an admin …) is the answer the model
-        // needs. Only a bare 403 gets the generic admin-role explanation.
+        // needs. Pass it on as is.
         if (/[A-Z][A-Z_]+_FORBIDDEN:/.test(message)) {
             return errorResult(message, { status: 403, code: "FORBIDDEN" });
         }
-        return errorResult(
-            "forbidden: this operation requires the deployment's admin role. "
-            + "The MCP server's credential (PILOTSWARM_API_TOKEN or cached login) does not carry it.",
-            { status: 403 },
-        );
+        // Many rules end in a 403: owner only, admin scope, admin role.
+        // Pass on the server's reason. Never guess which rule it was.
+        const details = { status: 403, code: (err as any)?.code ?? "FORBIDDEN" };
+        if (BARE_403_MESSAGE.test(message.trim())) {
+            return errorResult("The server refused this call (HTTP 403) and gave no reason.", details);
+        }
+        return errorResult(message, details);
     }
     return errorResult(message);
 }

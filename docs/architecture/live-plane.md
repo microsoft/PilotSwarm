@@ -16,6 +16,9 @@ both PgFactStore and HorizonDB deployments use the CMS PostgreSQL connection.
    per-session/topic sequence and emits `pilotswarm_live` NOTIFY.
 4. One LISTEN connection per portal fans notifications out to authorized
    session readers. Large envelopes are pointers resolved through `getLive`.
+   The connection uses the CMS pool's rules
+   (`buildSessionCatalogPgClientConfig`): the same database, the sslmode
+   fix, and the managed-identity token.
 5. The browser reconciles provisional items with durable
    `assistant.message` events by message ID. Durable content always wins.
 

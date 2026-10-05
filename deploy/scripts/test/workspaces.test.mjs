@@ -207,6 +207,8 @@ for (const [edge, tls, overlay] of PORTAL_OVERLAYS) {
     const patched = envOf(container(after["Deployment/pilotswarm-portal"], "portal")).PLUGIN_DIRS;
     // The patch restates the base list; if the base changes, this catches the drift.
     assert.deepEqual(patched.split(","), [...base.split(","), "/app/packages/sdk/examples/repo-workspaces/plugin"]);
+    // Canvas commands come only with the component.
+    assert.equal(envOf(container(before["Deployment/pilotswarm-portal"], "portal")).PORTAL_CANVAS_COMMANDS_RUNNER, undefined);
   });
 
   test(`rendered portal/${overlay}: the Workspace tab sees the workers' roots at the workers' paths`, (t) => {
@@ -230,6 +232,8 @@ for (const [edge, tls, overlay] of PORTAL_OVERLAYS) {
     assert.equal(byName(deployment.spec.template.spec.volumes, "workspaces").hostPath.path, envOf(attacher).ATTACHER_MOUNT_BASE);
     // Base entries survive the strategic merge.
     for (const name of ["PORTAL_TUI_MODE", "PS_MODEL_PROVIDERS_PATH"]) assert.ok(byName(portal0.env, name), name);
+    // Canvas apps may run their declared git commands (Dockerfile.portal installs git).
+    assert.equal(envOf(portal0).PORTAL_CANVAS_COMMANDS_RUNNER, "local");
     // Room for whole-file calls: 2 GiB, and the base's request is kept.
     assert.equal(portal0.resources?.limits?.memory, "2Gi");
     assert.ok(portal0.resources?.requests?.memory, "the base memory request is kept");

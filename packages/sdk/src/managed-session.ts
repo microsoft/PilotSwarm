@@ -14,6 +14,7 @@ import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
+import { STREAMING_EVENT_TYPES, TURN_RESULT_EXCLUDED_EVENT_TYPES } from "./turn-result-events.js";
 import { mergeWorkspaceChange, sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
 import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
@@ -3148,6 +3149,42 @@ export class ManagedSession {
         const collectedEvents: CapturedEvent[] = [];
         const unsubscribers: (() => void)[] = [];
         const toolEventMetadataByKey = new Map<string, { toolName?: string; arguments?: unknown }>();
+        // Late tool-call argument pieces: assistant.tool_call_delta events that
+        // arrive after their call's tool.execution_start. Reported once per
+        // call at the end of the turn (issue #121: the CLI sent pieces late).
+        const toolStartedAt = new Map<string, number>();
+        const lateToolCallPieces = new Map<string, { toolName?: string; count: number; firstDelayMs: number; lastDelayMs: number; bytes: number }>();
+        const trackLateToolCallPiece = (eventType: string, data: any): void => {
+            const toolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : "";
+            if (!toolCallId) return;
+            const now = Date.now();
+            if (eventType === "tool.execution_start") {
+                if (!toolStartedAt.has(toolCallId)) toolStartedAt.set(toolCallId, now);
+                return;
+            }
+            const startedAt = toolStartedAt.get(toolCallId);
+            if (startedAt === undefined) return;
+            const delayMs = now - startedAt;
+            const late = lateToolCallPieces.get(toolCallId)
+                ?? { toolName: undefined, count: 0, firstDelayMs: delayMs, lastDelayMs: delayMs, bytes: 0 };
+            if (!late.toolName && typeof data?.toolName === "string") late.toolName = data.toolName;
+            late.count++;
+            late.lastDelayMs = delayMs;
+            try { late.bytes += Buffer.byteLength(JSON.stringify(data) ?? "", "utf8"); } catch {}
+            lateToolCallPieces.set(toolCallId, late);
+        };
+        const reportLateToolCallPieces = (): void => {
+            if (!opts?.trace) return;
+            for (const [toolCallId, late] of lateToolCallPieces) {
+                try {
+                    opts.trace(
+                        `[runTurn] session=${this.sessionId} tool call ${toolCallId} (${late.toolName ?? "unknown tool"}): `
+                        + `${late.count} argument pieces arrived after the tool started, the first ${late.firstDelayMs} ms `
+                        + `and the last ${late.lastDelayMs} ms after the start, ${late.bytes} bytes`,
+                    );
+                } catch {}
+            }
+        };
         let currentReasoning = "";
         let lastPublishedReasoning = "";
         let lastReasoningPublishAt = 0;
@@ -3282,7 +3319,11 @@ export class ManagedSession {
                     if (typeof rawEventData === "object" && rawEventData !== null) {
                         eventData = { ...rawEventData };
 
-                        const toolEventKey = getToolEventKey(eventData);
+                        // Streaming pieces take no part in the copy rule below.
+                        // A piece is a fragment of the call: copying the call's
+                        // full arguments into each of thousands of late pieces
+                        // made turn results of hundreds of MB (issue #121).
+                        const toolEventKey = STREAMING_EVENT_TYPES.has(eventType) ? null : getToolEventKey(eventData);
                         const toolName = typeof eventData.toolName === "string" && eventData.toolName.trim()
                             ? eventData.toolName
                             : typeof eventData.name === "string" && eventData.name.trim()
@@ -3336,6 +3377,9 @@ export class ManagedSession {
                         collectedEvents.push(nativeEvent);
                         try { opts?.onEvent?.(nativeEvent); } catch {}
                         return;
+                    }
+                    if (eventType === "tool.execution_start" || eventType === "assistant.tool_call_delta") {
+                        trackLateToolCallPiece(eventType, rawEventData);
                     }
                     const captured: CapturedEvent = { eventType, data: eventData };
                     if (eventType === "session.error" && isBenignPostCompletionQueryError(eventData)) {
@@ -3446,7 +3490,12 @@ export class ManagedSession {
                         liveTurn?.reasoningDelta(eventData);
                     }
 
-                    collectedEvents.push(captured);
+                    // Streaming fragments (assistant.tool_call_delta,
+                    // assistant.reasoning_delta, ...) and the conversation
+                    // snapshot go to live consumers only: nothing in the turn
+                    // reads them back, and one large tool call can stream
+                    // thousands of fragments (see turn-result-events.ts).
+                    if (!TURN_RESULT_EXCLUDED_EVENT_TYPES.has(eventType)) collectedEvents.push(captured);
                     // Fire immediately so callers can write to CMS in real-time
                     if (opts?.onEvent) {
                         try { opts.onEvent(captured); } catch {}
@@ -3764,6 +3813,7 @@ export class ManagedSession {
             nativeTasks?.finish(this.stopRequest ? "cancelled" : "interrupted");
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
+            reportLateToolCallPieces();
         }
 
         // Check what ended the turn

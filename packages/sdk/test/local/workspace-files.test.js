@@ -83,6 +83,7 @@ describe("workspace files", () => {
                 // F2: the folders, with their paths here.
                 const listed = await mgmt.listSessionWorkspaceFolders(sessionId);
                 assertEqual(listed.enabled, true);
+                assertEqual(JSON.stringify(listed.roots), JSON.stringify(["repo", "shared"]), "the roots this process serves, for the Set dialog");
                 assertEqual(JSON.stringify(listed.folders.map((f) => [f.id, f.name, f.base])), JSON.stringify([
                     ["working", "app", fx.repo],
                     ["extra:shared", "shared", path.join(fx.base, "shared")],

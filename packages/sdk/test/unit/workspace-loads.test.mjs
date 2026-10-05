@@ -83,32 +83,35 @@ describe("L1 storage", () => {
 });
 
 describe("L2 resolveLoadPath", () => {
-    const working = { root: "a", rootPath: "/r/a", path: "/r/a/sessions/t/app" };
-    const shared = { root: "shared", rootPath: "/r/shared", path: "/r/shared" };
+    const testRoot = path.join(path.parse(process.cwd()).root, "r");
+    const working = { root: "a", rootPath: path.join(testRoot, "a"), path: path.join(testRoot, "a", "sessions", "t", "app") };
+    const shared = { root: "shared", rootPath: path.join(testRoot, "shared"), path: path.join(testRoot, "shared") };
     const folders = [working, shared];
 
     it("a path in the working folder or an extra folder, kept relative to its root", () => {
-        assert.deepEqual(resolveLoadPath("/r/a/sessions/t/app/.github/agents/x.agent.md", folders),
-            { ok: true, folder: working, absolute: "/r/a/sessions/t/app/.github/agents/x.agent.md", rootRelative: "sessions/t/app/.github/agents/x.agent.md" });
+        const agentPath = path.join(working.path, ".github", "agents", "x.agent.md");
+        assert.deepEqual(resolveLoadPath(agentPath, folders),
+            { ok: true, folder: working, absolute: agentPath, rootRelative: "sessions/t/app/.github/agents/x.agent.md" });
         const relative = resolveLoadPath("tools/y.agent.md", folders);
-        assert.equal(relative.absolute, "/r/a/sessions/t/app/tools/y.agent.md", "a relative path starts at the working folder");
-        const extra = resolveLoadPath("/r/shared/agents/../agents/r.agent.md", folders);
+        assert.equal(relative.absolute, path.join(working.path, "tools", "y.agent.md"), "a relative path starts at the working folder");
+        const extra = resolveLoadPath(path.join(shared.path, "agents", "..", "agents", "r.agent.md"), folders);
         assert.deepEqual([extra.folder.root, extra.rootRelative], ["shared", "agents/r.agent.md"]);
     });
 
     it("anything else is refused", () => {
-        for (const input of ["../../other/x.agent.md", "/etc/passwd", "/r/sharedX/x.agent.md", "/r/a/sessions/t/other/x.agent.md"]) {
+        for (const input of ["../../other/x.agent.md", path.join(path.parse(process.cwd()).root, "etc", "passwd"),
+            path.join(testRoot, "sharedX", "x.agent.md"), path.join(testRoot, "a", "sessions", "t", "other", "x.agent.md")]) {
             const result = resolveLoadPath(input, folders);
             assert.equal(result.ok, false, input);
             assert.match(result.reason, /is not inside the working folder or an extra folder/, input);
         }
         for (const input of ["", "   ", 7, null, "x\0y"]) assert.equal(resolveLoadPath(input, folders).reason, "path is required", String(input));
         assert.match(resolveLoadPath("x", []).reason, /no attached folders/);
-        assert.match(resolveLoadPath("/r/shared", folders).reason, /not inside its root/, "the root itself is not a file");
+        assert.match(resolveLoadPath(shared.path, folders).reason, /not inside its root/, "the root itself is not a file");
     });
 
     it("the deepest folder that holds the path wins", () => {
-        const inner = { root: "b", rootPath: "/r/a/sessions/t/app/vendor", path: "/r/a/sessions/t/app/vendor" };
+        const inner = { root: "b", rootPath: path.join(working.path, "vendor"), path: path.join(working.path, "vendor") };
         const result = resolveLoadPath("vendor/x.agent.md", [working, inner]);
         assert.deepEqual([result.folder.root, result.rootRelative], ["b", "x.agent.md"]);
     });

@@ -186,7 +186,7 @@ describe("built-in provider", () => {
         assert.deepEqual(roots, [{ name: "a", path: "/ws/a" }]);
         roots[0].path = "/changed";
         assert.deepEqual(await provider.listRoots(), [{ name: "a", path: "/ws/a" }], "listRoots hands out copies");
-        assert.deepEqual(await provider.ensureAttached({ ...REQ, workspace: { schema: 1, root: "a", folder: "x/y" } }), { ok: true, path: "/ws/a/x/y" });
+        assert.deepEqual(await provider.ensureAttached({ ...REQ, workspace: { schema: 1, root: "a", folder: "x/y" } }), { ok: true, path: path.join("/ws/a", "x/y") });
         assert.deepEqual(await provider.ensureAttached({ ...REQ, workspace: { schema: 1, root: "a" } }), { ok: true, path: "/ws/a" });
         const unknown = await provider.ensureAttached({ ...REQ, workspace: { schema: 1, root: "b" } });
         assert.equal(unknown.code, CODES.ROOT_UNKNOWN);

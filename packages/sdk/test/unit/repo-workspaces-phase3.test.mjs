@@ -118,7 +118,7 @@ describe("a repo mirrored from an upstream, with a sandbox remote", () => {
 });
 
 describe("a service that already runs as the clone uid (a laptop run)", () => {
-    it("makes a clone without switching users, so it needs no setpriv (macOS has none)", async () => {
+    it("makes a clone without switching users, so it needs no setpriv (macOS has none)", { skip: process.platform === "win32" && "Windows has no Unix uid" }, async () => {
         const fixture = await createGitFixture();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-own-uid-root-")));
         const port = await freePort();
@@ -238,7 +238,7 @@ describe("the node attacher", () => {
         assert.throws(() => parseAttacherRoots("../x=nfs:/ws"), /bad root name/);
     });
 
-    it("reads mount points from mountinfo, octal escapes included", () => {
+    it("reads mount points from mountinfo, octal escapes included", { skip: process.platform === "win32" && "mountinfo paths are Linux-specific" }, () => {
         const info = [
             "36 35 98:0 / /mnt/ps/a rw,noatime master:1 - nfs4 10.0.0.5:/ws/a rw",
             "37 35 98:0 / /mnt/ps/with\\040space rw - nfs4 10.0.0.5:/ws/b rw",
@@ -321,7 +321,7 @@ describe("the node attacher", () => {
         }
     });
 
-    it("answers over its unix socket: mount, status, and a refusal for an unknown root", async () => {
+    it("answers over its unix socket: mount, status, and a refusal for an unknown root", { skip: process.platform === "win32" && "requires Unix domain socket paths" }, async () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-attacher-sock-"));
         const socket = path.join(dir, "sock");
         let mountinfo = "";

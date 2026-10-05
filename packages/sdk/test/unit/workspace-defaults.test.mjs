@@ -15,7 +15,8 @@
  *   D7  linkSkillFolders keeps one link per adopted skill
  *   D8  notes and the personal instructions section
  *   D13 the defaults record for session.workspace_defaults: built from the
- *       applied defaults, read back from a stored event, compared
+ *       applied defaults, read back from a stored event, compared; the
+ *       defaults left out are listed under `skipped`
  *   D14 the "Your folders are durable" section: only with folders, after
  *       PilotSwarm's base, and the same text every time; the Base V2 prompt's
  *       sentence about the worker's own disk
@@ -205,7 +206,7 @@ describe("D6-D7 resolveWorkspaceAdoption and linked skills", () => {
         assert.deepEqual(one.customAgents, plain.customAgents);
         assert.deepEqual(one.report, plain.report);
         assert.equal(one.hash, plain.hash);
-        assert.deepEqual(one.skillDirectories, ["/ws/a/c/.github/skills"]);
+        assert.deepEqual(one.skillDirectories, [path.join(repo.attachPath, ".github", "skills")]);
         assert.equal(one.linkSkills, false);
     });
 
@@ -228,7 +229,7 @@ describe("D6-D7 resolveWorkspaceAdoption and linked skills", () => {
         assert.equal(all.linkSkills, true, "skills from several sources are linked");
         assert.deepEqual(all.skillDirectories, []);
         assert.deepEqual(all.skills.map((s) => [s.name, s.path, s.kind]), [
-            ["notes", "/ws/shared/skills/notes", "loaded"], ["build", "/ws/a/c/.github/skills/build", "repo"],
+            ["notes", "/ws/shared/skills/notes", "loaded"], ["build", path.join(repo.attachPath, ".github", "skills", "build"), "repo"],
         ]);
     });
 
@@ -237,7 +238,7 @@ describe("D6-D7 resolveWorkspaceAdoption and linked skills", () => {
         assert.deepEqual(only.report.personal, { agents: ["helper", "reviewer"], skills: ["notes"] });
         assert.deepEqual(only.report.agents, []);
         assert.equal(only.linkSkills, false);
-        assert.deepEqual(only.skillDirectories, ["/ws/home/users/me/.github/skills"]);
+        assert.deepEqual(only.skillDirectories, [path.join(personal.attachPath, ".github", "skills")]);
     });
 
     it("D7 linkSkillFolders: one link per skill; a changed target is replaced; a gone skill is removed", () => {
@@ -299,6 +300,32 @@ describe("D13 the defaults record", () => {
         assert.equal(defaultsRecordOf(applyWorkspaceDefaults(null, { extra: SHARED }), false), null,
             "extra folders only, and no working folder: nothing applied (rule A)");
         assert.equal(defaultsRecordOf(applyWorkspaceDefaults(clone, null), true), null, "no defaults");
+    });
+
+    it("an extra folder inside the person's folder: the record says the home default was left out, and why", () => {
+        const clone = { schema: 1, root: "a", folder: "sessions/t/app" };
+        const inside = { ...clone, extra: { notes: { root: "home", folder: "users/me/notes" } } };
+        // Only a skip: the record still exists, so the portal and the tools can say so.
+        assert.deepEqual(defaultsRecordOf(applyWorkspaceDefaults(inside, { home: HOME }), true), {
+            workingFolder: null,
+            extra: [],
+            skipped: [{ name: "home", reason: "it overlaps extra folder \"notes\"" }],
+        });
+        // With another default used, the skip rides along.
+        assert.deepEqual(defaultsRecordOf(applyWorkspaceDefaults(inside, { home: HOME, extra: SHARED }), true), {
+            workingFolder: null,
+            extra: [{ name: "shared", root: "shared" }],
+            skipped: [{ name: "home", reason: "it overlaps extra folder \"notes\"" }],
+        });
+        // Nothing skipped: no skipped key, as before.
+        assert.equal("skipped" in defaultsRecordOf(applyWorkspaceDefaults(clone, { home: HOME }), true), false);
+
+        // The stored event reads back with its skips; a change of skips is a change.
+        const read = readDefaultsRecord({ revision: 2, workingFolder: null, extra: [], skipped: [{ name: "home", reason: "it overlaps extra folder \"notes\"" }, { name: 7 }] });
+        assert.deepEqual(read, { workingFolder: null, extra: [], skipped: [{ name: "home", reason: "it overlaps extra folder \"notes\"" }] });
+        assert.equal(sameDefaultsRecord(read, { workingFolder: null, extra: [] }), false, "a skip that goes away is recorded");
+        assert.equal(sameDefaultsRecord(read, { workingFolder: null, extra: [], skipped: [{ name: "home", reason: "it overlaps the working folder" }] }), false);
+        assert.equal(sameDefaultsRecord(read, { extra: [], workingFolder: null, skipped: [{ reason: "it overlaps extra folder \"notes\"", name: "home" }] }), true);
     });
 
     it("a stored record reads back whatever its key order; empty or malformed reads as none; compare ignores order", () => {
