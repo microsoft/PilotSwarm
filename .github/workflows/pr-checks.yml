@@ -26,6 +26,10 @@ jobs:
         run: Copy-Item .model_providers.example.json .model_providers.json
       - shell: bash
         run: npm run test:unit --workspace=pilotswarm-sdk
+      - name: Validation campaign unit tests
+        run: |
+          npm run test:validation:unit
+          npm run test:validation:dashboard:unit
 
   basic:
     name: Repository policy, build, and unit tests (Linux)

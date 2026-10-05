@@ -1539,8 +1539,7 @@ test("timeout supervision bounds cleanup, waits for close, and verifies identity
     );
 });
 
-test("POSIX cleanup terminates detached descendants before reporting verified", {
-    skip: process.platform === "win32",
+test("cleanup terminates detached descendants before reporting verified", {
     timeout: 30_000,
 }, async (t) => {
     const id = crypto.randomUUID();
