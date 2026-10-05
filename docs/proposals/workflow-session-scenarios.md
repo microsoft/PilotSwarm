@@ -116,11 +116,11 @@ Required behavior:
 
 ### 1.2 Conversational parent
 
-An ordinary agent may start an allowed workflow using `start_workflow`.
+An ordinary agent may start an allowed workflow using `spawn_workflow`.
 
 ```text
 Conversation C0
-  -> durable start_workflow action
+  -> durable spawn_workflow action
   -> workflow child W1
   -> W1 terminal result
   -> direct-parent result delivery
@@ -247,7 +247,7 @@ of a retryable model turn.
 For conversational creation:
 
 ```text
-model emits start_workflow
+model emits spawn_workflow
   -> parent orchestration allocates replay-stable child ID
   -> idempotent activity creates or reuses that workflow child
   -> parent records it in subWorkflows
@@ -518,7 +518,7 @@ being copied into orchestration state.
 | Scenario need | Design mechanism |
 |---|---|
 | Root workflow | Workflow sessions may omit `parentSessionId`; result remains attached |
-| Conversational start | Durable `start_workflow` action with replay-stable child ID |
+| Conversational start | Durable `spawn_workflow` action with replay-stable child ID |
 | Agent creativity | Agents own reasoning and tools inside bounded state contracts |
 | Repeatable process | Frozen definition and workflow-authored transition function |
 | Reviewed correction | Candidate revisions plus exact review decisions |
@@ -541,7 +541,7 @@ The feature branch already provides:
 | Workflow session kind and CMS lineage | Implemented |
 | Non-conversational workflow handle | Implemented |
 | Top-level SDK creation | Implemented |
-| Conversational `start_workflow` | Implemented as durable action |
+| Conversational `spawn_workflow` | Implemented as durable action |
 | Parent `subWorkflows`, check, wait, and result consumption | Implemented |
 | Dedicated workflow orchestration version boundary | Scaffolded; fails explicitly |
 | Definition compiler and controller | Not implemented |

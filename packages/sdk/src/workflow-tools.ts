@@ -2,7 +2,7 @@ import type { WorkflowDefinitionSource } from "./types.js";
 
 export const WORKFLOW_TOOLS_MIN_ORCHESTRATION_VERSION = "1.0.81";
 
-export const START_WORKFLOW_TOOL_SPEC = {
+export const SPAWN_WORKFLOW_TOOL_SPEC = {
     description:
         "Start a controller-backed workflow as a child of this session. " +
         "The workflow starts asynchronously at the durable turn boundary, and its workflow_session_id is returned in the follow-up context. " +
@@ -67,7 +67,7 @@ export const WAIT_FOR_WORKFLOWS_TOOL_SPEC = {
     },
 } as const;
 
-export type StartWorkflowToolArgs = {
+export type SpawnWorkflowToolArgs = {
     definition?: {
         kind?: unknown;
         package_name?: unknown;
@@ -78,7 +78,7 @@ export type StartWorkflowToolArgs = {
     inputs?: unknown;
 };
 
-export function parseStartWorkflowToolArgs(args: StartWorkflowToolArgs):
+export function parseSpawnWorkflowToolArgs(args: SpawnWorkflowToolArgs):
     | { ok: true; definition: WorkflowDefinitionSource; inputs: Record<string, unknown> }
     | { ok: false; error: string } {
     const raw = args?.definition;

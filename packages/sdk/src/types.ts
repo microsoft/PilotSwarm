@@ -26,7 +26,7 @@ export type TurnAction =
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
     | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null }
-    | { type: "start_workflow"; definition: WorkflowDefinitionSource; inputs: Record<string, unknown>; events?: CapturedEvent[] }
+    | { type: "spawn_workflow"; definition: WorkflowDefinitionSource; inputs: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_workflows"; workflowIds: string[]; events?: CapturedEvent[] }
     | { type: "wait_for_workflows"; workflowIds: string[]; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
@@ -91,7 +91,7 @@ type TurnResultVariant =
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null } & QueuedTurnActionCarrier)
-    | ({ type: "start_workflow"; definition: WorkflowDefinitionSource; inputs: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_workflow"; definition: WorkflowDefinitionSource; inputs: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_workflows"; workflowIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_workflows"; workflowIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)

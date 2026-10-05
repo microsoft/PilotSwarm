@@ -20,7 +20,7 @@ and then fails its orchestration with
 Conversational sessions on orchestration version `1.0.81` or later expose these
 tools:
 
-- `start_workflow` creates a workflow child and returns its session ID.
+- `spawn_workflow` creates a workflow child and returns its session ID.
 - `check_workflows` reads any controller-written terminal results without
   waiting.
 - `wait_for_workflows` durably waits until all selected workflows have written
@@ -38,12 +38,12 @@ description: Starts an inline workflow.
 
 When asked to run a workflow:
 
-1. Call `start_workflow` exactly once using the supplied definition and inputs.
+1. Call `spawn_workflow` exactly once using the supplied definition and inputs.
 2. Report the returned workflow session ID.
 3. Call `wait_for_workflows` if the caller wants the final result.
 ```
 
-The model calls `start_workflow` with this shape:
+The model calls `spawn_workflow` with this shape:
 
 ```json
 {
@@ -81,7 +81,7 @@ orchestration separately tracks workflow execution state in `subWorkflows`.
 
 ## Force the Tool in an SDK Scenario
 
-Tests and applications can require the model to call `start_workflow` during a
+Tests and applications can require the model to call `spawn_workflow` during a
 turn:
 
 ```js
@@ -93,7 +93,7 @@ const response = await parent.sendAndWait(
   "Start the supplied inline workflow.",
   180_000,
   undefined,
-  { requiredTool: "start_workflow" },
+  { requiredTool: "spawn_workflow" },
 );
 ```
 
@@ -135,7 +135,7 @@ node --env-file=.env node_modules/vitest/vitest.mjs run packages/sdk/test/local/
 
 The test demonstrates the current complete boundary:
 
-1. A real markdown agent calls the production `start_workflow` tool.
+1. A real markdown agent calls the production `spawn_workflow` tool.
 2. The parent creates a durable workflow child with the correct lineage.
 3. The workflow definition and inputs are persisted in its creation config.
 4. The worker starts the real `workflow-session-v1` orchestration.

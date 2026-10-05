@@ -202,10 +202,10 @@ describe("inline control tool execution", () => {
         expect(result.content).toBe("Spawned one and continuing.");
     });
 
-    it("returns start_workflow as a durable orchestration action", async () => {
+    it("returns spawn_workflow as a durable orchestration action", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [{
-            name: "start_workflow",
+            name: "spawn_workflow",
             args: {
                 definition: {
                     kind: "inline",
@@ -220,13 +220,13 @@ describe("inline control tool execution", () => {
         const result = await managed.runTurn("start the workflow", {
             controlToolBridge: {
                 startWorkflow: vi.fn(() => {
-                    throw new Error("start_workflow must not execute inline");
+                    throw new Error("spawn_workflow must not execute inline");
                 }),
             },
         });
 
         expect(result).toMatchObject({
-            type: "start_workflow",
+            type: "spawn_workflow",
             definition: {
                 kind: "inline",
                 yaml: "name: durable-start\nversion: 1\nsteps: []",

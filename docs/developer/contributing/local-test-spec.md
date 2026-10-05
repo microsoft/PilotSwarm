@@ -558,7 +558,7 @@ Purpose:
 Tests:
 
 - `a markdown agent starts a durable workflow child that reaches the explicit scaffold failure`
-  - forces the real `start_workflow` tool during an agent turn
+  - forces the real `spawn_workflow` tool during an agent turn
   - verifies the CMS workflow child, parent lineage, orchestration ID, durable
     definition, and inputs
   - verifies the current scaffold fails with

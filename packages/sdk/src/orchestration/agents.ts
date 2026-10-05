@@ -684,7 +684,7 @@ export function* handleSubAgentAction(
 ): Generator<any, boolean, any> {
     const { ctx, state } = runtime;
     switch (result.type) {
-        case "start_workflow": {
+        case "spawn_workflow": {
             const childSessionId: string = yield ctx.newGuid();
             yield runtime.manager.spawnWorkflowSession(
                 runtime.input.sessionId,

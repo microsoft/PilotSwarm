@@ -1,7 +1,7 @@
 /**
  * Real parent-agent to workflow-child integration boundary.
  *
- * The synthetic markdown agent invokes the production start_workflow tool.
+ * The synthetic markdown agent invokes the production spawn_workflow tool.
  * Until the workflow controller is implemented, the child orchestration is
  * expected to fail explicitly after the parent has created it successfully.
  *
@@ -61,7 +61,7 @@ describe("Workflow Session: Agent E2E", () => {
             }, async client => {
                 const parent = await client.createSession({ agentId: "workflow-runner" });
                 const response = await parent.sendAndWait(
-                    "Exercise workflow sessions now. Call start_workflow with this exact definition:\n" +
+                    "Exercise workflow sessions now. Call spawn_workflow with this exact definition:\n" +
                     "kind: inline\n" +
                     "yaml: |\n" +
                     "  name: synthetic-e2e\n" +
@@ -70,7 +70,7 @@ describe("Workflow Session: Agent E2E", () => {
                     "and these exact inputs: {\"request\":\"integration-test\"}.",
                     TIMEOUT,
                     undefined,
-                    { requiredTool: "start_workflow" },
+                    { requiredTool: "spawn_workflow" },
                 );
 
                 expect(response).toBeTruthy();

@@ -4,7 +4,7 @@ import { handleSubAgentAction } from "../../dist/orchestration/agents.js";
 import { buildContinueInput } from "../../dist/orchestration/lifecycle.js";
 import { createInitialState, deriveOptions } from "../../dist/orchestration/state.js";
 
-test("start_workflow durably creates and tracks the workflow child", () => {
+test("spawn_workflow durably creates and tracks the workflow child", () => {
     const state = { subAgents: [], subWorkflows: [], pendingPrompt: undefined };
     const runtime = {
         input: { sessionId: "parent-1" },
@@ -22,7 +22,7 @@ test("start_workflow durably creates and tracks the workflow child", () => {
         },
     };
     const generator = handleSubAgentAction(runtime, {
-        type: "start_workflow",
+        type: "spawn_workflow",
         definition: { kind: "inline", yaml: "name: test" },
         inputs: { target: "staging" },
     });

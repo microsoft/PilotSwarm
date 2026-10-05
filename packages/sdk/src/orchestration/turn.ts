@@ -1604,7 +1604,7 @@ export function* handleTurnResult(
             yield* applyAgentWorkspaceExtrasChange(runtime, result as Extract<TurnResult, { type: "set_workspace_extra" }>);
             return;
 
-        case "start_workflow":
+        case "spawn_workflow":
         case "check_workflows":
         case "wait_for_workflows":
         case "spawn_agent":

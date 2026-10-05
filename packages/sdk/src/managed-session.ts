@@ -15,10 +15,10 @@ import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionCo
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import {
     CHECK_WORKFLOWS_TOOL_SPEC,
-    parseStartWorkflowToolArgs,
-    START_WORKFLOW_TOOL_SPEC,
+    parseSpawnWorkflowToolArgs,
+    SPAWN_WORKFLOW_TOOL_SPEC,
     WAIT_FOR_WORKFLOWS_TOOL_SPEC,
-    type StartWorkflowToolArgs,
+    type SpawnWorkflowToolArgs,
 } from "./workflow-tools.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 import { mergeWorkspaceChange, sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
@@ -574,7 +574,7 @@ function backgroundTaskRuns(task: { type?: string; status?: string; pid?: unknow
     return true;
 }
 
-const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "start_workflow", "wait_for_agents", "list_sessions", "check_agents", "set_workspace"]);
+const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "spawn_workflow", "wait_for_agents", "list_sessions", "check_agents", "set_workspace"]);
 
 // ── Session workspaces (docs/proposals/session-workspaces.md 4.3) ──
 // One spec per tool: the declaration and the per-turn handler build from it.
@@ -1238,8 +1238,8 @@ export class ManagedSession {
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
     static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowTools?: boolean }): Tool<any>[] {
-        const startWorkflowTool = defineTool("start_workflow", {
-            ...START_WORKFLOW_TOOL_SPEC,
+        const spawnWorkflowTool = defineTool("spawn_workflow", {
+            ...SPAWN_WORKFLOW_TOOL_SPEC,
             handler: async () => "stub",
         });
         const checkWorkflowsTool = defineTool("check_workflows", {
@@ -1388,7 +1388,7 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [...(opts?.workflowTools === false ? [] : [startWorkflowTool, checkWorkflowsTool, waitForWorkflowsTool]),
+        return [...(opts?.workflowTools === false ? [] : [spawnWorkflowTool, checkWorkflowsTool, waitForWorkflowsTool]),
             spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
@@ -2404,18 +2404,18 @@ export class ManagedSession {
         });
 
         // Build sub-agent tools
-        const startWorkflowTool = defineTool("start_workflow", {
-            ...START_WORKFLOW_TOOL_SPEC,
-            handler: async (args: StartWorkflowToolArgs) => {
-                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("start_workflow");
-                const parsed = parseStartWorkflowToolArgs(args);
+        const spawnWorkflowTool = defineTool("spawn_workflow", {
+            ...SPAWN_WORKFLOW_TOOL_SPEC,
+            handler: async (args: SpawnWorkflowToolArgs) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
+                const parsed = parseSpawnWorkflowToolArgs(args);
                 if (!parsed.ok) return `Error: ${parsed.error}`;
                 turnState.pendingActions.push({
-                    type: "start_workflow",
+                    type: "spawn_workflow",
                     definition: parsed.definition,
                     inputs: parsed.inputs,
                 });
-                return acknowledgeTurnBoundary("start_workflow");
+                return acknowledgeTurnBoundary("spawn_workflow");
             },
         });
         const checkWorkflowsTool = defineTool("check_workflows", {
@@ -2885,7 +2885,7 @@ export class ManagedSession {
                 ? [checkAgentsTool, listSessionsTool]
                 : [
                     ...(this.config.workflowToolsBlocked ? [] : [
-                        startWorkflowTool,
+                        spawnWorkflowTool,
                         checkWorkflowsTool,
                         waitForWorkflowsTool,
                     ]),
@@ -3842,7 +3842,7 @@ export class ManagedSession {
                     return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
                 case "cron":
                     return { ...firstAction, events: collectedEvents, queuedActions };
-                case "start_workflow":
+                case "spawn_workflow":
                     return { ...firstAction, events: collectedEvents, queuedActions };
                 case "spawn_agent":
                     return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
