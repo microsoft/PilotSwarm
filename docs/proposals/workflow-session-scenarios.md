@@ -29,12 +29,13 @@ tool execution.
   - [2.3 Durable creation and identity](#23-durable-creation-and-identity)
   - [2.4 Result and lifecycle records](#24-result-and-lifecycle-records)
     - [Lifecycle records for reviewed completion](#lifecycle-records-for-reviewed-completion)
-  - [2.5 Workflow-authored transition function](#25-workflow-authored-transition-function)
-  - [2.6 External waits, providers, and actions](#26-external-waits-providers-and-actions)
-  - [2.7 Nested workflows and limits](#27-nested-workflows-and-limits)
-  - [2.8 Authorization and cancellation](#28-authorization-and-cancellation)
-  - [2.9 Observability](#29-observability)
-  - [2.10 Open workflow-controller design TODOs](#210-open-workflow-controller-design-todos)
+  - [2.5 State-machine authoring experience](#25-state-machine-authoring-experience)
+  - [2.6 PilotSwarm workflow controller](#26-pilotswarm-workflow-controller)
+  - [2.7 External waits, providers, and actions](#27-external-waits-providers-and-actions)
+  - [2.8 Nested workflows and limits](#28-nested-workflows-and-limits)
+  - [2.9 Authorization and cancellation](#29-authorization-and-cancellation)
+  - [2.10 Observability](#210-observability)
+  - [2.11 Open workflow-controller design TODOs](#211-open-workflow-controller-design-todos)
 - [3. How the design solves the scenarios](#3-how-the-design-solves-the-scenarios)
 - [4. Implementation notes](#4-implementation-notes)
   - [4.1 Current foundation](#41-current-foundation)
@@ -165,7 +166,7 @@ Required behavior:
 
 | Stage | User or author supplies | PilotSwarm supplies |
 |---|---|---|
-| Author | Definition, schemas, agents, graph, bounds, deadlines, failure behavior, and mappings | Validation and compilation |
+| Author | Definition, schemas, agents, prompts, transition modules, graph, bounds, deadlines, and failure behavior | Validation and compilation |
 | Publish | Resolvable package and immutable version | Definition identity and source pinning |
 | Start | Registered definition reference or inline definition plus schema-valid business inputs | Compilation, immutable definition identity, session, and invocation identity |
 | Run | Review decisions or cancellation when permitted | Durable execution, waits, status, and correlation |
@@ -304,67 +305,475 @@ for:
 Telemetry should reference immutable records and minimal metadata instead of
 copying sensitive result content.
 
-### 2.5 Workflow-authored transition function
+### 2.5 State-machine authoring experience
 
 The workflow author owns both:
 
 - the execution contract for each state, including its pinned agent, provider,
   action, or other handler and its allowed outputs; and
-- the transition function that maps an accepted output to the next directive.
+- the transition function that maps a recorded, schema-valid output to the next
+  directive.
+
+The author publishes those contracts as one immutable package containing the
+workflow definition and its referenced artifacts:
 
 ```text
-output = executeState(currentState)
-nextDirective = transition(definitionVersion, currentState, output)
+workflow.yaml
+agents/
+  example-agent.agent.md
+prompts/
+  state-a.md
+schemas/
+  state-output.schema.json
+transitions.mjs
+results.mjs
 ```
+
+#### State types
+
+The proposed authoring model currently names five state types:
+
+| Type | Author supplies | Abstract example |
+|---|---|---|
+| `agent` | Agent-definition Markdown, a state prompt, input mappings, allowed outcomes, and a result schema. | State A asks an agent to produce a structured value. |
+| `observed-condition` | An opaque registered handler reference, operation data, and declared outcomes. The environment owner separately registers an `evaluate` implementation. | State B waits until an external condition reaches a terminal status. |
+| `action` | An opaque registered handler and operation reference, structured input, idempotency key, allowed outcomes, and result schema. The environment owner separately registers an `execute` implementation. | State C applies one external operation and records its result. |
+| `result` | A declarative value template or deterministic packaged result function plus its result schema. | State D combines earlier outputs into a final value. |
+| `terminal` | A declared workflow outcome and terminal result mapping. No executable handler is supplied. | State E ends the workflow as succeeded, blocked, or failed. |
+
+These names are proposed contract vocabulary rather than already implemented
+SDK types. A future direct-subworkflow state may extend the model, but its
+authoring shape and type name are not yet defined.
+
+#### Externally registered handler interfaces
+
+The workflow definition refers to observed-condition and action handlers by
+registered name. The end user or environment owner supplies and registers the
+implementations independently from the workflow package. The registration
+contract is conceptual:
+
+```typescript
+interface HandlerWorkflowIdentity {
+    sessionId: string;
+    definitionId: string;
+    stateId: StateId;
+    invocationId: string;
+}
+
+interface ObservedConditionHandler<TOperation, TCheckpoint, TOutput> {
+    evaluate(
+        request: Readonly<{
+            workflow: HandlerWorkflowIdentity;
+            operation: TOperation;
+            checkpoint?: TCheckpoint;
+            trigger: HandlerTrigger;
+        }>,
+    ): Promise<
+        | { status: "waiting"; checkpoint: TCheckpoint; correlationKeys: string[] }
+        | { status: "completed"; outcome: string; output: TOutput }
+    >;
+}
+
+interface ActionHandler<TInput, TOutput> {
+    execute(
+        request: Readonly<{
+            workflow: HandlerWorkflowIdentity;
+            operation: string;
+            input: TInput;
+            idempotencyKey: string;
+            authorization: HandlerAuthorization;
+        }>,
+    ): Promise<{ outcome: string; output: TOutput }>;
+}
+
+type ResultFunction<TContext, TOutput> = (
+    context: DeepReadonly<TContext>,
+) => TOutput;
+```
+
+For example, an end user could register REST-backed implementations:
+
+```typescript
+export const createRemoteResource: ActionHandler<CreateInput, CreateOutput> = {
+    async execute(request) {
+        const response = await restClient.post("/resources", request.input, {
+            headers: { "Idempotency-Key": request.idempotencyKey },
+        });
+
+        return {
+            outcome: "succeeded",
+            output: { resourceId: response.body.id },
+        };
+    },
+};
+
+export const awaitRemoteResource:
+    ObservedConditionHandler<ObserveOperation, ObserveCheckpoint, ObserveOutput> = {
+        async evaluate(request) {
+            const response = await restClient.get(
+                `/resources/${request.operation.resourceId}`,
+            );
+
+            if (response.body.status === "running") {
+                return {
+                    status: "waiting",
+                    checkpoint: { lastStatus: "running" },
+                    correlationKeys: [request.operation.resourceId],
+                };
+            }
+
+            return {
+                status: "completed",
+                outcome: response.body.status,
+                output: response.body,
+            };
+        },
+    };
+
+handlerRegistry.registerAction(
+    "example.create-resource",
+    createRemoteResource,
+);
+
+handlerRegistry.registerObservedCondition(
+    "example.await-resource",
+    awaitRemoteResource,
+);
+```
+
+The action starts or mutates remote work. The observed condition reads
+authoritative remote state and either remains waiting or returns a declared
+terminal outcome. A polling timer or authenticated callback may wake the
+observation, but every wake invokes `evaluate` again; the callback itself does
+not authoritatively complete the state.
+
+Observed-condition and action handlers may perform external I/O because they
+run behind the generic handler boundary. PilotSwarm knows only the registered
+handler identity, request envelope, waiting/completed lifecycle, and declared
+outcomes. It does not know that an implementation uses REST, which endpoints
+it calls, or how it interprets domain status. Credentials and connection
+configuration remain with the externally registered handler rather than the
+workflow YAML or package source. Result functions are synchronous and
+deterministic over recorded facts, like transition functions. Terminal states
+are declarative and have no handler.
+
+#### Agent state declaration
+
+The agent-state example remains intentionally small:
+
+```yaml
+states:
+  state-a:
+    type: agent
+    agent:
+      path: ./agents/example-agent.agent.md
+    prompt:
+      path: ./prompts/state-a.md
+    input:
+      value: ${inputs.value}
+    result:
+      schema: example/state-output/v1
+    completion:
+      outcomes:
+        - succeeded
+        - failed
+    transition:
+      use: after-state-a
+      allowedTargets:
+        - state-b
+        - state-c
+```
+
+The agent definition describes instructions and capabilities, while the prompt
+describes the state-specific task.
+
+#### Transition callback declaration
+
+Complex transition logic is packaged as deterministic code rather than
+embedded as an unrestricted script string in YAML. The workflow package
+manifest registers a stable callback name to a module export:
+
+```yaml
+transitions:
+  after-state-a:
+    module: ./transitions.mjs
+    export: afterStateA
+```
+
+The workflow YAML references the registered name through `transition.use`.
+The named module export implements this author-facing interface:
+
+```typescript
+type StateId = string;
+
+interface TransitionContext<TInput, TOutput> {
+    workflowInput: DeepReadonly<TInput>;
+    configuration: DeepReadonly<unknown>;
+    currentStateId: StateId;
+    stateOutput: DeepReadonly<TOutput>;
+    recordedStateOutputs: DeepReadonly<Record<StateId, unknown>>;
+}
+
+type TransitionFunction<TInput, TOutput> = (
+    ctx: TransitionContext<TInput, TOutput>,
+) => StateId;
+
+export const afterStateA: TransitionFunction<WorkflowInput, StateAOutput> =
+    ctx => {
+        if (ctx.stateOutput.result.matchesCondition) {
+            return "state-b";
+        }
+
+        return "state-c";
+    };
+```
+
+Transition code must be synchronous and deterministic over the immutable
+context. It must not use tools, network, filesystem, clocks, randomness, model
+calls, mutable module globals, or other side effects, and it may return only
+one of the state's declared `allowedTargets`.
+
+### 2.6 PilotSwarm workflow controller
+
+Definition preparation precedes controller execution:
+
+```text
+workflow YAML and package references
+  -> compile and register
+  -> immutable definition ID and compiled graph
+  -> workflow orchestration durably loads that pinned graph
+```
+
+For a package-backed workflow, compilation occurs once during registration,
+outside the workflow orchestration. For an inline definition, the start path
+must first durably compile and register it, then create the workflow session
+with the resulting immutable definition ID. The orchestration never recompiles
+mutable YAML during replay.
+
+The following is **PilotSwarm implementation pseudocode**, not code supplied
+by the workflow author. The initial implementation uses
+`oneShotCompletionPolicy`; `reviewedCompletionPolicy` illustrates the planned
+extension point but is not part of initial delivery.
+
+For an agent state, `executeAgentState` resolves the pinned agent definition
+and prompt, evaluates the state input, starts or resumes one replay-stable
+bounded agent turn, and returns its structured completion envelope. Other
+executable state types are omitted from this pseudocode. A `terminal` state is
+not executed; reaching it exits the loop and produces the workflow result.
+The controller durably admits each invocation, records its accepted output,
+records the effective transition, and records terminal workflow completion.
+Mutable monitoring projections are omitted.
+
+```typescript
+interface TransitionRequest<TOutput> {
+    currentStateId: StateId;
+    requestedNextStateId: StateId;
+    stateOutput: Readonly<TOutput>;
+}
+
+interface CompletionPolicy<TOutput> {
+    resolve(
+        ctx,
+        request: TransitionRequest<TOutput>,
+    ): Generator<DurableOperation, StateId, unknown>;
+}
+
+function* runWorkflow(ctx, input) {
+    const definition = yield* loadPinnedDefinition(
+        ctx,
+        input.definitionId,
+    );
+    let currentStateId = definition.initialState;
+
+    while (definition.states[currentStateId].type !== "terminal") {
+        const state = definition.states[currentStateId];
+        const invocation = yield* admitStateInvocation(ctx, {
+            definitionId: input.definitionId,
+            stateId: currentStateId,
+            stateType: state.type,
+        });
+
+        // State-type dispatch is omitted; this example expands only agent states.
+        const output = yield* executeAgentState(ctx, state, invocation);
+        const recordedOutput = yield* completeStateInvocation(
+            ctx,
+            invocation,
+            {
+                output,
+                allowedOutcomes: state.completion.outcomes,
+                resultSchema: state.result.schema,
+            },
+        );
+
+        const requestedNextStateId = invokeTransitionFunction(
+            ctx,
+            definition,
+            state,
+            recordedOutput,
+        );
+
+        const effectiveNextStateId = yield* state.completionPolicy.resolve(ctx, {
+            currentStateId,
+            requestedNextStateId,
+            stateOutput: recordedOutput,
+        });
+
+        yield* recordTransition(ctx, {
+            invocationId: invocation.id,
+            fromStateId: currentStateId,
+            requestedNextStateId,
+            effectiveNextStateId,
+        });
+
+        currentStateId = effectiveNextStateId;
+    }
+
+    return yield* completeWorkflow(ctx, {
+        terminalStateId: currentStateId,
+        result: createTerminalResult(definition, currentStateId),
+    });
+}
+
+function* executeAgentState(ctx, state, invocation) {
+    const stateInput = evaluateStateInput(state.input, ctx.recordedFacts);
+    const promptTemplate = resolvePinnedPrompt(state.prompt);
+    const prompt = renderPrompt(promptTemplate, stateInput);
+
+    return yield* runBoundedAgentTurn(ctx, {
+        invocationId: invocation.id,
+        agent: state.agent,
+        prompt,
+        input: stateInput,
+        allowedOutcomes: state.completion.outcomes,
+        resultSchema: state.result.schema,
+    });
+}
+
+function invokeTransitionFunction(ctx, definition, state, recordedOutput) {
+    const transitionFunction = definition.transitionRegistry.resolve(
+        state.transition.callbackId,
+    );
+
+    const requestedNextStateId = transitionFunction(deepFreeze({
+        workflowInput: ctx.workflowInput,
+        configuration: definition.configuration,
+        currentStateId: state.id,
+        stateOutput: recordedOutput,
+        recordedStateOutputs: ctx.recordedStateOutputs,
+    }));
+
+    if (!state.transition.allowedTargets.includes(requestedNextStateId)) {
+        throw new InvalidTransitionTargetError(requestedNextStateId);
+    }
+
+    return requestedNextStateId;
+}
+
+function* oneShotCompletionPolicy<TOutput>(
+    ctx,
+    request: TransitionRequest<TOutput>,
+) {
+    return request.requestedNextStateId;
+}
+
+function* reviewedCompletionPolicy<TOutput>(
+    ctx,
+    request: TransitionRequest<TOutput>,
+) {
+    const reviewDecision = yield* requestTransitionReview(ctx, {
+        requestedNextStateId: request.requestedNextStateId,
+        stateOutput: request.stateOutput,
+    });
+
+    return resolveReview(request, reviewDecision);
+}
+
+function* executeAgenticTransition(ctx, state, recordedOutput) {
+    const selectedRoute = yield* executeTransitionAgent(ctx, {
+        currentStateId: state.id,
+        stateOutput: recordedOutput,
+        allowedRoutes: state.allowedRoutes,
+    });
+
+    return state.routeToNextState(selectedRoute);
+}
+```
+
+#### PilotSwarm transition-registration context
+
+The controller resolves `state.transition.callbackId` through this
+PilotSwarm-owned registration boundary:
+
+```typescript
+type TransitionCallbackId = string;
+
+interface TransitionExportDescriptor {
+    module: string;
+    export: string;
+}
+
+interface TransitionRegistration {
+    packageHash: string;
+    modulePath: string;
+    moduleHash: string;
+    exportName: string;
+}
+
+interface TransitionRegistry {
+    register(registration: TransitionRegistration): TransitionCallbackId;
+
+    resolve<TInput, TOutput>(
+        callbackId: TransitionCallbackId,
+    ): TransitionFunction<TInput, TOutput>;
+}
+```
+
+Every nonterminal state has a workflow-author-supplied transition function.
+That function is deterministic code, pinned with the registered definition,
+that gives semantic meaning to the state's declared outputs by mapping each
+one to a declared next state.
+
+The controller does not `yield` the transition function. Replay calls it again
+with the same frozen context and must receive the same next state. Package
+registration rejects missing callbacks and unknown allowed targets; the
+controller rejects callback results outside those targets.
+
+The completion policy then decides whether the requested next state becomes
+effective. Multiple policy implementations share the same interface without
+changing the controller.
 
 State execution may be nondeterministic. PilotSwarm validates and durably
 records `output` before evaluating `transition`. The producer never names or
 applies `nextDirective`.
 
-`executeState` is a logical lifecycle, not necessarily one synchronous call. It
-may span durable waits and resumptions while `currentState` remains unchanged.
-The transition function runs only after that lifecycle produces an accepted
-output.
+`executeAgentState` is a logical lifecycle, not necessarily one synchronous
+call. It may span durable waits and resumptions while `currentState` remains
+unchanged. The transition function runs only after that lifecycle produces a
+recorded, schema-valid output.
 
 Given a schema-valid state output, the workflow author's transition function
-first computes the **intended directive**:
-
-```text
-output = executeState(currentState)
-acceptedOutput = validateAndRecord(output)
-intendedDirective =
-    transition(definitionVersion, currentState, acceptedOutput)
-```
-
-The completion policy determines whether that intended directive becomes the
-effective directive:
+first computes the **intended directive**. The completion policy determines
+whether that intended directive becomes the effective directive.
 
 | | `one-shot` | `reviewed` *(post-initial delivery)* |
 |---|---|---|
-| Controller path | `effectiveDirective = intendedDirective` | `reviewDecision = requestTransitionReview(`<br>&nbsp;&nbsp;`requestedNextDirective: intendedDirective,`<br>&nbsp;&nbsp;`stateOutput: acceptedOutput`<br>`)`<br>`effectiveDirective = resolveReview(`<br>&nbsp;&nbsp;`definitionVersion,`<br>&nbsp;&nbsp;`intendedDirective,`<br>&nbsp;&nbsp;`reviewDecision`<br>`)` |
+| Controller path | `effectiveDirective = intendedDirective` | `reviewDecision = requestTransitionReview(...)`<br>`effectiveDirective = resolveReview(...)` |
 | Effective result | The controller immediately applies the state-machine author's intended next directive. | A reviewer receives the requested next directive and state output, then gates the intended directive. Acceptance applies it; rejection, abort, or another declared review outcome may produce a different workflow-authorized directive. |
 
 The transition function therefore expresses where the workflow **intends** to
-go based on the current state and accepted output. Under reviewed completion,
+go based on the current state and recorded output. Under reviewed completion,
 the reviewer does not rewrite the transition function or name an arbitrary
-target state. The frozen workflow definition maps the recorded review decision
-to the effective directive, which may differ from the intended directive.
+target state. The frozen workflow definition maps the recorded review
+decision to the effective directive, which may differ from the intended
+directive.
 
 `requestTransitionReview` is a placeholder for the future durable review
 protocol. Its notification, correlation, authentication, race handling, and
 recovery semantics remain part of the post-initial-delivery TODO.
 
-The transition function is a deterministic mapping from the accepted output to
-an intended next state:
-
-```text
-(currentState, outputA) -> advance(stateA)
-(currentState, outputB) -> advance(stateB)
-```
-
-`outputA`, `outputB`, `stateA`, and `stateB` are placeholders for values and
+The transition function is a deterministic mapping from recorded outputs to
 states declared by the workflow definition. PilotSwarm does not assign
-universal domain semantics to them.
+universal domain semantics to those outputs or states.
 
 > **TODO — post-initial delivery:** Define reviewed completion, including
 > candidate revisions; which artifact and intended directive are reviewed;
@@ -380,13 +789,8 @@ reviewer, or provider supplies outcomes and evidence but never directly names
 or applies a target state.
 
 For genuinely semantic routing, the author may declare an explicit agentic
-transition function:
-
-```text
-output = executeState(currentState)
-selectedRoute = executeTransitionAgent(currentState, output, allowedRoutes)
-nextDirective = mapRoute(definitionVersion, currentState, selectedRoute)
-```
+transition function, represented by `executeAgenticTransition` in the
+consolidated pseudocode.
 
 The transition agent is a visible, bounded invocation. It chooses one declared
 route, not an arbitrary state. PilotSwarm persists `selectedRoute`; replay
@@ -395,7 +799,7 @@ never reruns the agent merely to reconstruct control flow.
 Deterministic mappings are the default. Agentic routing is an explicit escape
 hatch, not hidden model execution inside the controller.
 
-### 2.6 External waits, providers, and actions
+### 2.7 External waits, providers, and actions
 
 An **external wait** suspends an invocation until progress or a condition outside
 PilotSwarm produces a terminal output. An observed condition only waits; a
@@ -472,7 +876,7 @@ The
 [ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md)
 is one candidate encoding, not the normative schema.
 
-### 2.7 Nested workflows and limits
+### 2.8 Nested workflows and limits
 
 A workflow may start:
 
@@ -491,7 +895,7 @@ Timeout, cancellation, retry exhaustion, and loop-bound exhaustion are explicit
 controller outcomes. Definitions decide whether each advances, blocks, fails,
 or cancels the workflow.
 
-### 2.8 Authorization and cancellation
+### 2.9 Authorization and cancellation
 
 Every creation edge:
 
@@ -513,7 +917,7 @@ Pausing also fences new admissions without erasing active state. Management
 retention preserves terminal results and immutable lifecycle references
 according to policy.
 
-### 2.9 Observability
+### 2.10 Observability
 
 Management surfaces expose:
 
@@ -529,7 +933,7 @@ Management surfaces expose:
 Large transcripts and result payloads remain in their owning stores rather than
 being copied into orchestration state.
 
-### 2.10 Open workflow-controller design TODOs
+### 2.11 Open workflow-controller design TODOs
 
 - [x] Separate submissions, candidate revisions, review decisions, accepted
   state outcomes, and selected transitions.
@@ -594,8 +998,11 @@ Add a definition subsystem responsible for:
 
 - resolving packaged and inline sources;
 - pinning mutable package and Git references;
+- resolving and hashing agent definitions, prompts, and transition modules;
 - validating schema, references, expressions, and bounds;
-- compiling the graph and transition functions;
+- compiling the graph, case mappings, and callback registrations;
+- rejecting transition-module imports or capabilities that violate
+  deterministic execution;
 - rejecting unsupported nodes, missing outcomes, invalid targets, and cycles;
 - persisting definition identity, source hash, and compiled version.
 
@@ -702,6 +1109,10 @@ Definition:
 
 - packaged and inline sources compile identically;
 - references pin to immutable identity;
+- prompt and transition-module identities are included in the definition hash;
+- transition callbacks cannot import ambient I/O, clock, randomness, or model
+  capabilities;
+- callback results outside the state's declared allowed targets fail;
 - unsupported nodes, expressions, cycles, and targets fail;
 - outcomes and transition mappings are complete and unambiguous;
 - compiled identity and source hash are stable.
@@ -787,7 +1198,8 @@ boundary used by production integrations.
 2. `parentSessionId` is the authoritative relationship edge.
 3. Workflow execution state is separate from conversational `subAgents`.
 4. Agents produce outcomes; workflow authors define transition functions.
-5. Deterministic outcome maps are the default.
+5. Transition callbacks are immutable package exports executed in a restricted
+   deterministic host; declarative outcome maps are compiler sugar.
 6. Agentic transitions are explicit durable invocations with bounded routes.
 7. Reviewed candidates, decisions, accepted outcomes, and transitions are
    distinct immutable facts.
