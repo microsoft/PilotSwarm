@@ -326,16 +326,58 @@ may span durable waits and resumptions while `currentState` remains unchanged.
 The transition function runs only after that lifecycle produces an accepted
 output.
 
-The default transition function is a deterministic finite mapping:
+Given a schema-valid state output, the workflow author's transition function
+first computes the **intended directive**:
 
 ```text
-(currentState, accepted) -> advance(acceptedState)
-(currentState, stale)    -> advance(staleState)
-(currentState, rejected) -> resume(producer)
+output = executeState(currentState)
+acceptedOutput = validateAndRecord(output)
+intendedDirective =
+    transition(definitionVersion, currentState, acceptedOutput)
 ```
 
-A directive either advances to a declared state or resumes a reviewed producer.
-Replay evaluates the same frozen definition and recorded outcome.
+The completion policy determines whether that intended directive becomes the
+effective directive:
+
+| | `one-shot` | `reviewed` *(post-initial delivery)* |
+|---|---|---|
+| Controller path | `effectiveDirective = intendedDirective` | `reviewDecision = requestTransitionReview(`<br>&nbsp;&nbsp;`requestedNextDirective: intendedDirective,`<br>&nbsp;&nbsp;`stateOutput: acceptedOutput`<br>`)`<br>`effectiveDirective = resolveReview(`<br>&nbsp;&nbsp;`definitionVersion,`<br>&nbsp;&nbsp;`intendedDirective,`<br>&nbsp;&nbsp;`reviewDecision`<br>`)` |
+| Effective result | The controller immediately applies the state-machine author's intended next directive. | A reviewer receives the requested next directive and state output, then gates the intended directive. Acceptance applies it; rejection, abort, or another declared review outcome may produce a different workflow-authorized directive. |
+
+The transition function therefore expresses where the workflow **intends** to
+go based on the current state and accepted output. Under reviewed completion,
+the reviewer does not rewrite the transition function or name an arbitrary
+target state. The frozen workflow definition maps the recorded review decision
+to the effective directive, which may differ from the intended directive.
+
+`requestTransitionReview` is a placeholder for the future durable review
+protocol. Its notification, correlation, authentication, race handling, and
+recovery semantics remain part of the post-initial-delivery TODO.
+
+The transition function is a deterministic mapping from the accepted output to
+an intended next state:
+
+```text
+(currentState, outputA) -> advance(stateA)
+(currentState, outputB) -> advance(stateB)
+```
+
+`outputA`, `outputB`, `stateA`, and `stateB` are placeholders for values and
+states declared by the workflow definition. PilotSwarm does not assign
+universal domain semantics to them.
+
+> **TODO — post-initial delivery:** Define reviewed completion, including
+> candidate revisions; which artifact and intended directive are reviewed;
+> accept/reject/abort semantics; producer resumption; dependency invalidation;
+> bounds; durable review decisions; duplicate event delivery; and atomic
+> compare-and-set behavior for racing decisions. These concerns must be
+> resolved before `reviewed` completion becomes an executable platform
+> contract. The initial transition kernel supports `one-shot`, where every
+> valid intended directive becomes effective.
+
+Replay evaluates the same frozen definition and recorded facts. A producer,
+reviewer, or provider supplies outcomes and evidence but never directly names
+or applies a target state.
 
 For genuinely semantic routing, the author may declare an explicit agentic
 transition function:
