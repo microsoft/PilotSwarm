@@ -1,3 +1,4 @@
+import type { SteeringCarrier, SteeringChannel } from "./steering-types.js";
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
@@ -66,7 +67,13 @@ type WorkspaceAttachCarrier = {
     workspaceAttached?: boolean;
 };
 
-export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier;
+/**
+ * Session steering (§6a.8): the delivered-steer manifest of this turn. Handlers
+ * switch on `type` only and ignore it; finalize reads it after the commit.
+ */
+export type { SteeringCarrier } from "./steering-types.js";
+
+export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier & SteeringCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
@@ -120,6 +127,11 @@ export interface TurnOptions {
     liveTurn?: boolean;
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
     turnIndex?: number;
+    /**
+     * Session steering channel for this turn (§6a.5). Supplied by the runTurn
+     * activity only when steering is enabled and the turn has a turn key.
+     */
+    steering?: SteeringChannel;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */

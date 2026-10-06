@@ -21,6 +21,13 @@ export const FEATURE_FLAGS = {
         defaultAllowUserOverride: true,
         requiredCapability: null,
     },
+    "sessions.steering": {
+        displayName: "Session steering",
+        description: "Let people with write access send guidance to a running turn without stopping it. Turn on only after every worker runs a build that supports steering.",
+        defaultEnabled: false,
+        defaultAllowUserOverride: false,
+        requiredCapability: "sessions.steering",
+    },
 } as const;
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
 export type ResolveOptions = { fallback: boolean; required?: never } | { required: true; fallback?: never };
