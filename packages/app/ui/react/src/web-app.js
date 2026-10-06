@@ -9907,16 +9907,19 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     onClick: stopTurn,
                 }, "■")
                 : null,
-            steering.visible ? React.createElement("button", {
-                type: "button",
+            steering.visible ? React.createElement(IconButton, {
                 className: "ps-mini-button ps-steer-button",
-                "data-testid": "steer-current-turn",
-                "aria-label": "Steer current turn",
-                title: steering.enabled ? `${steering.help} (Ctrl+S)` : steering.reason,
+                testId: "steer-current-turn",
+                label: "Steer current turn",
+                tooltip: steering.enabled ? `Steer current turn. ${steering.help} (Ctrl+S)` : steering.reason,
+                preservePromptFocus: true,
                 disabled: !steering.enabled,
-                onPointerDown: (event) => event.preventDefault(),
                 onClick: steerPrompt,
-            }, "Steer") : null,
+                icon: React.createElement(React.Fragment, null,
+                    React.createElement("span", { className: "ps-steer-label" }, "Steer"),
+                    React.createElement("svg", { className: "ps-steer-glyph", viewBox: "0 0 24 24", width: 20, height: 20, fill: "none", stroke: "currentColor", strokeWidth: 2 },
+                        React.createElement("path", { d: "M6 20v-6a6 6 0 0 1 6-6h7M14 3l5 5-5 5" }))),
+            }) : null,
             React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}`,
@@ -9952,7 +9955,7 @@ function StatusStrip({ controller }) {
 // (hold ~450ms to see the label, release to dismiss — the long-press does not
 // fire onClick). aria-label carries the meaning for assistive tech.
 const ICON_HOVER_TOOLTIP_MS = 1000;
-function IconButton({ icon, label, onClick, disabled = false, active = false, pressed = undefined, className = "ps-toolbar-button" }) {
+function IconButton({ icon, label, tooltip = label, testId, preservePromptFocus = false, onClick, disabled = false, active = false, pressed = undefined, className = "ps-toolbar-button" }) {
     // The tooltip is portaled to <body> so it escapes the toolbar/pane
     // overflow-clipping and stacking contexts (nested tooltips were hidden
     // behind, or bled through by, the panes). Coordinates are computed from
@@ -10024,6 +10027,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
         setTip(null);
     };
     const startPress = (e) => {
+        if (preservePromptFocus) e.preventDefault();
         if (e.pointerType === "mouse") return;
         longPressRef.current = false;
         pressOriginRef.current = { x: e.clientX, y: e.clientY };
@@ -10084,7 +10088,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
                 className: `ps-icon-tooltip is-${tip.placement}`,
                 role: "tooltip",
                 style: { left: `${tip.x}px`, top: `${tip.y}px` },
-            }, label),
+            }, tooltip),
             document.body)
         : null;
 
@@ -10095,6 +10099,8 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
         onClick: handleClick,
         disabled,
         "aria-label": label,
+        "data-testid": testId,
+        title: preservePromptFocus ? tooltip : undefined,
         "aria-pressed": pressed,
         onPointerEnter: startHover,
         onPointerLeave: endHover,
