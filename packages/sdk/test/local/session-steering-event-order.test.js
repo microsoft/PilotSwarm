@@ -23,6 +23,7 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
 import { messageText } from "../helpers/scripted-model.mjs";
 import { decodeSteeringTarget, steeringContentHash } from "../../src/steering.ts";
+import { assignSteeringTestOwner } from "../helpers/steering-ledger.js";
 
 const TIMEOUT = 240_000;
 const RUNS = 3;
@@ -37,17 +38,6 @@ async function waitFor(fn, ms, label) {
         if (v) return v;
         if (Date.now() > end) throw new Error(`timed out waiting for ${label}`);
         await sleep(50);
-    }
-}
-
-async function ownSession(env, sessionId) {
-    const { default: pg } = await import("pg");
-    const c = new pg.Client({ connectionString: env.store });
-    await c.connect();
-    try {
-        await c.query(`SELECT "${env.cmsSchema}".cms_set_session_owner($1, $2, $3, $4, $5)`, [sessionId, "test", "order-author", null, "Author"]);
-    } finally {
-        await c.end();
     }
 }
 
@@ -74,7 +64,7 @@ describe("session steering event order (real CLI, queued delivery)", () => {
             if (steered) return { content: `follow-up:${label}` };
             const h = holdFor(label);
             h.entered = true;
-            await Promise.race([h.gate, sleep(120_000)]);
+            await h.gate;
             return { content: `answer:${label}` };
         };
 
@@ -95,7 +85,7 @@ describe("session steering event order (real CLI, queued delivery)", () => {
                 for (let run = 0; run < RUNS; run++) {
                     const label = `order-run-${run}`;
                     const session = await client.createSession({ model: qualifiedModel });
-                    await ownSession(env, session.sessionId);
+                    await assignSteeringTestOwner(env, session.sessionId, AUTHOR);
                     await session.send(label);
                     const h = holdFor(label);
                     await waitFor(() => h.entered, 60_000, "the in-flight answer");
@@ -132,10 +122,9 @@ describe("session steering event order (real CLI, queued delivery)", () => {
                     assert(steerMsg.seq > answer.seq,
                         `run ${run}: queued steer user.message seq ${steerMsg.seq} must follow the response it followed (seq ${answer.seq})`);
                     const followTurn = events.find((e) => e.eventType === "assistant.turn_start" && e.seq > answer.seq);
-                    if (followTurn) {
-                        assert(steerMsg.seq < followTurn.seq,
-                            `run ${run}: steer user.message seq ${steerMsg.seq} must precede the follow-up run's turn_start (seq ${followTurn.seq})`);
-                    }
+                    assert(followTurn, `run ${run}: the actual queued continuation has a persisted turn_start`);
+                    assert(steerMsg.seq < followTurn.seq,
+                        `run ${run}: steer user.message seq ${steerMsg.seq} must precede the follow-up run's turn_start (seq ${followTurn.seq})`);
                     const followUp = events.find((e) => e.eventType === "assistant.message"
                         && String(e.data?.content ?? "").includes(`follow-up:${label}`));
                     assert(followUp && followUp.seq > steerMsg.seq, `run ${run}: the follow-up answer follows the steer`);
