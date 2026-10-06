@@ -6112,21 +6112,34 @@ export class PilotSwarmUiController {
         const key = `${sessionId}:${requestId}`;
         if (this.steeringResends.has(key)) return;
         this.steeringResends.add(key);
+        const entry = this.getState().steering?.bySessionId?.[sessionId];
+        const accessRevision = entry?.accessRevision || 0;
+        const previous = entry?.resends?.[requestId];
+        const clientMessageId = previous?.phase === "uncertain" ? previous.clientMessageId : globalThis.crypto.randomUUID();
+        let enqueueAttempted = false;
         try {
             const receipt = await this.refreshSteeringReceipt(sessionId, requestId);
             if (!receipt.actions.canSendAsNewMessage) {
                 this.setStatus("This guidance cannot be sent as a new message.");
                 return;
             }
+            this.dispatch({ type: "steering/resendUpdated", sessionId, requestId, accessRevision,
+                resend: { clientMessageId, phase: "sending", error: null } });
             // Explicit ordinary send, pinned to the retained row's session.
             // Do not route this through question or slash-command handling.
+            enqueueAttempted = true;
             await this.transport.sendMessage(sessionId, receipt.text, {
-                enqueueOnly: true, clientMessageIds: [globalThis.crypto.randomUUID()],
+                enqueueOnly: true, clientMessageIds: [clientMessageId],
                 steeringRequestId: requestId,
             });
+            this.dispatch({ type: "steering/resendUpdated", sessionId, requestId, accessRevision,
+                resend: { clientMessageId, phase: "queued", error: null } });
             this.setStatus("Added guidance as a new message; earlier messages stay ahead.");
         } catch (error) {
-            this.setStatus(`Could not send guidance as a new message: ${error.message}`);
+            const uncertain = enqueueAttempted || previous?.phase === "uncertain";
+            this.dispatch({ type: "steering/resendUpdated", sessionId, requestId, accessRevision,
+                resend: { clientMessageId, phase: uncertain ? "uncertain" : "failed", error: error.message } });
+            this.setStatus(`${uncertain ? "New-message enqueue unconfirmed; the retry identity is retained" : "Could not resend guidance"}: ${error.message}`);
         } finally {
             this.steeringResends.delete(key);
         }

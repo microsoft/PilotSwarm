@@ -69,6 +69,12 @@ original caller identity and original target. A timeout is not proof of failure.
 The client never silently retargets guidance to a later turn or converts it to
 ordinary Send.
 
+If **Send as new message** loses its acknowledgement, the row reports
+**New-message enqueue unconfirmed** and retains that ordinary message's new ID.
+A retry reuses it, including after a session switch. Ordinary queue submission
+does not promise exactly-once execution; the UI warns that retrying may repeat
+input. No enqueue is replayed automatically from the provenance record.
+
 ## Scripts and tools
 
 Use `pilotswarm sessions steering-state` to read the observed target, then

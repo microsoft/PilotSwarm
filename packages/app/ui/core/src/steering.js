@@ -11,7 +11,7 @@ export function getSteeringAttemptDisplay(attempt) {
 }
 
 export function emptySteeringSession() {
-    return { state: null, windowSeq: 0, receipts: {}, pending: {}, error: null };
+    return { state: null, windowSeq: 0, receipts: {}, pending: {}, resends: {}, error: null };
 }
 
 export function mergeSteeringReceipt(entry = emptySteeringSession(), incoming) {
