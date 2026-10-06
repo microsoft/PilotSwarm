@@ -88,7 +88,7 @@ import { FeatureFlagError } from "./feature-flags.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
-import { SteeringManagement, type SteeringCallerContext } from "./steering-client.js";
+import { SteeringManagement, type SteeringCallerContext, type SteeringResendOptions } from "./steering-client.js";
 import type { SteerSessionTurnOptions, GetSteeringRequestOptions, ListSteeringRequestsOptions, SteeringStatsOptions } from "./steering-types.js";
 import type {
     SessionMetricSummary,
@@ -3839,7 +3839,7 @@ export class PilotSwarmManagementClient {
     async sendMessage(
         sessionId: string,
         prompt: string,
-        options?: { clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+        options?: { clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] } & SteeringResendOptions,
     ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
@@ -3869,6 +3869,12 @@ export class PilotSwarmManagementClient {
         }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendMessage");
+        const resendContext = options?.steeringRequestId !== undefined
+            ? options.steeringContext ?? this.config.steeringContext ?? { sender: options.sender } : undefined;
+        if (options?.steeringRequestId !== undefined) {
+            await new SteeringManagement(this._catalog!).recordResendIntent(sessionId, options.steeringRequestId,
+                prompt, options.clientMessageIds, resendContext);
+        }
         await this._catalog!.updateSession(sessionId, {
             state: "running",
             lastError: null,
@@ -3884,7 +3890,7 @@ export class PilotSwarmManagementClient {
         if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
             payload.clientMessageIds = options.clientMessageIds;
         }
-        const sender = normalizeMessageSender(options?.sender);
+        const sender = normalizeMessageSender(resendContext?.sender ?? options?.sender);
         if (sender) payload.sender = sender;
         const attachments = sanitizePromptAttachmentRefs(options?.attachments);
         if (attachments.length > 0) payload.attachments = attachments;

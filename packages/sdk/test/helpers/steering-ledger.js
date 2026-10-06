@@ -9,6 +9,18 @@ export const STEER_LIMITS = Object.freeze({
     maxBytes: 8192, ratePerMinute: 30, maxUnresolved: 16,
 });
 
+export async function assignSteeringTestOwner(env, sessionId, actor = STEER_AUTHOR) {
+    const client = new pg.Client({ connectionString: env.store });
+    try {
+        await client.connect();
+        await client.query(`SELECT "${env.cmsSchema}".cms_set_session_owner($1,$2,$3,$4,$5)`, [
+            sessionId, actor.provider, actor.subject, null, actor.displayName ?? actor.display ?? actor.subject,
+        ]);
+    } finally {
+        await client.end();
+    }
+}
+
 /** Real procedures and isolated PostgreSQL state; no steering behavior is faked. */
 export async function withSteeringLedger(fn) {
     const env = createTestEnv("steering-ledger");

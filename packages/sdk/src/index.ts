@@ -46,7 +46,7 @@ export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 export type { SharedManagementSurface } from "./web/web-management-client.js";
 export type * from "./steering-types.js";
 export { SteeringError } from "./steering-client.js";
-export type { SteeringCallerContext } from "./steering-client.js";
+export type { SteeringCallerContext, SteeringResendOptions } from "./steering-client.js";
 export {
     STEERING_FEATURE, DEFAULT_STEERING_LIMITS, STEERING_EVENT_TYPES,
     encodeSteeringTarget, decodeSteeringTarget, toSteeringReceipt, normalizeSteerText,

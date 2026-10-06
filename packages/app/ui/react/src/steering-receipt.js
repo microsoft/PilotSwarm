@@ -7,6 +7,7 @@ export function SteeringReceipt({ message, controller }) {
     const [error, setError] = React.useState("");
     const sessionId = receipt.sessionId;
     const requestId = receipt.requestId || receipt.clientRequestId;
+    const resend = message.steeringResend;
     const invoke = async (operation) => {
         setPending(true);
         setError("");
@@ -38,6 +39,11 @@ export function SteeringReceipt({ message, controller }) {
     React.createElement("details", null,
         React.createElement("summary", null, "Delivery details"),
         React.createElement("p", null, message.steeringDetail),
+        resend?.phase === "uncertain" ? React.createElement("p", { role: "alert" },
+            "New-message enqueue unconfirmed. Retrying reuses its identity but may repeat ordinary input.") : null,
+        resend?.phase === "queued" ? React.createElement("p", null,
+            "Added as an ordinary queued message; this original guidance receipt is unchanged.") : null,
+        resend?.error ? React.createElement("p", { role: "alert" }, resend.error) : null,
         ...(receipt.attempts?.items || []).map((attempt, index) => React.createElement("p", {
             key: attempt.attemptId,
         }, `Attempt ${attempt.attemptNo || index + 1}: ${getSteeringAttemptDisplay(attempt)}`)),
@@ -46,7 +52,10 @@ export function SteeringReceipt({ message, controller }) {
         receipt.actions?.canWithdraw ? button("Withdraw", () => controller.withdrawSteering(sessionId, receipt.requestId)) : null,
         receipt.actions?.canSendAsNewMessage ? button("Send as new message",
             () => controller.resendSteering(sessionId, receipt.requestId),
-            "Adds this text to the message queue; earlier messages stay ahead.") : null,
+            resend?.phase === "uncertain"
+                ? "Retry the same ordinary message identity. The earlier enqueue may have succeeded."
+                : "Adds this text to the message queue; earlier messages stay ahead.",
+            resend?.phase === "sending") : null,
         receipt.error && !receipt.rejected && !receipt.inFlight ? button("Reconcile acceptance",
             () => controller.retrySteering(sessionId, receipt.clientRequestId)) : null,
         button("Copy to draft", () => controller.copySteeringToDraft(sessionId, requestId), undefined, typeof receipt.text !== "string"),

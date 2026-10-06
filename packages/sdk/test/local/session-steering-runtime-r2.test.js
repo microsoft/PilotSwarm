@@ -16,23 +16,12 @@ import { defineTool, createManagementClient } from "../helpers/local-workers.js"
 import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
 import { messageText } from "../helpers/scripted-model.mjs";
 import { decodeSteeringTarget, steeringContentHash } from "../../src/steering.ts";
+import { assignSteeringTestOwner } from "../helpers/steering-ledger.js";
 
 const TIMEOUT = 240_000;
 const getEnv = useSuiteEnv(import.meta.url);
 const ALICE = { kind: "user", provider: "test", subject: "alice", display: "Alice" };
 const BOB = { kind: "user", provider: "test", subject: "bob", display: "Bob" };
-
-/** The worker re-checks the author's write access before hand-off (NFR-10): make Alice the owner. */
-async function ownSession(env, sessionId) {
-    const { default: pg } = await import("pg");
-    const c = new pg.Client({ connectionString: env.store });
-    await c.connect();
-    try {
-        await c.query(`SELECT "${env.cmsSchema}".cms_set_session_owner($1, $2, $3, $4, $5)`, [sessionId, "test", "alice", null, "Alice"]);
-    } finally {
-        await c.end();
-    }
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms, label) {
@@ -54,7 +43,7 @@ function holdTool() {
         parameters: { type: "object", properties: {} },
         handler: async () => {
             tracker.started = true;
-            await Promise.race([tracker.gate, sleep(120_000)]);
+            await tracker.gate;
             return "held";
         },
     });
@@ -93,7 +82,7 @@ describe("session steering runtime (real CLI, scripted model)", () => {
             const catalog = await createCatalog(env);
             try {
                 const session = await client.createSession({ model: qualifiedModel, tools: [hold.tool] });
-                await ownSession(env, session.sessionId);
+                await assignSteeringTestOwner(env, session.sessionId, ALICE);
                 const answer = session.sendAndWait("start the work", TIMEOUT);
                 await waitFor(() => hold.started, 60_000, "the blocking tool");
 
@@ -163,7 +152,7 @@ describe("session steering runtime (real CLI, scripted model)", () => {
             const mgmt = await createManagementClient(env);
             try {
                 const session = await client.createSession({ model: qualifiedModel, tools: [hold.tool] });
-                await ownSession(env, session.sessionId);
+                await assignSteeringTestOwner(env, session.sessionId, ALICE);
                 await session.send("start the work");
                 await waitFor(() => hold.started, 60_000, "the blocking tool");
                 const handed = await acceptSteer(catalog, session.sessionId, "handed off", "k-handed");
@@ -203,12 +192,12 @@ describe("session steering runtime (real CLI, scripted model)", () => {
                 const session = await client.createSession({ model: qualifiedModel, tools: [hold.tool] });
                 const answer = session.sendAndWait("start the work", TIMEOUT);
                 await waitFor(() => hold.started, 60_000, "the blocking tool");
-                await sleep(1_500);
                 const state = await catalog.steerState(session.sessionId);
                 assertEqual(state.steerable, false, "flag off: no window");
                 assertEqual(state.window, null);
                 hold.release();
                 assertEqual(await answer, "unsteered");
+                assertEqual((await catalog.steerState(session.sessionId)).windowSeq, 0, "flag off: no window event at any point");
             } finally {
                 hold.release();
                 await catalog.close();

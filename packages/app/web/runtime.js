@@ -1121,6 +1121,8 @@ export class PortalRuntime {
                     ...(safeParams.options && typeof safeParams.options === "object" ? safeParams.options : {}),
                     // Server-stamped; a client-supplied options.sender is overwritten.
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin, origin: safeParams.options?.origin }),
+                    ...(safeParams.options?.steeringRequestId !== undefined
+                        ? { steeringContext: this._steeringContext(authContext, gate.snapshot, isAdmin) } : {}),
                 });
             }
             case "sendAnswer":

@@ -584,26 +584,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                 return;
             }
-            if (focus === "prompt" && controller.getState().ui.promptActionIndex != null) {
-                const actions = selectPromptActions(controller.getState());
-                const index = controller.getState().ui.promptActionIndex;
-                if (!actions.length) {
-                    controller.dispatch({ type: "ui/promptAction", index: null });
-                    return;
-                }
-                if (key.escape || key.tab && key.shift) {
-                    controller.dispatch({ type: "ui/promptAction", index: null });
-                } else if (key.tab) {
-                    controller.dispatch({ type: "ui/promptAction", index: null });
-                    controller.handleCommand(UI_COMMANDS.FOCUS_NEXT).catch(() => {});
-                } else if (key.leftArrow || key.rightArrow) {
-                    controller.dispatch({ type: "ui/promptAction", index: (index + (key.leftArrow ? -1 : 1) + actions.length) % actions.length });
-                } else if (key.return) {
-                    const action = actions[index];
-                    if (action?.enabled) controller.handleCommand(action.command).catch(error => controller.setStatus(error.message));
-                }
-                return;
-            }
             if (key.tab && key.shift) {
                 controller.handleCommand(UI_COMMANDS.MODAL_PANE_PREV).catch(() => {});
                 return;
@@ -632,6 +612,27 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             if (key.downArrow || input === "j") {
                 controller.handleCommand(UI_COMMANDS.MODAL_NEXT).catch(() => {});
                 return;
+            }
+            return;
+        }
+
+        if (focus === "prompt" && controller.getState().ui.promptActionIndex != null) {
+            const actions = selectPromptActions(controller.getState());
+            const index = controller.getState().ui.promptActionIndex;
+            if (!actions.length) {
+                controller.dispatch({ type: "ui/promptAction", index: null });
+                return;
+            }
+            if (key.escape || key.tab && key.shift) {
+                controller.dispatch({ type: "ui/promptAction", index: null });
+            } else if (key.tab) {
+                controller.dispatch({ type: "ui/promptAction", index: null });
+                controller.handleCommand(UI_COMMANDS.FOCUS_NEXT).catch(() => {});
+            } else if (key.leftArrow || key.rightArrow) {
+                controller.dispatch({ type: "ui/promptAction", index: (index + (key.leftArrow ? -1 : 1) + actions.length) % actions.length });
+            } else if (key.return) {
+                const action = actions[index];
+                if (action?.enabled) controller.handleCommand(action.command).catch(error => controller.setStatus(error.message));
             }
             return;
         }

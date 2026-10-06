@@ -2304,6 +2304,7 @@ function baseReducer(state, action) {
         case "steering/stateLoaded":
         case "steering/windowChanged":
         case "steering/receiptReceived":
+        case "steering/resendUpdated":
         case "steering/submissionStarted":
         case "steering/submissionFailed": {
             const sessionId = action.sessionId;
@@ -2333,6 +2334,9 @@ function baseReducer(state, action) {
                 if (entry.accessLost || action.accessRevision !== undefined && action.accessRevision !== (entry.accessRevision || 0)) return state;
                 if (action.receipt?.sessionId !== sessionId) return state;
                 entry = mergeSteeringReceipt(entry, action.receipt);
+            } else if (action.type === "steering/resendUpdated") {
+                if (entry.accessLost || (action.accessRevision || 0) !== (entry.accessRevision || 0)) return state;
+                entry = { ...entry, resends: { ...entry.resends, [action.requestId]: action.resend } };
             } else if (action.type === "steering/submissionStarted") {
                 entry = { ...entry, pending: { ...entry.pending, [action.request.clientRequestId]: action.request } };
             } else {

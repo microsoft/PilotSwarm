@@ -2066,6 +2066,7 @@ export function selectActiveChat(state) {
             // history learned the server ID. Preserve that original DOM key.
             merged.rowKey = receipt.rowKey || merged.rowKey;
             const message = buildSteeringMessage(merged);
+            message.steeringResend = steering.resends?.[receipt.requestId] || null;
             if (index >= 0) chat[index] = message;
             else chat.push(message);
         }
@@ -3653,6 +3654,11 @@ export function selectSteeringReceiptModal(state, maxWidth = 76) {
             rows.push([{ text: `Attempt ${attempt.attemptNo || index + 1}: ${getSteeringAttemptDisplay(attempt)}`, color: "gray" }]);
         }
         if (receipt.attempts?.nextCursor) rows.push([{ text: "Additional attempt evidence is available through the receipt API.", color: "gray" }]);
+        if (selected.steeringResend?.phase === "uncertain") {
+            rows.push([{ text: "New-message enqueue unconfirmed. Retrying reuses its identity but may repeat ordinary input.", color: "yellow" }]);
+        } else if (selected.steeringResend?.phase === "queued") {
+            rows.push([{ text: "Added as an ordinary queued message; this original guidance receipt is unchanged.", color: "gray" }]);
+        }
         const actions = [
             receipt.actions?.canWithdraw ? "w Withdraw" : null,
             receipt.actions?.canSendAsNewMessage ? "r Send as new message" : null,
