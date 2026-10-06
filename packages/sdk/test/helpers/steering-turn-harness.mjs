@@ -26,8 +26,8 @@ export function makeSteeringTurnHarness({ block = null, send = null, history = n
     const delivered = Promise.withResolvers();
     const cut = barrier();
     const row = {
-        requestId: "request-a", content: "Keep this guidance separate", actor: { provider: "test", subject: "author-a" },
-        sequence: 1, seq: 1, status: "claimed", sdkMessageId: null,
+        requestId: "request-a", text: "Keep this guidance separate", actor: { provider: "test", subject: "author-a" },
+        sequence: 1, seq: 1, status: "claimed", sdkMessageId: null, redelivery: false,
     };
     let claimReturned = false;
     let wake;
@@ -65,6 +65,9 @@ export function makeSteeringTurnHarness({ block = null, send = null, history = n
         getMessages: vi.fn(async () => []),
     };
     const channel = {
+        sessionId: "steering-turn-fixture",
+        target: { epoch: 0, turnIndex: 1, incarnation: "snapshot-turn-fixture" },
+        ownerToken: "owner-fixture",
         openWindow: vi.fn(async () => {
             calls.push(["open"]);
             if (block === "open") return await cut.hold();
