@@ -178,7 +178,10 @@ export class SteeringPump {
     private quiesced = false;
     private released = false;
     /** Diagnostics for tests and traces. */
-    readonly stats = { scans: 0, claimed: 0, sent: 0, delivered: 0, sendTimeouts: 0, released: 0, wakes: 0 };
+    readonly stats = {
+        scans: 0, claimed: 0, sent: 0, delivered: 0, sendTimeouts: 0, sendErrors: 0, released: 0, wakes: 0,
+        leaseLost: 0, startupFailed: 0, authorizationRefused: 0, quiesced: 0, quiesceFailed: 0, unclassified: 0,
+    };
 
     constructor(private readonly session: SteeringSdkSession, private readonly ch: SteeringChannel, options: SteeringPumpOptions) {
         this.o = {
@@ -211,6 +214,7 @@ export class SteeringPump {
     private beginStartup(): void {                                    // exactly one tracked startup
         if (this.startup) return;
         this.startup = this.start().catch((err) => {
+            this.stats.startupFailed++;
             this.gate.close();
             this.trace(`[steering] startup failed: ${err?.message ?? String(err)}`);
         });
@@ -271,6 +275,7 @@ export class SteeringPump {
         if (this.released) { if (this.leaseTimer) clearInterval(this.leaseTimer); return; }   // INV-P13
         const ok = await this.ch.renew().catch(() => false);
         if (!ok && !this.released) {
+            this.stats.leaseLost++;
             this.trace("[steering] lease renewal refused; closing admission for this turn");
             this.gate.close();
             this.wake();
@@ -299,6 +304,7 @@ export class SteeringPump {
                         if (this.o.authorize) {
                             const allowed = await this.o.authorize(row).catch(() => false);
                             if (!allowed) {
+                                this.stats.authorizationRefused++;
                                 this.trace(`[steering] request ${row.requestId}: author no longer has write access; not handed off`);
                                 continue;
                             }
@@ -335,7 +341,7 @@ export class SteeringPump {
                         // Unknown: the call may still start a run (timeout) or never reached the CLI (error).
                         this.writes.push("unconfirmed", () => this.ch.markUnconfirmed(attemptId));
                         if (outcome.kind === "timeout") { this.stats.sendTimeouts++; this.needsQuiesce = true; }
-                        else this.trace(`[steering] send failed: ${(outcome.err as any)?.message ?? outcome.err}`);
+                        else { this.stats.sendErrors++; this.trace(`[steering] send failed: ${(outcome.err as any)?.message ?? outcome.err}`); }
                         this.gate.close();
                         break;
                     }
@@ -404,6 +410,7 @@ export class SteeringPump {
             // started its own run (an unrecognized `idle`), so ownership ends with quiescence.
             this.trace(`[steering] user.message without a recognized delivery kind (${String(raw)}); recorded as unconfirmed`);
             a.uncertain = true;
+            this.stats.unclassified++;
             this.needsQuiesce = true;
             const attemptId = a.attemptId;
             this.writes.push("unconfirmed", () => this.ch.markUnconfirmed(attemptId));
@@ -468,7 +475,8 @@ export class SteeringPump {
             this.o.quiesceWarmSession().catch(() => false),
             sleep(this.o.quiesceMs).then(() => false),
         ]);
-        if (!ok) throw new SteeringQuiesceFailedError();
+        if (!ok) { this.stats.quiesceFailed++; throw new SteeringQuiesceFailedError(); }
+        this.stats.quiesced++;
         this.quiesced = true;
     }
 
@@ -477,6 +485,35 @@ export class SteeringPump {
      * or undefined when stopping or when no window was opened.
      */
     async settle(o: { stopping: boolean }): Promise<SteeringManifest | undefined> {
+        try {
+            return await this.settleInner(o);
+        } finally {
+            await this.flushCounters();
+        }
+    }
+
+    /** Durable §11 counters, once per turn; bounded and best-effort (never fails the turn). */
+    private countersFlushed = false;
+    private async flushCounters(): Promise<void> {
+        if (this.countersFlushed || !this.ch.recordCounters) return;
+        this.countersFlushed = true;
+        if (!this.startup && this.stats.scans === 0) return;          // no steering activity this turn
+        const s = this.stats;
+        const counts: Record<string, number> = {
+            "pump:turns": 1, "pump:scans": s.scans, "pump:claimed": s.claimed, "pump:sent": s.sent,
+            "pump:delivered": s.delivered, "pump:wakes": s.wakes, "pump:released": s.released,
+            "pump:send_timeouts": s.sendTimeouts, "pump:send_errors": s.sendErrors,
+            "pump:receipt_write_failures": this.writes.failures, "pump:lease_lost": s.leaseLost,
+            "pump:startup_failed": s.startupFailed, "pump:authorization_refused": s.authorizationRefused,
+            "pump:unclassified_delivery": s.unclassified, "pump:quiesced": s.quiesced, "pump:quiesce_failed": s.quiesceFailed,
+        };
+        const r = await bounded(this.ch.recordCounters(counts).catch((err) => {
+            this.trace(`[steering] counter write failed: ${err?.message ?? String(err)}`);
+        }), this.o.ioTimeoutMs);
+        if (r === TIMEOUT) this.trace("[steering] counter write timed out");
+    }
+
+    private async settleInner(o: { stopping: boolean }): Promise<SteeringManifest | undefined> {
         this.released = true;                                         // INV-P13: before any await
         this.gate.close();
         if (this.leaseTimer) clearInterval(this.leaseTimer);

@@ -1053,9 +1053,13 @@ export class PilotSwarmWorker {
             this._agentPackagesTimer = null;
         }
         await this._featureFlags?.stop();
-        await this._steeringWake?.stop().catch(() => {});
-        this._steeringWake = null;
-        this.sessionManager.setSteeringWakeSource(null);
+        // Undo only what start() installed (start sets it only with a steering-capable catalog).
+        const steeringWake = this._steeringWake;
+        if (steeringWake) {
+            this._steeringWake = null;
+            await steeringWake.stop().catch(() => {});
+            this.sessionManager.setSteeringWakeSource(null);
+        }
         if (this._eventLoopHist) {
             this._eventLoopHist.disable();
             this._eventLoopHist = null;
@@ -1460,6 +1464,9 @@ export class PilotSwarmWorker {
                 blobStore: Boolean(this.blobStore),
                 enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
                 graph: Boolean(this.graphStore),
+                // Session steering runtime (pump, gate, finalize) is in this build; the flag's
+                // enablement gate refuses while any live worker lacks it (D-23, ST-M04).
+                "sessions.steering": true,
             },
             runtime: {
                 substrate: process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "process",

@@ -1487,6 +1487,9 @@ export function registerActivities(
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        // The worker's feature cache, fetched ONCE per turn: steering and model
+        // event logging both resolve from this one snapshot.
+        const turnFeatureCache = sessionManager.getFeatureFlagCache?.() ?? null;
         // Session steering (§6a.6): only with a turn key, a non-service session
         // and the flag on for the owner. No orchestration change (D-12).
         const steeringTurn = await SteeringTurn.create({
@@ -1496,7 +1499,7 @@ export function registerActivities(
             transcriptEpoch: input.transcriptEpoch,
             turnIndex: input.turnIndex,
             sessionRow: catalogSessionRow,
-            featureCache: sessionManager.getFeatureFlagCache?.() ?? null,
+            featureCache: turnFeatureCache,
             wake: sessionManager.getSteeringWakeSource?.() ?? null,
             trace: traceWarn,
         }).catch((err: any) => {
@@ -3837,7 +3840,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // debug.enable_model_event_logging feature is on for the session
             // owner. Resolved once per turn from the in-memory feature cache.
             const recordModelEvents = modelEventLoggingEnabled(
-                sessionManager.getFeatureFlagCache?.() ?? null,
+                turnFeatureCache,
                 catalogSessionRow?.owner ?? null,
             );
             const EPHEMERAL_TYPES = new Set([
@@ -4741,7 +4744,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         if (input.expectedTurnIndex != null) {
             const closed = await closeStoppedSteering(catalog, input.sessionId, input.expectedTurnIndex,
                 (msg) => activityCtx.traceInfo(msg));
-            if (!closed) activityCtx.traceInfo(`[abortTurn] session=${input.sessionId} steering_stop_close_failed`);
+            if (!closed) {
+                activityCtx.traceInfo(`[abortTurn] session=${input.sessionId} steering_stop_close_failed`);
+                // Durable §11 counter, bounded; the storage that just failed may fail again.
+                if (catalog && typeof (catalog as any).steerAddCounters === "function") {
+                    await Promise.race([
+                        (catalog as any).steerAddCounters(input.sessionId, { "stop:close_failed": 1 }).catch(() => {}),
+                        new Promise((r) => { const t = setTimeout(r, 2_000); (t as any).unref?.(); }),
+                    ]);
+                }
+            }
         }
         activityCtx.traceInfo(
             `[abortTurn] session=${input.sessionId} outcome=${result.outcome}${result.detail ? ` (${result.detail})` : ""}`,
