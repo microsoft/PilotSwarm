@@ -74,4 +74,23 @@ describe.concurrent("session steering adversarial R2 failures", () => {
             assertEqual(corrected.attempts.items[0].outcome, "delivered");
         });
     });
+
+    it("ST-M04: cluster enablement refuses an eligible worker without steering capability", { timeout: 120_000 }, async () => {
+        await withSteeringLedger(async (h) => {
+            await h.catalog.workerHeartbeat({
+                workerNodeId: "incapable-worker-fixture", phase: "ready", pool: "test-pool",
+                info: { sdkVersion: "fixture-old-build", consumes: ["feature-flags"], capabilities: { "sessions.steering": false } },
+            });
+            const definition = (await h.catalog.features.revisions()).find((row) => row.featureKey === "sessions.steering");
+            const enable = h.catalog.features.mutate({
+                principal: { provider: "test", subject: "fixture-admin" }, isAdmin: true,
+            }, "cluster", {
+                featureKey: "sessions.steering", expectedRevision: definition.revision,
+                requestId: "mixed-capability-enable-fixture", enabled: true, allowUserOverride: false,
+            });
+            await expect(enable).rejects.toThrow(/worker|capabil|unsupported|incompatible/i);
+            const snapshot = await h.catalog.features.snapshot(["sessions.steering"]);
+            assertEqual(snapshot.settings.find((row) => row.scope === "cluster").enabled, false);
+        });
+    });
 });
