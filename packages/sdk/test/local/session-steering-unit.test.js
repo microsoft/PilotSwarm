@@ -104,4 +104,61 @@ describe.concurrent("session steering product admission and settlement", () => {
         assertEqual(h.copilot.send.mock.calls.filter(([input]) => input.mode === "immediate").length, 0);
         expect(h.calls.filter(([name]) => name === "abort")).toHaveLength(1);
     });
+
+    for (const [name, args, type] of [
+        ["wait", { seconds: 60, reason: "durable fixture boundary" }, "wait"],
+        ["wait_on_worker", { seconds: 60, reason: "durable fixture boundary" }, "wait"],
+        ["ask_user", { question: "Keep this question?", choices: ["Yes", "No"] }, "input_required"],
+    ]) {
+        it(`ST-I10/ST-U04: actual ${name} boundary ends naturally and fences pending handoff`, async () => {
+            const h = makeSteeringTurnHarness({ block: "claim" });
+            const turn = h.run();
+            await within(h.cut.entered, "claim before actual control tool");
+            const tool = h.copilot.tools.get(name);
+            expect(tool).toBeDefined();
+            await tool.handler(args, {});
+            h.cut.release([h.row]);
+            h.answer("natural terminal reply");
+            const result = await turn;
+            assertEqual(result.type, type);
+            assertEqual(h.copilot.abort.mock.calls.length, 0, "wait/question boundary is not Stop");
+            assertEqual(h.copilot.send.mock.calls.filter(([input]) => input.mode === "immediate").length, 0,
+                "no external send after a terminal control action");
+            if (type === "wait") assertEqual(result.seconds, 60);
+            else assertEqual(result.question, args.question);
+        });
+    }
+
+    it("ST-I10: a nonterminal cron action leaves the running turn steerable", async () => {
+        const h = makeSteeringTurnHarness({ block: "claim" });
+        const turn = h.run();
+        await within(h.cut.entered, "claim before nonterminal schedule");
+        await h.copilot.tools.get("cron").handler({ seconds: 60, reason: "nonterminal fixture schedule" }, {});
+        h.cut.release([h.row]);
+        await within(h.delivered, "handoff after nonterminal cron");
+        h.answer();
+        const result = await turn;
+        assertEqual(h.channel.markDelivered.mock.calls.length, 1);
+        assertEqual(h.copilot.abort.mock.calls.length, 0);
+        expect(result.queuedActions).toContainEqual({
+            type: "cron", action: "set", intervalSeconds: 60, reason: "nonterminal fixture schedule",
+        });
+    });
+
+    for (const [config, expected] of [
+        [{ turnTimeoutMs: 100, turnInactivityTimeoutMs: 0 }, /Copilot was taking too long to process and was killed\./],
+        [{ turnTimeoutMs: 0, turnInactivityTimeoutMs: 100 }, /No events from the Copilot CLI subprocess/],
+    ]) {
+        it(`ST-I17: steering does not disable ${config.turnTimeoutMs ? "wall-clock cap" : "CLI inactivity guard"}`, async () => {
+            const h = makeSteeringTurnHarness({ config });
+            const turn = h.run();
+            await within(h.delivered, "handoff before original guard");
+            const result = await within(turn, "original turn guard", 2_000);
+            assertEqual(result.type, "error");
+            expect(result.message).toMatch(expected);
+            assertEqual(h.copilot.abort.mock.calls.length, 1, "the original abort funnel is preserved");
+            assertEqual(h.copilot.send.mock.calls.filter(([input]) => input.mode === "immediate").length, 1);
+            assertEqual(h.managed.getActiveTurn(), null);
+        });
+    }
 });

@@ -332,12 +332,24 @@ describe.concurrent("SteeringPump", () => {
 
     it("a refused lease renewal closes admission", async () => {
         const session = new FakeSession(); const ch = new FakeChannel([]);
-        ch.renewOk = false;
+        const renewalEntered = Promise.withResolvers();
+        const renewalResult = Promise.withResolvers();
+        ch.renew = async () => {
+            ch.log("renew");
+            renewalEntered.resolve();
+            return await renewalResult.promise;
+        };
         const { pump } = makePump(session, ch, { options: { renewMs: 5 } });
-        await startTurn(session, pump, ch);
-        await until(() => !pump.gate.isOpen);
-        await pump.settle({ stopping: false });
-        pump.dispose();
+        try {
+            await startTurn(session, pump, ch);
+            await renewalEntered.promise;
+            renewalResult.resolve(false);
+            await until(() => !pump.gate.isOpen);
+            await pump.settle({ stopping: false });
+        } finally {
+            renewalResult.resolve(false);
+            pump.dispose();
+        }
     });
 
     it("same-target recovery checks the restored conversation once: present, absent, or failed read", async () => {

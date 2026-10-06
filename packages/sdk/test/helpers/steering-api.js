@@ -7,6 +7,26 @@ import { ApiClient } from "../../api/src/api-client.js";
 const require = createRequire(new URL("../../../app/package.json", import.meta.url));
 const express = require("express");
 
+export async function withRegisteredSteeringMcp(mgmt, fn) {
+    const [{ McpServer }, { Client }, { InMemoryTransport }, { registerTurnControlTools }] = await Promise.all([
+        import(require.resolve("@modelcontextprotocol/sdk/server/mcp.js")),
+        import(require.resolve("@modelcontextprotocol/sdk/client/index.js")),
+        import(require.resolve("@modelcontextprotocol/sdk/inMemory.js")),
+        import("../../../app/mcp/dist/src/tools/turn-control.js"),
+    ]);
+    const server = new McpServer({ name: "steering-contract-fixture", version: "1.0.0" });
+    registerTurnControlTools(server, { mgmt });
+    const client = new Client({ name: "steering-contract-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+        await fn(client);
+    } finally {
+        await client.close();
+        await server.close();
+    }
+}
+
 export const steeringContext = (subject, over = {}) => ({
     sender: { kind: "user", provider: "test", subject, display: subject },
     authzEnforced: true, isAdmin: false, ...over,
@@ -31,6 +51,7 @@ export async function withSteeringApi(h, fn) {
         listSteeringRequests: (...args) => direct.listSteeringRequests(...args),
         withdrawSteeringRequest: (...args) => direct.withdrawSteeringRequest(...args),
         getSessionSteeringStats: (...args) => direct.getSessionSteeringStats(...args),
+        sendMessage: (...args) => direct.sendMessage(...args),
     };
     const app = express();
     app.use(express.json());

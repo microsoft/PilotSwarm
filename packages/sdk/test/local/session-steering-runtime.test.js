@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { withSteeringCli, nextSdkEvent, within } from "../helpers/steering-cli.mjs";
@@ -6,6 +7,8 @@ import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { runTurnCommit, runTurnPreamble } from "../../src/session-lifecycle.ts";
 import { writeTurnSentinel } from "../../src/snapshot-protocol.ts";
 import { barrier, makeSteeringTurnHarness } from "../helpers/steering-turn-harness.mjs";
+import { SessionManager } from "../../src/session-manager.ts";
+import { ModelProviderRegistry } from "../../src/model-providers.ts";
 
 const TIMEOUT = 60_000;
 
@@ -116,6 +119,97 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
             } finally {
                 sendRelease.resolve();
                 modelRelease.resolve();
+            }
+        });
+    });
+
+    it("ST-I18 partial gate: actual SessionManager quiescence owns a delayed issued-send response", { timeout: TIMEOUT }, async () => {
+        const modelEntered = Promise.withResolvers();
+        const modelRelease = Promise.withResolvers();
+        const sendIssued = Promise.withResolvers();
+        const sendResponse = Promise.withResolvers();
+        const responseContinuation = Promise.withResolvers();
+        let generationClosed = false;
+        const oldGenerationRequests = [];
+        await withSteeringCli(async (_body, position, record) => {
+            if (position.firstUserText.includes("original prompt")) {
+                if (generationClosed) {
+                    oldGenerationRequests.push(record);
+                    throw new Error("fixture: model work started after target-generation quiescence");
+                }
+                modelEntered.resolve(record);
+                await modelRelease.promise;
+                return { content: "held main response" };
+            }
+            return { content: "second session still works" };
+        }, async (h) => {
+            let product;
+            let managed;
+            let manager;
+            try {
+                const registry = new ModelProviderRegistry({ providers: [{
+                    id: "steering-fixture", type: "openai", baseUrl: h.model.baseUrl, apiKey: "synthetic-key",
+                    models: ["fixture-model"],
+                }] });
+                manager = new SessionManager(undefined, null, { modelProviders: registry }, join(h.home, "session-state"));
+                manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+                const sessionId = randomUUID();
+                managed = await manager.getOrCreate(sessionId, { model: "steering-fixture:fixture-model" }, { turnIndex: 0 });
+                const other = await manager.getOrCreate(randomUUID(), { model: "steering-fixture:fixture-model" }, { turnIndex: 0 });
+                const sdk = managed.copilotSession;
+                assertEqual(manager.clients.size, 1, "both sessions use the same actual client pool");
+                const actualSend = sdk.send.bind(sdk);
+                sdk.send = async (input) => {
+                    const id = await actualSend(input);
+                    if (input.mode === "immediate") {
+                        sendIssued.resolve(id);
+                        await sendResponse.promise;
+                        responseContinuation.resolve(id);
+                    }
+                    return id;
+                };
+                const lateEvents = [];
+                sdk.on((event) => lateEvents.push(event));
+                product = makeSteeringTurnHarness({ sdkSession: sdk });
+                const disconnect = vi.fn(() => manager.quiesceForSteering(sessionId));
+                const turn = managed.runTurn("original prompt", {
+                    turnIndex: 1, steering: product.channel, steeringQuiesce: disconnect,
+                });
+                const request = await within(modelEntered.promise, "active product model request");
+                await within(sendIssued.promise, "actual already-issued immediate RPC");
+                assertEqual(request.connectionClosed, false);
+                managed.requestStop("Stop delayed-send fixture");
+                managed.abort();
+                const result = await within(turn, "bounded product Stop/quiescence", 30_000);
+                assertEqual(result.type, "stopped");
+                assertEqual(managed.getActiveTurn(), null);
+                assertEqual(manager.get(sessionId), null, "actual manager forgot the quiesced target session");
+                assertEqual(disconnect.mock.calls.length, 1, "unresolved issued work is quiesced per session");
+                assertEqual(request.connectionClosed, true, "actual main model work has ceased before ownership returns");
+                const requestsAtReturn = h.model.sessionRequests().length;
+                const eventsAtReturn = lateEvents.length;
+                const renewalsAtReturn = product.channel.renew.mock.calls.length;
+                const handoffsAtReturn = product.channel.markSubmitting.mock.calls.length;
+                generationClosed = true;
+                sendResponse.resolve();
+                modelRelease.resolve();
+                await within(responseContinuation.promise, "registered response continuation after quiescence");
+                const answer = await other.runTurn("unrelated second session prompt", { turnIndex: 1 });
+                assertEqual(answer.content, "second session still works");
+                assertEqual(h.model.sessionRequests().length, requestsAtReturn + 1, "late send response starts no orphan model work");
+                assert(!lateEvents.slice(eventsAtReturn).some((event) => event.type === "assistant.message"
+                    || event.type === "assistant.turn_start" || event.type === "tool.execution_start"),
+                "late events after ownership release do not continue model/tool work");
+                assertEqual(oldGenerationRequests.length, 0, "endpoint tripwire saw no old-generation successor request");
+                assertEqual(product.channel.renew.mock.calls.length, renewalsAtReturn, "disposed pump never rearms its lease");
+                assertEqual(product.channel.markSubmitting.mock.calls.length, handoffsAtReturn, "late continuation cannot authorize another handoff");
+                assertEqual(product.copilot.send === sdk.send, true);
+            } finally {
+                sendResponse.resolve();
+                modelRelease.resolve();
+                managed?.requestStop("fixture cleanup");
+                managed?.abort();
+                await manager?.shutdown();
             }
         });
     });
