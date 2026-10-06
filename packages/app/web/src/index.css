@@ -3402,6 +3402,10 @@ body.is-resizing-pane-y iframe {
   min-height: 44px;
 }
 
+.ps-steer-glyph {
+  display: none;
+}
+
 .ps-steering-receipt {
   margin: 8px 0;
   padding: 10px;
@@ -3479,6 +3483,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-input {
+  min-height: 44px;
   font-size: 16px;
   line-height: 1.25;
   /* Cap against the VISUAL viewport — the keyboard already took half the
@@ -9781,21 +9786,25 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
 
-/* A narrow chat pane needs the full text width, including in MoA. Keep the
-   action order while moving that whole row below the draft. */
+/* Keep input, label and controls on one row without increasing the keyboard
+   composer height. The narrow Steer icon retains its accessible name and tip. */
 @container prompt-composer (max-width: 480px) {
   .ps-chat-composer .ps-prompt-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .ps-prompt-shell > .ps-prompt-label,
-  .ps-prompt-shell > .ps-prompt-input,
-  .ps-prompt-shell > .ps-prompt-actions {
-    grid-column: 1 / -1;
+    gap: 2px;
   }
   .ps-prompt-shell > .ps-prompt-actions {
-    min-width: 0;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    gap: 2px;
+  }
+  .ps-prompt-shell .ps-steer-button {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .ps-steer-label {
+    display: none;
+  }
+  .ps-steer-glyph {
+    display: block;
   }
 }
 

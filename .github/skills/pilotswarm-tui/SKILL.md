@@ -79,9 +79,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   as a new message, `c` copies to an empty draft, and `a` appends. Escape closes.
   The portal uses the same shared controller methods through receipt-row buttons.
 - Portal composer buttons keep a minimum 44px touch target even inside panels.
-  A composer container at most 480px wide places actions below the full-width
-  textarea, preserving Attach/Stop/Steer/Send order and wrapping only the action
-  row when needed. This CSS layout does not change the native TUI action row.
+  Keep mobile composers on one row with the label centered beside the textarea.
+  At most 480px wide, use a 44px Steer icon with its accessible name and tooltip,
+  and tighter gaps, preserving Attach/Stop/Steer/Send order. Do not increase the
+  keyboard composer height or change the native TUI action row.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
