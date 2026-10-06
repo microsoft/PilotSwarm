@@ -43,13 +43,15 @@ export function createCmsSteeringChannel(
     sessionId: string,
     target: SteeringTarget,
     ownerToken: string,
-    opts: { leaseMs?: number; wake?: SteeringWakeSource | null } = {},
+    opts: { leaseMs?: number; wake?: SteeringWakeSource | null; recoverySource?: "restored" | "local" } = {},
 ): SteeringChannel {
     const leaseMs = opts.leaseMs ?? STEERING_LEASE_MS;
     return {
         sessionId,
         target,
         ownerToken,
+        // Fail closed: without an explicit restore, local state is never an inclusion oracle.
+        recoverySource: opts.recoverySource ?? "local",
         openWindow: () => catalog.steerWindowOpen(sessionId, target, ownerToken, leaseMs),
         recordRecoveryCheck: async (requestId, result, sdkMessageId) => {
             await catalog.steerRecordRecoveryCheck(requestId, ownerToken, result, sdkMessageId ?? null);
@@ -91,6 +93,7 @@ export interface SteeringTurnInput {
 /** Per-activity steering state. Null when the turn is not steerable. */
 export class SteeringTurn {
     private owners: string[] = [];
+    private restoredBase = false;
     private constructor(
         private readonly catalog: SteeringCatalog,
         readonly sessionId: string,
@@ -118,11 +121,20 @@ export class SteeringTurn {
         );
     }
 
+    /**
+     * The lifecycle preamble restored (or validated) the local session against
+     * the stored base for this activity. Only the FIRST runTurn call after it
+     * reads a restored conversation; any later call in the same activity
+     * resumes local state the activity itself changed (FR-13).
+     */
+    markRestoredBase(): void { this.restoredBase = true; }
+
     /** A fresh channel and owner token for one ManagedSession.runTurn() call. */
     newChannel(): SteeringChannel {
         const owner = randomUUID();
+        const recoverySource = this.restoredBase && this.owners.length === 0 ? "restored" : "local";
         this.owners.push(owner);
-        return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner, { wake: this.wake });
+        return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner, { wake: this.wake, recoverySource });
     }
 
     /** The owner token that finalizes: the last channel's, or a fresh one for adoption. */
@@ -179,23 +191,57 @@ export class SteeringTurn {
     }
 }
 
-/** Stop fast path (§7.5): target-scoped by turn index, bounded retry, never throws. */
+/** Bounds for the Stop fast path: per database call and for the whole path (§7.5, §9.1 rule 4). */
+export const STOP_CLOSE_CALL_TIMEOUT_MS = 2_000;
+export const STOP_CLOSE_BUDGET_MS = 5_000;
+
+const STOP_TIMEOUT = Symbol("stop-close-timeout");
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof STOP_TIMEOUT> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+        p,
+        new Promise<typeof STOP_TIMEOUT>((resolve) => {
+            timer = setTimeout(() => resolve(STOP_TIMEOUT), ms);
+            (timer as any).unref?.();
+        }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+/**
+ * Stop fast path (§7.5): target-scoped by turn index. Every database call is
+ * bounded and the whole path has one budget, so a held procedure cannot delay
+ * the Stop activity; on expiry it returns false (counted by the caller) and the
+ * durable session.turn_stopped close remains the authority. A late write that
+ * commits after the budget is still scoped to that turn index. Never throws.
+ */
 export async function closeStoppedSteering(
     catalog: Pick<SessionCatalog, "supportsSteering" | "steerCloseStopped"> | null | undefined,
     sessionId: string,
     turnIndex: number | null | undefined,
     trace: (m: string) => void = () => {},
+    bounds: { callTimeoutMs?: number; budgetMs?: number } = {},
 ): Promise<boolean> {
     if (!catalog || turnIndex == null) return true;
-    if (!(await catalog.supportsSteering().catch(() => false))) return true;
-    for (const delay of [0, 200, 800]) {
-        if (delay) await new Promise((r) => setTimeout(r, delay));
-        try {
-            await catalog.steerCloseStopped(sessionId, turnIndex);
-            return true;
-        } catch (err: any) {
-            trace(`[steering] Stop close failed: ${err?.message ?? String(err)}`);
+    const callMs = bounds.callTimeoutMs ?? STOP_CLOSE_CALL_TIMEOUT_MS;
+    const deadline = Date.now() + (bounds.budgetMs ?? STOP_CLOSE_BUDGET_MS);
+    const remaining = () => Math.max(0, Math.min(callMs, deadline - Date.now()));
+    try {
+        const supported = await withTimeout(catalog.supportsSteering().catch(() => false), remaining());
+        if (supported === STOP_TIMEOUT) { trace("[steering] Stop close: support check timed out"); return false; }
+        if (!supported) return true;
+        for (const delay of [0, 200, 800]) {
+            if (delay) await new Promise((r) => setTimeout(r, Math.min(delay, Math.max(0, deadline - Date.now()))));
+            if (remaining() <= 0) break;
+            const r = await withTimeout(catalog.steerCloseStopped(sessionId, turnIndex).then(() => true, (err: any) => {
+                trace(`[steering] Stop close failed: ${err?.message ?? String(err)}`);
+                return false;
+            }), remaining());
+            if (r === true) return true;
+            if (r === STOP_TIMEOUT) trace("[steering] Stop close timed out");
         }
+    } catch (err: any) {
+        trace(`[steering] Stop close failed: ${err?.message ?? String(err)}`);
     }
     return false;
 }

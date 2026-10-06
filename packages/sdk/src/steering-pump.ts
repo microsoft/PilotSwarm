@@ -146,6 +146,8 @@ interface Attempt {
     attemptId: string;
     sdkMessageId?: string;
     event?: any;
+    /** Correlated by id but with no recognized delivery kind: evidence-only, so unconfirmed. */
+    uncertain?: boolean;
 }
 
 const DELIVERY_KINDS = new Set<SteeringDeliveryKind>(["steering", "queued", "idle"]);
@@ -170,6 +172,8 @@ export class SteeringPump {
     private loop?: Promise<void>;
     private leaseTimer?: ReturnType<typeof setInterval>;
     private windowOpened = false;
+    /** Steers found in resumed LOCAL state on recovery: in this attempt's conversation, so in its manifest. */
+    private readonly recoveredLocal: Array<{ requestId: string; sdkMessageId: string; kind: SteeringDeliveryKind | null }> = [];
     private needsQuiesce = false;
     private quiesced = false;
     private released = false;
@@ -246,8 +250,20 @@ export class SteeringPump {
                 continue;
             }
             const ids = new Set(row.sdkMessageIds.length > 0 ? row.sdkMessageIds : [row.sdkMessageId!]);
-            const hit = history.find((h) => h?.type === "user.message" && ids.has(h?.data?.messageId));
-            await this.ch.recordRecoveryCheck(row.requestId, hit ? "present" : "absent", hit?.data?.messageId);
+            const hit = history.find((h) => h?.type === "user.message" && ids.has(h?.data?.messageId) && !isNativeChildEvent(h));
+            if (!hit) { await this.ch.recordRecoveryCheck(row.requestId, "absent"); continue; }
+            if (this.ch.recoverySource === "restored") {
+                await this.ch.recordRecoveryCheck(row.requestId, "present", hit.data.messageId);   // stored base: included
+                continue;
+            }
+            // Local state this activity resumed: delivered, not resent; inclusion follows this commit.
+            await this.ch.recordRecoveryCheck(row.requestId, "present_local", hit.data.messageId);
+            const raw = hit?.data?.delivery;
+            this.recoveredLocal.push({
+                requestId: row.requestId,
+                sdkMessageId: hit.data.messageId,
+                kind: DELIVERY_KINDS.has(raw) ? raw : null,
+            });
         }
     }
 
@@ -263,7 +279,7 @@ export class SteeringPump {
 
     private unconfirmedCount(): number {
         let n = 0;
-        for (const a of this.attempts.values()) if (!a.event) n++;
+        for (const a of this.attempts.values()) if (!a.event) n++;   // uncertain attempts still count
         return n;
     }
 
@@ -382,10 +398,20 @@ export class SteeringPump {
     private recordDelivery(a: Attempt, e: any): void {
         if (!a.sdkMessageId || this.seen.has(a.sdkMessageId)) return; // INV-P5
         this.seen.add(a.sdkMessageId);
-        a.event = e;
         const raw = e?.data?.delivery;
-        const kind: SteeringDeliveryKind = DELIVERY_KINDS.has(raw) ? raw : "steering";
-        if (!DELIVERY_KINDS.has(raw)) this.trace(`[steering] user.message without a known delivery kind (${String(raw)}); recorded as steering`);
+        if (!DELIVERY_KINDS.has(raw)) {
+            // Labels are evidence-only (D-17): never guess the timing. The steer may have
+            // started its own run (an unrecognized `idle`), so ownership ends with quiescence.
+            this.trace(`[steering] user.message without a recognized delivery kind (${String(raw)}); recorded as unconfirmed`);
+            a.uncertain = true;
+            this.needsQuiesce = true;
+            const attemptId = a.attemptId;
+            this.writes.push("unconfirmed", () => this.ch.markUnconfirmed(attemptId));
+            this.notify();
+            return;
+        }
+        a.event = e;
+        const kind = raw as SteeringDeliveryKind;
         if (kind === "idle") this.runsStartedBySteer++;               // a late send started a new run (S-4 C4c)
         this.stats.delivered++;
         const id = a.sdkMessageId;
@@ -394,7 +420,7 @@ export class SteeringPump {
     }
 
     private unresolved(): Attempt[] {
-        return [...this.attempts.values()].filter((a) => !a.event);
+        return [...this.attempts.values()].filter((a) => !a.event && !a.uncertain);
     }
 
     /**
@@ -407,7 +433,9 @@ export class SteeringPump {
         this.gate.close();
         this.wake();
         const settled = (): boolean => this.unresolved().length === 0 && this.idleCount >= 1 + this.runsStartedBySteer;
-        if (settled()) return;
+        // An unconfirmed hand-off (send timeout, unclassified delivery) may still run: ownership
+        // ends only with positively confirmed quiescence, never by returning early (INV-P6).
+        if (settled() && !this.needsQuiesce) return;
         let stop = false;
         const done = (async () => {
             while (!stop && !settled()) await this.nextChange();
@@ -421,7 +449,7 @@ export class SteeringPump {
         ]);
         stop = true;
         this.notify();
-        if (outcome !== "settled") {
+        if (outcome !== "settled" || this.needsQuiesce) {
             this.trace(`[steering] settle ${outcome}: ${this.unresolved().length} send(s) without evidence; quiescing the session`);
             await this.quiesceSession();                              // INV-P6
         }
@@ -464,7 +492,7 @@ export class SteeringPump {
                 const read = await bounded(this.findInHistory(a.sdkMessageId), this.o.ioTimeoutMs);
                 hit = read === TIMEOUT || read == null ? null : read;   // INV-P12
             }
-            if (hit) this.recordDelivery(a, hit);
+            if (hit) this.recordDelivery(a, hit);                     // an unrecognized kind stays uncertain
             else this.writes.push("unconfirmed", () => this.ch.markUnconfirmed(a.attemptId));   // INV-P8
             // Without positive evidence, or found only as an `idle` delivery, the send may
             // still start or continue a run: ownership ends only with quiescence.
@@ -486,17 +514,18 @@ export class SteeringPump {
             }
         }
         if (o.stopping || !this.windowOpened) return undefined;
-        const delivered = [...this.attempts.values()]
+        const delivered: SteeringManifest["delivered"] = [...this.attempts.values()]
             .filter((a) => a.event && a.sdkMessageId)
-            .map((a) => {
-                const raw = a.event?.data?.delivery;
-                return {
-                    requestId: a.row.requestId,
-                    attemptId: a.attemptId,
-                    sdkMessageId: a.sdkMessageId!,
-                    kind: (DELIVERY_KINDS.has(raw) ? raw : "steering") as SteeringDeliveryKind,
-                };
-            });
+            .map((a) => ({
+                requestId: a.row.requestId,
+                attemptId: a.attemptId,
+                sdkMessageId: a.sdkMessageId!,
+                kind: a.event.data.delivery as SteeringDeliveryKind,
+            }));
+        const handedOff = new Set(delivered.map((d) => d.requestId));
+        for (const r of this.recoveredLocal) {
+            if (!handedOff.has(r.requestId)) delivered.push({ ...r, attemptId: null, recovered: true });
+        }
         return { delivered };
     }
 

@@ -1684,6 +1684,9 @@ export function registerActivities(
                 };
             }
             lifecycleBaseVersion = pre.baseVersion;
+            // Session steering: the live conversation of THIS activity's first runTurn
+            // call is restored from / validated against the stored base (FR-13 oracle).
+            steeringTurn?.markRestoredBase();
             lifecycleRehydrated = pre.kind === "hydrated";
             lifecyclePreambleFresh = pre.kind === "fresh";
             if (lifecycleRehydrated) {

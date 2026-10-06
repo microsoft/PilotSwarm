@@ -72,6 +72,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "read_session_metric_summary",
     "read_session_retrieval_usage",
     "read_session_skill_usage",
+    "read_session_steering",
     "read_session_tokens_by_model",
     "read_session_tree_facts_stats",
     "read_session_tree_retrieval_usage",

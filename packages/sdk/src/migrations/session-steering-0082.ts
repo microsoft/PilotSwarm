@@ -662,7 +662,7 @@ BEGIN
         END IF;
         UPDATE ${s}.session_steering_requests SET
             status = 'delivered', recovery_check = 'present', included = 'included',
-            disposition = CASE WHEN disposition = 'accepted' THEN 'delivered_current_turn' ELSE disposition END,
+            disposition = CASE WHEN disposition IN ('accepted', 'delivery_unconfirmed') THEN 'delivered_current_turn' ELSE disposition END,
             revision = revision + 1
          WHERE request_id = p_request_id;
     ELSE
@@ -774,7 +774,7 @@ BEGIN
     v_current := r.owner_token = a.owner_token AND r.status IN ('claimed', 'submitting', 'submitted', 'delivered');
     IF r.status = 'closed' THEN
         v_disp := ${s}.cms_steer_closed_disposition(r.request_id, r.closure_reason, r.disposition);
-    ELSIF r.disposition = 'accepted' THEN
+    ELSIF r.disposition IN ('accepted', 'delivery_unconfirmed') THEN
         v_disp := CASE WHEN p_kind = 'steering' THEN 'delivered_current_turn' ELSE 'delivered_after_response' END;
     ELSE
         v_disp := r.disposition;
@@ -805,10 +805,13 @@ BEGIN
     SELECT * INTO r FROM ${s}.session_steering_requests WHERE request_id = a.request_id FOR UPDATE;
     UPDATE ${s}.session_steering_attempts SET outcome = 'unconfirmed'
      WHERE attempt_id = p_attempt_id AND (outcome IS NULL OR outcome = 'acknowledged') AND delivered_at IS NULL;
+    -- Live uncertainty is shown at once ("Delivery uncertain"), not only at closure; a row with
+    -- positive delivery keeps its delivered label. Eligibility and attempt history are unchanged.
     UPDATE ${s}.session_steering_requests SET
-        disposition = CASE WHEN status = 'closed'
-                           THEN ${s}.cms_steer_closed_disposition(request_id, closure_reason, disposition)
-                           ELSE disposition END,
+        disposition = CASE
+            WHEN status = 'closed' THEN ${s}.cms_steer_closed_disposition(request_id, closure_reason, disposition)
+            WHEN disposition = 'accepted' THEN 'delivery_unconfirmed'
+            ELSE disposition END,
         revision = revision + 1
      WHERE request_id = a.request_id;
     PERFORM ${s}.cms_steer_record_event(a.session_id, 'session.steering_updated', a.request_id);

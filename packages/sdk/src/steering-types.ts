@@ -132,6 +132,8 @@ export interface SteeringReceiptV1 {
     submission: SteeringSubmissionEvidence;
     /** The row's window lost its owner (stale lease or orphaned row); recovery may follow. */
     recovering: boolean;
+    /** Same-target recovery check (migration 0083): pending | present | absent | failed, or null. */
+    recoveryCheck: "pending" | "present" | "absent" | "failed" | null;
     eligibility: { state: SteeringEligibilityState; reason: string | null };
     inclusion: { state: SteeringInclusionState; snapshotVersion: number | null };
     recoveryFlags: SteeringRecoveryFlag[];
@@ -319,7 +321,11 @@ export interface SteerWindowOpenResult {
     recovered: SteerRecoveredRow[];
 }
 
-export type SteerRecoveryCheckResult = "present" | "absent" | "failed";
+/**
+ * `present`: the id is in the conversation restored from the stored base (inclusion oracle).
+ * `present_local`: the id is in local state this activity resumed (delivered; inclusion decided by finalize).
+ */
+export type SteerRecoveryCheckResult = "present" | "present_local" | "absent" | "failed";
 
 export type SteerFinalizeOutcome = "published" | "adopted" | "unpublished" | "stopped" | "unknown";
 
@@ -340,9 +346,13 @@ export interface SteerMarkDeliveredResult {
 /** One delivered steer in a turn result manifest (§6a.8). */
 export interface SteeringManifestEntry {
     requestId: string;
-    attemptId: string;
+    /** Null for a steer found in local state on same-activity recovery. */
+    attemptId: string | null;
     sdkMessageId: string;
-    kind: SteeringDeliveryKind;
+    /** Null when the recovered history event carried no recognized kind. */
+    kind: SteeringDeliveryKind | null;
+    /** Present in the resumed local conversation (not handed off by this pump). */
+    recovered?: true;
 }
 
 export interface SteeringManifest {
@@ -363,6 +373,12 @@ export interface SteeringChannel {
     readonly sessionId: string;
     readonly target: SteeringTarget;
     readonly ownerToken: string;
+    /**
+     * Where this turn's live conversation came from. Only `restored` (the lifecycle
+     * preamble restored or validated it against the stored base) makes the recovery
+     * check an inclusion oracle (FR-13); `local` is resumed activity-local state.
+     */
+    readonly recoverySource: "restored" | "local";
     openWindow(): Promise<SteerWindowOpenResult>;
     recordRecoveryCheck(requestId: string, result: SteerRecoveryCheckResult, sdkMessageId?: string): Promise<void>;
     renew(): Promise<boolean>;
@@ -395,3 +411,16 @@ export interface SteeringUserMessageData {
     attemptId: string;
     deliveryKind: SteeringDeliveryKind;
 }
+
+/** "Send as new message" linkage (§3.5, migration 0084). */
+export interface SteeringResendLinkage {
+    sessionId: string;
+    requestId: string;
+    clientMessageId: string;
+    actor: { provider: string; subject: string };
+    createdAt: string;
+}
+
+export type SteerResendIntentResult =
+    | { outcome: "recorded"; duplicate: boolean; linkage: SteeringResendLinkage }
+    | { outcome: "conflict" | "not_found" | "not_resendable" | "invalid" };
