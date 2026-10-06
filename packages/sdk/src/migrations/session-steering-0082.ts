@@ -314,6 +314,19 @@ BEGIN
     RETURN jsonb_build_object('outcome', 'idempotency_conflict');
 END $$;
 
+-- Retry probe for the management client (§6b.1, §8.6): an already-accepted matching retry
+-- returns its receipt BEFORE any new-admission gate (flag, terminal state, window). NULL when the
+-- key is new. Same comparison and counters as acceptance; a mismatch reveals nothing.
+CREATE OR REPLACE FUNCTION ${s}.cms_steer_match_existing(
+    p_session_id TEXT, p_idem TEXT, p_actor JSONB, p_hash TEXT, p_epoch INT, p_turn INT, p_incarnation TEXT)
+RETURNS JSONB LANGUAGE plpgsql AS $$
+DECLARE r ${s}.session_steering_requests;
+BEGIN
+    SELECT * INTO r FROM ${s}.session_steering_requests WHERE session_id = p_session_id AND idempotency_key = p_idem;
+    IF NOT FOUND THEN RETURN NULL; END IF;
+    RETURN ${s}.cms_steer_match_or_conflict(r, p_actor, p_hash, p_epoch, p_turn, p_incarnation);
+END $$;
+
 -- Shared terminal closure of one target (§7.3). Caller holds the session lock.
 CREATE OR REPLACE FUNCTION ${s}.cms_steer_close_target(
     p_session_id TEXT, p_epoch INT, p_turn INT, p_incarnation TEXT, p_reason TEXT, p_window_reason TEXT DEFAULT NULL)
@@ -649,7 +662,7 @@ BEGIN
         END IF;
         UPDATE ${s}.session_steering_requests SET
             status = 'delivered', recovery_check = 'present', included = 'included',
-            disposition = CASE WHEN disposition = 'accepted' THEN 'delivered_current_turn' ELSE disposition END,
+            disposition = CASE WHEN disposition IN ('accepted', 'delivery_unconfirmed') THEN 'delivered_current_turn' ELSE disposition END,
             revision = revision + 1
          WHERE request_id = p_request_id;
     ELSE
@@ -761,7 +774,7 @@ BEGIN
     v_current := r.owner_token = a.owner_token AND r.status IN ('claimed', 'submitting', 'submitted', 'delivered');
     IF r.status = 'closed' THEN
         v_disp := ${s}.cms_steer_closed_disposition(r.request_id, r.closure_reason, r.disposition);
-    ELSIF r.disposition = 'accepted' THEN
+    ELSIF r.disposition IN ('accepted', 'delivery_unconfirmed') THEN
         v_disp := CASE WHEN p_kind = 'steering' THEN 'delivered_current_turn' ELSE 'delivered_after_response' END;
     ELSE
         v_disp := r.disposition;
@@ -792,10 +805,13 @@ BEGIN
     SELECT * INTO r FROM ${s}.session_steering_requests WHERE request_id = a.request_id FOR UPDATE;
     UPDATE ${s}.session_steering_attempts SET outcome = 'unconfirmed'
      WHERE attempt_id = p_attempt_id AND (outcome IS NULL OR outcome = 'acknowledged') AND delivered_at IS NULL;
+    -- Live uncertainty is shown at once ("Delivery uncertain"), not only at closure; a row with
+    -- positive delivery keeps its delivered label. Eligibility and attempt history are unchanged.
     UPDATE ${s}.session_steering_requests SET
-        disposition = CASE WHEN status = 'closed'
-                           THEN ${s}.cms_steer_closed_disposition(request_id, closure_reason, disposition)
-                           ELSE disposition END,
+        disposition = CASE
+            WHEN status = 'closed' THEN ${s}.cms_steer_closed_disposition(request_id, closure_reason, disposition)
+            WHEN disposition = 'accepted' THEN 'delivery_unconfirmed'
+            ELSE disposition END,
         revision = revision + 1
      WHERE request_id = a.request_id;
     PERFORM ${s}.cms_steer_record_event(a.session_id, 'session.steering_updated', a.request_id);
@@ -960,17 +976,22 @@ BEGIN
 END $$;
 
 -- Current window and admission facts for getSessionSteeringState. Stale leases read as recovering.
+-- windowSeq: session_events.seq of the latest session.steering_window_changed (0 when none), so a
+-- client can order this read against live window events (a newer event wins; an older one is ignored).
 CREATE OR REPLACE FUNCTION ${s}.cms_steer_state(p_session_id TEXT)
 RETURNS JSONB LANGUAGE plpgsql STABLE AS $$
-DECLARE w RECORD; has_window BOOLEAN; v_fresh BOOLEAN; v_unresolved INT;
+DECLARE w RECORD; has_window BOOLEAN; v_fresh BOOLEAN; v_unresolved INT; v_seq BIGINT;
 BEGIN
+    SELECT COALESCE(max(seq), 0) INTO v_seq FROM ${s}.session_events
+     WHERE session_id = p_session_id AND event_type = 'session.steering_window_changed';
     SELECT count(*) INTO v_unresolved FROM ${s}.session_steering_requests
      WHERE session_id = p_session_id AND status NOT IN ('closed', 'withdrawn');
     SELECT * INTO w FROM ${s}.session_steering_windows WHERE session_id = p_session_id AND state <> 'closed';
     has_window := FOUND;
     IF NOT has_window THEN
         RETURN jsonb_build_object('steerable', false, 'reason', 'no_active_turn', 'recovering', false,
-                                  'expectedTarget', NULL, 'window', NULL, 'unresolved', v_unresolved);
+                                  'expectedTarget', NULL, 'window', NULL, 'unresolved', v_unresolved,
+                                  'windowSeq', v_seq);
     END IF;
     v_fresh := w.lease_expires_at IS NOT NULL AND w.lease_expires_at > now();
     RETURN jsonb_build_object(
@@ -984,7 +1005,8 @@ BEGIN
             'state', w.state, 'transcriptEpoch', w.transcript_epoch, 'turnIndex', w.turn_index,
             'leaseFresh', v_fresh, 'openedAt', ${s}.cms_steer_iso(w.opened_at),
             'leaseExpiresAt', ${s}.cms_steer_iso(w.lease_expires_at)),
-        'unresolved', v_unresolved);
+        'unresolved', v_unresolved,
+        'windowSeq', v_seq);
 END $$;
 
 -- Aggregates for §11 (no content, no identities). p_since bounds request/attempt rows.

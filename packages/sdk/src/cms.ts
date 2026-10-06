@@ -1447,6 +1447,11 @@ export interface SessionCatalog {
     supportsSteering(): Promise<boolean>;
     /** cms_steer_accept: one transaction; a matching retry returns its receipt. */
     steerAccept(input: SteerAcceptInput): Promise<SteerAcceptResult>;
+    /**
+     * cms_steer_match_existing: retry probe run BEFORE new-admission gates. Null when the
+     * key is new; otherwise the duplicate receipt or `idempotency_conflict`, exactly as accept.
+     */
+    steerMatchExisting(input: Omit<SteerAcceptInput, "requestId" | "content" | "limits">): Promise<SteerAcceptResult | null>;
     /** cms_steer_withdraw: author or manager; only before claim. */
     steerWithdraw(sessionId: string, requestId: string, actor: Pick<SteeringActor, "provider" | "subject"> | null, isManager: boolean): Promise<SteerWithdrawRecord>;
     /** cms_steer_get: the receipt record, or null when the id is not in this session. */
@@ -3896,6 +3901,15 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.content, input.contentHash, input.epoch, input.turnIndex, input.incarnation,
                 JSON.stringify(input.limits ?? {})],
         );
+    }
+
+    async steerMatchExisting(input: Omit<SteerAcceptInput, "requestId" | "content" | "limits">): Promise<SteerAcceptResult | null> {
+        const v = await this.steerScalar<SteerAcceptResult | null>(
+            `SELECT ${this.steerFn("cms_steer_match_existing")}($1,$2,$3::jsonb,$4,$5,$6,$7) AS v`,
+            [input.sessionId, input.idempotencyKey, JSON.stringify(input.actor), input.contentHash,
+                input.epoch, input.turnIndex, input.incarnation],
+        );
+        return v ?? null;
     }
 
     async steerWithdraw(sessionId: string, requestId: string, actor: Pick<SteeringActor, "provider" | "subject"> | null, isManager: boolean): Promise<SteerWithdrawRecord> {

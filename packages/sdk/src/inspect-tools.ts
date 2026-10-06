@@ -795,6 +795,67 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
+    // Session steering (§11.3): summary plus bounded request/attempt diagnostics.
+    // Same CMS reads as getSessionSteeringStats / listSteeringRequests; message
+    // text is never returned here (read it through the authorized receipt APIs).
+    const readSessionSteeringTool = defineTool("read_session_steering", {
+        description:
+            "Read session steering diagnostics: window state, counts by disposition and inclusion, deliveries " +
+            "and redeliveries, uncertainty, latency distributions (hand-off, safe point), refusal counters, and " +
+            "optionally the most recent requests with their attempt evidence (no message text).",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                since: { type: "string", description: "ISO timestamp lower bound for request/attempt aggregates." },
+                include_requests: { type: "boolean", description: "Also return the latest requests (default false)." },
+                limit: { type: "number", description: "Requests to return when include_requests (default 20, max 100)." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; since?: string; include_requests?: boolean; limit?: number }) => {
+            const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_steering", id);   // RULE 2
+            if (denied) return denied;
+            const steering = catalog as Partial<Pick<SessionCatalog, "supportsSteering" | "steerState" | "steerStats" | "steerList">>;
+            try {
+                if (typeof steering.supportsSteering !== "function" || !(await steering.supportsSteering())) {
+                    return { sessionId: id, supported: false, reason: "schema_missing" };
+                }
+                const since = args.since ? new Date(args.since) : null;
+                if (since && Number.isNaN(since.getTime())) return { error: "read_session_steering: since is not a valid timestamp" };
+                const [state, stats] = await Promise.all([
+                    steering.steerState!(id),
+                    steering.steerStats!(id, { since }),
+                ]);
+                const out: Record<string, unknown> = { sessionId: id, supported: true, state, stats };
+                if (args.include_requests) {
+                    const limit = Math.min(Math.max(1, Number(args.limit) || 20), 100);
+                    // The latest `limit` requests in server order, reading at most 5 pages of 200.
+                    let tail: any[] = [];
+                    let afterSeq: number | null = null;
+                    let seen = 0;
+                    let complete = false;
+                    for (let pageNo = 0; pageNo < 5; pageNo++) {
+                        const page = await steering.steerList!(id, { afterSeq, limit: 200 });
+                        seen += page.items.length;
+                        tail = [...tail, ...page.items].slice(-limit);
+                        if (page.nextAfterSeq == null) { complete = true; break; }
+                        afterSeq = page.nextAfterSeq;
+                    }
+                    const items = tail.map((r) => {
+                        const { text: _omit, ...rest } = r as typeof r & { text?: string };
+                        return rest;
+                    });
+                    out.requests = { items, scanned: seen, truncated: !complete || seen > limit };
+                }
+                return out;
+            } catch (err: any) {
+                return { error: `read_session_steering: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const readSessionTokensByModelTool = defineTool("read_session_tokens_by_model", {
         description:
             "Read per-session token totals grouped by provider:model:reasoning effort, with turn counts. " +
@@ -1406,6 +1467,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         contextHealthTool,
         ...systemReadTools,
         readSessionMetricSummaryTool,
+        readSessionSteeringTool,
         readSessionTokensByModelTool,
         readSessionGraphSearchesTool,
         readSessionTreeStatsTool,
