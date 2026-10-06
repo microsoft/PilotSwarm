@@ -52,6 +52,8 @@ export async function withSteeringApi(h, fn) {
         withdrawSteeringRequest: (...args) => direct.withdrawSteeringRequest(...args),
         getSessionSteeringStats: (...args) => direct.getSessionSteeringStats(...args),
         sendMessage: (...args) => direct.sendMessage(...args),
+        getSessionEvents: (...args) => direct.getSessionEvents(...args),
+        getSessionEventsBefore: (...args) => direct.getSessionEventsBefore(...args),
     };
     const app = express();
     app.use(express.json());
