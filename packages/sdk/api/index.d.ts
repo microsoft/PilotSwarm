@@ -19,6 +19,8 @@ export interface Operation {
     path: string;
     params?: Record<string, OperationParamSpec>;
     summary: string;
+    access?: string;
+    alwaysEnforce?: boolean;
 }
 
 export declare const OPERATIONS: Operation[];
@@ -40,7 +42,9 @@ export declare class ApiError extends Error {
     etag?: string | null;
     /** Workspace files: a too-large file's size in bytes. */
     size?: number;
-    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number });
+    reason?: string;
+    retryAfterMs?: number;
+    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number; reason?: string; retryAfterMs?: number });
 }
 
 export interface NonManagementOperationOwner {

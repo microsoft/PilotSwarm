@@ -106,6 +106,10 @@ These keys work whenever focus is not in the prompt editor.
 | `Option+Enter` / `Alt+Enter` | Insert a newline |
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
+| `Tab` | Accept reference autocomplete; otherwise focus the Send/Steer/Stop action row when steering is available |
+| Action row: `Left` / `Right`, `Enter` | Select and activate a distinct Send, Steer, or Stop action |
+| Action row: `Shift+Tab` / `Esc` | Return to the prompt without submitting |
+| Action row: `Tab` | Continue normal next-pane traversal |
 | `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
 | `←` / `→` | Move cursor by character |
 | `↑` / `↓` | Move cursor vertically across prompt lines, then enter/leave queued pending-prompt editing at the top/bottom boundary |
@@ -115,6 +119,14 @@ These keys work whenever focus is not in the prompt editor.
 
 Notes:
 
+- Steering is explicit and text-only. Enter still sends or queues ordinary
+  input; it never silently changes to steering. The portal also offers
+  `Ctrl+S` only while its textarea has focus. The native terminal uses its
+  focusable action row; the terminal `Ctrl+S` chord is not enabled until its
+  raw-mode host compatibility gate is satisfied.
+- Guidance receipts distinguish acceptance, waiting for a safe point,
+  delivery, retention, Stop, and uncertainty. Delivery does not mean compliance.
+  A missed steer does not automatically run next turn.
 - The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
 - Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.
 - Every send first lands in a per-session local outbox, then transitions through three durability states shown next to each user message in chat:

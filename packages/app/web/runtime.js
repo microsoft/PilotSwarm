@@ -372,8 +372,12 @@ export class PortalRuntime {
         // flip to enforce (adversarial review HIGH-2).
         // session:files (the Workspace pane) is new as well: the session's
         // owner only, whatever the ownership switch says.
-        const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files";
+        const alwaysEnforce = getMethodAccess(method)?.alwaysEnforce === true;
+        const effectiveEnforce = this.authz.enforce || alwaysEnforce || accessClass === "session:share" || accessClass === "session:files";
         const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
+        if (alwaysEnforce && (!hasSessionId || !this._accessSnapshotSupported())) {
+            throw notFoundError();
+        }
 
         // HIGH-1: a supplied-but-unresolvable id (missing OR soft-deleted —
         // cms_get_session_access returns no row for either) must not open the
@@ -672,6 +676,14 @@ export class PortalRuntime {
         // Ownership/visibility gate — the single enforcement point for both
         // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
+        if (getMethodAccess(method)?.alwaysEnforce && !this.authz.enforce) {
+            if (method === "getSessionSteeringState") {
+                return { steerable: false, supported: false, expectedTarget: null, reason: "authz_not_enforced", limits: null };
+            }
+            throw Object.assign(new Error("Steering requires enforcing ownership authorization."), {
+                code: "unsupported", reason: "authz_not_enforced", status: 409,
+            });
+        }
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":

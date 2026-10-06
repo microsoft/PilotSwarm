@@ -54,6 +54,75 @@ Admission follows the portal's authorization engine (app roles →
 email allowlists → `PORTAL_AUTHZ_DEFAULT_ROLE`); a `403` body carries the
 engine's reason.
 
+## Session steering
+
+Steering is additive and disabled by default (`sessions.steering`). It requires
+enforcing ownership authorization, a supported worker, and a fresh open input
+window. Send still queues the next turn. Stop still interrupts the current turn.
+Steering neither interrupts a running action nor changes permissions.
+
+| Operation | Method and path (under `/api/v1`) | Access |
+|---|---|---|
+| `getSessionSteeringState` | `GET /management/sessions/:sessionId/steering-state` | Read |
+| `steerSessionTurn` | `POST /management/sessions/:sessionId/steering` | Write |
+| `getSteeringRequest` | `GET /management/sessions/:sessionId/steering/:requestId` | Read |
+| `listSteeringRequests` | `GET /management/sessions/:sessionId/steering` | Read |
+| `withdrawSteeringRequest` | `POST /management/sessions/:sessionId/steering/:requestId/withdraw` | Read plus original author or effective manager |
+| `getSessionSteeringStats` | `GET /management/sessions/:sessionId/steering-stats` | Read |
+
+Read state first, then submit the observed opaque `expectedTarget` unchanged:
+
+```json
+{
+  "options": {
+    "text": "Keep the existing public API unchanged.",
+    "clientRequestId": "<caller-generated-uuid>",
+    "expectedTarget": "<observed-target-token>"
+  }
+}
+```
+
+The success envelope contains a version-1 receipt: `requestId`,
+`clientRequestId`, `sessionId`, `expectedTarget`, `sequence`, `acceptedAt`,
+`actor`, immutable `text`, monotonic `revision`, `status`, `disposition`,
+`eligibility`, `inclusion`, `recoveryFlags`, paginated `attempts`, and
+viewer-derived `actions`. Acceptance is not delivery. SDK acknowledgement alone
+means **Waiting for a safe point**, not success. Positive delivery evidence
+distinguishes **Delivered to current turn** from **Delivered after the earlier
+response**. Neither label means the agent understood or followed the guidance.
+
+List reads default to 50 and cap at 200. Use `limit`, `cursor`, `disposition`,
+and `expectedTarget` query parameters. A cursor is bound to the original session
+and filters. `attemptCursor` on a receipt read pages bounded attempt evidence;
+a non-null `attempts.nextCursor` means evidence is incomplete.
+
+Reuse the original caller identity after a lost response; do not mint a new key
+because acceptance was slow. A matching retry returns the same receipt even
+after the turn closes. A different actor, text, or target with that identity
+conflicts. `stale_target` never retargets to a newer turn. `no_active_turn`,
+`unsupported`, `forbidden`, `too_large`, `rate_limited`, and
+`idempotency_conflict` create no ordinary queued message.
+
+Withdrawal is atomic and succeeds only before claim. A losing withdrawal
+returns `not_withdrawable` with the current receipt. It does not recall text.
+Missed guidance stays retained; **Send as new message** is a separate ordinary
+send with a new identity and the actual resender's attribution.
+
+An uncertain receipt remains uncertain until positive evidence corrects it.
+Stop suppresses future delivery but preserves historical delivery and separate
+snapshot-inclusion evidence. Recovery can visibly redeliver within the same
+target; it must never silently advance guidance to another turn.
+
+The durable events `session.steering_accepted`, `session.steering_updated`, and
+`session.steering_window_changed` drive shared UI projections. Updates omit
+authored text and viewer action grants. A correlated `user.message` carries
+`steering: { requestId, revision, attemptId, deliveryKind }`; render it as the
+same receipt row, not another human message.
+
+Audit-only deployments report `unsupported` with `authz_not_enforced`.
+Turning ownership enforcement off later also exposes retained transcript text
+under that deployment's ordinary audit-only policy; it is not a safe rollback.
+
 ## Bespoke routes
 
 | Route | Auth | Description |

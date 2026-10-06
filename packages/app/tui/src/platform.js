@@ -804,7 +804,7 @@ function renderPromptRow(lineText, cursorColumn, { color, showCursor, keyPrefix,
     );
 }
 
-function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0, readOnly = false }) {
+function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0, readOnly = false, actions = [], actionIndex = null }) {
     const safeValue = String(value || "");
     const isEmpty = safeValue.length === 0;
     const safeRows = clampValue(Number(rows) || 1, 1, MAX_PROMPT_INPUT_ROWS);
@@ -827,7 +827,7 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0, 
         borderColor: focused ? "red" : "green",
         paddingX: 1,
         marginTop: 0,
-        height: safeRows + 2,
+        height: safeRows + 2 + (actions.length ? 1 : 0),
     },
     React.createElement(Box, { flexDirection: "column" },
         isEmpty
@@ -851,6 +851,13 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0, 
                 keyPrefix: `prompt-line:${index}`,
                 prefix: index === 0 ? labelPrefix : null,
             })),
+        actions.length ? React.createElement(Box, { flexDirection: "row" }, actions.map((action, index) =>
+            React.createElement(Text, {
+                key: action.command,
+                color: resolveColorToken(!action.enabled ? "gray" : actionIndex === index ? "cyan" : "white"),
+                bold: actionIndex === index,
+                inverse: actionIndex === index,
+            }, ` ${actionIndex === index ? ">" : ""}${action.label} `))) : null,
     ));
 }
 

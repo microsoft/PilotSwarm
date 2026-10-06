@@ -43,6 +43,8 @@ function errorExtras(error) {
     return {
         ...(Object.prototype.hasOwnProperty.call(error, "etag") && (error.etag === null || typeof error.etag === "string") ? { etag: error.etag } : {}),
         ...(Number.isFinite(error.size) ? { size: error.size } : {}),
+        ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
+        ...(Number.isFinite(error.retryAfterMs) ? { retryAfterMs: error.retryAfterMs } : {}),
     };
 }
 

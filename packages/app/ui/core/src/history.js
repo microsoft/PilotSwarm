@@ -6,6 +6,7 @@ import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
+import { appendSteeringEvent } from "./steering.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -23,6 +24,9 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     ...CHAT_CALL_EVENT_TYPES,
     ...CHAT_CALL_EVENT_TYPES.filter(type => type !== "session.agent_spawned").map(type => `native.${type}`),
     "user.message",
+    "session.steering_accepted",
+    "session.steering_updated",
+    "session.steering_window_changed",
     "assistant.message",
     // Needed to distinguish interim assistant output from the final answer
     // when an older transcript page is loaded.
@@ -476,6 +480,9 @@ function sharesClientMessageId(left, right) {
 
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
+    if (left.kind === "steering" || right.kind === "steering") {
+        return left.kind === right.kind && left.steering.requestId === right.steering.requestId;
+    }
     if (left.role !== right.role) return false;
     // Different agents can send the same short acknowledgement. Only a
     // durable identity or a redelivered queue envelope can merge those calls.
@@ -523,6 +530,11 @@ export function dedupeChatMessages(chat = []) {
     for (const message of chat) {
         if (!message) continue;
         const previous = deduped[deduped.length - 1];
+        if (previous?.kind === "steering" && message.kind === "steering"
+            && previous.steering.requestId === message.steering.requestId) {
+            if (message.steering.revision > previous.steering.revision) deduped[deduped.length - 1] = message;
+            continue;
+        }
         if (!areMessagesEquivalent(previous, message)) {
             deduped.push(message);
             continue;
@@ -1320,6 +1332,7 @@ export function buildHistoryModel(events = [], options = {}) {
 
     for (const event of events) {
         storedEvents.push(event);
+        if (appendSteeringEvent(chat, event)) continue;
         appendNativeTaskEvent(chat, event);
         appendParentChatCall(chat, event);
         appendSessionWarning(chat, event);
@@ -1421,6 +1434,7 @@ export function appendEventToHistory(history, event) {
         stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
     };
 
+    if (appendSteeringEvent(next.chat, event)) return next;
     appendNativeTaskEvent(next.chat, event);
     appendParentChatCall(next.chat, event);
     appendSessionWarning(next.chat, event);

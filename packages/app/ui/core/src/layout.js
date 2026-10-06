@@ -67,13 +67,13 @@ export function getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight) {
     };
 }
 
-export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, sessionPaneAdjust = 0, activityPaneAdjust = 0, fullscreenPane = null) {
+export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, sessionPaneAdjust = 0, activityPaneAdjust = 0, fullscreenPane = null, promptActionRows = 0) {
     const safeViewport = normalizeViewport(viewport);
     const totalWidth = safeViewport.width;
     const totalHeight = safeViewport.height;
     const safePromptRows = clamp(Number(promptRows) || 1, 1, MAX_PROMPT_INPUT_ROWS);
     const safeFullscreenPane = normalizeFullscreenPane(fullscreenPane);
-    const reservedRows = 5 + safePromptRows;
+    const reservedRows = 5 + safePromptRows + (promptActionRows ? 1 : 0);
     const bodyHeight = Math.max(18, totalHeight - reservedRows);
     const baseLeftWidth = Math.floor(totalWidth * DEFAULT_LEFT_PANE_RATIO);
     const desiredLeftWidth = baseLeftWidth + (Number(paneAdjust) || 0);

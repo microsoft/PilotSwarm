@@ -3395,6 +3395,34 @@ body.is-resizing-pane-y iframe {
   gap: 8px;
 }
 
+.ps-steer-button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.ps-steering-receipt {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--ps-muted);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.ps-steering-receipt header {
+  margin-bottom: 6px;
+}
+
+.ps-steering-receipt details {
+  margin-top: 8px;
+}
+
+.ps-steering-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .ps-hidden-file-input {
   display: none;
 }

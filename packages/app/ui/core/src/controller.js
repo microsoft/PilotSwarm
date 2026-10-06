@@ -48,6 +48,7 @@ import {
     selectFilesView,
     selectInspector,
     selectOutboxOverlayLines,
+    selectSteeringComposer,
     selectAdminConsole,
     selectSessionRows,
     selectSelectedFileBrowserItem,
@@ -2938,6 +2939,7 @@ export class PilotSwarmUiController {
             state.ui.layout.sessionPaneAdjust,
             state.ui.layout.activityPaneAdjust,
             state.ui.fullscreenPane,
+            selectSteeringComposer(state).visible ? 1 : 0,
         );
         const maxRows = this.getSessionListMaxRows(layout);
         const visibleRows = selectVisibleSessionRows(state, maxRows);
@@ -3157,6 +3159,7 @@ export class PilotSwarmUiController {
                 state.ui.layout.sessionPaneAdjust,
                 state.ui.layout.activityPaneAdjust,
                 state.ui.fullscreenPane,
+                selectSteeringComposer(state).visible ? 1 : 0,
             );
             const maxRows = this.getSessionListMaxRows(layout);
             const visibleRows = selectVisibleSessionRows(state, maxRows);
@@ -5831,6 +5834,7 @@ export class PilotSwarmUiController {
         await Promise.all([
             this.ensureSessionHistory(sessionId, { force: true }),
             this.syncSessionDetail(sessionId).catch(() => {}),
+            this.refreshSteering(sessionId),
         ]);
         if (this.navigationGeneration !== navigationGeneration
             || this.getState().sessions.activeSessionId !== sessionId) return;
@@ -5860,6 +5864,9 @@ export class PilotSwarmUiController {
      */
     reconcileOutboxAgainstEvent(sessionId, event) {
         if (!sessionId || !event) return;
+        this.reconcileSteeringEvent(sessionId, event);
+        // Steering identity must never acknowledge equal-text ordinary input.
+        if (event.data?.steering) return;
         if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -5886,6 +5893,169 @@ export class PilotSwarmUiController {
                 : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
             this.acknowledgeCancelledOutboxPrompt(sessionId, clientMessageIds);
         }
+    }
+
+    async refreshSteering(sessionId) {
+        if (typeof this.transport.getSessionSteeringState !== "function") return;
+        const windowSeq = this.getState().steering?.bySessionId?.[sessionId]?.windowSeq || 0;
+        try {
+            const state = await this.transport.getSessionSteeringState(sessionId);
+            this.dispatch({ type: "steering/stateLoaded", sessionId, state, windowSeq: state.windowSeq ?? windowSeq });
+            if (state.supported && typeof this.transport.listSteeringRequests === "function") {
+                const page = await this.transport.listSteeringRequests(sessionId, { limit: 50 });
+                for (const receipt of page.items) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt });
+            }
+        } catch (error) {
+            if (isSessionGoneError(error)) {
+                this.handleSessionGone(sessionId);
+                return;
+            }
+            const unsupported = ["WEB_MODE_UNSUPPORTED", "UNKNOWN_OPERATION", "unsupported"].includes(error.code);
+            this.dispatch({
+                type: "steering/stateLoaded", sessionId, windowSeq,
+                state: { steerable: false, supported: false, expectedTarget: null, reason: unsupported ? "unsupported" : "unavailable" },
+                error: error.message,
+            });
+            if (!unsupported) this.setStatus(`Steering unavailable: ${error.message}`);
+        }
+    }
+
+    reconcileSteeringEvent(sessionId, event) {
+        if (event.eventType === "session.steering_window_changed") {
+            this.dispatch({ type: "steering/windowChanged", sessionId, window: event.data, seq: event.seq });
+            return;
+        }
+        const receipt = event.eventType === "session.steering_accepted" ? event.data?.receipt
+            : event.eventType === "session.steering_updated" ? event.data?.projection : null;
+        if (receipt) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt });
+        const requestId = receipt?.requestId || event.data?.steering?.requestId;
+        if (!requestId || typeof this.transport.getSteeringRequest !== "function") return;
+        this.refreshSteeringReceipt(sessionId, requestId).catch(error => this.setStatus(`Could not refresh guidance: ${error.message}`));
+    }
+
+    async refreshSteeringReceipt(sessionId, requestId) {
+        this.steeringReceiptLoads ??= new Map();
+        const key = `${sessionId}:${requestId}`;
+        if (this.steeringReceiptLoads.has(key)) {
+            await this.steeringReceiptLoads.get(key);
+            // A newer event can land during an authorized read. Repair once
+            // more instead of leaving the newer revision's action grants stale.
+            return this.refreshSteeringReceipt(sessionId, requestId);
+        }
+        const load = this.transport.getSteeringRequest(sessionId, requestId).then(receipt => {
+            this.dispatch({ type: "steering/receiptReceived", sessionId, receipt });
+            return receipt;
+        }).catch(error => {
+            if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
+            throw error;
+        }).finally(() => this.steeringReceiptLoads.delete(key));
+        this.steeringReceiptLoads.set(key, load);
+        return load;
+    }
+
+    async steerPrompt() {
+        const state = this.getState();
+        const eligibility = selectSteeringComposer(state);
+        if (!eligibility.enabled) {
+            this.setStatus(eligibility.reason);
+            return;
+        }
+        const sessionId = state.sessions.activeSessionId;
+        const text = state.ui.prompt;
+        const clientRequestId = globalThis.crypto.randomUUID();
+        const request = {
+            text, clientRequestId, sessionId,
+            expectedTarget: state.steering.bySessionId[sessionId].state.expectedTarget,
+            rowKey: `steering-local:${clientRequestId}`,
+            createdAt: new Date().toISOString(),
+            inFlight: true,
+        };
+        this.dispatch({ type: "steering/submissionStarted", sessionId, request });
+        this.setPrompt("", 0);
+        return this.submitSteeringRequest(sessionId, request);
+    }
+
+    async submitSteeringRequest(sessionId, request) {
+        const { text, clientRequestId, expectedTarget } = request;
+        try {
+            const receipt = await this.transport.steerSessionTurn(sessionId, { text, clientRequestId, expectedTarget });
+            if (!receipt?.requestId || receipt.clientRequestId !== clientRequestId || receipt.sessionId !== sessionId) {
+                throw new Error("The server returned no matching durable steering receipt");
+            }
+            this.dispatch({ type: "steering/receiptReceived", sessionId, receipt });
+            return receipt;
+        } catch (error) {
+            const rejected = ["stale_target", "no_active_turn", "unsupported", "forbidden", "too_large",
+                "rate_limited", "idempotency_conflict", "FORBIDDEN", "NOT_FOUND", "INVALID_REQUEST"].includes(error.code);
+            this.dispatch({ type: "steering/submissionFailed", sessionId, clientRequestId, error: error.message, rejected });
+            this.setStatus(`${rejected ? "Guidance rejected" : "Acceptance unconfirmed"}: ${error.message}`);
+            if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
+            if (rejected) await this.refreshSteering(sessionId);
+            // The retained row owns the text. Never overwrite a newer draft
+            // or mint a new key because a transport response was lost.
+            return null;
+        }
+    }
+
+    async retrySteering(sessionId, clientRequestId) {
+        const request = this.getState().steering?.bySessionId?.[sessionId]?.pending?.[clientRequestId];
+        if (!request || request.inFlight || request.rejected) return;
+        this.dispatch({ type: "steering/submissionStarted", sessionId, request: { ...request, inFlight: true, error: null } });
+        return this.submitSteeringRequest(sessionId, request);
+    }
+
+    async withdrawSteering(sessionId, requestId) {
+        try {
+            const result = await this.transport.withdrawSteeringRequest(sessionId, requestId);
+            this.dispatch({ type: "steering/receiptReceived", sessionId, receipt: result.receipt });
+            this.setStatus(result.outcome === "withdrawn" ? "Guidance withdrawn"
+                : "This guidance can no longer be withdrawn. Delivery may still be pending.");
+            return result;
+        } catch (error) {
+            this.setStatus(`Could not withdraw guidance: ${error.message}`);
+            return null;
+        }
+    }
+
+    async resendSteering(sessionId, requestId) {
+        this.steeringResends ??= new Set();
+        const key = `${sessionId}:${requestId}`;
+        if (this.steeringResends.has(key)) return;
+        this.steeringResends.add(key);
+        try {
+            const receipt = await this.refreshSteeringReceipt(sessionId, requestId);
+            if (!receipt.actions.canSendAsNewMessage) {
+                this.setStatus("This guidance cannot be sent as a new message.");
+                return;
+            }
+            // Explicit ordinary send, pinned to the retained row's session.
+            // Do not route this through question or slash-command handling.
+            await this.transport.sendMessage(sessionId, receipt.text, {
+                enqueueOnly: true, clientMessageIds: [globalThis.crypto.randomUUID()],
+                steeringRequestId: requestId,
+            });
+            this.setStatus("Added guidance as a new message; earlier messages stay ahead.");
+        } catch (error) {
+            this.setStatus(`Could not send guidance as a new message: ${error.message}`);
+        } finally {
+            this.steeringResends.delete(key);
+        }
+    }
+
+    copySteeringToDraft(sessionId, requestId, { append = false } = {}) {
+        const state = this.getState();
+        const entry = state.steering?.bySessionId?.[sessionId];
+        const receipt = entry?.receipts?.[requestId] || entry?.pending?.[requestId];
+        if (state.sessions.activeSessionId !== sessionId || typeof receipt?.text !== "string") {
+            this.setStatus("Select the guidance's session before copying it to the draft.");
+            return;
+        }
+        if (state.ui.prompt && !append) {
+            this.setStatus("The draft is not empty. Use Append to draft to keep both texts.");
+            return;
+        }
+        this.setPrompt(append && state.ui.prompt ? `${state.ui.prompt}\n\n${receipt.text}` : receipt.text);
+        this.setFocus(FOCUS_REGIONS.PROMPT);
     }
 
     /**
@@ -6403,6 +6573,9 @@ export class PilotSwarmUiController {
         this.activeSessionSubscriptionId = sessionId;
         this.activeSessionUnsub = this.transport.subscribeSession(sessionId, (event) => {
             this.mergeSessionEvent(sessionId, event);
+        }, () => {
+            this.refreshSteering(sessionId);
+            this.syncSessionEvents(sessionId).catch(error => this.setStatus(`Could not restore conversation: ${error.message}`));
         });
         this.syncSessionEvents(sessionId).catch(() => {});
     }
@@ -9479,7 +9652,8 @@ export class PilotSwarmUiController {
         overrides.promptRows ?? uiState.promptRows ?? getPromptInputRows(prompt),
         overrides.sessionPaneAdjust ?? layoutState.sessionPaneAdjust ?? 0,
         overrides.activityPaneAdjust ?? layoutState.activityPaneAdjust ?? 0,
-        overrides.fullscreenPane ?? uiState.fullscreenPane ?? null);
+        overrides.fullscreenPane ?? uiState.fullscreenPane ?? null,
+        selectSteeringComposer(this.getState()).visible ? 1 : 0);
     }
 
     getSessionListMaxRows(layout = this.getCurrentLayout()) {
@@ -11175,6 +11349,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.SEND_PROMPT:
                 await this.sendPrompt();
+                return;
+            case UI_COMMANDS.STEER_TURN:
+                await this.steerPrompt();
                 return;
             case UI_COMMANDS.FOCUS_NEXT:
                 this.focusNext();
