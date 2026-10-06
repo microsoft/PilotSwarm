@@ -159,6 +159,14 @@ export class SteeringPump {
     private readonly attempts = new Map<string, Attempt>();
     private readonly byMessageId = new Map<string, string>();
     private readonly earlyEvents = new Map<string, any>();
+    /**
+     * Places reserved in the ordered event writer for a user.message that arrived
+     * before its send() returned an id. Resolved with the attempt at bind, or null.
+     */
+    private readonly earlySlots = new Map<string, { settle: (a: Attempt | null) => void; settled: boolean }>();
+    /** Delivery persistence in the ordered writer; awaited (bounded) at settle. */
+    private readonly orderedWrites = new Set<Promise<void>>();
+    private orderedWriteFailures = 0;
     private readonly seen = new Set<string>();
     private readonly unsubs: Array<() => void> = [];
     private readonly writes: SerialWrites;
@@ -385,10 +393,35 @@ export class SteeringPump {
         }
         const attemptId = this.byMessageId.get(id);
         if (!attemptId) {                                             // before send() resolved, or not ours
-            if (this.earlyEvents.size < 256) this.earlyEvents.set(id, e);
+            if (this.earlyEvents.size < 256) {
+                this.earlyEvents.set(id, e);
+                // A send still in flight may own this id: hold its place in the
+                // ordered writer NOW, so the projection keeps SDK emission order.
+                if (this.ch.ordered && !this.earlySlots.has(id) && this.hasUnboundSend()) this.reserveEarlySlot(id);
+            }
             return;
         }
         this.recordDelivery(this.attempts.get(attemptId)!, e);
+    }
+
+    private hasUnboundSend(): boolean {
+        for (const a of this.attempts.values()) if (!a.sdkMessageId && !a.event && !a.uncertain) return true;
+        return false;
+    }
+
+    private reserveEarlySlot(id: string): void {
+        let resolve!: (a: Attempt | null) => void;
+        const owner = new Promise<Attempt | null>((r) => { resolve = r; });
+        const slot = { settled: false, settle: (a: Attempt | null) => { if (slot.settled) return; slot.settled = true; resolve(a); } };
+        this.earlySlots.set(id, slot);
+        const timer = setTimeout(() => slot.settle(null), this.o.sendTimeoutMs + this.o.ioTimeoutMs);
+        (timer as any).unref?.();
+        this.track(this.ch.ordered!(async () => {
+            const a = await owner;
+            clearTimeout(timer);
+            this.earlySlots.delete(id);
+            if (a?.event && a.sdkMessageId === id) await this.persistDelivery(a, id, a.event.data.delivery);
+        }));
     }
 
     private bind(a: Attempt, sdkMessageId: string): void {
@@ -397,11 +430,20 @@ export class SteeringPump {
         this.byMessageId.set(sdkMessageId, a.attemptId);
         this.writes.push("submitted", () => this.ch.markSubmitted(a.attemptId, sdkMessageId));
         const early = this.earlyEvents.get(sdkMessageId);
-        if (early) { this.earlyEvents.delete(sdkMessageId); this.recordDelivery(a, early); }
+        if (early) {
+            this.earlyEvents.delete(sdkMessageId);
+            const slot = this.earlySlots.get(sdkMessageId);
+            if (slot && !slot.settled) {
+                this.recordDelivery(a, early, { persist: false });    // persisted in its reserved place
+                slot.settle(a);
+            } else {
+                this.recordDelivery(a, early);
+            }
+        }
         this.notify();
     }
 
-    private recordDelivery(a: Attempt, e: any): void {
+    private recordDelivery(a: Attempt, e: any, opts: { persist?: boolean } = {}): void {
         if (!a.sdkMessageId || this.seen.has(a.sdkMessageId)) return; // INV-P5
         this.seen.add(a.sdkMessageId);
         const raw = e?.data?.delivery;
@@ -422,8 +464,33 @@ export class SteeringPump {
         if (kind === "idle") this.runsStartedBySteer++;               // a late send started a new run (S-4 C4c)
         this.stats.delivered++;
         const id = a.sdkMessageId;
-        this.writes.push("delivered", () => this.ch.markDelivered(a.attemptId, id, kind));
+        if (opts.persist !== false) {
+            if (this.ch.ordered) {
+                // Enqueued synchronously, in SDK emission order, in the turn's single
+                // ordered event writer (the projection writes user.message).
+                this.track(this.ch.ordered(() => this.persistDelivery(a, id, kind)));
+            } else {
+                this.writes.push("delivered", () => this.ch.markDelivered(a.attemptId, id, kind));
+            }
+        }
         this.notify();
+    }
+
+    /** Bounded retry inside the ordered place; a failure is counted, never thrown. */
+    private async persistDelivery(a: Attempt, sdkMessageId: string, kind: SteeringDeliveryKind): Promise<void> {
+        let lastErr: unknown;
+        for (const delay of [0, 100, 400]) {
+            if (delay) await sleep(delay);
+            try { await this.ch.markDelivered(a.attemptId, sdkMessageId, kind); return; } catch (err) { lastErr = err; }
+        }
+        this.orderedWriteFailures++;
+        this.trace(`[steering] receipt write failed (delivered): ${(lastErr as any)?.message ?? String(lastErr)}`);
+    }
+
+    private track(p: Promise<unknown>): void {
+        const tracked = p.then(() => {}, () => {});
+        this.orderedWrites.add(tracked);
+        void tracked.then(() => this.orderedWrites.delete(tracked));
     }
 
     private unresolved(): Attempt[] {
@@ -503,7 +570,7 @@ export class SteeringPump {
             "pump:turns": 1, "pump:scans": s.scans, "pump:claimed": s.claimed, "pump:sent": s.sent,
             "pump:delivered": s.delivered, "pump:wakes": s.wakes, "pump:released": s.released,
             "pump:send_timeouts": s.sendTimeouts, "pump:send_errors": s.sendErrors,
-            "pump:receipt_write_failures": this.writes.failures, "pump:lease_lost": s.leaseLost,
+            "pump:receipt_write_failures": this.writes.failures + this.orderedWriteFailures, "pump:lease_lost": s.leaseLost,
             "pump:startup_failed": s.startupFailed, "pump:authorization_refused": s.authorizationRefused,
             "pump:unclassified_delivery": s.unclassified, "pump:quiesced": s.quiesced, "pump:quiesce_failed": s.quiesceFailed,
         };
@@ -542,7 +609,9 @@ export class SteeringPump {
                 await this.quiesceSession();                          // throws (INV-P9)
             }
         }
-        if ((await bounded(this.writes.drain(), this.o.ioTimeoutMs)) === TIMEOUT) {
+        for (const slot of this.earlySlots.values()) slot.settle(null);   // unbound by now: not ours
+        const allWrites = Promise.all([this.writes.drain(), ...this.orderedWrites]).then(() => {});
+        if ((await bounded(allWrites, this.o.ioTimeoutMs)) === TIMEOUT) {
             this.trace("[steering] receipt writes did not drain in time; unresolved evidence stays unconfirmed");
         }
         if (!o.stopping && this.windowOpened) {
@@ -567,9 +636,10 @@ export class SteeringPump {
     }
 
     /** Number of receipt writes that failed after retry. */
-    get writeFailures(): number { return this.writes.failures; }
+    get writeFailures(): number { return this.writes.failures + this.orderedWriteFailures; }
 
     dispose(): void {
+        for (const slot of this.earlySlots.values()) slot.settle(null);
         this.released = true;
         this.gate.close();
         if (this.leaseTimer) clearInterval(this.leaseTimer);

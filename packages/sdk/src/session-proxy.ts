@@ -24,7 +24,7 @@ import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo }
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
 import { evaluateRoleObservation, evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
-import { SteeringTurn, closeStoppedSteering, createSteeringAuthorizer } from "./steering-channel.js";
+import { SteeringTurn, closeStoppedSteering, createOrderedEventWriter, createSteeringAuthorizer } from "./steering-channel.js";
 import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
@@ -3832,6 +3832,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // insert and CMS will assign the smaller `seq` to turn_completed,
             // breaking event-ordering invariants downstream (see cms-seq-nodemap).
             const pendingEventWrites: Promise<unknown>[] = [];
+            // Session steering: in a steerable turn the SDK events and the steering
+            // delivery projection (user.message with data.steering) go through ONE
+            // ordered writer, so seq order is SDK emission order (a queued steer's
+            // user.message after the response it followed). Other turns keep today's
+            // concurrent writes.
+            const orderedEventWrite = steeringTurn ? createOrderedEventWriter() : null;
             const trackEventWrite = (promise: Promise<unknown> | undefined | null) => {
                 if (!promise || typeof (promise as Promise<unknown>).then !== "function") return;
                 pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
@@ -3961,11 +3967,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the
                     // retry to settle before emitting turn_completed.
-                    const writePromise = cmsRetryBestEffort(
+                    const recordThisEvent = () => cmsRetryBestEffort(
                         `runTurn.onEvent recordEvent ${persistedEvent.eventType} session=${input.sessionId}`,
                         () => catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
                     );
+                    // A task-summary projection stays outside the ordered writer: a stuck
+                    // projection write must never delay transcript events.
+                    const writePromise = orderedEventWrite && event.eventType !== "native.task_updated"
+                        ? orderedEventWrite(recordThisEvent)
+                        : recordThisEvent();
                     // Task summaries are a redundant UI projection. The
                     // original tool/lifecycle events still use the barrier;
                     // a stuck projection write must not delay turn commit.
@@ -4239,7 +4250,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // A fresh owner per runTurn call: a retry on a new live
                     // session recovers the same target as a new owner.
                     ...(steeringTurn ? {
-                        steering: steeringTurn.newChannel(),
+                        steering: steeringTurn.newChannel({ ordered: orderedEventWrite ?? undefined }),
                         steeringQuiesce: () => sessionManager.quiesceForSteering(input.sessionId),
                         steeringAuthorize,
                     } : {}),
