@@ -283,6 +283,12 @@ Known violations to fix rather than copy:
 
 ### TUI Keybindings
 
+Session steering is an explicit action, never a replacement for ordinary Send
+or Stop. Preserve its captured session, target, and caller identity across
+asynchronous responses. Receipt revisions and window event sequences are
+monotonic; an open-window event grants no permission. Neither SDK
+acknowledgement nor assistant prose proves delivery or compliance.
+
 If you add or change a TUI keybinding, you must update all user-facing keybinding surfaces together:
 
 - the actual binding in host input handling
@@ -307,6 +313,9 @@ Current overlap to preserve unless intentionally changed:
 - `t` in the logs inspector toggles log tailing
 - `s` in the chat pane toggles between the transcript and the current session summary view
 - `Ctrl+A` in the prompt opens the attach-file dialog
+- Portal `Ctrl+S` steers only while the textarea has focus; browser Save elsewhere is unchanged. Native `Ctrl+S` is not enabled or advertised until the supported-terminal raw-mode matrix passes. Its keyboard-accessible action row is the fallback.
+- Native prompt `Tab` accepts reference autocomplete first; otherwise it focuses Send/Steer/Stop, plus Guidance when receipts exist. Left/Right selects, Enter activates, Tab continues normal pane traversal, and Shift+Tab/Escape returns to editing. Send and newline keys stay unchanged.
+- Guidance receipts use Up/Down to select and PageUp/PageDown to scroll. Enter refreshes or reconciles acceptance; `w` withdraws, `r` sends as a new message, `c` copies to an empty draft, `a` appends, and Escape closes. Keep these actions, their permission checks, and help copy aligned with portal receipt controls.
 - `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
