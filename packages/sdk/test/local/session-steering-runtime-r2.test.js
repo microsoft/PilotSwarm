@@ -109,6 +109,11 @@ describe("session steering runtime (real CLI, scripted model)", () => {
                 assertEqual(receipt.attempts.items.length, 1, "one hand-off");
                 assertEqual(receipt.attempts.items[0].deliveryKind, "steering");
                 assertEqual(receipt.recoveryFlags.length, 0);
+                const diagnostics = await catalog.steerStats(session.sessionId);
+                assertEqual(diagnostics.counters["pump:turns"], 1, "actual pump work is durable after settlement");
+                assert(diagnostics.counters["pump:scans"] >= 1, "actual scans are visible to diagnostics");
+                assertEqual(diagnostics.counters["pump:sent"], 1);
+                assert(!JSON.stringify(diagnostics.counters).includes("focus on the tests"), "counter data is content-free");
 
                 const bobReceipt = await catalog.steerGet(session.sessionId, fromBob.receipt.requestId);
                 assertEqual(bobReceipt.disposition, "not_delivered_turn_ended", "a revoked/unauthorized author is never handed off");

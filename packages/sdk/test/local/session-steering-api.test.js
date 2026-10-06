@@ -74,8 +74,11 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                 const writer = await web(STEER_OTHER.subject);
                 const target = (await direct.getSessionSteeringState(h.sessionId, owner)).expectedTarget;
                 const accepted = await remoteOwner.steerSessionTurn(h.sessionId, { text: "withdrawal guidance", clientRequestId: randomUUID(), expectedTarget: target });
-                const denied = await writer.withdrawSteeringRequest(h.sessionId, accepted.receipt.requestId);
-                expect(denied).toEqual({ outcome: "forbidden", receipt: null });
+                await expect(writer.withdrawSteeringRequest(h.sessionId, accepted.receipt.requestId))
+                    .rejects.toMatchObject({ code: "forbidden", status: 403 });
+                const { rows: denialAudit } = await h.query(`SELECT * FROM ${h.schema}.authz_audit
+                    WHERE session_id=$1 AND action='withdrawSteeringRequest' AND decision='deny'`, [h.sessionId]);
+                assertEqual(denialAudit.length, 1, "atomic author denial is audited before the error response");
                 assertEqual((await h.request(accepted.receipt.requestId)).status, "pending");
                 assertEqual((await remoteOwner.withdrawSteeringRequest(h.sessionId, accepted.receipt.requestId)).outcome, "withdrawn");
                 const claimed = await remoteOwner.steerSessionTurn(h.sessionId, { text: "claimed guidance", clientRequestId: randomUUID(), expectedTarget: target });
