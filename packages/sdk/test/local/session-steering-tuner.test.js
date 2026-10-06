@@ -11,6 +11,7 @@ import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createInspectTools } from "../../src/inspect-tools.ts";
 import { steeringContentHash } from "../../src/steering.ts";
+import { SteeringWakeHub } from "../../src/steering-channel.ts";
 import { TEST_ADMIN_VIEWER, testUserViewer } from "../helpers/inspect-viewer.js";
 
 const url = process.env.PS_TEST_DATABASE_URL || process.env.TEST_DATABASE_URL || process.env.DATABASE_URL
@@ -71,5 +72,31 @@ describe("read_session_steering", () => {
         const t = tool(createInspectTools({ resolveViewer: testUserViewer("someone-else"), catalog, agentIdentity: "agent-tuner" }));
         const out = await t.handler({ session_id: sessionId }, {});
         expect(out.error).toMatch(/not found/);
+    });
+});
+
+describe("steering wake-ups", () => {
+    it("one LISTEN connection wakes the subscribed session on accept and withdraw, and nobody else", async () => {
+        let connects = 0;
+        const hub = new SteeringWakeHub((onNotify, onError) => { connects++; return catalog.listenSteering(onNotify, onError); });
+        const woke = { mine: 0, other: 0 };
+        const unsub = hub.subscribe(sessionId, () => { woke.mine++; });
+        hub.subscribe("other-session", () => { woke.other++; });
+        const until = async (pred) => { const end = Date.now() + 5_000; while (!pred()) { if (Date.now() > end) throw new Error("no wake"); await new Promise((r) => setTimeout(r, 20)); } };
+        await until(() => woke.mine >= 1);                     // the (re)connect wakes every subscriber once
+        const base = { mine: woke.mine, other: woke.other };
+        const state = await catalog.steerState(sessionId);
+        const [, , turn, inc] = Buffer.from(state.expectedTarget.slice(4), "base64url").toString().split("\n");
+        const r = await catalog.steerAccept({ sessionId, requestId: `steer_${randomUUID()}`, idempotencyKey: randomUUID(),
+            actor: { kind: "user", provider: "test", subject: "owner-1" }, content: "wake", contentHash: steeringContentHash("wake"),
+            epoch: 0, turnIndex: Number(turn), incarnation: inc });
+        expect(r.outcome).toBe("accepted");
+        await until(() => woke.mine > base.mine);
+        await catalog.steerWithdraw(sessionId, r.receipt.requestId, { provider: "test", subject: "owner-1" }, false);
+        await until(() => woke.mine > base.mine + 1);
+        expect(woke.other).toBe(base.other);
+        expect(connects).toBe(1);
+        unsub();
+        await hub.stop();
     });
 });
