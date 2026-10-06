@@ -194,6 +194,7 @@ export class SteeringManagement {
                 actor: viewer.actor, action: "withdrawSteeringRequest", sessionId,
                 decision: "deny", reason: "original author or session manager required",
             });
+            throw new SteeringError("forbidden", "Only the original author or a session manager can withdraw this guidance.");
         }
         return { outcome: result.outcome, receipt: result.receipt ? toSteeringReceipt(result.receipt, viewer) : null };
     }
