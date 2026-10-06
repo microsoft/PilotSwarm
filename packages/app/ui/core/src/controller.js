@@ -6103,8 +6103,13 @@ export class PilotSwarmUiController {
                 : "This guidance can no longer be withdrawn. Delivery may still be pending.");
             return result;
         } catch (error) {
+            if (Number(error.status) === 403 || String(error.code || "").toLowerCase() === "forbidden") {
+                const receipt = this.getState().steering?.bySessionId?.[sessionId]?.receipts?.[requestId];
+                if (receipt) this.dispatch({ type: "steering/receiptReceived", sessionId,
+                    receipt: { ...receipt, actions: { ...receipt.actions, canWithdraw: false } } });
+            }
             this.setStatus(`Could not withdraw guidance: ${error.message}`);
-            return null;
+            throw error;
         }
     }
 

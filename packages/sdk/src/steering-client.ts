@@ -194,6 +194,7 @@ export class SteeringManagement {
                 actor: viewer.actor, action: "withdrawSteeringRequest", sessionId,
                 decision: "deny", reason: "original author or session manager required",
             });
+            throw new SteeringError("forbidden", "Only the original author or a session manager can withdraw this guidance.");
         }
         return { outcome: result.outcome, receipt: result.receipt ? toSteeringReceipt(result.receipt, viewer) : null };
     }
@@ -216,14 +217,16 @@ export class SteeringManagement {
         if (clientMessageIds[0] === record.clientRequestId || clientMessageIds[0] === record.requestId) {
             throw new SteeringError("invalid", "A guidance resend must use a new client message identity.");
         }
-        if (!toSteeringReceipt(record, viewer).actions.canSendAsNewMessage || text !== record.text) {
-            throw new SteeringError("invalid", "Only retained guidance can be resent through its original receipt.");
+        if (text !== record.text) {
+            throw new SteeringError("invalid", "The resend text must match its original guidance receipt.");
         }
         // The queue and CMS have different commit boundaries. Record intent,
         // not success; a normal user.message with this fresh ID proves uptake.
-        await this.catalog.recordEvents(sessionId, [{
-            eventType: "session.steering_resend_requested",
-            data: { schemaVersion: 1, requestId, clientMessageIds, actor: viewer.actor, sender: edge.sender },
-        }]);
+        const result = await this.catalog.steerRecordResendIntent(sessionId, requestId, clientMessageIds[0],
+            { provider: viewer.actor.provider, subject: viewer.actor.subject }, edge.sender ? { ...edge.sender } : null);
+        if (result.outcome === "conflict") throw new SteeringError("idempotency_conflict", "The resend identity is already bound to different guidance or another sender.");
+        if (result.outcome === "not_found") throw new SteeringError("not_found", "Guidance request not found.");
+        if (result.outcome === "not_resendable") throw new SteeringError("invalid", "Only retained guidance can be resent through its original receipt.");
+        if (result.outcome === "invalid") throw new SteeringError("invalid", "Invalid guidance resend identity.");
     }
 }
