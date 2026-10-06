@@ -2069,13 +2069,15 @@ export function selectActiveChat(state) {
             message.steeringResend = steering.resends?.[receipt.requestId] || null;
             if (index >= 0) chat[index] = message;
             else {
-                const nextIndex = chat.findIndex(item => Number(item.createdAt) > message.createdAt);
+                const nextIndex = chat.findIndex(item => item.kind === "steering"
+                    && item.steering.sequence > message.steering.sequence);
                 chat.splice(nextIndex < 0 ? chat.length : nextIndex, 0, message);
             }
         }
         for (const pending of Object.values(steering.pending)) chat.push(buildSteeringMessage(pending));
         // Ordinary transcript order comes from durable event sequence, not
-        // timestamps. A receipt overlay must not reorder a backward page.
+        // timestamps. Missing receipts use server sequence relative to their
+        // receipt neighbours; transaction-start timestamps cannot order them.
     }
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
