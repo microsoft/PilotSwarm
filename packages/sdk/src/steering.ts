@@ -168,7 +168,7 @@ const RESENDABLE: ReadonlySet<SteeringDisposition> = new Set([
 export interface SteeringViewer {
     /** The viewer's canonical identity, if any. */
     actor?: { provider?: string | null; subject?: string | null } | null;
-    /** Effective session:write. */
+    /** Effective session:write (gates "Send as new message"; not withdrawal). */
     canWrite: boolean;
     /** Owner, or admin within admin scope. */
     isManager: boolean;
@@ -180,7 +180,8 @@ export function toSteeringReceipt(record: SteeringReceiptRecord, viewer: Steerin
     return {
         ...record,
         actions: {
-            canWithdraw: record.status === "pending" && viewer.canWrite && (isAuthor || viewer.isManager),
+            // §10.1: session:read plus original author or effective manager; not session:write.
+            canWithdraw: record.status === "pending" && (isAuthor || viewer.isManager),
             canSendAsNewMessage: viewer.canWrite && RESENDABLE.has(record.disposition),
         },
     };
