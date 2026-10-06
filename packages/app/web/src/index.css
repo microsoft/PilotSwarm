@@ -2331,6 +2331,32 @@ body.is-resizing-pane-y iframe {
   width: 100%;
   max-width: 100%;
   min-height: 0;
+  container: work-index-panel / inline-size;
+}
+
+/* Admins get an extra Fleet/My view control in the work-index title. In a
+   narrow split pane, keep every session action reachable by giving the fixed
+   action cluster its own row instead of clipping it at the panel boundary. */
+@container work-index-panel (max-width: 620px) {
+  .ps-panel-header:has(.ps-work-index-scope) {
+    height: auto;
+    min-height: var(--ps-panel-header-h);
+    max-height: none;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding-block: 4px;
+  }
+
+  .ps-panel-header:has(.ps-work-index-scope) > .ps-panel-title {
+    flex: 1 0 100%;
+    overflow: hidden;
+  }
+
+  .ps-panel-header:has(.ps-work-index-scope) > .ps-panel-header-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .ps-work-index-tab {
