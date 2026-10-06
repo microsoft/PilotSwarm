@@ -33,6 +33,7 @@ function makeRuntime({ enforce = true, visibility = "private", share = null, mis
     runtime.authz = { ...runtime.authz, enforce, adminScope, systemVisibility: "read" };
     const audit = [];
     const controls = Object.fromEntries(OPERATIONS_REQUIRED.map(([name]) => [name, vi.fn(async () => receipt())]));
+    controls.steerSessionTurn = vi.fn(async () => ({ ok: true, duplicate: false, receipt: receipt() }));
     controls.getSessionSteeringState = vi.fn(async () => ({
         steerable: true, expectedTarget: "opaque-target", reason: null,
         limits: { maxBytes: 16_384, perSessionPerMinute: 30, perActorPerMinute: 60, maxUnresolved: 5 },
@@ -82,7 +83,7 @@ describe.concurrent("session steering management and authorization contract", ()
         const params = submitParams();
         params.sender = { provider: "dev", subject: "mallory", role: "admin", trustedSystem: true };
         const result = await h.runtime.call("steerSessionTurn", params, as("alice"));
-        expect(result).toEqual(receipt());
+        expect(result).toEqual({ ok: true, duplicate: false, receipt: receipt() });
         assertEqual(h.controls.steerSessionTurn.mock.calls.length, 1);
         const call = h.controls.steerSessionTurn.mock.calls[0];
         assertEqual(call[0], params.sessionId);
@@ -109,7 +110,7 @@ describe.concurrent("session steering management and authorization contract", ()
                 assertEqual(evaluateSessionAccess("session:write", h.snapshotFor(auth.principal)).allowed, allowed, "fixture uses the production predicate");
             }
             if (allowed) {
-                expect(await h.runtime.call("steerSessionTurn", submitParams(), auth)).toEqual(receipt());
+                expect(await h.runtime.call("steerSessionTurn", submitParams(), auth)).toEqual({ ok: true, duplicate: false, receipt: receipt() });
             } else {
                 await expect(h.runtime.call("steerSessionTurn", submitParams(), auth)).rejects.toMatchObject({ status });
                 assertEqual(h.controls.steerSessionTurn.mock.calls.length, 0, "denied request cannot reach acceptance");
@@ -123,18 +124,24 @@ describe.concurrent("session steering management and authorization contract", ()
         const h = makeRuntime({ enforce: false });
         const state = await h.runtime.call("getSessionSteeringState", { sessionId: "steer-session" }, as("alice"));
         assertEqual(state.steerable, false);
-        assertEqual(state.reason, "authz_not_enforced");
+        assertEqual(state.reason, "unsupported");
+        assertEqual(state.unsupportedReason, "authz_not_enforced");
         await expect(h.runtime.call("steerSessionTurn", submitParams(), as("alice")))
             .rejects.toMatchObject({ reason: "authz_not_enforced" });
         assertEqual(h.controls.steerSessionTurn.mock.calls.length, 0);
         assertEqual(h.runtime.transport.sendMessage.mock.calls.length, 0);
     });
 
-    it("ST-A03: a different writer cannot withdraw the author's request", async () => {
+    it("ST-A03: another writer's withdrawal carries only their validated identity to the enforcing management contract", async () => {
         const h = makeRuntime({ share: "write" });
-        await expect(h.runtime.call("withdrawSteeringRequest", { sessionId: "steer-session", requestId: "request-a" }, as("bob")))
-            .rejects.toMatchObject({ status: 403 });
-        assertEqual(h.controls.withdrawSteeringRequest.mock.calls.length, 0);
+        await h.runtime.call("withdrawSteeringRequest", { sessionId: "steer-session", requestId: "request-a",
+            isManager: true, actor: { provider: "dev", subject: "alice" } }, as("bob"));
+        const [sessionId, requestId, edge] = h.controls.withdrawSteeringRequest.mock.calls[0];
+        assertEqual(sessionId, "steer-session");
+        assertEqual(requestId, "request-a");
+        assertEqual(edge.sender.subject, "bob");
+        assertEqual(edge.isAdmin, false);
+        assertEqual(edge.isManager, undefined, "caller supplied manager authority is not forwarded");
     });
 
     it("ST-A03: unreadable request IDs are not probed or disclosed", async () => {

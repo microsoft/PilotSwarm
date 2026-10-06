@@ -69,6 +69,7 @@ describe.concurrent("session steering recovery lineage gates", () => {
                 let windowUnsubscribe;
                 let sessionId;
                 let turnSent = false;
+                let completed = false;
                 try {
                     const session = await client.createSession({ model: qualifiedModel, tools: [first.tool, recovered.tool] });
                     sessionId = session.sessionId;
@@ -109,7 +110,7 @@ describe.concurrent("session steering recovery lineage gates", () => {
                     await within(requestWait.promise, "first handoff", 30_000);
                     requestWait.unsubscribe();
                     recoveryWait = receiptAfterEvent(session, catalog, requestId, (receipt) =>
-                        receipt.inclusion.state === "included" || receipt.attempts.total > 1
+                        receipt.recoveryCheck === "present" || receipt.inclusion.state === "included" || receipt.attempts.total > 1
                         || receipt.recoveryFlags.includes("redelivery_pending")
                         || receipt.recoveryFlags.includes("recovery_unconfirmed"));
                     first.release();
@@ -120,12 +121,21 @@ describe.concurrent("session steering recovery lineage gates", () => {
                     assertEqual(saved.version, base.version, "the failed attempt has not published any snapshot");
                     assert(observed.inclusion.state !== "included",
                         "raw-resumed dirty conversation is not a stored-snapshot inclusion oracle");
+                    assertEqual(observed.inclusion.state, "unconfirmed", "local positive history awaits actual publication");
+                    assertEqual(observed.attempts.total, 1, "retained local positive evidence does not duplicate model input");
+                    recovered.release();
+                    assertEqual(await session.wait(30_000), "recovered reply");
+                    const final = await catalog.steerGet(session.sessionId, requestId);
+                    assertEqual(final.status, "closed");
+                    assertEqual(final.inclusion.state, "included", "actual published recovery result is the inclusion oracle");
+                    assertEqual((await store.probeSnapshot(session.sessionId)).version, base.version + 1);
+                    completed = true;
                 } finally {
                     requestWait?.unsubscribe();
                     recoveryWait?.unsubscribe();
                     windowUnsubscribe?.();
                     try {
-                        if (sessionId && turnSent) await mgmt.stopSessionTurn(sessionId, { reason: "Recovery fixture cleanup" });
+                        if (sessionId && turnSent && !completed) await mgmt.stopSessionTurn(sessionId, { reason: "Recovery fixture cleanup" });
                     } finally {
                         first.release();
                         recovered.release();
