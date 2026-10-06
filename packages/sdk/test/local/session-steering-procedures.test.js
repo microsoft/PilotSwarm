@@ -291,7 +291,7 @@ describe("session steering procedures (0082)", () => {
         expect(toSteeringReceipt(left, { actor: alice, canWrite: true, isManager: false }).actions.canSendAsNewMessage).toBe(true);
 
         expect(await catalog.steerWindowOpen(sid, t, randomUUID(), LEASE)).toMatchObject({ ok: false, reason: "closed" });
-        expect(await catalog.steerTurnFinalize(sid, t, owner, "published", [], 8)).toEqual({ finalized: false, reason: "closed" });
+        expect(await catalog.steerTurnFinalize(sid, t, owner, "published", [], 8)).toEqual({ finalized: false, reason: "closed", inclusionUpdated: 0 });
         const wev = (await events(sid, ["session.steering_window_changed"])).map((e) => e.data.state);
         expect(wev).toEqual(["open", "quiesced", "closed"]);
     });
@@ -310,6 +310,27 @@ describe("session steering procedures (0082)", () => {
         const b = await deliverOne(s2, o2);
         await catalog.steerTurnFinalize(s2, t2, o2, "unpublished", [b.requestId], null);
         expect(await catalog.steerGet(s2, b.requestId)).toMatchObject({ inclusion: { state: "not_included" }, disposition: "delivered_current_turn" });
+    });
+
+    it("a stopped result closes with Stop labels; after Stop closed first, the owner still records inclusion only", async () => {
+        const s1 = await newSession(); const t1 = target(); const o1 = randomUUID();
+        await catalog.steerWindowOpen(s1, t1, o1, LEASE);
+        await accept(s1, t1, "delivered"); await accept(s1, t1, "pending");
+        const a = await deliverOne(s1, o1);
+        expect(await catalog.steerTurnFinalize(s1, t1, o1, "stopped", [a.requestId], null)).toEqual({ finalized: true });
+        const by1 = Object.fromEntries((await catalog.steerList(s1)).items.map((i) => [i.text, i]));
+        expect(by1.delivered).toMatchObject({ disposition: "delivered_before_stop", closureReason: "stopped", inclusion: { state: "not_included" }, recoveryFlags: [] });
+        expect(by1.pending).toMatchObject({ disposition: "not_delivered_turn_stopped", inclusion: { state: "not_included" } });
+
+        const s2 = await newSession(); const t2 = target(5); const o2 = randomUUID();
+        await catalog.steerWindowOpen(s2, t2, o2, LEASE);
+        await accept(s2, t2, "x");
+        const b = await deliverOne(s2, o2);
+        await catalog.steerCloseStopped(s2, 5);
+        expect(await catalog.steerGet(s2, b.requestId)).toMatchObject({ disposition: "delivered_before_stop", inclusion: { state: "unconfirmed" }, recoveryFlags: [] });
+        expect(await catalog.steerTurnFinalize(s2, t2, "stale", "stopped", null, null)).toMatchObject({ finalized: false, reason: "not_owner" });
+        expect(await catalog.steerTurnFinalize(s2, t2, o2, "stopped", null, null)).toEqual({ finalized: false, reason: "closed", inclusionUpdated: 1 });
+        expect(await catalog.steerGet(s2, b.requestId)).toMatchObject({ status: "closed", disposition: "delivered_before_stop", inclusion: { state: "not_included" } });
     });
 
     it("write-ahead cut and released attempts close with evidence-based labels", async () => {

@@ -310,11 +310,13 @@ export interface SteerWindowOpenResult {
 
 export type SteerRecoveryCheckResult = "present" | "absent" | "failed";
 
-export type SteerFinalizeOutcome = "published" | "adopted" | "unpublished" | "unknown";
+export type SteerFinalizeOutcome = "published" | "adopted" | "unpublished" | "stopped" | "unknown";
 
 export interface SteerFinalizeResult {
     finalized: boolean;
     reason?: "no_window" | "not_owner" | "closed";
+    /** On an already-closed target: rows whose inclusion this owner recorded. */
+    inclusionUpdated?: number;
 }
 
 export interface SteerMarkDeliveredResult {

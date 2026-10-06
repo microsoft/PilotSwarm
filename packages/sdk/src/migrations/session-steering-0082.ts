@@ -206,7 +206,8 @@ BEGIN
         v_flags := v_flags || '["redelivery_pending"]'::JSONB;
     END IF;
     IF v_delivered >= 2 THEN v_flags := v_flags || '["delivered_again"]'::JSONB; END IF;
-    IF r.recovery_check = 'failed' OR (r.status = 'closed' AND v_delivered > 0 AND r.included IS NULL) THEN
+    IF r.recovery_check = 'failed'
+       OR (r.status = 'closed' AND r.closure_reason = 'turn_ended' AND v_delivered > 0 AND r.included IS NULL) THEN
         v_flags := v_flags || '["recovery_unconfirmed"]'::JSONB;
     END IF;
 
@@ -802,15 +803,18 @@ BEGIN
 END $$;
 
 -- ─── Finalize, Stop, withdraw (D-04, D-21, D-28, D-29) ───────────
--- p_outcome: published | adopted | unpublished | unknown. p_manifest: request ids of the
--- delivered entries of the saved result, or NULL when the result carried no manifest.
+-- p_outcome: published | adopted | unpublished | stopped | unknown. p_manifest: request ids of
+-- the delivered entries of the saved result, or NULL when the result carried no manifest.
+-- 'stopped' is an unpublished result whose target closes with reason 'stopped'.
+-- On a target that Stop already closed, the current owner may still record inclusion;
+-- closed rows are never reopened and their dispositions are not changed.
 CREATE OR REPLACE FUNCTION ${s}.cms_steer_turn_finalize(
     p_session_id TEXT, p_epoch INT, p_turn INT, p_incarnation TEXT, p_owner TEXT,
     p_outcome TEXT, p_manifest TEXT[], p_snapshot_version INT)
 RETURNS JSONB LANGUAGE plpgsql AS $$
-DECLARE w RECORD; r RECORD; v_possible BOOLEAN; v_own BOOLEAN; v_incl TEXT;
+DECLARE w RECORD; r RECORD; v_possible BOOLEAN; v_own BOOLEAN; v_incl TEXT; v_n INT := 0;
 BEGIN
-    IF p_outcome NOT IN ('published', 'adopted', 'unpublished', 'unknown') THEN
+    IF p_outcome NOT IN ('published', 'adopted', 'unpublished', 'stopped', 'unknown') THEN
         RAISE EXCEPTION 'invalid finalize outcome %', p_outcome;
     END IF;
     PERFORM ${s}.cms_steer_lock_session(p_session_id);
@@ -821,10 +825,10 @@ BEGIN
     IF w.owner_token IS DISTINCT FROM p_owner THEN
         RETURN jsonb_build_object('finalized', false, 'reason', 'not_owner');   -- stale owner: history only
     END IF;
-    IF w.state = 'closed' THEN RETURN jsonb_build_object('finalized', false, 'reason', 'closed'); END IF;
     FOR r IN SELECT * FROM ${s}.session_steering_requests
               WHERE session_id = p_session_id AND transcript_epoch = p_epoch AND turn_index = p_turn
-                AND incarnation = p_incarnation AND status NOT IN ('closed', 'withdrawn')
+                AND incarnation = p_incarnation
+                AND (status NOT IN ('closed', 'withdrawn') OR (status = 'closed' AND included IS NULL))
               ORDER BY seq FOR UPDATE LOOP
         IF r.included = 'included' THEN CONTINUE; END IF;   -- a winner's inclusion is never overwritten
         SELECT COALESCE(bool_or(outcome IS DISTINCT FROM 'released'), false),
@@ -839,19 +843,30 @@ BEGIN
             ELSIF r.recovery_check = 'absent' AND NOT v_own THEN v_incl := 'not_included';
             ELSE v_incl := 'unconfirmed';
             END IF;
-        ELSIF p_outcome = 'unpublished' THEN
+        ELSIF p_outcome IN ('unpublished', 'stopped') THEN
             v_incl := CASE WHEN v_own OR r.request_id = ANY(COALESCE(p_manifest, '{}'::TEXT[]))
                            THEN 'not_included' ELSE r.included END;
         ELSE
             v_incl := COALESCE(r.included, 'unconfirmed');
         END IF;
-        UPDATE ${s}.session_steering_requests SET
-            included = v_incl,
-            included_snapshot_version = CASE WHEN v_incl = 'included' THEN p_snapshot_version
-                                             ELSE included_snapshot_version END
-         WHERE request_id = r.request_id;
+        IF v_incl IS DISTINCT FROM r.included THEN
+            UPDATE ${s}.session_steering_requests SET
+                included = v_incl,
+                included_snapshot_version = CASE WHEN v_incl = 'included' THEN p_snapshot_version
+                                                 ELSE included_snapshot_version END,
+                revision = CASE WHEN r.status = 'closed' THEN revision + 1 ELSE revision END
+             WHERE request_id = r.request_id;
+            v_n := v_n + 1;
+            IF r.status = 'closed' THEN
+                PERFORM ${s}.cms_steer_record_event(p_session_id, 'session.steering_updated', r.request_id);
+            END IF;
+        END IF;
     END LOOP;
-    PERFORM ${s}.cms_steer_close_target(p_session_id, p_epoch, p_turn, p_incarnation, 'turn_ended', 'finalized');
+    IF w.state = 'closed' THEN
+        RETURN jsonb_build_object('finalized', false, 'reason', 'closed', 'inclusionUpdated', v_n);
+    END IF;
+    PERFORM ${s}.cms_steer_close_target(p_session_id, p_epoch, p_turn, p_incarnation,
+        CASE WHEN p_outcome = 'stopped' THEN 'stopped' ELSE 'turn_ended' END, 'finalized');
     RETURN jsonb_build_object('finalized', true);
 END $$;
 
