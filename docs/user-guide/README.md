@@ -49,6 +49,10 @@ front makes the rest read faster:
 **history**, **files**, **stats** — each shows a different view into what
 the agent did.
 
+**[Session steering](./session-steering.md)** sends explicit guidance to a
+supported running turn. Its receipts distinguish durable acceptance, delivery,
+recovery and uncertainty. Ordinary Send still queues input; Stop remains separate.
+
 **Sub-agents** appear nested under their parent. A child of a child appears
 two levels deep, and so on, up to the runtime's nesting cap.
 

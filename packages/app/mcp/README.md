@@ -384,9 +384,20 @@ with `get_capabilities` to see the shape of this server.
 | Tool | Description |
 |------|-------------|
 | `stop_turn` | Abort the in-flight turn; the session stays alive |
+| `get_steering_state` | Read steering availability and the opaque observed target |
+| `steer_turn` | Accept text guidance for that target; requires a preserved caller request ID |
+| `get_steering_request` | Read authoritative delivery, inclusion and no-resend evidence |
+| `list_steering_requests` | List bounded server-ordered receipt pages |
+| `withdraw_steering_request` | Withdraw before claim, as the original author or effective manager |
 | `complete_session` | Mark a session completed (successful terminal state, distinct from cancel) |
 | `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
 | `send_session_event` | Inject a custom named event into a session *(web)* |
+
+For explicit retained-guidance resend, ordinary `send_message` accepts
+`steering_request_id` with exactly one fresh `client_message_ids` entry.
+Its result says `enqueued`, not delivered. A durable
+`session.steering_resend_requested` event links the original receipt and new
+message identity without changing the original receipt.
 
 ### Session Groups
 

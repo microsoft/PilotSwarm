@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { emptySteeringSession, mergeSteeringReceipt, mergeSteeringWindow } from "./steering.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -843,7 +844,7 @@ function normalizePromptAttachments(prompt, attachments) {
 
 export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
-    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
+    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox|steering)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
     const next = baseReducer(state, action);
     if (next === state) return next;
@@ -984,6 +985,8 @@ function baseReducer(state, action) {
                 },
             };
 
+        case "ui/promptAction":
+            return { ...state, ui: { ...state.ui, promptActionIndex: action.index } };
         case "ui/status":
             return {
                 ...state,
@@ -1613,7 +1616,7 @@ function baseReducer(state, action) {
             const hadRow = Boolean(state.sessions.byId[goneId]);
             const wasActive = state.sessions.activeSessionId === goneId;
             const hadContent = state.history.bySessionId.has(goneId)
-                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.sessionStats]
+                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.steering, state.sessionStats]
                     .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
             if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
@@ -1642,6 +1645,7 @@ function baseReducer(state, action) {
                 executionHistory: discard(state.executionHistory),
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
+                steering: discard(state.steering),
                 sessionStats: discard(state.sessionStats),
                 sessions: {
                     ...state.sessions,
@@ -1968,6 +1972,7 @@ function baseReducer(state, action) {
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
+                    promptActionIndex: null,
                     prompt: nextPrompt,
                     promptCursor: nextPromptCursor,
                     promptRows: getPromptInputRows(nextPrompt),
@@ -2288,6 +2293,64 @@ function baseReducer(state, action) {
             };
         }
 
+        case "steering/accessLost": {
+            const bySessionId = { ...state.steering?.bySessionId };
+            bySessionId[action.sessionId] = {
+                ...emptySteeringSession(), accessLost: true,
+                accessRevision: (bySessionId[action.sessionId]?.accessRevision || 0) + 1,
+            };
+            return { ...state, steering: { ...state.steering, bySessionId } };
+        }
+        case "steering/stateLoaded":
+        case "steering/windowChanged":
+        case "steering/receiptReceived":
+        case "steering/resendUpdated":
+        case "steering/submissionStarted":
+        case "steering/submissionFailed": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            let entry = state.steering?.bySessionId?.[sessionId] || emptySteeringSession();
+            if (action.type === "steering/stateLoaded") {
+                if ((action.accessRevision ?? 0) !== (entry.accessRevision || 0)) return state;
+                entry = { ...entry, accessLost: false };
+                // Reads are captured before awaiting; newer live events win.
+                if ((action.windowSeq ?? 0) >= entry.windowSeq) {
+                    entry = { ...entry, state: action.state, windowSeq: action.windowSeq ?? entry.windowSeq, error: action.error || null };
+                } else {
+                    // The read still supplies capability/access that window
+                    // events deliberately omit, including first-load races.
+                    entry = { ...entry, state: {
+                        ...action.state, ...entry.state,
+                        supported: action.state.supported,
+                        canWrite: action.state.canWrite,
+                        limits: action.state.limits,
+                        steerable: action.state.supported === true && entry.state?.windowState === "open",
+                    } };
+                }
+            } else if (action.type === "steering/windowChanged") {
+                if (entry.accessLost) return state;
+                entry = mergeSteeringWindow(entry, action.window, action.seq);
+            } else if (action.type === "steering/receiptReceived") {
+                if (entry.accessLost || action.accessRevision !== undefined && action.accessRevision !== (entry.accessRevision || 0)) return state;
+                if (action.receipt?.sessionId !== sessionId) return state;
+                entry = mergeSteeringReceipt(entry, action.receipt);
+            } else if (action.type === "steering/resendUpdated") {
+                if (entry.accessLost || (action.accessRevision || 0) !== (entry.accessRevision || 0)) return state;
+                entry = { ...entry, resends: { ...entry.resends, [action.requestId]: action.resend } };
+            } else if (action.type === "steering/submissionStarted") {
+                entry = { ...entry, pending: { ...entry.pending, [action.request.clientRequestId]: action.request } };
+            } else {
+                const pending = entry.pending[action.clientRequestId];
+                if (!pending) return state;
+                entry = { ...entry, pending: { ...entry.pending, [action.clientRequestId]: {
+                    ...pending, inFlight: false, error: action.error, rejected: action.rejected === true,
+                } } };
+            }
+            return { ...state, steering: { ...state.steering, bySessionId: {
+                ...state.steering?.bySessionId, [sessionId]: entry,
+            } } };
+        }
+
         case "outbox/setSessionItems": {
             const sessionId = action.sessionId;
             if (!sessionId) return state;
@@ -2466,6 +2529,7 @@ function baseReducer(state, action) {
                 treeFactsStats: action.treeFactsStats || null,
                 // Session workspaces: getSessionWorkspace's view, or null when unknown.
                 workspace: action.workspace || null,
+                steeringStats: action.steeringStats || null,
             };
             return {
                 ...state,

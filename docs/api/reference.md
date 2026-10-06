@@ -54,6 +54,89 @@ Admission follows the portal's authorization engine (app roles →
 email allowlists → `PORTAL_AUTHZ_DEFAULT_ROLE`); a `403` body carries the
 engine's reason.
 
+## Session steering
+
+Steering is additive and disabled by default (`sessions.steering`). It requires
+enforcing ownership authorization, a supported worker, and a fresh open input
+window. Send still queues the next turn. Stop still interrupts the current turn.
+Steering neither interrupts a running action nor changes permissions.
+
+| Operation | Method and path (under `/api/v1`) | Access |
+|---|---|---|
+| `getSessionSteeringState` | `GET /management/sessions/:sessionId/steering-state` | Read |
+| `steerSessionTurn` | `POST /management/sessions/:sessionId/steering` | Write |
+| `getSteeringRequest` | `GET /management/sessions/:sessionId/steering/:requestId` | Read |
+| `listSteeringRequests` | `GET /management/sessions/:sessionId/steering` | Read |
+| `withdrawSteeringRequest` | `POST /management/sessions/:sessionId/steering/:requestId/withdraw` | Read plus original author or effective manager |
+| `getSessionSteeringStats` | `GET /management/sessions/:sessionId/steering-stats` | Read |
+
+Read state first, then submit the observed opaque `expectedTarget` unchanged:
+
+```json
+{
+  "options": {
+    "text": "Keep the existing public API unchanged.",
+    "clientRequestId": "<caller-generated-uuid>",
+    "expectedTarget": "<observed-target-token>"
+  }
+}
+```
+
+Acceptance returns `{ ok: true, duplicate, receipt }` inside the API's normal
+`{ ok: true, result }` envelope. A refused acceptance returns
+`{ ok: false, code, reason?, limit?, retryAfterMs? }` as its result; authentication
+and authorization failures at the HTTP boundary use the ordinary error envelope.
+The SDK normalizes known acceptance refusals to the same typed result in both modes.
+
+The version-1 receipt contains `requestId`,
+`clientRequestId`, `sessionId`, `expectedTarget`, `sequence`, `acceptedAt`,
+`actor`, immutable `text`, monotonic `revision`, `status`, `disposition`,
+`eligibility`, `inclusion`, `recoveryFlags`, paginated `attempts`, and
+viewer-derived `actions`. Acceptance is not delivery. SDK acknowledgement alone
+means **Waiting for a safe point**, not success. Positive delivery evidence
+distinguishes **Delivered to current turn** from **Delivered after the earlier
+response**. Neither label means the agent understood or followed the guidance.
+
+List reads default to 50 and cap at 200. Use `limit`, `cursor`, `dispositions` (JSON array),
+and `expectedTarget` query parameters. A cursor is bound to the original session
+and filters. `attemptCursor` on a receipt read pages bounded attempt evidence;
+a non-null `attempts.nextCursor` means evidence is incomplete.
+
+Reuse the original caller identity after a lost response; do not mint a new key
+because acceptance was slow. A matching retry returns the same receipt even
+after the turn closes. A different actor, text, or target with that identity
+conflicts. `stale_target` never retargets to a newer turn. `no_active_turn`,
+`unsupported`, `forbidden`, `too_large`, `rate_limited`, and
+`idempotency_conflict` create no ordinary queued message.
+
+Withdrawal is atomic and succeeds only before claim. A losing withdrawal
+returns `not_withdrawable` with the current receipt. It does not recall text.
+Missed guidance stays retained; **Send as new message** is a separate ordinary
+send with a new identity and the actual resender's attribution. For programmatic
+resends, pass `options.steeringRequestId` and exactly one fresh
+`options.clientMessageIds` entry to ordinary `sendMessage`; the text must match
+the retained receipt. The SDK rechecks current write access and records
+`session.steering_resend_requested` before enqueueing. Its payload links the
+original `requestId`, fresh `clientMessageIds`, and actual resender. It proves
+resend intent, not enqueue success or delivery; the ordinary `user.message`
+with the fresh identity is the later delivery evidence. The old receipt is
+unchanged, and the orchestration queue payload has no new fields.
+
+An uncertain receipt remains uncertain until positive evidence corrects it.
+Stop suppresses future delivery but preserves historical delivery and separate
+snapshot-inclusion evidence. Recovery can visibly redeliver within the same
+target; it must never silently advance guidance to another turn.
+
+The durable events `session.steering_accepted`, `session.steering_updated`, and
+`session.steering_window_changed` drive shared UI projections. Updates omit
+authored text and viewer action grants. A correlated `user.message` carries
+`steering: { requestId, revision, attemptId, deliveryKind }`; render it as the
+same receipt row, not another human message.
+
+Audit-only deployments report `unsupported` with `authz_not_enforced`.
+Turning ownership enforcement off later also exposes retained transcript text
+under that deployment's ordinary audit-only policy; it is not a safe rollback.
+
 ## Bespoke routes
 
 | Route | Auth | Description |
@@ -153,6 +236,12 @@ group membership is per-viewer state, not a property of the session. See
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
 | stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
+| getSessionSteeringState | `GET /api/v1/management/sessions/:sessionId/steering-state` | sessionId (path) | Effective capability, observed target, limits and unavailable reason. |
+| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steering` | sessionId (path), options (body) | Accept text guidance with preserved clientRequestId and expectedTarget; returns a typed acceptance/refusal result. |
+| getSteeringRequest | `GET /api/v1/management/sessions/:sessionId/steering/:requestId` | sessionId, requestId (path), attemptCursor, attemptLimit (query) | Authoritative receipt with bounded attempt evidence. |
+| listSteeringRequests | `GET /api/v1/management/sessions/:sessionId/steering` | sessionId (path), cursor, limit, dispositions, expectedTarget (query) | Server-ordered receipt page; cursor is bound to session and filters. |
+| withdrawSteeringRequest | `POST /api/v1/management/sessions/:sessionId/steering/:requestId/withdraw` | sessionId, requestId (path) | Original-author or manager pre-claim withdrawal; returns outcome and current receipt. |
+| getSessionSteeringStats | `GET /api/v1/management/sessions/:sessionId/steering-stats` | sessionId (path), since (query) | Content-free counts and measured latency distributions; counters are cumulative. |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). With `startReplacement: false`, remove it and start nothing; refused (409 `SYSTEM_AGENT_LOADED`) while a live worker loads the agent. |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |

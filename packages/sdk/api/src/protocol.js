@@ -103,6 +103,12 @@ export const OPERATIONS = [
     { name: "cancelSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/cancel", params: { sessionId: path("sessionId") }, summary: "Cancel a session." },
     { name: "completeSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/complete", params: { sessionId: path("sessionId"), reason: body() }, summary: "Mark a session completed." },
     { name: "stopSessionTurn", access: "session:write", method: "POST", path: "/management/sessions/:sessionId/stop-turn", params: { sessionId: path("sessionId"), options: body() }, summary: "Abort the in-flight turn." },
+    { name: "getSessionSteeringState", access: "session:read", alwaysEnforce: true, method: "GET", path: "/management/sessions/:sessionId/steering-state", params: { sessionId: path("sessionId") }, summary: "Steering capability, observed target and limits. Audit-only authorization reports unavailable." },
+    { name: "steerSessionTurn", access: "session:write", alwaysEnforce: true, method: "POST", path: "/management/sessions/:sessionId/steering", params: { sessionId: path("sessionId"), options: body() }, summary: "Accept guidance for the observed running turn: options { text, clientRequestId, expectedTarget }. Returns a durable receipt, not delivery acknowledgement." },
+    { name: "getSteeringRequest", access: "session:read", alwaysEnforce: true, method: "GET", path: "/management/sessions/:sessionId/steering/:requestId", params: { sessionId: path("sessionId"), requestId: path("requestId"), attemptCursor: query(), attemptLimit: query("number") }, summary: "Read an authoritative steering receipt with bounded, paginated attempt evidence." },
+    { name: "listSteeringRequests", access: "session:read", alwaysEnforce: true, method: "GET", path: "/management/sessions/:sessionId/steering", params: { sessionId: path("sessionId"), limit: query("number"), cursor: query(), dispositions: query("json"), expectedTarget: query() }, summary: "List steering receipts in server order (default 50, maximum 200); cursor is bound to the session and filters." },
+    { name: "withdrawSteeringRequest", access: "session:read", alwaysEnforce: true, method: "POST", path: "/management/sessions/:sessionId/steering/:requestId/withdraw", params: { sessionId: path("sessionId"), requestId: path("requestId") }, summary: "Withdraw before claim. Original author or effective session manager only; otherwise forbidden. Returns outcome and current receipt." },
+    { name: "getSessionSteeringStats", access: "session:read", alwaysEnforce: true, method: "GET", path: "/management/sessions/:sessionId/steering-stats", params: { sessionId: path("sessionId"), since: query() }, summary: "Bounded steering counts, uncertainty and latency distributions. Contains no message bodies." },
     { name: "setSessionModel", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/model", params: { sessionId: path("sessionId"), options: body() }, summary: "Switch the session model ({ model, reasoningEffort?, contextTier? })." },
     { name: "restartSystemSession", access: "fleet:admin", method: "POST", path: "/management/sessions/:agentIdOrSessionId/restart-system", params: { agentIdOrSessionId: path("agentIdOrSessionId"), options: body() }, summary: "Restart a system session (complete | terminate | hard_delete). With startReplacement: false, remove it and start nothing; refused (409 SYSTEM_AGENT_LOADED) while a live worker loads the agent." },
     { name: "exportExecutionHistory", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/export-execution-history", params: { sessionId: path("sessionId") }, summary: "Export execution history to an artifact; returns artifact meta." },
@@ -372,7 +378,7 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined, reason = undefined, retryAfterMs = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
@@ -382,5 +388,7 @@ export class ApiError extends Error {
         // and a too-large file's size.
         if (etag === null || typeof etag === "string") this.etag = etag;
         if (Number.isFinite(size)) this.size = size;
+        if (typeof reason === "string") this.reason = reason;
+        if (Number.isFinite(retryAfterMs)) this.retryAfterMs = retryAfterMs;
     }
 }

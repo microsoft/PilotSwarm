@@ -88,6 +88,8 @@ import { FeatureFlagError } from "./feature-flags.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
+import { SteeringManagement, type SteeringCallerContext, type SteeringResendOptions } from "./steering-client.js";
+import type { SteerSessionTurnOptions, GetSteeringRequestOptions, ListSteeringRequestsOptions, SteeringStatsOptions } from "./steering-types.js";
 import type {
     SessionMetricSummary,
     TokensByModelRow,
@@ -668,6 +670,8 @@ export interface ExecutionHistoryEvent {
 
 /** Options for PilotSwarmManagementClient. */
 export interface PilotSwarmManagementClientOptions {
+    /** Validated principal/policy for trusted direct-mode steering calls. Never accepted from HTTP input. */
+    steeringContext?: SteeringCallerContext;
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
     /** Resolved storage config. Must match the worker when supplied. */
@@ -1087,6 +1091,36 @@ export class PilotSwarmManagementClient {
     async getSessionAccess(sessionId: string, viewer: { provider: string; subject: string }): Promise<SessionAccessSnapshot | null> {
         this._ensureStarted();
         return this._catalog!.getSessionAccess(sessionId, viewer);
+    }
+
+    getSessionSteeringState(sessionId: string, edge: SteeringCallerContext = this.config.steeringContext ?? {}) {
+        this._ensureStarted();
+        return new SteeringManagement(this._catalog!).state(sessionId, edge);
+    }
+
+    steerSessionTurn(sessionId: string, options: SteerSessionTurnOptions, edge: SteeringCallerContext = this.config.steeringContext ?? {}) {
+        this._ensureStarted();
+        return new SteeringManagement(this._catalog!).accept(sessionId, options, edge);
+    }
+
+    getSteeringRequest(sessionId: string, requestId: string, options: GetSteeringRequestOptions = {}, edge: SteeringCallerContext = this.config.steeringContext ?? {}) {
+        this._ensureStarted();
+        return new SteeringManagement(this._catalog!).get(sessionId, requestId, options, edge);
+    }
+
+    listSteeringRequests(sessionId: string, options: ListSteeringRequestsOptions = {}, edge: SteeringCallerContext = this.config.steeringContext ?? {}) {
+        this._ensureStarted();
+        return new SteeringManagement(this._catalog!).list(sessionId, options, edge);
+    }
+
+    withdrawSteeringRequest(sessionId: string, requestId: string, edge: SteeringCallerContext = this.config.steeringContext ?? {}) {
+        this._ensureStarted();
+        return new SteeringManagement(this._catalog!).withdraw(sessionId, requestId, edge);
+    }
+
+    getSessionSteeringStats(sessionId: string, options: SteeringStatsOptions = {}, edge: SteeringCallerContext = this.config.steeringContext ?? {}) {
+        this._ensureStarted();
+        return new SteeringManagement(this._catalog!).stats(sessionId, options, edge);
     }
 
     /** Set the sharing level on the ROOT of the given session's tree. */
@@ -3805,7 +3839,7 @@ export class PilotSwarmManagementClient {
     async sendMessage(
         sessionId: string,
         prompt: string,
-        options?: { clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+        options?: { clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] } & SteeringResendOptions,
     ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
@@ -3835,6 +3869,12 @@ export class PilotSwarmManagementClient {
         }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendMessage");
+        const resendContext = options?.steeringRequestId !== undefined
+            ? options.steeringContext ?? this.config.steeringContext ?? { sender: options.sender } : undefined;
+        if (options?.steeringRequestId !== undefined) {
+            await new SteeringManagement(this._catalog!).recordResendIntent(sessionId, options.steeringRequestId,
+                prompt, options.clientMessageIds, resendContext);
+        }
         await this._catalog!.updateSession(sessionId, {
             state: "running",
             lastError: null,
@@ -3850,7 +3890,7 @@ export class PilotSwarmManagementClient {
         if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
             payload.clientMessageIds = options.clientMessageIds;
         }
-        const sender = normalizeMessageSender(options?.sender);
+        const sender = normalizeMessageSender(resendContext?.sender ?? options?.sender);
         if (sender) payload.sender = sender;
         const attachments = sanitizePromptAttachmentRefs(options?.attachments);
         if (attachments.length > 0) payload.attachments = attachments;

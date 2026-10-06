@@ -32,6 +32,15 @@ const BARE_403_MESSAGE = /^(?:forbidden|http 403|403(?: forbidden)?)?\.?$/i;
  */
 export function errorToResult(err: unknown): ToolResult {
     const message = err instanceof Error ? err.message : String(err);
+    if (err && typeof err === "object" && "code" in err && typeof err.code === "string"
+        && ["unsupported", "stale_target", "no_active_turn", "forbidden", "not_found", "invalid",
+            "too_large", "rate_limited", "idempotency_conflict", "not_withdrawable"].includes(err.code)) {
+        return errorResult(message, {
+            code: err.code,
+            ...("reason" in err && typeof err.reason === "string" ? { reason: err.reason } : {}),
+            ...("retryAfterMs" in err && typeof err.retryAfterMs === "number" ? { retryAfterMs: err.retryAfterMs } : {}),
+        });
+    }
     const status = (err as any)?.status ?? (err as any)?.statusCode;
     if ((err as any)?.code === "MODEL_AMBIGUOUS") {
         return errorResult(message, {

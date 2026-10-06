@@ -21,6 +21,7 @@ export {
     evaluateArchiveAccess,
 } from "./src/session-authz.js";
 export { ApiClient } from "./src/api-client.js";
+export { callSteeringOperation } from "./src/steering.js";
 export { ADMIN_SCOPE_POLICY_VERSION, ADMIN_SCOPES, loadAdminScope, validateAdminScope, adminCanAccessResource, adminCapabilities } from "./src/admin-scope.js";
 export * from "./src/admin-diagnostics.js";
 export { createCanvasLiveMirror, jsonMergePatch } from "./src/canvas-live-mirror.js";

@@ -64,6 +64,11 @@ collapsing a folder preserves the current order.
 
 ## Layout overview
 
+To redirect ongoing work without stopping it, use the explicit **Steer** action.
+It keeps a durable guidance receipt separate from ordinary queued input.
+See [Guide a running turn](./session-steering.md) for permissions, delivery
+labels, late input, recovery, and keyboard controls.
+
 When the portal opens you see three panes:
 
 - **Sessions** — left column, session tree (or list on mobile).

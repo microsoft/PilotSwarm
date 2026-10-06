@@ -28,6 +28,19 @@ dashboard picker in the session header; it does not support tab dragging.
 MoA has no sharing links and is unavailable in the native TUI.
 See `docs/user-guide/master-of-agents.md` for behavior and keyboard controls.
 
+## Explicit current-turn guidance
+
+Use shared Steer controls across normal, mobile, focus and MoA composers.
+Do not replace ordinary Send or make steering a sticky global mode. Ctrl+S
+belongs only to the focused textarea; browser Save outside it is unchanged.
+Read `getSessionSteeringState` initially and on reconnect; live window events
+are applicability hints, never access grants. Keep one row per request, merge
+receipt revisions monotonically, and separate delivery from snapshot inclusion
+and terminal no-resend evidence. Preserve the captured session/target and caller
+identity across view switches. The feature requires enforcing ownership
+authorization; no cloud-specific setup is needed.
+See `docs/user-guide/session-steering.md` and `docs/api/reference.md`.
+
 ## Preferred Structure
 
 ```text

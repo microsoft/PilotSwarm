@@ -1,4 +1,7 @@
 import type { ApiClient } from "pilotswarm-sdk/api";
+import { callSteeringOperation } from "pilotswarm-sdk/api";
+import type { SteeringCallerContext } from "../steering-client.js";
+import type { SteerSessionTurnOptions, SteerSessionTurnResult } from "../steering-types.js";
 import type { SessionEvent } from "../cms.js";
 import type {
     PilotSwarmSessionInfo,
@@ -123,6 +126,12 @@ export class WebPilotSwarmClient {
         await this._api.call("cancelPendingMessage", { sessionId, clientMessageIds });
     }
 
+    steerSessionTurn(sessionId: string, options: SteerSessionTurnOptions, _edge?: SteeringCallerContext): Promise<SteerSessionTurnResult> {
+        return callSteeringOperation(this._api, "steerSessionTurn", {
+            sessionId, options: { text: options.text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget },
+        });
+    }
+
     createSystemSession(): never {
         throw webModeUnsupported("createSystemSession", "system sessions are managed by the deployment");
     }
@@ -164,7 +173,7 @@ export class WebPilotSwarmSession {
         this.onUserInput = onUserInput;
     }
 
-    async send(prompt: string, opts?: { clientMessageIds?: string[]; attachments?: Array<{ filename: string }> }): Promise<void> {
+    async send(prompt: string, opts?: { clientMessageIds?: string[]; attachments?: Array<{ filename: string }>; steeringRequestId?: string }): Promise<void> {
         // Seed the turn-tracking cursors from the current live status before
         // the first turn from this handle, so wait() accepts only results
         // produced by our own prompt — not a previous turn's (on a resumed
@@ -177,6 +186,7 @@ export class WebPilotSwarmSession {
             options: {
                 ...(opts?.clientMessageIds ? { clientMessageIds: opts.clientMessageIds } : {}),
                 ...(opts?.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
+                ...(opts?.steeringRequestId !== undefined ? { steeringRequestId: opts.steeringRequestId } : {}),
             },
         });
         this.pendingTurn = true;
@@ -253,6 +263,12 @@ export class WebPilotSwarmSession {
         const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
         if (ids.length === 0) return;
         await this.api.call("cancelPendingMessage", { sessionId: this.sessionId, clientMessageIds: ids });
+    }
+
+    steer(text: string, options: Omit<SteerSessionTurnOptions, "text">, _edge?: SteeringCallerContext): Promise<SteerSessionTurnResult> {
+        return callSteeringOperation(this.api, "steerSessionTurn", {
+            sessionId: this.sessionId, options: { text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget },
+        });
     }
 
     async abort(): Promise<void> {
