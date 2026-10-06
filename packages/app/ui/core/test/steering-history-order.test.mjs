@@ -33,3 +33,22 @@ test("inserting a missing receipt preserves the relative order of all ordinary m
     assert.deepEqual(chat.filter(message => message.kind !== "steering").map(message => message.text), before);
     assert.equal(chat.filter(message => message.kind === "steering").length, 1);
 });
+
+test("missing receipt overlays retain server sequence even when transaction timestamps run backward", () => {
+    let state = stateWithHistory();
+    const ordinary = selectActiveChat(state).map(message => message.text);
+    for (const receipt of [
+        { requestId: "r2", clientRequestId: "c2", sequence: 2, acceptedAt: new Date(500).toISOString() },
+        { requestId: "r1", clientRequestId: "c1", sequence: 1, acceptedAt: new Date(2500).toISOString() },
+    ]) {
+        state = appReducer(state, { type: "steering/receiptReceived", sessionId: "s1", receipt: {
+            schemaVersion: 1, sessionId: "s1", revision: 1, text: "identical guidance",
+            status: "pending", disposition: "accepted", ...receipt,
+        } });
+    }
+    const chat = selectActiveChat(state);
+    assert.deepEqual(chat.filter(message => message.kind !== "steering").map(message => message.text), ordinary);
+    assert.deepEqual(chat.filter(message => message.kind === "steering").map(message => message.steering.requestId), ["r1", "r2"],
+        "acceptedAt is transaction-time evidence, not authority to invert accepted server order");
+    assert.equal(chat.filter(message => message.kind === "steering").length, 2, "equal text retains distinct receipts");
+});
