@@ -98,7 +98,7 @@ test("local sources resolve to observable absolute plugin directories", async t 
     );
 
     assert.equal(installed.spec.kind, "local");
-    assert.equal(installed.pluginDir, fs.realpathSync(local));
+    assert.equal(installed.pluginDir, await fs.promises.realpath(local));
     assert.equal(installed.destinationDir, null);
 });
 
@@ -295,7 +295,11 @@ test("default Git resolver installs a requested commit from a synthetic local re
         fs.readFileSync(path.join(installed.pluginDir, "agents", "example.agent.md"), "utf8"),
         "example",
     );
-    assert.equal(fs.realpathSync(installed.pluginDir).startsWith(fs.realpathSync(destinationRoot) + path.sep), true);
+    assert.equal(
+        (await fs.promises.realpath(installed.pluginDir))
+            .startsWith((await fs.promises.realpath(destinationRoot)) + path.sep),
+        true,
+    );
     assert.deepEqual(
         fs.readdirSync(destinationRoot).filter(name => name.startsWith(".plugin-source-")),
         [],
