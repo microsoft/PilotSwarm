@@ -419,7 +419,9 @@ export class SteeringPump {
         this.gate.close();
         this.wake();
         const settled = (): boolean => this.unresolved().length === 0 && this.idleCount >= 1 + this.runsStartedBySteer;
-        if (settled()) return;
+        // An unconfirmed hand-off (send timeout, unclassified delivery) may still run: ownership
+        // ends only with positively confirmed quiescence, never by returning early (INV-P6).
+        if (settled() && !this.needsQuiesce) return;
         let stop = false;
         const done = (async () => {
             while (!stop && !settled()) await this.nextChange();
