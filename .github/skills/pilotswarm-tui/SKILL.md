@@ -78,6 +78,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   PageUp/PageDown to scroll; Enter refreshes/reconciles, `w` withdraws, `r` sends
   as a new message, `c` copies to an empty draft, and `a` appends. Escape closes.
   The portal uses the same shared controller methods through receipt-row buttons.
+- Portal composer buttons keep a minimum 44px touch target even inside panels.
+  A composer container at most 480px wide places actions below the full-width
+  textarea, preserving Attach/Stop/Steer/Send order and wrapping only the action
+  row when needed. This CSS layout does not change the native TUI action row.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
