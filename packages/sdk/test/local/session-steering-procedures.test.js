@@ -430,6 +430,45 @@ describe.concurrent("session steering procedures (0082)", () => {
         expect(await catalog.steerGet(sid, b.requestId)).toMatchObject({ inclusion: { state: "included" }, status: "closed" });
     });
 
+    it("0083: present_local marks delivered without inclusion; inclusion then follows this attempt's commit", async () => {
+        for (const [outcome, expected] of [["published", "included"], ["unpublished", "not_included"]]) {
+            const sid = await newSession(); const t = target(); const old = randomUUID(); const fresh = randomUUID();
+            await catalog.steerWindowOpen(sid, t, old, LEASE);
+            await accept(sid, t, "x");
+            const a = await deliverOne(sid, old);
+            await catalog.steerWindowOpen(sid, t, fresh, LEASE);
+            expect(await catalog.steerRecordRecoveryCheck(a.requestId, fresh, "present_local", a.sdkId)).toBe(true);
+            expect(await catalog.steerGet(sid, a.requestId)).toMatchObject({ status: "delivered", recoveryCheck: "present", inclusion: { state: "unconfirmed" }, recoveryFlags: [] });
+            expect(await catalog.steerClaim(sid, fresh, 5)).toEqual([]);         // never resent
+            await catalog.steerTurnFinalize(sid, t, fresh, outcome, [a.requestId], outcome === "published" ? 3 : null);
+            expect((await catalog.steerGet(sid, a.requestId)).inclusion.state).toBe(expected);
+        }
+    });
+
+    it("0084: resend intent links a retained steer to a fresh ordinary id, idempotently, and never enqueues", async () => {
+        const sid = await newSession(); const t = target(); const owner = randomUUID();
+        await catalog.steerWindowOpen(sid, t, owner, LEASE);
+        const kept = (await accept(sid, t, "retained")).receipt;
+        const live = (await accept(sid, t, "still pending")).receipt;
+        expect(await catalog.steerRecordResendIntent(sid, live.requestId, "cm-0", alice, alice)).toEqual({ outcome: "not_resendable" });
+        await catalog.steerWindowQuiesce(sid, owner);
+        await catalog.steerTurnFinalize(sid, t, owner, "published", [], 1);
+        const first = await catalog.steerRecordResendIntent(sid, kept.requestId, "cm-1", alice, alice);
+        expect(first).toMatchObject({ outcome: "recorded", duplicate: false,
+            linkage: { sessionId: sid, requestId: kept.requestId, clientMessageId: "cm-1", actor: { provider: "test", subject: "alice" } } });
+        expect(await catalog.steerRecordResendIntent(sid, kept.requestId, "cm-1", alice, alice)).toMatchObject({ outcome: "recorded", duplicate: true });
+        expect(await catalog.steerRecordResendIntent(sid, kept.requestId, "cm-1", bob, bob)).toEqual({ outcome: "conflict" });
+        expect(await catalog.steerRecordResendIntent(sid, live.requestId, "cm-1", alice, alice)).toEqual({ outcome: "conflict" });
+        expect(await catalog.steerRecordResendIntent(sid, "steer_nope", "cm-2", alice, alice)).toEqual({ outcome: "not_found" });
+        expect(await catalog.steerRecordResendIntent(sid, kept.requestId, "", alice, alice)).toEqual({ outcome: "invalid" });
+        expect((await catalog.steerRecordResendIntent(sid, kept.requestId, "cm-3", alice, alice)).duplicate).toBe(false);
+        const ev = await events(sid, ["session.steering_resend_requested"]);
+        expect(ev.map((e) => e.data.clientMessageIds)).toEqual([["cm-1"], ["cm-3"]]);
+        expect(ev[0].data).toMatchObject({ schemaVersion: 1, requestId: kept.requestId, actor: { subject: "alice" }, sender: { subject: "alice" } });
+        const { rows } = await pool.query(`SELECT count(*)::int AS n FROM "${schema}".session_steering_requests WHERE session_id = $1`, [sid]);
+        expect(rows[0].n).toBe(2);                                   // no new steer, no queue row
+    });
+
     it("a failed recovery read keeps the row unclaimable and closes it as recovery unconfirmed", async () => {
         const sid = await newSession(); const t = target(); const old = randomUUID(); const fresh = randomUUID();
         await catalog.steerWindowOpen(sid, t, old, LEASE);

@@ -18,7 +18,7 @@ import type {
     SteerAcceptInput, SteerAcceptResult, SteerFinalizeOutcome, SteerFinalizeResult, SteerListRecord,
     SteerMarkDeliveredResult, SteerRecoveryCheckResult, SteerRow, SteerWindowOpenResult, SteerWithdrawRecord,
     SessionSteeringStats, SteeringActor, SteeringDeliveryKind, SteeringDisposition, SteeringReceiptRecord,
-    SteeringStateRecord, SteeringTarget,
+    SteeringStateRecord, SteeringTarget, SteerResendIntentResult,
 } from "./steering-types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -1490,6 +1490,11 @@ export interface SessionCatalog {
     steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null): Promise<SteerFinalizeResult>;
     /** cms_steer_close_stopped: target-scoped by turn index. */
     steerCloseStopped(sessionId: string, turnIndex: number): Promise<void>;
+    /**
+     * cms_steer_record_resend_intent (0084): idempotent link from a retained steer to the
+     * fresh client message id of its explicit "Send as new message". Records only; never enqueues.
+     */
+    steerRecordResendIntent(sessionId: string, requestId: string, clientMessageId: string, actor: Pick<SteeringActor, "provider" | "subject">, sender?: Record<string, unknown> | null): Promise<SteerResendIntentResult>;
 }
 
 // ─── PostgreSQL Implementation ───────────────────────────────────
@@ -4016,6 +4021,13 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.steerFn("cms_steer_turn_finalize")}($1,$2,$3,$4,$5,$6,$7::text[],$8) AS v`,
             [sessionId, target.epoch, target.turnIndex, target.incarnation, owner, outcome,
                 manifestRequestIds, snapshotVersion]);
+    }
+
+    async steerRecordResendIntent(sessionId: string, requestId: string, clientMessageId: string, actor: Pick<SteeringActor, "provider" | "subject">, sender?: Record<string, unknown> | null): Promise<SteerResendIntentResult> {
+        return this.steerScalar<SteerResendIntentResult>(
+            `SELECT ${this.steerFn("cms_steer_record_resend_intent")}($1,$2,$3,$4::jsonb,$5::jsonb) AS v`,
+            [sessionId, requestId, clientMessageId, JSON.stringify({ provider: actor.provider, subject: actor.subject }),
+                sender ? JSON.stringify(sender) : null]);
     }
 
     async steerCloseStopped(sessionId: string, turnIndex: number): Promise<void> {
