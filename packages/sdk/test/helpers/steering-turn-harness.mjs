@@ -16,7 +16,7 @@ export function barrier() {
 }
 
 /** Product ManagedSession with controlled SDK and storage boundaries. */
-export function makeSteeringTurnHarness({ block = null, send = null, history = null, sdkSession = null } = {}) {
+export function makeSteeringTurnHarness({ block = null, send = null, history = null, sdkSession = null, config = {} } = {}) {
     const handlers = new Set();
     const events = [];
     const calls = [];
@@ -39,7 +39,10 @@ export function makeSteeringTurnHarness({ block = null, send = null, history = n
         }
     };
     const copilot = sdkSession ?? {
-        registerTools() {},
+        tools: new Map(),
+        registerTools(tools) {
+            for (const tool of tools) this.tools.set(tool.name, tool);
+        },
         on(type, fn) {
             const handler = typeof type === "function" ? { type: null, fn: type } : { type, fn };
             handlers.add(handler);
@@ -100,7 +103,7 @@ export function makeSteeringTurnHarness({ block = null, send = null, history = n
         markUnconfirmed: vi.fn(async () => { calls.push(["unconfirmed"]); }),
         onWake(cb) { wake = cb; return () => { wake = null; }; },
     };
-    const managed = new ManagedSession("steering-turn-fixture", copilot, { waitThreshold: 30 });
+    const managed = new ManagedSession("steering-turn-fixture", copilot, { waitThreshold: 30, ...config });
     return {
         managed, copilot, channel, emit, row, calls, cut, events,
         mainEntered: main.promise, claimEntered: claimed.promise, submitted: submitted.promise, delivered: delivered.promise,

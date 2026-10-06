@@ -120,6 +120,67 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
         });
     });
 
+    it("ST-I18: product Stop owns an issued send whose response arrives only after per-session quiescence", { timeout: TIMEOUT }, async () => {
+        const modelEntered = Promise.withResolvers();
+        const modelRelease = Promise.withResolvers();
+        const sendIssued = Promise.withResolvers();
+        const sendResponse = Promise.withResolvers();
+        await withSteeringCli(async (_body, position, record) => {
+            if (position.firstUserText.includes("original prompt")) {
+                modelEntered.resolve(record);
+                await modelRelease.promise;
+                return { content: "held main response" };
+            }
+            return { content: "second session still works" };
+        }, async (h) => {
+            let product;
+            try {
+                const sdk = await h.client.createSession(h.config);
+                const other = await h.client.createSession(h.config);
+                const actualSend = sdk.send.bind(sdk);
+                sdk.send = async (input) => {
+                    const id = await actualSend(input);
+                    if (input.mode === "immediate") {
+                        sendIssued.resolve(id);
+                        await sendResponse.promise;
+                    }
+                    return id;
+                };
+                const lateEvents = [];
+                sdk.on((event) => lateEvents.push(event));
+                product = makeSteeringTurnHarness({ sdkSession: sdk });
+                const disconnect = vi.fn(async () => { await sdk.disconnect(); return true; });
+                const turn = product.run({ steeringQuiesce: disconnect });
+                const request = await within(modelEntered.promise, "active product model request");
+                await within(sendIssued.promise, "actual already-issued immediate RPC");
+                assertEqual(request.connectionClosed, false);
+                product.managed.requestStop("Stop delayed-send fixture");
+                product.managed.abort();
+                const result = await within(turn, "bounded product Stop/quiescence", 30_000);
+                assertEqual(result.type, "stopped");
+                assertEqual(product.managed.getActiveTurn(), null);
+                assertEqual(disconnect.mock.calls.length, 1, "unresolved issued work is quiesced per session");
+                assertEqual(request.connectionClosed, true, "actual main model work has ceased before ownership returns");
+                const requestsAtReturn = h.model.sessionRequests().length;
+                const eventsAtReturn = lateEvents.length;
+                sendResponse.resolve();
+                modelRelease.resolve();
+                const answer = await other.sendAndWait({ prompt: "unrelated second session prompt" }, 20_000);
+                assertEqual(answer.data.content, "second session still works");
+                assertEqual(h.model.sessionRequests().length, requestsAtReturn + 1, "late send response starts no orphan model work");
+                assert(!lateEvents.slice(eventsAtReturn).some((event) => event.type === "assistant.message"
+                    || event.type === "assistant.turn_start" || event.type === "tool.execution_start"),
+                "late events after ownership release do not continue model/tool work");
+                assertEqual(product.copilot.send === sdk.send, true);
+            } finally {
+                sendResponse.resolve();
+                modelRelease.resolve();
+                product?.managed.requestStop("fixture cleanup");
+                product?.managed.abort();
+            }
+        });
+    });
+
     it("ST-I12 prerequisite: getEvents after PilotSwarm preamble reflects the restored snapshot, not dirty warm memory", { timeout: TIMEOUT }, async () => {
         await withSteeringCli(() => ({ content: "fixture answer" }), async (h) => {
             let session = await h.client.createSession(h.config);

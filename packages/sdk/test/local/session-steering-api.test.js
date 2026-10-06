@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { withSteeringLedger, STEER_AUTHOR, STEER_OTHER } from "../helpers/steering-ledger.js";
-import { steeringContext, withSteeringApi } from "../helpers/steering-api.js";
+import { steeringContext, withSteeringApi, withRegisteredSteeringMcp } from "../helpers/steering-api.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
+import { executeSessionsCommand, parseSessionsArgs } from "../../../app/tui/src/sessions-cli.js";
 
 const TIMEOUT = 120_000;
 const owner = steeringContext(STEER_AUTHOR.subject);
@@ -147,6 +148,106 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                 await h.catalog.createSession(otherSession, { owner: STEER_AUTHOR });
                 await expect(remote.listSteeringRequests(otherSession, { limit: 1, cursor: page.nextCursor }))
                     .rejects.toMatchObject({ code: "invalid" });
+            });
+        });
+    });
+
+    it("ST-A01/ST-A07: registered MCP and CLI controllers reach the real authorized Web management contract", { timeout: TIMEOUT }, async () => {
+            await withSteeringLedger(async (h) => {
+                await enable(h);
+                await h.open();
+                await withSteeringApi(h, async ({ web }) => {
+                    const remote = await web(STEER_AUTHOR.subject);
+                    const state = await executeSessionsCommand(remote, parseSessionsArgs(["steering-state", h.sessionId]));
+                    const options = { text: "registered tool guidance", clientRequestId: randomUUID(), expectedTarget: state.expectedTarget };
+                    await withRegisteredSteeringMcp(remote, async (mcp) => {
+                        const wire = await mcp.callTool({ name: "steer_turn", arguments: {
+                            session_id: h.sessionId, text: options.text,
+                            client_request_id: options.clientRequestId, expected_target: options.expectedTarget,
+                        } });
+                        const accepted = JSON.parse(wire.content[0].text);
+                        assertEqual(wire.isError, undefined);
+                        assertEqual(accepted.ok, true);
+                        assertEqual(accepted.receipt.disposition, "accepted");
+                        assertEqual(accepted.receipt.actor.subject, STEER_AUTHOR.subject);
+                        const retry = await executeSessionsCommand(remote, parseSessionsArgs(["steer", h.sessionId, "--text", options.text,
+                            "--client-request-id", options.clientRequestId, "--expected-target", options.expectedTarget]));
+                        assertEqual(retry.duplicate, true);
+                        expect(retry.receipt).toEqual(accepted.receipt);
+                        const receiptWire = await mcp.callTool({ name: "get_steering_request", arguments: {
+                            session_id: h.sessionId, request_id: accepted.receipt.requestId,
+                        } });
+                        expect(JSON.parse(receiptWire.content[0].text)).toEqual(accepted.receipt);
+                        await h.catalog.steerClaim(h.sessionId, h.target.owner, 1);
+                        const withdrawn = await mcp.callTool({ name: "withdraw_steering_request", arguments: {
+                            session_id: h.sessionId, request_id: accepted.receipt.requestId,
+                        } });
+                        assertEqual(withdrawn.isError, true);
+                        assertEqual(JSON.parse(withdrawn.content[0].text).outcome, "not_withdrawable");
+                        const refusal = await mcp.callTool({ name: "steer_turn", arguments: {
+                            session_id: h.sessionId, text: "stale", client_request_id: randomUUID(), expected_target: "stale-token",
+                        } });
+                        assertEqual(refusal.isError, true);
+                        assertEqual(JSON.parse(refusal.content[0].text).code, "stale_target");
+                        assertEqual((await h.requests()).length, 1);
+                    });
+                });
+            });
+        });
+
+    it("ST-A06: actual API resend persists one attributed linkage before an ordinary unchanged queue payload", { timeout: TIMEOUT }, async () => {
+            await withSteeringLedger(async (h) => {
+                await enable(h);
+                await h.open();
+                const accepted = await h.accept();
+                await h.finalize();
+                await h.catalog.grantSessionShare(h.sessionId, STEER_OTHER, "write", STEER_AUTHOR);
+                await withSteeringApi(h, async ({ direct, web }) => {
+                    const sent = [];
+                    const originalQueue = direct._duroxideClient.enqueueEvent;
+                    const originalStatus = direct._duroxideClient.getStatus;
+                    direct._duroxideClient.getStatus = async () => ({ status: "Running" });
+                    direct._duroxideClient.enqueueEvent = async (...args) => {
+                        const events = await h.catalog.getSessionEvents(h.sessionId);
+                        const linkage = events.filter((event) => event.eventType === "session.steering_resend_requested");
+                        assertEqual(linkage.length, 1, "durable provenance precedes ordinary enqueue");
+                        assertEqual(linkage[0].data.actor.subject, STEER_OTHER.subject);
+                        sent.push(args);
+                    };
+                    try {
+                        const writer = await web(STEER_OTHER.subject);
+                        const clientMessageId = randomUUID();
+                        const options = {
+                            clientMessageIds: [clientMessageId], steeringRequestId: accepted.requestId,
+                            sender: { kind: "system", subject: "forged" }, isManager: true,
+                        };
+                        await writer.sendMessage(h.sessionId, accepted.content, options);
+                        await writer.sendMessage(h.sessionId, accepted.content, options);
+                        assertEqual(sent.length, 2, "queue still uses ordinary resend/replay semantics");
+                        const [orchestrationId, queue, payloadJson] = sent[0];
+                        assertEqual(orchestrationId, `session-${h.sessionId}`);
+                        assertEqual(queue, "messages");
+                        const payload = JSON.parse(payloadJson);
+                        expect(Object.keys(payload).sort()).toEqual(["clientMessageIds", "prompt", "sender"]);
+                        assertEqual(payload.prompt, accepted.content);
+                        expect(payload.clientMessageIds).toEqual([clientMessageId]);
+                        assertEqual(payload.sender.subject, STEER_OTHER.subject);
+                        assertEqual(payload.sender.kind, "user");
+                        assertEqual(payload.sender.steeringRequestId, undefined, "provenance stays outside replayed queue shape");
+                        const record = await h.request(accepted.requestId);
+                        assertEqual(record.actor.subject, STEER_AUTHOR.subject, "original author remains immutable");
+                        assertEqual(record.status, "closed");
+                        const { rows } = await h.query(`SELECT * FROM ${h.schema}.session_steering_resend_intents WHERE session_id=$1`, [h.sessionId]);
+                        assertEqual(rows.length, 1, "matching resend retry writes one intent");
+                        assertEqual(rows[0].actor.subject, STEER_OTHER.subject);
+                        await expect(writer.sendMessage(h.sessionId, "changed text", options)).rejects.toMatchObject({ code: "invalid" });
+                        await expect(writer.sendMessage(h.sessionId, accepted.content, { ...options, clientMessageIds: [accepted.idempotencyKey] }))
+                            .rejects.toMatchObject({ code: "invalid" });
+                        assertEqual(sent.length, 2, "invalid resend cannot enqueue");
+                    } finally {
+                        direct._duroxideClient.enqueueEvent = originalQueue;
+                        direct._duroxideClient.getStatus = originalStatus;
+                    }
             });
         });
     });
