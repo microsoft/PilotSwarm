@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { canvasKey, newClientId, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes } from "./pane-layout.js";
@@ -686,7 +686,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
     const split = (node, direction) => {
         if (nodes.length >= MOA_MAX_PANELS) { setError(`A MoA supports up to ${MOA_MAX_PANELS} panels.`); return; }
         const empty = emptyMoaPanel();
-        replace(node.id, { id: crypto.randomUUID(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
+        replace(node.id, { id: newClientId(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
     };
     const zoom = (node, artifact = null) => {
         setError("");
@@ -810,7 +810,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
     const dashboardNav = <DashboardTabs value={value} onSelect={id => update({ ...value, activeDashboardId: id })} onPicker={() => setDashboardPicker(true)} onAdd={addDashboard} onEdit={() => setDashboardEdit({ name: layout.name })} onReorder={(id, index) => update(moveMoaDashboard(value, id, index))} />;
     function addDashboard() {
         if (value.dashboards.length >= MOA_MAX_DASHBOARDS) return;
-        const id = crypto.randomUUID();
+        const id = newClientId();
         const names = new Set(value.dashboards.map(d => d.name)); let n = 1; while (names.has(`MoA ${n}`)) n++;
         update({ ...value, activeDashboardId: id, dashboards: [...value.dashboards, { id, name: `MoA ${n}`, tree: null }] });
     }
@@ -857,7 +857,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
                 <small>Swipe left for the next panel, right for the previous. Canvas: swipe the title bar.</small>
             </div>
         </Modal>}
-        {visible && creating && <CreatePanelSession parent={controller} createTransport={createTransport} onClose={() => { setPicker(creating); setCreating(null); }} onCreated={created => { const target = creating; controller.dispatch({ type: "sessions/merged", session: created }); controller.refreshSessions().catch(() => {}); const next = { id: target.id || crypto.randomUUID(), type: "chat", sessionId: created.sessionId }; replace(target.id, next, next.id); setCreating(null); }} />}
+        {visible && creating && <CreatePanelSession parent={controller} createTransport={createTransport} onClose={() => { setPicker(creating); setCreating(null); }} onCreated={created => { const target = creating; controller.dispatch({ type: "sessions/merged", session: created }); controller.refreshSessions().catch(() => {}); const next = { id: target.id || newClientId(), type: "chat", sessionId: created.sessionId }; replace(target.id, next, next.id); setCreating(null); }} />}
         {visible && dashboardPicker && <Modal title="MoA dashboards" onClose={() => setDashboardPicker(false)}><div className="ps-moa-dashboard-picker">
             {value.dashboards.map(d => <div className="ps-moa-dashboard-item" key={d.id}><button className="ps-moa-dashboard-choice" aria-current={d.id === layout.id ? "true" : undefined} onClick={() => { setDashboardPicker(false); update({ ...value, activeDashboardId: d.id }); }}><DashboardPreview dashboard={d} /><span>{d.name}<small>{moaLeaves(d.tree).length} panels{d.id === layout.id ? " · Active" : ""}</small></span></button><IconButton label={`Edit dashboard ${d.name}`} icon="controls" onClick={() => { setDashboardPicker(false); setDashboardEdit({ id: d.id, name: d.name }); }} /></div>)}
             <IconButton label="Add MoA dashboard" icon="add" disabled={value.dashboards.length >= MOA_MAX_DASHBOARDS} onClick={addDashboard} />
@@ -875,7 +875,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
             <p>Clear “{layout.name}”? This removes the panels from this dashboard. Your sessions and canvases stay intact.</p>
             <div className="ps-moa-row"><IconButton label="Cancel clear" icon="close" onClick={() => setClearing(false)} /><IconButton label="Confirm clear layout" icon="clear" onClick={() => { saveLayout({ tree: null, focusedPanelId: null }); setClearing(false); setError(""); }} /></div>
         </div></Modal>}
-        {visible && picker && <SessionPicker controller={controller} initial={picker} onCreate={() => { setCreating(picker); setPicker(null); }} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || crypto.randomUUID(), ...binding }; replace(picker.id, next, next.id); setPicker(null); }} />}
+        {visible && picker && <SessionPicker controller={controller} initial={picker} onCreate={() => { setCreating(picker); setPicker(null); }} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || newClientId(), ...binding }; replace(picker.id, next, next.id); setPicker(null); }} />}
         {visible && menu && <Modal title="Session control panel" onClose={closeMenu}><div className="ps-moa-control-panel">
             <p className="ps-moa-control-title">{state.sessions.byId[menu.sessionId]?.title || "Empty panel"}</p>
             {menu.type !== "empty" && <section aria-label="Session actions"><h3>Session</h3><div className="ps-moa-control-actions">

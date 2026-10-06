@@ -1,4 +1,5 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
+import { newClientId } from "./client-id.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -4062,7 +4063,7 @@ export class PilotSwarmUiController {
         const expectedRevision = draft?.expectedRevision ?? definition.revision;
         const signature = JSON.stringify([target, featureKey, expectedRevision, values]);
         this._featureMutationRetries ??= new Map();
-        const requestId = this._featureMutationRetries.get(signature) ?? globalThis.crypto.randomUUID();
+        const requestId = this._featureMutationRetries.get(signature) ?? newClientId();
         this._featureMutationRetries.set(signature, requestId);
         const input = { featureKey, expectedRevision, requestId, ...(values || {}) };
         this.dispatch({ type: "admin/features", patch: { saving: true, error: null, notice: null } });
@@ -6040,7 +6041,7 @@ export class PilotSwarmUiController {
         }
         const sessionId = state.sessions.activeSessionId;
         const text = state.ui.prompt;
-        const clientRequestId = globalThis.crypto.randomUUID();
+        const clientRequestId = newClientId();
         const request = {
             text, clientRequestId, sessionId,
             expectedTarget: state.steering.bySessionId[sessionId].state.expectedTarget,
@@ -6115,7 +6116,7 @@ export class PilotSwarmUiController {
         const entry = this.getState().steering?.bySessionId?.[sessionId];
         const accessRevision = entry?.accessRevision || 0;
         const previous = entry?.resends?.[requestId];
-        const clientMessageId = previous?.phase === "uncertain" ? previous.clientMessageId : globalThis.crypto.randomUUID();
+        const clientMessageId = previous?.phase === "uncertain" ? previous.clientMessageId : newClientId();
         let enqueueAttempted = false;
         try {
             const receipt = await this.refreshSteeringReceipt(sessionId, requestId);
