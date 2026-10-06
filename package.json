@@ -14,6 +14,7 @@
     "test:devbox-scripts": "node --test scripts/test/devbox-owner.test.mjs scripts/test/devbox-workflow-generator.test.mjs",
     "test:campaign": "node scripts/run-local-test-baseline.mjs",
     "test:campaign:unit": "node --test scripts/test/local-test-baseline-runner.test.mjs scripts/test/local-test-validation-compare.test.mjs",
+    "test:campaign:component": "node --test scripts/test/local-test-baseline-runner.component.test.mjs",
     "test:campaign:compare": "node scripts/compare-local-test-validation.mjs",
     "test:campaign:dashboard": "node scripts/serve-local-test-baseline.mjs",
     "test:campaign:dashboard:unit": "node --test scripts/test/local-test-baseline-dashboard.test.mjs",
