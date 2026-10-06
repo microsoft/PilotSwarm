@@ -1,4 +1,11 @@
 import type { ApiClient } from "pilotswarm-sdk/api";
+import { callSteeringOperation } from "pilotswarm-sdk/api";
+import type { SteeringCallerContext } from "../steering-client.js";
+import type {
+    SteerSessionTurnOptions, SteerSessionTurnResult, SessionSteeringState,
+    GetSteeringRequestOptions, SteeringReceiptV1, ListSteeringRequestsOptions,
+    SteeringListPage, WithdrawSteeringRequestResult, SteeringStatsOptions, SessionSteeringStats,
+} from "../steering-types.js";
 import {
     PilotSwarmWebOptions,
     createApiClientFromOptions,
@@ -107,6 +114,39 @@ export class WebPilotSwarmManagementClient {
 
     async stopSessionTurn(sessionId: string, opts: { reason?: string; timeoutMs?: number } = {}): Promise<any> {
         return this._api.call("stopSessionTurn", { sessionId, options: opts });
+    }
+
+    async getSessionSteeringState(sessionId: string, _edge?: SteeringCallerContext): Promise<SessionSteeringState & {
+        supported: boolean; canWrite: boolean; windowSeq: number;
+    }> {
+        return callSteeringOperation(this._api, "getSessionSteeringState", { sessionId });
+    }
+
+    async steerSessionTurn(sessionId: string, options: SteerSessionTurnOptions, _edge?: SteeringCallerContext): Promise<SteerSessionTurnResult> {
+        return callSteeringOperation(this._api, "steerSessionTurn", {
+            sessionId, options: { text: options.text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget },
+        });
+    }
+
+    async getSteeringRequest(sessionId: string, requestId: string, options: GetSteeringRequestOptions = {}, _edge?: SteeringCallerContext): Promise<SteeringReceiptV1> {
+        return callSteeringOperation(this._api, "getSteeringRequest", {
+            sessionId, requestId, attemptCursor: options.attemptCursor, attemptLimit: options.attemptLimit,
+        });
+    }
+
+    async listSteeringRequests(sessionId: string, options: ListSteeringRequestsOptions = {}, _edge?: SteeringCallerContext): Promise<SteeringListPage> {
+        return callSteeringOperation(this._api, "listSteeringRequests", {
+            sessionId, limit: options.limit, cursor: options.cursor,
+            dispositions: options.dispositions, expectedTarget: options.expectedTarget,
+        });
+    }
+
+    async withdrawSteeringRequest(sessionId: string, requestId: string, _edge?: SteeringCallerContext): Promise<WithdrawSteeringRequestResult> {
+        return callSteeringOperation(this._api, "withdrawSteeringRequest", { sessionId, requestId });
+    }
+
+    async getSessionSteeringStats(sessionId: string, options: SteeringStatsOptions = {}, _edge?: SteeringCallerContext): Promise<SessionSteeringStats> {
+        return callSteeringOperation(this._api, "getSessionSteeringStats", { sessionId, since: options.since });
     }
 
     async setSessionModel(sessionId: string, model: string, opts: { reasoningEffort?: string | null; contextTier?: string | null; source?: string } = {}): Promise<void> {

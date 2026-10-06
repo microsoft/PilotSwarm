@@ -1,5 +1,6 @@
 import { ApiClient } from "./api-client.js";
 import { createCanvasLiveMirror } from "./canvas-live-mirror.js";
+import { callSteeringOperation } from "./steering.js";
 
 /**
  * Flatten an agent-package copy selector into wire params.
@@ -266,6 +267,37 @@ export class HttpApiTransport {
 
     async stopSessionTurn(sessionId, options = {}) {
         return this.api.call("stopSessionTurn", { sessionId, options });
+    }
+
+    getSessionSteeringState(sessionId) {
+        return callSteeringOperation(this.api, "getSessionSteeringState", { sessionId });
+    }
+
+    steerSessionTurn(sessionId, options) {
+        return callSteeringOperation(this.api, "steerSessionTurn", { sessionId, options: {
+            text: options.text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget,
+        } });
+    }
+
+    getSteeringRequest(sessionId, requestId, options = {}) {
+        return callSteeringOperation(this.api, "getSteeringRequest", {
+            sessionId, requestId, attemptCursor: options.attemptCursor, attemptLimit: options.attemptLimit,
+        });
+    }
+
+    listSteeringRequests(sessionId, options = {}) {
+        return callSteeringOperation(this.api, "listSteeringRequests", {
+            sessionId, limit: options.limit, cursor: options.cursor,
+            dispositions: options.dispositions, expectedTarget: options.expectedTarget,
+        });
+    }
+
+    withdrawSteeringRequest(sessionId, requestId) {
+        return callSteeringOperation(this.api, "withdrawSteeringRequest", { sessionId, requestId });
+    }
+
+    getSessionSteeringStats(sessionId, options = {}) {
+        return callSteeringOperation(this.api, "getSessionSteeringStats", { sessionId, since: options.since });
     }
 
     // ── Messaging ───────────────────────────────────────────────────────
@@ -622,7 +654,7 @@ export class HttpApiTransport {
 
     // ── Streaming ───────────────────────────────────────────────────────
 
-    subscribeSession(sessionId, handler) {
+    subscribeSession(sessionId, handler, onResubscribe) {
         // The canvas data plane rides the SAME subscription: plane pushes
         // (patch pings off the database's NOTIFY) are mirrored into complete
         // `session.canvas_data`-shaped events, so every consumer keeps its
@@ -670,7 +702,7 @@ export class HttpApiTransport {
             }
             handler(event);
         };
-        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped);
+        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, onResubscribe);
         const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
             if (message?.kind === "kv") {
                 // A KV change: not part of the tick mirror (per-key rev, not

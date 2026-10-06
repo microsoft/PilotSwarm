@@ -62,6 +62,18 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 ## Product Rules
 
+- Session steering is separate from the ordinary outbox. Preserve the captured
+  session, target and caller identity across asynchronous responses and view
+  changes. Merge receipt revisions monotonically; `user.message.steering`
+  updates the same guidance row, never an equal-text queued prompt. An SDK
+  send acknowledgement is not delivery or inclusion.
+- The portal's Steer button and prompt-focused Ctrl+S use the shared command.
+  Native TUI Tab first accepts reference autocomplete, otherwise focuses the
+  Send/Steer/Stop action row when available. Left/Right select, Enter activates,
+  Tab continues pane traversal, and Shift+Tab/Escape returns to the editor.
+  Native Ctrl+S is gated on raw-mode coverage across supported terminal hosts;
+  do not advertise it before that gate passes. Send/newline/Stop stay unchanged.
+
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
   app-specific guide overrides. Public source and package downloads do not

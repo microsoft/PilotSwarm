@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { SteeringReceipt } from "./steering-receipt.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -43,6 +44,7 @@ import {
     selectArtifactUploadModal,
     selectLiveActivityLines,
     selectActiveOutboxMessages,
+    selectSteeringComposer,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -902,7 +904,7 @@ function normalizeLines(lines) {
         // recognize and render them (e.g. markdownTable → HTML <table>,
         // cardStart/cardEnd → styled card with structured body,
         // imageAttachments → authenticated thumbnail strip).
-        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments") {
+        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments" || line?.kind === "steeringReceipt") {
             normalized.push(line);
             continue;
         }
@@ -3570,6 +3572,11 @@ function parseStructuredChatBlocks(lines = []) {
         // mode. The body lines between the bounds are UNWRAPPED, so parse
         // them recursively — box-drawn/markdown tables inside the card
         // become real HTML tables instead of hard-wrapped box art.
+        if (currentLine?.kind === "steeringReceipt") {
+            blocks.push({ type: "steeringReceipt", message: currentLine.message });
+            index += 1;
+            continue;
+        }
         if (currentLine?.kind === "cardStart") {
             const innerLines = [];
             index += 1;
@@ -3983,6 +3990,9 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
+            if (block.type === "steeringReceipt") {
+                return React.createElement(SteeringReceipt, { key: block.message.id, message: block.message, controller });
+            }
             if (block.type === "nativeTasks") {
                 return React.createElement(NativeTaskCard, { key: block.group.id, group: block.group,
                     colors: { starting: resolveColor(theme, "cyan"), running: resolveColor(theme, "cyan"),
@@ -9514,6 +9524,7 @@ function formatAttachmentSize(sizeBytes) {
 }
 
 function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
+    const steering = useControllerSelector(controller, selectSteeringComposer, shallowEqualObject);
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -9686,6 +9697,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 onAfterSend?.();
             });
     }, [controller, onAfterSend]);
+    const steerPrompt = React.useCallback(() => {
+        controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    }, [controller]);
 
     const [stoppingTurn, setStoppingTurn] = React.useState(false);
     const stopTurn = React.useCallback(() => {
@@ -9806,6 +9820,12 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 }
                 : undefined,
             onKeyDown: (event) => {
+                if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "s") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    steerPrompt();
+                    return;
+                }
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {
                     event.preventDefault();
                     return;
@@ -9882,6 +9902,15 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     onClick: stopTurn,
                 }, "■")
                 : null,
+            steering.visible ? React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button ps-steer-button",
+                "aria-label": "Steer current turn",
+                title: steering.enabled ? `${steering.help} (Ctrl+S)` : steering.reason,
+                disabled: !steering.enabled,
+                onPointerDown: (event) => event.preventDefault(),
+                onClick: steerPrompt,
+            }, "Steer") : null,
             React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}`,
@@ -9889,7 +9918,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     ? "Send all queued prompts"
                     : promptState.hasOutbox
                         ? "Queue prompt behind the pending batch"
-                        : "Send prompt",
+                        : promptState.canStopTurn ? "Queue for the next turn" : "Send prompt",
                 "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                     ? "Send queued prompts"
                     : promptState.hasOutbox

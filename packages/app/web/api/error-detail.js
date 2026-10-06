@@ -19,5 +19,7 @@ export function errorDetail(error, status, code) {
     if (Array.isArray(error?.validation?.errors)) detail.validation = error.validation;
     if (error && Object.prototype.hasOwnProperty.call(error, "etag") && (error.etag === null || typeof error.etag === "string")) detail.etag = error.etag;
     if (Number.isFinite(error?.size)) detail.size = error.size;
+    if (typeof error?.reason === "string" && error.reason.length <= 128) detail.reason = error.reason;
+    if (Number.isFinite(error?.retryAfterMs) && error.retryAfterMs >= 0) detail.retryAfterMs = error.retryAfterMs;
     return detail;
 }

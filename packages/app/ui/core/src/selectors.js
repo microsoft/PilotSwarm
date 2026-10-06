@@ -1,5 +1,6 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
+import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession } from "./steering.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import {
@@ -2052,7 +2053,23 @@ export function selectActiveChat(state) {
         }];
     }
     const history = state.history.bySessionId.get(sessionId);
-    const chat = history?.chat || [];
+    const steering = state.steering?.bySessionId?.[sessionId];
+    const chat = steering ? [...(history?.chat || [])] : history?.chat || [];
+    if (steering) {
+        for (const receipt of Object.values(steering.receipts)) {
+            const index = chat.findIndex(item => item.kind === "steering" && item.steering.requestId === receipt.requestId);
+            const previous = index >= 0 ? chat[index].steering : null;
+            const merged = mergeSteeringReceipt({
+                ...emptySteeringSession(), receipts: previous ? { [receipt.requestId]: previous } : {},
+            }, receipt).receipts[receipt.requestId];
+            const message = buildSteeringMessage(merged);
+            if (index >= 0) chat[index] = message;
+            else chat.push(message);
+        }
+        for (const pending of Object.values(steering.pending)) chat.push(buildSteeringMessage(pending));
+        chat.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)
+            || (a.steering?.sequence || 0) - (b.steering?.sequence || 0));
+    }
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
         if (splash.length) return splash;
@@ -2192,7 +2209,9 @@ function describeChatMessageHeader(message, options = {}) {
     //        message to the model; timestamp shows the LATEST delivery
     let glyph = null;
     let glyphColor = null;
-    if (message?.pendingPhase === "pending") {
+    if (message?.kind === "steering") {
+        glyph = null;
+    } else if (message?.pendingPhase === "pending") {
         glyph = "○";
         glyphColor = "yellow";
     } else if (message?.pendingPhase === "queued") {
@@ -2705,6 +2724,17 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 }
 
 function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
+    if (message?.kind === "steering") {
+        if (options.tableMode === "sentinel") return [{ kind: "steeringReceipt", message }];
+        return buildMessageCardLines({
+            title: `${message.sender?.display || "You"} · Guidance · ${message.steeringLabel}`,
+            titleColor: "cyan",
+            body: `${message.text}\n\n${message.steeringDetail || ""}`,
+            width: maxWidth,
+            tableMode: options.tableMode,
+            cardKey: message.id,
+        });
+    }
     if (message?.kind === "chat-call") {
         return options.tableMode === "sentinel" ? [chatCallLine(message)] : [];
     }
@@ -3198,6 +3228,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         session: memoSession,
         byId: state?.sessions?.byId ?? null,
         chat: state?.history?.bySessionId?.get?.(memoSessionId)?.chat ?? null,
+        steering: state?.steering?.bySessionId?.[memoSessionId] ?? null,
         // Raw tool activity affects warning/question reconciliation, but must
         // not re-wrap an ordinary, unchanged transcript on every event.
         events: memoSession?.chatWarnings?.length || memoSession?.error || memoSession?.pendingQuestion
@@ -3212,6 +3243,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.session === memoKey.session
             && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
+            && entry.steering === memoKey.steering
             && entry.events === memoKey.events
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
@@ -3564,6 +3596,33 @@ export function selectActiveOutboxMessages(state) {
     return Array.isArray(state.outbox?.bySessionId?.[sessionId])
         ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
         : [];
+}
+
+export function selectSteeringComposer(state) {
+    const sessionId = state.sessions.activeSessionId;
+    const steering = state.steering?.bySessionId?.[sessionId];
+    const session = state.sessions.byId[sessionId];
+    const eligibility = getSteeringEligibility({
+        session: session ? { ...session, canWrite: steering?.state?.canWrite === true } : null,
+        steering, draft: state.ui.prompt, attachments: state.ui.promptAttachments || [],
+    });
+    return {
+        ...eligibility,
+        enabled: eligibility.enabled && !state.ui.promptEdit,
+        reason: state.ui.promptEdit ? "Finish editing the queued message first" : eligibility.reason,
+        visible: Boolean(steering?.state?.supported),
+    };
+}
+
+export function selectPromptActions(state) {
+    const steering = selectSteeringComposer(state);
+    if (!steering.visible) return [];
+    const session = selectActiveSession(state);
+    return [
+        { label: "Send", command: "sendPrompt", enabled: true },
+        { label: "Steer", command: "steerTurn", enabled: steering.enabled },
+        { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session) },
+    ];
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
@@ -6026,8 +6085,14 @@ export function selectStatusBar(state) {
                         ? `type message · enter queues behind durable items · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                         : `type message · enter send · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
+    if (focus === FOCUS_REGIONS.PROMPT && state.ui.promptActionIndex != null) {
+        return { left: state.ui.statusText, right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
+    }
 
     let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];
+    if (focus === FOCUS_REGIONS.PROMPT && selectSteeringComposer(state).visible) {
+        right = `tab Send/Steer/Stop actions · ${right}`;
+    }
     // Surface the Stop-turn hint at the front (so truncation never eats it)
     // exactly while a turn is running; it stays listed, grayed, in `?` help.
     if (canStopSessionTurn(selectActiveSession(state))) {
@@ -9399,6 +9464,8 @@ const KEYBINDING_HELP = [
     ] },
     { section: "Prompt", bindings: [
         ["enter", "send"],
+        ["Tab", "autocomplete, else Send/Steer/Stop actions when available"],
+        ["actions: ← →", "choose · Enter activate · Esc/Shift+Tab prompt"],
         ["alt/ctrl-j", "newline"],
         ["ctrl-a", "attach artifact"],
         ["@ / @@", "artifact / session reference"],

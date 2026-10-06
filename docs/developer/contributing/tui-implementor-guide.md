@@ -53,6 +53,26 @@ The most important rule is:
 
 If a fix can live below `packages/app/tui`, it usually should.
 
+### Steering input and receipts
+
+`ui/core/src/steering.js` owns the guidance projection. Its per-session receipt
+map is independent of the coalescing message outbox. Match caller/server
+identities, never equal text. Ignore lower receipt revisions and stale window
+event sequences. Broadcast events do not grant viewer action permissions;
+authorized receipt/state reads supply those.
+
+Both hosts use the shared `steerTurn` command. Capture session, target and caller
+identity before awaiting; a response must not clear a different session's draft.
+History, backward paging and live events produce the same stable guidance row.
+SDK send acknowledgement means waiting, not delivered. Keep inclusion and
+terminal no-resend evidence separate from historical delivery.
+
+The portal uses native button focus and a textarea-scoped Ctrl+S handler.
+The native prompt's Tab accepts autocomplete first, then enters the action row
+when available. Left/Right select Send, Steer or Stop; Enter activates; Tab
+continues pane traversal; Shift+Tab/Escape returns to editing. Do not enable or
+advertise native Ctrl+S until supported-terminal raw-mode coverage passes.
+
 ## Source Map
 
 For streaming chat, follow the [live-plane contract](../../architecture/live-plane.md).

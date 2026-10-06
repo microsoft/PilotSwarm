@@ -372,8 +372,12 @@ export class PortalRuntime {
         // flip to enforce (adversarial review HIGH-2).
         // session:files (the Workspace pane) is new as well: the session's
         // owner only, whatever the ownership switch says.
-        const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files";
+        const alwaysEnforce = getMethodAccess(method)?.alwaysEnforce === true;
+        const effectiveEnforce = this.authz.enforce || alwaysEnforce || accessClass === "session:share" || accessClass === "session:files";
         const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
+        if (alwaysEnforce && (!hasSessionId || !this._accessSnapshotSupported())) {
+            throw notFoundError();
+        }
 
         // HIGH-1: a supplied-but-unresolvable id (missing OR soft-deleted —
         // cms_get_session_access returns no row for either) must not open the
@@ -672,6 +676,17 @@ export class PortalRuntime {
         // Ownership/visibility gate — the single enforcement point for both
         // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
+        if (getMethodAccess(method)?.alwaysEnforce && !this.authz.enforce) {
+            if (method === "getSessionSteeringState") {
+                const state = await this.transport.getSessionSteeringState(safeParams.sessionId,
+                    this._steeringContext(authContext, gate.snapshot, isAdmin));
+                return { ...state, supported: false, canWrite: false, steerable: false,
+                    expectedTarget: null, reason: "unsupported", unsupportedReason: "authz_not_enforced" };
+            }
+            throw Object.assign(new Error("Steering requires enforcing ownership authorization."), {
+                code: "unsupported", reason: "authz_not_enforced", status: 409,
+            });
+        }
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":
@@ -1244,6 +1259,29 @@ export class PortalRuntime {
                 return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
             case "stopSessionTurn":
                 return this.transport.stopSessionTurn(safeParams.sessionId, safeParams.options || {});
+            case "getSessionSteeringState":
+                return this.transport.getSessionSteeringState(safeParams.sessionId, this._steeringContext(authContext, gate.snapshot, isAdmin));
+            case "steerSessionTurn":
+                return this.transport.steerSessionTurn(safeParams.sessionId, {
+                    text: safeParams.options?.text,
+                    clientRequestId: safeParams.options?.clientRequestId,
+                    expectedTarget: safeParams.options?.expectedTarget,
+                }, this._steeringContext(authContext, gate.snapshot, isAdmin));
+            case "getSteeringRequest":
+                return this.transport.getSteeringRequest(safeParams.sessionId, safeParams.requestId, {
+                    attemptCursor: safeParams.attemptCursor, attemptLimit: safeParams.attemptLimit,
+                }, this._steeringContext(authContext, gate.snapshot, isAdmin));
+            case "listSteeringRequests":
+                return this.transport.listSteeringRequests(safeParams.sessionId, {
+                    limit: safeParams.limit, cursor: safeParams.cursor,
+                    dispositions: safeParams.dispositions, expectedTarget: safeParams.expectedTarget,
+                }, this._steeringContext(authContext, gate.snapshot, isAdmin));
+            case "withdrawSteeringRequest":
+                return this.transport.withdrawSteeringRequest(safeParams.sessionId, safeParams.requestId,
+                    this._steeringContext(authContext, gate.snapshot, isAdmin));
+            case "getSessionSteeringStats":
+                return this.transport.getSessionSteeringStats(safeParams.sessionId, { since: safeParams.since },
+                    this._steeringContext(authContext, gate.snapshot, isAdmin));
             case "deleteSessionGroup":
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
@@ -1560,6 +1598,16 @@ export class PortalRuntime {
             display: principal.displayName || principal.email || principal.subject,
             relation: relationFor(snapshot, { isAdmin, adminScope: this.authz.adminScope }),
             origin: allowedOrigins.has(origin) ? origin : "api",
+        };
+    }
+
+    _steeringContext(authContext, snapshot, isAdmin) {
+        return {
+            sender: this._buildSender(authContext, snapshot, { isAdmin }),
+            isAdmin,
+            adminScope: this.authz.adminScope,
+            systemReadable: this.authz.systemVisibility === "read",
+            authzEnforced: this.authz.enforce,
         };
     }
 
