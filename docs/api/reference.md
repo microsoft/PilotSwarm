@@ -111,6 +111,9 @@ conflicts. `stale_target` never retargets to a newer turn. `no_active_turn`,
 
 Withdrawal is atomic and succeeds only before claim. A losing withdrawal
 returns `not_withdrawable` with the current receipt. It does not recall text.
+An authorized reader who is neither the original author nor a session manager
+receives typed `forbidden` (HTTP 403) after the ledger decision; the denial is
+audited and the receipt is not changed.
 Missed guidance stays retained; **Send as new message** is a separate ordinary
 send with a new identity and the actual resender's attribution. For programmatic
 resends, pass `options.steeringRequestId` and exactly one fresh
