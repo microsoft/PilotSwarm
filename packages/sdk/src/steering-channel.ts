@@ -43,13 +43,15 @@ export function createCmsSteeringChannel(
     sessionId: string,
     target: SteeringTarget,
     ownerToken: string,
-    opts: { leaseMs?: number; wake?: SteeringWakeSource | null } = {},
+    opts: { leaseMs?: number; wake?: SteeringWakeSource | null; recoverySource?: "restored" | "local" } = {},
 ): SteeringChannel {
     const leaseMs = opts.leaseMs ?? STEERING_LEASE_MS;
     return {
         sessionId,
         target,
         ownerToken,
+        // Fail closed: without an explicit restore, local state is never an inclusion oracle.
+        recoverySource: opts.recoverySource ?? "local",
         openWindow: () => catalog.steerWindowOpen(sessionId, target, ownerToken, leaseMs),
         recordRecoveryCheck: async (requestId, result, sdkMessageId) => {
             await catalog.steerRecordRecoveryCheck(requestId, ownerToken, result, sdkMessageId ?? null);
@@ -91,6 +93,7 @@ export interface SteeringTurnInput {
 /** Per-activity steering state. Null when the turn is not steerable. */
 export class SteeringTurn {
     private owners: string[] = [];
+    private restoredBase = false;
     private constructor(
         private readonly catalog: SteeringCatalog,
         readonly sessionId: string,
@@ -118,11 +121,20 @@ export class SteeringTurn {
         );
     }
 
+    /**
+     * The lifecycle preamble restored (or validated) the local session against
+     * the stored base for this activity. Only the FIRST runTurn call after it
+     * reads a restored conversation; any later call in the same activity
+     * resumes local state the activity itself changed (FR-13).
+     */
+    markRestoredBase(): void { this.restoredBase = true; }
+
     /** A fresh channel and owner token for one ManagedSession.runTurn() call. */
     newChannel(): SteeringChannel {
         const owner = randomUUID();
+        const recoverySource = this.restoredBase && this.owners.length === 0 ? "restored" : "local";
         this.owners.push(owner);
-        return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner, { wake: this.wake });
+        return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner, { wake: this.wake, recoverySource });
     }
 
     /** The owner token that finalizes: the last channel's, or a fresh one for adoption. */
