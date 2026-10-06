@@ -4063,7 +4063,7 @@ export class PilotSwarmUiController {
         const expectedRevision = draft?.expectedRevision ?? definition.revision;
         const signature = JSON.stringify([target, featureKey, expectedRevision, values]);
         this._featureMutationRetries ??= new Map();
-        const requestId = this._featureMutationRetries.get(signature) ?? globalThis.crypto.randomUUID();
+        const requestId = this._featureMutationRetries.get(signature) ?? newClientId();
         this._featureMutationRetries.set(signature, requestId);
         const input = { featureKey, expectedRevision, requestId, ...(values || {}) };
         this.dispatch({ type: "admin/features", patch: { saving: true, error: null, notice: null } });
