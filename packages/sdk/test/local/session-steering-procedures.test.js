@@ -156,6 +156,12 @@ describe("session steering procedures (0082)", () => {
         expect(again.receipt.sequence).toBe(a.receipt.sequence);
 
         expect(await accept(sid, t, "different body", { key })).toEqual({ outcome: "idempotency_conflict" });
+        const probe = (text, extra = {}) => catalog.steerMatchExisting({ sessionId: sid, idempotencyKey: key, actor: alice,
+            contentHash: steeringContentHash(text), epoch: t.epoch, turnIndex: t.turnIndex, incarnation: t.incarnation, ...extra });
+        expect((await probe("focus on tests")).receipt.requestId).toBe(a.receipt.requestId);
+        expect(await probe("other")).toEqual({ outcome: "idempotency_conflict" });
+        expect(await catalog.steerMatchExisting({ sessionId: sid, idempotencyKey: "new-key", actor: alice,
+            contentHash: "h", epoch: t.epoch, turnIndex: t.turnIndex, incarnation: t.incarnation })).toBeNull();
         expect(await accept(sid, t, "focus on tests", { key, actor: bob })).toEqual({ outcome: "idempotency_conflict" });
         expect(await accept(sid, { ...t, incarnation: randomUUID() }, "x")).toEqual({ outcome: "stale_target" });
         expect(await accept(sid, t, "   ")).toMatchObject({ outcome: "invalid" });
@@ -172,7 +178,7 @@ describe("session steering procedures (0082)", () => {
         expect(windowEvents[0].data).toEqual({ schemaVersion: 1, state: "open", expectedTarget: token, reason: "turn_started" });
 
         const stats = await catalog.steerStats(sid);
-        expect(stats.counters).toMatchObject({ duplicate: 1, "rejected:idempotency_conflict": 2, "rejected:stale_target": 1, "rejected:too_large": 1 });
+        expect(stats.counters).toMatchObject({ duplicate: 2, "rejected:idempotency_conflict": 3, "rejected:stale_target": 1, "rejected:too_large": 1 });
         expect(stats.requests.accepted).toBe(2);
     });
 

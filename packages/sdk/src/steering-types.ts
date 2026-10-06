@@ -149,7 +149,16 @@ export type SteeringReceiptRecord = Omit<SteeringReceiptV1, "actions">;
 /** `getSessionSteeringState` result. */
 export interface SessionSteeringState {
     sessionId: string;
+    /**
+     * Steering can work on this session at all (schema, flag, enforcing authz,
+     * not a service or terminal session). Live `session.steering_window_changed`
+     * events may enable Steer only when this is true.
+     */
+    supported: boolean;
+    /** A window is open with a fresh lease now. Implies `supported`. */
     steerable: boolean;
+    /** The viewer has effective session:write (management-computed). Steer is enabled only with it. */
+    canWrite: boolean;
     /** Opaque token for the open window, or null. Pass unchanged on submission. */
     expectedTarget: string | null;
     /** Why not steerable: a refusal code, or null when steerable. */
@@ -167,11 +176,13 @@ export interface SessionSteeringState {
         leaseExpiresAt: string | null;
     } | null;
     unresolved: number;
+    /** `session_events.seq` of the latest window event read with this state (0 when none). */
+    windowSeq: number;
     limits: SteeringLimits;
 }
 
 /** CMS part of the steering state (no limits, no flag/authz decision). */
-export type SteeringStateRecord = Omit<SessionSteeringState, "sessionId" | "limits" | "unsupportedReason"> & {
+export type SteeringStateRecord = Omit<SessionSteeringState, "sessionId" | "limits" | "unsupportedReason" | "supported" | "canWrite"> & {
     reason: "no_active_turn" | null;
 };
 
