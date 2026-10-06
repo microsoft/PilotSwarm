@@ -134,8 +134,13 @@ describe.concurrent("session steering management and authorization contract", ()
 
     it("ST-A03: another writer's withdrawal carries only their validated identity to the enforcing management contract", async () => {
         const h = makeRuntime({ share: "write" });
-        await h.runtime.call("withdrawSteeringRequest", { sessionId: "steer-session", requestId: "request-a",
-            isManager: true, actor: { provider: "dev", subject: "alice" } }, as("bob"));
+        h.controls.withdrawSteeringRequest.mockImplementation(async () => {
+            throw Object.assign(new Error("Only the original author or a session manager can withdraw this guidance."), {
+                code: "forbidden", status: 403,
+            });
+        });
+        await expect(h.runtime.call("withdrawSteeringRequest", { sessionId: "steer-session", requestId: "request-a",
+            isManager: true, actor: { provider: "dev", subject: "alice" } }, as("bob"))).rejects.toMatchObject({ code: "forbidden", status: 403 });
         const [sessionId, requestId, edge] = h.controls.withdrawSteeringRequest.mock.calls[0];
         assertEqual(sessionId, "steer-session");
         assertEqual(requestId, "request-a");

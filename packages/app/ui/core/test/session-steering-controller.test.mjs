@@ -172,3 +172,23 @@ test("ST-U07/ST-A05: a gone/revoked session evicts receipts and ignores late res
     h.store.dispatch({ type: "steering/receiptReceived", sessionId: "s1", receipt: { ...value, revision: 3 } });
     assert.equal(h.store.getState().steering.bySessionId.s1, undefined, "late response cannot restore inaccessible content");
 });
+
+test("ST-A03: forbidden withdrawal preserves the readable receipt and draft, but clears the stale action", async () => {
+    const h = makeController({ withdrawSteeringRequest: async () => {
+        throw Object.assign(new Error("Only the original author or a session manager can withdraw this guidance."), {
+            code: "forbidden", status: 403,
+        });
+    } });
+    const value = makeReceipt({ text: "retained guidance", clientRequestId: "caller-a", expectedTarget: "target-a" });
+    h.store.dispatch({ type: "steering/receiptReceived", sessionId: "s1", receipt: value });
+    await assert.rejects(h.controller.withdrawSteering("s1", "request-a"),
+        (error) => error.code === "forbidden" && error.status === 403);
+    const state = h.store.getState();
+    assert.equal(state.ui.prompt, "guidance for s1");
+    assert.equal(state.sessions.activeSessionId, "s1");
+    assert.equal(state.sessions.byId.s1.sessionId, "s1");
+    assert.equal(state.steering.bySessionId.s1.receipts["request-a"].text, "retained guidance");
+    assert.equal(state.steering.bySessionId.s1.receipts["request-a"].actions.canWithdraw, false,
+        "server denial removes the obsolete withdrawal affordance without erasing readable content");
+    assert.match(state.ui.statusText, /Only the original author or a session manager/);
+});

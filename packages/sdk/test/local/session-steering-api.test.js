@@ -74,8 +74,11 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                 const writer = await web(STEER_OTHER.subject);
                 const target = (await direct.getSessionSteeringState(h.sessionId, owner)).expectedTarget;
                 const accepted = await remoteOwner.steerSessionTurn(h.sessionId, { text: "withdrawal guidance", clientRequestId: randomUUID(), expectedTarget: target });
-                const denied = await writer.withdrawSteeringRequest(h.sessionId, accepted.receipt.requestId);
-                expect(denied).toEqual({ outcome: "forbidden", receipt: null });
+                await expect(writer.withdrawSteeringRequest(h.sessionId, accepted.receipt.requestId))
+                    .rejects.toMatchObject({ code: "forbidden", status: 403 });
+                const { rows: denialAudit } = await h.query(`SELECT * FROM ${h.schema}.authz_audit
+                    WHERE session_id=$1 AND action='withdrawSteeringRequest' AND decision='deny'`, [h.sessionId]);
+                assertEqual(denialAudit.length, 1, "atomic author denial is audited before the error response");
                 assertEqual((await h.request(accepted.receipt.requestId)).status, "pending");
                 assertEqual((await remoteOwner.withdrawSteeringRequest(h.sessionId, accepted.receipt.requestId)).outcome, "withdrawn");
                 const claimed = await remoteOwner.steerSessionTurn(h.sessionId, { text: "claimed guidance", clientRequestId: randomUUID(), expectedTarget: target });
@@ -124,6 +127,67 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                 expect(await remote.steerSessionTurn(h.sessionId, { text: "cannot accept", clientRequestId: randomUUID(), expectedTarget: "observed-token" }))
                     .toMatchObject({ ok: false, code: "unsupported", reason: "authz_not_enforced" });
                 assertEqual((await h.requests()).length, 0);
+            });
+        });
+    });
+
+    it("ST-A01/ST-A04: matching retries survive closed admission, disablement and terminal state without recharging", { timeout: TIMEOUT }, async () => {
+        await withSteeringLedger(async (h) => {
+            await enable(h);
+            await h.open();
+            await withSteeringApi(h, async ({ web }) => {
+                const remote = await web(STEER_AUTHOR.subject);
+                const state = await remote.getSessionSteeringState(h.sessionId);
+                const options = { text: "retain original accepted identity", clientRequestId: randomUUID(), expectedTarget: state.expectedTarget };
+                const accepted = await remote.steerSessionTurn(h.sessionId, options);
+                assertEqual(accepted.ok, true);
+                await h.finalize();
+                await enable(h, false);
+                await h.catalog.updateSession(h.sessionId, { state: "completed" });
+                const duplicate = await remote.steerSessionTurn(h.sessionId, options);
+                assertEqual(duplicate.ok, true);
+                assertEqual(duplicate.duplicate, true);
+                assertEqual(duplicate.receipt.requestId, accepted.receipt.requestId);
+                assertEqual(duplicate.receipt.sequence, accepted.receipt.sequence);
+                assertEqual(duplicate.receipt.disposition, "not_delivered_turn_ended");
+                expect(await remote.steerSessionTurn(h.sessionId, { ...options, text: "changed retry" }))
+                    .toMatchObject({ ok: false, code: "idempotency_conflict" });
+                expect(await remote.steerSessionTurn(h.sessionId, { ...options, clientRequestId: randomUUID() }))
+                    .toMatchObject({ ok: false, code: "unsupported" });
+                assertEqual((await h.requests()).length, 1);
+            });
+        });
+    });
+
+    it("ST-A05: revoked readers lose receipt, history, paging and live-subscription authority together", { timeout: TIMEOUT }, async () => {
+        await withSteeringLedger(async (h) => {
+            await enable(h);
+            await h.open();
+            const accepted = await h.accept();
+            const requestId = accepted.requestId;
+            const readerActor = { provider: "test", subject: "reader" };
+            await h.catalog.grantSessionShare(h.sessionId, readerActor, "read", STEER_AUTHOR);
+            await withSteeringApi(h, async ({ runtime, web }) => {
+                const reader = await web("reader");
+                const auth = { principal: readerActor, authorization: { role: "user" } };
+                assertEqual((await reader.getSteeringRequest(h.sessionId, requestId)).text, accepted.content);
+                const events = await reader.getSessionEvents(h.sessionId);
+                assert(events.some((event) => event.eventType === "session.steering_accepted"
+                    && event.data.receipt.requestId === requestId), "authorized history carries the actual correlated receipt");
+                const beforeSeq = events.at(-1).seq + 1;
+                assert((await reader.getSessionEventsBefore(h.sessionId, beforeSeq)).length > 0);
+                await runtime.authorizeSessionSubscribe(h.sessionId, auth);
+                await h.catalog.revokeSessionShare(h.sessionId, readerActor);
+                for (const read of [
+                    () => reader.getSteeringRequest(h.sessionId, requestId),
+                    () => reader.listSteeringRequests(h.sessionId),
+                    () => reader.getSessionEvents(h.sessionId),
+                    () => reader.getSessionEventsBefore(h.sessionId, beforeSeq),
+                    () => runtime.authorizeSessionSubscribe(h.sessionId, auth),
+                ]) await expect(read()).rejects.toMatchObject({ status: 404 });
+                const ownerWeb = await web(STEER_AUTHOR.subject);
+                assertEqual((await ownerWeb.getSteeringRequest(h.sessionId, requestId)).text, accepted.content,
+                    "revocation does not erase authoritative retained evidence for its owner");
             });
         });
     });
@@ -248,6 +312,83 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                         direct._duroxideClient.enqueueEvent = originalQueue;
                         direct._duroxideClient.getStatus = originalStatus;
                     }
+            });
+        });
+    });
+
+    it("ST-A06/ST-C01: resend-intent persistence failure cannot enqueue or claim success", { timeout: TIMEOUT }, async () => {
+                await withSteeringLedger(async (h) => {
+                    await enable(h);
+                    await h.open();
+                    const accepted = await h.accept();
+                    await h.finalize();
+                    await h.query(`CREATE FUNCTION ${h.schema}.reject_resend_intent() RETURNS trigger LANGUAGE plpgsql AS $$
+                        BEGIN RAISE EXCEPTION 'fixture: resend intent storage failed'; END $$`);
+                    await h.query(`CREATE TRIGGER reject_resend_intent BEFORE INSERT ON ${h.schema}.session_steering_resend_intents
+                        FOR EACH ROW EXECUTE FUNCTION ${h.schema}.reject_resend_intent()`);
+                    await withSteeringApi(h, async ({ direct, web }) => {
+                        let enqueues = 0;
+                        const oldQueue = direct._duroxideClient.enqueueEvent;
+                        const oldStatus = direct._duroxideClient.getStatus;
+                        direct._duroxideClient.getStatus = async () => ({ status: "Running" });
+                        direct._duroxideClient.enqueueEvent = async () => { enqueues++; };
+                        try {
+                            const remote = await web(STEER_AUTHOR.subject);
+                            await expect(remote.sendMessage(h.sessionId, accepted.content, {
+                                steeringRequestId: accepted.requestId, clientMessageIds: [randomUUID()],
+                            })).rejects.toMatchObject({ status: 500 });
+                            assertEqual(enqueues, 0, "pre-enqueue persistence is strict");
+                            const { rows } = await h.query(`SELECT * FROM ${h.schema}.session_steering_resend_intents WHERE session_id=$1`, [h.sessionId]);
+                            assertEqual(rows.length, 0, "failed intent transaction is not success-shaped");
+                            assertEqual((await h.request(accepted.requestId)).status, "closed");
+                        } finally {
+                            direct._duroxideClient.enqueueEvent = oldQueue;
+                            direct._duroxideClient.getStatus = oldStatus;
+                        }
+                    });
+                });
+            });
+
+    it("ST-A06/ST-C01: ordinary queue failure leaves intent, not delivery, and replay retains its ID", { timeout: TIMEOUT }, async () => {
+                await withSteeringLedger(async (h) => {
+                    await enable(h);
+                    await h.open();
+                    const accepted = await h.accept();
+                    await h.finalize();
+                    await withSteeringApi(h, async ({ direct, web }) => {
+                        const oldQueue = direct._duroxideClient.enqueueEvent;
+                        const oldStatus = direct._duroxideClient.getStatus;
+                        const attemptedPayloads = [];
+                        let queueFails = true;
+                        direct._duroxideClient.getStatus = async () => ({ status: "Running" });
+                        direct._duroxideClient.enqueueEvent = async (_id, _queue, payload) => {
+                            attemptedPayloads.push(payload);
+                            if (queueFails) throw new Error("fixture: ordinary queue failed");
+                        };
+                        try {
+                            const remote = await web(STEER_AUTHOR.subject);
+                            const clientMessageId = randomUUID();
+                            const options = { steeringRequestId: accepted.requestId, clientMessageIds: [clientMessageId] };
+                            await expect(remote.sendMessage(h.sessionId, accepted.content, options)).rejects.toMatchObject({ status: 500 });
+                            let events = await h.catalog.getSessionEvents(h.sessionId);
+                            assertEqual(events.filter((event) => event.eventType === "session.steering_resend_requested").length, 1);
+                            assertEqual(events.filter((event) => event.eventType === "user.message").length, 0,
+                                "durable intent never fabricates ordinary uptake");
+                            const original = await h.request(accepted.requestId);
+                            assertEqual(original.disposition, "not_delivered_turn_ended");
+                            queueFails = false;
+                            await remote.sendMessage(h.sessionId, accepted.content, options);
+                            assertEqual(attemptedPayloads.length, 2);
+                            assertEqual(attemptedPayloads[1], attemptedPayloads[0], "explicit replay keeps the same ordinary identity and sender");
+                            events = await h.catalog.getSessionEvents(h.sessionId);
+                            assertEqual(events.filter((event) => event.eventType === "session.steering_resend_requested").length, 1,
+                                "ambiguous enqueue retry does not create a second provenance intent");
+                            assertEqual(events.filter((event) => event.eventType === "user.message").length, 0);
+                            assertEqual((await h.request(accepted.requestId)).revision, original.revision);
+                        } finally {
+                            direct._duroxideClient.enqueueEvent = oldQueue;
+                            direct._duroxideClient.getStatus = oldStatus;
+                        }
             });
         });
     });
