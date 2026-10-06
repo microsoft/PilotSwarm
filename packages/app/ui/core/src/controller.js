@@ -5884,11 +5884,13 @@ export class PilotSwarmUiController {
             this.detachActiveSession();
             return;
         }
+        // Optional steering discovery must not delay ordinary history,
+        // subscription attachment, or starting the catalog refresh cadence.
+        void this.refreshSteering(sessionId);
         // Independent reads share one network-latency window. Cached chat stays visible.
         await Promise.all([
             this.ensureSessionHistory(sessionId, { force: true }),
             this.syncSessionDetail(sessionId).catch(() => {}),
-            this.refreshSteering(sessionId),
         ]);
         if (this.navigationGeneration !== navigationGeneration
             || this.getState().sessions.activeSessionId !== sessionId) return;
@@ -5955,10 +5957,14 @@ export class PilotSwarmUiController {
         const accessRevision = this.getState().steering?.bySessionId?.[sessionId]?.accessRevision || 0;
         try {
             const state = await this.transport.getSessionSteeringState(sessionId);
+            if (!state || typeof state.supported !== "boolean" || typeof state.steerable !== "boolean") {
+                throw Object.assign(new Error("This server does not expose steering state."), { code: "unsupported" });
+            }
             this.dispatch({ type: "steering/stateLoaded", sessionId, state, windowSeq: state.windowSeq ?? windowSeq, accessRevision });
             // A disabled feature or inactive window must not hide retained
             // receipts. Only audit-only deployments prohibit the read path.
-            if (state.reason !== "authz_not_enforced" && typeof this.transport.listSteeringRequests === "function") {
+            if (!["authz_not_enforced", "schema_missing", "web_mode_unsupported"].includes(state.unsupportedReason)
+                && typeof this.transport.listSteeringRequests === "function") {
                 const page = await this.transport.listSteeringRequests(sessionId, { limit: 50 });
                 for (const receipt of page.items) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
             }

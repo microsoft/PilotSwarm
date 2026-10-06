@@ -2056,7 +2056,7 @@ export function selectActiveChat(state) {
     const steering = state.steering?.bySessionId?.[sessionId];
     const chat = steering ? [...(history?.chat || [])] : history?.chat || [];
     if (steering) {
-        for (const receipt of Object.values(steering.receipts)) {
+        for (const receipt of Object.values(steering.receipts).sort((a, b) => a.sequence - b.sequence)) {
             const index = chat.findIndex(item => item.kind === "steering" && item.steering.requestId === receipt.requestId);
             const previous = index >= 0 ? chat[index].steering : null;
             const merged = mergeSteeringReceipt({
@@ -2068,11 +2068,14 @@ export function selectActiveChat(state) {
             const message = buildSteeringMessage(merged);
             message.steeringResend = steering.resends?.[receipt.requestId] || null;
             if (index >= 0) chat[index] = message;
-            else chat.push(message);
+            else {
+                const nextIndex = chat.findIndex(item => Number(item.createdAt) > message.createdAt);
+                chat.splice(nextIndex < 0 ? chat.length : nextIndex, 0, message);
+            }
         }
         for (const pending of Object.values(steering.pending)) chat.push(buildSteeringMessage(pending));
-        chat.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)
-            || (a.steering?.sequence || 0) - (b.steering?.sequence || 0));
+        // Ordinary transcript order comes from durable event sequence, not
+        // timestamps. A receipt overlay must not reorder a backward page.
     }
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });

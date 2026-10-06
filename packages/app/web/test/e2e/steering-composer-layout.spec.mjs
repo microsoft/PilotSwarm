@@ -6,13 +6,16 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-for (const width of [390, 800, 1440]) {
-    test(`steering composer ${width}px: touch targets and input remain usable`, async ({ browser }) => {
+for (const width of [320, 390, 800, 1440]) for (const themeId of ["workspace-dark", "win95", "ms-dos"]) {
+    test(`steering composer ${width}px ${themeId}: touch targets and input remain usable`, async ({ browser }) => {
         const context = await browser.newContext({
             viewport: { width, height: 844 }, isMobile: width < 921, hasTouch: width < 921,
         });
         try {
             const page = await context.newPage();
+            await page.route("**/api/v1/me/profile", route => route.fulfill({ json: {
+                ok: true, result: { isAdmin: false, profileSettings: { themeId } },
+            } }));
             await page.route(`**/sessions/${sessionId}/steering-state`, route => route.fulfill({ json: {
                 ok: true, result: {
                     sessionId, supported: true, canWrite: true, steerable: true,
@@ -45,6 +48,7 @@ for (const width of [390, 800, 1440]) {
                 };
                 return {
                     input: bounds(node), shell: bounds(shell),
+                    label: bounds(shell.querySelector(".ps-prompt-label")),
                     actions: bounds(shell.querySelector(".ps-prompt-actions")),
                     buttons: [...shell.querySelectorAll(".ps-prompt-actions > button")].map(bounds),
                 };
@@ -53,13 +57,17 @@ for (const width of [390, 800, 1440]) {
                 expect(geometry.buttons[index].x).toBeGreaterThanOrEqual(geometry.buttons[index - 1].right);
             }
             for (const box of geometry.buttons) expect(box.right).toBeLessThanOrEqual(width);
+            expect(geometry.actions.x).toBeGreaterThanOrEqual(geometry.input.right);
+            if (width <= 390) {
+                expect(geometry.input.width).toBeGreaterThanOrEqual(width === 320 ? 70 : 130);
+                expect(Math.abs(geometry.label.y + geometry.label.height / 2 - geometry.input.y - geometry.input.height / 2)).toBeLessThan(2);
+                expect(await steer.locator(".ps-steer-glyph").isVisible()).toBe(true);
+                await steer.dispatchEvent("pointerdown", { pointerType: "touch", clientX: 200, clientY: 700 });
+                await expect(page.getByRole("tooltip")).toContainText("Steer current turn");
+                await steer.dispatchEvent("pointerup", { pointerType: "touch" });
+            }
             if (width === 390) {
-                expect(geometry.actions.y).toBeGreaterThanOrEqual(geometry.input.bottom);
-                expect(geometry.input.width).toBeGreaterThanOrEqual(geometry.shell.width - 1);
-                expect(geometry.input.width).toBeGreaterThan(300);
                 expect(geometry.input.height).toBeLessThan(80);
-            } else {
-                expect(geometry.actions.x).toBeGreaterThanOrEqual(geometry.input.right);
             }
         } finally {
             await context.close();
