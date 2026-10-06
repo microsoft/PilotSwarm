@@ -76,7 +76,10 @@ test("MCP workload identity requests one token per scope and binds deployment UR
         deploymentMcpServers: {
             ado: { type: "http", url: "https://mcp.dev.azure.com/org" },
             boards: { type: "sse", url: "https://mcp.dev.azure.com/org/boards" },
-            kusto: { url: "https://kusto.example.test/mcp" },
+            kusto: {
+                type: "http",
+                url: "http://kusto-mcp.pilotswarm.svc.cluster.local/mcp",
+            },
         },
         credential: {
             async getToken(scope) {
@@ -108,7 +111,8 @@ test("MCP workload identity requests one token per scope and binds deployment UR
             },
         },
         kusto: {
-            expectedUrl: "https://kusto.example.test/mcp",
+            expectedUrl:
+                "http://kusto-mcp.pilotswarm.svc.cluster.local/mcp",
             headers: {
                 Authorization: authorization(
                     "token-for-https://kusto.kusto.windows.net/.default",
@@ -125,7 +129,7 @@ test("MCP workload identity requests one token per scope and binds deployment UR
     assert.equal(requestedScopes.length, 4);
 });
 
-test("MCP workload identity accepts only trusted deployment HTTPS servers", () => {
+test("MCP workload identity accepts only trusted deployment server URLs", () => {
     assert.throws(
         () =>
             createMcpWorkloadIdentityHeadersProvider({
@@ -152,8 +156,25 @@ test("MCP workload identity accepts only trusted deployment HTTPS servers", () =
                     plain: { type: "http", url: "http://example.test/mcp" },
                 },
             }),
-        /must use an HTTPS URL/,
+        /must use HTTPS or an in-cluster HTTP service URL/,
     );
+    for (const url of [
+        "http://kusto-mcp.svc.cluster.local/mcp",
+        "http://kusto-mcp.pilotswarm.svc.cluster.local.example.test/mcp",
+        "http://10.0.0.10/mcp",
+        "http://kusto-mcp.pilotswarm.svc.cluster.local/mcp#fragment",
+    ]) {
+        assert.throws(
+            () =>
+                createMcpWorkloadIdentityHeadersProvider({
+                    scopeBindings: "kusto=api://kusto/.default",
+                    deploymentMcpServers: {
+                        kusto: { type: "http", url },
+                    },
+                }),
+            /must use HTTPS or an in-cluster HTTP service URL/,
+        );
+    }
 });
 
 test("MCP workload identity fails closed when a scope returns no token", async () => {
