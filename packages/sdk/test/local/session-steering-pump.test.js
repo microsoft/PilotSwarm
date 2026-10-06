@@ -39,6 +39,7 @@ class FakeSession {
 class FakeChannel {
     constructor(rows = []) {
         this.sessionId = "s1"; this.target = { epoch: 0, turnIndex: 1, incarnation: "inc" }; this.ownerToken = "owner";
+        this.recoverySource = "restored";
         this.queue = [...rows]; this.calls = []; this.openResult = { ok: true, recovery: false, recovered: [] };
         this.openDelay = null; this.renewOk = true; this.nextAttempt = 1; this.submitting = async () => ({ attemptId: `att-${this.nextAttempt++}` });
     }
@@ -360,6 +361,38 @@ describe.concurrent("SteeringPump", () => {
         expect(c2.calls.filter((c) => c[0] === "recovery").map((c) => c[2])).toEqual(["failed", "failed"]);
         await p2.settle({ stopping: false });
         p2.dispose();
+    });
+
+    it("recovery from LOCAL resumed state is not an inclusion oracle: present_local, no resend, listed in the manifest", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([]);
+        ch.recoverySource = "local";
+        ch.openResult = { ok: true, recovery: true, recovered: [
+            { requestId: "a", sequence: 1, recoveryCheck: "pending", sdkMessageId: "old-1", sdkMessageIds: ["old-1"] },
+            { requestId: "b", sequence: 2, recoveryCheck: "pending", sdkMessageId: "old-2", sdkMessageIds: ["old-2"] },
+        ] };
+        session.history = [{ type: "user.message", data: { messageId: "old-1", delivery: "steering" } }];
+        const { pump } = makePump(session, ch);
+        await startTurn(session, pump, ch);
+        expect(ch.calls.filter((c) => c[0] === "recovery")).toEqual([["recovery", "a", "present_local", "old-1"], ["recovery", "b", "absent", undefined]]);
+        expect(session.sends).toEqual([]);
+        session.emit("session.idle", {});
+        await pump.reconcileAfterIdle({ guards: [] });
+        const manifest = await pump.settle({ stopping: false });
+        pump.dispose();
+        expect(manifest.delivered).toEqual([{ requestId: "a", attemptId: null, sdkMessageId: "old-1", kind: "steering", recovered: true }]);
+    });
+
+    it("a channel without a declared recovery source fails closed to local", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([]);
+        delete ch.recoverySource;
+        ch.openResult = { ok: true, recovery: true, recovered: [
+            { requestId: "a", sequence: 1, recoveryCheck: "pending", sdkMessageId: "old-1", sdkMessageIds: ["old-1"] }] };
+        session.history = [{ type: "user.message", data: { messageId: "old-1" } }];
+        const { pump } = makePump(session, ch);
+        await startTurn(session, pump, ch);
+        expect(ch.calls.filter((c) => c[0] === "recovery").map((c) => c[2])).toEqual(["present_local"]);
+        await pump.settle({ stopping: false });
+        pump.dispose();
     });
 
     it("a refused window open never opens the gate and yields no manifest", async () => {

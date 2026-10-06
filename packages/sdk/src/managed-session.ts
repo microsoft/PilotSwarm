@@ -3952,6 +3952,7 @@ export class ManagedSession {
      * Destroy the session — release resources, flush to disk.
      */
     async destroy(): Promise<void> {
+        this.steeringPump?.gate.close();   // no steering send() after a disconnect starts
         await this.copilotSession.disconnect();
     }
 

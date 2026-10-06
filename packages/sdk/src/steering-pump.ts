@@ -172,6 +172,8 @@ export class SteeringPump {
     private loop?: Promise<void>;
     private leaseTimer?: ReturnType<typeof setInterval>;
     private windowOpened = false;
+    /** Steers found in resumed LOCAL state on recovery: in this attempt's conversation, so in its manifest. */
+    private readonly recoveredLocal: Array<{ requestId: string; sdkMessageId: string; kind: SteeringDeliveryKind | null }> = [];
     private needsQuiesce = false;
     private quiesced = false;
     private released = false;
@@ -248,8 +250,20 @@ export class SteeringPump {
                 continue;
             }
             const ids = new Set(row.sdkMessageIds.length > 0 ? row.sdkMessageIds : [row.sdkMessageId!]);
-            const hit = history.find((h) => h?.type === "user.message" && ids.has(h?.data?.messageId));
-            await this.ch.recordRecoveryCheck(row.requestId, hit ? "present" : "absent", hit?.data?.messageId);
+            const hit = history.find((h) => h?.type === "user.message" && ids.has(h?.data?.messageId) && !isNativeChildEvent(h));
+            if (!hit) { await this.ch.recordRecoveryCheck(row.requestId, "absent"); continue; }
+            if (this.ch.recoverySource === "restored") {
+                await this.ch.recordRecoveryCheck(row.requestId, "present", hit.data.messageId);   // stored base: included
+                continue;
+            }
+            // Local state this activity resumed: delivered, not resent; inclusion follows this commit.
+            await this.ch.recordRecoveryCheck(row.requestId, "present_local", hit.data.messageId);
+            const raw = hit?.data?.delivery;
+            this.recoveredLocal.push({
+                requestId: row.requestId,
+                sdkMessageId: hit.data.messageId,
+                kind: DELIVERY_KINDS.has(raw) ? raw : null,
+            });
         }
     }
 
@@ -500,7 +514,7 @@ export class SteeringPump {
             }
         }
         if (o.stopping || !this.windowOpened) return undefined;
-        const delivered = [...this.attempts.values()]
+        const delivered: SteeringManifest["delivered"] = [...this.attempts.values()]
             .filter((a) => a.event && a.sdkMessageId)
             .map((a) => ({
                 requestId: a.row.requestId,
@@ -508,6 +522,10 @@ export class SteeringPump {
                 sdkMessageId: a.sdkMessageId!,
                 kind: a.event.data.delivery as SteeringDeliveryKind,
             }));
+        const handedOff = new Set(delivered.map((d) => d.requestId));
+        for (const r of this.recoveredLocal) {
+            if (!handedOff.has(r.requestId)) delivered.push({ ...r, attemptId: null, recovered: true });
+        }
         return { delivered };
     }
 
