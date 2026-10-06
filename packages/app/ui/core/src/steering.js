@@ -100,6 +100,7 @@ export function getSteeringEligibility({ session, steering, draft = "", attachme
     else if (attachments.length) reason = "Steering supports text only";
     else if (!steering?.state || steering.state.supported !== true || steering.state.reason === "unsupported"
         || steering.state.reason === "authz_not_enforced" || steering.state.reason === "disabled") reason = "Steering unavailable";
+    else if (steering.state.recovering) reason = "Steering is recovering";
     else if (!steering.state.steerable || !steering.state.expectedTarget) reason = "No active turn to steer";
     else if (!draft.trim()) reason = "Enter guidance";
     else if (new TextEncoder().encode(draft.trim()).byteLength > (steering.state.limits?.maxBytes || 8192)) reason = "Guidance exceeds the text limit";

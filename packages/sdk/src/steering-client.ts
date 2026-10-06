@@ -23,6 +23,13 @@ export interface SteeringCallerContext {
     authzEnforced?: boolean;
 }
 
+/** Optional provenance for an explicit ordinary resend, never a steering submission. */
+export interface SteeringResendOptions {
+    steeringRequestId?: string;
+    /** Trusted direct-mode context; overwritten by the Web API. */
+    steeringContext?: SteeringCallerContext;
+}
+
 export class SteeringError extends Error {
     constructor(public readonly code: SteeringRefusalCode, message: string, public readonly reason?: string) {
         super(message);
@@ -196,5 +203,27 @@ export class SteeringManagement {
         await this.requireSchema();
         if (options.since != null && !Number.isFinite(Date.parse(options.since))) throw new SteeringError("invalid", "Invalid since timestamp");
         return this.catalog.steerStats(sessionId, options);
+    }
+
+    async recordResendIntent(sessionId: string, requestId: string, text: string, clientMessageIds: string[] | undefined, edge: SteeringCallerContext = {}): Promise<void> {
+        const viewer = await this.authorize(sessionId, edge, "sendMessage.steeringResend", true);
+        await this.requireSchema();
+        if (!isValidClientRequestId(requestId) || clientMessageIds?.length !== 1 || !isValidClientRequestId(clientMessageIds[0])) {
+            throw new SteeringError("invalid", "A guidance resend requires its request ID and one fresh client message ID.");
+        }
+        const record = await this.catalog.steerGet(sessionId, requestId);
+        if (!record) throw new SteeringError("not_found", "Guidance request not found.");
+        if (clientMessageIds[0] === record.clientRequestId || clientMessageIds[0] === record.requestId) {
+            throw new SteeringError("invalid", "A guidance resend must use a new client message identity.");
+        }
+        if (!toSteeringReceipt(record, viewer).actions.canSendAsNewMessage || text !== record.text) {
+            throw new SteeringError("invalid", "Only retained guidance can be resent through its original receipt.");
+        }
+        // The queue and CMS have different commit boundaries. Record intent,
+        // not success; a normal user.message with this fresh ID proves uptake.
+        await this.catalog.recordEvents(sessionId, [{
+            eventType: "session.steering_resend_requested",
+            data: { schemaVersion: 1, requestId, clientMessageIds, actor: viewer.actor, sender: edge.sender },
+        }]);
     }
 }

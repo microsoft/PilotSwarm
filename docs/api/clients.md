@@ -79,6 +79,19 @@ The same context can be passed as the trailing direct-method argument.
 Without a validated actor, direct steering fails closed. Web clients ignore
 this context argument; the server derives authority from authentication.
 
+An explicit retained resend uses ordinary `sendMessage`, not `steerSessionTurn`:
+
+```js
+await management.sendMessage(sessionId, retainedReceipt.text, {
+    steeringRequestId: retainedReceipt.requestId,
+    clientMessageIds: [crypto.randomUUID()],
+});
+```
+
+The SDK records a durable resend-intent link before the ordinary enqueue.
+That link is not delivery evidence. It preserves the original receipt and
+attributes the new message to the actual resender.
+
 Read/list/withdraw/stats have direct and web management equivalents. The
 [reference](./reference.md#session-steering) defines typed outcomes, cursor
 scope, and the separate inclusion and no-resend evidence.

@@ -393,6 +393,12 @@ with `get_capabilities` to see the shape of this server.
 | `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
 | `send_session_event` | Inject a custom named event into a session *(web)* |
 
+For explicit retained-guidance resend, ordinary `send_message` accepts
+`steering_request_id` with exactly one fresh `client_message_ids` entry.
+Its result says `enqueued`, not delivered. A durable
+`session.steering_resend_requested` event links the original receipt and new
+message identity without changing the original receipt.
+
 ### Session Groups
 
 | Tool | Description |

@@ -1452,6 +1452,10 @@ export class NodeSdkTransport {
             // Server-stamped sender identity (security model) — set by the
             // portal runtime from the validated auth context.
             ...(options?.sender && typeof options.sender === "object" ? { sender: options.sender } : {}),
+            ...(options?.steeringRequestId !== undefined ? {
+                steeringRequestId: options.steeringRequestId,
+                steeringContext: this._steeringContext(options.steeringContext),
+            } : {}),
         };
 
         // Image attachments: clients send bare filenames; every other field is
