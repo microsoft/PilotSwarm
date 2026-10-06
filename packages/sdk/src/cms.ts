@@ -1490,6 +1490,8 @@ export interface SessionCatalog {
     steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null): Promise<SteerFinalizeResult>;
     /** cms_steer_close_stopped: target-scoped by turn index. */
     steerCloseStopped(sessionId: string, turnIndex: number): Promise<void>;
+    /** cms_steer_add_counters (0085): durable, content-free runtime counters for §11. */
+    steerAddCounters(sessionId: string, counts: Record<string, number>): Promise<void>;
     /**
      * cms_steer_record_resend_intent (0084): idempotent link from a retained steer to the
      * fresh client message id of its explicit "Send as new message". Records only; never enqueues.
@@ -4028,6 +4030,12 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.steerFn("cms_steer_record_resend_intent")}($1,$2,$3,$4::jsonb,$5::jsonb) AS v`,
             [sessionId, requestId, clientMessageId, JSON.stringify({ provider: actor.provider, subject: actor.subject }),
                 sender ? JSON.stringify(sender) : null]);
+    }
+
+    async steerAddCounters(sessionId: string, counts: Record<string, number>): Promise<void> {
+        const clean = Object.fromEntries(Object.entries(counts).filter(([, v]) => Number.isSafeInteger(v) && v > 0));
+        if (Object.keys(clean).length === 0) return;
+        await this.pool.query(`SELECT ${this.steerFn("cms_steer_add_counters")}($1,$2::jsonb)`, [sessionId, JSON.stringify(clean)]);
     }
 
     async steerCloseStopped(sessionId: string, turnIndex: number): Promise<void> {

@@ -97,8 +97,18 @@ export class FeatureStore {
             || unset && (input.enabled !== undefined || input.allowUserOverride !== undefined)) {
             throw new FeatureFlagError("FEATURE_INVALID", "Invalid feature setting, revision or request ID");
         }
-        return this.call("cms_feature_mutate", [...this.actor(viewer), scope, userId ?? null, input.featureKey,
-            input.enabled ?? null, input.allowUserOverride ?? null, unset, input.expectedRevision, input.requestId]);
+        // Session steering (D-23, ST-M04): enabling is refused while a live worker cannot run it,
+        // checked in the same statement as the write. A schema without the gate fails closed.
+        const gated = input.featureKey === "sessions.steering";
+        try {
+            return await this.call(gated ? "cms_feature_mutate_gated" : "cms_feature_mutate", [...this.actor(viewer), scope, userId ?? null, input.featureKey,
+                input.enabled ?? null, input.allowUserOverride ?? null, unset, input.expectedRevision, input.requestId]);
+        } catch (error: any) {
+            if (gated && (error?.code === "42883" || /cms_feature_mutate_gated.*does not exist/.test(error?.message ?? ""))) {
+                throw new FeatureFlagError("FEATURE_CONFLICT", "sessions.steering cannot be changed: the enablement check is unavailable on this database", 409);
+            }
+            throw error;
+        }
     }
     changes(viewer: FeatureViewer, limit = 50): Promise<unknown[]> {
         return this.call("cms_feature_changes", [...this.actor(viewer), Math.max(1, Math.min(200, Math.trunc(limit) || 50))]);

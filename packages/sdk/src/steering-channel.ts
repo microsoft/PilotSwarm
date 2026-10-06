@@ -30,7 +30,8 @@ export interface SteeringWakeSource {
 type SteeringCatalog = Pick<SessionCatalog,
     | "supportsSteering" | "steerWindowOpen" | "steerWindowAbandon" | "steerWindowRenew" | "steerWindowQuiesce"
     | "steerWindowAdopt" | "steerClaim" | "steerRecordRecoveryCheck" | "steerMarkSubmitting" | "steerMarkReleased"
-    | "steerMarkSubmitted" | "steerMarkDelivered" | "steerMarkUnconfirmed" | "steerTurnFinalize" | "steerCloseStopped">;
+    | "steerMarkSubmitted" | "steerMarkDelivered" | "steerMarkUnconfirmed" | "steerTurnFinalize" | "steerCloseStopped"
+    | "steerAddCounters">;
 
 function failOnFalse(label: string): (ok: boolean) => void {
     return (ok) => {
@@ -73,6 +74,7 @@ export function createCmsSteeringChannel(
             if (!r.changed && r.reason !== "already_recorded") throw new Error(`steering delivery not recorded: ${r.reason}`);
         },
         markUnconfirmed: async (attemptId) => { await catalog.steerMarkUnconfirmed(attemptId, ownerToken); },
+        recordCounters: async (counts) => { await catalog.steerAddCounters(sessionId, counts); },
         ...(opts.wake ? { onWake: (cb: () => void) => opts.wake!.subscribe(sessionId, cb) } : {}),
     };
 }
