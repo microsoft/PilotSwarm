@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.8.0
+version: 1.9.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -72,6 +72,13 @@ teach it in generated READMEs:
 - Reference: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
+
+- When exposing current-turn guidance, use `steerSessionTurn` and the receipt
+  reads on the public management client, or `PilotSwarmSession.steer`.
+  Preserve caller request identity and the observed target through retry.
+  Acceptance is not delivery or compliance; never fall back to ordinary Send.
+  Consult `docs/api/reference.md#session-steering` and the installed SDK builder
+  skill. Keep this user control out of generated agents' cross-session tools.
 
 - keep prompts and reusable knowledge in plugin files
 - keep tool implementations on the worker side

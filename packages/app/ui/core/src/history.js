@@ -481,7 +481,8 @@ function sharesClientMessageId(left, right) {
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.kind === "steering" || right.kind === "steering") {
-        return left.kind === right.kind && left.steering.requestId === right.steering.requestId;
+        return left.kind === right.kind && Boolean(left.steering.requestId)
+            && left.steering.requestId === right.steering.requestId;
     }
     if (left.role !== right.role) return false;
     // Different agents can send the same short acknowledgement. Only a
@@ -531,6 +532,7 @@ export function dedupeChatMessages(chat = []) {
         if (!message) continue;
         const previous = deduped[deduped.length - 1];
         if (previous?.kind === "steering" && message.kind === "steering"
+            && previous.steering.requestId
             && previous.steering.requestId === message.steering.requestId) {
             if (message.steering.revision > previous.steering.revision) deduped[deduped.length - 1] = message;
             continue;

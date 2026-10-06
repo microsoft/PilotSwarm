@@ -2,6 +2,14 @@
 // prose establishes delivery, inclusion, or compliance.
 export const STEERING_HELP = "Send guidance at the next supported input boundary. Running actions may still finish.";
 
+export function getSteeringAttemptDisplay(attempt) {
+    if (attempt.outcome === "released") return "Not submitted";
+    if (attempt.deliveredAt && attempt.deliveryKind === "steering") return "Delivered to current turn";
+    if (attempt.deliveredAt && ["queued", "idle"].includes(attempt.deliveryKind)) return "Delivered after the earlier response";
+    if (attempt.acknowledgedAt && !attempt.deliveredAt) return "Waiting for a safe point";
+    return "Delivery unconfirmed";
+}
+
 export function emptySteeringSession() {
     return { state: null, windowSeq: 0, receipts: {}, pending: {}, error: null };
 }
@@ -21,6 +29,7 @@ export function mergeSteeringReceipt(entry = emptySteeringSession(), incoming) {
         || incoming.revision < previous.revision && !previous.actions)) {
         receipt.actions = { canWithdraw: false, canSendAsNewMessage: false };
     }
+    receipt.actionsRevision = incoming.actions && newer ? incoming.revision : previous?.actionsRevision ?? 0;
     const pending = { ...entry.pending };
     const optimistic = pending[receipt.clientRequestId];
     receipt.rowKey = previous?.rowKey || optimistic?.rowKey || `steering:${receipt.requestId}`;
@@ -65,7 +74,7 @@ export function getSteeringDisplay(receipt) {
             not_delivered_turn_ended: "Not delivered — turn ended",
             not_delivered_turn_stopped: "Not delivered — turn stopped",
             withdrawn: "Withdrawn",
-            delivery_unconfirmed: receipt.eligibility?.reason === "stop"
+            delivery_unconfirmed: receipt.closureReason === "stopped" || receipt.eligibility?.reason === "stopped"
                 ? "Delivery unconfirmed — turn stopped" : "Delivery uncertain",
             rejected: "Guidance rejected",
         };
@@ -85,15 +94,15 @@ export function getSteeringEligibility({ session, steering, draft = "", attachme
     let reason = "";
     if (!session || session.isGroup || session.serviceKind
         || ["completed", "cancelled", "failed", "deleted"].includes(session.status)) reason = "No active turn to steer";
-    else if (session.pendingQuestion || session.status === "input_required") reason = "Answer the question";
+    else if (session.pendingQuestion?.question || session.status === "input_required") reason = "Answer the question";
+    else if (session.status === "waiting") reason = "No active turn to steer";
     else if (session.canWrite !== true) reason = "Write access is required";
     else if (attachments.length) reason = "Steering supports text only";
-    else if (!steering?.state || steering.state.reason === "unsupported"
+    else if (!steering?.state || steering.state.supported !== true || steering.state.reason === "unsupported"
         || steering.state.reason === "authz_not_enforced" || steering.state.reason === "disabled") reason = "Steering unavailable";
     else if (!steering.state.steerable || !steering.state.expectedTarget) reason = "No active turn to steer";
-    else if (Object.values(steering.pending || {}).some(item => item.inFlight)) reason = "Sending guidance...";
     else if (!draft.trim()) reason = "Enter guidance";
-    else if (new TextEncoder().encode(draft).byteLength > (steering.state.limits?.maxTextBytes || 8192)) reason = "Guidance exceeds the text limit";
+    else if (new TextEncoder().encode(draft.trim()).byteLength > (steering.state.limits?.maxBytes || 8192)) reason = "Guidance exceeds the text limit";
     return { enabled: !reason, reason, help: STEERING_HELP };
 }
 

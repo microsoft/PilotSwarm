@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.5.0
+version: 1.6.0
 name: pilotswarm-cli-builder
 description: "Use when building a plugin-driven CLI/TUI app on top of PilotSwarm. Scaffolds plugin.json branding, agents, skills, worker modules, and CLI run instructions."
 ---
@@ -66,6 +66,11 @@ or through management APIs. Remote attach instructions carry only the portal
 URL. Reference: `https://github.com/microsoft/PilotSwarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
+
+- Teach explicit session steering through the shipped `pilotswarm sessions`
+  commands and native action row. Do not change Enter/Send or Stop semantics.
+  Preserve `clientRequestId` and `expectedTarget`; receipt acceptance is not
+  delivery. Keep normal remote commands on `{ apiUrl }` without database secrets.
 
 - prefer plugin files for prompts, skills, session policy, and TUI branding
 - keep worker-side code limited to tool handlers and runtime wiring

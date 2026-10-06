@@ -75,6 +75,18 @@ Before generating files, ask:
 
 Do not guess these answers when the user has not provided them. Offer the standard topology choices explicitly so the guided experience stays fast.
 
+## Explicit current-turn guidance
+
+Keep ordinary Enter/Send queued and Stop independent. The shipped native TUI
+offers Steer in its keyboard-accessible prompt action row; do not advertise
+native Ctrl+S before its raw-mode compatibility gate passes. Noninteractive
+commands are `pilotswarm sessions steering-state|steer|steering-status|steering-list|withdraw-steering`.
+Use the configured API URL and normal auth bootstrap, never a database URL.
+`steer` needs `--client-request-id` and the observed `--expected-target`, plus
+exactly one of `--text`, `--text-file`, or `--stdin`. Preserve both identities
+through an ambiguous retry. Exit zero is acceptance, not delivery or compliance.
+See `docs/user-guide/session-steering.md`.
+
 ## Env File Guidance
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input for LOCAL

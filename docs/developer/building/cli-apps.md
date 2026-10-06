@@ -54,6 +54,25 @@ Choose the SDK path when:
 
 ## The Two Extension Hooks
 
+### Noninteractive session steering
+
+The `sessions` command family uses the same public management client in Web API
+mode and does not start Ink or require database credentials:
+
+```bash
+pilotswarm sessions steering-state <session-id> --api-url <portal-url> --json
+pilotswarm sessions steer <session-id> --stdin --client-request-id <caller-id> --expected-target <observed-token> --api-url <portal-url> --json
+pilotswarm sessions steering-status <session-id> <request-id> --api-url <portal-url> --json
+pilotswarm sessions steering-list <session-id> --api-url <portal-url> --json
+pilotswarm sessions withdraw-steering <session-id> <request-id> --api-url <portal-url> --json
+```
+
+Authenticate with the existing `pilotswarm auth login` command. Preserve the
+caller identity after ambiguous failures; never auto-refresh a stale target.
+Use exactly one of `--text`, `--text-file`, or `--stdin`. Exit zero means the
+control operation succeeded, not that the agent understood or obeyed guidance.
+See [session steering](../../user-guide/session-steering.md).
+
 ### 1. Plugin directory
 
 The plugin directory supplies:

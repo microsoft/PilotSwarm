@@ -1,4 +1,5 @@
 export * from "./commands.js";
+export * from "./steering.js";
 export * from "./context-usage.js";
 export * from "./formatting.js";
 export * from "./history.js";
