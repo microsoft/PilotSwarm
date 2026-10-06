@@ -207,6 +207,24 @@ describe("SteeringPump", () => {
         pump.dispose();
     });
 
+    it("a correlated user.message with no recognized delivery kind is unconfirmed, never a guessed label", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
+        const { pump, state } = makePump(session, ch);
+        let quiesced = 0;
+        state.quiesce = async () => { quiesced++; return true; };
+        await startTurn(session, pump, ch);
+        await until(() => session.sends.length === 1);
+        session.emit("user.message", { messageId: "sdk-1" });          // delivery field missing
+        await until(() => ch.names().includes("unconfirmed"));
+        session.emit("session.idle", {});
+        await pump.reconcileAfterIdle({ guards: [] });
+        const manifest = await pump.settle({ stopping: false });
+        pump.dispose();
+        expect(manifest.delivered).toEqual([]);
+        expect(ch.names()).not.toContain("delivered");
+        expect(quiesced).toBe(1);                                       // it may have started its own run
+    });
+
     it("under Stop an unproven quiescence does not throw", async () => {
         const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
         session.sendImpl = () => new Promise(() => {});
