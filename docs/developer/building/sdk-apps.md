@@ -23,6 +23,12 @@ npm install --save-exact ./dist-tarballs/pilotswarm-sdk-X.Y.Z.tgz
 
 ## The Basic Shape
 
+For current-turn guidance, use the public `steerSessionTurn` management/client
+method or `session.steer(text, { clientRequestId, expectedTarget })`. Acceptance
+returns immediately with a durable receipt; it does not wait for model delivery.
+See [the client example](../../api/clients.md#steering-a-running-turn) for
+target capture, retry identity, authorization and receipt inspection.
+
 Every SDK app has two halves:
 
 - `PilotSwarmWorker` — owns LLM turns, tool execution, plugin loading, and orchestration activities

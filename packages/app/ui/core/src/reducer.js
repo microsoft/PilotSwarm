@@ -1972,6 +1972,7 @@ function baseReducer(state, action) {
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
+                    promptActionIndex: null,
                     prompt: nextPrompt,
                     promptCursor: nextPromptCursor,
                     promptRows: getPromptInputRows(nextPrompt),
@@ -2292,6 +2293,14 @@ function baseReducer(state, action) {
             };
         }
 
+        case "steering/accessLost": {
+            const bySessionId = { ...state.steering?.bySessionId };
+            bySessionId[action.sessionId] = {
+                ...emptySteeringSession(), accessLost: true,
+                accessRevision: (bySessionId[action.sessionId]?.accessRevision || 0) + 1,
+            };
+            return { ...state, steering: { ...state.steering, bySessionId } };
+        }
         case "steering/stateLoaded":
         case "steering/windowChanged":
         case "steering/receiptReceived":
@@ -2301,6 +2310,8 @@ function baseReducer(state, action) {
             if (!sessionId) return state;
             let entry = state.steering?.bySessionId?.[sessionId] || emptySteeringSession();
             if (action.type === "steering/stateLoaded") {
+                if ((action.accessRevision ?? 0) !== (entry.accessRevision || 0)) return state;
+                entry = { ...entry, accessLost: false };
                 // Reads are captured before awaiting; newer live events win.
                 if ((action.windowSeq ?? 0) >= entry.windowSeq) {
                     entry = { ...entry, state: action.state, windowSeq: action.windowSeq ?? entry.windowSeq, error: action.error || null };
@@ -2316,8 +2327,10 @@ function baseReducer(state, action) {
                     } };
                 }
             } else if (action.type === "steering/windowChanged") {
+                if (entry.accessLost) return state;
                 entry = mergeSteeringWindow(entry, action.window, action.seq);
             } else if (action.type === "steering/receiptReceived") {
+                if (entry.accessLost || action.accessRevision !== undefined && action.accessRevision !== (entry.accessRevision || 0)) return state;
                 if (action.receipt?.sessionId !== sessionId) return state;
                 entry = mergeSteeringReceipt(entry, action.receipt);
             } else if (action.type === "steering/submissionStarted") {
@@ -2512,6 +2525,7 @@ function baseReducer(state, action) {
                 treeFactsStats: action.treeFactsStats || null,
                 // Session workspaces: getSessionWorkspace's view, or null when unknown.
                 workspace: action.workspace || null,
+                steeringStats: action.steeringStats || null,
             };
             return {
                 ...state,

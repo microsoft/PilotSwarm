@@ -4,12 +4,12 @@ import type { MessageSender } from "./message-sender.js";
 import {
     DEFAULT_STEERING_LIMITS, decodeSteeringTarget, decodeSteeringListCursor,
     encodeSteeringListCursor, isValidClientRequestId, newSteeringRequestId,
-    normalizeSteerText, readSteeringEnabled, sameSteeringActor,
+    normalizeSteerText, readSteeringEnabled,
     steeringActorFromSender, steeringContentHash, toSteeringReceipt,
 } from "./steering.js";
 import type {
     GetSteeringRequestOptions, ListSteeringRequestsOptions, SessionSteeringState,
-    SteeringDisposition, SteeringReceiptRecord, SteeringReceiptV1, SteeringRefusalCode,
+    SteeringDisposition, SteeringReceiptV1, SteeringRefusalCode,
     SteeringStatsOptions, SteerSessionTurnOptions, SteerSessionTurnResult,
     SteeringListPage, SessionSteeringStats, WithdrawSteeringRequestResult,
 } from "./steering-types.js";
@@ -30,12 +30,6 @@ export class SteeringError extends Error {
     }
 }
 
-// Optional while rolling the additive catalog capability out. No weaker
-// acceptance fallback exists when the replay probe is unavailable.
-type SteeringCatalog = SessionCatalog & {
-    steerGetByClientRequestId?: (sessionId: string, clientRequestId: string) => Promise<SteeringReceiptRecord | null>;
-};
-
 const DISPOSITIONS: ReadonlySet<SteeringDisposition> = new Set([
     "accepted", "delivered_current_turn", "delivered_after_response", "delivered_before_stop",
     "not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed", "rejected",
@@ -51,7 +45,7 @@ function boundedInteger(value: number | undefined, fallback: number, max: number
 
 /** One implementation shared by the management client and session facade. */
 export class SteeringManagement {
-    constructor(private readonly catalog: SteeringCatalog) {}
+    constructor(private readonly catalog: SessionCatalog) {}
 
     private async authorize(sessionId: string, edge: SteeringCallerContext, action: string, write = false) {
         const actor = steeringActorFromSender(edge.sender);
@@ -87,9 +81,7 @@ export class SteeringManagement {
         }
     }
 
-    async state(sessionId: string, edge: SteeringCallerContext = {}): Promise<SessionSteeringState & {
-        supported: boolean; canWrite: boolean; windowSeq: number;
-    }> {
+    async state(sessionId: string, edge: SteeringCallerContext = {}): Promise<SessionSteeringState> {
         const viewer = await this.authorize(sessionId, edge, "getSessionSteeringState");
         const session = await this.catalog.getSession(sessionId);
         if (!session) throw new SteeringError("not_found", "Session not found.");
@@ -118,14 +110,16 @@ export class SteeringManagement {
             const normalized = normalizeSteerText(options.text);
             if (!normalized.ok) return { ok: false, code: normalized.code, ...("limit" in normalized ? { limit: normalized.limit } : {}) };
             await this.requireSchema();
-            if (!this.catalog.steerGetByClientRequestId) return { ok: false, code: "unsupported", reason: "schema_missing" };
-            const existing = await this.catalog.steerGetByClientRequestId(sessionId, options.clientRequestId);
+            const identity = {
+                sessionId, idempotencyKey: options.clientRequestId, actor: { ...viewer.actor },
+                contentHash: steeringContentHash(normalized.text),
+                epoch: target.epoch, turnIndex: target.turnIndex, incarnation: target.incarnation,
+            };
+            const existing = await this.catalog.steerMatchExisting(identity);
             if (existing) {
-                if (!sameSteeringActor(existing.actor, viewer.actor)) return { ok: false, code: "forbidden" };
-                if (existing.expectedTarget !== options.expectedTarget || existing.text !== normalized.text) {
-                    return { ok: false, code: "idempotency_conflict" };
-                }
-                return { ok: true, duplicate: true, receipt: toSteeringReceipt(existing, viewer) };
+                return existing.outcome === "accepted"
+                    ? { ok: true, duplicate: true, receipt: toSteeringReceipt(existing.receipt, viewer) }
+                    : { ok: false, code: existing.outcome, reason: existing.reason, limit: existing.limit, retryAfterMs: existing.retryAfterMs };
             }
             const session = await this.catalog.getSession(sessionId);
             if (!session) return { ok: false, code: "not_found" };
@@ -135,10 +129,7 @@ export class SteeringManagement {
                 return { ok: false, code: "unsupported", reason: "feature_disabled" };
             }
             const result = await this.catalog.steerAccept({
-                sessionId, requestId: newSteeringRequestId(), idempotencyKey: options.clientRequestId,
-                actor: { ...viewer.actor }, content: normalized.text, contentHash: steeringContentHash(normalized.text),
-                epoch: target.epoch, turnIndex: target.turnIndex, incarnation: target.incarnation,
-                limits: DEFAULT_STEERING_LIMITS,
+                ...identity, requestId: newSteeringRequestId(), content: normalized.text, limits: DEFAULT_STEERING_LIMITS,
             });
             if (result.outcome === "accepted") {
                 return { ok: true, duplicate: result.duplicate, receipt: toSteeringReceipt(result.receipt, viewer) };

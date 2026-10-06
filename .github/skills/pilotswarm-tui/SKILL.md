@@ -73,6 +73,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   Tab continues pane traversal, and Shift+Tab/Escape returns to the editor.
   Native Ctrl+S is gated on raw-mode coverage across supported terminal hosts;
   do not advertise it before that gate passes. Send/newline/Stop stay unchanged.
+- The native action row includes Guidance when receipts exist, including after
+  feature disablement. Its receipt view uses Up/Down to select and
+  PageUp/PageDown to scroll; Enter refreshes/reconciles, `w` withdraws, `r` sends
+  as a new message, `c` copies to an empty draft, and `a` appends. Escape closes.
+  The portal uses the same shared controller methods through receipt-row buttons.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve

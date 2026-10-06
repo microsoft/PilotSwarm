@@ -7083,6 +7083,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeSteering: activeSessionId ? state.steering?.bySessionId?.[activeSessionId] || null : null,
             // A shared empty array, not a literal: a fresh [] per call failed
             // the shallow-equal check on every dispatch and re-rendered the
             // whole pane, transcript included, on every keystroke.
@@ -7124,11 +7125,14 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
                 ? { [viewState.activeSessionId]: viewState.activeOutbox }
                 : {},
         },
+        steering: { bySessionId: viewState.activeSessionId && viewState.activeSteering
+            ? { [viewState.activeSessionId]: viewState.activeSteering } : {} },
         ui: {
             inspectorTab: viewState.inspectorTab,
         },
     }), [
         viewState.activeHistory,
+        viewState.activeSteering,
         viewState.activeSessionId,
         viewState.activeOutbox,
         viewState.authPrincipal,
@@ -9792,6 +9796,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",
+            "data-testid": "session-prompt",
             // One line at rest; a layout effect grows it to the rendered
             // content and CSS max-height caps it. Never a manual resize grip.
             rows: 1,
@@ -9905,6 +9910,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             steering.visible ? React.createElement("button", {
                 type: "button",
                 className: "ps-mini-button ps-steer-button",
+                "data-testid": "steer-current-turn",
                 "aria-label": "Steer current turn",
                 title: steering.enabled ? `${steering.help} (Ctrl+S)` : steering.reason,
                 disabled: !steering.enabled,
@@ -9914,6 +9920,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}`,
+                "data-testid": "send-prompt",
                 title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                     ? "Send all queued prompts"
                     : promptState.hasOutbox

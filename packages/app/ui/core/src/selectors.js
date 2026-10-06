@@ -1,6 +1,6 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
-import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession } from "./steering.js";
+import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession, getSteeringAttemptDisplay } from "./steering.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import {
@@ -2062,6 +2062,9 @@ export function selectActiveChat(state) {
             const merged = mergeSteeringReceipt({
                 ...emptySteeringSession(), receipts: previous ? { [receipt.requestId]: previous } : {},
             }, receipt).receipts[receipt.requestId];
+            // The controller reconciled the optimistic caller identity before
+            // history learned the server ID. Preserve that original DOM key.
+            merged.rowKey = receipt.rowKey || merged.rowKey;
             const message = buildSteeringMessage(merged);
             if (index >= 0) chat[index] = message;
             else chat.push(message);
@@ -2094,7 +2097,7 @@ export function selectActiveChat(state) {
     // reducer that captures status-only notices. Keep their fallback too.
     const sessionErrorMessage = session?.chatWarnings?.length ? null : buildSessionErrorMessage(session, events);
 
-    if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage && !session?.chatWarnings?.length) {
+    if (chat.length === 0 && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage && !session?.chatWarnings?.length) {
         return createSplashCard(state.branding, session);
     }
 
@@ -2727,7 +2730,7 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
     if (message?.kind === "steering") {
         if (options.tableMode === "sentinel") return [{ kind: "steeringReceipt", message }];
         return buildMessageCardLines({
-            title: `${message.sender?.display || "You"} · Guidance · ${message.steeringLabel}`,
+            title: `${message.sender?.display || message.sender?.subject || (message.steering?.requestId ? "User" : "You")} · Guidance · ${message.steeringLabel}`,
             titleColor: "cyan",
             body: `${message.text}\n\n${message.steeringDetail || ""}`,
             width: maxWidth,
@@ -3616,13 +3619,50 @@ export function selectSteeringComposer(state) {
 
 export function selectPromptActions(state) {
     const steering = selectSteeringComposer(state);
-    if (!steering.visible) return [];
+    const entry = state.steering?.bySessionId?.[state.sessions.activeSessionId];
+    const hasReceipts = Object.keys(entry?.receipts || {}).length > 0 || Object.keys(entry?.pending || {}).length > 0;
+    if (!steering.visible && !hasReceipts) return [];
     const session = selectActiveSession(state);
     return [
         { label: "Send", command: "sendPrompt", enabled: true },
         { label: "Steer", command: "steerTurn", enabled: steering.enabled },
         { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session) },
+        ...(hasReceipts ? [{ label: "Guidance", command: "steeringDetails", enabled: true }] : []),
     ];
+}
+
+export function selectSteeringReceiptModal(state, maxWidth = 76) {
+    const modal = state.ui.modal;
+    if (modal?.type !== "steeringReceipts") return null;
+    const entry = state.steering?.bySessionId?.[modal.sessionId];
+    const messages = selectActiveChat({ ...state, sessions: { ...state.sessions, activeSessionId: modal.sessionId } })
+        .filter(message => message.kind === "steering");
+    const receipts = new Map(messages.map(message => [message.id, message]));
+    const selectedId = modal.items[modal.selectedIndex || 0];
+    const selected = receipts.get(selectedId);
+    const rows = modal.items.map((id, index) => {
+        const message = receipts.get(id);
+        const text = (message?.text || "Loading guidance...").replace(/\s+/g, " ");
+        return [{ text: `${index === modal.selectedIndex ? "> " : "  "}${message?.steeringLabel || "Loading"}: ${text}`,
+            color: index === modal.selectedIndex ? "cyan" : "gray" }];
+    });
+    if (selected) {
+        rows.push(...buildChatMessageLines(selected, maxWidth));
+        const receipt = entry?.receipts?.[selected.steering.requestId] || selected.steering;
+        for (const [index, attempt] of (receipt.attempts?.items || []).entries()) {
+            rows.push([{ text: `Attempt ${attempt.attemptNo || index + 1}: ${getSteeringAttemptDisplay(attempt)}`, color: "gray" }]);
+        }
+        if (receipt.attempts?.nextCursor) rows.push([{ text: "Additional attempt evidence is available through the receipt API.", color: "gray" }]);
+        const actions = [
+            receipt.actions?.canWithdraw ? "w Withdraw" : null,
+            receipt.actions?.canSendAsNewMessage ? "r Send as new message" : null,
+            !receipt.requestId && receipt.error && !receipt.rejected ? "Enter Reconcile acceptance" : "Enter Refresh receipt",
+            "c Copy to draft", "a Append to draft",
+        ].filter(Boolean);
+        rows.push([{ text: actions.join(" · "), color: "cyan" }]);
+    }
+    rows.push([{ text: "Up/Down guidance · PageUp/PageDown scroll · Esc close. Delivery does not prove compliance.", color: "gray" }]);
+    return { title: "Guidance receipts", rows, scrollOffset: modal.scrollOffset || 0, idealWidth: maxWidth };
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
@@ -6090,8 +6130,8 @@ export function selectStatusBar(state) {
     }
 
     let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];
-    if (focus === FOCUS_REGIONS.PROMPT && selectSteeringComposer(state).visible) {
-        right = `tab Send/Steer/Stop actions · ${right}`;
+    if (focus === FOCUS_REGIONS.PROMPT && selectPromptActions(state).length) {
+        right = `tab Send/Steer/Stop/Guidance actions · ${right}`;
     }
     // Surface the Stop-turn hint at the front (so truncation never eats it)
     // exactly while a turn is running; it stays listed, grayed, in `?` help.
@@ -8602,6 +8642,27 @@ function buildSessionStatsLines(state, session, maxWidth) {
     // Facts card — per-session non-shared facts grouped by namespace.
     // When the session has descendants and tree facts differ from per-session
     // facts, append a "Tree" line so investigators can see lineage growth.
+    if (entry.steeringStats && !entry.steeringStats.unsupported) {
+        const stats = entry.steeringStats.data;
+        const count = value => Number.isFinite(value) ? value.toLocaleString() : "Unavailable";
+        const latency = value => value?.count && Number.isFinite(value.p95)
+            ? `${value.p95.toFixed(1)} ms (n=${count(value.count)})` : "Not measured";
+        const body = stats ? formatKeyValueTable([
+            ["Accepted", count(stats.requests.accepted)],
+            ["Unresolved / claimable", `${count(stats.requests.unresolved)} / ${count(stats.requests.claimable)}`],
+            ["Delivery attempts", count(stats.attempts.deliveries)],
+            ["Delivered current turn", count(stats.attempts.deliveredByKind.steering)],
+            ["Delivered follow-up", count(stats.attempts.deliveredByKind.queued + stats.attempts.deliveredByKind.idle)],
+            ["Recovery redeliveries", count(stats.attempts.redeliveries)],
+            ["Unconfirmed attempts", count(stats.attempts.unconfirmed)],
+            ["Inclusion unconfirmed", count(stats.requests.byInclusion.unconfirmed)],
+            ["Oldest unresolved", stats.requests.oldestUnresolvedAt ? formatLocalTimestamp(stats.requests.oldestUnresolvedAt) : "None"],
+            ["Handoff p95", latency(stats.latency.handoffMs)],
+            ["Safe-point delivery p95", latency(stats.latency.safePointMs)],
+        ], { maxWidth: w - 4 }) : `Unavailable: ${entry.steeringStats.error}`;
+        lines.push(...buildMessageCardLines({ title: "Steering", body, width: w, titleColor: "cyan", borderColor: "gray", fitToContent: true }));
+    }
+
     const facts = entry.factsStats;
     const treeFacts = entry.treeFactsStats;
     if (facts && Array.isArray(facts.rows) && facts.rows.length > 0) {
@@ -9464,7 +9525,7 @@ const KEYBINDING_HELP = [
     ] },
     { section: "Prompt", bindings: [
         ["enter", "send"],
-        ["Tab", "autocomplete, else Send/Steer/Stop actions when available"],
+        ["Tab", "autocomplete, else Send/Steer/Stop/Guidance actions"],
         ["actions: ← →", "choose · Enter activate · Esc/Shift+Tab prompt"],
         ["alt/ctrl-j", "newline"],
         ["ctrl-a", "attach artifact"],

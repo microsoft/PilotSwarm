@@ -10,6 +10,11 @@ point.
 For the full keybinding reference, see [keybindings.md](./keybindings.md).
 This guide introduces keys as you need them.
 
+The optional **Steer** action guides an already-running turn; ordinary Send
+still queues input. Tab from the prompt reaches distinct Send, Steer and Stop
+actions, plus Guidance for retained receipts. See
+[Guide a running turn](./session-steering.md).
+
 ## Prerequisites
 
 Follow the [local setup guide](../quickstart/local.md), then run

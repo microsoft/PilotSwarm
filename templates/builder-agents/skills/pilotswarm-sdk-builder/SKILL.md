@@ -87,6 +87,19 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Facts/graph access for clients goes through the Web API data-plane
   (`createWebFactStore` / `createWebGraphStore`).
 
+## Explicit current-turn guidance
+
+Use `PilotSwarmManagementClient({ apiUrl })`: `getSessionSteeringState`,
+`steerSessionTurn`, `getSteeringRequest`, `listSteeringRequests`,
+`withdrawSteeringRequest`, and `getSessionSteeringStats`. The session facade is
+`session.steer(text, { clientRequestId, expectedTarget })`. Read the target once
+for the user's action; preserve the caller-generated identity on ambiguous
+retry. Never silently retarget, use internal stores, or fall back to Send.
+Acceptance is durable intent, not model delivery or compliance. Guidance is
+text-only and the feature is off by default; the server requires enforcing
+ownership authorization and a supported active input window.
+See `docs/api/reference.md#session-steering` and `docs/api/clients.md`.
+
 ## Env File Guidance
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input.

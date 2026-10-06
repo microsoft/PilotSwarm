@@ -33,7 +33,7 @@ import {
     selectSessionOwnerFilterModal,
     selectStatusBar,
     selectPromptActions,
-    selectSteeringComposer,
+    selectSteeringReceiptModal,
     selectThemePickerModal,
     selectHelpModal,
     selectConfirmModal,
@@ -980,6 +980,8 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         filesFullscreen: Boolean(state.files.fullscreen),
         mode: state.connection.mode,
         statusText: state.ui.statusText,
+        promptActionIndex: state.ui.promptActionIndex,
+        steering: state.steering,
         modal: state.ui.modal,
         activeSessionId: state.sessions.activeSessionId,
         activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
@@ -997,6 +999,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
             inspectorTab: statusState.inspectorTab,
             fullscreenPane: statusState.fullscreenPane,
             statusText: statusState.statusText,
+            promptActionIndex: statusState.promptActionIndex,
             modal: statusState.modal,
         },
         logs: {
@@ -1014,6 +1017,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
                 ? { [statusState.activeSessionId]: statusState.activeSession }
                 : {},
         },
+        steering: statusState.steering,
     }), [statusState]);
     const status = React.useMemo(() => selectStatusBar(selectorState), [selectorState]);
     const viewport = typeof platform.getViewport === "function"
@@ -1810,6 +1814,26 @@ function HelpModalContainer({ controller }) {
     return React.createElement(HelpModal, { state });
 }
 
+function SteeringReceiptModalContainer({ controller }) {
+    const platform = useUiPlatform();
+    const state = useControllerSelector(controller, rootState => ({
+        ui: rootState.ui, sessions: rootState.sessions, history: rootState.history,
+        steering: rootState.steering, branding: rootState.branding,
+    }), shallowEqualObject);
+    const viewport = platform.getViewport?.() || { width: 120, height: 40 };
+    const width = Math.max(24, Math.min(84, viewport.width - 8));
+    const modal = selectSteeringReceiptModal(state, width - 4);
+    if (!modal) return null;
+    const height = Math.min(viewport.height - 4, modal.rows.length + 2);
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Panel, {
+            title: modal.title, color: "cyan", focused: true, width,
+            height,
+            lines: modal.rows, scrollOffset: Math.min(modal.scrollOffset, Math.max(0, modal.rows.length - height + 2)),
+            scrollMode: "top", fillColor: "surface",
+        }));
+}
+
 function renderFilterModal(platform, modal) {
     if (!modal) return null;
     const viewport = typeof platform.getViewport === "function"
@@ -2490,7 +2514,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         sessionPaneAdjust: state.ui.layout?.sessionPaneAdjust ?? 0,
         activityPaneAdjust: state.ui.layout?.activityPaneAdjust ?? 0,
         promptRows: getPromptInputRows(state.ui.prompt),
-        promptActionRows: selectSteeringComposer(state).visible ? 1 : 0,
+        promptActionRows: selectPromptActions(state).length ? 1 : 0,
         inspectorTab: state.ui.inspectorTab,
         filesFullscreen: Boolean(state.files?.fullscreen),
         fullscreenPane: state.ui.fullscreenPane || null,
@@ -2616,6 +2640,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),
         React.createElement(HelpModalContainer, { controller }),
+        React.createElement(SteeringReceiptModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),

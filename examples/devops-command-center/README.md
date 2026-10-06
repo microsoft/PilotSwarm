@@ -4,6 +4,20 @@ A sample PilotSwarm application that demonstrates building an agent-powered DevO
 
 All tools return **mock data** — no real cloud APIs are called.
 
+### Optional current-turn guidance
+
+[`steering.js`](./steering.js) demonstrates explicit steering and receipt
+inspection through a public management client. Connect with `{ apiUrl,
+getAccessToken }`, read `getSessionSteeringState(sessionId)`, and preserve
+`{ text, clientRequestId, expectedTarget }` before calling `submitGuidance`.
+The returned `receipt` means durable acceptance; `inspect()` reads current
+delivery/inclusion evidence. A lost response must reuse those same options.
+The sample's ordinary Send flows remain unchanged.
+
+The deployment must enable `sessions.steering` only after its compatibility
+gates pass and ownership authorization is enforced. No cloud configuration is
+required by this example. See [the steering guide](../../docs/user-guide/session-steering.md).
+
 ## What's Included
 
 ### Agents

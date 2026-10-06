@@ -71,6 +71,12 @@ The CLI builder template also assumes runnable scaffolds should:
 - make those scripts executable
 - verify direct script execution rather than only relying on `node script.js`
 
+The SDK, CLI and portal templates also teach explicit
+[session steering](../../docs/user-guide/session-steering.md). Builders preserve
+ordinary Send/Stop, observed targets and retry identities, and inspect durable
+receipts without treating acceptance or delivery as compliance. Steering stays
+behind `sessions.steering`; templates do not enable it automatically.
+
 ## Install Into Another Repo
 
 Copy these folders into the target repository:

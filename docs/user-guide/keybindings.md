@@ -107,7 +107,7 @@ These keys work whenever focus is not in the prompt editor.
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
 | `Tab` | Accept reference autocomplete; otherwise focus the Send/Steer/Stop action row when steering is available |
-| Action row: `Left` / `Right`, `Enter` | Select and activate a distinct Send, Steer, or Stop action |
+| Action row: `Left` / `Right`, `Enter` | Select and activate Send, Steer, Stop, or Guidance (when receipts exist) |
 | Action row: `Shift+Tab` / `Esc` | Return to the prompt without submitting |
 | Action row: `Tab` | Continue normal next-pane traversal |
 | `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
@@ -127,6 +127,10 @@ Notes:
 - Guidance receipts distinguish acceptance, waiting for a safe point,
   delivery, retention, Stop, and uncertainty. Delivery does not mean compliance.
   A missed steer does not automatically run next turn.
+- In Guidance receipts, Up/Down selects a request and PageUp/PageDown scrolls
+  its text. Enter refreshes or reconciles acceptance; `w` withdraws,
+  `r` sends as a new message, `c` copies to an empty draft, and `a` appends.
+  Escape closes the receipt view. The server decides which mutations are allowed.
 - The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
 - Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.
 - Every send first lands in a per-session local outbox, then transitions through three durability states shown next to each user message in chat:

@@ -291,6 +291,18 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         if (key.name !== "escape") {
             clearQuitArm(true);
         }
+        if (modal?.type === "steeringReceipts") {
+            const action = { w: "withdraw", r: "resend", c: "copy", a: "append" }[input];
+            if (key.escape) controller.closeModal();
+            else if (key.pageUp) controller.scrollSteeringReceipt(-10);
+            else if (key.pageDown) controller.scrollSteeringReceipt(10);
+            else if (key.upArrow || input === "k") controller.moveModalSelection(-1);
+            else if (key.downArrow || input === "j") controller.moveModalSelection(1);
+            else if (key.return || action) {
+                controller.actOnSelectedSteering(action || "refresh").catch(error => controller.setStatus(error.message));
+            }
+            return;
+        }
 
         // ── Admin Console keybindings ─────────────────────────
         // The Admin Console replaces the workspace, so its input handling
