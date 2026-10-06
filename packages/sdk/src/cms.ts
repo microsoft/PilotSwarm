@@ -1669,7 +1669,42 @@ export class PgSessionCatalog implements SessionCatalog {
             console.error('[cms] pool idle client error (non-fatal):', err.message);
         });
 
-        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const catalog = new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        catalog.clientConfig = poolConfig as unknown as Record<string, unknown>;
+        return catalog;
+    }
+
+    /** Connection settings for dedicated non-pool clients (the steering listener). */
+    private clientConfig: Record<string, unknown> | null = null;
+
+    /**
+     * Session steering: one dedicated LISTEN connection outside the pool, so
+     * it never holds one of the pool's few connections (NFR-6). Payloads are
+     * session ids only (D-14).
+     */
+    async listenSteering(onNotify: (sessionId: string) => void, onError: (err: unknown) => void): Promise<{ close(): Promise<void> }> {
+        if (!this.clientConfig) throw new Error("steering listener unavailable: no connection settings");
+        const { default: pg } = await import("pg");
+        const { max: _max, idleTimeoutMillis: _idle, ...config } = this.clientConfig as any;
+        const client = new pg.Client(config);
+        client.on("error", onError);
+        client.on("end", () => onError(new Error("steering listener connection ended")));
+        client.on("notification", (msg: any) => {
+            if (msg?.channel === "pilotswarm_steering" && typeof msg.payload === "string") onNotify(msg.payload);
+        });
+        await client.connect();
+        await client.query("LISTEN pilotswarm_steering");
+        let closed = false;
+        return {
+            close: async () => {
+                if (closed) return;
+                closed = true;
+                client.removeAllListeners("end");
+                client.removeAllListeners("error");
+                client.on("error", () => {});
+                await client.end().catch(() => {});
+            },
+        };
     }
 
 

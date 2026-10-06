@@ -1,4 +1,4 @@
-import type { SteeringCarrier, SteeringChannel } from "./steering-types.js";
+import type { SteerRow, SteeringCarrier, SteeringChannel } from "./steering-types.js";
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
@@ -132,6 +132,14 @@ export interface TurnOptions {
      * activity only when steering is enabled and the turn has a turn key.
      */
     steering?: SteeringChannel;
+    /**
+     * Lock-held, per-session disconnect of the warm handle, used by the
+     * steering pump when it cannot prove that no registered send can still
+     * start or continue SDK work (INV-P9). Resolves true only on success.
+     */
+    steeringQuiesce?: () => Promise<boolean>;
+    /** Re-check the steer author's write access before hand-off (NFR-10). */
+    steeringAuthorize?: (row: SteerRow) => Promise<boolean>;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
