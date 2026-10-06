@@ -6,6 +6,19 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-10-06 - Builder guidance for session steering
+
+- **Agents:** SDK builder 1.8.0 to 1.9.0; CLI builder 1.5.0 to 1.6.0;
+  portal builder 1.3.0 to 1.4.0.
+- **Model tested:** none; these are builder contract updates, not a model experiment.
+- **Observed behavior:** existing templates taught ordinary Send but not explicit
+  current-turn guidance or its durable receipt contract.
+- **Expected behavior:** use public steering clients and controls; preserve the
+  observed target and retry identity; distinguish acceptance, delivery, inclusion
+  and terminal no-resend evidence. Keep ordinary Send/Stop and authorization intact.
+- **Validation:** source/build and API/UI contract coverage. No builder-model
+  compliance or live-provider compatibility result is claimed.
+
 ## 2026-09-22 — Maintainer PR comment command
 
 - **Agent:** repository `pilotswarm-release`, `2.2.0` to `2.3.0`.
