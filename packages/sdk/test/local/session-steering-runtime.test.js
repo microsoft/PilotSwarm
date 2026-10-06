@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { withSteeringCli, nextSdkEvent, within } from "../helpers/steering-cli.mjs";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
@@ -81,7 +81,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
         });
     });
 
-    it("ST-I18: disconnect must cease a held model run without stopping a second session", { timeout: TIMEOUT }, async () => {
+    it("ST-I18 prerequisite: disconnect must cease a held model run without stopping a second session", { timeout: TIMEOUT }, async () => {
         const mainRequest = Promise.withResolvers();
         const modelRelease = Promise.withResolvers();
         const sendRelease = Promise.withResolvers();
@@ -103,6 +103,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 const issued = originalSend({ prompt: "late registered steer", mode: "immediate" });
                 const registered = issued.then(async (id) => { await sendRelease.promise; return id; });
                 const sdkMessageId = await within(issued, "steering send RPC");
+                assertEqual(request.connectionClosed, false, "the held model request is active immediately before disconnect");
                 await within(main.disconnect(), "per-session disconnect");
                 const otherReply = await other.sendAndWait({ prompt: "unrelated main turn" }, 20_000);
                 assertEqual(otherReply.data.content, "unrelated session remains usable");
@@ -119,7 +120,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
         });
     });
 
-    it("ST-I12: getEvents after PilotSwarm preamble reflects the restored snapshot, not dirty warm memory", { timeout: TIMEOUT }, async () => {
+    it("ST-I12 prerequisite: getEvents after PilotSwarm preamble reflects the restored snapshot, not dirty warm memory", { timeout: TIMEOUT }, async () => {
         await withSteeringCli(() => ({ content: "fixture answer" }), async (h) => {
             let session = await h.client.createSession(h.config);
             const sessionId = session.sessionId;
@@ -160,6 +161,88 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
             assert(!restored.some((event) => event.type === "user.message" && event.data.messageId === dirtyId), "discarded warm ID is absent");
             assertEqual(restored.filter((event) => event.type === "user.message" && event.data.messageId === savedId).length, 1);
             console.log("  real CLI restore: committed ID present; dirty ID absent");
+        });
+    });
+
+    it("ST-I12 prerequisite: cancelled publication remains valid saved inclusion evidence", { timeout: TIMEOUT }, async () => {
+        await withSteeringCli(() => ({ content: "cancelled fixture answer" }), async (h) => {
+            let session = await h.client.createSession(h.config);
+            const sessionId = session.sessionId;
+            const sessionStateDir = join(h.home, "session-state");
+            const sessionDir = join(sessionStateDir, sessionId);
+            const store = new FilesystemSessionStore(join(h.home, "stored-snapshots"), sessionStateDir);
+            const lifecycle = {
+                store, sessionStateDir, sessionId, expectedVersion: 0, turnKey: "cancelled-published-turn",
+                dropWarmSession: async () => {}, trace() {},
+            };
+            await runTurnPreamble(lifecycle);
+            writeTurnSentinel(sessionDir, lifecycle.turnKey);
+            const idle = nextSdkEvent(session, "session.idle");
+            const sdkMessageId = await session.send({ prompt: "cancelled but published guidance", mode: "immediate" });
+            await idle.promise;
+            const result = { type: "cancelled", steering: { delivered: [{
+                requestId: "cancelled-request", attemptId: "cancelled-attempt", sdkMessageId, kind: "idle",
+            }] } };
+            const committed = await runTurnCommit(lifecycle, 0, result);
+            assertEqual(committed.published, true, "cancelled does not mean unpublished");
+            await h.restart();
+            const pre = await runTurnPreamble(lifecycle);
+            assertEqual(pre.kind, "already-committed");
+            assertEqual(pre.result.type, "cancelled");
+            expect(pre.result.steering).toEqual(result.steering);
+            session = await h.client.resumeSession(sessionId, h.config);
+            const restored = await session.getEvents();
+            assert(restored.some((event) => event.type === "user.message" && event.data.messageId === sdkMessageId));
+        });
+    });
+
+    it("ST-I12 prerequisite: stopped delivery is historical but absent from the restored saved base", { timeout: TIMEOUT }, async () => {
+        const heldRequest = Promise.withResolvers();
+        const release = Promise.withResolvers();
+        await withSteeringCli(async (_body, position) => {
+            if (position.lastUserText.includes("dirty guidance before Stop")) {
+                heldRequest.resolve();
+                await release.promise;
+                return { content: "dirty reply" };
+            }
+            return { content: "saved base reply" };
+        }, async (h) => {
+            try {
+                let session = await h.client.createSession(h.config);
+                const sessionId = session.sessionId;
+                const sessionStateDir = join(h.home, "session-state");
+                const sessionDir = join(sessionStateDir, sessionId);
+                const store = new FilesystemSessionStore(join(h.home, "stored-snapshots"), sessionStateDir);
+                const lifecycle = {
+                    store, sessionStateDir, sessionId, expectedVersion: 0, turnKey: "saved-base-turn",
+                    dropWarmSession: async () => {}, trace() {},
+                };
+                await runTurnPreamble(lifecycle);
+                await session.sendAndWait({ prompt: "committed seed" }, 20_000);
+                writeTurnSentinel(sessionDir, lifecycle.turnKey);
+                const base = await runTurnCommit(lifecycle, 0, { type: "completed", content: "saved base reply" });
+                assertEqual(base.published, true);
+                const stoppedLifecycle = { ...lifecycle, expectedVersion: base.version, turnKey: "stopped-unpublished-turn" };
+                await runTurnPreamble(stoppedLifecycle);
+                writeTurnSentinel(sessionDir, stoppedLifecycle.turnKey);
+                const sdkMessageId = await session.send({ prompt: "dirty guidance before Stop", mode: "immediate" });
+                await within(heldRequest.promise, "held stopped model request");
+                const historical = await session.getEvents();
+                assert(historical.some((event) => event.type === "user.message" && event.data.messageId === sdkMessageId));
+                await session.abort();
+                const stopped = await runTurnCommit(stoppedLifecycle, base.version, { type: "stopped", reason: "fixture Stop" });
+                assertEqual(stopped.published, false);
+                assertEqual((await store.probeSnapshot(sessionId)).version, base.version);
+                await h.restart();
+                const pre = await runTurnPreamble(stoppedLifecycle);
+                assertEqual(pre.kind, "hydrated", "dirty stopped state is not a stored winner");
+                session = await h.client.resumeSession(sessionId, h.config);
+                const restored = await session.getEvents();
+                assert(!restored.some((event) => event.type === "user.message" && event.data.messageId === sdkMessageId),
+                    "observed delivery alone cannot establish saved inclusion");
+            } finally {
+                release.resolve();
+            }
         });
     });
 });
