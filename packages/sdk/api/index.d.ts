@@ -6,6 +6,7 @@ export declare const WS_PATH: string;
 export declare const WS_CLIENT_MESSAGES: string[];
 export declare const WS_SERVER_MESSAGES: string[];
 export declare const WEB_MODE_UNSUPPORTED: string;
+export declare function callSteeringOperation<T = unknown>(api: Pick<ApiClient, "call">, name: string, params: Record<string, unknown>): Promise<T>;
 
 export interface OperationParamSpec {
     in: "path" | "query" | "body";

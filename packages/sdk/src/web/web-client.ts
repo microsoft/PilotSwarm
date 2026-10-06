@@ -1,4 +1,7 @@
 import type { ApiClient } from "pilotswarm-sdk/api";
+import { callSteeringOperation } from "pilotswarm-sdk/api";
+import type { SteeringCallerContext } from "../steering-client.js";
+import type { SteerSessionTurnOptions, SteerSessionTurnResult } from "../steering-types.js";
 import type { SessionEvent } from "../cms.js";
 import type {
     PilotSwarmSessionInfo,
@@ -121,6 +124,12 @@ export class WebPilotSwarmClient {
 
     async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
         await this._api.call("cancelPendingMessage", { sessionId, clientMessageIds });
+    }
+
+    steerSessionTurn(sessionId: string, options: SteerSessionTurnOptions, _edge?: SteeringCallerContext): Promise<SteerSessionTurnResult> {
+        return callSteeringOperation(this._api, "steerSessionTurn", {
+            sessionId, options: { text: options.text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget },
+        });
     }
 
     createSystemSession(): never {
@@ -253,6 +262,12 @@ export class WebPilotSwarmSession {
         const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
         if (ids.length === 0) return;
         await this.api.call("cancelPendingMessage", { sessionId: this.sessionId, clientMessageIds: ids });
+    }
+
+    steer(text: string, options: Omit<SteerSessionTurnOptions, "text">, _edge?: SteeringCallerContext): Promise<SteerSessionTurnResult> {
+        return callSteeringOperation(this.api, "steerSessionTurn", {
+            sessionId: this.sessionId, options: { text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget },
+        });
     }
 
     async abort(): Promise<void> {

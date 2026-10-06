@@ -1,5 +1,6 @@
 import { ApiClient } from "./api-client.js";
 import { createCanvasLiveMirror } from "./canvas-live-mirror.js";
+import { callSteeringOperation } from "./steering.js";
 
 /**
  * Flatten an agent-package copy selector into wire params.
@@ -266,6 +267,37 @@ export class HttpApiTransport {
 
     async stopSessionTurn(sessionId, options = {}) {
         return this.api.call("stopSessionTurn", { sessionId, options });
+    }
+
+    getSessionSteeringState(sessionId) {
+        return callSteeringOperation(this.api, "getSessionSteeringState", { sessionId });
+    }
+
+    steerSessionTurn(sessionId, options) {
+        return callSteeringOperation(this.api, "steerSessionTurn", { sessionId, options: {
+            text: options.text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget,
+        } });
+    }
+
+    getSteeringRequest(sessionId, requestId, options = {}) {
+        return callSteeringOperation(this.api, "getSteeringRequest", {
+            sessionId, requestId, attemptCursor: options.attemptCursor, attemptLimit: options.attemptLimit,
+        });
+    }
+
+    listSteeringRequests(sessionId, options = {}) {
+        return callSteeringOperation(this.api, "listSteeringRequests", {
+            sessionId, limit: options.limit, cursor: options.cursor,
+            dispositions: options.dispositions, expectedTarget: options.expectedTarget,
+        });
+    }
+
+    withdrawSteeringRequest(sessionId, requestId) {
+        return callSteeringOperation(this.api, "withdrawSteeringRequest", { sessionId, requestId });
+    }
+
+    getSessionSteeringStats(sessionId, options = {}) {
+        return callSteeringOperation(this.api, "getSessionSteeringStats", { sessionId, since: options.since });
     }
 
     // ── Messaging ───────────────────────────────────────────────────────

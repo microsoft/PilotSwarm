@@ -24,6 +24,8 @@ import type {
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
+import { SteeringManagement, type SteeringCallerContext } from "./steering-client.js";
+import type { SteerSessionTurnOptions, SteerSessionTurnResult } from "./steering-types.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
@@ -607,6 +609,12 @@ export class PilotSwarmClient {
             "messages",
             JSON.stringify({ cancelPending: ids }),
         );
+    }
+
+    /** Accept current-turn guidance without queueing an ordinary message. */
+    steerSessionTurn(sessionId: string, options: SteerSessionTurnOptions, edge: SteeringCallerContext = {}): Promise<SteerSessionTurnResult> {
+        if (!this.started) throw new Error("PilotSwarmClient is not started");
+        return new SteeringManagement(this._catalog).accept(sessionId, options, edge);
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -1507,6 +1515,10 @@ export class PilotSwarmSession {
             "messages",
             JSON.stringify({ cancelPending: ids }),
         );
+    }
+
+    steer(text: string, options: Omit<SteerSessionTurnOptions, "text">, edge: SteeringCallerContext = {}): Promise<SteerSessionTurnResult> {
+        return this.client.steerSessionTurn(this.sessionId, { text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget }, edge);
     }
 
     async abort(): Promise<void> {

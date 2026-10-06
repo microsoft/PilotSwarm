@@ -47,7 +47,7 @@ async function readStdin(stream) {
     for await (const chunk of stream) {
         const buffer = Buffer.from(chunk);
         bytes += buffer.length;
-        if (bytes > 8192) throw new Error("Guidance exceeds 8 KiB of UTF-8 text");
+        if (bytes > 2 * 1024 * 1024) throw new Error("Input exceeds the 2 MiB request envelope");
         chunks.push(buffer);
     }
     return Buffer.concat(chunks).toString("utf8");
@@ -60,6 +60,16 @@ export async function executeSessionsCommand(client, { positional, flags }, { st
         throw new Error(`Unknown sessions command: ${command || "(missing)"}`);
     }
     if (!sessionId || positional.length !== (withRequest ? 3 : 2)) throw new Error("Incorrect session/request arguments; use --help");
+    const specific = {
+        "steering-state": [], "withdraw-steering": [],
+        "steering-status": ["attempt-cursor"],
+        "steering-list": ["limit", "cursor", "disposition", "expected-target"],
+        steer: ["text", "text-file", "stdin", "client-request-id", "expected-target"],
+    }[command];
+    const allowed = new Set(["api-url", "json", "help", ...specific]);
+    for (const name of Object.keys(flags)) {
+        if (!allowed.has(name)) throw new Error(`--${name} is not supported by ${command}`);
+    }
     if (command === "steering-state") return client.getSessionSteeringState(sessionId);
     if (command === "steering-status") return client.getSteeringRequest(sessionId, requestId,
         flags["attempt-cursor"] ? { attemptCursor: flags["attempt-cursor"] } : {});
@@ -68,7 +78,7 @@ export async function executeSessionsCommand(client, { positional, flags }, { st
         const limit = flags.limit === undefined ? 50 : Number(flags.limit);
         if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("--limit must be an integer from 1 to 200");
         return client.listSteeringRequests(sessionId, {
-            limit, cursor: flags.cursor, disposition: flags.disposition, expectedTarget: flags["expected-target"],
+            limit, cursor: flags.cursor, dispositions: flags.disposition ? [flags.disposition] : undefined, expectedTarget: flags["expected-target"],
         });
     }
     const sources = ["text", "text-file", "stdin"].filter(name => Object.hasOwn(flags, name));
@@ -77,7 +87,7 @@ export async function executeSessionsCommand(client, { positional, flags }, { st
     const text = flags.stdin ? await readStdin(stdin)
         : flags["text-file"] ? await loadText(flags["text-file"], "utf8") : flags.text;
     if (!text.trim()) throw new Error("Guidance must not be empty");
-    if (Buffer.byteLength(text, "utf8") > 8192) throw new Error("Guidance exceeds 8 KiB of UTF-8 text");
+    if (Buffer.byteLength(text.trim(), "utf8") > 8192) throw new Error("Guidance exceeds 8 KiB of UTF-8 text");
     return client.steerSessionTurn(sessionId, {
         text, clientRequestId: flags["client-request-id"], expectedTarget: flags["expected-target"],
     });
@@ -100,11 +110,12 @@ export async function runSessionsCommand(argv, { output = console.log, errorOutp
         await client.start();
         const result = await executeSessionsCommand(client, parsed);
         if (json) output(JSON.stringify(result));
+        else if (result?.receipt) output(`${result.receipt.requestId}: ${result.outcome || result.receipt.disposition} (target ${result.receipt.expectedTarget})`);
         else if (result?.requestId) output(`${result.requestId}: ${result.disposition} (target ${result.expectedTarget})`);
         else output(JSON.stringify(result, null, 2));
-        return 0;
+        return result?.ok === false || ["forbidden", "not_found", "not_withdrawable"].includes(result?.outcome) ? 1 : 0;
     } catch (error) {
-        errorOutput(json ? JSON.stringify({ error: { code: error.code || "INVALID_REQUEST", message: error.message } }) : error.message);
+        errorOutput(json ? JSON.stringify({ error: { code: error.code || "CLI_ERROR", message: error.message } }) : error.message);
         return 1;
     } finally {
         if (client) await client.stop();

@@ -83,6 +83,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSessionRetrievalUsage",
     "getSessionSkillUsage",
     "getSessionStatus",
+    "getSessionSteeringState",
+    "getSessionSteeringStats",
     "getSessionTokensByModel",
     "getSessionTreeFactsStats",
     "getSessionTreeRetrievalUsage",
@@ -90,6 +92,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSessionTreeStats",
     "getSessionWorkspace",
     "getSharedFactsStats",
+    "getSteeringRequest",
     "getSystemGitHubCopilotKeyStatus",
     "getTopEventEmitters",
     "getUserFeatureFlags",
@@ -119,6 +122,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionShares",
     "listSessionsPage",
     "listSessionWorkspaceFolders",
+    "listSteeringRequests",
     "listWorkers",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
@@ -169,6 +173,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setUserFeatureFlag",
     "similarFacts",
     "startFactsEmbedder",
+    "steerSessionTurn",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
@@ -183,6 +188,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "upsertGraphNamespace",
     "upsertGraphNode",
     "waitForStatusChange",
+    "withdrawSteeringRequest",
     "writeCanvasKv",
 ];
 
@@ -867,6 +873,23 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Steering capability, observed target and limits. Audit-only authorization reports unavailable.
+     * @remarks `GET /management/sessions/:sessionId/steering-state` — access: `session:read`
+     */
+    getSessionSteeringState(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
+     * Bounded steering counts, uncertainty and latency distributions. Contains no message bodies.
+     * @remarks `GET /management/sessions/:sessionId/steering-stats` — access: `session:read`
+     */
+    getSessionSteeringStats(params: {
+        sessionId: string;
+        since?: string;
+    }): Promise<any>;
+
+    /**
      * Token totals grouped by model.
      * @remarks `GET /management/sessions/:sessionId/tokens-by-model` — access: `session:read`
      */
@@ -921,6 +944,17 @@ export interface ManagementOps {
      * @remarks `GET /management/facts/shared-stats` — access: `fleet:read`
      */
     getSharedFactsStats(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read an authoritative steering receipt with bounded, paginated attempt evidence.
+     * @remarks `GET /management/sessions/:sessionId/steering/:requestId` — access: `session:read`
+     */
+    getSteeringRequest(params: {
+        sessionId: string;
+        requestId: string;
+        attemptCursor?: string;
+        attemptLimit?: number;
+    }): Promise<any>;
 
     /**
      * Whether a System GitHub Copilot key is configured and who last changed it. [admin]
@@ -1144,6 +1178,18 @@ export interface ManagementOps {
      */
     listSessionWorkspaceFolders(params: {
         sessionId: string;
+    }): Promise<any>;
+
+    /**
+     * List steering receipts in server order (default 50, maximum 200); cursor is bound to the session and filters.
+     * @remarks `GET /management/sessions/:sessionId/steering` — access: `session:read`
+     */
+    listSteeringRequests(params: {
+        sessionId: string;
+        limit?: number;
+        cursor?: string;
+        dispositions?: any;
+        expectedTarget?: string;
     }): Promise<any>;
 
     /**
@@ -1642,6 +1688,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Accept guidance for the observed running turn: options { text, clientRequestId, expectedTarget }. Returns a durable receipt, not delivery acknowledgement.
+     * @remarks `POST /management/sessions/:sessionId/steering` — access: `session:write`
+     */
+    steerSessionTurn(params: {
+        sessionId: string;
+        options?: any;
+    }): Promise<any>;
+
+    /**
      * Stop the durable embedder loop. [enhanced, admin]
      * @remarks `POST /facts/embedder/stop` — access: `fleet:admin` (admin)
      */
@@ -1770,6 +1825,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Withdraw before claim. Original author or effective session manager only; otherwise forbidden. Returns outcome and current receipt.
+     * @remarks `POST /management/sessions/:sessionId/steering/:requestId/withdraw` — access: `session:read`
+     */
+    withdrawSteeringRequest(params: {
+        sessionId: string;
+        requestId: string;
+    }): Promise<any>;
+
+    /**
      * Write the canvas KV store: ops [{op: put|delete, key, value?, ifMatch?}] (≤50). Each op is answered individually; who may write is the canvas policy × the app's kv.write switch; req/* rows from collaborators are capped to status suggested.
      * @remarks `POST /management/sessions/:sessionId/canvas-kv` — access: `canvas:write`
      */
@@ -1865,6 +1929,8 @@ export function createManagementOps(
         getSessionRetrievalUsage: (params: Record<string, unknown> = {}) => callOp("getSessionRetrievalUsage", params),
         getSessionSkillUsage: (params: Record<string, unknown> = {}) => callOp("getSessionSkillUsage", params),
         getSessionStatus: (params: Record<string, unknown> = {}) => callOp("getSessionStatus", params),
+        getSessionSteeringState: (params: Record<string, unknown> = {}) => callOp("getSessionSteeringState", params),
+        getSessionSteeringStats: (params: Record<string, unknown> = {}) => callOp("getSessionSteeringStats", params),
         getSessionTokensByModel: (params: Record<string, unknown> = {}) => callOp("getSessionTokensByModel", params),
         getSessionTreeFactsStats: (params: Record<string, unknown> = {}) => callOp("getSessionTreeFactsStats", params),
         getSessionTreeRetrievalUsage: (params: Record<string, unknown> = {}) => callOp("getSessionTreeRetrievalUsage", params),
@@ -1872,6 +1938,7 @@ export function createManagementOps(
         getSessionTreeStats: (params: Record<string, unknown> = {}) => callOp("getSessionTreeStats", params),
         getSessionWorkspace: (params: Record<string, unknown> = {}) => callOp("getSessionWorkspace", params),
         getSharedFactsStats: (params: Record<string, unknown> = {}) => callOp("getSharedFactsStats", params),
+        getSteeringRequest: (params: Record<string, unknown> = {}) => callOp("getSteeringRequest", params),
         getSystemGitHubCopilotKeyStatus: (params: Record<string, unknown> = {}) => callOp("getSystemGitHubCopilotKeyStatus", params),
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
         getUserFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getUserFeatureFlags", params),
@@ -1901,6 +1968,7 @@ export function createManagementOps(
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
+        listSteeringRequests: (params: Record<string, unknown> = {}) => callOp("listSteeringRequests", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
@@ -1951,6 +2019,7 @@ export function createManagementOps(
         setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        steerSessionTurn: (params: Record<string, unknown> = {}) => callOp("steerSessionTurn", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
@@ -1965,6 +2034,7 @@ export function createManagementOps(
         upsertGraphNamespace: (params: Record<string, unknown> = {}) => callOp("upsertGraphNamespace", params),
         upsertGraphNode: (params: Record<string, unknown> = {}) => callOp("upsertGraphNode", params),
         waitForStatusChange: (params: Record<string, unknown> = {}) => callOp("waitForStatusChange", params),
+        withdrawSteeringRequest: (params: Record<string, unknown> = {}) => callOp("withdrawSteeringRequest", params),
         writeCanvasKv: (params: Record<string, unknown> = {}) => callOp("writeCanvasKv", params),
     };
 }

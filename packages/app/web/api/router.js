@@ -51,6 +51,8 @@ const ERROR_STATUS_BY_CODE = {
     not_found: 404,
     too_large: 413,
     rate_limited: 429,
+    invalid: 400,
+    not_withdrawable: 409,
 };
 
 // Domain/lifecycle errors the runtime throws with actionable, non-sensitive

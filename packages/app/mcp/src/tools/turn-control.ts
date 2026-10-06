@@ -19,6 +19,65 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
         return existing ?? null;
     }
 
+    server.registerTool("get_steering_state", {
+        title: "Get Steering State",
+        description: "Read current-turn steering availability, the observed expectedTarget token and text/rate limits. "
+            + "An open target grants no permission. Preserve the observed token when submitting guidance.",
+        inputSchema: { session_id: sessionIdShape() },
+    }, withToolErrors(async ({ session_id }) => jsonResult(await ctx.mgmt.getSessionSteeringState(session_id))));
+
+    server.registerTool("steer_turn", {
+        title: "Steer Current Turn",
+        description: "Accept user guidance for this session's observed running turn without stopping it. Text only. "
+            + "Delivery waits for a supported model/tool boundary and may be retained if the turn ends. "
+            + "Acceptance is not delivery or compliance. This is not ordinary Send, a question answer, or a permission change. "
+            + "Reuse client_request_id and expected_target after a lost response; never silently retarget.",
+        inputSchema: {
+            session_id: sessionIdShape(),
+            text: z.string().min(1),
+            client_request_id: z.string().min(1).max(200),
+            expected_target: z.string().min(1).max(1024),
+        },
+    }, withToolErrors(async ({ session_id, text, client_request_id, expected_target }) => {
+        const result = await ctx.mgmt.steerSessionTurn(session_id, {
+            text, clientRequestId: client_request_id, expectedTarget: expected_target,
+        });
+        return { ...jsonResult(result), ...(result.ok ? {} : { isError: true }) };
+    }));
+
+    server.registerTool("get_steering_request", {
+        title: "Get Steering Receipt",
+        description: "Read one authoritative receipt, including separate delivery, future eligibility, inclusion and bounded attempt evidence. "
+            + "Use the server request ID, not the caller retry identity.",
+        inputSchema: {
+            session_id: sessionIdShape(), request_id: z.string().min(1),
+            attempt_cursor: z.string().optional(), attempt_limit: z.number().int().min(1).max(200).optional(),
+        },
+    }, withToolErrors(async ({ session_id, request_id, attempt_cursor, attempt_limit }) =>
+        jsonResult(await ctx.mgmt.getSteeringRequest(session_id, request_id, { attemptCursor: attempt_cursor, attemptLimit: attempt_limit }))));
+
+    server.registerTool("list_steering_requests", {
+        title: "List Steering Receipts",
+        description: "Read a bounded server-ordered receipt page (default 50, maximum 200). Cursors stay bound to this session and filters.",
+        inputSchema: {
+            session_id: sessionIdShape(), cursor: z.string().optional(),
+            limit: z.number().int().min(1).max(200).optional(), expected_target: z.string().optional(),
+            dispositions: z.array(z.enum(["accepted", "delivered_current_turn", "delivered_after_response", "delivered_before_stop",
+                "not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed", "rejected"])).optional(),
+        },
+    }, withToolErrors(async ({ session_id, cursor, limit, expected_target, dispositions }) =>
+        jsonResult(await ctx.mgmt.listSteeringRequests(session_id, { cursor, limit, expectedTarget: expected_target, dispositions }))));
+
+    server.registerTool("withdraw_steering_request", {
+        title: "Withdraw Guidance",
+        description: "Withdraw only before worker claim, as the original author or effective session manager. "
+            + "It never recalls submitted text. A losing withdrawal returns not_withdrawable and the current receipt.",
+        inputSchema: { session_id: sessionIdShape(), request_id: z.string().min(1) },
+    }, withToolErrors(async ({ session_id, request_id }) => {
+        const result = await ctx.mgmt.withdrawSteeringRequest(session_id, request_id);
+        return { ...jsonResult(result), ...(["forbidden", "not_found", "not_withdrawable"].includes(result.outcome) ? { isError: true } : {}) };
+    }));
+
     server.registerTool(
         "stop_turn",
         {

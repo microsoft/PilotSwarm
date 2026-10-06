@@ -82,7 +82,13 @@ Read state first, then submit the observed opaque `expectedTarget` unchanged:
 }
 ```
 
-The success envelope contains a version-1 receipt: `requestId`,
+Acceptance returns `{ ok: true, duplicate, receipt }` inside the API's normal
+`{ ok: true, result }` envelope. A refused acceptance returns
+`{ ok: false, code, reason?, limit?, retryAfterMs? }` as its result; authentication
+and authorization failures at the HTTP boundary use the ordinary error envelope.
+The SDK normalizes known acceptance refusals to the same typed result in both modes.
+
+The version-1 receipt contains `requestId`,
 `clientRequestId`, `sessionId`, `expectedTarget`, `sequence`, `acceptedAt`,
 `actor`, immutable `text`, monotonic `revision`, `status`, `disposition`,
 `eligibility`, `inclusion`, `recoveryFlags`, paginated `attempts`, and
@@ -91,7 +97,7 @@ means **Waiting for a safe point**, not success. Positive delivery evidence
 distinguishes **Delivered to current turn** from **Delivered after the earlier
 response**. Neither label means the agent understood or followed the guidance.
 
-List reads default to 50 and cap at 200. Use `limit`, `cursor`, `disposition`,
+List reads default to 50 and cap at 200. Use `limit`, `cursor`, `dispositions` (JSON array),
 and `expectedTarget` query parameters. A cursor is bound to the original session
 and filters. `attemptCursor` on a receipt read pages bounded attempt evidence;
 a non-null `attempts.nextCursor` means evidence is incomplete.
@@ -222,6 +228,12 @@ group membership is per-viewer state, not a property of the session. See
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
 | stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
+| getSessionSteeringState | `GET /api/v1/management/sessions/:sessionId/steering-state` | sessionId (path) | Effective capability, observed target, limits and unavailable reason. |
+| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steering` | sessionId (path), options (body) | Accept text guidance with preserved clientRequestId and expectedTarget; returns a typed acceptance/refusal result. |
+| getSteeringRequest | `GET /api/v1/management/sessions/:sessionId/steering/:requestId` | sessionId, requestId (path), attemptCursor, attemptLimit (query) | Authoritative receipt with bounded attempt evidence. |
+| listSteeringRequests | `GET /api/v1/management/sessions/:sessionId/steering` | sessionId (path), cursor, limit, dispositions, expectedTarget (query) | Server-ordered receipt page; cursor is bound to session and filters. |
+| withdrawSteeringRequest | `POST /api/v1/management/sessions/:sessionId/steering/:requestId/withdraw` | sessionId, requestId (path) | Original-author or manager pre-claim withdrawal; returns outcome and current receipt. |
+| getSessionSteeringStats | `GET /api/v1/management/sessions/:sessionId/steering-stats` | sessionId (path), since (query) | Content-free counts and measured latency distributions; counters are cumulative. |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). With `startReplacement: false`, remove it and start nothing; refused (409 `SYSTEM_AGENT_LOADED`) while a live worker loads the agent. |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |
