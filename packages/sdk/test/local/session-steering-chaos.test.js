@@ -27,7 +27,7 @@ describe.concurrent("session steering causal ledger cuts", () => {
             const original = await h.accept();
             // Drop the response, not the transaction: reconcile using the caller's original key.
             const recovered = await h.accept({ idempotencyKey: original.idempotencyKey });
-            assertEqual(recovered.result.requestId, original.requestId);
+            assertEqual(recovered.result.receipt.requestId, original.requestId);
             assertEqual((await h.requests()).length, 1);
             const events = await h.catalog.getSessionEvents(h.sessionId);
             assertEqual(events.filter((event) => event.eventType === "session.steering_accepted").length, 1);
@@ -156,7 +156,7 @@ describe.concurrent("session steering causal ledger cuts", () => {
             assertEqual((await h.proc("cms_steer_claim", [h.sessionId, owner, 5])).length, 0);
             await h.finalize({ owner: h.target.owner });
             assertEqual((await h.request(accepted.requestId)).status, "delivered", "stale finalizer cannot close the winner");
-            await h.finalize({ owner, outcome: "adopted", manifest: deliveredManifest(accepted.requestId, attemptId, sdkMessageId), snapshotVersion: 7 });
+            await h.finalize({ owner, outcome: "adopted", manifest: deliveredManifest(accepted.requestId), snapshotVersion: 7 });
             const row = await h.request(accepted.requestId);
             assertEqual(row.status, "closed");
             assertEqual(row.included, "included");

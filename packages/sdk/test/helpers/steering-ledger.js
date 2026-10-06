@@ -6,7 +6,7 @@ import { createCatalog } from "./cms-helpers.js";
 export const STEER_AUTHOR = Object.freeze({ provider: "test", subject: "steer-author", displayName: "Author" });
 export const STEER_OTHER = Object.freeze({ provider: "test", subject: "steer-other", displayName: "Other writer" });
 export const STEER_LIMITS = Object.freeze({
-    maxBytes: 16_384, perSessionPerMinute: 30, perActorPerMinute: 60, maxUnresolved: 5,
+    maxBytes: 8192, ratePerMinute: 30, maxUnresolved: 16,
 });
 
 /** Real procedures and isolated PostgreSQL state; no steering behavior is faked. */
@@ -21,7 +21,8 @@ export async function withSteeringLedger(fn) {
     const proc = async (name, args) => {
         if (!/^cms_steer_[a-z_]+$/.test(name)) throw new Error(`Not a steering procedure: ${name}`);
         const placeholders = args.map((_, i) => `$${i + 1}`).join(",");
-        const { rows } = await query(`SELECT ${schema}.${name}(${placeholders}) AS result`, args);
+        const parameters = args.map((arg) => arg !== null && typeof arg === "object" && !Array.isArray(arg) ? JSON.stringify(arg) : arg);
+        const { rows } = await query(`SELECT ${schema}.${name}(${placeholders}) AS result`, parameters);
         return rows[0].result;
     };
     const open = (over = {}) => {
@@ -77,6 +78,6 @@ export async function withSteeringLedger(fn) {
     }
 }
 
-export function deliveredManifest(requestId, attemptId, sdkMessageId, kind = "steering") {
-    return [{ requestId, attemptId, sdkMessageId, kind }];
+export function deliveredManifest(requestId) {
+    return [requestId];
 }

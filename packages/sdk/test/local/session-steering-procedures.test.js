@@ -81,7 +81,7 @@ async function deliverOne(sessionId, owner, kind = "steering") {
     return { requestId: row.requestId, attemptId, sdkId, delivered: d };
 }
 
-describe("session steering procedures (0082)", () => {
+describe.concurrent("session steering procedures (0082)", () => {
     it("publishes sessions.steering exactly as the code defines it: Off, no user override", async () => {
         const snapshot = await catalog.features.snapshot([STEERING_FEATURE]);
         expect(snapshot.definitions).toEqual([{ featureKey: STEERING_FEATURE, ...FEATURE_FLAGS[STEERING_FEATURE], revision: "1" }]);

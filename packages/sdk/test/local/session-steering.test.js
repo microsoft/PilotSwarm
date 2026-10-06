@@ -23,14 +23,14 @@ describe.concurrent("session steering ledger and procedures", () => {
         await withSteeringLedger(async (h) => {
             await h.open();
             const idempotencyKey = randomUUID();
-            const limits = { ...STEER_LIMITS, perActorPerMinute: 1, perSessionPerMinute: 1 };
+            const limits = { ...STEER_LIMITS, ratePerMinute: 1 };
             const answers = await Promise.all(Array.from({ length: 8 }, () => h.accept({ idempotencyKey, limits })));
             const rows = await h.requests();
             assertEqual(rows.length, 1, "unique acceptance authority");
-            for (const answer of answers) assertEqual(answer.result.requestId, rows[0].request_id, "all callers observe the winner");
+            for (const answer of answers) assertEqual(answer.result.receipt.requestId, rows[0].request_id, "all callers observe the winner");
             await h.finalize();
             const retry = await h.accept({ idempotencyKey, limits });
-            assertEqual(retry.result.requestId, rows[0].request_id, "reauthorized replay works after closure");
+            assertEqual(retry.result.receipt.requestId, rows[0].request_id, "reauthorized replay works after closure");
             console.log(`  same-key race: ${answers.length} callers, ${rows.length} accepted row`);
         });
     });
@@ -81,7 +81,7 @@ describe.concurrent("session steering ledger and procedures", () => {
             await h.catalog.createSession(otherSession, { owner: STEER_AUTHOR });
             await h.catalog.updateSession(otherSession, { state: "running" });
             await Promise.all([h.open(), h.open({ sessionId: otherSession })]);
-            const limits = { ...STEER_LIMITS, perActorPerMinute: 1 };
+            const limits = { ...STEER_LIMITS, ratePerMinute: 1 };
             await Promise.all([h.accept({ limits }), h.accept({ sessionId: otherSession, limits })]);
             assertEqual((await h.requests()).length + (await h.requests(otherSession)).length, 1, "global actor cap cannot overshoot");
         });
