@@ -14,7 +14,7 @@ import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { FEATURE_FLAGS } from "../../src/feature-flags.ts";
 import {
-    STEERING_FEATURE, decodeSteeringTarget, encodeSteeringTarget, steeringContentHash, toSteeringReceipt,
+    STEERING_FEATURE, readSteeringEnabled, decodeSteeringTarget, encodeSteeringTarget, steeringContentHash, toSteeringReceipt,
     encodeSteeringListCursor, decodeSteeringListCursor,
 } from "../../src/steering.ts";
 
@@ -92,6 +92,11 @@ describe("session steering procedures (0082)", () => {
             [STEERING_FEATURE]);
         expect(rows).toEqual([{ scope: "cluster", user_id: null, enabled: false, allow_user_override: false, updated_by: "migration:0082" }]);
         expect(await catalog.supportsSteering()).toBe(true);
+        expect(await readSteeringEnabled(catalog.features, { provider: "test", subject: "alice" })).toBe(false);
+        await pool.query(`UPDATE "${schema}".feature_flag_settings SET enabled = true WHERE feature_key = $1 AND scope = 'cluster'`, [STEERING_FEATURE]);
+        expect(await readSteeringEnabled(catalog.features, { provider: "test", subject: "alice" })).toBe(true);
+        expect(await readSteeringEnabled(catalog.features, null)).toBe(true);
+        await pool.query(`UPDATE "${schema}".feature_flag_settings SET enabled = false WHERE feature_key = $1 AND scope = 'cluster'`, [STEERING_FEATURE]);
     });
 
     it("is idempotent when initialization is repeated", async () => {

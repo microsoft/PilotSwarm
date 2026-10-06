@@ -14,7 +14,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
-import type { FeatureOwner } from "./feature-flags.js";
+import { featureOwnerKey, resolveFeatureDefinition, type FeatureOwner, type FeatureSnapshot } from "./feature-flags.js";
 import type { MessageSender } from "./message-sender.js";
 import type {
     DecodedSteeringTarget,
@@ -60,6 +60,27 @@ export function steeringEnabled(
         ? { provider: owner.provider, subject: owner.subject }
         : null;
     return cache.resolve(STEERING_FEATURE, featureOwner, { fallback: false }).enabled === true;
+}
+
+/**
+ * Direct read for trusted direct-mode callers without a worker cache (the
+ * management client): one `cms_feature_snapshot` read, resolved with the same
+ * rules as the cache. Off when the definition is missing.
+ */
+export async function readSteeringEnabled(
+    features: { snapshot(keys: string[]): Promise<FeatureSnapshot> } | null | undefined,
+    owner: { provider?: string | null; subject?: string | null } | null | undefined,
+): Promise<boolean> {
+    if (!features) return false;
+    const snapshot = await features.snapshot([STEERING_FEATURE]);
+    const definition = snapshot.definitions.find((d) => d.featureKey === STEERING_FEATURE);
+    if (!definition) return false;
+    const cluster = snapshot.settings.find((s) => s.featureKey === STEERING_FEATURE && s.scope === "cluster");
+    const ownerKey = owner?.provider && owner?.subject ? featureOwnerKey({ provider: owner.provider, subject: owner.subject }) : null;
+    const user = ownerKey
+        ? snapshot.settings.find((s) => s.featureKey === STEERING_FEATURE && s.scope === "user" && s.owner && featureOwnerKey(s.owner) === ownerKey)
+        : undefined;
+    return resolveFeatureDefinition(definition, cluster, user).enabled === true;
 }
 
 /** Same encoding as `cms_steer_target_token`. */
