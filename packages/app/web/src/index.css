@@ -3365,6 +3365,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-chat-composer {
+  container: prompt-composer / inline-size;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -3395,7 +3396,8 @@ body.is-resizing-pane-y iframe {
   gap: 8px;
 }
 
-.ps-steer-button {
+.ps-prompt-shell .ps-prompt-actions > button {
+  flex: none;
   min-width: 44px;
   min-height: 44px;
 }
@@ -9778,6 +9780,24 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
+
+/* A narrow chat pane needs the full text width, including in MoA. Keep the
+   action order while moving that whole row below the draft. */
+@container prompt-composer (max-width: 480px) {
+  .ps-chat-composer .ps-prompt-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ps-prompt-shell > .ps-prompt-label,
+  .ps-prompt-shell > .ps-prompt-input,
+  .ps-prompt-shell > .ps-prompt-actions {
+    grid-column: 1 / -1;
+  }
+  .ps-prompt-shell > .ps-prompt-actions {
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
 
 /* Permanent desktop navigation geometry. Context controls may change, but
    neither a mode change nor a long canvas title can move Back / Forward. */
