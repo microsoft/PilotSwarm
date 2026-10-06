@@ -33,3 +33,44 @@ test("inserting a missing receipt preserves the relative order of all ordinary m
     assert.deepEqual(chat.filter(message => message.kind !== "steering").map(message => message.text), before);
     assert.equal(chat.filter(message => message.kind === "steering").length, 1);
 });
+
+test("missing receipt overlays retain server sequence even when transaction timestamps run backward", () => {
+    let state = stateWithHistory();
+    const ordinary = selectActiveChat(state).map(message => message.text);
+    for (const receipt of [
+        { requestId: "r2", clientRequestId: "c2", sequence: 2, acceptedAt: new Date(500).toISOString() },
+        { requestId: "r1", clientRequestId: "c1", sequence: 1, acceptedAt: new Date(2500).toISOString() },
+    ]) {
+        state = appReducer(state, { type: "steering/receiptReceived", sessionId: "s1", receipt: {
+            schemaVersion: 1, sessionId: "s1", revision: 1, text: "identical guidance",
+            status: "pending", disposition: "accepted", ...receipt,
+        } });
+    }
+    const chat = selectActiveChat(state);
+    assert.deepEqual(chat.filter(message => message.kind !== "steering").map(message => message.text), ordinary);
+    assert.deepEqual(chat.filter(message => message.kind === "steering").map(message => message.steering.requestId), ["r1", "r2"],
+        "acceptedAt is transaction-time evidence, not authority to invert accepted server order");
+    assert.equal(chat.filter(message => message.kind === "steering").length, 2, "equal text retains distinct receipts");
+});
+
+test("a missing earlier receipt is inserted before an existing later receipt without moving ordinary rows", () => {
+    let state = stateWithHistory();
+    const later = {
+        schemaVersion: 1, sessionId: "s1", requestId: "r2", clientRequestId: "c2",
+        revision: 1, sequence: 2, acceptedAt: new Date(500).toISOString(), text: "later guidance",
+        status: "pending", disposition: "accepted",
+    };
+    state = appReducer(state, { type: "history/set", sessionId: "s1", history: buildHistoryModel([
+        { sessionId: "s1", seq: 1, eventType: "user.message", createdAt: 3000, data: { content: "first ordinary row" } },
+        { sessionId: "s1", seq: 2, eventType: "session.steering_accepted", createdAt: 500, data: { receipt: later } },
+        { sessionId: "s1", seq: 3, eventType: "user.message", createdAt: 1000, data: { content: "second ordinary row" } },
+    ]) });
+    state = appReducer(state, { type: "steering/receiptReceived", sessionId: "s1", receipt: {
+        ...later, requestId: "r1", clientRequestId: "c1", sequence: 1,
+        acceptedAt: new Date(2500).toISOString(), text: "earlier guidance",
+    } });
+    const chat = selectActiveChat(state);
+    assert.deepEqual(chat.map(message => message.text),
+        ["first ordinary row", "earlier guidance", "later guidance", "second ordinary row"]);
+    assert.deepEqual(chat.filter(message => message.kind === "steering").map(message => message.steering.requestId), ["r1", "r2"]);
+});

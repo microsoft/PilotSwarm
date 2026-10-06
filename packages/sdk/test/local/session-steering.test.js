@@ -75,6 +75,40 @@ describe.concurrent("session steering ledger and procedures", () => {
         });
     });
 
+    it("ST-I02: server sequence remains authority when an older transaction accepts later", { timeout: TIMEOUT }, async () => {
+        await withSteeringLedger(async (h) => {
+            await h.open();
+            const earlierTransaction = await h.pool.connect();
+            try {
+                await earlierTransaction.query("BEGIN");
+                await earlierTransaction.query("SELECT transaction_timestamp()");
+                const first = await h.accept({ content: "identical guidance" });
+                assertEqual(first.result.outcome, "accepted");
+                const firstRow = await h.request(first.requestId);
+                const secondId = randomUUID();
+                const { rows: accepted } = await earlierTransaction.query(
+                    `SELECT ${h.schema}.cms_steer_accept($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) AS result`,
+                    [h.sessionId, secondId, randomUUID(), JSON.stringify(STEER_AUTHOR),
+                        first.content, firstRow.content_hash,
+                        h.target.epoch, h.target.turn, h.target.incarnation, JSON.stringify(STEER_LIMITS)],
+                );
+                assertEqual(accepted[0].result.outcome, "accepted");
+                await earlierTransaction.query("COMMIT");
+                const { rows } = await h.query(`SELECT
+                    a.seq < b.seq AS server_order,
+                    a.accepted_at > b.accepted_at AS backward_transaction_clock
+                    FROM ${h.schema}.session_steering_requests a, ${h.schema}.session_steering_requests b
+                    WHERE a.request_id=$1 AND b.request_id=$2`, [first.requestId, secondId]);
+                assertEqual(rows[0].server_order, true);
+                assertEqual(rows[0].backward_transaction_clock, true,
+                    "a queued older transaction receives later seq with earlier now() acceptance timestamp");
+            } finally {
+                await earlierTransaction.query("ROLLBACK");
+                earlierTransaction.release();
+            }
+        });
+    });
+
     it("ST-A04: actor rate admission is atomic across different sessions", { timeout: TIMEOUT }, async () => {
         await withSteeringLedger(async (h) => {
             const otherSession = randomUUID();
