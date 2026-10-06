@@ -121,6 +121,9 @@ original `requestId`, fresh `clientMessageIds`, and actual resender. It proves
 resend intent, not enqueue success or delivery; the ordinary `user.message`
 with the fresh identity is the later delivery evidence. The old receipt is
 unchanged, and the orchestration queue payload has no new fields.
+The intent is idempotent by session and new client-message ID. Matching retries
+create no second linkage event; a different receipt or resender with the same
+ID conflicts. This does not make ordinary queue execution exactly-once.
 
 An uncertain receipt remains uncertain until positive evidence corrects it.
 Stop suppresses future delivery but preserves historical delivery and separate
