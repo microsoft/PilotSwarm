@@ -116,9 +116,7 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("stopSessionTurn", { sessionId, options: opts });
     }
 
-    async getSessionSteeringState(sessionId: string, _edge?: SteeringCallerContext): Promise<SessionSteeringState & {
-        supported: boolean; canWrite: boolean; windowSeq: number;
-    }> {
+    async getSessionSteeringState(sessionId: string, _edge?: SteeringCallerContext): Promise<SessionSteeringState> {
         return callSteeringOperation(this._api, "getSessionSteeringState", { sessionId });
     }
 
