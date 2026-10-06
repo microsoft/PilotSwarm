@@ -14,6 +14,12 @@ import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState } from "./types.js";
+import type {
+    SteerAcceptInput, SteerAcceptResult, SteerFinalizeOutcome, SteerFinalizeResult, SteerListRecord,
+    SteerMarkDeliveredResult, SteerRecoveryCheckResult, SteerRow, SteerWindowOpenResult, SteerWithdrawRecord,
+    SessionSteeringStats, SteeringActor, SteeringDeliveryKind, SteeringDisposition, SteeringReceiptRecord,
+    SteeringStateRecord, SteeringTarget,
+} from "./steering-types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1434,6 +1440,51 @@ export interface SessionCatalog {
 
     /** Cleanup / close connections. */
     close(): Promise<void>;
+
+    // ── Session steering (migration 0082; docs/proposals/session-steering.md §6a.3) ──
+
+    /** True when the steering procedures exist in this schema. */
+    supportsSteering(): Promise<boolean>;
+    /** cms_steer_accept: one transaction; a matching retry returns its receipt. */
+    steerAccept(input: SteerAcceptInput): Promise<SteerAcceptResult>;
+    /** cms_steer_withdraw: author or manager; only before claim. */
+    steerWithdraw(sessionId: string, requestId: string, actor: Pick<SteeringActor, "provider" | "subject"> | null, isManager: boolean): Promise<SteerWithdrawRecord>;
+    /** cms_steer_get: the receipt record, or null when the id is not in this session. */
+    steerGet(sessionId: string, requestId: string, opts?: { attemptAfter?: number; attemptLimit?: number }): Promise<SteeringReceiptRecord | null>;
+    /** cms_steer_list: server-sequence page. */
+    steerList(sessionId: string, opts?: { afterSeq?: number | null; limit?: number; dispositions?: SteeringDisposition[] | null; target?: SteeringTarget | null }): Promise<SteerListRecord>;
+    /** cms_steer_state: current window and admission facts. */
+    steerState(sessionId: string): Promise<SteeringStateRecord>;
+    /** cms_steer_stats: §11 aggregates, no content. */
+    steerStats(sessionId: string, opts?: { since?: string | Date | null }): Promise<SessionSteeringStats>;
+    /** cms_steer_window_open. */
+    steerWindowOpen(sessionId: string, target: SteeringTarget, owner: string, leaseMs: number): Promise<SteerWindowOpenResult>;
+    /** cms_steer_window_abandon. */
+    steerWindowAbandon(sessionId: string, target: SteeringTarget, owner: string): Promise<boolean>;
+    /** cms_steer_window_renew. */
+    steerWindowRenew(sessionId: string, owner: string, leaseMs: number): Promise<boolean>;
+    /** cms_steer_window_quiesce. */
+    steerWindowQuiesce(sessionId: string, owner: string): Promise<boolean>;
+    /** cms_steer_window_adopt: already-committed path only. */
+    steerWindowAdopt(sessionId: string, target: SteeringTarget, owner: string): Promise<boolean>;
+    /** cms_steer_claim. */
+    steerClaim(sessionId: string, owner: string, limit: number): Promise<SteerRow[]>;
+    /** cms_steer_record_recovery_check. */
+    steerRecordRecoveryCheck(requestId: string, owner: string, result: SteerRecoveryCheckResult, sdkMessageId?: string | null): Promise<boolean>;
+    /** cms_steer_mark_submitting: the write-ahead marker. Returns the attempt id or null. */
+    steerMarkSubmitting(requestId: string, owner: string): Promise<string | null>;
+    /** cms_steer_mark_released. */
+    steerMarkReleased(attemptId: string, owner: string): Promise<boolean>;
+    /** cms_steer_mark_submitted. */
+    steerMarkSubmitted(attemptId: string, owner: string, sdkMessageId: string): Promise<boolean>;
+    /** cms_steer_mark_delivered: also writes the user.message projection. */
+    steerMarkDelivered(attemptId: string, sdkMessageId: string, kind: SteeringDeliveryKind): Promise<SteerMarkDeliveredResult>;
+    /** cms_steer_mark_unconfirmed. */
+    steerMarkUnconfirmed(attemptId: string, owner: string): Promise<boolean>;
+    /** cms_steer_turn_finalize: owner-fenced. `manifestRequestIds` null = result carried no manifest. */
+    steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null): Promise<SteerFinalizeResult>;
+    /** cms_steer_close_stopped: target-scoped by turn index. */
+    steerCloseStopped(sessionId: string, turnIndex: number): Promise<void>;
 }
 
 // ─── PostgreSQL Implementation ───────────────────────────────────
@@ -3777,6 +3828,149 @@ export class PgSessionCatalog implements SessionCatalog {
             installed: row.installed ?? {},
             updatedAt: new Date(row.updated_at),
         }));
+    }
+
+    // ── Session steering (migration 0082) ────────────────────
+
+    private _steeringSupported: boolean | null = null;
+
+    async supportsSteering(): Promise<boolean> {
+        if (this._steeringSupported) return true;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`"${this.sql.schema}".cms_steer_accept(text,text,text,jsonb,text,text,integer,integer,text,jsonb)`],
+        );
+        // Cache only a positive answer: a later migration can add the procedures.
+        this._steeringSupported = Boolean(rows[0]?.supported) || null;
+        return Boolean(rows[0]?.supported);
+    }
+
+    private steerFn(name: string): string {
+        return `"${this.sql.schema}".${name}`;
+    }
+
+    private async steerScalar<T>(sql: string, params: unknown[]): Promise<T> {
+        const { rows } = await this.pool.query(sql, params);
+        return rows[0]?.v as T;
+    }
+
+    async steerAccept(input: SteerAcceptInput): Promise<SteerAcceptResult> {
+        return this.steerScalar<SteerAcceptResult>(
+            `SELECT ${this.steerFn("cms_steer_accept")}($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10::jsonb) AS v`,
+            [input.sessionId, input.requestId, input.idempotencyKey, JSON.stringify(input.actor),
+                input.content, input.contentHash, input.epoch, input.turnIndex, input.incarnation,
+                JSON.stringify(input.limits ?? {})],
+        );
+    }
+
+    async steerWithdraw(sessionId: string, requestId: string, actor: Pick<SteeringActor, "provider" | "subject"> | null, isManager: boolean): Promise<SteerWithdrawRecord> {
+        return this.steerScalar<SteerWithdrawRecord>(
+            `SELECT ${this.steerFn("cms_steer_withdraw")}($1,$2,$3::jsonb,$4) AS v`,
+            [sessionId, requestId, JSON.stringify(actor ? { provider: actor.provider, subject: actor.subject } : {}), isManager],
+        );
+    }
+
+    async steerGet(sessionId: string, requestId: string, opts?: { attemptAfter?: number; attemptLimit?: number }): Promise<SteeringReceiptRecord | null> {
+        const v = await this.steerScalar<SteeringReceiptRecord | null>(
+            `SELECT ${this.steerFn("cms_steer_get")}($1,$2,$3,$4) AS v`,
+            [sessionId, requestId, opts?.attemptAfter ?? 0, opts?.attemptLimit ?? 20],
+        );
+        return v ?? null;
+    }
+
+    async steerList(sessionId: string, opts?: { afterSeq?: number | null; limit?: number; dispositions?: SteeringDisposition[] | null; target?: SteeringTarget | null }): Promise<SteerListRecord> {
+        const dispositions = opts?.dispositions && opts.dispositions.length > 0 ? opts.dispositions : null;
+        return this.steerScalar<SteerListRecord>(
+            `SELECT ${this.steerFn("cms_steer_list")}($1,$2,$3,$4::text[],$5,$6,$7) AS v`,
+            [sessionId, opts?.afterSeq ?? null, opts?.limit ?? 50, dispositions,
+                opts?.target?.epoch ?? null, opts?.target?.turnIndex ?? null, opts?.target?.incarnation ?? null],
+        );
+    }
+
+    async steerState(sessionId: string): Promise<SteeringStateRecord> {
+        return this.steerScalar<SteeringStateRecord>(`SELECT ${this.steerFn("cms_steer_state")}($1) AS v`, [sessionId]);
+    }
+
+    async steerStats(sessionId: string, opts?: { since?: string | Date | null }): Promise<SessionSteeringStats> {
+        const since = opts?.since == null ? null : new Date(opts.since).toISOString();
+        return this.steerScalar<SessionSteeringStats>(
+            `SELECT ${this.steerFn("cms_steer_stats")}($1,$2::timestamptz) AS v`, [sessionId, since]);
+    }
+
+    async steerWindowOpen(sessionId: string, target: SteeringTarget, owner: string, leaseMs: number): Promise<SteerWindowOpenResult> {
+        return this.steerScalar<SteerWindowOpenResult>(
+            `SELECT ${this.steerFn("cms_steer_window_open")}($1,$2,$3,$4,$5,$6) AS v`,
+            [sessionId, target.epoch, target.turnIndex, target.incarnation, owner, Math.round(leaseMs)],
+        );
+    }
+
+    async steerWindowAbandon(sessionId: string, target: SteeringTarget, owner: string): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_window_abandon")}($1,$2,$3,$4,$5) AS v`,
+            [sessionId, target.epoch, target.turnIndex, target.incarnation, owner]));
+    }
+
+    async steerWindowRenew(sessionId: string, owner: string, leaseMs: number): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_window_renew")}($1,$2,$3) AS v`, [sessionId, owner, Math.round(leaseMs)]));
+    }
+
+    async steerWindowQuiesce(sessionId: string, owner: string): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_window_quiesce")}($1,$2) AS v`, [sessionId, owner]));
+    }
+
+    async steerWindowAdopt(sessionId: string, target: SteeringTarget, owner: string): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_window_adopt")}($1,$2,$3,$4,$5) AS v`,
+            [sessionId, target.epoch, target.turnIndex, target.incarnation, owner]));
+    }
+
+    async steerClaim(sessionId: string, owner: string, limit: number): Promise<SteerRow[]> {
+        return (await this.steerScalar<SteerRow[]>(
+            `SELECT ${this.steerFn("cms_steer_claim")}($1,$2,$3) AS v`, [sessionId, owner, limit])) ?? [];
+    }
+
+    async steerRecordRecoveryCheck(requestId: string, owner: string, result: SteerRecoveryCheckResult, sdkMessageId?: string | null): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_record_recovery_check")}($1,$2,$3,$4) AS v`,
+            [requestId, owner, result, sdkMessageId ?? null]));
+    }
+
+    async steerMarkSubmitting(requestId: string, owner: string): Promise<string | null> {
+        return (await this.steerScalar<string | null>(
+            `SELECT ${this.steerFn("cms_steer_mark_submitting")}($1,$2) AS v`, [requestId, owner])) ?? null;
+    }
+
+    async steerMarkReleased(attemptId: string, owner: string): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_mark_released")}($1,$2) AS v`, [attemptId, owner]));
+    }
+
+    async steerMarkSubmitted(attemptId: string, owner: string, sdkMessageId: string): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_mark_submitted")}($1,$2,$3) AS v`, [attemptId, owner, sdkMessageId]));
+    }
+
+    async steerMarkDelivered(attemptId: string, sdkMessageId: string, kind: SteeringDeliveryKind): Promise<SteerMarkDeliveredResult> {
+        return this.steerScalar<SteerMarkDeliveredResult>(
+            `SELECT ${this.steerFn("cms_steer_mark_delivered")}($1,$2,$3) AS v`, [attemptId, sdkMessageId, kind]);
+    }
+
+    async steerMarkUnconfirmed(attemptId: string, owner: string): Promise<boolean> {
+        return Boolean(await this.steerScalar<boolean>(
+            `SELECT ${this.steerFn("cms_steer_mark_unconfirmed")}($1,$2) AS v`, [attemptId, owner]));
+    }
+
+    async steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null): Promise<SteerFinalizeResult> {
+        return this.steerScalar<SteerFinalizeResult>(
+            `SELECT ${this.steerFn("cms_steer_turn_finalize")}($1,$2,$3,$4,$5,$6,$7::text[],$8) AS v`,
+            [sessionId, target.epoch, target.turnIndex, target.incarnation, owner, outcome,
+                manifestRequestIds, snapshotVersion]);
+    }
+
+    async steerCloseStopped(sessionId: string, turnIndex: number): Promise<void> {
+        await this.pool.query(`SELECT ${this.steerFn("cms_steer_close_stopped")}($1,$2)`, [sessionId, turnIndex]);
     }
 
     async close(): Promise<void> {
