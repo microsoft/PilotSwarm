@@ -1,4 +1,5 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
+import { SteeringWakeHub } from "./steering-channel.js";
 import { AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -332,6 +333,7 @@ export class PilotSwarmWorker {
     /** Last refresh failure — carried in heartbeat state until a clean pass. */
     private _agentPackagesRefreshError: string | null = null;
     private _featureFlags: FeatureFlagCache | null = null;
+    private _steeringWake: SteeringWakeHub | null = null;
     private _registryReporting = false;
 
     constructor(options: PilotSwarmWorkerOptions) {
@@ -725,6 +727,13 @@ export class PilotSwarmWorker {
             await this._featureFlags.pollRevisionsAndRefresh();
         }
 
+        // Session steering: one lazy LISTEN connection per worker (§6a.7).
+        if (this._catalog && typeof (this._catalog as any).listenSteering === "function") {
+            const catalog = this._catalog as any;
+            this._steeringWake = new SteeringWakeHub((onNotify, onError) => catalog.listenSteering(onNotify, onError));
+            this.sessionManager.setSteeringWakeSource(this._steeringWake);
+        }
+
         // ── Provider budgets: the one-time deployment seed ──────────────
         //
         // A fresh cluster holds no providers, and the credentials in the
@@ -1044,6 +1053,9 @@ export class PilotSwarmWorker {
             this._agentPackagesTimer = null;
         }
         await this._featureFlags?.stop();
+        await this._steeringWake?.stop().catch(() => {});
+        this._steeringWake = null;
+        this.sessionManager.setSteeringWakeSource(null);
         if (this._eventLoopHist) {
             this._eventLoopHist.disable();
             this._eventLoopHist = null;

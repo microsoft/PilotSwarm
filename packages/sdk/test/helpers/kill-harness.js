@@ -41,6 +41,7 @@ const FAST_LOCK_MS = "2000";
  * @param {string} id        worker id suffix (also the workerNodeId)
  * @param {object} [opts]
  * @param {string} [opts.faultInject]  PILOTSWARM_FAULT_INJECT value to arm
+ * @param {string} [opts.modelProvidersPath] Scripted model provider metadata.
  */
 /** Shared snapshot-store dir for every kill-harness worker in this suite. */
 export function killStoreDir(env) {
@@ -85,7 +86,7 @@ export function forkKillWorker(env, id, opts = {}) {
     });
 
     const ready = new Promise((resolveReady, reject) => {
-        const timeout = setTimeout(() => reject(new Error(`worker ${id} did not start in 45s`)), 45_000);
+        const timeout = setTimeout(() => reject(new Error(`worker ${id} did not start in 45s. Logs tail:\n${logs.slice(-15).join("\n")}`)), 45_000);
         child.on("message", function handler(msg) {
             if (msg.type === "ready") {
                 clearTimeout(timeout);
@@ -98,6 +99,10 @@ export function forkKillWorker(env, id, opts = {}) {
             }
         });
         child.on("error", (err) => { clearTimeout(timeout); reject(err); });
+        child.once("exit", (code, signal) => {
+            clearTimeout(timeout);
+            reject(new Error(`worker ${id} exited before readiness: code=${code} signal=${signal}. Logs tail:\n${logs.slice(-15).join("\n")}`));
+        });
     });
 
     child.send({
@@ -111,6 +116,7 @@ export function forkKillWorker(env, id, opts = {}) {
         sessionStoreDir: storeDir,
         workerNodeId: `kill-${id}`,
         logLevel: process.env.DUROXIDE_LOG_LEVEL || "warn",
+        ...(opts.modelProvidersPath ? { modelProvidersPath: opts.modelProvidersPath } : {}),
     });
 
     return {

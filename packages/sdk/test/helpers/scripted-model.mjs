@@ -147,7 +147,8 @@ export async function startScriptedModel(opts = {}) {
             const index = requests.length + 1;
             const session = isSessionRequest(body);
             const position = requestPosition(body);
-            const record = { index, path: req.url, session, position, body };
+            const record = { index, path: req.url, session, position, body, connectionClosed: false };
+            res.once("close", () => { record.connectionClosed = true; });
             requests.push(record);
             const answer = session
                 ? await respond(body, position, record)

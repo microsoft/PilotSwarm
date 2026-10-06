@@ -1,4 +1,5 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import type { SteeringWakeSource } from "./steering-channel.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
@@ -1191,6 +1192,17 @@ export class SessionManager {
     /** The worker's feature flag cache, or null when the worker has no CMS. */
     getFeatureFlagCache(): FeatureFlagCache | null {
         return this.featureFlags;
+    }
+
+    private steeringWake: SteeringWakeSource | null = null;
+
+    /** Session steering: the worker's single notification listener (§6a.7). */
+    setSteeringWakeSource(source: SteeringWakeSource | null): void {
+        this.steeringWake = source;
+    }
+
+    getSteeringWakeSource(): SteeringWakeSource | null {
+        return this.steeringWake;
     }
 
     /**
@@ -3362,6 +3374,28 @@ export class SessionManager {
             await session.destroy();
         } catch {}
         this._forgetWarmSession(sessionId);
+    }
+
+    /**
+     * Session steering (§7.6): per-session quiescence, called ONLY from inside
+     * the held runTurn lock (the ordinary invalidateWarmSession would wait for
+     * that lock and deadlock). Disconnects this session's handle and forgets
+     * it; never stops the shared CopilotClient, which serves other sessions.
+     * Resolves true only when the disconnect resolved; a failure is not
+     * swallowed into success (INV-P9).
+     */
+    async quiesceForSteering(sessionId: string): Promise<boolean> {
+        const session = this.sessions.get(sessionId);
+        if (!session) return true;
+        try {
+            await this._cancelWorkspaceShells(sessionId, session, "steering quiescence");
+            await session.destroy();
+            return true;
+        } catch {
+            return false;
+        } finally {
+            this._forgetWarmSession(sessionId);
+        }
     }
 
     /**

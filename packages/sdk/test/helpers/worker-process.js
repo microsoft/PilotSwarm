@@ -21,6 +21,7 @@ process.on("message", async (msg) => {
                 workerNodeId: msg.workerNodeId,
                 disableManagementAgents: true,
                 logLevel: msg.logLevel || "warn",
+                ...(msg.modelProvidersPath ? { modelProvidersPath: msg.modelProvidersPath } : {}),
                 // Kill-harness support: an explicit SHARED snapshot store dir
                 // (separate worker "disks" + one store, like pods sharing
                 // blob storage). Without it, the store derives from
