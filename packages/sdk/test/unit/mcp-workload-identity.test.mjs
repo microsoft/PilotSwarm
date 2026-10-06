@@ -72,13 +72,13 @@ test("MCP workload identity requests one token per scope and binds deployment UR
         scopeBindings:
             "ado=https://mcp.dev.azure.com/.default," +
             "boards=https://mcp.dev.azure.com/.default," +
-            "kusto=https://kusto.kusto.windows.net/.default",
+            "internal=api://internal-mcp/.default",
         deploymentMcpServers: {
             ado: { type: "http", url: "https://mcp.dev.azure.com/org" },
             boards: { type: "sse", url: "https://mcp.dev.azure.com/org/boards" },
-            kusto: {
+            internal: {
                 type: "http",
-                url: "http://kusto-mcp.pilotswarm.svc.cluster.local/mcp",
+                url: "http://internal-mcp.platform.svc.cluster.local/mcp",
             },
         },
         credential: {
@@ -110,19 +110,19 @@ test("MCP workload identity requests one token per scope and binds deployment UR
                 ),
             },
         },
-        kusto: {
+        internal: {
             expectedUrl:
-                "http://kusto-mcp.pilotswarm.svc.cluster.local/mcp",
+                "http://internal-mcp.platform.svc.cluster.local/mcp",
             headers: {
                 Authorization: authorization(
-                    "token-for-https://kusto.kusto.windows.net/.default",
+                    "token-for-api://internal-mcp/.default",
                 ),
             },
         },
     };
     assert.deepEqual(await provider(), expectedHeaders);
     assert.deepEqual(requestedScopes.sort(), [
-        "https://kusto.kusto.windows.net/.default",
+        "api://internal-mcp/.default",
         "https://mcp.dev.azure.com/.default",
     ]);
     assert.deepEqual(await provider(), expectedHeaders);
@@ -159,17 +159,17 @@ test("MCP workload identity accepts only trusted deployment server URLs", () => 
         /must use HTTPS or an in-cluster HTTP service URL/,
     );
     for (const url of [
-        "http://kusto-mcp.svc.cluster.local/mcp",
-        "http://kusto-mcp.pilotswarm.svc.cluster.local.example.test/mcp",
+        "http://internal-mcp.svc.cluster.local/mcp",
+        "http://internal-mcp.platform.svc.cluster.local.example.test/mcp",
         "http://10.0.0.10/mcp",
-        "http://kusto-mcp.pilotswarm.svc.cluster.local/mcp#fragment",
+        "http://internal-mcp.platform.svc.cluster.local/mcp#fragment",
     ]) {
         assert.throws(
             () =>
                 createMcpWorkloadIdentityHeadersProvider({
-                    scopeBindings: "kusto=api://kusto/.default",
+                    scopeBindings: "internal=api://internal-mcp/.default",
                     deploymentMcpServers: {
-                        kusto: { type: "http", url },
+                        internal: { type: "http", url },
                     },
                 }),
             /must use HTTPS or an in-cluster HTTP service URL/,
