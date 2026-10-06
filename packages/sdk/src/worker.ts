@@ -1460,6 +1460,9 @@ export class PilotSwarmWorker {
                 blobStore: Boolean(this.blobStore),
                 enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
                 graph: Boolean(this.graphStore),
+                // Session steering runtime (pump, gate, finalize) is in this build; the flag's
+                // enablement gate refuses while any live worker lacks it (D-23, ST-M04).
+                "sessions.steering": true,
             },
             runtime: {
                 substrate: process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "process",

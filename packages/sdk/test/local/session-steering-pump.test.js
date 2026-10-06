@@ -395,6 +395,25 @@ describe("SteeringPump", () => {
         pump.dispose();
     });
 
+    it("flushes durable runtime counters once per turn, content-free", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
+        const flushed = [];
+        ch.recordCounters = async (c) => { flushed.push(c); };
+        const { pump } = makePump(session, ch);
+        await startTurn(session, pump, ch);
+        await until(() => session.sends.length === 1);
+        session.emit("user.message", { messageId: "sdk-1", delivery: "steering" });
+        session.emit("session.idle", {});
+        await pump.reconcileAfterIdle({ guards: [] });
+        await pump.settle({ stopping: false });
+        await pump.settle({ stopping: false });
+        pump.dispose();
+        expect(flushed).toHaveLength(1);
+        expect(flushed[0]).toMatchObject({ "pump:turns": 1, "pump:claimed": 1, "pump:sent": 1, "pump:delivered": 1, "pump:receipt_write_failures": 0 });
+        expect(flushed[0]["pump:scans"]).toBeGreaterThan(0);
+        expect(JSON.stringify(flushed)).not.toContain("guidance");
+    });
+
     it("a refused window open never opens the gate and yields no manifest", async () => {
         const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
         ch.openResult = { ok: false, reason: "stale", recovered: [] };

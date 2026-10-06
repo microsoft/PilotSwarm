@@ -394,6 +394,8 @@ export interface SteeringChannel {
     markUnconfirmed(attemptId: string): Promise<void>;
     /** Notification hint; optional. Returns an unsubscribe function. */
     onWake?(cb: () => void): () => void;
+    /** Durable, content-free runtime counters (§11). Optional; best-effort. */
+    recordCounters?(counts: Record<string, number>): Promise<void>;
 }
 
 /** `session.steering_window_changed` payload. */

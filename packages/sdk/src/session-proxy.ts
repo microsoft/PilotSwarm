@@ -4741,7 +4741,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         if (input.expectedTurnIndex != null) {
             const closed = await closeStoppedSteering(catalog, input.sessionId, input.expectedTurnIndex,
                 (msg) => activityCtx.traceInfo(msg));
-            if (!closed) activityCtx.traceInfo(`[abortTurn] session=${input.sessionId} steering_stop_close_failed`);
+            if (!closed) {
+                activityCtx.traceInfo(`[abortTurn] session=${input.sessionId} steering_stop_close_failed`);
+                // Durable §11 counter, bounded; the storage that just failed may fail again.
+                if (catalog && typeof (catalog as any).steerAddCounters === "function") {
+                    await Promise.race([
+                        (catalog as any).steerAddCounters(input.sessionId, { "stop:close_failed": 1 }).catch(() => {}),
+                        new Promise((r) => { const t = setTimeout(r, 2_000); (t as any).unref?.(); }),
+                    ]);
+                }
+            }
         }
         activityCtx.traceInfo(
             `[abortTurn] session=${input.sessionId} outcome=${result.outcome}${result.detail ? ` (${result.detail})` : ""}`,

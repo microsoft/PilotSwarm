@@ -469,6 +469,39 @@ describe("session steering procedures (0082)", () => {
         expect(rows[0].n).toBe(2);                                   // no new steer, no queue row
     });
 
+    it("0085: enabling sessions.steering is refused while a live worker lacks the capability (ST-M04)", async () => {
+        const admin = { principal: { provider: "test", subject: "flag-admin" }, isAdmin: true };
+        const rev = async () => (await catalog.features.revisions()).find((r) => r.featureKey === STEERING_FEATURE).revision;
+        const mutate = async (enabled) => catalog.features.mutate(admin, "cluster",
+            { featureKey: STEERING_FEATURE, expectedRevision: await rev(), requestId: randomUUID(), enabled, allowUserOverride: false });
+        const old = `old-${randomUUID()}`; const capable = `new-${randomUUID()}`;
+        await catalog.workerHeartbeat({ workerNodeId: capable, phase: "ready", info: { capabilities: { "sessions.steering": true } } });
+        await catalog.workerHeartbeat({ workerNodeId: old, phase: "ready", info: { capabilities: { graph: false } } });
+        await expect(mutate(true)).rejects.toMatchObject({ code: "FEATURE_CONFLICT", status: 409 });
+        let snap = await catalog.features.snapshot([STEERING_FEATURE]);
+        expect(snap.settings.find((x) => x.scope === "cluster").enabled).toBe(false);
+        expect((await mutate(false)).setting?.enabled ?? false).toBe(false);          // disabling is never gated
+
+        // A draining or stale incapable worker is not eligible.
+        await pool.query(`UPDATE "${schema}".workers SET phase = 'draining' WHERE worker_node_id = $1`, [old]);
+        await mutate(true);
+        snap = await catalog.features.snapshot([STEERING_FEATURE]);
+        expect(snap.settings.find((x) => x.scope === "cluster").enabled).toBe(true);
+        await mutate(false);
+        await pool.query(`UPDATE "${schema}".workers SET phase = 'ready', updated_at = now() - interval '10 minutes' WHERE worker_node_id = $1`, [old]);
+        await mutate(true);
+        await mutate(false);
+        await pool.query(`DELETE FROM "${schema}".workers WHERE worker_node_id = ANY($1)`, [[old, capable]]);
+    });
+
+    it("0085: runtime counters are durable, bounded and content-free", async () => {
+        const sid = await newSession();
+        await catalog.steerAddCounters(sid, { "pump:scans": 3, "pump:sent": 1, "pump:zero": 0, "Bad Name": 5, "x": -2, "y": 1.5 });
+        await catalog.steerAddCounters(sid, { "pump:scans": 2, "stop:close_failed": 1 });
+        const stats = await catalog.steerStats(sid);
+        expect(stats.counters).toEqual({ "pump:scans": 5, "pump:sent": 1, "stop:close_failed": 1 });
+    });
+
     it("a failed recovery read keeps the row unclaimable and closes it as recovery unconfirmed", async () => {
         const sid = await newSession(); const t = target(); const old = randomUUID(); const fresh = randomUUID();
         await catalog.steerWindowOpen(sid, t, old, LEASE);
