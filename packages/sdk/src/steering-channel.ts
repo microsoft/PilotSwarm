@@ -44,7 +44,12 @@ export function createCmsSteeringChannel(
     sessionId: string,
     target: SteeringTarget,
     ownerToken: string,
-    opts: { leaseMs?: number; wake?: SteeringWakeSource | null; recoverySource?: "restored" | "local" } = {},
+    opts: {
+        leaseMs?: number;
+        wake?: SteeringWakeSource | null;
+        recoverySource?: "restored" | "local";
+        ordered?: <T>(fn: () => Promise<T>) => Promise<T>;
+    } = {},
 ): SteeringChannel {
     const leaseMs = opts.leaseMs ?? STEERING_LEASE_MS;
     return {
@@ -76,6 +81,7 @@ export function createCmsSteeringChannel(
         markUnconfirmed: async (attemptId) => { await catalog.steerMarkUnconfirmed(attemptId, ownerToken); },
         recordCounters: async (counts) => { await catalog.steerAddCounters(sessionId, counts); },
         ...(opts.wake ? { onWake: (cb: () => void) => opts.wake!.subscribe(sessionId, cb) } : {}),
+        ...(opts.ordered ? { ordered: opts.ordered } : {}),
     };
 }
 
@@ -132,11 +138,12 @@ export class SteeringTurn {
     markRestoredBase(): void { this.restoredBase = true; }
 
     /** A fresh channel and owner token for one ManagedSession.runTurn() call. */
-    newChannel(): SteeringChannel {
+    newChannel(opts: { ordered?: <T>(fn: () => Promise<T>) => Promise<T> } = {}): SteeringChannel {
         const owner = randomUUID();
         const recoverySource = this.restoredBase && this.owners.length === 0 ? "restored" : "local";
         this.owners.push(owner);
-        return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner, { wake: this.wake, recoverySource });
+        return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner,
+            { wake: this.wake, recoverySource, ordered: opts.ordered });
     }
 
     /** The owner token that finalizes: the last channel's, or a fresh one for adoption. */
@@ -348,4 +355,19 @@ export class SteeringWakeHub implements SteeringWakeSource {
         this.subs.clear();
         if (conn) await conn.close().catch(() => {});
     }
+}
+
+/**
+ * One ordered writer for a turn's CMS events (session steering turns). Each
+ * call enqueues `fn` synchronously and runs it after every earlier call has
+ * settled, so `session_events.seq` follows enqueue order. A failure or a
+ * rejection never stops the queue.
+ */
+export function createOrderedEventWriter(): <T>(fn: () => Promise<T>) => Promise<T> {
+    let tail: Promise<unknown> = Promise.resolve();
+    return <T>(fn: () => Promise<T>): Promise<T> => {
+        const run = tail.then(fn, fn);
+        tail = run.catch(() => {});
+        return run;
+    };
 }

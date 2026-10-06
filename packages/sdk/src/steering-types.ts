@@ -396,6 +396,13 @@ export interface SteeringChannel {
     onWake?(cb: () => void): () => void;
     /** Durable, content-free runtime counters (§11). Optional; best-effort. */
     recordCounters?(counts: Record<string, number>): Promise<void>;
+    /**
+     * The session's ordered event writer for this turn. `fn` is ENQUEUED
+     * synchronously, before this call returns, and runs after every write
+     * enqueued earlier (generic SDK events included), so persisted seq order
+     * matches SDK emission order. Absent ⇒ writes run directly.
+     */
+    ordered?<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 /** `session.steering_window_changed` payload. */

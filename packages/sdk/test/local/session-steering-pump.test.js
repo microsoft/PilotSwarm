@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { SteeringGate, SteeringPump, SteeringQuiesceFailedError } from "../../src/steering-pump.ts";
 import { buildSteeringPrompt, neutralizeSteeringText } from "../../src/steering-prompt.ts";
+import { createOrderedEventWriter } from "../../src/steering-channel.ts";
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 async function until(pred, ms = 2_000) {
@@ -412,6 +413,75 @@ describe("SteeringPump", () => {
         expect(flushed[0]).toMatchObject({ "pump:turns": 1, "pump:claimed": 1, "pump:sent": 1, "pump:delivered": 1, "pump:receipt_write_failures": 0 });
         expect(flushed[0]["pump:scans"]).toBeGreaterThan(0);
         expect(JSON.stringify(flushed)).not.toContain("guidance");
+    });
+
+    it("persists the steer's delivery in SDK emission order through the ordered writer, even when an earlier write is slower", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
+        const committed = [];
+        ch.ordered = createOrderedEventWriter();
+        ch.markDelivered = async (a, id, kind) => { await tick(1); committed.push(`user.message:${id}:${kind}`); };
+        // The generic SDK-event writer of the same turn (session-proxy onEvent).
+        const generic = (name, ms) => ch.ordered(async () => { await tick(ms); committed.push(name); });
+        const { pump } = makePump(session, ch);
+        await startTurn(session, pump, ch);
+        await until(() => session.sends.length === 1);
+        await until(() => ch.names().includes("submitted"));
+        const first = generic("assistant.message", 40);                 // emitted first, slow to commit
+        session.emit("user.message", { messageId: "sdk-1", delivery: "queued" });
+        const last = generic("assistant.turn_start", 1);                // the follow-up run, emitted after
+        session.emit("session.idle", {});
+        session.emit("session.idle", {});
+        await pump.reconcileAfterIdle({ guards: [] });
+        await pump.settle({ stopping: false });
+        pump.dispose();
+        await Promise.all([first, last]);
+        expect(committed).toEqual(["assistant.message", "user.message:sdk-1:queued", "assistant.turn_start"]);
+    });
+
+    it("a delivery event that arrives before send() resolves keeps its emission-order place", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
+        const committed = [];
+        ch.ordered = createOrderedEventWriter();
+        ch.markDelivered = async (a, id) => { committed.push(`user.message:${id}`); };
+        const generic = (name) => ch.ordered(async () => { committed.push(name); });
+        let release;
+        session.sendImpl = (_o, id) => new Promise((r) => { release = () => r(id); });
+        const { pump } = makePump(session, ch, { options: { sendTimeoutMs: 1_000 } });
+        await startTurn(session, pump, ch);
+        await until(() => typeof release === "function");
+        generic("assistant.message");
+        session.emit("user.message", { messageId: "sdk-1", delivery: "steering" });   // before the id is known
+        generic("tool.execution_start");
+        await tick(20);
+        expect(committed).toEqual(["assistant.message"]);              // later events wait for the reserved place
+        release();
+        await until(() => committed.length === 3);
+        expect(committed).toEqual(["assistant.message", "user.message:sdk-1", "tool.execution_start"]);
+        session.emit("session.idle", {});
+        await pump.reconcileAfterIdle({ guards: [] });
+        expect((await pump.settle({ stopping: false })).delivered).toHaveLength(1);
+        pump.dispose();
+    });
+
+    it("an unrelated early user.message releases its reserved place without a write", async () => {
+        const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
+        const committed = [];
+        ch.ordered = createOrderedEventWriter();
+        ch.markDelivered = async (a, id) => { committed.push(`user.message:${id}`); };
+        let release;
+        session.sendImpl = (_o, id) => new Promise((r) => { release = () => r(id); });
+        const { pump } = makePump(session, ch, { options: { sendTimeoutMs: 1_000 } });
+        await startTurn(session, pump, ch);
+        await until(() => typeof release === "function");
+        session.emit("user.message", { messageId: "someone-else", delivery: "queued" });
+        ch.ordered(async () => { committed.push("after"); });
+        release();                                                      // binds sdk-1, not someone-else
+        session.emit("session.idle", {});
+        await pump.reconcileAfterIdle({ guards: [] }).catch(() => {});
+        await pump.settle({ stopping: false }).catch(() => {});
+        pump.dispose();
+        await until(() => committed.includes("after"));
+        expect(committed).toEqual(["after"]);
     });
 
     it("a refused window open never opens the gate and yields no manifest", async () => {
