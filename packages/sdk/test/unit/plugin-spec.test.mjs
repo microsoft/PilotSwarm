@@ -210,7 +210,7 @@ test("legacy local specs install through the validated provider-neutral core", a
         cacheDir: path.join(root, "cache"),
     });
 
-    assert.deepEqual(result.pluginDirs, [fs.realpathSync(plugin)]);
+    assert.deepEqual(result.pluginDirs, [await fs.promises.realpath(plugin)]);
     assert.equal(result.results[0].status, "ok");
 });
 
@@ -226,7 +226,7 @@ test("legacy specs quarantine duplicate sources and invalid refs before checkout
         cacheDir: path.join(root, "duplicate-cache"),
         trace: (message) => traces.push(message),
     });
-    assert.deepEqual(duplicate.pluginDirs, [fs.realpathSync(plugin)]);
+    assert.deepEqual(duplicate.pluginDirs, [await fs.promises.realpath(plugin)]);
     assert.deepEqual(duplicate.results.map((result) => result.status), ["ok", "error"]);
     assert.equal(traces.some((message) => /duplicates source 0/.test(message)), true);
 
@@ -260,7 +260,7 @@ test("an unavailable legacy local source does not disable valid peers", async (t
     assert.equal(result.results[0].status, "error");
     assert.match(result.results[0].error, /no such file|cannot find|not found/i);
     assert.equal(result.results[1].status, "ok");
-    assert.deepEqual(result.pluginDirs, [fs.realpathSync(valid)]);
+    assert.deepEqual(result.pluginDirs, [await fs.promises.realpath(valid)]);
 });
 
 test("a malformed legacy entry does not disable valid peers", async (t) => {
@@ -281,5 +281,5 @@ test("a malformed legacy entry does not disable valid peers", async (t) => {
         error: result.parseErrors[0].error,
     }]);
     assert.match(result.parseErrors[0].error, /unrecognized scheme/);
-    assert.deepEqual(result.pluginDirs, [fs.realpathSync(valid)]);
+    assert.deepEqual(result.pluginDirs, [await fs.promises.realpath(valid)]);
 });
