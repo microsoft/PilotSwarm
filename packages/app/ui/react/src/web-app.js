@@ -9556,6 +9556,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
+    const composingRef = React.useRef(false);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
@@ -9810,6 +9811,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             onFocus: () => controller.setFocus("prompt"),
             onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
+            onCompositionStart: () => { composingRef.current = true; },
+            onCompositionEnd: () => { composingRef.current = false; },
             // Ctrl/Cmd+V of a copied image (or iOS/Android long-press → Paste):
             // clipboardData.items carries the image file(s). preventDefault only
             // when we actually staged one, so text pastes are untouched.
@@ -9826,6 +9829,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 }
                 : undefined,
             onKeyDown: (event) => {
+                if (composingRef.current || event.nativeEvent?.isComposing || event.isComposing
+                    || event.nativeEvent?.keyCode === 229) return;
                 if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "s") {
                     event.preventDefault();
                     event.stopPropagation();
@@ -9837,7 +9842,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     return;
                 }
                 if (supportsPromptHistoryKeyboard(mobile) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
-                    && !event.isComposing && ["ArrowUp", "ArrowDown"].includes(event.key)
+                    && ["ArrowUp", "ArrowDown"].includes(event.key)
                     && event.currentTarget.selectionStart === event.currentTarget.selectionEnd
                     && !event.currentTarget.hasAttribute("aria-activedescendant")
                     && isTextareaHistoryBoundary(event.currentTarget, event.key === "ArrowUp" ? -1 : 1)) {

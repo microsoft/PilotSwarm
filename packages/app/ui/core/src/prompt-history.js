@@ -1,4 +1,5 @@
 export const PROMPT_HISTORY_LIMIT = 10;
+export const PROMPT_HISTORY_EVENT_TYPES = ["user.message", "session.steering_accepted"];
 
 export function promptHistoryActorKey(actor) {
     return actor?.provider && actor?.subject ? JSON.stringify([actor.provider, actor.subject]) : null;
@@ -9,6 +10,15 @@ function sameInput(a, b) {
 }
 
 export function promptHistoryEvent(event, viewer) {
+    if (event?.eventType === "session.steering_accepted") {
+        const receipt = event.data?.receipt;
+        if (receipt?.schemaVersion !== 1 || !receipt.requestId
+            || receipt.sessionId !== event.sessionId
+            || !promptHistoryActorKey(viewer)
+            || promptHistoryActorKey(receipt.actor) !== promptHistoryActorKey(viewer)
+            || typeof receipt.text !== "string" || !receipt.text.trim()) return null;
+        return { text: receipt.text, seq: event.seq, ids: [`steer:${receipt.requestId}`] };
+    }
     if (event?.eventType !== "user.message" || event.data?.sender?.kind !== "user"
         || !promptHistoryActorKey(viewer)
         || promptHistoryActorKey(event.data.sender) !== promptHistoryActorKey(viewer)
