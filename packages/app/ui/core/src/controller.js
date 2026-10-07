@@ -2693,7 +2693,21 @@ export class PilotSwarmUiController {
         // reducer then refuses fallback selection so the renderer can show
         // the nav error instead of silently landing somewhere else.
         const pendingIntent = preRefreshState.sessions.navigationIntent;
-        if (
+        if (pendingIntent?.status === "pending" && isSessionGroupRowId(pendingIntent.sessionId)) {
+            // A folder link ("group:<uuid>") is not a session: never ask the
+            // server for it. A known folder stays pending, and the reducer
+            // selects it. Any other folder is not found. When the folder fetch
+            // failed, we cannot tell, so the link fails as retryable.
+            const folderRows = pendingGroupRows || preRefreshState.sessions.groupRows || [];
+            if (!folderRows.some((row) => row?.sessionId === pendingIntent.sessionId)) {
+                const folderFetchFailed = !pendingGroupRows && typeof this.transport.listSessionGroups === "function";
+                this.dispatch({
+                    type: "sessions/navigationIntentFailed",
+                    sessionId: pendingIntent.sessionId,
+                    errorKind: folderFetchFailed ? "network" : "not_found",
+                });
+            }
+        } else if (
             pendingIntent?.status === "pending"
             && !sessions.some((session) => session?.sessionId === pendingIntent.sessionId)
             && typeof this.transport.getSession === "function"
@@ -6755,13 +6769,24 @@ export class PilotSwarmUiController {
         return { sessionId, session, view, revision: Number.isInteger(view?.revision) ? view.revision : 0 };
     }
 
+    /**
+     * The portal's Workspace tab on request (Manage session → Workspace →
+     * Files): show the side pane (the canvas column), then pick its
+     * Workspace tab. Nothing opens the pane by itself.
+     */
+    openWorkspaceFiles() {
+        const sessionId = this.getState().sessions.activeSessionId || null;
+        this.dispatch({ type: "ui/canvasOpen", open: true, ...(sessionId ? { sessionId } : {}) });
+        this.dispatch({ type: "ui/sidePaneTab", tab: "workspace" });
+    }
+
     async _afterWorkspaceChange(sessionId, text) {
         this.dispatch({ type: "ui/status", text });
         await this.ensureSessionStats({ force: true });
         this.scheduleSessionDetailSync?.(sessionId, 100);
     }
 
-    openSetWorkspaceModal() {
+    async openSetWorkspaceModal() {
         if (typeof this.transport.setSessionWorkspace !== "function") {
             this.dispatch({ type: "ui/status", text: "Workspaces are not supported by this deployment" });
             return;
@@ -6784,6 +6809,19 @@ export class PilotSwarmUiController {
                 maxLength: 1200,
             },
         });
+        // The roots the deployment serves, so the dialog can list them. The
+        // call is for the session's owner only: anyone else sees no list.
+        if (typeof this.transport.listSessionWorkspaceFolders !== "function") return;
+        let roots = [];
+        try {
+            const listed = await this.transport.listSessionWorkspaceFolders(target.sessionId);
+            roots = Array.isArray(listed?.roots) ? listed.roots.filter((root) => typeof root === "string" && root) : [];
+        } catch {
+            return;
+        }
+        const modal = this.getState().ui.modal;
+        if (roots.length === 0 || modal?.type !== "sessionWorkspace" || modal.sessionId !== target.sessionId) return;
+        this.updateSetWorkspaceModal({ roots });
     }
 
     updateSetWorkspaceModal(updater) {
@@ -8718,7 +8756,12 @@ export class PilotSwarmUiController {
         if (modal.previousFocus) {
             this.setFocus(modal.previousFocus);
         }
-        this.dispatch({ type: "ui/status", text: "Connected" });
+        // Closing the Clear confirm (a click outside, Escape, Cancel)
+        // cancels it: say so, or the person may think it was cleared.
+        const text = modal.type === "confirm" && modal.action === "clearSessionWorkspace"
+            ? "Workspace not cleared (cancelled)"
+            : "Connected";
+        this.dispatch({ type: "ui/status", text });
     }
 
     /**
@@ -8904,6 +8947,8 @@ export class PilotSwarmUiController {
                 await this.completeActiveSession("Completed by user", { confirmed: true });
             } else if (modal.action === "deleteSession") {
                 await this.deleteActiveSession({ confirmed: true });
+            } else if (modal.action === "removeSystemSession") {
+                await this.removeOrphanedSystemSession(modal.sessionId);
             } else if (modal.action === "regenerateSession") {
                 await this.regenerateActiveSession({ confirmed: true, ...(modal.extras || {}) });
             } else if (modal.action === "clearSessionWorkspace") {
@@ -11003,10 +11048,30 @@ export class PilotSwarmUiController {
                 });
                 return;
             }
-            await this.transport.restartSystemSession(activeSession.agentId || sessionId, {
-                disposition: "hard_delete",
-                reason: "Hard-deleted by user for system-session restart",
-            });
+            try {
+                await this.transport.restartSystemSession(activeSession.agentId || sessionId, {
+                    disposition: "hard_delete",
+                    reason: "Hard-deleted by user for system-session restart",
+                });
+            } catch (error) {
+                // NOT_FOUND: the agent is not loaded any more, so the session
+                // cannot restart. Offer to remove the orphaned session instead.
+                if (error?.code !== "NOT_FOUND") throw error;
+                const label = activeSession.title || activeSession.agentId || sessionId.slice(0, 8);
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Remove Orphaned System Session",
+                        message: `System session "${label}" cannot restart: its agent is not loaded any more. Remove the session? This action cannot be undone.`,
+                        confirmLabel: "Remove",
+                        action: "removeSystemSession",
+                        sessionId,
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
             this.dispatch({ type: "ui/status", text: `Restarted system session ${activeSession.agentId || sessionId.slice(0, 8)}` });
             await this.refreshSessions();
             return;
@@ -11031,6 +11096,28 @@ export class PilotSwarmUiController {
         await this.transport.deleteSession(sessionId);
         this.handleSessionGone(sessionId);
         this.dispatch({ type: "ui/status", text: `Deleted ${sessionId.slice(0, 8)}` });
+        await this.refreshSessions();
+    }
+
+    /**
+     * Remove a system session whose agent is not loaded any more, and start
+     * nothing in its place. The server refuses while a live worker still
+     * loads the agent; that refusal is shown as the status.
+     */
+    async removeOrphanedSystemSession(sessionId) {
+        if (!sessionId) return;
+        try {
+            await this.transport.restartSystemSession(sessionId, {
+                disposition: "hard_delete",
+                startReplacement: false,
+                reason: "Removed by user: the system agent is not loaded any more",
+            });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Remove system session failed: ${error?.message || String(error)}` });
+            return;
+        }
+        this.handleSessionGone(sessionId);
+        this.dispatch({ type: "ui/status", text: `Removed system session ${sessionId.slice(0, 8)}` });
         await this.refreshSessions();
     }
 
@@ -11256,13 +11343,16 @@ export class PilotSwarmUiController {
                 await this.regenerateActiveSession();
                 return;
             case UI_COMMANDS.OPEN_SET_WORKSPACE:
-                this.openSetWorkspaceModal();
+                await this.openSetWorkspaceModal();
                 return;
             case UI_COMMANDS.CLEAR_WORKSPACE:
                 await this.clearActiveSessionWorkspace();
                 return;
             case UI_COMMANDS.RETRY_WORKSPACE:
                 await this.retryActiveSessionWorkspace();
+                return;
+            case UI_COMMANDS.OPEN_WORKSPACE_FILES:
+                this.openWorkspaceFiles();
                 return;
             case UI_COMMANDS.PIN_SESSION:
                 this.togglePinActiveSession();

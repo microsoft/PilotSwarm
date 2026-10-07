@@ -120,7 +120,27 @@ At orchestration start (iteration 0, before first `runTurn()`):
 
 `softDeleteSession()` checks `isSystem` at the DB level. No change needed.
 
-The explicit exception is the trusted management restart path: `PilotSwarmManagementClient.restartSystemSession()` temporarily archives the deterministic system-session row after the operator chooses `complete`, `terminate`, or `hard_delete`, then recreates the configured system agent under the same deterministic session id. Normal `deleteSession()` calls still reject system sessions.
+The explicit exception is the trusted management restart path: `PilotSwarmManagementClient.restartSystemSession()` temporarily archives the deterministic system-session row after the operator chooses `complete`, `terminate`, or `hard_delete`, then recreates the configured system agent under the same deterministic session id. Normal `deleteSession()` calls still reject system sessions, with 409 `SYSTEM_SESSION_PROTECTED`.
+
+To remove a system session for good, pass `startReplacement: false`. This is for an agent that was removed from the deployment: its row stays, and no worker recreates it.
+
+```
+restartSystemSession(agentOrSessionId, { disposition, startReplacement: false })
+1. Find the row: through the client's agent list, else by session id,
+   by the id derived from the agent id, or by agent id on the system rows.
+   An id that is not a system session answers NOT_FOUND, as a missing id does
+2. Refuse (409 SYSTEM_AGENT_LOADED) if a live worker would create the
+   session again: its heartbeat state "system-agents".sessions lists the
+   session id (an older worker: "system-agents".loaded lists the agent),
+   or it has no "system-agents" state at all
+3. Stop the orchestration as the disposition says, archive the row
+4. Start nothing
+```
+
+A worker is live while its last heartbeat is younger than 90 s, or than 3
+of its heartbeats ("system-agents".heartbeatMs) when they are further apart.
+
+Admin only, like every restart (`fleet:admin`).
 
 ## Top-Level Agent List
 

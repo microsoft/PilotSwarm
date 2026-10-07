@@ -501,10 +501,11 @@ export function* processPrompt(
             return;
         }
 
-        // The select bridge flattens activity failures into their raw error
-        // string (duroxide-node make_select_future) instead of throwing, so a
-        // failed runTurn must be re-thrown here to reach the existing retry
-        // machinery in the catch below.
+        // duroxide-node 0.2.0+ throws from the race when a failed runTurn
+        // wins, and that error reaches the retry machinery in the catch
+        // below. Older releases returned the raw error text as the value
+        // instead; this re-throw keeps that shape working, with the same
+        // message.
         const raced = normalizeRacedTurnValue(race.value);
         if (raced.kind === "error") {
             throw new Error(raced.message);
@@ -675,10 +676,12 @@ export function* processPrompt(
 // ─── Stop-turn race support ─────────────────────────────────
 
 /**
- * Normalize a raced runTurn branch value. The duroxide-node select bridge
- * flattens activity failures into their raw error string (make_select_future:
- * `Ok(v) => v, Err(e) => e`) instead of throwing into the generator, so the
- * caller must distinguish a TurnResult payload from an error message.
+ * Normalize a raced runTurn branch value. duroxide-node before 0.2.0
+ * flattened activity failures into their raw error string
+ * (make_select_future: `Ok(v) => v, Err(e) => e`) instead of throwing into
+ * the generator, so the caller must distinguish a TurnResult payload from an
+ * error message. 0.2.0+ throws instead; frozen orchestration versions and
+ * this one keep calling this for both shapes.
  */
 export function normalizeRacedTurnValue(value: any): { kind: "result"; result: any } | { kind: "error"; message: string } {
     let v = value;

@@ -9,6 +9,7 @@
 //   move by dragging, rename, delete, new file, new folder
 //   the divider: drag, keys, reset, kept across a reload; stacked on a phone
 //   no Workspace tab when the portal serves no folders; the empty states
+//   Win95: a raised window with a title bar and white wells; other themes unchanged
 import crypto from "node:crypto";
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
@@ -192,7 +193,7 @@ test("the tab, the tree, open, edit and save", async ({ page }) => {
     await expect(tree(page).locator(":scope > .ps-ws-row .ps-ws-row-name")).toHaveText([".git", "src", "README.md"]);
     await expect(row(page, ".git").locator(".ps-ws-row-lock")).toHaveCount(1);
 
-    await row(page, "src").click();
+    await row(page, "src").dblclick();
     await row(page, "a.ts").click();
     await expect(editor(page)).toHaveText("export const a = 1;");
     const opened = etagOf(Buffer.from("export const a = 1;\n"));
@@ -241,8 +242,8 @@ test("a save conflict: Compare shows both with the file name in view, then Save 
     const folder = new Folder({ [name]: "one\ntwo\n" });
     await routeWorkspace(page, folder);
     await openWorkspace(page);
-    await row(page, "docs").click();
-    await row(page, "guides").click();
+    await row(page, "docs").dblclick();
+    await row(page, "guides").dblclick();
     await row(page, "a-long-file-name-for-compare.txt").click();
     await expect(editor(page)).toContainText("two");
     folder.set(name, "ONE\ntwo\n");
@@ -356,7 +357,7 @@ test("move by dragging, rename, delete, new file and new folder", async ({ page 
     await expect.poll(() => folder.text("docs/notes.md")).toBe("notes\n");
     expect(folder.nodes.has("notes.md")).toBe(false);
 
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").hover();
     await page.getByRole("button", { name: "Rename guide.md" }).click();
     const newName = page.getByRole("textbox", { name: "New name" });
@@ -459,7 +460,7 @@ test("on a phone the viewer bar keeps its buttons whole; the path gives way", as
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
         await page.getByRole("button", { name: "Show canvas" }).click();
         await page.getByRole("tab", { name: "The session's folders and files" }).click();
-        await row(page, "notes").click();
+        await row(page, "notes").dblclick();
         await row(page, "long-phone-name.md").click();
         await expect(page.locator(".ps-ws-viewer .cm-content")).toContainText("# N");
         const layout = await page.locator(".ps-ws-viewer-bar").evaluate((bar) => {
@@ -637,11 +638,100 @@ test("full screen: the Workspace tab is solid, nothing shows through", async ({ 
     expect(background === "transparent" || (alpha !== undefined && Number(alpha) < 1), `background ${background}`).toBe(false);
 });
 
+const computed = (locator, ...names) => locator.evaluate((el, names) => {
+    const style = getComputedStyle(el);
+    return Object.fromEntries(names.map((name) => [name, style[name]]));
+}, names);
+
+async function useTheme(page, themeId) {
+    await page.route("**/api/v1/me/profile**", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: { themeId } } } }));
+}
+
+test("Win95: the side pane is a raised window with a navy title bar, white wells and navy selection", async ({ page }) => {
+    await useTheme(page, "win95");
+    await routeWorkspace(page, new Folder({ "src/a.ts": "export const a = 1;\n", "README.md": "# App\n" }));
+    await openWorkspace(page);
+    await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "win95");
+
+    // The title bar has the panel header's gradient; the chosen tab is pressed in.
+    expect((await computed(page.locator(".ps-canvas-pane > .ps-artifact-pane-bar"), "backgroundImage")).backgroundImage)
+        .toMatch(/^linear-gradient\(90deg, rgb\(0, 0, 128\)/);
+    expect(await computed(page.getByRole("tab", { name: "Workspace" }), "borderTopColor", "borderBottomColor"))
+        .toEqual({ borderTopColor: "rgb(0, 0, 0)", borderBottomColor: "rgb(255, 255, 255)" });
+    expect(await computed(page.getByRole("tab", { name: "Canvas" }), "borderTopColor", "backgroundColor"))
+        .toEqual({ borderTopColor: "rgb(255, 255, 255)", backgroundColor: "rgb(192, 192, 192)" });
+
+    // The tree and the viewer are white wells; the open file's row is navy with white text.
+    expect((await computed(tree(page), "backgroundColor")).backgroundColor).toBe("rgb(255, 255, 255)");
+    await row(page, "README.md").click();
+    await expect(row(page, "README.md")).toHaveClass(/is-selected/);
+    expect(await computed(row(page, "README.md"), "backgroundColor", "color")).toEqual({ backgroundColor: "rgb(0, 0, 128)", color: "rgb(255, 255, 255)" });
+    expect((await computed(page.locator(".ps-ws-viewer-body"), "backgroundColor")).backgroundColor).toBe("rgb(255, 255, 255)");
+    expect((await computed(page.locator(".ps-ws-chip.is-on"), "backgroundColor", "color"))).toEqual({ backgroundColor: "rgb(0, 0, 128)", color: "rgb(255, 255, 255)" });
+    await page.screenshot({ path: test.info().outputPath("win95-workspace.png") });
+
+    // The find field removes the browser's focus ring, so focus shows as a navy outline.
+    await page.getByPlaceholder("Find files").click();
+    expect(await computed(page.locator(".ps-ws-finder"), "outlineStyle", "outlineColor")).toEqual({ outlineStyle: "solid", outlineColor: "rgb(0, 0, 128)" });
+});
+
+test("Win95: a disabled primary button, such as Save while it saves, is grey, not navy", async ({ page }) => {
+    await useTheme(page, "win95");
+    await routeWorkspace(page, new Folder({ "notes.txt": "n\n" }), { writeDelayMs: 1500 });
+    await openWorkspace(page);
+    await row(page, "notes.txt").click();
+    await editor(page).click();
+    await page.keyboard.type("x");
+    const save = page.getByRole("button", { name: "Save", exact: true });
+    await expect(save).toHaveClass(/is-primary/);
+    expect((await computed(save, "backgroundColor")).backgroundColor).toBe("rgb(0, 0, 128)");
+    await save.click();
+    await expect(save).toBeDisabled();
+    await expect(save).toHaveClass(/is-primary/);
+    expect(await computed(save, "backgroundColor", "color")).toEqual({ backgroundColor: "rgb(192, 192, 192)", color: "rgb(128, 128, 128)" });
+});
+
+test("Win95 on a phone: the list and the file fit the screen, and the thin top strip keeps its look", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    try {
+        await useTheme(page, "win95");
+        await routeWorkspace(page, new Folder({ "README.md": "# App\n", "src/a.ts": "export const a = 1;\n" }));
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+        await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "win95");
+        await page.getByRole("button", { name: "Show canvas" }).click();
+        await page.getByRole("tab", { name: "The session's folders and files" }).click();
+        await row(page, "README.md").click();
+        await expect(page.locator(".ps-ws-viewer .cm-content")).toHaveText("# App");
+
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+        for (const selector of [".ps-ws-pane", ".ps-ws-toolbar", ".ps-ws-viewer-bar", ".ps-ws-tree", ".ps-ws-viewer-body"]) {
+            const b = await page.locator(selector).boundingBox();
+            expect(b.x + b.width, selector).toBeLessThanOrEqual(391);
+        }
+        expect((await computed(tree(page), "backgroundColor")).backgroundColor).toBe("rgb(255, 255, 255)");
+        const strip = page.locator(".ps-canvas-pane > .ps-artifact-pane-bar.is-rev-strip");
+        await expect(strip).toHaveCount(1);
+        expect((await computed(strip, "backgroundImage")).backgroundImage).toBe("none");
+        await page.screenshot({ path: test.info().outputPath("win95-workspace-phone.png") });
+    } finally {
+        await context.close();
+    }
+});
+
+test("other themes keep their own side pane: no title bar gradient, no white wells", async ({ page }) => {
+    await routeWorkspace(page, new Folder({ "README.md": "# App\n" }));
+    await openWorkspace(page);
+    await expect(page.locator("html")).not.toHaveAttribute("data-ps-theme", "win95");
+    expect((await computed(page.locator(".ps-canvas-pane > .ps-artifact-pane-bar"), "backgroundImage")).backgroundImage).toBe("none");
+    expect((await computed(tree(page), "backgroundColor")).backgroundColor).not.toBe("rgb(255, 255, 255)");
+});
+
 test("markdown preview links: #heading scrolls, a file link opens the file, a web link opens a new tab", async ({ page }) => {
     const guide = `# Guide\n\n[Jump](#install-it) [License](../LICENSE) [Web](https://example.com/x) [Out](../../x.md)\n\n${"filler\n\n".repeat(80)}## Install it\n\nsteps\n`;
     await routeWorkspace(page, new Folder({ "docs/guide.md": guide, "LICENSE": "MIT License\n" }));
     await openWorkspace(page);
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").click();
     await page.getByRole("button", { name: "Preview" }).click();
     const body = page.locator(".ps-ws-md-body");
@@ -923,7 +1013,7 @@ test("each session's view is remembered, and a file that is gone leaves the defa
     const folder = new Folder({ "docs/guide.md": "# Guide\n", "README.md": "# App\n" });
     await routeWorkspace(page, folder);
     await openWorkspace(page);
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").click();
     await page.getByRole("button", { name: "Preview" }).click();
     await expect(page.locator(".ps-ws-md-preview").getByRole("heading", { name: "Guide" })).toBeVisible();
@@ -1015,7 +1105,7 @@ for (const theme of listThemes()) {
         await routeWorkspace(page, folder);
         await openWorkspace(page);
         await expect(page.locator("html")).toHaveAttribute("data-ps-theme", theme.id);
-        await row(page, "src").click();
+        await row(page, "src").dblclick();
         await row(page, "app.js").click();
         await expect(page.locator(".ps-ws-viewer .cm-content")).toContainText("return 42");
         await editor(page).click();
@@ -1133,7 +1223,7 @@ test("pick several: Cmd/Ctrl-click, Shift-click, download, drag, delete, Escape"
     await row(page, "c.txt").dragTo(row(page, "box"));
     await expect.poll(() => ["a.txt", "c.txt", "d.txt"].map((n) => folder.nodes.has(`box/${n}`))).toEqual([true, true, true]);
 
-    await row(page, "box").click();
+    await row(page, "box").dblclick();
     await row(page, "keep.txt").click();
     await row(page, "b.txt").click({ modifiers: ["ControlOrMeta"] });
     await tree(page).press("Delete");
@@ -1170,7 +1260,7 @@ test("renaming the folder of the open file: the file follows, and saving works",
     const folder = new Folder({ "docs/guide.md": "guide\n" });
     await routeWorkspace(page, folder);
     await openWorkspace(page);
-    await row(page, "docs").click();
+    await row(page, "docs").dblclick();
     await row(page, "guide.md").click();
     await editor(page).click();
     await page.keyboard.press("ControlOrMeta+End");
@@ -1212,3 +1302,62 @@ test("an image button in markdown loads nothing either", async ({ page }) => {
     expect(remote).toEqual([]);
 });
 
+
+test("a folder that is not on disk keeps its message while each check asks again (no blinking)", async ({ page }) => {
+    await routeWorkspace(page, new Folder({}));
+    let delay = 0;
+    await page.route(`**/management/sessions/${sessionId}/workspace/files`, async (route) => {
+        const call = route.request().postDataJSON().call;
+        if (call.op !== "list" || call.path) return route.fallback();
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        return route.fulfill({ status: 404, json: { ok: false, error: { code: "WORKSPACE_FILES_NOT_FOUND", message: "no such file or folder" } } });
+    });
+    await openWorkspace(page);
+    const gone = tree(page).locator(".ps-ws-row.is-error");
+    await expect(gone).toHaveText("This folder is not on disk: a/sessions/s1/app. It may have been removed; the session's next turn can bring it back.");
+    // A check (here: Refresh) asks again, slowly. Every state the tree goes
+    // through is recorded: the message must never give way to "Loading…".
+    await page.evaluate(() => {
+        window.__treeTexts = [];
+        const tree = document.querySelector(".ps-ws-tree");
+        new MutationObserver(() => window.__treeTexts.push(tree.textContent)).observe(tree, { childList: true, subtree: true, characterData: true });
+    });
+    delay = 1_000;
+    let lists = 0;
+    page.on("request", (request) => { if (request.url().endsWith("/workspace/files") && request.postDataJSON()?.call?.op === "list") lists += 1; });
+    await page.locator(".ps-ws-toolbar").getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect.poll(() => lists).toBeGreaterThan(0);
+    await page.waitForTimeout(1_500);
+    await expect(gone).toBeVisible();
+    const texts = await page.evaluate(() => window.__treeTexts);
+    expect(texts.filter((text) => text.includes("Loading…"))).toEqual([]);
+});
+
+test("a first click selects a folder; a second click within 8 s opens it, the next closes it; its arrow opens at once", async ({ page }) => {
+    await page.clock.install();
+    await routeWorkspace(page, new Folder({ "docs/guide.md": "# Guide\n", "README.md": "# App\n" }));
+    await openWorkspace(page);
+    const docs = row(page, "docs");
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+    await expect(docs).toHaveClass(/is-picked/);
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "true");
+    await expect(row(page, "guide.md")).toBeVisible();
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+    // Later than 8 s: the click only selects again; the next one opens.
+    await page.clock.fastForward(9_000);
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "true");
+    // Clicking another row starts over.
+    await row(page, "README.md").click();
+    await expect(editor(page)).toContainText("# App");
+    await docs.click();
+    await expect(docs).toHaveAttribute("aria-expanded", "true");
+    // The arrow opens and closes at once.
+    await docs.locator(".ps-ws-twisty").click();
+    await expect(docs).toHaveAttribute("aria-expanded", "false");
+});

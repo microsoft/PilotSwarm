@@ -289,6 +289,38 @@ describe("workspace turn", () => {
         }
     });
 
+    it("a set or retry before the first turn is refused with WORKSPACE_SESSION_NOT_STARTED (409) and says what to do (issue #103)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-early-")));
+        fs.mkdirSync(path.join(root, "repo-x"), { recursive: true });
+        try {
+            await withScriptedModel(env, {
+                respond: pwdEveryTurn,
+                worker: { workspaceRoots: [{ name: "a", path: root }] },
+            }, async ({ client, qualifiedModel }) => {
+                const sessionId = randomUUID();
+                // Created, but nothing sent: no orchestration runs yet.
+                await client.createSession({ sessionId, model: qualifiedModel });
+                const mgmt = await createManagementClient(env);
+                try {
+                    const set = await mgmt.setSessionWorkspace(sessionId, { expectedRevision: 0, workspace: { root: "a", folder: "repo-x" } })
+                        .then(() => null, (err) => err);
+                    assert(set, "the set is refused");
+                    assertEqual(set.code, "WORKSPACE_SESSION_NOT_STARTED");
+                    assertEqual(set.status, 409);
+                    assert(/has not run its first turn/.test(set.message) && /create_session workspace_root/.test(set.message), set.message);
+                    const retry = await mgmt.retrySessionWorkspace(sessionId).then(() => null, (err) => err);
+                    assertEqual(retry?.code, "WORKSPACE_SESSION_NOT_STARTED");
+                    assertEqual(retry?.status, 409);
+                } finally {
+                    await mgmt.stop();
+                }
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it("a set during a running turn waits for it, then the next turn resumes in the new folder and the old folder's shell is cancelled (B14)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b14-")));

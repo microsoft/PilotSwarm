@@ -9,6 +9,13 @@ import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
 const context = () => new OrchestrationContext({ instanceId: "parent", executionId: "1", orchestrationName: "test", orchestrationVersion: "1.0.74" });
 const wire = (value) => JSON.parse(JSON.stringify(value));
+const sourceHash = (url) => {
+    const bytes = readFileSync(url);
+    const checkoutBytes = process.platform === "win32"
+        ? Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"))
+        : bytes;
+    return createHash("sha256").update(checkoutBytes).digest("hex");
+};
 
 // Immutable snapshot of the shipped 1.0.74 generator tree. The only change
 // from the former live tree was pinning its own version constant, as with
@@ -25,8 +32,7 @@ const frozenHashes = {
 };
 for (const [name, hash] of Object.entries(frozenHashes)) {
     test(`frozen 1.0.74 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_74/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+        assert.equal(sourceHash(new URL(`../../src/orchestration_1_0_74/${name}`, import.meta.url)), hash);
     });
 }
 
@@ -43,8 +49,7 @@ const selectorFreezeHashes = {
 };
 for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     test(`frozen 1.0.75 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_75/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+        assert.equal(sourceHash(new URL(`../../src/orchestration_1_0_75/${name}`, import.meta.url)), hash);
     });
 }
 
@@ -192,8 +197,7 @@ const cleanupFreezeHashes = {
 };
 for (const [name, hash] of Object.entries(cleanupFreezeHashes)) {
     test(`frozen 1.0.76 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_76/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+        assert.equal(sourceHash(new URL(`../../src/orchestration_1_0_76/${name}`, import.meta.url)), hash);
     });
 }
 
@@ -210,8 +214,7 @@ const provenanceFreezeHashes = {
 };
 for (const [name, hash] of Object.entries(provenanceFreezeHashes)) {
     test(`frozen 1.0.77 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_77/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+        assert.equal(sourceHash(new URL(`../../src/orchestration_1_0_77/${name}`, import.meta.url)), hash);
     });
 }
 

@@ -37,6 +37,7 @@ Building a **UI** rather than an app? That's the API section:
 landing page: repo map, workflows, checklists. Then:
 
 - [TUI implementor guide](./contributing/tui-implementor-guide.md)
+- [Resumable local test validation](./contributing/resumable-test-validation.md)
 - [Local test spec](./contributing/local-test-spec.md) · [Local integration test plan](./contributing/local-integration-test-plan.md)
 - [Facts table test spec](./contributing/facts-table-tests.md)
 - Root [CONTRIBUTING.md](../../CONTRIBUTING.md) — PR conventions, test requirements

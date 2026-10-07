@@ -76,6 +76,65 @@ function parseNonNegativeInt(raw: unknown): number | undefined {
     return Math.floor(normalized);
 }
 
+/** Locks shorter than this renew at half their timeout; duroxide ignores the buffer. */
+const LOCK_BUFFER_MIN_TIMEOUT_MS = 15_000;
+
+function defaultRenewalBuffer(timeoutMs: number | undefined): number | undefined {
+    if (timeoutMs === undefined || timeoutMs < LOCK_BUFFER_MIN_TIMEOUT_MS) return undefined;
+    return Math.floor(timeoutMs * 0.75);
+}
+
+export interface DuroxideLockOptions {
+    workerLockTimeoutMs: number;
+    workerLockRenewalBufferMs?: number;
+    orchestratorLockTimeoutMs: number;
+    orchestratorLockRenewalBufferMs?: number;
+    sessionLockTimeoutMs?: number;
+    sessionLockRenewalBufferMs?: number;
+}
+
+/**
+ * The duroxide lock settings for this worker. Each value comes from the
+ * worker option, then its `PILOTSWARM_*` env var, then the default. An unset
+ * renewal buffer defaults to 75% of its lock timeout, so raising a timeout
+ * also raises the stall the lock survives; keys left undefined use
+ * duroxide's own defaults.
+ */
+export function resolveDuroxideLockOptions(
+    config: Pick<PilotSwarmWorkerOptions, "workerLockTimeoutMs" | "workerLockRenewalBufferMs"
+        | "orchestratorLockTimeoutMs" | "orchestratorLockRenewalBufferMs"
+        | "sessionLockTimeoutMs" | "sessionLockRenewalBufferMs">,
+    env: Record<string, string | undefined> = process.env,
+): DuroxideLockOptions {
+    const workerLockTimeoutMs = parsePositiveInt(config.workerLockTimeoutMs)
+        ?? parsePositiveInt(env.PILOTSWARM_WORKER_LOCK_TIMEOUT_MS)
+        ?? 10_000;
+    const orchestratorLockTimeoutMs = parsePositiveInt(config.orchestratorLockTimeoutMs)
+        ?? parsePositiveInt(env.PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS)
+        ?? 60_000;
+    const sessionLockTimeoutMs = parsePositiveInt(config.sessionLockTimeoutMs)
+        ?? parsePositiveInt(env.PILOTSWARM_SESSION_LOCK_TIMEOUT_MS);
+    const options: DuroxideLockOptions = {
+        workerLockTimeoutMs,
+        workerLockRenewalBufferMs: parsePositiveInt(config.workerLockRenewalBufferMs)
+            ?? parsePositiveInt(env.PILOTSWARM_WORKER_LOCK_RENEWAL_BUFFER_MS)
+            ?? defaultRenewalBuffer(workerLockTimeoutMs),
+        orchestratorLockTimeoutMs,
+        orchestratorLockRenewalBufferMs: parsePositiveInt(config.orchestratorLockRenewalBufferMs)
+            ?? parsePositiveInt(env.PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS)
+            ?? defaultRenewalBuffer(orchestratorLockTimeoutMs),
+        sessionLockTimeoutMs,
+        sessionLockRenewalBufferMs: parsePositiveInt(config.sessionLockRenewalBufferMs)
+            ?? parsePositiveInt(env.PILOTSWARM_SESSION_LOCK_RENEWAL_BUFFER_MS)
+            ?? defaultRenewalBuffer(sessionLockTimeoutMs),
+    };
+    // duroxide reads a missing key as "use the default"; never send undefined.
+    for (const key of Object.keys(options) as (keyof DuroxideLockOptions)[]) {
+        if (options[key] === undefined) delete options[key];
+    }
+    return options;
+}
+
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
 export function resolveWorkerTurnTimeoutMs(
     explicitValue: unknown,
@@ -800,9 +859,7 @@ export class PilotSwarmWorker {
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
-            workerLockTimeoutMs: this.config.workerLockTimeoutMs
-                ?? parsePositiveInt(process.env.PILOTSWARM_WORKER_LOCK_TIMEOUT_MS)
-                ?? 10_000,
+            ...resolveDuroxideLockOptions(this.config),
             logLevel: this.config.logLevel ?? "error",
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
             sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
@@ -815,6 +872,11 @@ export class PilotSwarmWorker {
             `workerConcurrency=${runtimeOptions.workerConcurrency}, ` +
             `dispatcherPollIntervalMs=${runtimeOptions.dispatcherPollIntervalMs}, ` +
             `workerLockTimeoutMs=${runtimeOptions.workerLockTimeoutMs}, ` +
+            `workerLockRenewalBufferMs=${runtimeOptions.workerLockRenewalBufferMs ?? "(duroxide default)"}, ` +
+            `orchestratorLockTimeoutMs=${runtimeOptions.orchestratorLockTimeoutMs}, ` +
+            `orchestratorLockRenewalBufferMs=${runtimeOptions.orchestratorLockRenewalBufferMs ?? "(duroxide default)"}, ` +
+            `sessionLockTimeoutMs=${runtimeOptions.sessionLockTimeoutMs ?? "(duroxide default)"}, ` +
+            `sessionLockRenewalBufferMs=${runtimeOptions.sessionLockRenewalBufferMs ?? "(duroxide default)"}, ` +
             `maxSessionsPerRuntime=${runtimeOptions.maxSessionsPerRuntime}, ` +
             `sessionIdleTimeoutMs=${runtimeOptions.sessionIdleTimeoutMs}, ` +
             `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}`,
@@ -1210,8 +1272,27 @@ export class PilotSwarmWorker {
         void this._reportAgentWorkerState();
         this._agentPackagesTimer = setInterval(() => {
             void this.refreshWorkerConfiguration();
-        }, this._agentPackagesRefreshMs > 0 ? this._agentPackagesRefreshMs : 20_000);
+        }, this._configurationPollMs());
         this._agentPackagesTimer.unref?.();
+    }
+
+    /**
+     * The session ids this worker creates for its system agents. Left out
+     * when the agents' parent graph cannot be resolved; then the removal
+     * check falls back to the agent ids. Never throws: a failed heartbeat
+     * would make the worker look dead.
+     */
+    private _systemSessionIds(): { sessions?: string[] } {
+        try {
+            return { sessions: resolveSystemAgentSessionPlans(this._loadedSystemAgents).map((plan) => plan.sessionId) };
+        } catch {
+            return {};
+        }
+    }
+
+    /** How often the worker refreshes its configuration and sends its heartbeat. */
+    private _configurationPollMs(): number {
+        return this._agentPackagesRefreshMs > 0 ? this._agentPackagesRefreshMs : 20_000;
     }
 
     async refreshWorkerConfiguration(): Promise<void> {
@@ -1437,6 +1518,18 @@ export class PilotSwarmWorker {
                         epoch: this._agentPackagesEpoch,
                         installed: this._agentPackagesInstalled,
                         ...(this._agentPackagesRefreshError ? { lastError: this._agentPackagesRefreshError } : {}),
+                    },
+                    // The system agents this worker starts, and the session
+                    // ids it creates for them. Removing a system session
+                    // (restartSystemSession, startReplacement: false) is
+                    // refused while a live worker lists its session here.
+                    // heartbeatMs tells how long the worker counts as live.
+                    "system-agents": {
+                        loaded: this._loadedSystemAgents
+                            .map((agent) => agent.id)
+                            .filter((id): id is string => Boolean(id)),
+                        ...this._systemSessionIds(),
+                        heartbeatMs: this._configurationPollMs(),
                     },
                 },
             });

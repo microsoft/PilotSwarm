@@ -1,11 +1,19 @@
 import pg from "pg";
+import { pgErrorCode } from "./pg-error-code.js";
 
 /**
  * Generic live-plane relay: one LISTEN connection per portal process, fanned
  * out by (sessionId, topic). Large notifications are pointers; getLive reads
  * the retained row before delivery.
+ *
+ * `connection` is the pg client config for the session catalog database,
+ * from buildSessionCatalogPgClientConfig in pilotswarm-sdk. It follows the
+ * CMS rules: the same database, the sslmode fix, and the managed-identity
+ * password callback. `null` means no database, so the plane is unavailable.
+ * Without `connection`, a plain `connectionString` is used as before.
  */
 export function createLivePlane({
+    connection,
     connectionString = process.env.DATABASE_URL,
     schema = process.env.PILOTSWARM_CMS_SCHEMA || "copilot_sessions",
     channel = "pilotswarm_live",
@@ -26,7 +34,10 @@ export function createLivePlane({
     let epoch = 0;
     const deliveredSeq = new Map();
     const pointerReads = new Map();
-    const available = Boolean(connectionString);
+    const clientConfig = connection !== undefined
+        ? connection
+        : (connectionString ? { connectionString } : null);
+    const available = Boolean(clientConfig);
 
     const keyFor = (sessionId, topic) => `${sessionId}\u0000${topic}`;
 
@@ -83,7 +94,7 @@ export function createLivePlane({
         if (stopped || !available || client || connecting) return;
         connecting = true;
         reconnectTimer = null;
-        const next = createClient({ connectionString, keepAlive: true, connectionTimeoutMillis: 5_000, query_timeout: 5_000 });
+        const next = createClient({ ...clientConfig, keepAlive: true, connectionTimeoutMillis: 5_000, query_timeout: 5_000 });
         // Error listeners must exist while connect/LISTEN are still pending.
         const onGone = () => {
             if (client === next) {
@@ -101,7 +112,10 @@ export function createLivePlane({
                 await next.end();
                 return;
             }
-        } catch {
+        } catch (error) {
+            // One line with the error code only. The backoff caps it at
+            // one line per 15 s.
+            console.warn(`[live-plane] LISTEN connect failed (${pgErrorCode(error)}); retrying`);
             try { await next.end(); } catch {}
             scheduleReconnect();
             return;

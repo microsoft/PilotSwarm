@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, copyFileSync, chmodSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { testStorageEnvironment, horizonSdkFiles } from '../../../../scripts/test-provider-plan.mjs';
 
@@ -61,7 +62,7 @@ test('new SDK suites receive HDB coverage automatically; stale exclusions fail',
 });
 
 test('shell routing treats quotes and substitutions in URLs as literal data', () => {
-  const script = new URL('../../../../scripts/test-provider-plan.mjs', import.meta.url).pathname;
+  const script = fileURLToPath(new URL('../../../../scripts/test-provider-plan.mjs', import.meta.url));
   const env = { ...process.env, DATABASE_URL: "postgresql://user:pa'ss$(false)`false`@localhost/base" };
   const output = execFileSync('bash', ['-c', 'routing="$(node "$1" env baseline)" || exit; eval "$routing"; node -e \'console.log(process.env.PS_TEST_DATABASE_URL)\'', 'test', script], { env, encoding: 'utf8' });
   assert.equal(output.trim(), env.DATABASE_URL);
@@ -73,7 +74,7 @@ test('shell routing treats quotes and substitutions in URLs as literal data', ()
 function runnerFixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'provider-dispatch-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const root = new URL('../../../../', import.meta.url).pathname;
+  const root = fileURLToPath(new URL('../../../../', import.meta.url));
   for (const sub of ['scripts', 'bin', 'packages/sdk/test/local', 'packages/app', 'packages/horizon-store']) mkdirSync(join(dir, sub), { recursive: true });
   for (const f of ['run-tests.sh', 'test-provider-plan.mjs', 'provider-test-coverage.json']) copyFileSync(join(root, 'scripts', f), join(dir, 'scripts', f));
   chmodSync(join(dir, 'scripts/run-tests.sh'), 0o755);
@@ -84,9 +85,8 @@ function runnerFixture(t) {
   }
   writeFileSync(join(dir, '.env'), `DATABASE_URL=${pg}\nGITHUB_TOKEN=fixture\n`);
   writeFileSync(join(dir, '.env.horizondb'), `DATABASE_URL=${pg}\nHORIZON_DATABASE_URL=${hdb}\nGITHUB_TOKEN=fixture\n`);
-  const fake = `#!${process.execPath}
-const fs = require('node:fs'), cp = require('node:child_process'), path = require('node:path');
-const args = process.argv.slice(2), tool = path.basename(process.argv[1]);
+  const fake = `const fs = require('node:fs'), cp = require('node:child_process'), path = require('node:path');
+const args = process.argv.slice(2), tool = path.basename(process.argv[1], '.cjs');
 if (tool === 'node' && (args[0]?.endsWith('test-provider-plan.mjs') || args[0] === '-' || (args[0] === '-e' && !args[1].includes('show max_connections')))) {
   const r = cp.spawnSync(${JSON.stringify(process.execPath)}, args, {stdio:'inherit'}); process.exit(r.status ?? 1);
 }
@@ -96,7 +96,14 @@ fs.appendFileSync(process.env.TRACE, JSON.stringify({tool,args,cwd:process.cwd()
 const output = args.find(a=>a.startsWith('--outputFile='));
 if(output) fs.writeFileSync(output.slice('--outputFile='.length), JSON.stringify({success:true,numTotalTests:1,numPassedTests:1,numFailedTests:0,testResults:[{name:'test/local/smoke-basic.test.js',status:'passed',assertionResults:[{status:'passed'}]}]}));
 `;
-  for (const command of ['node', 'npm', 'npx']) { writeFileSync(join(dir, 'bin', command), fake); chmodSync(join(dir, 'bin', command), 0o755); }
+  const bashNode = process.platform === 'win32'
+    ? `/${process.execPath[0].toLowerCase()}${process.execPath.slice(2).replaceAll('\\', '/')}`
+    : process.execPath;
+  for (const command of ['node', 'npm', 'npx']) {
+    writeFileSync(join(dir, 'bin', `${command}.cjs`), fake);
+    writeFileSync(join(dir, 'bin', command), `#!/bin/sh\nexec ${JSON.stringify(bashNode)} "$0.cjs" "$@"\n`);
+    chmodSync(join(dir, 'bin', command), 0o755);
+  }
   const trace = join(dir, 'trace');
   return (args) => {
     writeFileSync(trace, '');
@@ -119,7 +126,7 @@ test('all-providers executes the baseline once plus HDB selection without duplic
   assert.deepEqual(sdk[1].args.filter(a => a.endsWith('.test.js')), horizonSdkFiles());
   assert.ok(sdk.every(c => c.workers === '8'));
   assert.equal(calls.filter(c => c.tool === 'node' && c.args.includes('--test')).length, 1, 'unit/API stage runs once');
-  assert.equal(calls.filter(c => c.tool === 'npm' && c.cwd.endsWith('/packages/sdk') && c.args.includes('build')).length, 1);
+  assert.equal(calls.filter(c => c.tool === 'npm' && c.cwd.endsWith(join('packages', 'sdk')) && c.args.includes('build')).length, 1);
   assert.equal(calls.filter(c => c.args.includes('test/integration')).length, 1);
 });
 

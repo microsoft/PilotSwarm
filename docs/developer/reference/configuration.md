@@ -216,6 +216,21 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
+- Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
+  (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
+  `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,
+  `sessionLockRenewalBufferMs`), which takes precedence over the env var.
+  A running item renews its lock this many ms before the lock expires, so the
+  renewal buffer is the longest stall (a blocked event loop, a paused
+  database) it survives without losing the lock. An unset buffer defaults to
+  75% of its lock timeout. Locks under 15 s renew at half their timeout and
+  ignore the buffer.
+  - `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`: activity lock timeout. Default: `10000`.
+  - `PILOTSWARM_WORKER_LOCK_RENEWAL_BUFFER_MS`: activity lock renewal buffer.
+  - `PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS`: orchestration lock timeout. Default: `60000`.
+  - `PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS`: orchestration lock renewal buffer. Default: `45000`.
+  - `PILOTSWARM_SESSION_LOCK_TIMEOUT_MS`: session lock timeout. Default: duroxide's.
+  - `PILOTSWARM_SESSION_LOCK_RENEWAL_BUFFER_MS`: session lock renewal buffer.
 
 Example:
 
@@ -226,6 +241,9 @@ PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
 PILOTSWARM_TURN_TIMEOUT_MS=1200000
+PILOTSWARM_WORKER_LOCK_TIMEOUT_MS=10000
+PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS=60000
+PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS=45000
 ```
 
 ### Local Development
@@ -602,6 +620,42 @@ Credentials are write-only: provider reads, defaults reads, logs, and selector
 view models never return them. Browser and terminal password drafts are cleared
 on save and cancel; the native UI also removes its draft before awaiting the
 provider create or credential-update request.
+
+### Request Format (`wireApi`)
+
+`wireApi` picks the request format for an OpenAI-shaped endpoint:
+`"completions"` (Chat Completions) or `"responses"` (the Responses API). Set
+it on a provider entry, on a model entry, or both. Only `openai`,
+`openai-proxy` and `azure` types accept it.
+
+Which value a model gets:
+
+```
+1. The model's own wireApi, if set
+2. Else the provider's wireApi, if set
+3. Else none is sent, and the Copilot SDK uses Chat Completions
+```
+
+Example: Azure GPT-5.6 needs Responses when a turn has tools and reasoning
+together. GPT-5.4 models under the same provider stay on Chat Completions:
+
+```json
+{
+  "id": "azure-openai",
+  "type": "azure",
+  "baseUrl": "https://my-resource.openai.azure.com/openai",
+  "models": [
+    { "name": "gpt-5.6", "wireApi": "responses" },
+    { "name": "gpt-5.4" }
+  ]
+}
+```
+
+The value follows shared and personal provider instances of the type. The
+catalog is checked when it loads. A `wireApi` other than `"completions"` or
+`"responses"`, or one on a `github`, `anthropic` or `anthropic-wif` model,
+fails the load with an error that names the `provider:model`. A hot reload
+that fails this way keeps the previous catalog.
 
 ### GPT-6 Astra through GitHub Copilot
 

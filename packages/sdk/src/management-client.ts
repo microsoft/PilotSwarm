@@ -16,6 +16,8 @@ import {
     commandResponseKey,
     stopTurnQueueName,
     sanitizePromptAttachmentRefs,
+    systemSessionProtectedError,
+    SYSTEM_AGENT_LOADED,
 } from "./types.js";
 import type {
     PilotSwarmSessionStatus,
@@ -65,6 +67,7 @@ import {
     type CanvasWorkspaceDeclaration,
 } from "./canvas-workspace.js";
 import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
+import { workspaceGit } from "./workspace-git.js";
 import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
@@ -135,7 +138,7 @@ import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelec
 import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
-import type { AgentConfig } from "./agent-loader.js";
+import { systemAgentUUID, type AgentConfig } from "./agent-loader.js";
 import {
     loadSystemAgentConfigs,
     resolveSystemAgentSessionPlans,
@@ -310,6 +313,15 @@ export interface RestartSystemSessionOptions {
     modelResolutionSource?: string;
     /** Stable id for an idempotent multi-agent rollout; omitted for a new manual restart. */
     operationId?: string;
+    /**
+     * Default true. false removes the system session and starts nothing in
+     * its place. This is how an operator removes the session of an agent
+     * that no worker loads any more. The agent may be unknown to this
+     * client; the session row is then found by session id or agent id.
+     * Refused with SYSTEM_AGENT_LOADED (409) while a live worker loads the
+     * agent, because that worker would create the session again.
+     */
+    startReplacement?: boolean;
 }
 
 export interface RestartSystemSessionResult {
@@ -320,7 +332,15 @@ export interface RestartSystemSessionResult {
     previousSessionExisted: boolean;
     startResults: SystemAgentStartResult[];
     skippedReason?: "busy" | "complete";
+    /** True when the session was removed with startReplacement: false. */
+    retired?: boolean;
 }
+
+/**
+ * A worker counts as live while its last heartbeat is younger than this, or
+ * than 3 of its own heartbeat intervals when it reports a longer one.
+ */
+const LIVE_WORKER_HEARTBEAT_MS = 90_000;
 
 function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisposition): "complete" | "terminate" | "hard_delete" {
     if (disposition === "complete") return "complete";
@@ -888,7 +908,7 @@ export class PilotSwarmManagementClient {
     private async _forceDeleteSession(sessionId: string, reason?: string): Promise<void> {
         const session = await this._catalog!.getSession(sessionId);
         if (session?.isSystem) {
-            throw new Error("Cannot delete system session");
+            throw systemSessionProtectedError("delete");
         }
 
         // Set terminal state in CMS before soft-delete so any last read picks it up
@@ -1480,12 +1500,17 @@ export class PilotSwarmManagementClient {
 
     // ─── Session Actions ─────────────────────────────────────
 
-    async completeSession(sessionId: string, reason?: string): Promise<void> {
+    /**
+     * Complete a session: send it the done command. Refuses a system session
+     * (409 SYSTEM_SESSION_PROTECTED). With wait: false, return once the
+     * command is sent, without waiting for the session to finish.
+     */
+    async completeSession(sessionId: string, reason?: string, options: { wait?: boolean } = {}): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
-            throw new Error("Cannot complete system session");
+            throw systemSessionProtectedError("complete");
         }
         if (session.status === "completed") return;
         if (session.status === "cancelled" || session.status === "failed") return;
@@ -1496,6 +1521,7 @@ export class PilotSwarmManagementClient {
             id: buildLifecycleCommandId("done"),
             args: { reason: doneReason },
         });
+        if (options.wait === false) return;
 
         await this._waitForSession(
             sessionId,
@@ -1514,7 +1540,7 @@ export class PilotSwarmManagementClient {
             throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
         }
         if (session.isSystem) {
-            throw new Error("System session titles are fixed");
+            throw systemSessionProtectedError("rename");
         }
 
         const storedTitle = buildStoredSessionTitle(session, title);
@@ -1537,7 +1563,7 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
-            throw new Error("Cannot cancel system session");
+            throw systemSessionProtectedError("cancel");
         }
         if (session.status === "cancelled" || session.status === "failed" || session.status === "completed") {
             return;
@@ -1566,7 +1592,7 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
-            throw new Error("Cannot delete system session");
+            throw systemSessionProtectedError("delete");
         }
         const deleteReason = reason ?? "Deleted by management client";
 
@@ -1707,6 +1733,8 @@ export class PilotSwarmManagementClient {
      * Resolves with the orchestration's answer. Rejects with an error whose
      * `code` names the reason (WORKSPACE_REVISION_CONFLICT, WORKSPACE_PATH_INVALID,
      * WORKSPACE_ROOT_UNKNOWN, WORKSPACE_FOLDER_MISSING, a provider code ...).
+     * Before the session's first turn it rejects with
+     * WORKSPACE_SESSION_NOT_STARTED (409): pass the workspace at create time.
      * If no answer arrives in time, resolves with `{ status: "pending" }`.
      */
     async setSessionWorkspace(
@@ -1734,7 +1762,7 @@ export class PilotSwarmManagementClient {
         const extraMode = input.workspace && typeof input.workspace === "object"
             && Object.prototype.hasOwnProperty.call(input.workspace, "extra") ? "replace" : "keep";
         const id = buildLifecycleCommandId("set-workspace");
-        await this.sendCommand(sessionId, {
+        await this._sendWorkspaceCommand(sessionId, {
             cmd: "set_workspace",
             id,
             args: { expectedRevision: input.expectedRevision, workspace, extraMode, source: "external" },
@@ -1762,18 +1790,40 @@ export class PilotSwarmManagementClient {
      * Session workspaces: the session's workspace, read from its latest
      * workspace events (no CMS migration in v1): the record, revision and
      * path of the last change, whether prompts are held and why, and the
-     * repo content adopted at the last resume.
+     * repo content adopted at the last resume. `turnRevision` is the
+     * revision the last turn ran under: the adopted content and the default
+     * folders are as of that revision.
      */
     async getSessionWorkspace(sessionId: string): Promise<SessionWorkspaceView> {
         this._ensureStarted();
         const types = ["session.workspace_changed", "session.workspace_unavailable", "session.workspace_available", "session.workspace_adopted", "session.workspace_defaults", "session.workspace_opened"];
-        const events = (await this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 200, types))
+        const WINDOW = 200;
+        const [fetched, turnStarted] = await Promise.all([
+            this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, WINDOW, types),
+            this._catalog!.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.turn_started"]),
+        ]);
+        const events = fetched
             .slice()
             .sort((a: any, b: any) => Number(a.seq) - Number(b.seq));
         const latest = (type: string) => [...events].reverse().find((e: any) => e.eventType === type) as any;
         const changed = latest("session.workspace_changed");
         const workspace = (changed?.data?.workspace ?? null) as SessionWorkspace | null;
         const revision = Number(changed?.data?.revision ?? 0) || 0;
+        // The revision the last turn ran under: the newest change before
+        // that turn started. `adopted` and `defaults` are written by turns,
+        // so a change from outside shows in `revision` before they follow.
+        let turnRevision: number | null = null;
+        const lastTurn = turnStarted.find((e: any) => e.eventType === "session.turn_started") as any;
+        if (lastTurn) {
+            const turnSeq = Number(lastTurn.seq);
+            let before = [...events].reverse().find((e: any) => e.eventType === "session.workspace_changed" && Number(e.seq) < turnSeq) as any;
+            if (!before && fetched.length >= WINDOW) {
+                // The window may not reach back to that turn: ask for the one event.
+                const [older] = await this._catalog!.getSessionEventsBefore(sessionId, turnSeq, 1, ["session.workspace_changed"]);
+                before = older?.eventType === "session.workspace_changed" ? older : undefined;
+            }
+            turnRevision = Number(before?.data?.revision ?? 0) || 0;
+        }
         const unavailable = latest("session.workspace_unavailable");
         const available = latest("session.workspace_available");
         const boundary = Math.max(Number(available?.seq ?? 0), Number(changed?.seq ?? 0));
@@ -1842,6 +1892,7 @@ export class PilotSwarmManagementClient {
         return {
             workspace,
             revision,
+            turnRevision,
             path: workspace ? path : null,
             ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
             status: !workspace ? "none" : held ? "unavailable" : "ready",
@@ -1867,19 +1918,22 @@ export class PilotSwarmManagementClient {
 
     /**
      * Session workspace files (the portal's Workspace pane): the session's
-     * folders, whether this process serves them, and the size limit.
+     * folders, whether this process serves them, the size limit, and the
+     * names of the roots this process serves (the Set dialog lists them).
      * `enabled` is false when no `workspaceFiles` config was given.
      */
-    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; folders: WorkspaceFileFolder[] }> {
+    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; git: boolean; folders: WorkspaceFileFolder[]; roots: string[] }> {
         this._ensureStarted();
         const config = this.config.workspaceFiles ?? null;
-        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, folders: [] };
+        // Git info in the Workspace tab runs on the canvas commands' runner.
+        const git = Boolean(this.config.canvasCommands?.allow?.includes("git"));
+        if (!config) return { enabled: false, maxBytes: DEFAULT_WORKSPACE_FILE_MAX_BYTES, git: false, folders: [], roots: [] };
         const view = await this.getSessionWorkspace(sessionId);
         const folders = workspaceFileFolders(view, config).map((folder) => {
             if (!folder.available) return folder;
             return { ...folder, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
         });
-        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, folders };
+        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders, roots: config.roots.map((root) => root.name) };
     }
 
     /**
@@ -1899,6 +1953,7 @@ export class PilotSwarmManagementClient {
         const codes = WORKSPACE_FILE_ERROR_CODES;
         if (!config) throw workspaceFileError(codes.DISABLED, "workspace files are not set up here (PORTAL_WORKSPACE_ROOTS)");
         const op = (call as any)?.op;
+        if (op === "git") return this._sessionWorkspaceGit(sessionId, call as any, config);
         if (!(WORKSPACE_FILE_OPS as readonly string[]).includes(op)) {
             throw workspaceFileError(codes.PATH_INVALID, `unknown workspace file call "${String(op)}"`);
         }
@@ -1939,6 +1994,81 @@ export class PilotSwarmManagementClient {
                 path: String(request.path),
                 ...(op === "write" ? { created: result?.created === true } : {}),
                 ...(op === "move" ? { toFolder: String(request.toName), toPath: String(request.toPath) } : {}),
+            };
+            await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: change }]).catch(() => {});
+        }
+        return result;
+    }
+
+    /**
+     * Git for the Workspace tab, read-only: `{ op: "git", folder, what:
+     * "status" | "log" | "show" | "file", repo?, since?, skip?, sha?, rev?, path? }`
+     * (see workspace-git.ts), and `what: "repos"`: is the folder itself a
+     * repository, and which folders inside it are (a clone in the person's
+     * own folder, say), up to 3 levels down.
+     *
+     * `repo` is a folder inside the session folder that holds `.git`; empty
+     * is the folder itself. Git runs there on the canvas commands' local
+     * runner and never looks above the session folder, so a deployment
+     * without that runner answers `{ repo: false, enabled: false }`.
+     */
+    private async _sessionWorkspaceGit(sessionId: string, call: Record<string, unknown>, config: WorkspaceFilesConfig): Promise<Record<string, any>> {
+        const commands = this.config.canvasCommands ?? null;
+        if (!commands || !commands.allow.includes("git")) return { repo: false, enabled: false };
+        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        const from = resolveWorkspaceFileFolder(folders, call.folder, config);
+        const at = { base: from.base, rootPath: from.rootPath };
+        const isRepo = async (dir: string) => {
+            try {
+                await runWorkspaceFileCall({ op: "stat", ...at, path: dir ? `${dir}/.git` : ".git" }, config);
+                return true;
+            } catch (error: any) {
+                if (error?.code === WORKSPACE_FILE_ERROR_CODES.NOT_FOUND || error?.code === WORKSPACE_FILE_ERROR_CODES.NOT_A_FOLDER) return false;
+                throw error;
+            }
+        };
+        if (call.what === "repos") {
+            const top = await isRepo("");
+            // Inside a repository, nested ones are not searched (as git itself treats them).
+            const found = top ? { repos: [], truncated: false } : await runWorkspaceFileCall({ op: "repos", ...at, path: "" }, config);
+            return { top, repos: found.repos ?? [], truncated: Boolean(found.truncated) };
+        }
+        const repo = checkWorkspaceFilePath(call.repo ?? "");
+        if (repo.split("/").some((part) => part === "." || part === "..")) {
+            throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.PATH_INVALID, "repo must be a folder inside the session folder");
+        }
+        if (!(await isRepo(repo))) return { repo: false };
+        // The repository's folder must be a real folder inside the session
+        // folder (a link out of it is refused by the stat).
+        if (repo) {
+            const place = await runWorkspaceFileCall({ op: "stat", ...at, path: repo, noLinks: true }, config);
+            if (place.kind !== "dir") return { repo: false };
+        }
+        const cwd = repo ? `${from.base.replace(/\/+$/, "")}/${repo}` : from.base;
+        // The two calls that change the repository: never under a running
+        // turn (the agent works in the same folder), and a stash is the
+        // owner's, so git needs their name.
+        const writes = call.what === "checkout" || call.what === "restore";
+        let author: { name: string; email: string } | null = null;
+        if (writes) {
+            const row: any = await this._catalog!.getSession(sessionId).catch(() => null);
+            if (row?.state === "running") throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.BUSY, "the agent is in a turn in this folder; try again when it is idle");
+            const owner = row?.owner ?? null;
+            author = owner?.email ? { name: String(owner.displayName || owner.email), email: String(owner.email) } : { name: "PilotSwarm Workspace tab", email: "workspace@pilotswarm.invalid" };
+        }
+        const result = await workspaceGit(
+            (args, maxOutputBytes) => runCanvasCommandLocally({ program: "git", args }, cwd, { top: from.base, timeoutSeconds: writes ? 60 : 15, maxOutputBytes, author }),
+            call,
+        );
+        // The agent is told at its next turn, as for files the owner changed.
+        if (writes && result?.done) {
+            const change: WorkspaceFileChange = {
+                op: "git",
+                folder: from.folder.name,
+                path: repo,
+                git: call.what === "checkout"
+                    ? { action: "checkout", to: result.to, from: result.from, detached: Boolean(result.detached), stashed: Boolean(result.stashed) }
+                    : { action: "restore" },
             };
             await this._catalog!.recordEvents(sessionId, [{ eventType: WORKSPACE_FILES_CHANGED_EVENT, data: change }]).catch(() => {});
         }
@@ -2198,11 +2328,28 @@ export class PilotSwarmManagementClient {
     async retrySessionWorkspace(sessionId: string, opts?: { timeoutMs?: number }): Promise<{ retried: boolean } | { status: "pending"; commandId: string }> {
         this._ensureStarted();
         const id = buildLifecycleCommandId("retry-workspace");
-        await this.sendCommand(sessionId, { cmd: "retry_workspace", id });
+        await this._sendWorkspaceCommand(sessionId, { cmd: "retry_workspace", id });
         const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 60_000));
         if (!resp) return { status: "pending", commandId: id };
         if (resp.error) throw new Error(resp.error);
         return { retried: Boolean((resp.result as any)?.retried) };
+    }
+
+    /**
+     * Session workspaces: send a set or retry command. A session that has not
+     * run its first turn has no orchestration to answer it yet; that is a
+     * WORKSPACE_SESSION_NOT_STARTED error (409) that says what to do instead.
+     */
+    private async _sendWorkspaceCommand(sessionId: string, command: { cmd: string; id: string; args?: Record<string, unknown> }): Promise<void> {
+        try {
+            await this.sendCommand(sessionId, command);
+        } catch (error: any) {
+            if (error?.orchestrationNotStarted !== true) throw error;
+            throw Object.assign(new Error(
+                "WORKSPACE_SESSION_NOT_STARTED: the session has not run its first turn; pass workspace at create time "
+                + "(createSession `workspace`, MCP create_session workspace_root/workspace_folder), or set it after the first turn",
+            ), { code: "WORKSPACE_SESSION_NOT_STARTED", status: 409 });
+        }
     }
 
     private async _awaitCommandResponse(sessionId: string, id: string, timeoutMs: number): Promise<SessionCommandResponse | null> {
@@ -2414,6 +2561,11 @@ export class PilotSwarmManagementClient {
         };
     }
 
+    /**
+     * Restart a system session: dispose of the current one as the
+     * disposition says, then start a fresh one for the same agent.
+     * With startReplacement: false, remove the session and start nothing.
+     */
     async restartSystemSession(
         agentIdOrSessionId: string,
         options: RestartSystemSessionOptions,
@@ -2430,6 +2582,9 @@ export class PilotSwarmManagementClient {
         }
 
         const disposition = normalizeSystemRestartDisposition(options.disposition);
+        if (options.startReplacement === false) {
+            return this._removeSystemSession(agentIdOrSessionId, disposition, options);
+        }
         const plan = this._resolveSystemAgentPlan(agentIdOrSessionId);
         const sessionId = plan.sessionId;
         const reason = options.reason ?? `Restarting system session ${plan.agent.id}`;
@@ -2520,33 +2675,7 @@ export class PilotSwarmManagementClient {
 
         try {
         if (existingRow) {
-            if (disposition === "complete") {
-                const view = await this.getSession(sessionId).catch(() => null);
-                if (view && view.status !== "completed" && view.status !== "failed" && view.status !== "cancelled") {
-                    try {
-                        await this.sendCommand(sessionId, {
-                            cmd: "done",
-                            id: buildLifecycleCommandId("done-system-restart"),
-                            args: { reason },
-                        });
-                        await this._waitForSession(
-                            sessionId,
-                            (current) => current != null && (current.status === "completed" || current.status === "failed" || current.status === "cancelled"),
-                            options.timeoutMs ?? SESSION_COMMAND_SETTLE_TIMEOUT_MS,
-                        );
-                    } catch (err) {
-                        if (!isIgnorableRestartCommandError(err)) throw err;
-                    }
-                }
-                await this._deleteSystemOrchestrationInstance(sessionId);
-                await this._archiveSystemSessionForRestart(sessionId, "completed", reason);
-            } else if (disposition === "terminate") {
-                await this._terminateSystemOrchestrationInstance(sessionId, reason);
-                await this._archiveSystemSessionForRestart(sessionId, "cancelled", `Terminated for restart: ${reason}`);
-            } else {
-                await this._deleteSystemOrchestrationInstance(sessionId);
-                await this._archiveSystemSessionForRestart(sessionId, "failed", `Hard-deleted for restart: ${reason}`);
-            }
+            await this._disposeSystemSession(sessionId, disposition, reason, "restart", options.timeoutMs);
         }
 
         const startResults = await startSystemAgents({
@@ -2586,6 +2715,181 @@ export class PilotSwarmManagementClient {
             await providerStore?.finishSystemRestart(plan.agent.id, claimId, error?.message || String(error));
             throw error;
         }
+    }
+
+    /**
+     * End the current lifetime of a system session. The disposition says how
+     * the orchestration stops; then the CMS row and its facts are archived.
+     * A missing orchestration instance is not an error.
+     */
+    private async _disposeSystemSession(
+        sessionId: string,
+        disposition: "complete" | "terminate" | "hard_delete",
+        reason: string,
+        purpose: "restart" | "removal",
+        timeoutMs?: number,
+    ): Promise<void> {
+        if (disposition === "complete") {
+            const view = await this.getSession(sessionId).catch(() => null);
+            if (view && view.status !== "completed" && view.status !== "failed" && view.status !== "cancelled") {
+                try {
+                    await this.sendCommand(sessionId, {
+                        cmd: "done",
+                        id: buildLifecycleCommandId(`done-system-${purpose}`),
+                        args: { reason },
+                    });
+                    await this._waitForSession(
+                        sessionId,
+                        (current) => current != null && (current.status === "completed" || current.status === "failed" || current.status === "cancelled"),
+                        timeoutMs ?? SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+                    );
+                } catch (err) {
+                    if (!isIgnorableRestartCommandError(err)) throw err;
+                }
+            }
+            await this._deleteSystemOrchestrationInstance(sessionId);
+            await this._archiveSystemSessionForRestart(sessionId, "completed", reason);
+        } else if (disposition === "terminate") {
+            await this._terminateSystemOrchestrationInstance(sessionId, reason);
+            await this._archiveSystemSessionForRestart(sessionId, "cancelled", `Terminated for ${purpose}: ${reason}`);
+        } else {
+            await this._deleteSystemOrchestrationInstance(sessionId);
+            await this._archiveSystemSessionForRestart(sessionId, "failed", `Hard-deleted for ${purpose}: ${reason}`);
+        }
+    }
+
+    /**
+     * restartSystemSession with startReplacement: false. Removes a system
+     * session and starts nothing in its place:
+     *
+     *   1. Find the session. A known agent gives its session id. An agent
+     *      this client does not know (an orphan) is found by its session
+     *      row: by session id, then by the id derived from the agent id,
+     *      then by the agent id on the system rows (child agents).
+     *   2. Refuse while a live worker loads the agent, or does not report
+     *      which agents it loads. That worker would create it again.
+     *   3. Stop the orchestration as the disposition says, then archive the
+     *      row (it is soft-deleted, like on a restart).
+     *
+     * It does not take the rollout claim of a restart: there is no model to
+     * roll out, and archiving a row twice is harmless.
+     */
+    private async _removeSystemSession(
+        agentIdOrSessionId: string,
+        disposition: "complete" | "terminate" | "hard_delete",
+        options: RestartSystemSessionOptions,
+    ): Promise<RestartSystemSessionResult> {
+        let plan: SystemAgentSessionPlan | null = null;
+        try {
+            plan = this._resolveSystemAgentPlan(agentIdOrSessionId);
+        } catch (err: any) {
+            if (err?.code !== "NOT_FOUND") throw err;
+        }
+
+        let row: SessionRow | null = null;
+        if (plan) {
+            row = await this._catalog!.getSession(plan.sessionId);
+        } else {
+            const target = String(agentIdOrSessionId).trim();
+            const candidates = [...new Set([target, target.replace(/^session-/, ""), systemAgentUUID(target)])];
+            for (const candidate of candidates) {
+                row = await this._catalog!.getSession(candidate);
+                if (row) break;
+            }
+            if (!row) {
+                // A child system agent's session id also depends on its
+                // parent's, so look for the agent id among the system rows.
+                const systemRows = await this._catalog!.listSessionsPage({ systemFilter: "only", limit: 200 });
+                const matches = systemRows.filter((candidate) => candidate.isSystem && candidate.agentId === target);
+                if (matches.length > 1) {
+                    throw Object.assign(
+                        new Error(
+                            `Several system sessions have agent id "${target}": `
+                            + `${matches.map((match) => match.sessionId).join(", ")}. Pass the session id.`,
+                        ),
+                        { code: "INVALID_REQUEST" },
+                    );
+                }
+                row = matches[0] ?? null;
+            }
+        }
+        // A session that is not a system session gets the same answer as a
+        // missing one: an admin whose scope is the cluster must not learn
+        // that a person's private session exists.
+        if (!plan && (!row || !row.isSystem)) {
+            throw Object.assign(new Error(`No system session found for "${String(agentIdOrSessionId).trim()}".`), { code: "NOT_FOUND" });
+        }
+
+        const sessionId = plan?.sessionId ?? row!.sessionId;
+        if (row && !row.isSystem) {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is not a system session. Use deleteSession to remove it.`),
+                { code: "INVALID_REQUEST" },
+            );
+        }
+        const agentId = plan?.agent.id ?? row?.agentId ?? null;
+
+        const blocking = await this._workersThatWouldRecreate(agentId, sessionId);
+        if (blocking.length > 0) {
+            throw Object.assign(
+                new Error(
+                    `Cannot remove system session ${sessionId.slice(0, 8)} (agent ${agentId ?? "unknown"}): `
+                    + `a live worker would create it again: ${blocking.join(", ")}. `
+                    + "Remove the agent from those workers and restart them, then try again.",
+                ),
+                { code: SYSTEM_AGENT_LOADED, status: 409 },
+            );
+        }
+
+        const reason = options.reason ?? `Removing system session ${agentId ?? sessionId}`;
+        if (row) {
+            await this._disposeSystemSession(sessionId, disposition, reason, "removal", options.timeoutMs);
+        }
+        return {
+            agentId: agentId ?? sessionId,
+            agentName: plan?.agent.name ?? agentId ?? sessionId,
+            sessionId,
+            disposition,
+            previousSessionExisted: Boolean(row),
+            startResults: [],
+            retired: true,
+        };
+    }
+
+    /**
+     * Live workers that would create this system session again: the ones
+     * that report its session (or, for older workers, its agent) as loaded,
+     * and the ones that do not report their loaded agents at all.
+     *
+     * A worker is live while its last heartbeat is younger than 90 s, or
+     * than 3 of its own heartbeat intervals when it reports a longer one.
+     */
+    private async _workersThatWouldRecreate(agentId: string | null, sessionId: string): Promise<string[]> {
+        const now = Date.now();
+        const blocking: string[] = [];
+        for (const worker of await this._catalog!.listWorkers()) {
+            const reported = (worker.state?.["system-agents"] ?? undefined) as
+                { loaded?: unknown; sessions?: unknown; heartbeatMs?: unknown } | undefined;
+            const heartbeatMs = typeof reported?.heartbeatMs === "number" && Number.isFinite(reported.heartbeatMs) && reported.heartbeatMs > 0
+                ? reported.heartbeatMs
+                : 0;
+            const liveWindowMs = Math.max(LIVE_WORKER_HEARTBEAT_MS, 3 * heartbeatMs);
+            if (new Date(worker.updatedAt).getTime() < now - liveWindowMs) continue;
+            const loaded = reported?.loaded;
+            if (!Array.isArray(loaded)) {
+                blocking.push(`${worker.workerNodeId} (does not report its system agents)`);
+                continue;
+            }
+            // The session ids the worker would create. A child agent's id
+            // depends on its parent's, so the agent id alone matches rows
+            // the worker would not create (after the agent moved).
+            const sessions = reported?.sessions;
+            const wouldCreate = Array.isArray(sessions)
+                ? sessions.includes(sessionId)
+                : loaded.some((id) => typeof id === "string" && (id === agentId || systemAgentUUID(id) === sessionId));
+            if (wouldCreate) blocking.push(worker.workerNodeId);
+        }
+        return blocking;
     }
 
     // ─── Session Events ──────────────────────────────────────
@@ -3606,10 +3910,10 @@ export class PilotSwarmManagementClient {
             return;
         }
         if (!status || status === "NotFound" || status === "Unknown") {
-            throw new Error(
+            throw Object.assign(new Error(
                 `Cannot ${operation} for session ${sessionId.slice(0, 8)}: orchestration ${orchId} is not started (status=${status ?? "missing"}). ` +
                 `Use PilotSwarmSession.send (which starts the orchestration on the first turn) instead of the management enqueue path.`,
-            );
+            ), { orchestrationNotStarted: true });
         }
     }
 

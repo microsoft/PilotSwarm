@@ -461,6 +461,41 @@ describe("extra folders: fixes from the adversarial review", () => {
                     assertEqual(JSON.stringify(Object.keys(moved.workspace.extra ?? {}).sort()), JSON.stringify(["logs", "shared"]));
                     const view = await mgmt.getSessionWorkspace(sessionId);
                     assertEqual(view.path, path.join(r.base, "a", "repo-y"), "the view has the new working folder's path");
+                    // The view's adopted content and defaults are as of the
+                    // last turn, which ran under revision 1.
+                    assertEqual(view.turnRevision, 1, "two changes since the last turn");
+
+                    // Drop "shared" with no turn since the move: the kept
+                    // working folder is repo-y, but the session's handle on
+                    // this worker last attached repo-x. The change must not
+                    // report repo-x as the path (issue #103).
+                    const dropped = await mgmt.setSessionWorkspace(sessionId, {
+                        expectedRevision: 3,
+                        workspace: { root: "a", folder: "repo-y", extra: { logs: { root: "logs", folder: "svc" } } },
+                    });
+                    assertEqual(dropped.revision, 4);
+                    assert(dropped.path !== path.join(r.base, "a", "repo-x"), `the change does not report the old folder's path: ${dropped.path}`);
+                    const catalog = await createCatalog(env);
+                    try {
+                        const changes = (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "session.workspace_changed");
+                        assert(changes.at(-1).data.path !== path.join(r.base, "a", "repo-x"), `the event does not name the old folder: ${JSON.stringify(changes.at(-1).data)}`);
+                    } finally {
+                        await catalog.close?.();
+                    }
+                    assertEqual((await mgmt.getSessionWorkspace(sessionId)).path, path.join(r.base, "a", "repo-y"), "the view keeps the moved folder's path");
+
+                    // After a turn under revision 4, a change of extra folders
+                    // reports the path that turn attached.
+                    assertEqual(await session.sendAndWait("second", TIMEOUT), "two");
+                    assertEqual((await mgmt.getSessionWorkspace(sessionId)).turnRevision, 4, "the turn ran under revision 4");
+                    const readded = await mgmt.setSessionWorkspace(sessionId, {
+                        expectedRevision: 4,
+                        workspace: { root: "a", folder: "repo-y", extra: { logs: { root: "logs", folder: "svc" }, shared: { root: "shared", folder: "notes" } } },
+                    });
+                    assertEqual(readded.revision, 5);
+                    assertEqual(readded.path, path.join(r.base, "a", "repo-y"), "the turn's own attach path");
+                    const after = await mgmt.getSessionWorkspace(sessionId);
+                    assertEqual([after.revision, after.turnRevision].join(","), "5,4", "the change waits for the next turn");
                 } finally {
                     await mgmt.stop();
                 }

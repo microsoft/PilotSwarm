@@ -540,11 +540,20 @@ async function gitSettingsRefusal(cwd: string, top: string, env: Record<string, 
     const where = await gitOutput(["rev-parse", "--absolute-git-dir", "--show-toplevel"], cwd, env);
     if (where === null) return null; // not a repository: the command itself says so
     const realTop = fs.realpathSync(top);
+    const topIdentity = fs.statSync(realTop, { bigint: true });
     const within = (p: string) => {
         let real: string;
         try { real = fs.realpathSync(p); } catch { return false; }
         const rel = path.relative(realTop, real);
-        return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+        if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return true;
+        // Git for Windows resolves substituted drives to their backing path,
+        // while Node keeps the drive alias. Compare ancestor identities too.
+        for (let current = real; ; current = path.dirname(current)) {
+            const identity = fs.statSync(current, { bigint: true });
+            if (topIdentity.ino !== 0n && identity.dev === topIdentity.dev && identity.ino === topIdentity.ino) return true;
+            const parent = path.dirname(current);
+            if (parent === current) return false;
+        }
     };
     const [gitDir, workTree] = where.split("\n").map((line) => line.trim()).filter(Boolean);
     if (!gitDir || !within(gitDir) || (workTree && !within(workTree))) {

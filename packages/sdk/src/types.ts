@@ -120,6 +120,8 @@ export interface TurnOptions {
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
     onEvent?: (event: CapturedEvent) => void;
+    /** Worker log line for problems seen during the turn (the runTurn activity trace). */
+    trace?: (message: string) => void;
     /** Emit coalesced assistant.live_tick events for the ephemeral live plane. */
     liveTurn?: boolean;
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
@@ -431,6 +433,12 @@ export interface WorkspaceDefaultsRecord {
     workingFolder: { root: string; folder?: string } | null;
     /** Default extra folders; `home: true` marks the person's folder as an extra folder. */
     extra: Array<{ name: string; root: string; folder?: string; home?: true }>;
+    /**
+     * Default folders the turn left out, and why. For example the person's
+     * folder ("home") while an extra folder of the record is inside it: its
+     * agents, skills and instructions are not loaded then. Absent when none.
+     */
+    skipped?: Array<{ name: string; reason: string }>;
 }
 
 /** What a session adopted from its checkout (section 4.6): the `session.workspace_adopted` event data, less the revision. */
@@ -454,6 +462,13 @@ export interface SessionWorkspaceView {
     workspace: SessionWorkspace | null;
     /** Rises by one on every set or clear. 0 = never set. */
     revision: number;
+    /**
+     * The revision the session's last turn ran under; null before the first
+     * turn. `adopted` and `defaults` come from that turn. When it is lower
+     * than `revision`, a change is waiting for the next turn, and they still
+     * describe the folders before it.
+     */
+    turnRevision?: number | null;
     /** The attach path the last change reported, when known. */
     path: string | null;
     /** Extra folders' paths, by name, as changes reported them (section 4.10). */
@@ -484,7 +499,34 @@ export const WORKSPACE_ERROR_CODES = {
     ATTACH_FAILED: "WORKSPACE_ATTACH_FAILED",
     REVISION_CONFLICT: "WORKSPACE_REVISION_CONFLICT",
     BUSY: "WORKSPACE_BUSY",
+    SESSION_NOT_STARTED: "WORKSPACE_SESSION_NOT_STARTED",
 } as const;
+
+/**
+ * Error code for a refused delete, cancel, complete or rename of a system
+ * session. Workers create system sessions, so these calls do not apply.
+ */
+export const SYSTEM_SESSION_PROTECTED = "SYSTEM_SESSION_PROTECTED";
+
+/**
+ * Error code for a refused removal of a system session: a live worker still
+ * loads its agent and would create the session again.
+ */
+export const SYSTEM_AGENT_LOADED = "SYSTEM_AGENT_LOADED";
+
+/**
+ * The refusal for a lifecycle call on a system session. It is a 409 with a
+ * fixed code, so the Web API returns the reason instead of a 500. The delete
+ * message keeps the "Cannot delete system session" prefix that the SQL soft
+ * delete raises.
+ */
+export function systemSessionProtectedError(action: "delete" | "cancel" | "complete" | "rename"): Error {
+    const message = action === "rename"
+        ? "System session titles are fixed. The title comes from the system agent definition."
+        : `Cannot ${action} system session. Use restartSystemSession to restart it, or `
+            + "restartSystemSession with startReplacement: false to remove it once no worker loads its agent.";
+    return Object.assign(new Error(message), { code: SYSTEM_SESSION_PROTECTED, status: 409 });
+}
 
 // ─── Session Config ──────────────────────────────────────────────
 
@@ -1218,13 +1260,45 @@ export interface PilotSwarmWorkerOptions {
     maxSessionsPerRuntime?: number;
     sessionIdleTimeoutMs?: number;
     /**
-     * Duroxide work-item lock timeout (ms). Governs how fast a crashed
-     * worker's in-flight activities are re-dispatched elsewhere. Default
-     * 10 000; fault-injection tests shrink it so kill/recovery cycles run
-     * in seconds. (The duroxide SESSION lock timeout — ~30s — is not
-     * exposed and remains the reclaim floor for session-pinned work.)
+     * Duroxide work-item (activity) lock timeout (ms). Governs how fast a
+     * crashed worker's in-flight activities are re-dispatched elsewhere.
+     * Default 10 000; fault-injection tests shrink it so kill/recovery cycles
+     * run in seconds. Env: `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`.
+     *
+     * Every lock below works the same way. A running item renews its lock
+     * `renewal buffer` ms before the lock expires, so the buffer is the
+     * longest stall (a blocked event loop, a paused database) the item
+     * survives without losing its lock. Locks of 15 s or more use the buffer;
+     * shorter locks renew at half their timeout and ignore it.
      */
     workerLockTimeoutMs?: number;
+    /**
+     * Activity lock renewal buffer (ms). Default: 75% of a lock timeout of
+     * 15 s or more, otherwise unset. Env: `PILOTSWARM_WORKER_LOCK_RENEWAL_BUFFER_MS`.
+     */
+    workerLockRenewalBufferMs?: number;
+    /**
+     * Orchestration lock timeout (ms): how long an orchestration turn may hold
+     * its instance before another worker can take it. Default 60 000.
+     * Env: `PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS`.
+     */
+    orchestratorLockTimeoutMs?: number;
+    /**
+     * Orchestration lock renewal buffer (ms). Default: 75% of the timeout
+     * (45 000 for the default timeout). Env: `PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS`.
+     */
+    orchestratorLockRenewalBufferMs?: number;
+    /**
+     * Duroxide session lock timeout (ms), the reclaim floor for session-pinned
+     * work. Default: duroxide's. Env: `PILOTSWARM_SESSION_LOCK_TIMEOUT_MS`.
+     */
+    sessionLockTimeoutMs?: number;
+    /**
+     * Session lock renewal buffer (ms). Default: 75% of a configured session
+     * lock timeout of 15 s or more, otherwise duroxide's.
+     * Env: `PILOTSWARM_SESSION_LOCK_RENEWAL_BUFFER_MS`.
+     */
+    sessionLockRenewalBufferMs?: number;
     workerNodeId?: string;
     /**
      * Dynamically install registry agent packages
