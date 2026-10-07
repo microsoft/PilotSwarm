@@ -56,6 +56,46 @@ function failOnFalse(label: string): (ok: boolean) => void {
     };
 }
 
+/**
+ * At most ONE steering database call in flight per turn (CMS pool pressure):
+ * every channel call of a turn queues here. A lease renewal goes to the head
+ * of the queue (it never preempts a running call), so a backlog cannot let the
+ * lease expire. Each call is itself bounded by the catalog.
+ */
+export class SteeringCallQueue {
+    private running = false;
+    private readonly queue: Array<{ run: () => void; priority: boolean }> = [];
+    /** Calls currently running (0 or 1) and the peak observed; diagnostics. */
+    inFlight = 0;
+    peak = 0;
+    calls = 0;
+
+    run<T>(fn: () => Promise<T>, opts: { priority?: boolean } = {}): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const run = () => {
+                this.running = true;
+                this.inFlight++;
+                this.calls++;
+                this.peak = Math.max(this.peak, this.inFlight);
+                Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+                    this.inFlight--;
+                    this.running = false;
+                    this.next();
+                });
+            };
+            if (opts.priority) this.queue.unshift({ run, priority: true });
+            else this.queue.push({ run, priority: false });
+            if (!this.running) this.next();
+        });
+    }
+
+    private next(): void {
+        if (this.running) return;
+        const item = this.queue.shift();
+        if (item) item.run();
+    }
+}
+
 export function createCmsSteeringChannel(
     catalog: SteeringCatalog,
     sessionId: string,
@@ -66,38 +106,42 @@ export function createCmsSteeringChannel(
         wake?: SteeringWakeSource | null;
         recoverySource?: "restored" | "local";
         ordered?: <T>(fn: () => Promise<T>) => Promise<T>;
+        queue?: SteeringCallQueue;
     } = {},
-): SteeringChannel {
+): SteeringChannel & { readonly callQueue: SteeringCallQueue } {
     const leaseMs = opts.leaseMs ?? STEERING_LEASE_MS;
+    const q = opts.queue ?? new SteeringCallQueue();
+    const one = <T>(fn: () => Promise<T>) => q.run(fn);
     return {
         sessionId,
         target,
         ownerToken,
+        callQueue: q,
         // Fail closed: without an explicit restore, local state is never an inclusion oracle.
         recoverySource: opts.recoverySource ?? "local",
         leaseMs,
-        openWindow: () => catalog.steerWindowOpen(sessionId, target, ownerToken, leaseMs),
-        recordRecoveryCheck: async (requestId, result, sdkMessageId, kind) => {
+        openWindow: () => one(() => catalog.steerWindowOpen(sessionId, target, ownerToken, leaseMs)),
+        recordRecoveryCheck: (requestId, result, sdkMessageId, kind) => one(async () => {
             await catalog.steerRecordRecoveryCheck(requestId, ownerToken, result, sdkMessageId ?? null, kind ?? null);
-        },
-        renew: () => catalog.steerWindowRenew(sessionId, ownerToken, leaseMs),
-        quiesce: async () => { await catalog.steerWindowQuiesce(sessionId, ownerToken); },
-        abandonWindow: async () => { await catalog.steerWindowAbandon(sessionId, target, ownerToken); },
-        claim: (limit) => catalog.steerClaim(sessionId, ownerToken, limit),
-        markSubmitting: async (requestId) => {
+        }),
+        renew: () => q.run(() => catalog.steerWindowRenew(sessionId, ownerToken, leaseMs), { priority: true }),
+        quiesce: () => one(async () => { await catalog.steerWindowQuiesce(sessionId, ownerToken); }),
+        abandonWindow: () => one(async () => { await catalog.steerWindowAbandon(sessionId, target, ownerToken); }),
+        claim: (limit) => one(() => catalog.steerClaim(sessionId, ownerToken, limit)),
+        markSubmitting: (requestId) => one(async () => {
             const attemptId = await catalog.steerMarkSubmitting(requestId, ownerToken);
             return attemptId ? { attemptId } : null;
-        },
+        }),
         // A refused receipt write is evidence the row moved on (stale owner, Stop);
         // the write queue reports it, and the DB state already reads as uncertain.
-        markReleased: async (attemptId) => failOnFalse("release")(await catalog.steerMarkReleased(attemptId, ownerToken)),
-        markSubmitted: async (attemptId, id) => failOnFalse("submitted")(await catalog.steerMarkSubmitted(attemptId, ownerToken, id)),
-        markDelivered: async (attemptId, id, kind) => {
+        markReleased: (attemptId) => one(async () => failOnFalse("release")(await catalog.steerMarkReleased(attemptId, ownerToken))),
+        markSubmitted: (attemptId, id) => one(async () => failOnFalse("submitted")(await catalog.steerMarkSubmitted(attemptId, ownerToken, id))),
+        markDelivered: (attemptId, id, kind) => one(async () => {
             const r = await catalog.steerMarkDelivered(attemptId, id, kind);
             if (!r.changed && r.reason !== "already_recorded") throw new Error(`steering delivery not recorded: ${r.reason}`);
-        },
-        markUnconfirmed: async (attemptId) => { await catalog.steerMarkUnconfirmed(attemptId, ownerToken); },
-        recordCounters: async (counts) => { await catalog.steerAddCounters(sessionId, counts); },
+        }),
+        markUnconfirmed: (attemptId) => one(async () => { await catalog.steerMarkUnconfirmed(attemptId, ownerToken); }),
+        recordCounters: (counts) => one(async () => { await catalog.steerAddCounters(sessionId, counts); }),
         ...(opts.wake ? { onWake: (cb: () => void) => opts.wake!.subscribe(sessionId, cb) } : {}),
         ...(opts.ordered ? { ordered: opts.ordered } : {}),
     };
@@ -120,6 +164,8 @@ export interface SteeringTurnInput {
 export class SteeringTurn {
     private owners: string[] = [];
     private restoredBase = false;
+    /** One queue for every channel of this turn: at most one steering DB call in flight. */
+    readonly callQueue = new SteeringCallQueue();
     private constructor(
         private readonly catalog: SteeringCatalog,
         readonly sessionId: string,
@@ -161,7 +207,7 @@ export class SteeringTurn {
         const recoverySource = this.restoredBase && this.owners.length === 0 ? "restored" : "local";
         this.owners.push(owner);
         return createCmsSteeringChannel(this.catalog, this.sessionId, this.target, owner,
-            { wake: this.wake, recoverySource, ordered: opts.ordered });
+            { wake: this.wake, recoverySource, ordered: opts.ordered, queue: this.callQueue });
     }
 
     /** The owner token that finalizes: the last channel's, or a fresh one for adoption. */
@@ -194,7 +240,7 @@ export class SteeringTurn {
             if (remaining <= 0) break;
             try {
                 const r = await withDeadline(
-                    this.catalog.steerTurnFinalize(this.sessionId, this.target, owner, outcome, ids, snapshotVersion), remaining);
+                    this.callQueue.run(() => this.catalog.steerTurnFinalize(this.sessionId, this.target, owner, outcome, ids, snapshotVersion)), remaining);
                 if (r === DEADLINE) { this.trace(`[steering] finalize ${outcome} exceeded its budget`); return "failed"; }
                 if (r.finalized) return "finalized";
                 return r.reason ?? "refused";
@@ -215,7 +261,7 @@ export class SteeringTurn {
         const owner = randomUUID();
         let adopted = false;
         try {
-            const r = await withDeadline(this.catalog.steerWindowAdopt(this.sessionId, this.target, owner), STEERING_FINALIZE_BUDGET_MS);
+            const r = await withDeadline(this.callQueue.run(() => this.catalog.steerWindowAdopt(this.sessionId, this.target, owner)), STEERING_FINALIZE_BUDGET_MS);
             if (r === DEADLINE) { this.trace("[steering] adopt exceeded its budget"); return; }
             adopted = r;
         } catch (err: any) {

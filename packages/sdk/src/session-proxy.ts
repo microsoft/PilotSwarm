@@ -4752,19 +4752,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // Session steering (§7.5): fast-path closure, target-scoped by the turn
         // index, even when the warm result is no_active_turn. The authoritative
         // close rides on the session.turn_stopped event (cms_record_events).
+        // Not awaited: Stop's acknowledgement never waits on steering storage (owner
+        // requirement). The fast path is bounded on its own; the durable
+        // session.turn_stopped close remains the authority if it fails.
         if (input.expectedTurnIndex != null) {
-            const closed = await closeStoppedSteering(catalog, input.sessionId, input.expectedTurnIndex,
-                (msg) => activityCtx.traceInfo(msg));
-            if (!closed) {
-                activityCtx.traceInfo(`[abortTurn] session=${input.sessionId} steering_stop_close_failed`);
-                // Durable §11 counter, bounded; the storage that just failed may fail again.
+            const sessionId = input.sessionId;
+            void closeStoppedSteering(catalog, sessionId, input.expectedTurnIndex,
+                (msg) => activityCtx.traceInfo(msg)).then(async (closed) => {
+                if (closed) return;
+                activityCtx.traceInfo(`[abortTurn] session=${sessionId} steering_stop_close_failed`);
                 if (catalog && typeof (catalog as any).steerAddCounters === "function") {
-                    await Promise.race([
-                        (catalog as any).steerAddCounters(input.sessionId, { "stop:close_failed": 1 }).catch(() => {}),
-                        new Promise((r) => { const t = setTimeout(r, 2_000); (t as any).unref?.(); }),
-                    ]);
+                    await (catalog as any).steerAddCounters(sessionId, { "stop:close_failed": 1 }).catch(() => {});
                 }
-            }
+            }, () => {});
         }
         activityCtx.traceInfo(
             `[abortTurn] session=${input.sessionId} outcome=${result.outcome}${result.detail ? ` (${result.detail})` : ""}`,

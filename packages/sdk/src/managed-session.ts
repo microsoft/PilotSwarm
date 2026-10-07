@@ -3949,6 +3949,38 @@ export class ManagedSession {
     }
 
     /**
+     * Steering quiescence (INV-P9, review F01): a disconnect alone does not end an
+     * SDK run a late steer may have started, nor its model request. Close the
+     * gate, abort through the single funnel and wait (bounded) for that run's
+     * session.idle before the caller disconnects. True when the abort RPC
+     * resolved within the bound; whether a run was active is not required.
+     */
+    async abortForSteeringQuiescence(timeoutMs = 5_000): Promise<boolean> {
+        this.steeringPump?.gate.close();
+        let unsubscribe: (() => void) | undefined;
+        const idle = new Promise<void>((resolve) => {
+            unsubscribe = this.copilotSession.on("session.idle", (event: any) => {
+                if (!isNativeChildEvent(event)) resolve();
+            });
+        });
+        const timer = (ms: number) => new Promise<"timeout">((resolve) => {
+            const t = setTimeout(() => resolve("timeout"), ms);
+            (t as any).unref?.();
+        });
+        try {
+            const aborted = await Promise.race([
+                Promise.resolve(this.copilotSession.abort()).then(() => "ok" as const, () => "failed" as const),
+                timer(timeoutMs),
+            ]);
+            if (aborted !== "ok") return false;
+            await Promise.race([idle, timer(Math.min(timeoutMs, 2_000))]);   // drain, best effort
+            return true;
+        } finally {
+            unsubscribe?.();
+        }
+    }
+
+    /**
      * Destroy the session — release resources, flush to disk.
      */
     async destroy(): Promise<void> {

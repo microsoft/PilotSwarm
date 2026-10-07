@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { steeringContentHash } from "../../src/steering.ts";
-import { SteeringTurn, createCmsSteeringChannel } from "../../src/steering-channel.ts";
+import { SteeringCallQueue, SteeringTurn, createCmsSteeringChannel } from "../../src/steering-channel.ts";
 import { SteeringPump } from "../../src/steering-pump.ts";
 import { within } from "../helpers/steering-cli.mjs";
 import { SessionManager } from "../../src/session-manager.ts";
@@ -471,5 +471,55 @@ describe.concurrent("F06: recovery records the observed delivery timing, never a
         handlers.get("session.idle")({ type: "session.idle", data: {} });
         await pump.settle({ stopping: false });
         pump.dispose();
+    });
+});
+
+describe("CMS pool pressure: one steering database call per turn", () => {
+    it("the call queue runs one call at a time and lets a renewal go next", async () => {
+        const q = new SteeringCallQueue();
+        const order = [];
+        let releaseFirst;
+        const first = q.run(() => new Promise((r) => { releaseFirst = () => { order.push("claim"); r(); }; }));
+        const second = q.run(async () => { order.push("mark"); });
+        const renewal = q.run(async () => { order.push("renew"); }, { priority: true });
+        await sleep(5);
+        expect(q.inFlight).toBe(1);
+        releaseFirst();
+        await Promise.all([first, second, renewal]);
+        expect(order).toEqual(["claim", "renew", "mark"]);
+        expect(q.peak).toBe(1);
+    });
+
+    it("a live pump plus finalize never holds more than one steering connection for the turn", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m" });
+        const turn = await SteeringTurn.create({
+            catalog, sessionId, turnKey: randomUUID(), transcriptEpoch: 0, turnIndex: 0,
+            sessionRow: { owner: null }, featureCache: { resolve: () => ({ enabled: true }) },
+        });
+        const channel = turn.newChannel();
+        const handlers = new Map();
+        const session = { on: (type, fn) => { handlers.set(type, fn); return () => {}; },
+            send: async () => `sdk-${randomUUID()}`, getEvents: async () => [] };
+        const pump = new SteeringPump(session, channel, {
+            stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true,
+            scanMs: 5, renewMs: 5, settleMs: 200,
+        });
+        handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+        pump.noteMainPrompt("main");
+        await until(() => pump.gate.isOpen, 5_000, "the gate");
+        const target = channel.target;
+        for (let i = 0; i < 3; i++) {
+            const text = `g${i}`;
+            await catalog.steerAccept({ sessionId, requestId: `steer_${randomUUID()}`, idempotencyKey: randomUUID(),
+                actor: alice, content: text, contentHash: steeringContentHash(text), ...target });
+        }
+        await sleep(200);
+        handlers.get("session.idle")({ type: "session.idle", data: {} });
+        await pump.settle({ stopping: false });
+        pump.dispose();
+        await turn.finalize("published", { delivered: [] }, 1);
+        expect(turn.callQueue.calls).toBeGreaterThan(10);
+        expect(turn.callQueue.peak).toBe(1);
     });
 });
