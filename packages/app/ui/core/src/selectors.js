@@ -8686,6 +8686,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ["Delivery attempts", count(stats.attempts.deliveries)],
             ["Delivered current turn", count(stats.attempts.deliveredByKind.steering)],
             ["Delivered follow-up", count(stats.attempts.deliveredByKind.queued + stats.attempts.deliveredByKind.idle)],
+            ["Delivered (timing unconfirmed)", count(stats.requests.byDisposition?.delivered_timing_unconfirmed ?? 0)],
             ["Recovery redeliveries", count(stats.attempts.redeliveries)],
             ["Unconfirmed attempts", count(stats.attempts.unconfirmed)],
             ["Inclusion unconfirmed", count(stats.requests.byInclusion.unconfirmed)],
