@@ -248,7 +248,13 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
     constructor(
         private readonly client: PilotSwarmClient,
         private readonly lifecycle?: {
-            store: Pick<SessionCatalog, "listWorkflowRunJournal" | "listWorkflowRunStateRuns" | "prepareWorkflowRunStateRun">;
+            store: Pick<
+                SessionCatalog,
+                | "grantSessionShare"
+                | "listWorkflowRunJournal"
+                | "listWorkflowRunStateRuns"
+                | "prepareWorkflowRunStateRun"
+            >;
             reader: LifecycleStateReader;
         },
         private readonly modelProviders?: Pick<ModelProviderRegistry, "normalize">,
@@ -273,6 +279,7 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
         const frozenStateMachine = lifecycleSnapshot(lifecycle.stateMachineSnapshot);
         let prompt = renderPrompt(initialPrompt, input.workflowRun);
         let lifecycleToolRequired = false;
+        let stateOwner: "user" | "platform" | undefined;
         if (sources.length > 0 || frozenStateMachine) {
             if (!this.lifecycle) {
                 throw new Error("Lifecycle state reader and catalog are required for lifecycle sources");
@@ -386,6 +393,7 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
                 allowedOutcomes: transitions.outcomes.map((entry) => ({ ...entry })),
                 terminal: transitions.terminal,
             });
+            stateOwner = loaded.owner;
             prompt = renderLifecyclePrompt({
                 workflowRun: input.workflowRun,
                 markdown: loaded.markdown,
@@ -433,6 +441,17 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
             owner: requireOwnerAffinity ? input.executionAffinity : input.workflowRun.owner,
             requireOwnerAffinity,
         });
+        if (stateOwner === "user"
+            && !requireOwnerAffinity
+            && (input.executionAffinity.provider !== input.workflowRun.owner.provider
+                || input.executionAffinity.subject !== input.workflowRun.owner.subject)) {
+            await this.lifecycle!.store.grantSessionShare(
+                input.association.sessionId,
+                input.executionAffinity,
+                "write",
+                input.workflowRun.owner,
+            );
+        }
         await input.onSessionCreated?.();
         await session.send(prompt, {
             bootstrap: true,

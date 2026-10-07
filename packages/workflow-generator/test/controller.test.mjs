@@ -1062,6 +1062,7 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     const created = [];
     const sent = [];
     const prepared = [];
+    const shares = [];
     const client = {
         async createSession(config) {
             created.push(config);
@@ -1111,6 +1112,9 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
                 prepared.push(input);
                 return {};
             },
+            async grantSessionShare(sessionId, grantee, access, grantedBy) {
+                shares.push({ sessionId, grantee, access, grantedBy });
+            },
         },
     });
 
@@ -1137,6 +1141,7 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
             workflowRunId: "workflowRun-1",
             workflowGeneratorId: "generator-1",
             workflowDefinitionId: "definition-1",
+            owner: { provider: "system", subject: "system", email: null, displayName: "System" },
             workflowRunKey: "source-42",
             input: { id: 42 },
             lifecycleState: "pending_session",
@@ -1178,6 +1183,12 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     assert.equal(prepared[0].sourcePath, "automation/Example.Diagnosed.md");
     assert.deepEqual(prepared[0].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
     assert.equal(prepared[0].terminal, false);
+    assert.deepEqual(shares, [{
+        sessionId: "session-2",
+        grantee: executionAffinity(),
+        access: "write",
+        grantedBy: { provider: "system", subject: "system", email: null, displayName: "System" },
+    }]);
     assert.match(sent[0].prompt, /Collected the failing query and logs/);
     assert.match(sent[0].prompt, /call read_workflow_run_source_session with its Session ID/);
     assert.match(sent[0].prompt, /instead of creating a duplicate/);
@@ -1187,6 +1198,94 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     assert.match(sent[0].prompt, /Use the repository evidence/);
     assert.match(sent[0].prompt, /Allowed outcomes: Fixed/);
     assert.deepEqual(sent[0].options.clientMessageIds, ["workflow-generator:workflowRun-1:state:2"]);
+});
+
+test("platform-owned lifecycle states do not grant the execution affinity a Session share", async () => {
+    const shares = [];
+    const factory = new PilotSwarmInitialSessionFactory({
+        async createSession() {
+            return { async send() {} };
+        },
+    }, {
+        reader: {
+            async readStateMarkdown() {
+                return "# Deliver\n\nComplete the platform operation.";
+            },
+        },
+        store: {
+            async listWorkflowRunJournal() {
+                return [];
+            },
+            async listWorkflowRunStateRuns() {
+                return [lifecycleStateRun({
+                    workflowRunId: "workflowRun-platform",
+                    stateName: "Deliver",
+                    sessionId: "session-platform",
+                })];
+            },
+            async prepareWorkflowRunStateRun() {
+                return {};
+            },
+            async grantSessionShare(...args) {
+                shares.push(args);
+            },
+        },
+    });
+
+    await factory.createInitialSession({
+        definition: {
+            ...definition(),
+            sessionComputeAffinity: "cluster",
+            workflowDefinition: {
+                name: "Example",
+                initialState: "Deliver",
+                sources: [{
+                    sourceId: "platform-lifecycle",
+                    owner: "platform",
+                    filePrefix: "Example",
+                    basePath: "automation",
+                    repositoryUrl: "https://github.com/example/repository",
+                    resolvedCommit: "abc123",
+                }],
+            },
+        },
+        workflowRun: {
+            workflowRunId: "workflowRun-platform",
+            workflowGeneratorId: "generator-1",
+            workflowDefinitionId: "definition-1",
+            owner: { provider: "system", subject: "system", email: null, displayName: "System" },
+            workflowRunKey: "source-platform",
+            input: { id: 43 },
+            lifecycleState: "pending_session",
+            currentState: "Deliver",
+            stateRevision: 1,
+            currentStateEnteredAt: now,
+            firstSeenCycleId: "cycle-1",
+            lastSeenCycleId: "cycle-1",
+            firstDiscoveredAt: now,
+            lastDiscoveredAt: now,
+            sessionAttempts: 0,
+            sessionError: null,
+            createdAt: now,
+            updatedAt: now,
+        },
+        association: {
+            associationId: "association-platform",
+            workflowRunId: "workflowRun-platform",
+            sessionId: "session-platform",
+            stateRunId: "state-run-1",
+            ordinal: 1,
+            isCurrent: true,
+            status: "reserved",
+            error: null,
+            reservedAt: now,
+            attachedAt: null,
+            endedAt: null,
+        },
+        executionAffinity: executionAffinity("run-requester"),
+    });
+
+    assert.deepEqual(shares, []);
 });
 
 test("published state-machine snapshot survives source changes, session replacement, and later states", async () => {
@@ -1269,6 +1368,7 @@ test("published state-machine snapshot survives source changes, session replacem
                 });
                 return run;
             },
+            async grantSessionShare() {},
         },
     });
     const workflowDefinition = {
@@ -1288,6 +1388,7 @@ test("published state-machine snapshot survives source changes, session replacem
         workflowRunId: "workflowRun-1",
         workflowGeneratorId: "generator-1",
         workflowDefinitionId: "definition-1",
+        owner: { provider: "system", subject: "system", email: null, displayName: "System" },
         workflowRunKey: "source-42",
         input: { id: 42 },
         lifecycleState: "pending_session",
