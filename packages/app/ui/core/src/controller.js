@@ -1,7 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { newClientId } from "./client-id.js";
 import { canReuseSteeringInDraft } from "./steering.js";
-import { promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary, PROMPT_HISTORY_EVENT_TYPES, PROMPT_HISTORY_MAX_PAGES, PROMPT_HISTORY_READ_BUDGET_MS } from "./prompt-history.js";
+import { promptDraftForPersistence, promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary, PROMPT_HISTORY_EVENT_TYPES, PROMPT_HISTORY_MAX_PAGES, PROMPT_HISTORY_READ_BUDGET_MS } from "./prompt-history.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -1724,9 +1724,15 @@ export class PilotSwarmUiController {
     }
 
     setPromptAttachments(attachments) {
+        const current = this.getState().ui;
+        const next = Array.isArray(attachments) ? attachments : [];
+        if (current.promptEdit && (next.length !== (current.promptAttachments || []).length
+            || next.some((item, index) => item !== current.promptAttachments[index]))) {
+            this.exitPendingPromptEdit({ restoreDraft: false });
+        }
         this.dispatch({
             type: "ui/promptAttachments",
-            attachments: Array.isArray(attachments) ? attachments : [],
+            attachments: next,
         });
     }
 
@@ -1791,18 +1797,21 @@ export class PilotSwarmUiController {
 
         const currentUi = this.getState().ui;
         const existingEdit = this.getPromptEditSessionMatch(sessionId);
+        const draft = promptDraftForPersistence(currentUi);
         const promptEdit = existingEdit
             ? { ...existingEdit, itemId, phase: item.phase }
             : {
                 sessionId,
                 itemId,
                 phase: item.phase,
-                draftPrompt: currentUi.prompt,
-                draftCursor: currentUi.promptCursor,
+                draftPrompt: draft.prompt,
+                draftCursor: draft.cursor,
+                draftAttachments: draft.attachments,
             };
 
         this.dispatch({ type: "ui/promptEdit", promptEdit });
         this.setPrompt(item.text, item.text.length);
+        this.dispatch({ type: "ui/promptAttachments", attachments: [] });
         this.setFocus(FOCUS_REGIONS.PROMPT);
         return true;
     }
@@ -1817,6 +1826,7 @@ export class PilotSwarmUiController {
                 promptEdit.draftPrompt || "",
                 Number.isFinite(promptEdit.draftCursor) ? promptEdit.draftCursor : String(promptEdit.draftPrompt || "").length,
             );
+            this.setPromptAttachments(promptEdit.draftAttachments || []);
         }
         return true;
     }
@@ -9893,14 +9903,12 @@ export class PilotSwarmUiController {
 
     movePromptCursorVertical(direction) {
         const state = this.getState().ui;
-        if (!state.promptEdit && this.recallPromptHistory(direction)) return;
+        if (this.recallPromptInput(direction)) return;
         const nextCursor = movePromptCursorVertically(state.prompt, state.promptCursor, direction);
         if (nextCursor !== state.promptCursor) {
             this.setPrompt(state.prompt, nextCursor);
             return;
         }
-        if (state.promptEdit && direction < 0 && this.selectPreviousPendingPrompt()) return;
-        if (state.promptEdit && direction > 0 && this.selectNextPendingPrompt()) return;
         this.setPrompt(state.prompt, nextCursor);
     }
 
@@ -9970,20 +9978,60 @@ export class PilotSwarmUiController {
         return load;
     }
 
-    recallPromptHistory(direction) {
+    canRecallPromptInput(direction) {
         const state = this.getState();
-        if (![-1, 1].includes(direction) || state.ui.modal || state.ui.promptEdit
+        return !(![-1, 1].includes(direction) || state.ui.modal
             || state.ui.promptActionIndex != null || this.getPromptReferenceContext()
             || state.ui.autocomplete?.open || state.ui.slashMenu?.open || state.ui.mentionMenu?.open
             || state.sessions.byId[state.sessions.activeSessionId]?.isGroup
-            || !isPromptHistoryBoundary(state.ui.prompt, state.ui.promptCursor, direction)) return false;
+            || !isPromptHistoryBoundary(state.ui.prompt, state.ui.promptCursor, direction));
+    }
+
+    recallPromptInput(direction) {
+        if (!this.canRecallPromptInput(direction)) return false;
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        const navigation = state.ui.promptHistoryNavigation;
+        if (navigation) {
+            if (direction > 0 && navigation.index === 0 && navigation.outboxIds?.length) {
+                const items = this.getNavigableOutboxItems(sessionId);
+                const itemId = navigation.outboxIds.find(id => items.some(item => item.id === id));
+                if (itemId) {
+                    this.dispatch({ type: "promptHistory/reset" });
+                    this.setPrompt(navigation.stash.prompt, navigation.stash.cursor);
+                    this.setPromptAttachments(navigation.stash.attachments);
+                    return this.enterPendingPromptEdit(sessionId, itemId);
+                }
+            }
+            return this.recallPromptHistory(direction, { excludeOutbox: true });
+        }
+        if (state.ui.promptEdit) {
+            if (direction > 0) return this.selectNextPendingPrompt(sessionId);
+            if (this.selectPreviousPendingPrompt(sessionId)) return true;
+            if (!selectPromptHistory(state, sessionId, { excludeOutbox: true }).length) return true;
+            // Cross from the oldest queued input without stashing its text as
+            // the user's draft or losing the path back through the queue.
+            const stash = promptDraftForPersistence(state.ui);
+            const outboxIds = this.getNavigableOutboxItems(sessionId).map(item => item.id);
+            this.exitPendingPromptEdit({ restoreDraft: false });
+            this.dispatch({ type: "promptHistory/navigate", direction, stash, outboxIds, excludeOutbox: true });
+            return true;
+        }
+        if (direction < 0 && this.selectPreviousPendingPrompt(sessionId)) return true;
+        return this.recallPromptHistory(direction, { excludeOutbox: true });
+    }
+
+    recallPromptHistory(direction, { excludeOutbox = false } = {}) {
+        const state = this.getState();
+        if (!this.canRecallPromptInput(direction) || state.ui.promptEdit) return false;
         const navigation = state.ui.promptHistoryNavigation;
         if (navigation?.viewerKey && navigation.viewerKey !== promptHistoryActorKey(state.auth?.principal)) {
             this.dispatch({ type: "promptHistory/reset" });
         }
         if (direction > 0 && !this.getState().ui.promptHistoryNavigation) return false;
-        if (direction < 0 && !this.getState().ui.promptHistoryNavigation && !selectPromptHistory(state).length) return false;
-        this.dispatch({ type: "promptHistory/navigate", direction });
+        if (direction < 0 && !this.getState().ui.promptHistoryNavigation
+            && !selectPromptHistory(state, state.sessions.activeSessionId, { excludeOutbox }).length) return false;
+        this.dispatch({ type: "promptHistory/navigate", direction, excludeOutbox });
         return true;
     }
 

@@ -9850,7 +9850,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     && !event.currentTarget.hasAttribute("aria-activedescendant")
                     && isTextareaHistoryBoundary(event.currentTarget, event.key === "ArrowUp" ? -1 : 1)) {
                     controller.setPromptCursor(event.currentTarget.selectionStart);
-                    if (controller.recallPromptHistory(event.key === "ArrowUp" ? -1 : 1)) {
+                    if (controller.recallPromptInput(event.key === "ArrowUp" ? -1 : 1)) {
                         event.preventDefault();
                         event.stopPropagation();
                         return;

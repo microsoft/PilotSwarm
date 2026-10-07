@@ -4,7 +4,10 @@ export const PROMPT_HISTORY_MAX_PAGES = 3;
 export const PROMPT_HISTORY_READ_BUDGET_MS = 5000;
 
 export function promptDraftForPersistence(ui) {
-    return ui.promptHistoryNavigation?.stash || {
+    return ui.promptHistoryNavigation?.stash || (ui.promptEdit?.draftPrompt !== undefined ? {
+        prompt: ui.promptEdit.draftPrompt, cursor: ui.promptEdit.draftCursor,
+        attachments: ui.promptEdit.draftAttachments || [],
+    } : null) || {
         prompt: ui.prompt || "", cursor: ui.promptCursor,
         attachments: ui.promptAttachments || [],
     };
@@ -61,13 +64,17 @@ export function mergePromptHistorySession(previous = {}, events = [], viewer) {
     };
 }
 
-export function selectPromptHistory(state, sessionId = state.sessions.activeSessionId) {
+export function selectPromptHistory(state, sessionId = state.sessions.activeSessionId, { excludeOutbox = false } = {}) {
     if (!sessionId || !promptHistoryActorKey(state.auth?.principal)) return [];
     const entry = state.promptHistory?.bySessionId?.[sessionId] || {};
     const durable = mergePromptHistoryEvents(entry.durable, state.history.bySessionId.get(sessionId)?.events, state.auth.principal);
     const accepted = (entry.accepted || []).filter(item => !durable.some(event => sameInput(item, event)));
+    const queuedIds = new Set(excludeOutbox
+        ? (state.outbox?.bySessionId?.[sessionId] || []).flatMap(item => (item.clientMessageIds || []).map(id => `message:${id}`))
+        : []);
     const result = [];
     for (const item of [...accepted, ...durable]) {
+        if (item.ids.some(id => queuedIds.has(id))) continue;
         if (result.at(-1) !== item.text) result.push(item.text);
         if (result.length === PROMPT_HISTORY_LIMIT) break;
     }
@@ -80,7 +87,7 @@ export function isPromptHistoryBoundary(text, cursor, direction) {
     return direction < 0 ? !value.slice(0, at).includes("\n") : !value.slice(at).includes("\n");
 }
 
-export function navigatePromptHistory(state, direction, entries) {
+export function navigatePromptHistory(state, direction, entries, { stash, outboxIds } = {}) {
     const sessionId = state.sessions.activeSessionId;
     const viewerKey = promptHistoryActorKey(state.auth?.principal);
     if (!sessionId || !viewerKey || !isPromptHistoryBoundary(state.ui.prompt, state.ui.promptCursor, direction)) return null;
@@ -97,7 +104,8 @@ export function navigatePromptHistory(state, direction, entries) {
         prompt: list[index], promptCursor: list[index].length, attachments: [],
         navigation: {
             sessionId, viewerKey, entries: list, index,
-            stash: navigation?.stash || { prompt: state.ui.prompt, cursor: state.ui.promptCursor, attachments: state.ui.promptAttachments },
+            stash: navigation?.stash || stash || { prompt: state.ui.prompt, cursor: state.ui.promptCursor, attachments: state.ui.promptAttachments },
+            ...(navigation?.outboxIds || outboxIds ? { outboxIds: navigation?.outboxIds || outboxIds } : {}),
         },
     };
 }

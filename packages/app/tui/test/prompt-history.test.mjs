@@ -62,3 +62,26 @@ test("native edits end recall and ordinary multiline/menu arrows keep priority",
     h.key({ downArrow: true });
     assert.equal(h.store.getState().ui.prompt, "@artifact");
 });
+
+test("native raw arrows visit queued inputs before history and reverse back through their original states", () => {
+    const h = harness();
+    const pending = h.controller.buildOutboxItem("pending input", "pending");
+    const queued = h.controller.buildOutboxItem("queued input", "queued");
+    h.controller.setSessionOutboxItems("s", [pending, queued]);
+    h.controller.setPrompt("unsent draft");
+    h.key({ upArrow: true });
+    assert.equal(h.store.getState().ui.promptEdit.itemId, queued.id);
+    assert.equal(h.store.getState().ui.promptEdit.phase, "queued");
+    h.key({ upArrow: true });
+    assert.equal(h.store.getState().ui.promptEdit.itemId, pending.id);
+    h.key({ upArrow: true });
+    assert.equal(h.store.getState().ui.prompt, "own 2");
+    assert.equal(h.store.getState().ui.promptEdit, null);
+    h.key({ downArrow: true });
+    assert.equal(h.store.getState().ui.promptEdit.itemId, pending.id);
+    h.key({ downArrow: true });
+    assert.equal(h.store.getState().ui.promptEdit.itemId, queued.id);
+    h.key({ downArrow: true });
+    assert.equal(h.store.getState().ui.prompt, "unsent draft");
+    assert.equal(h.store.getState().ui.promptEdit, null);
+});
