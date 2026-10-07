@@ -54,6 +54,7 @@ import {
     selectSteeringComposer,
     selectPromptActions,
     selectActiveChat,
+    selectSteeringReceipts,
     selectAdminConsole,
     selectSessionRows,
     selectSelectedFileBrowserItem,
@@ -3392,7 +3393,7 @@ export class PilotSwarmUiController {
     openSteeringReceipts() {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
-        const items = selectActiveChat(state).filter(item => item.kind === "steering")
+        const items = selectSteeringReceipts(state)
             .map(item => item.id);
         if (!sessionId || !items.length) {
             this.setStatus("No guidance receipts in this conversation.");
@@ -3414,7 +3415,7 @@ export class PilotSwarmUiController {
         const modal = state.ui.modal;
         if (modal?.type !== "steeringReceipts") return;
         const sessionId = modal.sessionId;
-        const message = selectActiveChat({ ...state, sessions: { ...state.sessions, activeSessionId: sessionId } })
+        const message = selectSteeringReceipts(state, sessionId)
             .find(item => item.id === modal.items[modal.selectedIndex || 0]);
         const requestId = message?.steering.requestId || message?.steering.clientRequestId;
         if (!requestId) {
@@ -5988,8 +5989,7 @@ export class PilotSwarmUiController {
             // receipts. Only audit-only deployments prohibit the read path.
             if (!["authz_not_enforced", "schema_missing", "web_mode_unsupported"].includes(state.unsupportedReason)
                 && typeof this.transport.listSteeringRequests === "function") {
-                const page = await this.transport.listSteeringRequests(sessionId, { limit: 50 });
-                for (const receipt of page.items) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
+                await this.loadSteeringRequests(sessionId, { reset: true });
             }
         } catch (error) {
             if (isSessionGoneError(error)) {
@@ -6017,6 +6017,34 @@ export class PilotSwarmUiController {
             if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
             else this.setStatus(`Could not refresh session access: ${error.message}`);
         }
+
+    }
+
+    loadSteeringRequests(sessionId, { reset = false } = {}) {
+        this.steeringListLoads ??= new Map();
+        if (this.steeringListLoads.has(sessionId)) return this.steeringListLoads.get(sessionId);
+        const entry = this.getState().steering?.bySessionId?.[sessionId];
+        const cursor = reset ? undefined : entry?.page?.nextCursor;
+        if (!reset && !cursor) return Promise.resolve();
+        const accessRevision = entry?.accessRevision || 0;
+        this.dispatch({ type: "steering/page", sessionId, accessRevision, page: { ...entry?.page, loading: true, error: null } });
+        const load = this.transport.listSteeringRequests(sessionId, { limit: 50, cursor }).then(page => {
+            for (const receipt of page.items) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
+            this.dispatch({ type: "steering/page", sessionId, accessRevision,
+                page: { nextCursor: page.nextCursor, loading: false, error: null } });
+            const modal = this.getState().ui.modal;
+            if (modal?.type === "steeringReceipts" && modal.sessionId === sessionId) {
+                this.dispatch({ type: "ui/modal", modal: { ...modal,
+                    items: selectSteeringReceipts(this.getState(), sessionId).map(item => item.id) } });
+            }
+        }).catch(async error => {
+            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId);
+            this.dispatch({ type: "steering/page", sessionId, accessRevision,
+                page: { ...entry?.page, loading: false, error: error.message } });
+            this.setStatus(`Could not load guidance: ${error.message}`);
+        }).finally(() => this.steeringListLoads.delete(sessionId));
+        this.steeringListLoads.set(sessionId, load);
+        return load;
     }
 
     reconcileSteeringEvent(sessionId, event) {

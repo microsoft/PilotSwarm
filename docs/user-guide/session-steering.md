@@ -63,6 +63,11 @@ have no draft action; their text remains selectable.
 
 The TUI's **Guidance** action opens retained receipts. Up/Down selects a receipt;
 PageUp/PageDown scrolls its text.
+The receipt list is paged. **Load more guidance** (TUI `m`) loads the next
+bounded page; a partial-list notice remains until all pages are read.
+Receipts whose acceptance event is outside the loaded transcript appear under
+**Guidance outside this history page**, not at the end of newer conversation.
+Loading their original history page places them at the durable acceptance row.
 Enter refreshes it or reconciles an unknown acceptance. Use `w` to withdraw,
 `r` to send as a new message and `c` to reuse eligible guidance in the draft.
 Escape closes it.

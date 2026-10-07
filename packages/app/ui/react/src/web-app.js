@@ -4,6 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { SteeringReceipt } from "./steering-receipt.js";
+import { SteeringArchive } from "./steering-archive.js";
 import { isTextareaHistoryBoundary, supportsPromptHistoryKeyboard } from "./prompt-history-boundary.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -9952,6 +9953,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 onClick: sendPrompt,
             }, sendLabel),
         ),
+        React.createElement(SteeringArchive, { controller }),
     );
 }
 
