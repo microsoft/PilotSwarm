@@ -17,6 +17,7 @@ import { sessionSteeringRecoveryMigration } from "./migrations/session-steering-
 import { sessionSteeringResendMigration } from "./migrations/session-steering-resend-0084.js";
 import { sessionSteeringEnablementMigration } from "./migrations/session-steering-enablement-0085.js";
 import { sessionSteeringReviewMigration } from "./migrations/session-steering-review-0086.js";
+import { sessionSteeringCancelledFinalizeMigration } from "./migrations/session-steering-cancelled-finalize-0087.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -414,6 +415,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0084", name: "session_steering_resend_intent", sql: sessionSteeringResendMigration(schema) },
         { version: "0085", name: "session_steering_enablement", sql: sessionSteeringEnablementMigration(schema) },
         { version: "0086", name: "session_steering_review_fixes", sql: sessionSteeringReviewMigration(schema) },
+        { version: "0087", name: "session_steering_cancelled_finalize", sql: sessionSteeringCancelledFinalizeMigration(schema) },
     ];
 }
 
