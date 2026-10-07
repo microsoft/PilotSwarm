@@ -1,12 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
+import { listThemes } from "../../../ui/core/src/themes/index.js";
 
 const sessionId = "11111110-2222-3333-4444-555555555550";
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-for (const width of [320, 390, 800, 1440]) for (const themeId of ["workspace-dark", "win95", "terminal-green", "winamp", "ms-dos"]) {
+for (const width of [320, 390, 800, 1440]) for (const { id: themeId } of listThemes()) {
     test(`steering composer ${width}px ${themeId}: touch targets and input remain usable`, async ({ browser }) => {
         const context = await browser.newContext({
             viewport: { width, height: 844 }, isMobile: width < 921, hasTouch: width < 921,
