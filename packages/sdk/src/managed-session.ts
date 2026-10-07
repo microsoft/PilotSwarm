@@ -3980,22 +3980,26 @@ export class ManagedSession {
         let idleSeen = false;
         let disposed = false;
         const timers: Array<ReturnType<typeof setTimeout>> = [];
+        // Generation fence: every step re-checks `disposed` (the next turn disarms the watch),
+        // so no queue removal or abort is issued for a turn this watch does not own. An RPC
+        // already issued is ordered before anything the next turn sends on the same connection.
         const drainQueue = async () => {
             const queue = (session as any).rpc?.queue;
             if (typeof queue?.removeMostRecent !== "function") return;
             for (let i = 0; i < 8; i++) {
+                if (disposed) return;
                 const r = await Promise.race([
                     Promise.resolve(queue.removeMostRecent()).catch(() => null),
                     new Promise((res) => { const x = setTimeout(() => res(null), 500); (x as any).unref?.(); }),
                 ]) as { removed?: boolean } | null;
-                if (!r?.removed) return;
+                if (disposed || !r?.removed) return;
             }
         };
         const reabort = (why: string) => {
             if (disposed || reaborts >= 3) return;
             reaborts++;
             trace(`[steering] Stop safety net: ${why}; removing pending CLI items and aborting again (${reaborts}/3)`);
-            void drainQueue().then(() => session.abort()).catch(() => {});
+            void drainQueue().then(() => { if (!disposed) return session.abort(); }).catch(() => {});
         };
         const unsubscribe = session.on((event: any) => {
             if (disposed || isNativeChildEvent(event)) return;
