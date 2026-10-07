@@ -287,6 +287,37 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
             });
         });
 
+    it("F06/ST-A07: registered MCP filters actual recovered timing-unconfirmed receipts without inventing current-turn delivery", { timeout: TIMEOUT }, async () => {
+        await withSteeringLedger(async (h) => {
+            await enable(h);
+            await h.open();
+            const accepted = await h.accept();
+            await h.catalog.steerClaim(h.sessionId, h.target.owner, 1);
+            const attemptId = await h.catalog.steerMarkSubmitting(accepted.requestId, h.target.owner);
+            await h.catalog.steerMarkSubmitted(attemptId, h.target.owner, "unknown-timing-sdk-message");
+            const freshOwner = randomUUID();
+            await h.catalog.steerWindowOpen(h.sessionId,
+                { epoch: h.target.epoch, turnIndex: h.target.turn, incarnation: h.target.incarnation }, freshOwner, 10_000);
+            await h.catalog.steerRecordRecoveryCheck(accepted.requestId, freshOwner, "present", "unknown-timing-sdk-message", null);
+            await withSteeringApi(h, async ({ web }) => {
+                const remote = await web(STEER_AUTHOR.subject);
+                const filtered = await remote.listSteeringRequests(h.sessionId, { dispositions: ["delivered_timing_unconfirmed"] });
+                assertEqual(filtered.items.length, 1);
+                assertEqual(filtered.items[0].disposition, "delivered_timing_unconfirmed");
+                assertEqual(filtered.items[0].inclusion.state, "included");
+                await withRegisteredSteeringMcp(remote, async (mcp) => {
+                    const result = await mcp.callTool({ name: "list_steering_requests", arguments: {
+                        session_id: h.sessionId, dispositions: ["delivered_timing_unconfirmed"],
+                    } });
+                    assertEqual(result.isError, undefined, "the public MCP filter must accept the actual canonical stored disposition");
+                    const page = JSON.parse(result.content[0].text);
+                    expect(page.items).toEqual(filtered.items);
+                    assert(page.display.detail.includes("Delivered"), "known positive delivery is not represented as a loading receipt");
+                });
+            });
+        });
+    });
+
     it("ST-A06: actual API resend persists one attributed linkage before an ordinary unchanged queue payload", { timeout: TIMEOUT }, async () => {
             await withSteeringLedger(async (h) => {
                 await enable(h);

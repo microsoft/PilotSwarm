@@ -42,3 +42,11 @@ test("direct MCP receipt-linked resend refuses before any session or queue looku
         code: "unsupported", reason: "direct_mcp_unavailable",
     });
 });
+
+test("F06: registered MCP disposition schema accepts the actual recovered timing-unconfirmed state", () => {
+    const configurations = new Map();
+    registerTurnControlTools({ registerTool: (name, configuration) => configurations.set(name, configuration) },
+        { api: {}, mgmt: {} });
+    const parsed = configurations.get("list_steering_requests").inputSchema.dispositions.safeParse(["delivered_timing_unconfirmed"]);
+    assert.equal(parsed.success, true, "the SDK/storage canonical timing state must be filterable through MCP");
+});
