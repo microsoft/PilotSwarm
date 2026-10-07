@@ -379,6 +379,8 @@ export interface SteeringChannel {
      * check an inclusion oracle (FR-13); `local` is resumed activity-local state.
      */
     readonly recoverySource: "restored" | "local";
+    /** Lease the window procedures grant (ms). The pump also enforces it locally. */
+    readonly leaseMs?: number;
     openWindow(): Promise<SteerWindowOpenResult>;
     recordRecoveryCheck(requestId: string, result: SteerRecoveryCheckResult, sdkMessageId?: string): Promise<void>;
     renew(): Promise<boolean>;

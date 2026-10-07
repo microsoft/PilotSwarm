@@ -180,6 +180,14 @@ export class SteeringPump {
     private loop?: Promise<void>;
     private leaseTimer?: ReturnType<typeof setInterval>;
     private windowOpened = false;
+    /**
+     * Local lease deadline (monotonic ms). Set from the time a successful open or
+     * renewal was ISSUED plus the granted lease, so it is never later than the
+     * database's own deadline. canSend() requires it (F03); a renewal that hangs
+     * therefore closes admission locally too.
+     */
+    private leaseValidUntil = 0;
+    private renewing = false;
     /** Steers found in resumed LOCAL state on recovery: in this attempt's conversation, so in its manifest. */
     private readonly recoveredLocal: Array<{ requestId: string; sdkMessageId: string; kind: SteeringDeliveryKind | null }> = [];
     private needsQuiesce = false;
@@ -232,11 +240,17 @@ export class SteeringPump {
         return !this.released && this.idleCount === 0 && !this.o.stopping() && !this.o.turnBoundaryScheduled();
     }
 
-    private canSend(): boolean { return this.gate.isOpen && this.stillEligible(); }
+    private canSend(): boolean { return this.gate.isOpen && this.stillEligible() && this.leaseFresh(); }
+
+    private leaseFresh(): boolean {
+        return this.ch.leaseMs == null || performance.now() < this.leaseValidUntil;
+    }
 
     private async start(): Promise<void> {
         if (this.loop || !this.stillEligible()) return;
+        const openIssuedAt = performance.now();
         const opened = await this.ch.openWindow();
+        if (opened.ok && this.ch.leaseMs != null) this.leaseValidUntil = openIssuedAt + this.ch.leaseMs;
         this.windowOpened = opened.ok;
         if (!opened.ok) {
             this.trace(`[steering] window not opened: ${opened.reason ?? "refused"}`);
@@ -281,7 +295,12 @@ export class SteeringPump {
 
     private async renewLease(): Promise<void> {
         if (this.released) { if (this.leaseTimer) clearInterval(this.leaseTimer); return; }   // INV-P13
-        const ok = await this.ch.renew().catch(() => false);
+        if (this.renewing) return;                                    // F05: never overlap renewals
+        this.renewing = true;
+        const issuedAt = performance.now();
+        let ok = false;
+        try { ok = await this.ch.renew().catch(() => false); } finally { this.renewing = false; }
+        if (ok && this.ch.leaseMs != null) this.leaseValidUntil = Math.max(this.leaseValidUntil, issuedAt + this.ch.leaseMs);
         if (!ok && !this.released) {
             this.stats.leaseLost++;
             this.trace("[steering] lease renewal refused; closing admission for this turn");

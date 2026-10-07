@@ -58,6 +58,7 @@ export function createCmsSteeringChannel(
         ownerToken,
         // Fail closed: without an explicit restore, local state is never an inclusion oracle.
         recoverySource: opts.recoverySource ?? "local",
+        leaseMs,
         openWindow: () => catalog.steerWindowOpen(sessionId, target, ownerToken, leaseMs),
         recordRecoveryCheck: async (requestId, result, sdkMessageId) => {
             await catalog.steerRecordRecoveryCheck(requestId, ownerToken, result, sdkMessageId ?? null);
