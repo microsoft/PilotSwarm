@@ -83,6 +83,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   At most 480px wide, use a 44px Steer icon with its accessible name and tooltip,
   and tighter gaps, preserving Attach/Stop/Steer/Send order. Do not increase the
   keyboard composer height or change the native TUI action row.
+- Steer uses normal composer-button typography, theme border/radius and a small
+  icon beside its desktop label. Enabled uses the accent; disabled remains a
+  visibly dimmed button. Never inherit the large toolbar-glyph font for its label.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve

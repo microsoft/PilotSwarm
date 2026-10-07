@@ -9916,9 +9916,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 disabled: !steering.enabled,
                 onClick: steerPrompt,
                 icon: React.createElement(React.Fragment, null,
-                    React.createElement("span", { className: "ps-steer-label" }, "Steer"),
                     React.createElement("svg", { className: "ps-steer-glyph", viewBox: "0 0 24 24", width: 20, height: 20, fill: "none", stroke: "currentColor", strokeWidth: 2 },
-                        React.createElement("path", { d: "M6 20v-6a6 6 0 0 1 6-6h7M14 3l5 5-5 5" }))),
+                        React.createElement("path", { d: "M6 20v-6a6 6 0 0 1 6-6h7M14 3l5 5-5 5" })),
+                    React.createElement("span", { className: "ps-steer-label" }, "Steer")),
             }) : null,
             React.createElement("button", {
                 type: "button",
