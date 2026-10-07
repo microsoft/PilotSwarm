@@ -19,6 +19,8 @@ export type McpServerHeadersProvider = () => Promise<
 >;
 
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const KUBERNETES_SERVICE_FQDN_PATTERN =
+    /^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\.){2}svc\.cluster\.local$/;
 const BEARER_SCHEME = ["Bear", "er"].join("");
 
 /**
@@ -81,7 +83,7 @@ export function parseMcpWorkloadIdentityScopes(
     return bindings;
 }
 
-function deploymentHttpsUrl(
+function deploymentMcpUrl(
     serverName: string,
     config: McpWorkloadIdentityServerConfig | undefined,
 ): string {
@@ -103,14 +105,17 @@ function deploymentHttpsUrl(
             `MCP workload identity server '${serverName}' has an invalid URL.`,
         );
     }
+    const isHttps = url.protocol === "https:";
+    const isClusterLocalHttp = url.protocol === "http:"
+        && KUBERNETES_SERVICE_FQDN_PATTERN.test(url.hostname);
     if (
-        url.protocol !== "https:"
+        (!isHttps && !isClusterLocalHttp)
         || url.username
         || url.password
         || url.hash
     ) {
         throw new Error(
-            `MCP workload identity server '${serverName}' must use an HTTPS URL without embedded credentials or a fragment.`,
+            `MCP workload identity server '${serverName}' must use HTTPS or an in-cluster HTTP service URL in the form '<service>.<namespace>.svc.cluster.local', without embedded credentials or a fragment.`,
         );
     }
     return config.url;
@@ -118,8 +123,9 @@ function deploymentHttpsUrl(
 
 /**
  * Creates fresh worker-owned authorization headers for explicitly mapped,
- * deployment-owned HTTPS MCP servers. The SessionManager additionally binds
- * each returned header to `expectedUrl` before injecting it.
+ * deployment-owned MCP servers. HTTPS is required except for exact Kubernetes
+ * Service FQDNs on the cluster-local network. The SessionManager additionally
+ * binds each returned header to `expectedUrl` before injecting it.
  */
 export function createMcpWorkloadIdentityHeadersProvider(options: {
     scopeBindings: unknown;
@@ -141,7 +147,7 @@ export function createMcpWorkloadIdentityHeadersProvider(options: {
         }
         return {
             ...binding,
-            expectedUrl: deploymentHttpsUrl(
+            expectedUrl: deploymentMcpUrl(
                 binding.serverName,
                 options.deploymentMcpServers[binding.serverName],
             ),

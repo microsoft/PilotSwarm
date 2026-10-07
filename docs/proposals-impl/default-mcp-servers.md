@@ -71,6 +71,11 @@ So a fleet targeting organization `<org>` would carry:
   to its Entra scope through `MCP_WORKLOAD_IDENTITY_SCOPES`. The worker acquires
   the token and attaches it only when the effective server URL matches the
   deployment-owned URL.
+- **Authenticated transport is constrained.** Workload-identity headers require
+  HTTPS except for deployment-owned Kubernetes Services addressed by the exact
+  cluster-local form
+  `http://<service>.<namespace>.svc.cluster.local[/path]`. Arbitrary HTTP hosts,
+  IP addresses, embedded credentials, and URL fragments remain rejected.
 - **Optional toolset narrowing** — the ADO MCP exposes a large surface; it can
   be trimmed with an `X-MCP-Toolsets` request header
   (e.g. `core,work-items,repositories,search`) to cut tool count / context.

@@ -72,11 +72,14 @@ test("MCP workload identity requests one token per scope and binds deployment UR
         scopeBindings:
             "ado=https://mcp.dev.azure.com/.default," +
             "boards=https://mcp.dev.azure.com/.default," +
-            "kusto=https://kusto.kusto.windows.net/.default",
+            "internal=api://internal-mcp/.default",
         deploymentMcpServers: {
             ado: { type: "http", url: "https://mcp.dev.azure.com/org" },
             boards: { type: "sse", url: "https://mcp.dev.azure.com/org/boards" },
-            kusto: { url: "https://kusto.example.test/mcp" },
+            internal: {
+                type: "http",
+                url: "http://internal-mcp.platform.svc.cluster.local/mcp",
+            },
         },
         credential: {
             async getToken(scope) {
@@ -107,25 +110,26 @@ test("MCP workload identity requests one token per scope and binds deployment UR
                 ),
             },
         },
-        kusto: {
-            expectedUrl: "https://kusto.example.test/mcp",
+        internal: {
+            expectedUrl:
+                "http://internal-mcp.platform.svc.cluster.local/mcp",
             headers: {
                 Authorization: authorization(
-                    "token-for-https://kusto.kusto.windows.net/.default",
+                    "token-for-api://internal-mcp/.default",
                 ),
             },
         },
     };
     assert.deepEqual(await provider(), expectedHeaders);
     assert.deepEqual(requestedScopes.sort(), [
-        "https://kusto.kusto.windows.net/.default",
+        "api://internal-mcp/.default",
         "https://mcp.dev.azure.com/.default",
     ]);
     assert.deepEqual(await provider(), expectedHeaders);
     assert.equal(requestedScopes.length, 4);
 });
 
-test("MCP workload identity accepts only trusted deployment HTTPS servers", () => {
+test("MCP workload identity accepts only trusted deployment server URLs", () => {
     assert.throws(
         () =>
             createMcpWorkloadIdentityHeadersProvider({
@@ -152,8 +156,25 @@ test("MCP workload identity accepts only trusted deployment HTTPS servers", () =
                     plain: { type: "http", url: "http://example.test/mcp" },
                 },
             }),
-        /must use an HTTPS URL/,
+        /must use HTTPS or an in-cluster HTTP service URL/,
     );
+    for (const url of [
+        "http://internal-mcp.svc.cluster.local/mcp",
+        "http://internal-mcp.platform.svc.cluster.local.example.test/mcp",
+        "http://10.0.0.10/mcp",
+        "http://internal-mcp.platform.svc.cluster.local/mcp#fragment",
+    ]) {
+        assert.throws(
+            () =>
+                createMcpWorkloadIdentityHeadersProvider({
+                    scopeBindings: "internal=api://internal-mcp/.default",
+                    deploymentMcpServers: {
+                        internal: { type: "http", url },
+                    },
+                }),
+            /must use HTTPS or an in-cluster HTTP service URL/,
+        );
+    }
 });
 
 test("MCP workload identity fails closed when a scope returns no token", async () => {
