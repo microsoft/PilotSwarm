@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { promptHistoryActorKey, mergePromptHistorySession, navigatePromptHistory, selectPromptHistory, PROMPT_HISTORY_LIMIT } from "./prompt-history.js";
 import { emptySteeringSession, mergeSteeringReceipt, mergeSteeringWindow } from "./steering.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
@@ -844,7 +845,7 @@ function normalizePromptAttachments(prompt, attachments) {
 
 export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
-    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox|steering)\//.test(action.type) || action.type === "sessions/merged";
+    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox|steering|promptHistory)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
     const next = baseReducer(state, action);
     if (next === state) return next;
@@ -976,6 +977,8 @@ function baseReducer(state, action) {
         case "auth/context":
             return {
                 ...state,
+                ...(promptHistoryActorKey(state.auth?.principal) !== promptHistoryActorKey(action.principal)
+                    ? { promptHistory: { bySessionId: {} }, ui: { ...state.ui, promptHistoryNavigation: null } } : {}),
                 admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
                     ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin,
@@ -1572,12 +1575,42 @@ function baseReducer(state, action) {
                 },
             };
 
+        case "promptHistory/navigate": {
+            if (![-1, 1].includes(action.direction) || state.ui.modal || state.ui.promptEdit) return state;
+            const next = navigatePromptHistory(state, action.direction, selectPromptHistory(state));
+            if (!next) return state;
+            return { ...state, ui: { ...state.ui, prompt: next.prompt, promptCursor: next.promptCursor,
+                promptRows: getPromptInputRows(next.prompt), promptAttachments: next.attachments || [],
+                promptHistoryNavigation: next.navigation } };
+        }
+        case "promptHistory/reset":
+            return state.ui.promptHistoryNavigation
+                ? { ...state, ui: { ...state.ui, promptHistoryNavigation: null } } : state;
+        case "promptHistory/accepted": {
+            if (!promptHistoryActorKey(action.actor)
+                || promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)
+                || !action.text?.trim() || !action.ids?.length) return state;
+            const previous = state.promptHistory?.bySessionId?.[action.sessionId] || {};
+            const remaining = (previous.accepted || []).filter(item => !item.ids.some(id => action.ids.includes(id)));
+            const duplicate = remaining[0]?.text === action.text ? remaining.shift() : null;
+            const accepted = [{ text: action.text, ids: [...action.ids, ...(duplicate?.ids || [])].slice(0, 100) },
+                ...remaining].slice(0, PROMPT_HISTORY_LIMIT);
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: { ...previous, accepted } } } };
+        }
+        case "promptHistory/eventsReceived": {
+            if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: mergePromptHistorySession(state.promptHistory?.bySessionId?.[action.sessionId],
+                    action.events, action.actor) } } };
+        }
         case "ui/prompt":
             return {
                 ...state,
                 ui: {
                     ...state.ui,
                     prompt: action.prompt,
+                    promptHistoryNavigation: action.prompt !== state.ui.prompt ? null : state.ui.promptHistoryNavigation,
                     promptCursor: clampPromptCursor(action.prompt, action.promptCursor, state.ui.promptCursor),
                     promptRows: getPromptInputRows(action.prompt),
                     promptAttachments: normalizePromptAttachments(action.prompt, state.ui.promptAttachments),
@@ -1645,6 +1678,7 @@ function baseReducer(state, action) {
                 executionHistory: discard(state.executionHistory),
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
+                promptHistory: discard(state.promptHistory),
                 steering: discard(state.steering),
                 sessionStats: discard(state.sessionStats),
                 sessions: {
@@ -1972,6 +2006,7 @@ function baseReducer(state, action) {
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
+                    promptHistoryNavigation: null,
                     promptActionIndex: null,
                     prompt: nextPrompt,
                     promptCursor: nextPromptCursor,
@@ -2245,6 +2280,9 @@ function baseReducer(state, action) {
             });
             return {
                 ...state,
+                promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                    [action.sessionId]: mergePromptHistorySession(state.promptHistory?.bySessionId?.[action.sessionId],
+                        action.history?.events, state.auth?.principal) } },
                 history: {
                     ...state.history,
                     bySessionId: nextHistory,
@@ -2268,6 +2306,8 @@ function baseReducer(state, action) {
             for (const id of ids) nextHistory.delete(id);
             const nextOutbox = cloneOutboxBySessionId(state.outbox?.bySessionId);
             for (const id of ids) delete nextOutbox[id];
+            const nextPromptHistory = { ...state.promptHistory?.bySessionId };
+            for (const id of ids) delete nextPromptHistory[id];
             const nextChatScroll = { ...(state.ui.chatScrollBySession || {}) };
             for (const id of ids) delete nextChatScroll[id];
             const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
@@ -2284,6 +2324,7 @@ function baseReducer(state, action) {
                     ...state.outbox,
                     bySessionId: nextOutbox,
                 },
+                promptHistory: { bySessionId: nextPromptHistory },
                 ui: {
                     ...state.ui,
                     chatScrollBySession: nextChatScroll,

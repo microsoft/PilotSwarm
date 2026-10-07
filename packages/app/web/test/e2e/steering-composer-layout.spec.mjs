@@ -1,12 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
+import { listThemes } from "../../../ui/core/src/themes/index.js";
 
 const sessionId = "11111110-2222-3333-4444-555555555550";
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-for (const width of [320, 390, 800, 1440]) for (const themeId of ["workspace-dark", "win95", "ms-dos"]) {
+for (const width of [320, 390, 800, 1440]) for (const { id: themeId } of listThemes()) {
     test(`steering composer ${width}px ${themeId}: touch targets and input remain usable`, async ({ browser }) => {
         const context = await browser.newContext({
             viewport: { width, height: 844 }, isMobile: width < 921, hasTouch: width < 921,
@@ -27,6 +28,7 @@ for (const width of [320, 390, 800, 1440]) for (const themeId of ["workspace-dar
                 json: { ok: true, result: { items: [], nextCursor: null } },
             }));
             await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+            await expect(page.locator("html")).toHaveAttribute("data-ps-theme", themeId);
             const input = page.getByTestId("session-prompt");
             await input.fill("Keep the public API unchanged.");
             const steer = page.getByRole("button", { name: "Steer current turn", exact: true });
@@ -39,6 +41,26 @@ for (const width of [320, 390, 800, 1440]) for (const themeId of ["workspace-dar
                 const box = await button.boundingBox();
                 expect(box.width).toBeGreaterThanOrEqual(44);
                 expect(box.height).toBeGreaterThanOrEqual(44);
+            }
+            const chrome = await steer.evaluate(node => {
+                const style = getComputedStyle(node);
+                const peer = getComputedStyle(node.parentElement.querySelector(".ps-attach-button"));
+                return { border: style.borderTopWidth, radius: style.borderRadius, peerRadius: peer.borderRadius,
+                    font: style.fontSize, peerFont: peer.fontSize, labelFont: getComputedStyle(node.querySelector(".ps-steer-label")).fontSize,
+                    color: style.color, shadow: style.boxShadow };
+            });
+            expect(parseFloat(chrome.border)).toBeGreaterThan(0);
+            expect(chrome.radius).toBe(chrome.peerRadius);
+            expect(chrome.font).toBe(chrome.peerFont);
+            expect(chrome.labelFont).toBe(chrome.font);
+            expect(chrome.shadow).not.toBe("none");
+            if (width === 1440) {
+                await expect(steer.locator(".ps-steer-label")).toBeVisible();
+                await expect(steer.locator(".ps-steer-glyph")).toBeVisible();
+                await input.fill("");
+                await expect(steer).toBeDisabled();
+                expect(await steer.evaluate(node => Number(getComputedStyle(node).opacity))).toBeLessThan(1);
+                await input.fill("Keep the public API unchanged.");
             }
             const geometry = await input.evaluate(node => {
                 const shell = node.closest(".ps-prompt-shell");

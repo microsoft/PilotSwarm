@@ -112,7 +112,7 @@ These keys work whenever focus is not in the prompt editor.
 | Action row: `Tab` | Continue normal next-pane traversal |
 | `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
 | `←` / `→` | Move cursor by character |
-| `↑` / `↓` | Move cursor vertically across prompt lines, then enter/leave queued pending-prompt editing at the top/bottom boundary |
+| `↑` / `↓` | On the first/last draft line, recall your own current-session input history; elsewhere move the caret normally |
 | `Option+←` / `Option+→` | Move cursor by word |
 | `Backspace` / `Delete` | Delete one character |
 | `Option+Backspace` / `Option+Delete` | Delete the previous word |
@@ -129,7 +129,9 @@ Notes:
   A missed steer does not automatically run next turn.
 - In Guidance receipts, Up/Down selects a request and PageUp/PageDown scrolls
   its text. Enter refreshes or reconciles acceptance; `w` withdraws,
-  `r` sends as a new message, `c` copies to an empty draft, and `a` appends.
+  `r` sends as a new message and `c` reuses undelivered/withdrawn/uncertain
+  guidance in an empty draft or appends it on a new line. Delivered receipts
+  have no draft action; text remains selectable.
   Escape closes the receipt view. The server decides which mutations are allowed.
 - The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
 - Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.
@@ -138,8 +140,17 @@ Notes:
   - `✓` queued — durably enqueued to the orchestration, waiting to be processed
   - `✓✓` sent — persisted as a `user.message` in the durable transcript; the LLM has it
 - Multiple synchronous sends coalesce into a single durable enqueue. Pressing `Enter` on an empty draft forces an immediate dispatch of any still-pending items.
-- Pressing `↑` at the top prompt boundary recalls the most recent pending item for editing. Pressing `↓` at the bottom boundary moves forward through pending items and eventually returns to the live draft.
-- `Esc` while editing a recalled pending item cancels that item before it becomes durable.
+- Up on the first line (or an empty draft) recalls your newest input, then older
+  entries, up to ten. Down on the last line moves newer and then restores the
+  unsaved draft. Other people's inputs, assistant output and system messages
+  are excluded; delivered steering counts as your input. Consecutive duplicates
+  are skipped. A newly accepted send is available immediately.
+- Editing a recalled entry ends navigation; the next Up starts from newest and
+  Down no longer restores the old draft. Sending or switching sessions resets
+  navigation. Menus and reference autocomplete retain priority. Mobile/touch
+  composer behavior is unchanged.
+- When an outbox item is explicitly selected for editing, its existing controls
+  still apply; Escape cancels that item before it becomes durable.
 
 ## Modals and Dialogs
 

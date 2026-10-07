@@ -76,13 +76,18 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - The native action row includes Guidance when receipts exist, including after
   feature disablement. Its receipt view uses Up/Down to select and
   PageUp/PageDown to scroll; Enter refreshes/reconciles, `w` withdraws, `r` sends
-  as a new message, `c` copies to an empty draft, and `a` appends. Escape closes.
+  as a new message, and `c` reuses undelivered/withdrawn/uncertain guidance in
+  the draft (append on a new line if nonempty). Delivered receipts have no
+  draft action; their text remains selectable. Escape closes.
   The portal uses the same shared controller methods through receipt-row buttons.
 - Portal composer buttons keep a minimum 44px touch target even inside panels.
   Keep mobile composers on one row with the label centered beside the textarea.
   At most 480px wide, use a 44px Steer icon with its accessible name and tooltip,
   and tighter gaps, preserving Attach/Stop/Steer/Send order. Do not increase the
   keyboard composer height or change the native TUI action row.
+- Steer uses normal composer-button typography, theme border/radius and a small
+  icon beside its desktop label. Enabled uses the accent; disabled remains a
+  visibly dimmed button. Never inherit the large toolbar-glyph font for its label.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
@@ -164,7 +169,18 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Persist portal theme, owner filter, pinned sessions, collapsed-session ids, active (selected) session id, chat transcript/summary mode, and pane split adjustments in `users.profile_settings` so browser/mobile sessions share the same preferences. The portal must not read or write browser localStorage/cookies for these preferences; it may only clear old legacy keys/cookies at startup. The native TUI persists the same `pinnedSessionIds`, `collapsedSessionIds`, `activeSessionId`, theme/filter/view mode, and pane adjustments in its user config file. If no stored `activeSessionId`/`collapsedSessionIds` exist yet, the shared default is the main PilotSwarm system session selected with every group/parent session collapsed.
 - A portal `?session=<id>` deep link is explicit navigation: it must select and visibly highlight that session in the Sessions list, expand its ancestors, and retain the transient filter exception when current filters would otherwise hide it. A prior empty-space list deselection must not suppress the linked row highlight.
 - In the native TUI, keep the session/chat divider shared and capped: it is the chat resize control, and it must not let the top sessions pane grow beyond 50% of the full window height.
-- Busy/system-session prompt sends now use a shared pending outbox: queued prompts render in chat as pending user items, `Enter` on an empty draft flushes the queued batch, `Up`/`Down` at the prompt boundary navigate queued items, and `Esc` cancels the selected queued item. Keep portal, TUI, status hints, and docs aligned with that behavior.
+- Prompt Up at the first line recalls the viewer's own executed current-session
+  inputs (ordinary plus delivered steering), newest first, at most ten with
+  consecutive duplicates skipped. Accepted sends enter recall immediately.
+  Down at the last line moves newer then restores the stashed draft. Any edit
+  ends navigation without mutating history; send/session switch resets it.
+  Reference autocomplete, slash/mention menus and modals keep priority.
+  Portal soft-wrap boundaries use actual textarea geometry; mobile is unchanged.
+  Share pure logic and reducer state in `prompt-history.js`, with no new storage
+  or API. Existing transcript paging fills the viewer-filtered bounded cache.
+- Busy/system-session sends still use the shared outbox: Enter on an empty
+  draft flushes pending input; explicit outbox-edit controls remain separate
+  from recalled executed inputs. Keep Send/Stop and all help surfaces aligned.
 - Pending-question answers render an optimistic asked/answered transcript item as soon as the user submits. Keep that item visible while `sendAnswer` is in flight and after it is accepted, then let the durable `user.message` transcript replace it once history sync catches up; stale session refreshes must not restore the old question card or hide the submitted exchange. Recognize both legacy and `(answered by …)` wrappers: the question remains a Question card and only the answer is human-authored. Use event sender metadata for identity, not the wrapper text.
 - Session warnings, including provider/API errors, remain stable while retrying and across stale idle/waiting refreshes. Use server status versions before timestamps to recognize recovery. Recovery resolves the active status, not the historical warning: keep the notice at its original transcript position and append later chat below it. Durable `session.error` events belong in chat history and backward paging. Capture status-only notices once in shared state; reconcile them with their durable event without duplicating or remounting the card. Keep the card's DOM key independent of retry counts and error text. Do not special-case only lost Copilot connections.
 - Creating a session explicitly selects and reveals its chat, including from mobile diagnostics/canvas or the desktop Master of Agents workspace. Seed the returned session before catalog refresh, preserve the outgoing draft, and keep selection through paged/stale catalogs and filters. A late load of the previous session must not take over the live subscription. Do not alter saved Master of Agents layouts when returning to normal chat.

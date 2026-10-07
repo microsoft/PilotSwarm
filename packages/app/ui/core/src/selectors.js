@@ -1,6 +1,6 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
-import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession, getSteeringAttemptDisplay } from "./steering.js";
+import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession, getSteeringAttemptDisplay, canReuseSteeringInDraft } from "./steering.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import {
@@ -3668,7 +3668,7 @@ export function selectSteeringReceiptModal(state, maxWidth = 76) {
             receipt.actions?.canWithdraw ? "w Withdraw" : null,
             receipt.actions?.canSendAsNewMessage ? "r Send as new message" : null,
             !receipt.requestId && receipt.error && !receipt.rejected ? "Enter Reconcile acceptance" : "Enter Refresh receipt",
-            "c Copy to draft", "a Append to draft",
+            canReuseSteeringInDraft(receipt) ? "c Reuse in draft" : null,
         ].filter(Boolean);
         rows.push([{ text: actions.join(" · "), color: "cyan" }]);
     }
@@ -6131,10 +6131,10 @@ export function selectStatusBar(state) {
                         ? `cancelling prompt selected · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                         : `edit pending prompt · enter send batch · up/down cycle pending · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                 : hasPendingOutbox
-                    ? `type message · enter queues · enter on empty sends batch · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    ? `type message · enter queues · enter on empty sends batch · up/down input history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : hasOutbox
-                        ? `type message · enter queues behind durable items · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
-                        : `type message · enter send · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
+                        ? `type message · enter queues behind durable items · up/down input history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        : `type message · enter send · up/down input history at first/last line · alt-enter newline · arrows move · alt-left/right word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
     if (focus === FOCUS_REGIONS.PROMPT && state.ui.promptActionIndex != null) {
         return { left: state.ui.statusText, right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
@@ -9536,6 +9536,7 @@ const KEYBINDING_HELP = [
     ] },
     { section: "Prompt", bindings: [
         ["enter", "send"],
+        ["↑ / ↓", "own input history at first/last line; Down restores draft"],
         ["Tab", "autocomplete, else Send/Steer/Stop/Guidance actions"],
         ["actions: ← →", "choose · Enter activate · Esc/Shift+Tab prompt"],
         ["alt/ctrl-j", "newline"],
