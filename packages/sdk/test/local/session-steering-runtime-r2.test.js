@@ -9,17 +9,17 @@
  * Run: npx vitest run test/local/session-steering-runtime-r2.test.js
  */
 import { describe, it } from "vitest";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { createTestEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { defineTool, createManagementClient } from "../helpers/local-workers.js";
 import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
 import { messageText } from "../helpers/scripted-model.mjs";
-import { decodeSteeringTarget, steeringContentHash } from "../../src/steering.ts";
+import { decodeSteeringTarget, encodeSteeringTarget, steeringContentHash } from "../../src/steering.ts";
 import { assignSteeringTestOwner } from "../helpers/steering-ledger.js";
 
 const TIMEOUT = 240_000;
-const getEnv = useSuiteEnv(import.meta.url);
+const getEnv = () => createTestEnv("steering-runtime-r2");
 const ALICE = { kind: "user", provider: "test", subject: "alice", display: "Alice" };
 const BOB = { kind: "user", provider: "test", subject: "bob", display: "Bob" };
 
@@ -73,12 +73,12 @@ async function acceptSteer(catalog, sessionId, text, key = `k-${Math.random()}`,
     });
 }
 
-describe("session steering runtime (real CLI, scripted model)", () => {
+describe.concurrent("session steering runtime (real CLI, scripted model)", () => {
     it("folds a steer into the running turn: delivered to the current turn and included in the saved result", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         await setClusterFeature(env, "sessions.steering", true, { allowUserOverride: false });
         const hold = holdTool();
-        await withScriptedModel(env, { respond, tools: [hold.tool] }, async ({ client, model, qualifiedModel }) => {
+        try { await withScriptedModel(env, { respond, tools: [hold.tool] }, async ({ client, model, qualifiedModel }) => {
             const catalog = await createCatalog(env);
             try {
                 const session = await client.createSession({ model: qualifiedModel, tools: [hold.tool] });
@@ -145,14 +145,14 @@ describe("session steering runtime (real CLI, scripted model)", () => {
                 hold.release();
                 await catalog.close();
             }
-        });
+        }); } finally { await env.cleanup(); }
     });
 
-    it("Stop after hand-off: future delivery discarded, history kept, Stop latency path unchanged", { timeout: TIMEOUT }, async () => {
+    it("Stop after hand-off discards future delivery and preserves historical uncertainty", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         await setClusterFeature(env, "sessions.steering", true, { allowUserOverride: false });
         const hold = holdTool();
-        await withScriptedModel(env, { respond, tools: [hold.tool] }, async ({ client, qualifiedModel }) => {
+        try { await withScriptedModel(env, { respond, tools: [hold.tool] }, async ({ client, qualifiedModel }) => {
             const catalog = await createCatalog(env);
             const mgmt = await createManagementClient(env);
             try {
@@ -185,14 +185,15 @@ describe("session steering runtime (real CLI, scripted model)", () => {
                 await mgmt.stop?.();
                 await catalog.close();
             }
-        });
+        }); } finally { await env.cleanup(); }
     });
 
     it("flag off: no window is opened and acceptance is refused", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const hold = holdTool();
-        await withScriptedModel(env, { respond, tools: [hold.tool] }, async ({ client, qualifiedModel }) => {
+        try { await withScriptedModel(env, { respond, tools: [hold.tool] }, async ({ client, qualifiedModel }) => {
             const catalog = await createCatalog(env);
+            const mgmt = await createManagementClient(env);
             try {
                 const session = await client.createSession({ model: qualifiedModel, tools: [hold.tool] });
                 const answer = session.sendAndWait("start the work", TIMEOUT);
@@ -200,13 +201,22 @@ describe("session steering runtime (real CLI, scripted model)", () => {
                 const state = await catalog.steerState(session.sessionId);
                 assertEqual(state.steerable, false, "flag off: no window");
                 assertEqual(state.window, null);
+                const refused = await mgmt.steerSessionTurn(session.sessionId, {
+                    text: "feature-off guidance", clientRequestId: "feature-off-request",
+                    expectedTarget: encodeSteeringTarget(session.sessionId, { epoch: 0, turnIndex: 0, incarnation: "unavailable-target" }),
+                }, { sender: ALICE, isAdmin: true, authzEnforced: true });
+                assertEqual(refused.ok, false);
+                assertEqual(refused.code, "unsupported");
+                assertEqual(refused.reason, "feature_disabled");
+                assertEqual((await catalog.steerList(session.sessionId)).items.length, 0);
                 hold.release();
                 assertEqual(await answer, "unsteered");
                 assertEqual((await catalog.steerState(session.sessionId)).windowSeq, 0, "flag off: no window event at any point");
             } finally {
                 hold.release();
+                await mgmt.stop();
                 await catalog.close();
             }
-        });
+        }); } finally { await env.cleanup(); }
     });
 });

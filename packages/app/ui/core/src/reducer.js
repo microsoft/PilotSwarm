@@ -1,6 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
-import { promptHistoryActorKey, mergePromptHistorySession, navigatePromptHistory, selectPromptHistory, PROMPT_HISTORY_LIMIT } from "./prompt-history.js";
+import { promptHistoryActorKey, mergePromptHistorySession, navigatePromptHistory, selectPromptHistory, PROMPT_HISTORY_LIMIT, promptDraftForPersistence } from "./prompt-history.js";
 import { emptySteeringSession, mergeSteeringReceipt, mergeSteeringWindow } from "./steering.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
@@ -1598,6 +1598,11 @@ function baseReducer(state, action) {
             return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
                 [action.sessionId]: { ...previous, accepted } } } };
         }
+        case "promptHistory/scan": {
+            if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: { ...state.promptHistory?.bySessionId?.[action.sessionId], scan: action.scan } } } };
+        }
         case "promptHistory/eventsReceived": {
             if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
             return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
@@ -1626,17 +1631,19 @@ function baseReducer(state, action) {
                 },
             };
 
-        case "ui/promptAttachments":
+        case "ui/promptAttachments": {
+            const attachments = normalizePromptAttachments(state.ui.prompt, action.attachments);
+            const old = state.ui.promptAttachments || [];
+            const changed = attachments.length !== old.length || attachments.some((item, index) => item !== old[index]);
             return {
                 ...state,
                 ui: {
                     ...state.ui,
-                    promptAttachments: normalizePromptAttachments(
-                        state.ui.prompt,
-                        action.attachments,
-                    ),
+                    promptAttachments: attachments,
+                    promptHistoryNavigation: changed ? null : state.ui.promptHistoryNavigation,
                 },
             };
+        }
 
         case "sessions/gone": {
             // Terminal eviction: the server answered 404 for this session (or
@@ -1969,10 +1976,9 @@ function baseReducer(state, action) {
             if (switchingSession) {
                 const editingPending = Boolean(state.ui.promptEdit);
                 if (!editingPending && previousActiveId) {
-                    const outgoing = {
-                        prompt: String(state.ui.prompt || ""),
-                        attachments: Array.isArray(state.ui.promptAttachments) ? state.ui.promptAttachments : [],
-                    };
+                    const savedDraft = promptDraftForPersistence(state.ui);
+                    const outgoing = { prompt: savedDraft.prompt, attachments: savedDraft.attachments || [],
+                        ...(state.ui.promptHistoryNavigation ? { cursor: savedDraft.cursor } : {}) };
                     if (outgoing.prompt || outgoing.attachments.length > 0) {
                         savedDrafts[previousActiveId] = outgoing;
                     } else {
@@ -1982,7 +1988,7 @@ function baseReducer(state, action) {
                 const incoming = action.sessionId ? savedDrafts[action.sessionId] : null;
                 delete savedDrafts[action.sessionId];
                 nextPrompt = incoming?.prompt || "";
-                nextPromptCursor = nextPrompt.length;
+                nextPromptCursor = clampPromptCursor(nextPrompt, incoming?.cursor, nextPrompt.length);
                 nextPromptAttachments = Array.isArray(incoming?.attachments) ? incoming.attachments : [];
                 nextPromptEdit = null;
             }
@@ -2334,6 +2340,18 @@ function baseReducer(state, action) {
             };
         }
 
+        case "steering/sharedSession": {
+            const bySessionId = { ...state.steering?.bySessionId };
+            if (action.entry) bySessionId[action.sessionId] = action.entry;
+            else delete bySessionId[action.sessionId];
+            return { ...state, steering: { ...state.steering, bySessionId } };
+        }
+        case "steering/page": {
+            const entry = state.steering?.bySessionId?.[action.sessionId] || emptySteeringSession();
+            if (entry.accessLost || (action.accessRevision || 0) !== (entry.accessRevision || 0)) return state;
+            return { ...state, steering: { ...state.steering, bySessionId: { ...state.steering?.bySessionId,
+                [action.sessionId]: { ...entry, page: action.page } } } };
+        }
         case "steering/accessLost": {
             const bySessionId = { ...state.steering?.bySessionId };
             bySessionId[action.sessionId] = {

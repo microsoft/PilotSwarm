@@ -28,6 +28,7 @@ export const UI_COMMANDS = {
     MODAL_PANE_NEXT: "modalPaneNext",
     MODAL_CONFIRM: "modalConfirm",
     SEND_PROMPT: "sendPrompt",
+    LOAD_PROMPT_HISTORY: "loadPromptHistory",
     STEER_TURN: "steerTurn",
     WITHDRAW_STEERING: "withdrawSteering",
     RESEND_STEERING: "resendSteering",

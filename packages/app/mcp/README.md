@@ -381,6 +381,12 @@ with `get_capabilities` to see the shape of this server.
 
 ### Turn & Queue Control
 
+Steering discovery, submission, receipt reads, withdrawal and receipt-linked
+resend require **Web API mode**. Direct-store MCP has no validated human
+principal and returns `unsupported` with `direct_mcp_unavailable`; it never
+accepts an actor from tool arguments or misreports a real session as missing.
+Other direct-mode controls retain their existing behavior.
+
 | Tool | Description |
 |------|-------------|
 | `stop_turn` | Abort the in-flight turn; the session stays alive |

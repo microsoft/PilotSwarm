@@ -2068,16 +2068,12 @@ export function selectActiveChat(state) {
             const message = buildSteeringMessage(merged);
             message.steeringResend = steering.resends?.[receipt.requestId] || null;
             if (index >= 0) chat[index] = message;
-            else {
-                const nextIndex = chat.findIndex(item => item.kind === "steering"
-                    && item.steering.sequence > message.steering.sequence);
-                chat.splice(nextIndex < 0 ? chat.length : nextIndex, 0, message);
-            }
+            else if (receipt.rowKey?.startsWith("steering-local:")) chat.push(message);
         }
         for (const pending of Object.values(steering.pending)) chat.push(buildSteeringMessage(pending));
         // Ordinary transcript order comes from durable event sequence, not
-        // timestamps. Missing receipts use server sequence relative to their
-        // receipt neighbours; transaction-start timestamps cannot order them.
+        // timestamps. Receipt sequence cannot place a missing acceptance among
+        // ordinary messages; unanchored reads belong in the receipt browser.
     }
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
@@ -3627,22 +3623,43 @@ export function selectPromptActions(state) {
     const steering = selectSteeringComposer(state);
     const entry = state.steering?.bySessionId?.[state.sessions.activeSessionId];
     const hasReceipts = Object.keys(entry?.receipts || {}).length > 0 || Object.keys(entry?.pending || {}).length > 0;
-    if (!steering.visible && !hasReceipts) return [];
+    const historyScan = state.promptHistory?.bySessionId?.[state.sessions.activeSessionId]?.scan;
+    if (!steering.visible && !hasReceipts && !historyScan?.partial) return [];
     const session = selectActiveSession(state);
     return [
         { label: "Send", command: "sendPrompt", enabled: true },
-        { label: "Steer", command: "steerTurn", enabled: steering.enabled },
-        { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session) },
+        { label: "Steer", command: "steerTurn", enabled: steering.enabled, reason: steering.reason },
+        { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session), reason: "No active turn to stop" },
         ...(hasReceipts ? [{ label: "Guidance", command: "steeringDetails", enabled: true }] : []),
+        ...(historyScan?.partial ? [{ label: "More history", command: "loadPromptHistory", enabled: !historyScan.loading,
+            reason: "Loading older input history" }] : []),
     ];
+}
+
+export function selectSteeringReceipts(state, sessionId = state.sessions.activeSessionId) {
+    const entry = state.steering?.bySessionId?.[sessionId] || emptySteeringSession();
+    const messages = new Map((state.history.bySessionId.get(sessionId)?.chat || [])
+        .filter(item => item.kind === "steering").map(item => [item.steering.requestId, item.steering]));
+    for (const receipt of Object.values(entry.receipts)) {
+        const previous = messages.get(receipt.requestId);
+        const merged = mergeSteeringReceipt({ ...emptySteeringSession(),
+            receipts: previous ? { [receipt.requestId]: previous } : {} }, receipt).receipts[receipt.requestId];
+        messages.set(receipt.requestId, { ...merged, rowKey: receipt.rowKey || merged.rowKey });
+    }
+    return [...[...messages.values()].sort((a, b) => a.sequence - b.sequence), ...Object.values(entry.pending)]
+        .map(receipt => ({ ...buildSteeringMessage(receipt), steeringResend: entry.resends?.[receipt.requestId] || null }));
+}
+
+export function selectUnplacedSteeringReceipts(state) {
+    const anchored = new Set(selectActiveChat(state).filter(item => item.kind === "steering").map(item => item.id));
+    return selectSteeringReceipts(state).filter(item => !anchored.has(item.id));
 }
 
 export function selectSteeringReceiptModal(state, maxWidth = 76) {
     const modal = state.ui.modal;
     if (modal?.type !== "steeringReceipts") return null;
     const entry = state.steering?.bySessionId?.[modal.sessionId];
-    const messages = selectActiveChat({ ...state, sessions: { ...state.sessions, activeSessionId: modal.sessionId } })
-        .filter(message => message.kind === "steering");
+    const messages = selectSteeringReceipts(state, modal.sessionId);
     const receipts = new Map(messages.map(message => [message.id, message]));
     const selectedId = modal.items[modal.selectedIndex || 0];
     const selected = receipts.get(selectedId);
@@ -3673,6 +3690,9 @@ export function selectSteeringReceiptModal(state, maxWidth = 76) {
         rows.push([{ text: actions.join(" · "), color: "cyan" }]);
     }
     rows.push([{ text: "Up/Down guidance · PageUp/PageDown scroll · Esc close. Delivery does not prove compliance.", color: "gray" }]);
+    if (entry.page?.nextCursor) rows.push([{ text: "Partial receipt list · m Load more guidance", color: "yellow" }]);
+    if (entry.page?.loading) rows.push([{ text: "Loading guidance...", color: "gray" }]);
+    if (entry.page?.error) rows.push([{ text: `Receipt load failed: ${entry.page.error}`, color: "red" }]);
     return { title: "Guidance receipts", rows, scrollOffset: modal.scrollOffset || 0, idealWidth: maxWidth };
 }
 
@@ -6137,7 +6157,9 @@ export function selectStatusBar(state) {
                         : `type message · enter send · up/down input history at first/last line · alt-enter newline · arrows move · alt-left/right word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
     if (focus === FOCUS_REGIONS.PROMPT && state.ui.promptActionIndex != null) {
-        return { left: state.ui.statusText, right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
+        const action = selectPromptActions(state)[state.ui.promptActionIndex];
+        return { left: action?.enabled === false ? action.reason : state.ui.statusText,
+            right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
     }
 
     let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];

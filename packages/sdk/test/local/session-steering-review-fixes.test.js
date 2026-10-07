@@ -12,7 +12,9 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { steeringContentHash } from "../../src/steering.ts";
 import { SteeringTurn, createCmsSteeringChannel } from "../../src/steering-channel.ts";
 import { SteeringPump } from "../../src/steering-pump.ts";
+import { within } from "../helpers/steering-cli.mjs";
 import { SessionManager } from "../../src/session-manager.ts";
+import { withSteeringLedger } from "../helpers/steering-ledger.js";
 
 const url = process.env.PS_TEST_DATABASE_URL || process.env.TEST_DATABASE_URL || process.env.DATABASE_URL
     || "postgres://postgres:postgres@localhost:5432/pilotswarm";
@@ -56,29 +58,37 @@ async function seededClaim(turnIndex = 0) {
     return { sessionId, target, owner, requestId: row.requestId };
 }
 
-/** Backends of this test database waiting on a lock that is not granted. */
-async function waitingBackends() {
-    const { rows } = await pool.query(
-        `SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-          WHERE NOT l.granted AND a.datname = current_database()`);
-    return rows[0].n;
+/** Wait for this exact blocked backend, not unrelated concurrent database activity. */
+async function blockedBy(pid, blocker) {
+    let stopped = false;
+    try { await within((async () => {
+        while (!stopped) {
+            const { rows } = await pool.query("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS held", [blocker, pid]);
+            if (rows[0].held) return;
+            await new Promise(setImmediate);
+        }
+    })(), "actual handoff backend waits on the held closure transaction", 5_000);
+    } finally { stopped = true; }
 }
 
-describe("F02: Stop closure and hand-off take locks in one order", () => {
+describe.concurrent("F02: Stop closure and hand-off take locks in one order", () => {
     it("a hand-off that starts while closure holds request rows waits instead of deadlocking (no 40P01)", async () => {
         const { sessionId, target, owner, requestId } = await seededClaim(4);
         const stop = new pg.Client({ connectionString: url });
+        const handoffClient = new pg.Client({ connectionString: url });
         await stop.connect();
+        await handoffClient.connect();
         try {
+            const stopperPid = (await stop.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+            const handoffPid = (await handoffClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
             // Connection A: the prefix of terminal closure — session advisory lock, then the request row.
             await stop.query("BEGIN");
             await stop.query(`SELECT "${schema}".cms_steer_lock_session($1)`, [sessionId]);
             await stop.query(`SELECT 1 FROM "${schema}".session_steering_requests WHERE request_id = $1 FOR UPDATE`, [requestId]);
             // Connection B: the real hand-off procedure, started while A holds those locks.
-            const before = await waitingBackends();
-            const handoff = catalog.steerMarkSubmitting(requestId, owner).then(
-                (v) => ({ ok: true, v }), (err) => ({ ok: false, err }));
-            await until(async () => (await waitingBackends()) > before, 5_000, "the hand-off to block on a lock");
+            const handoff = handoffClient.query(`SELECT "${schema}".cms_steer_mark_submitting($1,$2) AS attempt`, [requestId, owner]).then(
+                ({ rows }) => ({ ok: true, v: rows[0].attempt }), (err) => ({ ok: false, err }));
+            await blockedBy(handoffPid, stopperPid);
             // A finishes the real closure (requests, then the window) and commits.
             await stop.query(`SELECT "${schema}".cms_steer_close_stopped($1, $2)`, [sessionId, target.turnIndex]);
             await stop.query("COMMIT");
@@ -88,8 +98,9 @@ describe("F02: Stop closure and hand-off take locks in one order", () => {
             const receipt = await catalog.steerGet(sessionId, requestId);
             expect(receipt).toMatchObject({ status: "closed", disposition: "not_delivered_turn_stopped", attempts: { total: 0 } });
         } finally {
-            await stop.query("ROLLBACK").catch(() => {});
+            await stop.query("ROLLBACK");
             await stop.end();
+            await handoffClient.end();
         }
     });
 
@@ -99,24 +110,28 @@ describe("F02: Stop closure and hand-off take locks in one order", () => {
         await catalog.steerAccept({ sessionId, requestId: `steer_${randomUUID()}`, idempotencyKey: randomUUID(),
             actor: alice, content: text, contentHash: steeringContentHash(text), ...target });
         const stop = new pg.Client({ connectionString: url });
+        const claimClient = new pg.Client({ connectionString: url });
         await stop.connect();
+        await claimClient.connect();
         try {
+            const stopperPid = (await stop.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+            const claimPid = (await claimClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
             await stop.query("BEGIN");
             await stop.query(`SELECT "${schema}".cms_steer_lock_session($1)`, [sessionId]);
-            const before = await waitingBackends();
-            const claim = catalog.steerClaim(sessionId, owner, 5);
-            await until(async () => (await waitingBackends()) > before, 5_000, "the claim to block");
+            const claim = claimClient.query(`SELECT "${schema}".cms_steer_claim($1,$2,$3) AS requests`, [sessionId, owner, 5]);
+            await blockedBy(claimPid, stopperPid);
             await stop.query(`SELECT "${schema}".cms_steer_close_stopped($1, $2)`, [sessionId, target.turnIndex]);
             await stop.query("COMMIT");
-            expect(await claim).toEqual([]);
+            expect((await claim).rows[0].requests).toEqual([]);
         } finally {
-            await stop.query("ROLLBACK").catch(() => {});
+            await stop.query("ROLLBACK");
             await stop.end();
+            await claimClient.end();
         }
     });
 });
 
-describe("F03: the final hand-off fence checks the lease", () => {
+describe.concurrent("F03: the final hand-off fence checks the lease", () => {
     it("a row claimed before expiry gets no write-ahead attempt after expiry", async () => {
         const { sessionId, requestId, owner } = await seededClaim();
         await pool.query(`UPDATE "${schema}".session_steering_windows SET lease_expires_at = now() - interval '1 second'
@@ -137,12 +152,19 @@ describe("F03: the final hand-off fence checks the lease", () => {
         const leaseMs = 600;
         const real = createCmsSteeringChannel(catalog, sessionId, target, owner, { leaseMs, recoverySource: "restored" });
         let releaseClaim;
+        const claimReturned = Promise.withResolvers();
+        const claimEntered = Promise.withResolvers();
         const claimHeld = new Promise((r) => { releaseClaim = r; });
+        const renewalResult = Promise.withResolvers();
         let markCalls = 0;
         const channel = {
             ...real,
-            renew: () => new Promise(() => {}),                                   // held renewal: never answers
-            claim: async (limit) => { const rows = await real.claim(limit); if (rows.length) await claimHeld; return rows; },
+            renew: () => renewalResult.promise,
+            claim: async (limit) => {
+                const rows = await real.claim(limit);
+                if (rows.length) { claimEntered.resolve(); await claimHeld; claimReturned.resolve(); }
+                return rows;
+            },
             markSubmitting: async (id) => { markCalls++; return real.markSubmitting(id); },
         };
         const sends = [];
@@ -166,19 +188,22 @@ describe("F03: the final hand-off fence checks the lease", () => {
             expect(accepted.outcome).toBe("accepted");
             await until(async () => (await catalog.steerGet(sessionId, accepted.receipt.requestId))?.status === "claimed",
                 5_000, "the claim");
+            await within(claimEntered.promise, "actual claim barrier reached");
             await until(async () => {
                 const { rows } = await pool.query(`SELECT lease_expires_at < clock_timestamp() AS expired
                     FROM "${schema}".session_steering_windows WHERE session_id = $1`, [sessionId]);
                 return rows[0]?.expired === true;
             }, 5_000, "the database lease to expire");
             releaseClaim();
-            await sleep(100);
+            await within(claimReturned.promise, "held real claim returns after lease expiry");
+            await pump.settle({ stopping: false });
             expect(sends).toEqual([]);
             const receipt = await catalog.steerGet(sessionId, accepted.receipt.requestId);
             expect(receipt.attempts.total).toBe(0);
             expect(markCalls).toBe(0);                                        // the local lease deadline stopped it first
         } finally {
             releaseClaim();
+            renewalResult.resolve(false);
             handlers.get("session.idle")?.({ type: "session.idle", data: {} });
             await pump.settle({ stopping: false });
             pump.dispose();
@@ -186,7 +211,7 @@ describe("F03: the final hand-off fence checks the lease", () => {
     });
 });
 
-describe("F04: steering quiescence cleanup is generation-safe", () => {
+describe.concurrent("F04: steering quiescence cleanup is generation-safe", () => {
     /** The real SessionManager methods over an in-memory handle map (no CLI, no I/O). */
     function manager() {
         const m = Object.create(SessionManager.prototype);
@@ -209,18 +234,21 @@ describe("F04: steering quiescence cleanup is generation-safe", () => {
         return h;
     }
 
-    it("a late completion of a timed-out cleanup does not remove the replacement handle", async () => {
+    it("a deferred old cleanup completing after recovery does not remove the replacement handle", async () => {
         const m = manager();
+        const destroyEntered = Promise.withResolvers();
         let finishOld;
-        const old = handle("old", function () { return new Promise((r) => { finishOld = () => { this.destroyed = true; r(); }; }); });
+        const old = handle("old", function () {
+            destroyEntered.resolve();
+            return new Promise((r) => { finishOld = () => { this.destroyed = true; r(); }; });
+        });
         m.sessions.set("s1", old);
         m.sessionAgentCopies.set("s1", { tag: "old-copy" });
         m.sessionBindingFingerprints.set("s1", "old-fp");
 
-        // The pump's bounded quiescence gives up (deadline); the manager call keeps running.
+        // Hold the actual manager's destroy boundary while recovery replaces it.
         const late = m.quiesceForSteering("s1");
-        const outcome = await Promise.race([late, sleep(30).then(() => "deadline")]);
-        expect(outcome).toBe("deadline");
+        await within(destroyEntered.promise, "old handle destroy is issued and held");
 
         // Recovery installs a replacement while the old cleanup is still outstanding.
         const replacement = handle("replacement");
@@ -252,15 +280,17 @@ describe("F04: steering quiescence cleanup is generation-safe", () => {
     });
 });
 
-describe("F05: steering database work is bounded", () => {
+describe.concurrent("F05: steering database work is bounded", () => {
     async function holdSessionLock(sessionId) {
         const holder = new pg.Client({ connectionString: url });
         await holder.connect();
         await holder.query(`SELECT pg_advisory_lock(hashtextextended('steer-window:' || $1, 0))`, [sessionId]);
-        return { release: async () => { await holder.query(`SELECT pg_advisory_unlock_all()`).catch(() => {}); await holder.end(); } };
+        return { release: async () => { await holder.query(`SELECT pg_advisory_unlock_all()`); await holder.end(); } };
     }
 
     it("a blocked real statement is cancelled server-side within the budget; the pool stays usable", async () => {
+      await withSteeringLedger(async (h) => {
+        const catalog = h.catalog;
         const sessionId = randomUUID();
         await catalog.createSession(sessionId, { model: "m" });
         const target = { epoch: 0, turnIndex: 0, incarnation: randomUUID() };
@@ -271,21 +301,29 @@ describe("F05: steering database work is bounded", () => {
         const lock = await holdSessionLock(sessionId);
         try {
             const started = Date.now();
-            const err = await catalog.steerTurnFinalize(sessionId, target, owner, "published", [], 1).then(() => null, (e) => e);
+            const blocked = catalog.steerTurnFinalize(sessionId, target, owner, "published", [], 1).then(() => null, (e) => e);
+            const waitingHere = async () => (await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity
+                WHERE datname = current_database() AND wait_event_type = 'Lock'
+                  AND position($1 in query) > 0 AND query LIKE '%cms_steer_turn_finalize%'`, [h.schema])).rows[0].n;
+            await until(async () => (await waitingHere()) > 0, 3_000, "this exact schema's finalizer is blocked");
+            const err = await blocked;
             const elapsed = Date.now() - started;
             // Server-side cancellation: lock_timeout (55P03) or statement_timeout (57014), never a hang.
             expect(["55P03", "57014"], String(err?.message)).toContain(err?.code);
             expect(elapsed).toBeLessThan(2_500);
-            await until(async () => (await waitingBackends()) === 0, 3_000, "no backend left waiting");
+            expect(await waitingHere()).toBe(0, "this exact schema's timed-out statement no longer waits on the held lock");
             // Nothing committed: the window is still open, and the pool still serves calls.
             expect((await catalog.steerState(sessionId)).steerable).toBe(true);
         } finally {
             await lock.release();
             catalog.steeringQueryTimeoutMs = previous;
         }
+      });
     });
 
     it("post-commit finalize returns within its budget while storage is blocked, and completes once unblocked", async () => {
+      await withSteeringLedger(async (h) => {
+        const catalog = h.catalog;
         const sessionId = randomUUID();
         await catalog.createSession(sessionId, { model: "m" });
         const turn = await SteeringTurn.create({
@@ -308,14 +346,17 @@ describe("F05: steering database work is bounded", () => {
         }
         await turn.finalize("published", { delivered: [] }, 1);
         expect((await catalog.steerState(sessionId)).window).toBeNull();
+      });
     });
 
     it("lease renewals never overlap", async () => {
         let calls = 0;
+        const entered = Promise.withResolvers();
+        const held = Promise.withResolvers();
         const channel = {
             sessionId: "s", target: { epoch: 0, turnIndex: 0, incarnation: "i" }, ownerToken: "o", recoverySource: "restored",
             openWindow: async () => ({ ok: true, recovered: [] }),
-            renew: () => { calls++; return new Promise(() => {}); },              // held renewal
+            renew: () => { calls++; entered.resolve(); return held.promise; },
             claim: async () => [], quiesce: async () => {}, abandonWindow: async () => {},
             recordRecoveryCheck: async () => {}, markSubmitting: async () => null, markReleased: async () => {},
             markSubmitted: async () => {}, markDelivered: async () => {}, markUnconfirmed: async () => {},
@@ -326,18 +367,25 @@ describe("F05: steering database work is bounded", () => {
             stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true,
             scanMs: 10, renewMs: 5, ioTimeoutMs: 100, settleMs: 50,
         });
-        handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
-        pump.noteMainPrompt("main");
-        await until(() => pump.gate.isOpen, 2_000, "the gate");
-        await sleep(100);
-        expect(calls).toBe(1);
-        handlers.get("session.idle")({ type: "session.idle", data: {} });
-        await pump.settle({ stopping: false });
-        pump.dispose();
+        try {
+            handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+            pump.noteMainPrompt("main");
+            await until(() => pump.gate.isOpen, 2_000, "the gate");
+            await within(entered.promise, "first real pump renewal has been issued and is held");
+            await pump.renewLease();
+            await pump.renewLease();
+            await pump.renewLease();
+            expect(calls).toBe(1);
+        } finally {
+            held.resolve(false);
+            handlers.get("session.idle")({ type: "session.idle", data: {} });
+            await pump.settle({ stopping: false });
+            pump.dispose();
+        }
     });
 });
 
-describe("F06: recovery records the observed delivery timing, never an invented one", () => {
+describe.concurrent("F06: recovery records the observed delivery timing, never an invented one", () => {
     /** Accept → claim → write-ahead → SDK id persisted (delivery write lost) → same-target recovery. */
     async function lostDeliveryRecovered() {
         const { sessionId, target, owner, requestId } = await seededClaim();

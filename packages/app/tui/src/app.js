@@ -294,6 +294,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         if (modal?.type === "steeringReceipts") {
             const action = { w: "withdraw", r: "resend", c: "reuse" }[input];
             if (key.escape) controller.closeModal();
+            else if (input === "m") controller.loadSteeringRequests(modal.sessionId);
             else if (key.pageUp) controller.scrollSteeringReceipt(-10);
             else if (key.pageDown) controller.scrollSteeringReceipt(10);
             else if (key.upArrow || input === "k") controller.moveModalSelection(-1);
@@ -633,6 +634,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             } else if (key.return) {
                 const action = actions[index];
                 if (action?.enabled) controller.handleCommand(action.command).catch(error => controller.setStatus(error.message));
+                else if (action?.reason) controller.setStatus(action.reason);
             }
             return;
         }

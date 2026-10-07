@@ -176,6 +176,10 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ session_id, message, client_message_ids, steering_request_id, enqueue_only, attachments }) => {
             try {
+                if (steering_request_id !== undefined && !ctx.api) {
+                    return errorResult("Steering receipt resend is unsupported in direct-store MCP mode. Use authenticated Web API mode.",
+                        { code: "unsupported", reason: "direct_mcp_unavailable" });
+                }
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
                     return {

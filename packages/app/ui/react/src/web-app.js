@@ -4,6 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { SteeringReceipt } from "./steering-receipt.js";
+import { SteeringArchive } from "./steering-archive.js";
 import { isTextareaHistoryBoundary, supportsPromptHistoryKeyboard } from "./prompt-history-boundary.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -9553,6 +9554,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // Raw reference (stable across renders) — image entries are
             // filtered at render time so the shallow-equal selector holds.
             promptAttachments: state.ui.promptAttachments || EMPTY_ARRAY,
+            historyScan: state.promptHistory?.bySessionId?.[activeSessionId]?.scan || null,
+            sessionId: activeSessionId,
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
@@ -9914,7 +9917,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
-                    title: "Stop the current turn (the session stays alive and returns to idle)",
+                    title: "Stop the current turn. Queued prompts and schedules continue; the session stays alive.",
                     "aria-label": "Stop the current turn",
                     disabled: stoppingTurn,
                     onPointerDown: (event) => event.preventDefault(),
@@ -9952,6 +9955,13 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 onClick: sendPrompt,
             }, sendLabel),
         ),
+        React.createElement(SteeringArchive, { controller }),
+        promptState.historyScan?.partial ? React.createElement("div", { className: "ps-prompt-history-partial", role: "status" },
+            "Input history is partial. ",
+            React.createElement("button", { type: "button", className: "ps-mini-button",
+                disabled: promptState.historyScan.loading,
+                onClick: () => controller.loadPromptHistory(promptState.sessionId, { more: true }) },
+            promptState.historyScan.loading ? "Loading input history..." : "Load more input history")) : null,
     );
 }
 

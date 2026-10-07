@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, newClientId, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { canvasKey, newClientId, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows, linkSessionSteering, promptDraftForPersistence } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes } from "./pane-layout.js";
@@ -42,7 +42,7 @@ const canFocusMoaComposer = () => !document.activeElement?.closest?.(".ps-moa-di
 const canFocusPaneComposer = () => canFocusMoaComposer() && !document.activeElement?.closest?.(".ps-moa-dialog, .ps-modal-backdrop, [data-moa-panel] button, [data-moa-panel] select, [data-moa-panel] input, [data-moa-panel] iframe, [data-moa-panel] [contenteditable=true]");
 const sameDraft = (a, b) => a?.prompt === b?.prompt && (a?.attachments || []).length === (b?.attachments || []).length && (a?.attachments || []).every((item, i) => item === b.attachments[i]);
 function publishDraft(store, key, draft) {
-    if (sameDraft(store.get(key), draft)) return;
+    if (sameDraft(store.get(key), draft) && store.get(key)?.cursor === draft?.cursor) return;
     store.set(key, draft);
     for (const listener of draftListeners.get(store) || []) listener(key, draft);
 }
@@ -50,7 +50,8 @@ function restoreDraft(controller, draft) {
     if (!draft) return;
     restoringDraft.add(controller);
     try {
-        controller.dispatch({ type: "ui/prompt", prompt: draft.prompt });
+        controller.dispatch({ type: "promptHistory/reset" });
+        controller.dispatch({ type: "ui/prompt", prompt: draft.prompt, promptCursor: draft.cursor ?? draft.prompt.length });
         controller.dispatch({ type: "ui/promptAttachments", attachments: draft.attachments });
     } finally { restoringDraft.delete(controller); }
 }
@@ -235,7 +236,7 @@ export function useMoa(controller) {
     const open = () => { if (loaded) {
         if (!active) {
             const state = controller.getState(), sessionId = state.sessions.activeSessionId;
-            if (sessionId) publishDraft(drafts.current, sessionId, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] });
+            if (sessionId) publishDraft(drafts.current, sessionId, promptDraftForPersistence(state.ui));
         }
         controller.navigationGeneration = (controller.navigationGeneration || 0) + 1;
         setMobileZen(false); setActive(true); setReturnTo(false);
@@ -319,7 +320,7 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
         const store = drafts.current;
         if (!draftListeners.has(store)) draftListeners.set(store, new Set());
         if (!outboxListeners.has(store)) outboxListeners.set(store, new Set());
-        const listener = (key, draft) => { if (key === draftKey && focusedRef.current && !sameDraft({ prompt: ready.getState().ui.prompt, attachments: ready.getPromptAttachments() }, draft)) restoreDraft(ready, draft); };
+        const listener = (key, draft) => { if (key === draftKey && focusedRef.current && !sameDraft(promptDraftForPersistence(ready.getState().ui), draft)) restoreDraft(ready, draft); };
         const outboxListener = key => { if (key === draftKey && focusedRef.current) restoreOutbox(store, key, ready); };
         draftListeners.get(store).add(listener);
         outboxListeners.get(store).add(outboxListener);
@@ -331,6 +332,7 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
         const cached = resources.current;
         if (!cached) return;
         cached.disposed = true;
+        cached.steeringLink?.();
         clearInterval(cached.timer);
         cached.child.stop().catch(() => {});
     }, []);
@@ -342,6 +344,7 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
             const transport = createTransport();
             const child = createWebPilotSwarmController({ transport, branding: parent.getState().branding });
             resources.current = { child, transport, started: false, disposed: false, generation: 0, timer: null, polling: false,
+                steeringLink: linkSessionSteering(parent, child, node.sessionId),
                 send: child.sendPrompt.bind(child), scheduleDispatch: child.scheduleOutboxDispatch.bind(child) };
         }
         const cached = resources.current, { child, transport } = cached;
@@ -431,8 +434,8 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
             child.dispatch({ type: "profileSettings/apply", settings: { themeId: parent.getState().ui.themeId } });
             child.setFocus("prompt");
             const draft = drafts.current.get(draftKey);
-            if (draft) { child.dispatch({ type: "ui/prompt", prompt: draft.prompt }); child.dispatch({ type: "ui/promptAttachments", attachments: draft.attachments }); }
-            offDraft = child.subscribe(s => { if (focusedRef.current && !restoringDraft.has(child)) publishDraft(drafts.current, draftKey, { prompt: s.ui.prompt, attachments: s.ui.promptAttachments || [] }); });
+            if (draft) restoreDraft(child, draft);
+            offDraft = child.subscribe(s => { if (focusedRef.current && !restoringDraft.has(child)) publishDraft(drafts.current, draftKey, promptDraftForPersistence(s.ui)); });
             // Defense in depth: no hidden composer, stale selection or attachment
             // from another session may redirect a send to a different agent.
             wrappedSchedule = sessionId => { if (!cancelled) cached.scheduleDispatch(sessionId); };
@@ -902,7 +905,7 @@ export function MobileZen({ controller, onClose, drafts, createTransport }) {
     const active = state.sessions.activeSessionId;
     const changeSession = async (id, binding) => {
         if (!id || loading) return;
-        drafts.current.set(active, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] });
+        drafts.current.set(active, promptDraftForPersistence(state.ui));
         setLoading(true); setError("");
         // Clear the outgoing draft before starting asynchronous navigation.
         controller.setPrompt("");
@@ -934,7 +937,7 @@ export function MobileZen({ controller, onClose, drafts, createTransport }) {
     };
     return <ControllerContext.Provider value={controller}><div className="ps-mobile-zen">
         <header className="ps-mobile-focus-header">
-            <IconButton label="Exit mobile zen" icon="restore" disabled={loading} onClick={() => { drafts.current.set(active, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] }); onClose(); }} />
+            <IconButton label="Exit mobile zen" icon="restore" disabled={loading} onClick={() => { drafts.current.set(active, promptDraftForPersistence(state.ui)); onClose(); }} />
             <div className="ps-mobile-session-heading has-selector">
             <span className="ps-mobile-session-name">{state.sessions.byId[active]?.title || active || "Select session"}<span className="ps-mobile-select-chevron" aria-hidden="true">⌄</span></span>
             <SessionHeaderStatus controller={controller} />

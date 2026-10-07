@@ -15,7 +15,7 @@ export async function withRegisteredSteeringMcp(mgmt, fn) {
         import("../../../app/mcp/dist/src/tools/turn-control.js"),
     ]);
     const server = new McpServer({ name: "steering-contract-fixture", version: "1.0.0" });
-    registerTurnControlTools(server, { mgmt });
+    registerTurnControlTools(server, { mgmt, api: mgmt._api });
     const client = new Client({ name: "steering-contract-client", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {

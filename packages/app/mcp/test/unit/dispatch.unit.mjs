@@ -480,7 +480,7 @@ async function main() {
     // Steering tools preserve typed evidence instead of inventing delivery success.
     {
         const calls = [];
-        const ctx = makeCtx(calls);
+        const ctx = makeCtx(calls, { api: {}, webMode: true });
         const accepted = { ok: true, duplicate: false, receipt: {
             requestId: "server-request", clientRequestId: "caller-id", expectedTarget: "observed-target",
             disposition: "accepted", inclusion: { state: "unconfirmed", snapshotVersion: null },
@@ -498,8 +498,10 @@ async function main() {
         let res = await client.callTool({ name: "steer_turn", arguments: {
             session_id: UUID, text: "line one\nline two", client_request_id: "caller-id", expected_target: "observed-target",
         } });
-        record("steer_turn returns accepted receipt, never delivered:true",
-            !res.isError && JSON.stringify(parse(res)) === JSON.stringify(accepted) && parse(res).delivered === undefined);
+        const { display, ...canonicalAccepted } = parse(res);
+        record("steer_turn preserves canonical receipt and human wording, never delivered:true",
+            !res.isError && JSON.stringify(canonicalAccepted) === JSON.stringify(accepted)
+            && display.label === "Accepted" && typeof display.detail === "string" && parse(res).delivered === undefined);
         const call = calls.find(([name]) => name === "steer");
         record("steer_turn calls canonical management operation",
             call[1] === UUID && JSON.stringify(call[2]) === JSON.stringify({

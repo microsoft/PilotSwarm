@@ -121,6 +121,17 @@ test("ST-U07: stopped uncertain delivery uses the canonical stopped reason", () 
     assert.match(display.detail, /Not scheduled for resend/);
 });
 
+for (const status of ["delivered", "closed"]) {
+    test(`F06: recovered positive delivery with unknown timing is not a loading receipt (${status})`, () => {
+        const display = getSteeringDisplay(receipt({
+            status, disposition: "delivered_timing_unconfirmed", inclusion: { state: "included", snapshotVersion: 1 },
+        }));
+        assert.match(display.label, /\bDelivered\b/);
+        assert.doesNotMatch(display.label, /current turn|after the earlier response|Loading/);
+        assert.match(display.detail, /Included in the saved conversation/);
+    });
+}
+
 test("ST-U01/ST-U02: eligibility respects question, write access, target, attachments and UTF-8 limit", () => {
     const ready = {
         session: { status: "running", canWrite: true },
