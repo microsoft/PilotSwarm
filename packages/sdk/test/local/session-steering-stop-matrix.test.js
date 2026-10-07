@@ -345,7 +345,7 @@ describe.concurrent("session steering actual turn / steer / Stop matrix", () => 
         });
     });
 
-    it("C4: queued delivery -> Stop in owned follow-up preserves after-response evidence", { timeout: TIMEOUT }, async () => {
+    it("C4: queued delivery -> Stop records delivered-before-Stop with after-response evidence", { timeout: TIMEOUT }, async () => {
         await fixture("C4", {}, async (h) => {
             await h.start();
             await within(h.cuts.modelCut.entered, "earlier no-tool answer held");
@@ -362,7 +362,7 @@ describe.concurrent("session steering actual turn / steer / Stop matrix", () => 
             const followStart = events.find((event) => event.eventType === "assistant.turn_start" && event.seq > projection.seq);
             assert(response && followStart);
             assert(response.seq < projection.seq && projection.seq < followStart.seq, "earlier answer -> queued steer -> owned follow-up order");
-            await h.assertReceipt(steer.receipt.requestId, { disposition: "delivered_after_response", attemptCount: 1, deliveryKind: "queued" });
+            await h.assertReceipt(steer.receipt.requestId, { disposition: "delivered_before_stop", attemptCount: 1, deliveryKind: "queued" });
         });
     });
 
