@@ -474,17 +474,17 @@ describe.concurrent("F06: recovery records the observed delivery timing, never a
     });
 });
 
-describe("CMS pool pressure: one steering database call per turn", () => {
+describe.concurrent("CMS pool pressure: one steering database call per turn", () => {
     it("the call queue runs one call at a time and lets a renewal go next", async () => {
         const q = new SteeringCallQueue();
         const order = [];
+        const entered = Promise.withResolvers();
         let releaseFirst;
-        const first = q.run(() => new Promise((r) => { releaseFirst = () => { order.push("claim"); r(); }; }));
+        const first = q.run(() => new Promise((r) => { releaseFirst = () => { order.push("claim"); r(); }; entered.resolve(); }));
         const second = q.run(async () => { order.push("mark"); });
         const renewal = q.run(async () => { order.push("renew"); }, { priority: true });
-        await sleep(5);
-        expect(q.inFlight).toBe(1);
-        releaseFirst();
+        await within(entered.promise, "first real queue function is running and held");
+        try { expect(q.inFlight).toBe(1); } finally { releaseFirst(); }
         await Promise.all([first, second, renewal]);
         expect(order).toEqual(["claim", "renew", "mark"]);
         expect(q.peak).toBe(1);
@@ -493,33 +493,68 @@ describe("CMS pool pressure: one steering database call per turn", () => {
     it("a live pump plus finalize never holds more than one steering connection for the turn", async () => {
         const sessionId = randomUUID();
         await catalog.createSession(sessionId, { model: "m" });
+        const submitted = Promise.withResolvers();
+        let activeCalls = 0;
+        let peakCalls = 0;
+        let submittedCount = 0;
+        const observedCalls = [];
+        const observedCatalog = new Proxy(catalog, {
+            get(target, key) {
+                const value = Reflect.get(target, key, target);
+                if (typeof value !== "function") return value;
+                if (!String(key).startsWith("steer")) return value.bind(target);
+                return async (...args) => {
+                    activeCalls++;
+                    peakCalls = Math.max(peakCalls, activeCalls);
+                    observedCalls.push(key);
+                    try {
+                        const result = await value.apply(target, args);
+                        if (key === "steerMarkSubmitted" && ++submittedCount === 3) submitted.resolve();
+                        return result;
+                    } finally { activeCalls--; }
+                };
+            },
+        });
         const turn = await SteeringTurn.create({
-            catalog, sessionId, turnKey: randomUUID(), transcriptEpoch: 0, turnIndex: 0,
+            catalog: observedCatalog, sessionId, turnKey: randomUUID(), transcriptEpoch: 0, turnIndex: 0,
             sessionRow: { owner: null }, featureCache: { resolve: () => ({ enabled: true }) },
         });
         const channel = turn.newChannel();
         const handlers = new Map();
-        const session = { on: (type, fn) => { handlers.set(type, fn); return () => {}; },
-            send: async () => `sdk-${randomUUID()}`, getEvents: async () => [] };
+        const session = { on: (type, fn) => { handlers.set(type, fn); return () => handlers.delete(type); },
+            send: async () => {
+                const id = `sdk-${randomUUID()}`;
+                handlers.get("user.message")({ type: "user.message", data: { messageId: id, delivery: "steering" } });
+                return id;
+            }, getEvents: async () => [] };
         const pump = new SteeringPump(session, channel, {
             stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true,
             scanMs: 5, renewMs: 5, settleMs: 200,
         });
-        handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
-        pump.noteMainPrompt("main");
-        await until(() => pump.gate.isOpen, 5_000, "the gate");
-        const target = channel.target;
-        for (let i = 0; i < 3; i++) {
-            const text = `g${i}`;
-            await catalog.steerAccept({ sessionId, requestId: `steer_${randomUUID()}`, idempotencyKey: randomUUID(),
-                actor: alice, content: text, contentHash: steeringContentHash(text), ...target });
+        try {
+            handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+            pump.noteMainPrompt("main");
+            await until(() => pump.gate.isOpen, 5_000, "the gate");
+            const target = channel.target;
+            for (let i = 0; i < 3; i++) {
+                const text = `g${i}`;
+                await catalog.steerAccept({ sessionId, requestId: `steer_${randomUUID()}`, idempotencyKey: randomUUID(),
+                    actor: alice, content: text, contentHash: steeringContentHash(text), ...target });
+            }
+            await within(submitted.promise, "all three actual write-ahead and submitted procedures complete");
+            handlers.get("session.idle")({ type: "session.idle", data: {} });
+            const manifest = await pump.settle({ stopping: false });
+            expect(manifest.delivered).toHaveLength(3);
+            await turn.finalize("published", manifest, 1);
+            expect(observedCalls).toContain("steerTurnFinalize");
+            expect(submittedCount).toBe(3);
+            expect(peakCalls).toBe(1, "observe actual catalog procedure entries, not only a queue's self-reported peak");
+            expect(activeCalls).toBe(0);
+            expect(turn.callQueue.peak).toBe(1);
+        } finally {
+            handlers.get("session.idle")?.({ type: "session.idle", data: {} });
+            await pump.settle({ stopping: false });
+            pump.dispose();
         }
-        await sleep(200);
-        handlers.get("session.idle")({ type: "session.idle", data: {} });
-        await pump.settle({ stopping: false });
-        pump.dispose();
-        await turn.finalize("published", { delivered: [] }, 1);
-        expect(turn.callQueue.calls).toBeGreaterThan(10);
-        expect(turn.callQueue.peak).toBe(1);
     });
 });
