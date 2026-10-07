@@ -292,7 +292,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             clearQuitArm(true);
         }
         if (modal?.type === "steeringReceipts") {
-            const action = { w: "withdraw", r: "resend", c: "copy", a: "append" }[input];
+            const action = { w: "withdraw", r: "resend", c: "reuse" }[input];
             if (key.escape) controller.closeModal();
             else if (key.pageUp) controller.scrollSteeringReceipt(-10);
             else if (key.pageDown) controller.scrollSteeringReceipt(10);

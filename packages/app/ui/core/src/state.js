@@ -419,6 +419,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             promptRows: 1,
             promptAttachments: [],
             promptEdit: null,
+            promptHistoryNavigation: null,
             promptActionIndex: null,
             statusText: "Starting PilotSwarm...",
             // A persisted theme id may name a theme that no longer ships —
@@ -515,6 +516,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         outbox: {
             bySessionId: {},
         },
+        promptHistory: { bySessionId: {} },
         steering: {
             bySessionId: {},
         },

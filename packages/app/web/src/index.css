@@ -3402,8 +3402,16 @@ body.is-resizing-pane-y iframe {
   min-height: 44px;
 }
 
-.ps-steer-glyph {
-  display: none;
+.ps-steer-glyph { display: block; flex: none; }
+.ps-prompt-shell .ps-steer-button {
+  height: 44px;
+  padding: 0 10px;
+  font-size: var(--ps-control-font-size, 0.92rem);
+}
+.ps-steer-button .ps-icon-button-glyph {
+  gap: 6px;
+  font-size: inherit;
+  letter-spacing: normal;
 }
 
 .ps-steering-receipt {
@@ -9785,6 +9793,19 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
+
+.ps-prompt-shell .ps-steer-button:not(:disabled) {
+  color: var(--ps-accent);
+  background: color-mix(in srgb, var(--ps-accent) 12%, var(--ps-surface));
+  box-shadow: inset 0 0 0 1px var(--ps-accent);
+}
+.ps-prompt-shell .ps-steer-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ps-prompt-shell .ps-steer-button:disabled:hover {
+  transform: none;
+}
 
 /* Keep input, label and controls on one row without increasing the keyboard
    composer height. The narrow Steer icon retains its accessible name and tip. */

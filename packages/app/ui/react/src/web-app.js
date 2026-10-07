@@ -4,6 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { SteeringReceipt } from "./steering-receipt.js";
+import { isTextareaHistoryBoundary } from "./prompt-history-boundary.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -9570,7 +9571,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     : "Edit the pending message, then send or cancel it"
             : promptState.hasOutbox
                 ? "Type a message and press Enter to queue it behind the pending batch"
-                : "Type a message and press Enter";
+                : "Type a message and press Enter (Up recalls history)";
 
     // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
     // sees soft wrap; counting "\n" does not). CSS max-height provides the
@@ -9835,11 +9836,19 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     event.preventDefault();
                     return;
                 }
-                // Arrow keys are NOT intercepted: the textarea's native cursor
-                // movement understands soft-wrapped lines and goal columns;
-                // onSelect mirrors every move into the shared model. (The old
-                // hijack routed through the TUI's logical-line cursor and made
-                // Down jump whole paragraphs inside wrapped text.)
+                if (!mobile && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+                    && !event.isComposing && ["ArrowUp", "ArrowDown"].includes(event.key)
+                    && event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+                    && !event.currentTarget.hasAttribute("aria-activedescendant")
+                    && isTextareaHistoryBoundary(event.currentTarget, event.key === "ArrowUp" ? -1 : 1)) {
+                    controller.setPromptCursor(event.currentTarget.selectionStart);
+                    if (controller.recallPromptHistory(event.key === "ArrowUp" ? -1 : 1)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        return;
+                    }
+                }
+                // Other arrows keep native textarea movement and soft wrapping.
                 if (event.key === "Escape" && promptState.editingPending) {
                     event.preventDefault();
                     if (selectedReadOnly) {
@@ -9916,9 +9925,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 disabled: !steering.enabled,
                 onClick: steerPrompt,
                 icon: React.createElement(React.Fragment, null,
-                    React.createElement("span", { className: "ps-steer-label" }, "Steer"),
                     React.createElement("svg", { className: "ps-steer-glyph", viewBox: "0 0 24 24", width: 20, height: 20, fill: "none", stroke: "currentColor", strokeWidth: 2 },
-                        React.createElement("path", { d: "M6 20v-6a6 6 0 0 1 6-6h7M14 3l5 5-5 5" }))),
+                        React.createElement("path", { d: "M6 20v-6a6 6 0 0 1 6-6h7M14 3l5 5-5 5" })),
+                    React.createElement("span", { className: "ps-steer-label" }, "Steer")),
             }) : null,
             React.createElement("button", {
                 type: "button",

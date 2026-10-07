@@ -313,9 +313,10 @@ Current overlap to preserve unless intentionally changed:
 - `t` in the logs inspector toggles log tailing
 - `s` in the chat pane toggles between the transcript and the current session summary view
 - `Ctrl+A` in the prompt opens the attach-file dialog
+- Prompt Up at the first line recalls the viewer's own current-session inputs (newest first, at most ten, consecutive duplicates skipped); Down at the last line moves newer and restores the stashed draft past newest. Editing ends navigation; sending or switching sessions resets it. Reference/menu/modals keep priority. Share reducer/controller behavior across TUI and desktop portal; mobile/touch is unchanged. Use durable user.message authorship and immediate accepted-send memory, never other users' inputs or a new storage/API.
 - Portal `Ctrl+S` steers only while the textarea has focus; browser Save elsewhere is unchanged. Native `Ctrl+S` is not enabled or advertised until the supported-terminal raw-mode matrix passes. Its keyboard-accessible action row is the fallback.
 - Native prompt `Tab` accepts reference autocomplete first; otherwise it focuses Send/Steer/Stop, plus Guidance when receipts exist. Left/Right selects, Enter activates, Tab continues normal pane traversal, and Shift+Tab/Escape returns to editing. Send and newline keys stay unchanged.
-- Guidance receipts use Up/Down to select and PageUp/PageDown to scroll. Enter refreshes or reconciles acceptance; `w` withdraws, `r` sends as a new message, `c` copies to an empty draft, `a` appends, and Escape closes. Keep these actions, their permission checks, and help copy aligned with portal receipt controls.
+- Guidance receipts use Up/Down to select and PageUp/PageDown to scroll. Enter refreshes or reconciles acceptance; `w` withdraws, `r` sends as a new message, `c` reuses undelivered/withdrawn/uncertain text in a draft (append on a new line when nonempty), and Escape closes. Delivered receipts have no draft actions. Keep permissions and help copy aligned with portal controls.
 - `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
