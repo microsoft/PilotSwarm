@@ -5955,7 +5955,26 @@ export class PilotSwarmUiController {
         }
     }
 
-    async refreshSteering(sessionId) {
+    refreshSteering(sessionId, { afterWindowChange = false } = {}) {
+        this.steeringStateLoads ??= new Map();
+        this.steeringStateRefreshNeeded ??= new Set();
+        const existing = this.steeringStateLoads.get(sessionId);
+        if (existing) {
+            if (afterWindowChange) this.steeringStateRefreshNeeded.add(sessionId);
+            return existing;
+        }
+        const load = this._refreshSteering(sessionId).finally(() => {
+            this.steeringStateLoads.delete(sessionId);
+            if (this.steeringStateRefreshNeeded.delete(sessionId)
+                && !this.getState().sessions.goneIds?.includes(sessionId)) {
+                void this.refreshSteering(sessionId);
+            }
+        });
+        this.steeringStateLoads.set(sessionId, load);
+        return load;
+    }
+
+    async _refreshSteering(sessionId) {
         if (typeof this.transport.getSessionSteeringState !== "function") return;
         const windowSeq = this.getState().steering?.bySessionId?.[sessionId]?.windowSeq || 0;
         const accessRevision = this.getState().steering?.bySessionId?.[sessionId]?.accessRevision || 0;
@@ -6002,7 +6021,13 @@ export class PilotSwarmUiController {
 
     reconcileSteeringEvent(sessionId, event) {
         if (event.eventType === "session.steering_window_changed") {
+            const previous = this.getState().steering?.bySessionId?.[sessionId];
             this.dispatch({ type: "steering/windowChanged", sessionId, window: event.data, seq: event.seq });
+            const current = this.getState().steering?.bySessionId?.[sessionId];
+            if (current?.windowSeq > (previous?.windowSeq || 0) && event.data?.state === "open"
+                && (current.state?.recovering || current.state?.supported !== true)) {
+                void this.refreshSteering(sessionId, { afterWindowChange: true });
+            }
             return;
         }
         const receipt = event.eventType === "session.steering_accepted" ? event.data?.receipt
