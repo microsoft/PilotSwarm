@@ -91,7 +91,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Receipt paging preserves the selected row ID, not its old list index.
   Delayed read denials cannot clear a newer restored access grant.
   Recovery-confirmed delivery without a recorded kind displays
-  **Delivered - timing unconfirmed**; do not guess current-turn/after-response
+  **Delivered (timing unconfirmed)**; do not guess current-turn/after-response
   timing or confuse it with missing delivery evidence.
 - Disabled native prompt actions show their shared eligibility reason in the
   status hint and on Enter. Stop help must state that queued prompts and

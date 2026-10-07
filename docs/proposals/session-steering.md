@@ -3075,7 +3075,7 @@ task (ST-I15); GitHub Copilot and Anthropic providers (ST-L03).
 | `accepted` | Accepted; "Waiting for a safe point" once handed to the SDK |
 | `delivered_current_turn` | Delivered to current turn |
 | `delivered_after_response` | Delivered after the earlier response |
-| `delivered_timing_unconfirmed` | Delivered - timing unconfirmed |
+| `delivered_timing_unconfirmed` | Delivered (timing unconfirmed) |
 | `delivered_before_stop` | Delivered before Stop |
 | `not_delivered_turn_ended` | Not delivered — turn ended |
 | `not_delivered_turn_stopped` | Not delivered — turn stopped |

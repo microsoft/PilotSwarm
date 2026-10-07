@@ -97,9 +97,14 @@ means **Waiting for a safe point**, not success. Positive delivery evidence
 distinguishes **Delivered to current turn** from **Delivered after the earlier
 response**. Neither label means the agent understood or followed the guidance.
 When recovery confirms delivery without a recorded delivery kind,
-`delivered_timing_unconfirmed` displays **Delivered - timing unconfirmed**.
+`delivered_timing_unconfirmed` displays **Delivered (timing unconfirmed)**.
+Its detail is: "Delivered before recovery; whether it reached the turn or
+followed the response is not known."
 It is positive delivery evidence, not `delivery_unconfirmed`, and is a valid
 `dispositions` filter in SDK, HTTP, CLI, and MCP list reads.
+It permits neither retained-text resend nor draft reuse. The shared stats card
+uses `requests.byDisposition.delivered_timing_unconfirmed` for its request count;
+delivery-kind attempt counts and snapshot inclusion remain separate evidence.
 
 List reads default to 50 and cap at 200. Use `limit`, `cursor`, `dispositions` (JSON array),
 and `expectedTarget` query parameters. A cursor is bound to the original session
