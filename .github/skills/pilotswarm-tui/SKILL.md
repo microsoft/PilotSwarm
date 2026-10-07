@@ -76,7 +76,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - The native action row includes Guidance when receipts exist, including after
   feature disablement. Its receipt view uses Up/Down to select and
   PageUp/PageDown to scroll; Enter refreshes/reconciles, `w` withdraws, `r` sends
-  as a new message, `c` copies to an empty draft, and `a` appends. Escape closes.
+  as a new message, and `c` reuses undelivered/withdrawn/uncertain guidance in
+  the draft (append on a new line if nonempty). Delivered receipts have no
+  draft action; their text remains selectable. Escape closes.
   The portal uses the same shared controller methods through receipt-row buttons.
 - Portal composer buttons keep a minimum 44px touch target even inside panels.
   Keep mobile composers on one row with the label centered beside the textarea.

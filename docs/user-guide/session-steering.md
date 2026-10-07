@@ -56,13 +56,16 @@ not erase earlier evidence.
 
 A missed steer never automatically starts another turn. **Send as new message**
 adds its text to the ordinary queue with a new identity; earlier queued messages
-stay ahead. The old receipt remains unchanged. **Copy to draft** fills an empty
-draft; **Append to draft** preserves existing draft text.
+stay ahead. The old receipt remains unchanged. Undelivered, withdrawn, or
+delivery-uncertain receipts offer **Reuse in draft**: it fills an empty draft
+or appends on a new line without replacing existing text. Delivered receipts
+have no draft action; their text remains selectable.
 
 The TUI's **Guidance** action opens retained receipts. Up/Down selects a receipt;
 PageUp/PageDown scrolls its text.
 Enter refreshes it or reconciles an unknown acceptance. Use `w` to withdraw,
-`r` to send as a new message, `c` to copy, and `a` to append. Escape closes it.
+`r` to send as a new message and `c` to reuse eligible guidance in the draft.
+Escape closes it.
 
 If the acceptance response is lost, use **Reconcile acceptance**. It reuses the
 original caller identity and original target. A timeout is not proof of failure.

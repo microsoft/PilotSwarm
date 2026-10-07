@@ -1,6 +1,6 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
-import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession, getSteeringAttemptDisplay } from "./steering.js";
+import { buildSteeringMessage, getSteeringEligibility, mergeSteeringReceipt, emptySteeringSession, getSteeringAttemptDisplay, canReuseSteeringInDraft } from "./steering.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import {
@@ -3668,7 +3668,7 @@ export function selectSteeringReceiptModal(state, maxWidth = 76) {
             receipt.actions?.canWithdraw ? "w Withdraw" : null,
             receipt.actions?.canSendAsNewMessage ? "r Send as new message" : null,
             !receipt.requestId && receipt.error && !receipt.rejected ? "Enter Reconcile acceptance" : "Enter Refresh receipt",
-            "c Copy to draft", "a Append to draft",
+            canReuseSteeringInDraft(receipt) ? "c Reuse in draft" : null,
         ].filter(Boolean);
         rows.push([{ text: actions.join(" · "), color: "cyan" }]);
     }

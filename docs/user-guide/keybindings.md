@@ -129,7 +129,9 @@ Notes:
   A missed steer does not automatically run next turn.
 - In Guidance receipts, Up/Down selects a request and PageUp/PageDown scrolls
   its text. Enter refreshes or reconciles acceptance; `w` withdraws,
-  `r` sends as a new message, `c` copies to an empty draft, and `a` appends.
+  `r` sends as a new message and `c` reuses undelivered/withdrawn/uncertain
+  guidance in an empty draft or appends it on a new line. Delivered receipts
+  have no draft action; text remains selectable.
   Escape closes the receipt view. The server decides which mutations are allowed.
 - The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
 - Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.

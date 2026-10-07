@@ -2,6 +2,13 @@
 // prose establishes delivery, inclusion, or compliance.
 export const STEERING_HELP = "Send guidance at the next supported input boundary. Running actions may still finish.";
 
+export function canReuseSteeringInDraft(receipt) {
+    return typeof receipt?.text === "string"
+        && ["not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed"].includes(receipt.disposition)
+        && !(receipt.recoveryFlags?.length)
+        && !(receipt.attempts?.items || []).some(attempt => attempt.deliveredAt);
+}
+
 export function getSteeringAttemptDisplay(attempt) {
     if (attempt.outcome === "released") return "Not submitted";
     if (attempt.deliveredAt && attempt.deliveryKind === "steering") return "Delivered to current turn";

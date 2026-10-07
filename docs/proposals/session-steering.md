@@ -211,7 +211,7 @@ The main label follows the strongest available evidence and future disposition.
 | Registered/submitted to SDK; no delivery event | Waiting for a safe point | Current model call or tool batch may need to finish. |
 | Correlated SDK delivery is steering | Delivered to current turn | This is delivery, not compliance. |
 | Correlated delivery is queued or an owned idle continuation | Delivered after the earlier response | Earlier output was not interrupted. |
-| Target ended before invocation | Not delivered — turn ended | Retain text; offer Send as new message and Copy to draft. |
+| Target ended before invocation | Not delivered — turn ended | Retain text; offer Send as new message and Reuse in draft. |
 | Stop closed a never-invoked request | Not delivered — turn stopped | Nothing will be resent automatically. |
 | Atomic pre-claim withdrawal won | Withdrawn | Retain audit and copy; no delivery occurs through this request. |
 | Submission may have happened; no positive delivery evidence | Delivery uncertain | Explain the recovery or terminal reason; do not show success. |
@@ -277,9 +277,11 @@ Disable that action while its submission is in flight.
 Explain: `Adds this text to the message queue; earlier messages stay ahead.`
 Do not use `sendAnswer`, even if a question appeared since the steer was accepted.
 
-Also offer `Copy to draft`.
-If the draft is nonempty, ask before replacing it or offer an explicit append action.
-Cancelling that choice leaves both draft and retained guidance unchanged.
+Offer one `Reuse in draft` action on not-delivered, withdrawn, and
+delivery-uncertain receipts. It fills an empty draft or appends on a new line
+to a nonempty draft; it never replaces newer text. Delivered receipts have no
+draft action, but keep their text selectable. This owner-directed UI refinement
+replaces the earlier separate Copy/Append controls (2026-10-07).
 A failed new send keeps the retained text and original disposition visible.
 
 An already-submitted message can cross the CLI's final response boundary and become an owned

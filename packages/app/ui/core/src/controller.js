@@ -1,5 +1,6 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { newClientId } from "./client-id.js";
+import { canReuseSteeringInDraft } from "./steering.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -3419,8 +3420,8 @@ export class PilotSwarmUiController {
         }
         if (action === "withdraw") await this.withdrawSteering(sessionId, requestId);
         else if (action === "resend") await this.resendSteering(sessionId, requestId);
-        else if (action === "copy" || action === "append") {
-            this.copySteeringToDraft(sessionId, requestId, { append: action === "append" });
+        else if (action === "reuse") {
+            this.reuseSteeringInDraft(sessionId, requestId);
         } else {
             const pending = state.steering?.bySessionId?.[sessionId]?.pending?.[requestId];
             if (pending) await this.retrySteering(sessionId, requestId);
@@ -6165,6 +6166,7 @@ export class PilotSwarmUiController {
             this.setStatus("Select the guidance's session before copying it to the draft.");
             return;
         }
+
         if (state.ui.prompt && !append) {
             this.setStatus("The draft is not empty. Use Append to draft to keep both texts.");
             return;
@@ -6172,6 +6174,19 @@ export class PilotSwarmUiController {
         this.setPrompt(append && state.ui.prompt ? `${state.ui.prompt}\n\n${receipt.text}` : receipt.text);
         this.dispatch({ type: "ui/promptAction", index: null });
         this.setFocus(FOCUS_REGIONS.PROMPT);
+    }
+
+    reuseSteeringInDraft(sessionId, requestId) {
+        const state = this.getState();
+        const receipt = state.steering?.bySessionId?.[sessionId]?.receipts?.[requestId];
+        if (state.sessions.activeSessionId !== sessionId || state.ui.promptEdit || !canReuseSteeringInDraft(receipt)) {
+            this.setStatus("Select this session and an undelivered guidance receipt to reuse it in a new draft.");
+            return false;
+        }
+        this.setPrompt(state.ui.prompt ? `${state.ui.prompt}\n${receipt.text}` : receipt.text);
+        this.dispatch({ type: "ui/promptAction", index: null });
+        this.setFocus(FOCUS_REGIONS.PROMPT);
+        return true;
     }
 
     /**
@@ -11489,8 +11504,8 @@ export class PilotSwarmUiController {
             case UI_COMMANDS.RESEND_STEERING:
                 await this.actOnSelectedSteering("resend");
                 return;
-            case UI_COMMANDS.COPY_STEERING:
-                await this.actOnSelectedSteering("copy");
+            case UI_COMMANDS.REUSE_STEERING:
+                await this.actOnSelectedSteering("reuse");
                 return;
             case UI_COMMANDS.FOCUS_NEXT:
                 this.focusNext();

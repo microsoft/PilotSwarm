@@ -1,5 +1,5 @@
 import React from "react";
-import { getSteeringAttemptDisplay } from "pilotswarm/ui-core";
+import { getSteeringAttemptDisplay, canReuseSteeringInDraft } from "pilotswarm/ui-core";
 
 export function SteeringReceipt({ message, controller }) {
     const receipt = message.steering;
@@ -58,8 +58,8 @@ export function SteeringReceipt({ message, controller }) {
             resend?.phase === "sending") : null,
         receipt.error && !receipt.rejected && !receipt.inFlight ? button("Reconcile acceptance",
             () => controller.retrySteering(sessionId, receipt.clientRequestId)) : null,
-        button("Copy to draft", () => controller.copySteeringToDraft(sessionId, requestId), undefined, typeof receipt.text !== "string"),
-        button("Append to draft", () => controller.copySteeringToDraft(sessionId, requestId, { append: true }), undefined, typeof receipt.text !== "string"),
+        canReuseSteeringInDraft(receipt) ? button("Reuse in draft", () => controller.reuseSteeringInDraft(sessionId, requestId),
+            "Use in an empty draft, or append on a new line without replacing existing text.") : null,
     ) : null,
     error ? React.createElement("p", { role: "alert" }, error) : null);
 }
