@@ -266,7 +266,10 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                         const receiptWire = await mcp.callTool({ name: "get_steering_request", arguments: {
                             session_id: h.sessionId, request_id: accepted.receipt.requestId,
                         } });
-                        expect(JSON.parse(receiptWire.content[0].text)).toEqual(accepted.receipt);
+                        const { display, ...receiptPayload } = JSON.parse(receiptWire.content[0].text);
+                        expect(receiptPayload).toEqual(accepted.receipt);
+                        assertEqual(display.label, "Accepted");
+                        assert(typeof display.detail === "string");
                         await h.catalog.steerClaim(h.sessionId, h.target.owner, 1);
                         const withdrawn = await mcp.callTool({ name: "withdraw_steering_request", arguments: {
                             session_id: h.sessionId, request_id: accepted.receipt.requestId,

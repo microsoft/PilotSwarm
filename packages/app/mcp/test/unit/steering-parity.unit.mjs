@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerTurnControlTools } from "../../dist/src/tools/turn-control.js";
+import { registerSessionTools } from "../../dist/src/tools/sessions.js";
 
 function tools(api, mgmt) {
     const handlers = new Map();
@@ -24,4 +25,20 @@ test("web MCP keeps typed receipt state and adds safe-point human wording", asyn
     const body = JSON.parse(result.content[0].text);
     assert.deepEqual(body.receipt, receipt);
     assert.equal(body.display.label, "Waiting for a safe point");
+});
+
+test("direct MCP receipt-linked resend refuses before any session or queue lookup", async () => {
+    const handlers = new Map();
+    const neverRead = new Proxy({}, { get() { throw new Error("Direct receipt resend must not inspect or enqueue as an inferred actor"); } });
+    registerSessionTools({ registerTool: (name, _config, handler) => handlers.set(name, handler) },
+        { api: null, mgmt: neverRead, client: neverRead });
+    const result = await handlers.get("send_message")({
+        session_id: "s", message: "retained guidance", steering_request_id: "r",
+        client_message_ids: ["fresh-resend"], enqueue_only: true,
+    });
+    assert.equal(result.isError, true);
+    assert.deepEqual(JSON.parse(result.content[0].text), {
+        error: "Steering receipt resend is unsupported in direct-store MCP mode. Use authenticated Web API mode.",
+        code: "unsupported", reason: "direct_mcp_unavailable",
+    });
 });

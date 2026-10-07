@@ -64,3 +64,42 @@ test("disposed panel's lost steering acknowledgement remains reconcilable in mai
     assert.equal(next.getState().steering.bySessionId.s.pending.original.expectedTarget, "t");
     assert.match(next.getState().steering.bySessionId.s.pending.original.error, /Reply lost/);
 });
+
+test("main and linked panels exclude duplicate withdrawal while an acknowledged result survives panel disposal", async () => {
+    const result = Promise.withResolvers();
+    const entered = Promise.withResolvers();
+    const calls = [];
+    const transport = {
+        withdrawSteeringRequest: async (...args) => { calls.push(args); entered.resolve(); return result.promise; },
+    };
+    const main = controller(transport), panel = controller(transport), peer = controller(transport);
+    const pending = { ...receipt, revision: 1, disposition: "accepted", actions: { canWithdraw: true } };
+    main.dispatch({ type: "steering/receiptReceived", sessionId: "s", receipt: pending });
+    const dispose = linkSessionSteering(main, panel, "s");
+    linkSessionSteering(main, peer, "s");
+    const withdrawal = panel.withdrawSteering("s", "r");
+    await entered.promise;
+    dispose();
+    await main.withdrawSteering("s", "r");
+    await peer.withdrawSteering("s", "r");
+    assert.deepEqual(calls, [["s", "r"]]);
+    result.resolve({ outcome: "withdrawn", receipt: { ...pending, revision: 2, disposition: "withdrawn", actions: { canWithdraw: false } } });
+    await withdrawal;
+    assert.equal(main.getState().steering.bySessionId.s.receipts.r.disposition, "withdrawn");
+    assert.equal(peer.getState().steering.bySessionId.s.receipts.r.revision, 2);
+    assert.equal(main.steeringWithdrawals.size, 0);
+});
+
+test("linked panels share access loss without retaining private guidance or stale action grants", () => {
+    const main = controller(), panel = controller(), peer = controller();
+    main.dispatch({ type: "steering/receiptReceived", sessionId: "s", receipt });
+    linkSessionSteering(main, panel, "s");
+    linkSessionSteering(main, peer, "s");
+    panel.dispatch({ type: "steering/accessLost", sessionId: "s" });
+    for (const view of [main, panel, peer]) {
+        const entry = view.getState().steering.bySessionId.s;
+        assert.equal(entry.accessLost, true);
+        assert.deepEqual(entry.receipts, {});
+        assert.deepEqual(entry.resends, {});
+    }
+});
