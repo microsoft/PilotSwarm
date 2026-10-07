@@ -569,6 +569,7 @@ export class SteeringPump {
         if (outcome !== "settled" || this.needsQuiesce) {
             this.trace(`[steering] settle ${outcome}: ${this.unresolved().length} send(s) without evidence; quiescing the session`);
             await this.quiesceSession();                              // INV-P6
+            if (this.interrupted) return;                            // Stop/abort owns the SDK work now
         }
         if (outcome === "guard") throw guardError;                    // INV-P11
     }
@@ -580,11 +581,19 @@ export class SteeringPump {
     }
 
     private async quiesceSession(): Promise<void> {                  // INV-P9
-        if (this.quiesced) return;
+        if (this.quiesced || this.interrupted) return;
         const ok = await Promise.race([
             this.o.quiesceWarmSession().catch(() => false),
             sleep(this.o.quiesceMs).then(() => false),
+            this.whenInterrupted().then(() => "interrupted" as const),
         ]);
+        if (ok === "interrupted") {
+            // A Stop or abort took ownership of the session while quiescence was running.
+            // The issued quiescence finishes on its own (its cleanup is generation-fenced);
+            // the turn does not wait for it.
+            this.trace("[steering] quiescence interrupted by Stop/abort; not waiting for it");
+            return;
+        }
         if (!ok) { this.stats.quiesceFailed++; throw new SteeringQuiesceFailedError(); }
         this.stats.quiesced++;
         this.quiesced = true;
@@ -676,20 +685,30 @@ export class SteeringPump {
         if (r === TIMEOUT) this.trace("[steering] counter write timed out");
     }
 
+    /** bounded(), and also ends at once when a Stop/abort interrupts the pump. */
+    private boundedUnlessInterrupted<T>(p: Promise<T> | undefined, ms: number): Promise<Bounded<T | undefined>> {
+        if (!p) return Promise.resolve(undefined);
+        return Promise.race([bounded(p, ms), this.whenInterrupted().then((): typeof TIMEOUT => TIMEOUT)]);
+    }
+
     private async settleInner(o: { stopping: boolean }): Promise<SteeringManifest | undefined> {
         this.released = true;                                         // INV-P13: before any await
         this.gate.close();
         if (this.leaseTimer) clearInterval(this.leaseTimer);
         this.wake();
-        if ((await bounded(this.startup, this.o.ioTimeoutMs)) === TIMEOUT) {
+        if ((await this.boundedUnlessInterrupted(this.startup, this.o.ioTimeoutMs)) === TIMEOUT) {
             // openWindow is not cancelled: tombstone the target so a late open can never commit (§6a.9).
-            if ((await bounded(this.ch.abandonWindow(), this.o.ioTimeoutMs)) === TIMEOUT) this.needsQuiesce = true;
+            if ((await this.boundedUnlessInterrupted(this.ch.abandonWindow(), this.o.ioTimeoutMs)) === TIMEOUT) this.needsQuiesce = true;
         }
-        if ((await bounded(this.loop, this.o.sendTimeoutMs + this.o.ioTimeoutMs)) === TIMEOUT) this.needsQuiesce = true;
+        if ((await this.boundedUnlessInterrupted(this.loop, this.o.sendTimeoutMs + this.o.ioTimeoutMs)) === TIMEOUT) this.needsQuiesce = true;
         for (const a of this.unresolved()) {
+            if (this.interrupted) {                                  // Stop/abort mid-settle: no more reads
+                this.writes.push("unconfirmed", () => this.ch.markUnconfirmed(a.attemptId));
+                continue;
+            }
             let hit: any | null = null;
             if (a.sdkMessageId) {
-                const read = await bounded(this.findInHistory(a.sdkMessageId), this.o.ioTimeoutMs);
+                const read = await this.boundedUnlessInterrupted(this.findInHistory(a.sdkMessageId), this.o.ioTimeoutMs);
                 hit = read === TIMEOUT || read == null ? null : read;   // INV-P12
             }
             if (hit) this.recordDelivery(a, hit);                     // an unrecognized kind stays uncertain
@@ -707,11 +726,11 @@ export class SteeringPump {
         }
         for (const slot of this.earlySlots.values()) slot.settle(null);   // unbound by now: not ours
         const allWrites = Promise.all([this.writes.drain(), ...this.orderedWrites]).then(() => {});
-        if ((await bounded(allWrites, this.o.ioTimeoutMs)) === TIMEOUT) {
+        if ((await this.boundedUnlessInterrupted(allWrites, this.o.ioTimeoutMs)) === TIMEOUT) {
             this.trace("[steering] receipt writes did not drain in time; unresolved evidence stays unconfirmed");
         }
         if (!o.stopping && this.windowOpened) {
-            if ((await bounded(this.ch.quiesce(), this.o.ioTimeoutMs)) === TIMEOUT) {
+            if ((await this.boundedUnlessInterrupted(this.ch.quiesce(), this.o.ioTimeoutMs)) === TIMEOUT) {
                 this.trace("[steering] window quiesce did not complete in time");
             }
         }

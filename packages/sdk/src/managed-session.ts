@@ -913,6 +913,8 @@ export class ManagedSession {
     private steeringTrace: ((message: string) => void) | undefined;
     /** Incremented at every runTurn start; the Stop watch acts only within its own generation. */
     private turnGeneration = 0;
+    /** The SDK abort issued by steering quiescence, while it is in flight (never doubled). */
+    private quiescenceAbort: Promise<unknown> | null = null;
 
     constructor(
         sessionId: string,
@@ -3961,6 +3963,8 @@ export class ManagedSession {
         // steering settlement must not wait for evidence the abort discarded.
         this.steeringPump?.interrupt();
         if (this.steeringPump) this.armSteeringStopWatch();             // Stop, cancellation, cap or watchdog
+        // Quiescence's own abort is already on the wire: reuse it rather than send a second one.
+        if (this.quiescenceAbort) { try { await this.quiescenceAbort; } catch {} return; }
         try { await this.copilotSession.abort(); } catch {}
     }
 
@@ -4054,8 +4058,11 @@ export class ManagedSession {
             (t as any).unref?.();
         });
         try {
+            const abortCall = Promise.resolve(this.copilotSession.abort());
+            this.quiescenceAbort = abortCall;
+            void abortCall.then(() => {}, () => {}).finally(() => { if (this.quiescenceAbort === abortCall) this.quiescenceAbort = null; });
             const aborted = await Promise.race([
-                Promise.resolve(this.copilotSession.abort()).then(() => "ok" as const, () => "failed" as const),
+                abortCall.then(() => "ok" as const, () => "failed" as const),
                 timer(timeoutMs),
             ]);
             if (aborted !== "ok") return false;
