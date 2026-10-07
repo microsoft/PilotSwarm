@@ -360,6 +360,7 @@ describe.concurrent("SteeringPump", () => {
         try {
             await startTurn(session, pump, ch);
             await renewalEntered.promise;
+            expect(ch.names()[0]).toBe("open");
             renewalResult.resolve(false);
             await until(() => !pump.gate.isOpen);
             await pump.settle({ stopping: false });
