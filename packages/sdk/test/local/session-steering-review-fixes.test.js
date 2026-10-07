@@ -12,6 +12,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { steeringContentHash } from "../../src/steering.ts";
 import { createCmsSteeringChannel } from "../../src/steering-channel.ts";
 import { SteeringPump } from "../../src/steering-pump.ts";
+import { SessionManager } from "../../src/session-manager.ts";
 
 const url = process.env.PS_TEST_DATABASE_URL || process.env.TEST_DATABASE_URL || process.env.DATABASE_URL
     || "postgres://postgres:postgres@localhost:5432/pilotswarm";
@@ -182,5 +183,71 @@ describe("F03: the final hand-off fence checks the lease", () => {
             await pump.settle({ stopping: false });
             pump.dispose();
         }
+    });
+});
+
+describe("F04: steering quiescence cleanup is generation-safe", () => {
+    /** The real SessionManager methods over an in-memory handle map (no CLI, no I/O). */
+    function manager() {
+        const m = Object.create(SessionManager.prototype);
+        m.sessions = new Map();
+        m.sessionAgentCopies = new Map();
+        m.sessionBindingFingerprints = new Map();
+        return m;
+    }
+    function handle(name, destroyImpl) {
+        const h = {
+            name,
+            destroyed: false,
+            aborted: false,
+            getWorkspaceState: () => ({}),
+            getActiveTurn: () => (name === "replacement" && !h.aborted ? { turnIndex: 7, startedAt: Date.now() } : null),
+            requestStop: () => ({ turnIndex: 7 }),
+            abort: () => { h.aborted = true; },
+            destroy: destroyImpl ?? (async function () { this.destroyed = true; }),
+        };
+        return h;
+    }
+
+    it("a late completion of a timed-out cleanup does not remove the replacement handle", async () => {
+        const m = manager();
+        let finishOld;
+        const old = handle("old", function () { return new Promise((r) => { finishOld = () => { this.destroyed = true; r(); }; }); });
+        m.sessions.set("s1", old);
+        m.sessionAgentCopies.set("s1", { tag: "old-copy" });
+        m.sessionBindingFingerprints.set("s1", "old-fp");
+
+        // The pump's bounded quiescence gives up (deadline); the manager call keeps running.
+        const late = m.quiesceForSteering("s1");
+        const outcome = await Promise.race([late, sleep(30).then(() => "deadline")]);
+        expect(outcome).toBe("deadline");
+
+        // Recovery installs a replacement while the old cleanup is still outstanding.
+        const replacement = handle("replacement");
+        m.sessions.set("s1", replacement);
+        m.sessionAgentCopies.set("s1", { tag: "new-copy" });
+        m.sessionBindingFingerprints.set("s1", "new-fp");
+
+        finishOld();
+        expect(await late).toBe(true);
+        expect(old.destroyed).toBe(true);
+        expect(m.sessions.get("s1")).toBe(replacement);
+        expect(m.sessionAgentCopies.get("s1")).toEqual({ tag: "new-copy" });
+        expect(m.sessionBindingFingerprints.get("s1")).toBe("new-fp");
+
+        // Stop still reaches the replacement's running turn.
+        const stop = await m.abortWarmSessionTurn("s1", { reason: "test", unwindGraceMs: 1_000 });
+        expect(stop).toEqual({ outcome: "stopped", turnIndex: 7 });
+        expect(replacement.aborted).toBe(true);
+    });
+
+    it("without a replacement the cleanup still forgets its own handle", async () => {
+        const m = manager();
+        const old = handle("old");
+        m.sessions.set("s2", old);
+        m.sessionAgentCopies.set("s2", { tag: "copy" });
+        expect(await m.quiesceForSteering("s2")).toBe(true);
+        expect(m.sessions.has("s2")).toBe(false);
+        expect(m.sessionAgentCopies.has("s2")).toBe(false);
     });
 });

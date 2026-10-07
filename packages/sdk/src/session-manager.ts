@@ -3394,7 +3394,14 @@ export class SessionManager {
         } catch {
             return false;
         } finally {
-            this._forgetWarmSession(sessionId);
+            // Generation fence (review F04): the caller may have timed out and a
+            // replacement handle may be installed by now. Forget ONLY the handle
+            // this call captured; a late completion never removes its successor.
+            if (this.sessions.get(sessionId) === session) {
+                this._forgetWarmSession(sessionId);
+            } else {
+                emitSessionManagerTrace(sessionId, "steering quiescence completed after the handle was replaced; the current handle is kept");
+            }
         }
     }
 
