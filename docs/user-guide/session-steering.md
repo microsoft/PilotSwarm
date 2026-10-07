@@ -53,6 +53,10 @@ conversation, not external side effects.
 The timing-unconfirmed delivered state offers neither **Reuse in draft** nor
 **Send as new message**. The Steering stats card counts requests with this
 disposition separately from attempts with a known current-turn or follow-up kind.
+**Retained requests** counts not-delivered-ended, not-delivered-stopped and
+withdrawn requests. Uncertain delivery is separate. Select **Guidance history**
+in portal session stats, or press `r` in the TUI session stats view, to read
+permitted receipts and explicitly reuse eligible guidance.
 
 Recovery may show **Delivered earlier — pending redelivery**, **Delivered again
 after recovery**, or **Delivered earlier — recovery unconfirmed**. The original
@@ -97,6 +101,8 @@ Use `pilotswarm sessions steering-state` to read the observed target, then
 that `--expected-target`. Supply exactly one of `--text`, `--text-file`, or
 `--stdin`. File/stdin input keeps text out of process arguments. Add `--json`
 for machine-readable results.
+Human-readable discovery also prints the exact `--expected-target` value;
+receipt lists print `Next cursor (--cursor)` when more pages remain.
 
 The command returns after acceptance, not after delivery. Read `steering-status`
 or `steering-list` for receipts. `withdraw-steering` has the same pre-claim rule

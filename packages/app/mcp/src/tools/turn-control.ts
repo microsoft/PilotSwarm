@@ -94,7 +94,8 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             title: "Stop Turn",
             description:
                 "Abort the in-flight turn of a running PilotSwarm session without cancelling the session — it stays "
-                + "alive and accepts new messages. Use abort_session only when the whole session should end.",
+                + "alive and accepts new messages. Queued prompts and schedules continue. "
+                + "Use abort_session only when the whole session should end.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose current turn to stop"),
                 reason: z.string().optional().describe("Optional reason, surfaced to the session"),

@@ -2359,7 +2359,7 @@ function baseReducer(state, action) {
             const entry = state.steering?.bySessionId?.[action.sessionId] || emptySteeringSession();
             if (entry.accessLost || (action.accessRevision || 0) !== (entry.accessRevision || 0)) return state;
             return { ...state, steering: { ...state.steering, bySessionId: { ...state.steering?.bySessionId,
-                [action.sessionId]: { ...entry, page: action.page } } } };
+                [action.sessionId]: { ...entry, page: action.finishLoading ? { ...entry.page, loading: false } : action.page } } } };
         }
         case "steering/accessLost": {
             const bySessionId = { ...state.steering?.bySessionId };

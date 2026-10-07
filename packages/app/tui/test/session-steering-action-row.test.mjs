@@ -52,6 +52,14 @@ test("ST-U10: normal prompt Tab/Right/Enter invokes Steer, never ordinary Send",
     assert.equal(h.store.getState().ui.prompt, "guidance");
 });
 
+test("stats r invokes the permitted guidance-history command through the native callback", () => {
+    const h = harness();
+    h.store.dispatch({ type: "ui/focus", focusRegion: "inspector" });
+    h.store.dispatch({ type: "ui/inspectorTab", inspectorTab: "stats" });
+    h.key({}, "r");
+    assert.deepEqual(h.commands, [UI_COMMANDS.STEERING_HISTORY]);
+});
+
 test("ST-U10: Escape and Shift+Tab return to editing without sending", () => {
     for (const key of [{ escape: true, name: "escape" }, { tab: true, shift: true }]) {
         const h = harness();

@@ -73,6 +73,7 @@ These keys work whenever focus is not in the prompt editor.
 | Key | Action |
 |-----|--------|
 | `f` | Cycle between `session`, `fleet`, and `users` stats views |
+| `r` | Open permitted guidance receipt history from session stats |
 
 ## Files Inspector
 

@@ -4,7 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { SteeringReceipt } from "./steering-receipt.js";
-import { SteeringArchive } from "./steering-archive.js";
+import { SteeringArchive, SteeringHistoryDialog } from "./steering-archive.js";
 import { isTextareaHistoryBoundary, supportsPromptHistoryKeyboard } from "./prompt-history-boundary.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -9358,6 +9358,13 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
                 onClick: () => controller.setStatsViewMode(mode),
             }));
         }
+        const steeringStats = viewState.sessionStats?.bySessionId?.[viewState.activeSessionId]?.steeringStats;
+        if ((!viewState.statsViewMode || viewState.statsViewMode === "session") && steeringStats?.data && !steeringStats.unsupported) {
+            actions.push(React.createElement(IconButton, {
+                key: "steering-history", icon: "↗", label: "Guidance history",
+                onClick: () => controller.handleCommand(UI_COMMANDS.STEERING_HISTORY).catch(() => {}),
+            }));
+        }
     }
 
     const panelActions = extraActions
@@ -13209,6 +13216,9 @@ function ModalLayer({ controller }) {
         ));
     };
 
+    if (modal.type === "steeringReceipts") {
+        return React.createElement(SteeringHistoryDialog, { controller, sessionId: modal.sessionId, onClose: close });
+    }
     if (modal.type === "confirm" && modalState.confirm) {
         const isAlert = Boolean(modal.alert);
         const isDestructive = !isAlert && (modal.action === "deleteSession" || modal.action === "removeSystemSession");

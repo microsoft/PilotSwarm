@@ -6,8 +6,10 @@ export function linkSessionSteering(parent, child, sessionId) {
     const dispatchChild = child.dispatch.bind(child);
     parent.steeringResends ??= new Set();
     parent.steeringWithdrawals ??= new Set();
+    parent.steeringListLoads ??= new Map();
     child.steeringResends = parent.steeringResends;
     child.steeringWithdrawals = parent.steeringWithdrawals;
+    child.steeringListLoads = parent.steeringListLoads;
     let current;
     const sync = () => {
         const entry = parent.getState().steering?.bySessionId?.[sessionId];

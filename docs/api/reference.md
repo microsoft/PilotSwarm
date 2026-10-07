@@ -106,6 +106,11 @@ It permits neither retained-text resend nor draft reuse. The shared stats card
 uses `requests.byDisposition.delivered_timing_unconfirmed` for its request count;
 delivery-kind attempt counts and snapshot inclusion remain separate evidence.
 
+The low-level Web `ApiClient.call(name, params, { signal })` supports per-read
+cancellation for GET operations. It does not cancel writes. History discovery
+uses this to abort its own issued page read when its time budget expires,
+without cancelling other receipt reads or sends in the same session.
+
 List reads default to 50 and cap at 200. Use `limit`, `cursor`, `dispositions` (JSON array),
 and `expectedTarget` query parameters. A cursor is bound to the original session
 and filters. `attemptCursor` on a receipt read pages bounded attempt evidence;
