@@ -6105,7 +6105,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const panelActions = React.createElement(React.Fragment, null,
         !actionsOnly && isBulkSelection
             ? React.createElement("span", {
-                className: "ps-mini-button-label",
+                className: "ps-mini-button-label ps-session-selection-label",
                 style: { padding: "0 6px", fontSize: "12px", opacity: 0.85 },
                 title: "Multiple sessions selected. Move to group or cancel selected sessions; click Clear to exit.",
             }, `${selectedCount} selected`)

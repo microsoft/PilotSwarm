@@ -2359,6 +2359,29 @@ body.is-resizing-pane-y iframe {
   }
 }
 
+/* Bulk selection adds a count and Clear control to the session actions. Give
+   that wider toolbar its own row instead of rendering it below the clipped
+   fixed header. The ordinary single-selection header remains one row. */
+.ps-panel-header:has(.ps-session-selection-label) {
+  height: auto;
+  min-height: var(--ps-panel-header-h);
+  max-height: none;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  overflow: visible;
+  padding-block: 4px;
+}
+
+.ps-panel-header:has(.ps-session-selection-label) > .ps-panel-title {
+  flex: 1 0 100%;
+  overflow: hidden;
+}
+
+.ps-panel-header:has(.ps-session-selection-label) > .ps-panel-header-right {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 .ps-work-index-tab {
   border: 0;
   border-bottom: 2px solid transparent;
