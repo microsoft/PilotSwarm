@@ -77,8 +77,8 @@ export function createCmsSteeringChannel(
         recoverySource: opts.recoverySource ?? "local",
         leaseMs,
         openWindow: () => catalog.steerWindowOpen(sessionId, target, ownerToken, leaseMs),
-        recordRecoveryCheck: async (requestId, result, sdkMessageId) => {
-            await catalog.steerRecordRecoveryCheck(requestId, ownerToken, result, sdkMessageId ?? null);
+        recordRecoveryCheck: async (requestId, result, sdkMessageId, kind) => {
+            await catalog.steerRecordRecoveryCheck(requestId, ownerToken, result, sdkMessageId ?? null, kind ?? null);
         },
         renew: () => catalog.steerWindowRenew(sessionId, ownerToken, leaseMs),
         quiesce: async () => { await catalog.steerWindowQuiesce(sessionId, ownerToken); },

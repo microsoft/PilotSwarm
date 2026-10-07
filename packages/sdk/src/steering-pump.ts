@@ -278,18 +278,16 @@ export class SteeringPump {
             const ids = new Set(row.sdkMessageIds.length > 0 ? row.sdkMessageIds : [row.sdkMessageId!]);
             const hit = history.find((h) => h?.type === "user.message" && ids.has(h?.data?.messageId) && !isNativeChildEvent(h));
             if (!hit) { await this.ch.recordRecoveryCheck(row.requestId, "absent"); continue; }
+            // The delivery kind the CLI recorded with the found event; never guessed (F06).
+            const raw = hit?.data?.delivery;
+            const kind: SteeringDeliveryKind | null = DELIVERY_KINDS.has(raw) ? raw : null;
             if (this.ch.recoverySource === "restored") {
-                await this.ch.recordRecoveryCheck(row.requestId, "present", hit.data.messageId);   // stored base: included
+                await this.ch.recordRecoveryCheck(row.requestId, "present", hit.data.messageId, kind);   // stored base: included
                 continue;
             }
             // Local state this activity resumed: delivered, not resent; inclusion follows this commit.
-            await this.ch.recordRecoveryCheck(row.requestId, "present_local", hit.data.messageId);
-            const raw = hit?.data?.delivery;
-            this.recoveredLocal.push({
-                requestId: row.requestId,
-                sdkMessageId: hit.data.messageId,
-                kind: DELIVERY_KINDS.has(raw) ? raw : null,
-            });
+            await this.ch.recordRecoveryCheck(row.requestId, "present_local", hit.data.messageId, kind);
+            this.recoveredLocal.push({ requestId: row.requestId, sdkMessageId: hit.data.messageId, kind });
         }
     }
 

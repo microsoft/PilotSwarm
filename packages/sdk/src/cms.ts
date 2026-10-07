@@ -1475,7 +1475,7 @@ export interface SessionCatalog {
     /** cms_steer_claim. */
     steerClaim(sessionId: string, owner: string, limit: number): Promise<SteerRow[]>;
     /** cms_steer_record_recovery_check. */
-    steerRecordRecoveryCheck(requestId: string, owner: string, result: SteerRecoveryCheckResult, sdkMessageId?: string | null): Promise<boolean>;
+    steerRecordRecoveryCheck(requestId: string, owner: string, result: SteerRecoveryCheckResult, sdkMessageId?: string | null, kind?: SteeringDeliveryKind | null): Promise<boolean>;
     /** cms_steer_mark_submitting: the write-ahead marker. Returns the attempt id or null. */
     steerMarkSubmitting(requestId: string, owner: string): Promise<string | null>;
     /** cms_steer_mark_released. */
@@ -4027,10 +4027,10 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.steerFn("cms_steer_claim")}($1,$2,$3) AS v`, [sessionId, owner, limit])) ?? [];
     }
 
-    async steerRecordRecoveryCheck(requestId: string, owner: string, result: SteerRecoveryCheckResult, sdkMessageId?: string | null): Promise<boolean> {
+    async steerRecordRecoveryCheck(requestId: string, owner: string, result: SteerRecoveryCheckResult, sdkMessageId?: string | null, kind?: SteeringDeliveryKind | null): Promise<boolean> {
         return Boolean(await this.steerScalar<boolean>(
-            `SELECT ${this.steerFn("cms_steer_record_recovery_check")}($1,$2,$3,$4) AS v`,
-            [requestId, owner, result, sdkMessageId ?? null]));
+            `SELECT ${this.steerFn("cms_steer_record_recovery_check")}($1,$2,$3,$4,$5) AS v`,
+            [requestId, owner, result, sdkMessageId ?? null, kind ?? null]));
     }
 
     async steerMarkSubmitting(requestId: string, owner: string): Promise<string | null> {

@@ -336,3 +336,92 @@ describe("F05: steering database work is bounded", () => {
         pump.dispose();
     });
 });
+
+describe("F06: recovery records the observed delivery timing, never an invented one", () => {
+    /** Accept → claim → write-ahead → SDK id persisted (delivery write lost) → same-target recovery. */
+    async function lostDeliveryRecovered() {
+        const { sessionId, target, owner, requestId } = await seededClaim();
+        const attemptId = await catalog.steerMarkSubmitting(requestId, owner);
+        const sdkId = `sdk-${randomUUID()}`;
+        await catalog.steerMarkSubmitted(attemptId, owner, sdkId);
+        const fresh = randomUUID();
+        const reopened = await catalog.steerWindowOpen(sessionId, target, fresh, LEASE);
+        expect(reopened.recovered.map((r) => r.requestId)).toEqual([requestId]);
+        return { sessionId, target, fresh, requestId, sdkId };
+    }
+
+    for (const [kind, disposition] of [["steering", "delivered_current_turn"], ["queued", "delivered_after_response"],
+        ["idle", "delivered_after_response"], [null, "delivered_timing_unconfirmed"], ["bogus", "delivered_timing_unconfirmed"]]) {
+        it(`restored history with delivery kind ${kind} ⇒ ${disposition}; inclusion stays separate`, async () => {
+            const { sessionId, target, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+            expect(await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", sdkId, kind)).toBe(true);
+            const r = await catalog.steerGet(sessionId, requestId);
+            const recorded = ["steering", "queued", "idle"].includes(kind) ? kind : null;
+            expect(r).toMatchObject({ status: "delivered", disposition, inclusion: { state: "included" } });
+            expect(r.attempts.items.at(-1)).toMatchObject({ outcome: "delivered", deliveryKind: recorded });
+            await catalog.steerTurnFinalize(sessionId, target, fresh, "published", [], 2);
+            const closed = await catalog.steerGet(sessionId, requestId);
+            expect(closed).toMatchObject({ status: "closed", disposition, inclusion: { state: "included" } });
+        });
+    }
+
+    it("present_local carries the kind too and leaves inclusion to finalize", async () => {
+        const { sessionId, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present_local", sdkId, "queued");
+        expect(await catalog.steerGet(sessionId, requestId)).toMatchObject({
+            disposition: "delivered_after_response", inclusion: { state: "unconfirmed" } });
+    });
+
+    it("a kind recorded from live evidence is never overwritten by recovery", async () => {
+        const { sessionId, target, owner, requestId } = await seededClaim();
+        const attemptId = await catalog.steerMarkSubmitting(requestId, owner);
+        await catalog.steerMarkSubmitted(attemptId, owner, "sdk-live");
+        await catalog.steerMarkDelivered(attemptId, "sdk-live", "queued");
+        const fresh = randomUUID();
+        await catalog.steerWindowOpen(sessionId, target, fresh, LEASE);
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", "sdk-live", "steering");
+        const r = await catalog.steerGet(sessionId, requestId);
+        expect(r.attempts.items[0].deliveryKind).toBe("queued");
+        expect(r.disposition).toBe("delivered_after_response");
+    });
+
+    it("Stop still closes a recovered delivery as delivered_before_stop (spec §6a.2)", async () => {
+        const { sessionId, target, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", sdkId, null);
+        await catalog.steerCloseStopped(sessionId, target.turnIndex);
+        expect((await catalog.steerGet(sessionId, requestId)).disposition).toBe("delivered_before_stop");
+    });
+
+    it("the pump passes the recorded kind of the found event", async () => {
+        const calls = [];
+        const channel = {
+            sessionId: "s", target: { epoch: 0, turnIndex: 0, incarnation: "i" }, ownerToken: "o", recoverySource: "restored",
+            openWindow: async () => ({ ok: true, recovery: true, recovered: [
+                { requestId: "a", sequence: 1, recoveryCheck: "pending", sdkMessageId: "m1", sdkMessageIds: ["m1"] },
+                { requestId: "b", sequence: 2, recoveryCheck: "pending", sdkMessageId: "m2", sdkMessageIds: ["m2"] },
+                { requestId: "c", sequence: 3, recoveryCheck: "pending", sdkMessageId: "m3", sdkMessageIds: ["m3"] }] }),
+            recordRecoveryCheck: async (...args) => { calls.push(args); },
+            renew: async () => true, claim: async () => [], quiesce: async () => {}, abandonWindow: async () => {},
+            markSubmitting: async () => null, markReleased: async () => {}, markSubmitted: async () => {},
+            markDelivered: async () => {}, markUnconfirmed: async () => {},
+        };
+        const handlers = new Map();
+        const session = {
+            on: (type, fn) => { handlers.set(type, fn); return () => {}; }, send: async () => "x",
+            getEvents: async () => [
+                { type: "user.message", data: { messageId: "m1", delivery: "queued" } },
+                { type: "user.message", data: { messageId: "m2", delivery: "idle" } },
+                { type: "user.message", data: { messageId: "m3" } }],
+        };
+        const pump = new SteeringPump(session, channel, {
+            stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true, scanMs: 10, settleMs: 50,
+        });
+        handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+        pump.noteMainPrompt("main");
+        await until(() => pump.gate.isOpen, 2_000, "the gate");
+        expect(calls).toEqual([["a", "present", "m1", "queued"], ["b", "present", "m2", "idle"], ["c", "present", "m3", null]]);
+        handlers.get("session.idle")({ type: "session.idle", data: {} });
+        await pump.settle({ stopping: false });
+        pump.dispose();
+    });
+});
