@@ -23,5 +23,11 @@
     "name": "copilot-runtime-worker",
     "namespace": "pilotswarm",
     "verifyImage": true
+  },
+  "gitops": {
+    "optionalEnvKeys": [
+      "DEFAULT_MCP_JSON",
+      "MCP_WORKLOAD_IDENTITY_SCOPES"
+    ]
   }
 }

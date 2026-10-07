@@ -584,3 +584,35 @@ test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env
     }
   }
 });
+
+test("stageManifests(worker): optional deployment MCP settings reach worker-env", () => {
+  const cases = [
+    [{}, "", ""],
+    [{
+      DEFAULT_MCP_JSON: '{"servers":{"internal":{"type":"http","url":"https://mcp.example.invalid/mcp"}}}',
+      MCP_WORKLOAD_IDENTITY_SCOPES: "internal=api://example/.default",
+    }, '{"servers":{"internal":{"type":"http","url":"https://mcp.example.invalid/mcp"}}}', "internal=api://example/.default"],
+  ];
+
+  for (const [extra, expectedCatalog, expectedScopes] of cases) {
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-mcp-"));
+    try {
+      const root = stageManifests({
+        service: "worker",
+        envName: "testenv",
+        env: makePortalEnv({
+          AZURE_STORAGE_CONTAINER: "copilot-sessions",
+          PILOTSWARM_TURN_TIMEOUT_MS: "1",
+          PILOTSWARM_LIVE_TURN: "0",
+          ...extra,
+        }),
+        stagingDir,
+      });
+      const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
+      assert.match(text, new RegExp(`^DEFAULT_MCP_JSON=${expectedCatalog.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+      assert.match(text, new RegExp(`^MCP_WORKLOAD_IDENTITY_SCOPES=${expectedScopes.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
+    }
+  }
+});
