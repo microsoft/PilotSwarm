@@ -13,7 +13,9 @@ your unsent draft. Editing ends navigation; the next Up starts from newest.
 Sending and session switches reset navigation. Menus and reference autocomplete
 take priority. The history comes from durable user inputs, including delivered
 steering; new accepted sends appear immediately. No other writer's inputs are
-recalled. Mobile/touch input is unchanged.
+recalled. An iPad or other tablet also supports these hardware-arrow keys,
+including while its keyboard reduces the visible viewport. Phone typing and
+touch-keyboard behavior are unchanged.
 
 ## Prerequisites
 
