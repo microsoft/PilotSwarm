@@ -149,7 +149,7 @@ test("accepted steering enters recall immediately without requiring a delivery e
     assert.deepEqual(selectPromptHistory(h.state()), ["new guidance"]);
 });
 
-test("history reads use existing user-event paging and reject late cross-viewer content", async () => {
+test("history reads use existing user-event paging and retain a completed scan without rereading", async () => {
     const reads = [];
     const h = harness([], { getSessionEventsBefore: async (...args) => {
         reads.push(args);
@@ -158,13 +158,22 @@ test("history reads use existing user-event paging and reject late cross-viewer 
     await h.controller.loadPromptHistory("s");
     assert.deepEqual(reads[0], ["s", Number.MAX_SAFE_INTEGER, 100, ["user.message", "session.steering_accepted"]]);
     assert.equal(selectPromptHistory(h.state()).length, 10);
-    let release;
-    h.controller.transport.getSessionEventsBefore = () => new Promise(resolve => { release = resolve; });
+    await h.controller.loadPromptHistory("s");
+    assert.equal(reads.length, 1, "completed discovery does not start another network scan");
+});
+
+test("an actually outstanding history read rejects late cross-viewer private content", async () => {
+    const response = Promise.withResolvers();
+    const reads = [];
+    const h = harness([], { getSessionEventsBefore: (...args) => { reads.push(args); return response.promise; } });
     const pending = h.controller.loadPromptHistory("s");
+    assert.equal(reads.length, 1, "the privacy cut starts at a genuinely issued read, not a completed-scan shortcut");
+    assert.equal(h.state().promptHistory.bySessionId.s.scan.loading, true);
     h.store.dispatch({ type: "auth/context", principal: { provider: "test", subject: "bob" } });
-    release([event(15, "private input")]);
+    response.resolve([event(15, "private input")]);
     await pending;
     assert.deepEqual(selectPromptHistory(h.state()), []);
+    assert.deepEqual(h.state().promptHistory.bySessionId, {}, "the prior viewer's delayed page never rebuilds the new viewer's cache");
 });
 
 test("reducer text edits end navigation but cursor changes and old page arrival do not", () => {
