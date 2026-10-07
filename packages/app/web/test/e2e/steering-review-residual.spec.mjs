@@ -14,19 +14,55 @@ for (const browserName of ["chromium", "webkit"]) {
             const page = await browser.newPage();
             const receipt = { sessionId: sid, requestId: "old", sequence: 1, revision: 2, text: "Old guidance",
                 schemaVersion: 1, status: "delivered", disposition: "delivered_after_response" };
-            const newer = { sessionId: sid, seq: 50, eventType: "user.message", data: { content: "New conversation" } };
-            const update = { sessionId: sid, seq: 60, eventType: "session.steering_updated", data: { projection: receipt } };
+            const newer = Array.from({ length: 299 }, (_, index) => ({
+                sessionId: sid, seq: 50 + index, eventType: "user.message", data: { content: `New conversation ${index}` },
+            }));
+            const update = { sessionId: sid, seq: 400, eventType: "session.steering_updated", data: { projection: receipt } };
+            const acceptance = { sessionId: sid, seq: 2, eventType: "session.steering_accepted",
+                data: { receipt: { ...receipt, revision: 1, status: "pending", disposition: "accepted" } } };
+            const pageEntered = Promise.withResolvers();
+            const pageReleased = Promise.withResolvers();
+            let acceptedPageReads = 0;
             await page.route("**/steering-state", route => route.fulfill({ json: { ok: true, result: { supported: true, steerable: false } } }));
             await page.route("**/steering?*", route => route.fulfill({ json: { ok: true, result: { items: [receipt], nextCursor: null } } }));
             await page.route("**/steering/old", route => route.fulfill({ json: { ok: true, result: receipt } }));
-            await page.route(`**/sessions/${sid}/events?*`, route => route.fulfill({ json: { ok: true, result: [newer, update] } }));
-            await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
-            const chat = page.locator(".ps-chat-panel .ps-scroll-panel");
-            await expect(chat).toContainText("New conversation");
-            await expect(page.locator(".ps-steering-archive")).toBeVisible();
-            await expect(chat).not.toContainText("Old guidance");
-            await page.locator(".ps-steering-archive > summary").click();
-            await expect(page.locator(".ps-steering-archive")).toContainText("Old guidance");
+            await page.route(`**/sessions/${sid}/events?*`, route => route.fulfill({ json: { ok: true, result: [...newer, update] } }));
+            await page.route(`**/sessions/${sid}/events-before?*`, async route => {
+                const query = new URL(route.request().url()).searchParams;
+                if (query.get("beforeSeq") !== "50") return route.fulfill({ json: { ok: true, result: [] } });
+                acceptedPageReads++;
+                pageEntered.resolve();
+                await pageReleased.promise;
+                return route.fulfill({ json: { ok: true, result: [acceptance] } });
+            });
+            try {
+                await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
+                const chat = page.locator(".ps-chat-panel .ps-scroll-panel");
+                await expect(chat).toContainText("New conversation");
+                await expect(page.locator(".ps-steering-archive")).toBeVisible();
+                await expect(chat).not.toContainText("Old guidance");
+                await page.locator(".ps-steering-archive > summary").click();
+                await expect(page.locator(".ps-steering-archive")).toContainText("Old guidance");
+                await chat.evaluate(node => { node.scrollTop = 0; });
+                await chat.dispatchEvent("wheel", { deltaY: -100 });
+                await chat.dispatchEvent("wheel", { deltaY: -100 });
+                await expect.poll(() => acceptedPageReads).toBe(1);
+                await pageEntered.promise;
+                await expect(chat).not.toContainText("Old guidance");
+                await expect(page.locator(".ps-history-load.is-loading")).toBeVisible();
+                pageReleased.resolve();
+                await expect(chat.getByText("Old guidance", { exact: true })).toBeVisible();
+                await expect(page.locator(".ps-steering-archive")).toHaveCount(0);
+                await expect(chat).toContainText("Delivered after the earlier response");
+                await expect(chat).not.toContainText("Guidance — Accepted");
+                const chronology = await chat.evaluate(node => {
+                    const text = node.textContent;
+                    return { old: text.indexOf("Old guidance"), ordinary: text.indexOf("New conversation 0") };
+                });
+                expect(chronology.old).toBeGreaterThanOrEqual(0);
+                expect(chronology.ordinary).toBeGreaterThan(chronology.old);
+                expect(acceptedPageReads).toBe(1);
+            } finally { pageReleased.resolve(); }
         } finally { await browser.close(); }
     });
     for (const phase of ["pending", "queued"]) {
