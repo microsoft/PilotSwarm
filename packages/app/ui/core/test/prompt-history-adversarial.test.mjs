@@ -113,3 +113,25 @@ test("reload retains the viewer's accepted but not-yet-delivered guidance from i
     assert.deepEqual(selectPromptHistory(h.state()), ["own accepted guidance", "ordinary own input"],
         "reload must not drop accepted input solely because delivery has not occurred");
 });
+
+test("accepted receipts remain viewer-filtered and a later delivery/redelivery is one recall identity", () => {
+    const accepted = (seq, requestId, actor = alice, over = {}) => ({
+        sessionId: "s1", seq, eventType: "session.steering_accepted", createdAt: seq,
+        data: { receipt: {
+            schemaVersion: 1, sessionId: "s1", requestId, clientRequestId: `caller-${requestId}`,
+            sequence: seq, revision: 1, actor, acceptedAt: new Date(seq).toISOString(), text: `guidance-${requestId}`,
+            disposition: "accepted", status: "pending", ...over,
+        } },
+    });
+    const h = harness([
+        event(1, "own ordinary"),
+        accepted(2, "own"),
+        accepted(3, "other", { provider: "test", subject: "bob", displayName: "alice" }),
+        accepted(4, "foreign", { provider: "other", subject: "alice" }),
+        accepted(5, "wrong-session", alice, { sessionId: "s2" }),
+        accepted(6, "bad-schema", alice, { schemaVersion: 999 }),
+        event(7, "guidance-own", alice, { steering: { requestId: "own" } }),
+        event(8, "guidance-own", alice, { steering: { requestId: "own" } }),
+    ]);
+    assert.deepEqual(selectPromptHistory(h.state()), ["guidance-own", "own ordinary"]);
+});

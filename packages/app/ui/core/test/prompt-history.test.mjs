@@ -156,7 +156,7 @@ test("history reads use existing user-event paging and reject late cross-viewer 
         return Array.from({ length: 12 }, (_, i) => event(i + 1, `entry ${i}`));
     } });
     await h.controller.loadPromptHistory("s");
-    assert.deepEqual(reads[0], ["s", Number.MAX_SAFE_INTEGER, 100, ["user.message"]]);
+    assert.deepEqual(reads[0], ["s", Number.MAX_SAFE_INTEGER, 100, ["user.message", "session.steering_accepted"]]);
     assert.equal(selectPromptHistory(h.state()).length, 10);
     let release;
     h.controller.transport.getSessionEventsBefore = () => new Promise(resolve => { release = resolve; });
