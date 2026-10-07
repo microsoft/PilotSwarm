@@ -9,7 +9,11 @@
 //
 // No I/O; no import of common.mjs (it imports this).
 
-export const WORKER_ENV_DEFAULTS = Object.freeze({ PILOTSWARM_NATIVE_SUBAGENTS: "off" });
+export const WORKER_ENV_DEFAULTS = Object.freeze({
+  PILOTSWARM_NATIVE_SUBAGENTS: "off",
+  DEFAULT_MCP_JSON: "",
+  MCP_WORKLOAD_IDENTITY_SCOPES: "",
+});
 
 export function nativeSubagentsSetting(env) {
   const raw = env?.PILOTSWARM_NATIVE_SUBAGENTS;

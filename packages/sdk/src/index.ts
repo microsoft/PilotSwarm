@@ -64,6 +64,7 @@ export type {
     WorkerStartupContext,
     WorkerStartupResult,
 } from "./worker-startup-module.js";
+export { resolveDeploymentMcpWorkerOptions } from "./deployment-mcp.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";

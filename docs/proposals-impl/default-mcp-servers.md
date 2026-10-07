@@ -1,15 +1,15 @@
 # Fleet-Default MCP Servers — Design Sketch
 
 > **Implemented with a different assembly boundary:** this proposal originally
-> targeted the retired specialized repository worker. Fleet-default MCP servers
-> are now supplied to generic workers through the constrained deployment startup
-> module, while the owning composition repository provides server configuration
-> and workload-identity policy.
+> targeted the retired specialized repository worker. The standard generic
+> worker now consumes deployment-owned MCP configuration directly when no
+> startup module supplies MCP worker options. An owning composition repository
+> can still use a startup module to override that fallback.
 
-How a repo-pinned worker grants every session a set of **default MCP servers
-that are NOT checked into the target repo** — the canonical case being the
-Azure DevOps MCP — so a session can (e.g.) look up a work item even when the
-repo's `.vscode/mcp.json` never declares an ADO server.
+How a generic worker grants every session a set of **default MCP servers that
+are NOT checked into a target repo** — including sessions with no repository.
+The canonical case is Azure DevOps MCP, so a session can look up a work item
+without relying on a repo's `.vscode/mcp.json`.
 
 This is the deployment-owned source of MCP servers. Authentication is supplied
 by the worker through the configured workload-identity scope mapping and is
@@ -110,17 +110,18 @@ Add to `packages/sdk/src/mcp-loader.ts`, sharing internals with
   still carrying unresolved `${input:…}`/`${command:…}`.
 - **Mark each default server `optional: true`** (see §4).
 
-### 3. Merge + precedence (worker assembly)
+### 3. Precedence (worker assembly)
 
-The retired design proposed merging these in the specialized repository worker,
-where `mcpServers` was just `repoMcpServers`:
+The standard generic worker loads `DEFAULT_MCP_JSON` and
+`MCP_WORKLOAD_IDENTITY_SCOPES` from its environment. The Azure deployment
+already projects its rendered `.env` through the `worker-env` ConfigMap, so the
+same mechanism works for workers with or without a repository.
 
-```js
-const defaultMcpServers = loadDefaultMcpConfig(process.env.DEFAULT_MCP_JSON, { trace });
-// repo-declared wins on a name clash (a repo may pin `ado` with a narrower
-// toolset); log the override.
-const mcpServers = { ...defaultMcpServers, ...repoMcpServers };
-```
+If `PILOTSWARM_WORKER_STARTUP_MODULE` returns `workerOptions`, those options are
+authoritative and the generic fallback is not parsed. This preserves
+composition-owned startup behavior and prevents a server catalog or headers
+provider from being loaded twice. A startup module that only adds plugins and
+does not return `workerOptions` still receives the generic deployment fallback.
 
 Deployment-owned servers receive only URL-bound worker headers. Repository MCP
 discovery is disabled on shared workers; a trusted devbox launcher may opt in,
@@ -155,19 +156,18 @@ The error is surfaced by the worker rather than silently changing identities.
 3. **Identity boundary preserved:** the ADO server is reached with the worker
    UAMI. No caller token is accepted by the PilotSwarm API or persisted for the
    worker.
-4. **No repo regression:** repo-declared servers and `REPO_MCP_ALLOW` behavior
-   are unchanged; a repo that declares its own `ado` overrides the default
-   deterministically (logged).
+4. **No composition regression:** startup-module MCP options remain
+   authoritative and deployment fallback is used only when they are absent.
 5. **URL-free source:** the concrete ADO URL/org appear only in the deploy-side
-   value; the public base manifest carries only the `__DEFAULT_MCP_JSON__` token.
+   value; public source carries no concrete server or tenant configuration.
 
 ## Acceptance test
 
 An end-to-end test that exercises the feature against a real fleet:
 
-- Targets a repo whose enlistment declares **no** `ado` server in
-  `.vscode/mcp.json`, and attaches **no** MCP server of its own — so any `ado`
-  server that shows up must be the fleet default (not the repo, not the caller).
+- Creates a session without repository affinity and attaches **no** MCP server
+  of its own, so any `ado` server that shows up must be the fleet default rather
+  than repo or caller configuration.
 - Supplies no caller credential or MCP server configuration. The deployment
   provides the server and the worker UAMI authenticates it.
 - Submits a work-item lookup prompt and asserts an `ado` work-item tool
@@ -187,11 +187,11 @@ fast-fail.
 1. Land SDK changes (`loadDefaultMcpConfig`, `optional` tag, worker merge,
    `resolveMcpServerAuth` optional-skip) + unit tests.
 2. Build a new uniquely-tagged worker image (worker JS is baked in).
-3. Add `__DEFAULT_MCP_JSON__` to the worker base manifest + deploy tooling; set
-   the ADO default per-fleet on the deploy side (or the cluster `worker-env`
-   ConfigMap).
-4. Roll fleet-by-fleet (DaemonSet `maxUnavailable:1` + truthful readiness);
-   run the default-MCP acceptance client against each fleet to confirm green.
+3. Set the server catalog and scope bindings in the deploy-side worker `.env`;
+   the existing `worker-env` ConfigMap projects both values to the generic
+   worker.
+4. Roll fleet-by-fleet with truthful readiness and run the default-MCP
+   acceptance client against each fleet to confirm green.
 
 ## Open questions
 

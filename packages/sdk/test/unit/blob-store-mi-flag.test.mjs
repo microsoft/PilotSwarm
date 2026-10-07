@@ -164,6 +164,7 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
                     horizonConfigFromEnv: () => ({}),
                     loadTurnLifecycleHooksFromEnv: async () => undefined,
                     loadWorkerStartupModuleFromEnv: async () => undefined,
+                    resolveDeploymentMcpWorkerOptions: () => ({}),
                     // Both entry points load extension modules before start.
                     loadExtensionModules: async () => [],
                     parseExtensionModules: () => [],

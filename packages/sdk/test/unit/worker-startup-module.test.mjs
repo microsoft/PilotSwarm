@@ -186,7 +186,9 @@ test("the standard worker initializes startup additions before construction", as
     assert.notEqual(loadIndex, -1);
     assert.notEqual(constructionIndex, -1);
     assert.ok(loadIndex < constructionIndex);
-    assert.match(source, /\.\.\.\(workerStartup\?\.workerOptions \?\? \{\}\)/);
+    assert.match(source, /resolveDeploymentMcpWorkerOptions\(\{/);
+    assert.match(source, /startupWorkerOptions: workerStartup\?\.workerOptions/);
+    assert.match(source, /\.\.\.deploymentMcpWorkerOptions/);
     assert.match(source, /pluginDirs: effectivePluginDirs/);
 });
 

@@ -38,6 +38,8 @@
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
  *   PILOTSWARM_EXTENSION_MODULES    — Comma-separated modules; each exports register(worker), called
  *                                     before start (for example a session workspace provider)
+ *   DEFAULT_MCP_JSON                — Deployment-owned remote MCP server catalog
+ *   MCP_WORKLOAD_IDENTITY_SCOPES    — Comma-separated server=scope bindings for worker identity
  *
  * Usage:
  *   node --env-file=.env.remote examples/worker.js
@@ -54,6 +56,7 @@ import {
     parseExtensionModules,
     loadTurnLifecycleHooksFromEnv,
     loadWorkerStartupModuleFromEnv,
+    resolveDeploymentMcpWorkerOptions,
 } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
@@ -99,6 +102,11 @@ const workerStartup = await loadWorkerStartupModuleFromEnv({
     env: process.env,
     pluginDirs,
     trace: (message) => console.log(`[worker-startup] ${message}`),
+});
+const deploymentMcpWorkerOptions = resolveDeploymentMcpWorkerOptions({
+    env: process.env,
+    startupWorkerOptions: workerStartup?.workerOptions,
+    trace: (message) => console.log(`[deployment-mcp] ${message}`),
 });
 const effectivePluginDirs = [
     ...new Set([
@@ -154,7 +162,7 @@ const worker = new PilotSwarmWorker({
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
     pluginDirs: effectivePluginDirs,
-    ...(workerStartup?.workerOptions ?? {}),
+    ...deploymentMcpWorkerOptions,
     ...turnLifecycleHooks,
     // Bicep-deploy MI flow (set in worker-env ConfigMap by the overlay
     // .env). Unset on the legacy `scripts/deploy-aks.sh` path, local
