@@ -35,7 +35,7 @@ A parked wait, terminal session, or group is not an active turn to steer.
 | Waiting for a safe point | The current model call or tool batch may need to finish first. |
 | Delivered to current turn | A correlated SDK event confirms steering delivery. |
 | Delivered after the earlier response | Earlier output was not interrupted; an owned follow-up received the text. |
-| Delivered - timing unconfirmed | Recovery found delivery evidence, but not whether it arrived in the current turn or after the earlier response. |
+| Delivered (timing unconfirmed) | Delivered before recovery; whether it reached the turn or followed the response is not known. |
 | Not delivered — turn ended | The target ended before this guidance could be sent. |
 | Not delivered — turn stopped | Stop prevented this request from being invoked. |
 | Delivery uncertain | Submission may have happened but no positive delivery evidence is available. |
@@ -47,6 +47,9 @@ Delivery does not prove that the agent understood, obeyed, or completed the
 guidance. Running actions can still finish. Snapshot inclusion is separate:
 **Included**, **Not included**, and **Inclusion unconfirmed** describe the saved
 conversation, not external side effects.
+The timing-unconfirmed delivered state offers neither **Reuse in draft** nor
+**Send as new message**. The Steering stats card counts requests with this
+disposition separately from attempts with a known current-turn or follow-up kind.
 
 Recovery may show **Delivered earlier — pending redelivery**, **Delivered again
 after recovery**, or **Delivered earlier — recovery unconfirmed**. The original

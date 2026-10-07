@@ -13,7 +13,7 @@ export function getSteeringAttemptDisplay(attempt) {
     if (attempt.outcome === "released") return "Not submitted";
     if (attempt.deliveredAt && attempt.deliveryKind === "steering") return "Delivered to current turn";
     if (attempt.deliveredAt && ["queued", "idle"].includes(attempt.deliveryKind)) return "Delivered after the earlier response";
-    if (attempt.deliveredAt) return "Delivered - timing unconfirmed";
+    if (attempt.deliveredAt) return "Delivered (timing unconfirmed)";
     if (attempt.acknowledgedAt && !attempt.deliveredAt) return "Waiting for a safe point";
     return "Delivery unconfirmed";
 }
@@ -79,7 +79,7 @@ export function getSteeringDisplay(receipt) {
             accepted: ["submitting", "submitted"].includes(receipt.status) ? "Waiting for a safe point" : "Accepted",
             delivered_current_turn: "Delivered to current turn",
             delivered_after_response: "Delivered after the earlier response",
-            delivered_timing_unconfirmed: "Delivered - timing unconfirmed",
+            delivered_timing_unconfirmed: "Delivered (timing unconfirmed)",
             not_delivered_turn_ended: "Not delivered — turn ended",
             not_delivered_turn_stopped: "Not delivered — turn stopped",
             withdrawn: "Withdrawn",
@@ -92,7 +92,7 @@ export function getSteeringDisplay(receipt) {
     const details = [];
     if (receipt.disposition === "accepted") details.push(STEERING_HELP);
     if (receipt.disposition === "not_delivered_turn_ended") details.push("The turn ended before this guidance could be sent.");
-    if (receipt.disposition === "delivered_timing_unconfirmed") details.push("Delivery is confirmed, but its timing relative to the earlier response is not.");
+    if (receipt.disposition === "delivered_timing_unconfirmed") details.push("Delivered before recovery; whether it reached the turn or followed the response is not known.");
     if (receipt.inclusion?.state === "included") details.push("Included in the saved conversation.");
     else if (receipt.inclusion?.state === "not_included") details.push("Not included in the restored conversation.");
     else if (receipt.requestId) details.push("Inclusion unconfirmed.");
