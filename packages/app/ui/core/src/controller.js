@@ -1705,6 +1705,19 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text });
     }
 
+    isRetiredRead(error, sessionId = null) {
+        const networkFailure = error?.name === "AbortError" || error?.name === "TypeError";
+        return networkFailure && (error?.name === "AbortError" || this.viewStopped
+            || sessionId && (this.getState().sessions.goneIds?.includes(sessionId)
+                || this.getState().sessions.activeSessionId !== sessionId));
+    }
+
+    backgroundRead(promise, sessionId, label) {
+        Promise.resolve(promise).catch(error => {
+            if (!this.isRetiredRead(error, sessionId)) this.setStatus(`${label}: ${error?.message || error}`);
+        });
+    }
+
     getPromptAttachments() {
         const attachments = this.getState().ui.promptAttachments;
         return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
@@ -2532,7 +2545,9 @@ export class PilotSwarmUiController {
     }
 
     async start({ initialSessionId = null } = {}) {
+        this.viewStopped = false;
         await this.transport.start();
+        if (this.viewStopped) return;
         const authContext = typeof this.transport.getAuthContext === "function"
             ? this.transport.getAuthContext()
             : null;
@@ -2570,11 +2585,13 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/navigationIntent", sessionId: deepLinkSessionId });
         }
         await this.refreshSessions();
+        if (this.viewStopped) return;
         this.catalogTimer = setInterval(() => {
             // Do not queue more catalog traffic behind a slow periodic read.
             if (this.catalogPollInFlight) return;
             this.catalogPollInFlight = true;
             this.refreshSessions().catch((error) => {
+                if (this.isRetiredRead(error)) return;
                 this.dispatch({
                     type: "connection/error",
                     error: error?.message || String(error),
@@ -2585,6 +2602,7 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        this.viewStopped = true;
         this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
@@ -2607,6 +2625,7 @@ export class PilotSwarmUiController {
         // Timers belong to the subscription, not to a future visit to this session.
         const sessionId = this.activeSessionSubscriptionId;
         if (sessionId) {
+            this.transport.cancelSessionReads?.(sessionId);
             clearTimeout(this._liveTurnIdleTimers?.get(sessionId));
             this._liveTurnIdleTimers?.delete(sessionId);
             const history = this.getState().history.bySessionId.get(sessionId);
@@ -2653,6 +2672,7 @@ export class PilotSwarmUiController {
     }
 
     async refreshSessions() {
+        if (this.viewStopped) return;
         // FIRST, above every early return below (a selected group or a
         // navigation-intent branch returns before the tail): the worker
         // registry must refresh on every tick of the loop that provably runs.
@@ -2682,7 +2702,14 @@ export class PilotSwarmUiController {
                     return null;
                 })
             : Promise.resolve(null);
-        let sessions = (await loadSessionCatalog(this.transport)).map(normalizeSessionListRow);
+        let sessions;
+        try {
+            sessions = (await loadSessionCatalog(this.transport)).map(normalizeSessionListRow);
+        } catch (error) {
+            if (this.isRetiredRead(error)) return;
+            throw error;
+        }
+        if (this.viewStopped) return;
         // Folders are NOT merged into the session payload any more: they live
         // in their own state slice, so a session refresh cannot drop them. A
         // failed fetch is "no news" and simply leaves the slice alone.
@@ -5876,6 +5903,7 @@ export class PilotSwarmUiController {
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
         const active = this.getState().sessions.activeSessionId;
         if (active !== sessionId) {
+            if (active) this.transport.cancelSessionReads?.(active);
             if (this.getState().ui.promptEdit) {
                 this.exitPendingPromptEdit({ restoreDraft: true });
             }
@@ -5891,7 +5919,7 @@ export class PilotSwarmUiController {
         }
         // Optional steering discovery must not delay ordinary history,
         // subscription attachment, or starting the catalog refresh cadence.
-        void this.refreshSteering(sessionId);
+        this.backgroundRead(this.refreshSteering(sessionId), sessionId, "Steering unavailable");
         // Independent reads share one network-latency window. Cached chat stays visible.
         await Promise.all([
             this.ensureSessionHistory(sessionId, { force: true }),
@@ -5968,7 +5996,7 @@ export class PilotSwarmUiController {
             this.steeringStateLoads.delete(sessionId);
             if (this.steeringStateRefreshNeeded.delete(sessionId)
                 && !this.getState().sessions.goneIds?.includes(sessionId)) {
-                void this.refreshSteering(sessionId);
+                this.backgroundRead(this.refreshSteering(sessionId), sessionId, "Steering unavailable");
             }
         });
         this.steeringStateLoads.set(sessionId, load);
@@ -5992,6 +6020,7 @@ export class PilotSwarmUiController {
                 await this.loadSteeringRequests(sessionId, { reset: true });
             }
         } catch (error) {
+            if (this.isRetiredRead(error, sessionId)) return;
             if (isSessionGoneError(error)) {
                 await this.handleSteeringReadDenial(sessionId);
                 return;
@@ -6038,6 +6067,7 @@ export class PilotSwarmUiController {
                     items: selectSteeringReceipts(this.getState(), sessionId).map(item => item.id) } });
             }
         }).catch(async error => {
+            if (this.isRetiredRead(error, sessionId)) return;
             if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId);
             this.dispatch({ type: "steering/page", sessionId, accessRevision,
                 page: { ...entry?.page, loading: false, error: error.message } });
@@ -6054,7 +6084,7 @@ export class PilotSwarmUiController {
             const current = this.getState().steering?.bySessionId?.[sessionId];
             if (current?.windowSeq > (previous?.windowSeq || 0) && event.data?.state === "open"
                 && (current.state?.recovering || current.state?.supported !== true)) {
-                void this.refreshSteering(sessionId, { afterWindowChange: true });
+                this.backgroundRead(this.refreshSteering(sessionId, { afterWindowChange: true }), sessionId, "Steering unavailable");
             }
             return;
         }
@@ -6066,7 +6096,7 @@ export class PilotSwarmUiController {
         if (!requestId || typeof this.transport.getSteeringRequest !== "function") return;
         const revision = receipt?.revision ?? event.data?.steering?.revision;
         if (previous?.text !== undefined && previous.actionsRevision >= revision) return;
-        this.refreshSteeringReceipt(sessionId, requestId).catch(error => this.setStatus(`Could not refresh guidance: ${error.message}`));
+        this.backgroundRead(this.refreshSteeringReceipt(sessionId, requestId), sessionId, "Could not refresh guidance");
     }
 
     async refreshSteeringReceipt(sessionId, requestId) {
@@ -6088,7 +6118,7 @@ export class PilotSwarmUiController {
             this.steeringReceiptLoads.delete(key);
             if (this.steeringReceiptRefreshNeeded.delete(key)
                 && !this.getState().sessions.goneIds?.includes(sessionId)) {
-                this.refreshSteeringReceipt(sessionId, requestId).catch(error => this.setStatus(`Could not refresh guidance: ${error.message}`));
+                this.backgroundRead(this.refreshSteeringReceipt(sessionId, requestId), sessionId, "Could not refresh guidance");
             }
         });
         this.steeringReceiptLoads.set(key, load);
@@ -6768,12 +6798,12 @@ export class PilotSwarmUiController {
         }
         this.detachActiveSession();
         this.activeSessionSubscriptionId = sessionId;
-        void this.loadPromptHistory(sessionId);
+        this.backgroundRead(this.loadPromptHistory(sessionId), sessionId, "Input history unavailable");
         this.activeSessionUnsub = this.transport.subscribeSession(sessionId, (event) => {
             this.mergeSessionEvent(sessionId, event);
         }, () => {
-            this.refreshSteering(sessionId);
-            this.syncSessionEvents(sessionId).catch(error => this.setStatus(`Could not restore conversation: ${error.message}`));
+            this.backgroundRead(this.refreshSteering(sessionId), sessionId, "Steering unavailable");
+            this.backgroundRead(this.syncSessionEvents(sessionId), sessionId, "Could not restore conversation");
         });
         this.syncSessionEvents(sessionId).catch(() => {});
     }
@@ -9859,7 +9889,7 @@ export class PilotSwarmUiController {
         const actor = this.getState().auth?.principal;
         if (!promptHistoryActorKey(actor) || typeof this.transport.getSessionEventsBefore !== "function") return;
         const previous = this.getState().promptHistory?.bySessionId?.[sessionId]?.scan;
-        if (previous && (!more || previous.exhausted)) return;
+        if (previous && !previous.cancelled && (!more || previous.exhausted)) return;
         this.promptHistoryLoads ??= new Map();
         const key = `${sessionId}:${promptHistoryActorKey(actor)}`;
         if (this.promptHistoryLoads.has(key)) return this.promptHistoryLoads.get(key);
@@ -9903,6 +9933,10 @@ export class PilotSwarmUiController {
             report({ exhausted: false, partial: true, loading: false });
             this.setStatus("Input history is partial. Use More history to continue.");
         })().catch(error => {
+            if (this.isRetiredRead(error, sessionId)) {
+                report({ cancelled: true, partial: false, exhausted: false, loading: false });
+                return;
+            }
             if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
             else {
                 report({ exhausted: false, partial: true, loading: false, error: error.message });

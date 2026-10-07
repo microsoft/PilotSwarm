@@ -92,7 +92,8 @@ export declare class ApiClient {
     constructor(options: ApiClientOptions);
     apiUrl: string;
     call(name: string, params?: Record<string, unknown>): Promise<any>;
-    request(method: string, pathWithQuery: string, opts?: { body?: unknown; headers?: Record<string, string> }): Promise<any>;
+    request(method: string, pathWithQuery: string, opts?: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal }): Promise<any>;
+    abortReadRequests(sessionId?: string): void;
     health(): Promise<any>;
     getAuthConfig(): Promise<any>;
     getAuthContext(): Promise<any>;

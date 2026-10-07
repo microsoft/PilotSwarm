@@ -87,6 +87,10 @@ export class HttpApiTransport {
         await this.api.stop();
     }
 
+    cancelSessionReads(sessionId) {
+        this.api.abortReadRequests(sessionId);
+    }
+
     // ── Bootstrap-backed getters ────────────────────────────────────────
 
     getWorkerCount() {

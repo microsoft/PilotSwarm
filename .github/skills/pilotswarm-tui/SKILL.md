@@ -197,6 +197,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   Retain the continuation/exhaustion marker across selection; show partial
   history and offer explicit More history rather than scanning whole shared
   sessions automatically. Ignore late results after the budget expires.
+- Background HTTP reads belong to their active view/session. Abort them on
+  retirement and handle WebKit navigation TypeErrors/AbortErrors without
+  unhandled page errors or stale-view notices. Real failures in a live view
+  remain visible. Never abort or silently retry accepted writes on navigation.
 - Busy/system-session sends still use the shared outbox: Enter on an empty
   draft flushes pending input; explicit outbox-edit controls remain separate
   from recalled executed inputs. Keep Send/Stop and all help surfaces aligned.
