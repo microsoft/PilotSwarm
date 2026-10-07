@@ -205,6 +205,34 @@ describe("Stop is never delayed by steering settlement (test-env timeline 79d544
         expect(result.type).toBe("stopped");
     });
 
+    it("Stop also interrupts settlement after the isolated quiescence operation has already been issued", async () => {
+        const quiescenceEntered = Promise.withResolvers();
+        const quiescenceRelease = Promise.withResolvers();
+        const sdk = fakeSdk(dropOnAbort);
+        const managed = new ManagedSession("s", sdk, {});
+        const turn = managed.runTurn("long essay", { turnIndex: 1, steering: channel(ROW),
+            steeringQuiesce: async () => { quiescenceEntered.resolve(); await quiescenceRelease.promise; return true; } });
+        await until(() => sdk.pending === 1, 5_000, "the steer hand-off");
+        // Reach the real deadline branch without a wall-clock wait; hold its
+        // already-issued quiescence so Stop cuts this exact settlement phase.
+        managed.steeringPump.o.settleMs = 0;
+        sdk.emit("assistant.turn_end", {});
+        sdk.emit("session.idle", {});
+        await quiescenceEntered.promise;
+        let returned = false;
+        const result = turn.then(value => { returned = true; return value; });
+        try {
+            managed.requestStop("Stop during quiescence");
+            managed.abort();
+            await new Promise(setImmediate);
+            expect(returned).toBe(true);
+            expect((await result).type).toBe("stopped");
+        } finally {
+            quiescenceRelease.resolve();
+            await result;
+        }
+    });
+
     it("abortWarmSessionTurn reaches `stopped` quickly when the CLI is already idle and settlement is in progress", async () => {
         const sdk = fakeSdk(dropOnAbort);
         const managed = new ManagedSession("s3", sdk, {});
