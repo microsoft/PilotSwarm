@@ -9592,10 +9592,27 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const growInput = React.useCallback((force = false) => {
         const node = inputRef.current;
         if (!node) return;
+        const composer = node.closest(".ps-chat-composer");
+        const body = composer?.parentElement;
+        if (mobile && body?.classList.contains("ps-panel-body")) {
+            // The viewport fraction alone ignores the session list, panel
+            // header and Working/outbox strips on short screens.
+            const bodyStyle = getComputedStyle(body);
+            const siblingsHeight = [...body.children].filter(child => child !== composer).reduce((total, child) => {
+                const style = getComputedStyle(child);
+                return total + (child.classList.contains("ps-scroll-panel")
+                    ? parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+                    : child.getBoundingClientRect().height);
+            }, 0);
+            const chrome = composer.getBoundingClientRect().height - node.getBoundingClientRect().height;
+            const available = Math.max(44, body.clientHeight - parseFloat(bodyStyle.paddingTop)
+                - parseFloat(bodyStyle.paddingBottom) - siblingsHeight - chrome);
+            node.style.setProperty("--ps-prompt-available-height", `${Math.floor(available)}px`);
+        }
         if (!force && node.scrollHeight <= node.clientHeight) return;
         node.style.height = "0px";
         node.style.height = `${node.scrollHeight + 2}px`;
-    }, []);
+    }, [mobile]);
     React.useLayoutEffect(() => {
         const length = String(promptState.value || "").length;
         // Equal length can still drop a wrapped line (a selection replaced by
@@ -9625,13 +9642,20 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 frame = requestAnimationFrame(() => growInput(true));
             })
             : null;
-        if (observer && node) observer.observe(node);
+        if (observer && node) {
+            observer.observe(node);
+            const body = node.closest(".ps-chat-composer")?.parentElement;
+            if (mobile && body?.classList.contains("ps-panel-body")) {
+                observer.observe(body);
+                for (const child of body.children) observer.observe(child);
+            }
+        }
         return () => {
             window.removeEventListener("resize", onResize);
             observer?.disconnect();
             cancelAnimationFrame(frame);
         };
-    }, [growInput]);
+    }, [growInput, mobile]);
 
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
         && controller.transport.supportsPromptImageAttachments()

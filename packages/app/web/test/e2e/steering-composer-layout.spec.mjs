@@ -36,7 +36,14 @@ for (const width of [320, 390, 800, 1440]) for (const { id: themeId } of listThe
             const stop = page.getByRole("button", { name: "Stop the current turn", exact: true });
             const send = page.getByTestId("send-prompt");
             const attach = page.getByRole("button", { name: "Attach images", exact: true });
-            for (const button of [attach, stop, steer, send]) {
+            const narrow = await input.evaluate(node => {
+                const composer = node.closest(".ps-chat-composer");
+                const style = getComputedStyle(composer);
+                return composer.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+                    - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth) < 360;
+            });
+            if (narrow) await expect(attach).toBeHidden();
+            for (const button of narrow ? [stop, steer, send] : [attach, stop, steer, send]) {
                 await expect(button).toBeVisible();
                 const box = await button.boundingBox();
                 expect(box.width).toBeGreaterThanOrEqual(44);
@@ -72,7 +79,7 @@ for (const width of [320, 390, 800, 1440]) for (const { id: themeId } of listThe
                     input: bounds(node), shell: bounds(shell),
                     label: bounds(shell.querySelector(".ps-prompt-label")),
                     actions: bounds(shell.querySelector(".ps-prompt-actions")),
-                    buttons: [...shell.querySelectorAll(".ps-prompt-actions > button")].map(bounds),
+                    buttons: [...shell.querySelectorAll(".ps-prompt-actions > button")].filter(button => button.getBoundingClientRect().width > 0).map(bounds),
                 };
             });
             for (let index = 1; index < geometry.buttons.length; index++) {
@@ -81,7 +88,7 @@ for (const width of [320, 390, 800, 1440]) for (const { id: themeId } of listThe
             for (const box of geometry.buttons) expect(box.right).toBeLessThanOrEqual(width);
             expect(geometry.actions.x).toBeGreaterThanOrEqual(geometry.input.right);
             if (width <= 390) {
-                expect(geometry.input.width).toBeGreaterThanOrEqual(width === 320 ? 70 : 130);
+                expect(geometry.input.width).toBeGreaterThanOrEqual(width === 320 ? 112 : 130);
                 expect(Math.abs(geometry.label.y + geometry.label.height / 2 - geometry.input.y - geometry.input.height / 2)).toBeLessThan(2);
                 expect(await steer.locator(".ps-steer-glyph").isVisible()).toBe(true);
                 await steer.dispatchEvent("pointerdown", { pointerType: "touch", clientX: 200, clientY: 700 });
