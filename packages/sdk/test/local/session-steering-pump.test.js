@@ -227,18 +227,34 @@ describe.concurrent("SteeringPump", () => {
         expect(quiesced).toBe(1);                                       // it may have started its own run
     });
 
-    it("under Stop an unproven quiescence does not throw", async () => {
+    it("under Stop settle never waits on steering: no quiescence, no history read, receipts reconciled in the background", async () => {
         const session = new FakeSession(); const ch = new FakeChannel([row(1)]);
-        session.sendImpl = () => new Promise(() => {});
-        const { pump, state } = makePump(session, ch);
+        let releaseSend;
+        session.sendImpl = (_o, id) => new Promise((r) => { releaseSend = () => r(id); });   // in-flight steer
+        let releaseSubmitted;
+        ch.markSubmitted = (a, id) => new Promise((r) => { releaseSubmitted = () => { ch.log("submitted", a, id); r(); }; });
+        const { pump, state } = makePump(session, ch, { options: { sendTimeoutMs: 60_000 } });
         let quiesceCalls = 0;
         state.quiesce = async () => { quiesceCalls++; return false; };
+        session.getEvents = async () => { throw new Error("no history read under Stop"); };
         await startTurn(session, pump, ch);
-        await until(() => ch.names().includes("unconfirmed"));
+        await until(() => typeof releaseSend === "function");
         state.stopping = true;
-        expect(await pump.settle({ stopping: true })).toBeUndefined();
-        expect(quiesceCalls).toBe(1);
+        pump.gate.close();                                                // requestStop()
+        let settled = false;
+        const settling = pump.settle({ stopping: true }).then((m) => { settled = true; return m; });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(settled).toBe(true);                                       // no await on the held send or writes
+        expect(await settling).toBeUndefined();
+        expect(quiesceCalls).toBe(0);
         pump.dispose();
+        releaseSend();                                                    // the SDK answers after Stop
+        await until(() => typeof releaseSubmitted === "function");
+        releaseSubmitted();
+        await pump.stopReconciliation;
+        expect(ch.names()).toContain("unconfirmed");                      // no delivery evidence ⇒ unconfirmed
+        expect(session.sends).toHaveLength(1);                            // nothing new after Stop
     });
 
     it("a registered send without an event is checked in history at settle: hit ⇒ delivered, absent ⇒ unconfirmed + quiesce", async () => {

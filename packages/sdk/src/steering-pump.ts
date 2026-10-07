@@ -569,11 +569,56 @@ export class SteeringPump {
      * or undefined when stopping or when no window was opened.
      */
     async settle(o: { stopping: boolean }): Promise<SteeringManifest | undefined> {
+        if (o.stopping) {
+            this.settleForStop();
+            return undefined;
+        }
         try {
             return await this.settleInner(o);
         } finally {
             await this.flushCounters();
         }
+    }
+
+    /** Background receipt reconciliation started by a Stop settle (tests and shutdown may await it). */
+    stopReconciliation: Promise<void> | undefined;
+
+    /**
+     * Stop (owner requirement; review F01/F05): Stop's acknowledgement and abort never
+     * wait on steering. This closes admission synchronously and returns at once; Stop's
+     * own abort and per-session escalation own the SDK run. Receipts are reconciled in
+     * the background within a bound: sends without positive evidence are recorded
+     * unconfirmed ("Delivery uncertain" until the Stop closure labels them), a late
+     * startup is tombstoned, pending writes drain, counters flush. No history read and
+     * no quiescence: the warm session belongs to Stop now.
+     */
+    private settleForStop(): void {
+        if (this.stopReconciliation) return;
+        this.released = true;                                         // INV-P13
+        this.gate.close();
+        if (this.leaseTimer) clearInterval(this.leaseTimer);
+        this.wake();
+        for (const slot of this.earlySlots.values()) slot.settle(null);
+        this.stopReconciliation = this.reconcileAfterStop().catch((err) => {
+            this.trace(`[steering] reconciliation after Stop failed: ${err?.message ?? String(err)}`);
+        });
+    }
+
+    private async reconcileAfterStop(): Promise<void> {
+        const budgetEnd = performance.now() + this.o.sendTimeoutMs + 3 * this.o.ioTimeoutMs;
+        const left = () => Math.max(0, budgetEnd - performance.now());
+        if ((await bounded(this.startup, Math.min(this.o.ioTimeoutMs, left()))) === TIMEOUT) {
+            await bounded(this.ch.abandonWindow(), Math.min(this.o.ioTimeoutMs, left()));
+        }
+        await bounded(this.loop, Math.min(this.o.sendTimeoutMs, left()));
+        for (const a of this.unresolved()) {
+            this.writes.push("unconfirmed", () => this.ch.markUnconfirmed(a.attemptId));   // INV-P8
+        }
+        const allWrites = Promise.all([this.writes.drain(), ...this.orderedWrites]).then(() => {});
+        if ((await bounded(allWrites, Math.min(this.o.ioTimeoutMs, left()))) === TIMEOUT) {
+            this.trace("[steering] receipt writes after Stop did not drain in time; they stay unconfirmed");
+        }
+        await this.flushCounters();
     }
 
     /** Durable §11 counters, once per turn; bounded and best-effort (never fails the turn). */
