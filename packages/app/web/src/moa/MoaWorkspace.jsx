@@ -42,7 +42,7 @@ const canFocusMoaComposer = () => !document.activeElement?.closest?.(".ps-moa-di
 const canFocusPaneComposer = () => canFocusMoaComposer() && !document.activeElement?.closest?.(".ps-moa-dialog, .ps-modal-backdrop, [data-moa-panel] button, [data-moa-panel] select, [data-moa-panel] input, [data-moa-panel] iframe, [data-moa-panel] [contenteditable=true]");
 const sameDraft = (a, b) => a?.prompt === b?.prompt && (a?.attachments || []).length === (b?.attachments || []).length && (a?.attachments || []).every((item, i) => item === b.attachments[i]);
 function publishDraft(store, key, draft) {
-    if (sameDraft(store.get(key), draft)) return;
+    if (sameDraft(store.get(key), draft) && store.get(key)?.cursor === draft?.cursor) return;
     store.set(key, draft);
     for (const listener of draftListeners.get(store) || []) listener(key, draft);
 }

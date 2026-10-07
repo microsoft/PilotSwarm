@@ -133,6 +133,7 @@ Notes:
   guidance in an empty draft or appends it on a new line. Delivered receipts
   have no draft action; text remains selectable.
   Escape closes the receipt view. The server decides which mutations are allowed.
+  `m` loads the next receipt page when a partial-list notice is present.
 - The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
 - Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.
 - Every send first lands in a per-session local outbox, then transitions through three durability states shown next to each user message in chat:
