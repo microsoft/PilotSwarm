@@ -62,7 +62,9 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 };
                 const product = makeSteeringTurnHarness({ sdkSession: sdk });
                 let atBoundary = null;
+                let abortsBeforeQuiescence = null;
                 const quiesce = vi.fn(async () => {
+                    abortsBeforeQuiescence = abort.mock.calls.length;
                     const active = await lateRequest.promise;
                     assertEqual(active.connectionClosed, false, "the owned late model request is positively active before quiescence");
                     const result = await manager.quiesceForSteering(id);
@@ -82,7 +84,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 const result = await within(turn, "normal settlement bounded ownership resolution", 45_000);
                 assertEqual(result.type, "completed");
                 assertEqual(quiesce.mock.calls.length, 1);
-                assertEqual(abort.mock.calls.length, 0, "normal settlement proof uses no preceding Stop/abort");
+                assertEqual(abortsBeforeQuiescence, 0, "normal settlement proof uses no preceding Stop/abort; quiescence may use its own cessation primitive");
                 assertEqual(managed.getActiveTurn(), null);
                 assertEqual(manager.get(id), null);
                 lateRelease.resolve();
