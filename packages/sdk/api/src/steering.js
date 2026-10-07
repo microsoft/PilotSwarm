@@ -13,7 +13,8 @@ export async function callSteeringOperation(api, name, params) {
             });
         }
         if (name === "steerSessionTurn") {
-            const code = { FORBIDDEN: "forbidden", NOT_FOUND: "not_found", INVALID_REQUEST: "invalid", PAYLOAD_TOO_LARGE: "too_large" }[error?.code] || error?.code;
+            const code = error?.status === 413 ? "too_large"
+                : { FORBIDDEN: "forbidden", NOT_FOUND: "not_found", INVALID_REQUEST: "invalid", PAYLOAD_TOO_LARGE: "too_large" }[error?.code] || error?.code;
             if (["unsupported", "stale_target", "no_active_turn", "forbidden", "not_found", "invalid",
                 "too_large", "rate_limited", "idempotency_conflict"].includes(code)) {
                 return {

@@ -6131,7 +6131,7 @@ export function selectStatusBar(state) {
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane`
             : state.ui.inspectorTab === "stats"
-                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f cycle session/fleet/users · d done · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · m next tab · tab next pane`
+                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f cycle session/fleet/users · r guidance history (session) · d done · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · m next tab · tab next pane`
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
                     ? "a download · x delete · u/ctrl-a upload · o open · f filter · j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · v/esc close fullscreen · left/right tab · [/] resize pane · {/} columns · T themes · ? help · tab next pane"
@@ -8682,6 +8682,10 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ? `${value.p95.toFixed(1)} ms (n=${count(value.count)})` : "Not measured";
         const body = stats ? formatKeyValueTable([
             ["Accepted", count(stats.requests.accepted)],
+            ["Retained requests", count(stats.requests.byDisposition
+                ? ["not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn"]
+                    .reduce((total, disposition) => total + (stats.requests.byDisposition[disposition] || 0), 0)
+                : undefined)],
             ["Unresolved / claimable", `${count(stats.requests.unresolved)} / ${count(stats.requests.claimable)}`],
             ["Delivery attempts", count(stats.attempts.deliveries)],
             ["Delivered current turn", count(stats.attempts.deliveredByKind.steering)],
@@ -8693,6 +8697,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ["Oldest unresolved", stats.requests.oldestUnresolvedAt ? formatLocalTimestamp(stats.requests.oldestUnresolvedAt) : "None"],
             ["Handoff p95", latency(stats.latency.handoffMs)],
             ["Safe-point delivery p95", latency(stats.latency.safePointMs)],
+            ["Guidance history", "r Open receipts"],
         ], { maxWidth: w - 4 }) : `Unavailable: ${entry.steeringStats.error}`;
         lines.push(...buildMessageCardLines({ title: "Steering", body, width: w, titleColor: "cyan", borderColor: "gray", fitToContent: true }));
     }
@@ -9518,7 +9523,7 @@ const KEYBINDING_HELP = [
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
         ["c / d / D", "cancel / done / delete session"],
-        ["ctrl-x  (ctrl-esc)", "stop the current turn", { dim: true }],
+        ["ctrl-x  (ctrl-esc)", "stop current turn; queued prompts and schedules continue", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
         ["q", "quit (double-tap)"],
@@ -9549,7 +9554,7 @@ const KEYBINDING_HELP = [
         ["j k", "scroll"],
         ["enter", "expand / collapse a turn (Sequence tab)"],
         ["logs", "t tail · f filter"],
-        ["stats", "f cycle session/fleet/users"],
+        ["stats", "f cycle session/fleet/users · r guidance history (session)"],
         ["files", "a download · x delete · u upload · o open · f filter · v full"],
         ["history", "r refresh · a export · f format"],
     ] },

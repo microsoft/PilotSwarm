@@ -614,3 +614,24 @@ describe("F18: steering support is detected through a procedure", () => {
         }
     });
 });
+
+describe("Stop label survives the cancellation path", () => {
+    it("a cancelled turn's finalize records inclusion but leaves the closure to Stop", async () => {
+        const { sessionId, target, owner, requestId } = await seededClaim(12);
+        const attemptId = await catalog.steerMarkSubmitting(requestId, owner);
+        await catalog.steerMarkSubmitted(attemptId, owner, "sdk-c");
+        await catalog.steerWindowQuiesce(sessionId, owner);
+        expect(await catalog.steerTurnFinalize(sessionId, target, owner, "unpublished", [requestId], null, { close: false }))
+            .toEqual({ finalized: false, reason: "left_open", inclusionUpdated: 1 });
+        expect(await catalog.steerGet(sessionId, requestId)).toMatchObject({ status: "submitted", inclusion: { state: "not_included" } });
+        await catalog.recordEvents(sessionId, [{ eventType: "session.turn_stopped", data: { turnIndex: target.turnIndex } }]);
+        expect(await catalog.steerGet(sessionId, requestId)).toMatchObject({
+            status: "closed", closureReason: "stopped", disposition: "delivery_unconfirmed", inclusion: { state: "not_included" } });
+    });
+
+    it("finalize without the flag still closes as before", async () => {
+        const { sessionId, target, owner, requestId } = await seededClaim(13);
+        expect(await catalog.steerTurnFinalize(sessionId, target, owner, "published", [], 1)).toEqual({ finalized: true });
+        expect((await catalog.steerGet(sessionId, requestId)).closureReason).toBe("turn_ended");
+    });
+});

@@ -610,6 +610,14 @@ export class HttpApiTransport {
         return this.api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
 
+    getSessionEventsBeforeCancellable(sessionId, beforeSeq, limit, eventTypes) {
+        const abort = new AbortController();
+        return {
+            promise: this.api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes }, { signal: abort.signal }),
+            cancel: () => abort.abort(),
+        };
+    }
+
     async getExecutionHistory(sessionId, executionId) {
         return this.api.call("getExecutionHistory", { sessionId, executionId });
     }

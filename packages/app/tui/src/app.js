@@ -777,6 +777,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {});
             return;
         }
+        if (focus === "inspector" && inspectorTab === "stats" && plainShortcut && input === "r") {
+            controller.handleCommand(UI_COMMANDS.STEERING_HISTORY).catch(() => {});
+            return;
+        }
         // Node Map: digits pick a node by its listed ordinal (toggle to clear).
         if (focus === "inspector" && inspectorTab === "nodes" && plainShortcut && /^[1-9]$/.test(input || "")) {
             const node = selectNodeMapView(controller.getState()).nodes[Number(input) - 1];

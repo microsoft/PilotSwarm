@@ -3441,6 +3441,21 @@ export class PilotSwarmUiController {
         } });
     }
 
+    async openSteeringHistory() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        const summary = state.sessionStats?.bySessionId?.[sessionId]?.steeringStats;
+        if (!sessionId || summary?.unsupported || !summary?.data
+            || state.ui.statsViewMode && state.ui.statsViewMode !== "session") {
+            this.setStatus("Guidance history is unavailable for this stats scope.");
+            return;
+        }
+        await this.loadSteeringRequests(sessionId, { reset: true });
+        const current = this.getState();
+        const entry = current.steering?.bySessionId?.[sessionId];
+        if (current.sessions.activeSessionId === sessionId && !this.viewStopped && !entry?.accessLost && !entry?.page?.error) this.openSteeringReceipts();
+    }
+
     scrollSteeringReceipt(delta) {
         const modal = this.getState().ui.modal;
         if (modal?.type !== "steeringReceipts") return;
@@ -6083,7 +6098,8 @@ export class PilotSwarmUiController {
             if (!this.isCurrentSteeringRead(sessionId, accessRevision)) return;
             for (const receipt of page.items) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
             this.dispatch({ type: "steering/page", sessionId, accessRevision,
-                page: { nextCursor: page.nextCursor, loading: false, error: null } });
+                page: { nextCursor: reset && entry?.page?.nextCursor ? entry.page.nextCursor : page.nextCursor,
+                    loading: false, error: null } });
             const modal = this.getState().ui.modal;
             if (modal?.type === "steeringReceipts" && modal.sessionId === sessionId) {
                 const selectedId = modal.items[modal.selectedIndex || 0];
@@ -6098,7 +6114,16 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "steering/page", sessionId, accessRevision,
                 page: { ...entry?.page, loading: false, error: error.message } });
             this.setStatus(`Could not load guidance: ${error.message}`);
-        }).finally(() => this.steeringListLoads.delete(sessionId));
+        }).finally(() => {
+            if (this.steeringListLoads.get(sessionId) !== load) return;
+            this.steeringListLoads.delete(sessionId);
+            const current = this.getState().steering?.bySessionId?.[sessionId];
+            if ((current?.accessRevision || 0) === accessRevision && !current?.accessLost && current?.page?.loading) {
+                // A disposed reader still releases its shared loading state;
+                // a different generation's continuation must remain untouched.
+                this.dispatch({ type: "steering/page", sessionId, accessRevision, finishLoading: true });
+            }
+        });
         this.steeringListLoads.set(sessionId, load);
         return load;
     }
@@ -9935,11 +9960,17 @@ export class PilotSwarmUiController {
                 if (remaining <= 0) break;
                 let timer;
                 let events;
+                const read = typeof this.transport.getSessionEventsBeforeCancellable === "function"
+                    ? this.transport.getSessionEventsBeforeCancellable(sessionId, beforeSeq, 100, PROMPT_HISTORY_EVENT_TYPES)
+                    : { promise: this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, PROMPT_HISTORY_EVENT_TYPES) };
                 try {
                     events = await Promise.race([
-                        this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, PROMPT_HISTORY_EVENT_TYPES),
+                        read.promise,
                         new Promise((_, reject) => {
-                            timer = setTimeout(() => reject(new Error("Input-history read budget reached")), remaining);
+                            timer = setTimeout(() => {
+                                reject(new Error("Input-history read budget reached"));
+                                read.cancel?.();
+                            }, remaining);
                             timer?.unref?.();
                         }),
                     ]);
@@ -11750,6 +11781,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.LOAD_PROMPT_HISTORY:
                 await this.loadPromptHistory(this.getState().sessions.activeSessionId, { more: true });
+                return;
+            case UI_COMMANDS.STEERING_HISTORY:
+                await this.openSteeringHistory();
                 return;
             case UI_COMMANDS.STEER_TURN:
                 await this.steerPrompt();

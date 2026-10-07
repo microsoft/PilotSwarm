@@ -84,13 +84,13 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   end navigation just like text edits; history-driven clearing is separate.
   The portal uses the same shared controller methods through receipt-row buttons.
 - Receipt reads do not establish transcript position. Keep unanchored receipts
-  in the paginated Guidance view until their acceptance history loads. Show
+  in the paginated Guidance view until their acceptance history loads. Use
   the same behavior for update/delivery-only history: only acceptance anchors
-  the row. Restoring a MoA draft atomically clears both history navigation and
-  the pending/queued edit binding; typing must never alter the old queue item.
-  partial results and Load more guidance (`m` in the native receipt view).
+  the row. Show partial results and Load more guidance (`m` in the native receipt view).
   Main chat owns session steering pending/resend state; MoA panels share it,
   including results arriving after panel disposal.
+- Restoring a MoA draft atomically clears both history navigation and the
+  pending/queued edit binding; typing must never alter the old queue item.
 - Receipt paging preserves the selected row ID, not its old list index.
   Delayed read denials cannot clear a newer restored access grant.
   Recovery-confirmed delivery without a recorded kind displays
@@ -184,6 +184,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.
 - In the sessions pane, `V` toggles multi-select mode (seeded with the active session). `Space` toggles selection on the active row, `Ctrl+G` moves every selected top-level non-system session through the move-to-group picker, `c` cancels every selected session in one confirmation (system sessions and groups are skipped), `d` completes selected sessions, `D` hard-deletes selected sessions, and `Esc` exits select mode. The portal mirrors selection with Cmd/Ctrl-click and Shift-click on session rows; the panel header reveals `Clear`, `Group (n)`, and `Terminate (n)`. `Terminate (n)` opens the same three-disposition picker for Complete, Cancel, and Hard Delete.
 - In the stats inspector, `f` cycles between the session, fleet, and users views; keep terminal and portal behavior aligned.
+- In session stats, `r` opens permitted guidance history, equivalent to the portal
+  Guidance history action. Retained requests count not-delivered-ended,
+  not-delivered-stopped and withdrawn requests; uncertain delivery stays separate.
+  Receipt-list reads share ownership across panels; cancellation releases only
+  the owned loading state and never regresses another view's continuation.
 - In the sessions pane, `n` fast-starts a generic session with the default model when generic sessions are allowed; if generic sessions are disabled, it falls back to the model-first creation flow when models are available, or the agent picker. `Shift+N` opens the model picker, then reasoning effort when applicable, then the generic/named-agent picker.
 - The New/New+Model agent picker is fed by `transport.listCreatableAgents()`, not by worker logs. In remote mode, `packages/app/tui/src/node-sdk-transport.js` builds that metadata from `PLUGIN_DIRS`; if `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, the transport must expand those names from `packages/sdk/plugins/default-agents/` into `creatableAgents` so both native remote TUI and portal bootstrap show them.
 - The fleet stats view shows a compact `Fact Tombstones` card when facts tombstone

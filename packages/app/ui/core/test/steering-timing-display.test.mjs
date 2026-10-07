@@ -32,7 +32,8 @@ test("shared Steering stats show the canonical timing-unconfirmed request count"
     state = appReducer(state, { type: "sessions/selected", sessionId: "s" });
     state = { ...state, ui: { ...state.ui, inspectorTab: "stats" }, sessionStats: { bySessionId: { s: {
         summary: {}, steeringStats: { data: {
-            requests: { accepted: 6, unresolved: 0, claimable: 0, byDisposition: { delivered_timing_unconfirmed: 3 },
+            requests: { accepted: 16, unresolved: 0, claimable: 0, byDisposition: { delivered_timing_unconfirmed: 3,
+                not_delivered_turn_ended: 2, not_delivered_turn_stopped: 4, withdrawn: 1, delivery_unconfirmed: 6 },
                 byInclusion: { unconfirmed: 0 } },
             attempts: { deliveries: 7, deliveredByKind: { steering: 2, queued: 1, idle: 1 }, redeliveries: 0, unconfirmed: 0 },
             latency: {},
@@ -43,4 +44,6 @@ test("shared Steering stats show the canonical timing-unconfirmed request count"
             : line.text ?? line.runs?.map(run => run.text).join("") ?? ""
     )).join("\n");
     assert.match(text, /Delivered \(timing unconfirmed\)\s+3/);
+    assert.match(text, /Retained requests\s+7/);
+    assert.match(text, /Guidance history\s+r Open receipts/);
 });

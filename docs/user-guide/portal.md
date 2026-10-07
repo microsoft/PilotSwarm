@@ -31,6 +31,12 @@ Initial recall discovery reads at most three 100-event pages within five
 seconds. A mostly shared history can therefore be partial. **Load more input
 history** resumes from the saved cursor; reselecting the session does not
 restart the scan. It never fills your recall history with another writer's text.
+When the time budget expires, the outstanding history fetch is cancelled;
+other reads and writes continue.
+
+Session stats includes a **Guidance history** action. It opens permitted
+receipts with a partial-list notice and **Load more guidance**, keeping
+retained-request counts separate from delivery attempts.
 
 ## Prerequisites
 

@@ -321,6 +321,7 @@ Current overlap to preserve unless intentionally changed:
 - `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
+- `r` in session stats opens permitted guidance receipt history; the portal has a matching Guidance history action. Fleet/users stats do not open a selected session's history.
 - `Shift+A` opens or closes the Admin Console; in My Providers, `e` adds a personal provider and `Shift+U` updates the selected provider credential in place. The portal exposes the same action as `Update Key`. Keep credential drafts masked and clear them before awaiting the request; `r` refreshes and `Esc` returns to the workspace.
 
 ## TUI Maintenance
