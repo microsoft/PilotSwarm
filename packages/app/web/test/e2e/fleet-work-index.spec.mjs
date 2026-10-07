@@ -51,6 +51,44 @@ test("admin personal view keeps Session actions inside a narrow work-index heade
     }
 });
 
+test("bulk selection keeps the terminate and delete action visible", async ({ page }) => {
+    await page.setViewportSize({ width: 696, height: 452 });
+    await page.goto(`http://127.0.0.1:${stub.port}`);
+    const rows = page.locator(".ps-session-list-button");
+    await rows.first().waitFor();
+
+    await rows.nth(0).click({ modifiers: ["Control"] });
+    await rows.nth(1).click({ modifiers: ["Control"] });
+
+    const header = page.locator("#ps-work-index-panel .ps-panel-header").first();
+    const terminate = header.getByRole("button", {
+        name: /Terminate 2 selected sessions/,
+    });
+    await expect(terminate).toBeVisible();
+
+    const geometry = await header.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const button = element.querySelector(
+            '[aria-label^="Terminate 2 selected sessions"]',
+        )?.getBoundingClientRect();
+        return {
+            header: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom },
+            button: button
+                ? { left: button.left, top: button.top, right: button.right, bottom: button.bottom }
+                : null,
+        };
+    });
+
+    expect(geometry.button).not.toBeNull();
+    expect(geometry.button.left).toBeGreaterThanOrEqual(geometry.header.left);
+    expect(geometry.button.top).toBeGreaterThanOrEqual(geometry.header.top);
+    expect(geometry.button.right).toBeLessThanOrEqual(geometry.header.right);
+    expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.header.bottom);
+
+    await terminate.click();
+    await expect(page.getByRole("button", { name: "Hard Delete 2 Sessions" })).toBeVisible();
+});
+
 test("admin Fleet view keeps Session transcripts stable and read-only", async ({ page }) => {
     const requests = [];
     page.on("request", (request) => {
