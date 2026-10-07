@@ -38,7 +38,7 @@ export class SteeringError extends Error {
 }
 
 const DISPOSITIONS: ReadonlySet<SteeringDisposition> = new Set([
-    "accepted", "delivered_current_turn", "delivered_after_response", "delivered_before_stop",
+    "accepted", "delivered_current_turn", "delivered_after_response", "delivered_timing_unconfirmed", "delivered_before_stop",
     "not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed", "rejected",
 ]);
 

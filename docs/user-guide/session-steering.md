@@ -35,6 +35,7 @@ A parked wait, terminal session, or group is not an active turn to steer.
 | Waiting for a safe point | The current model call or tool batch may need to finish first. |
 | Delivered to current turn | A correlated SDK event confirms steering delivery. |
 | Delivered after the earlier response | Earlier output was not interrupted; an owned follow-up received the text. |
+| Delivered - timing unconfirmed | Recovery found delivery evidence, but not whether it arrived in the current turn or after the earlier response. |
 | Not delivered — turn ended | The target ended before this guidance could be sent. |
 | Not delivered — turn stopped | Stop prevented this request from being invoked. |
 | Delivery uncertain | Submission may have happened but no positive delivery evidence is available. |

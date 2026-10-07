@@ -224,7 +224,7 @@ Spike S-4 C1-C8 (Appendix B) demonstrates ID correlation, lost pending input on 
 and whole-batch delay.
 These observations do not prove that any model understood or followed an instruction.
 The shared selector maps canonical dispositions to these labels:
-`accepted`, `delivered_current_turn`, `delivered_after_response`, `delivered_before_stop`,
+`accepted`, `delivered_current_turn`, `delivered_after_response`, `delivered_timing_unconfirmed`, `delivered_before_stop`,
 `not_delivered_turn_ended`, `not_delivered_turn_stopped`, `withdrawn`,
 `delivery_unconfirmed`, and `rejected`.
 Waiting for a safe point is a display derived from accepted-but-submitting/submitted state,
@@ -685,7 +685,7 @@ these runs, the UI shows the row's last state with "recovering".
 |---|---|---|
 | No attempt, or only `released` attempts | `not_delivered_turn_ended` | `not_delivered_turn_stopped` |
 | An attempt without delivery evidence (`submitting`, `acknowledged`, `unconfirmed`) | `delivery_unconfirmed` | `delivery_unconfirmed` ("Delivery unconfirmed — turn stopped") |
-| A delivered attempt | Keeps `delivered_current_turn` / `delivered_after_response` | `delivered_before_stop` |
+| A delivered attempt | Keeps `delivered_current_turn` / `delivered_after_response` / `delivered_timing_unconfirmed` | `delivered_before_stop` |
 
 **Recovery flags are derived, not stored** (the shared SDK mapping module computes them):
 
@@ -930,9 +930,12 @@ Do not duplicate a different enum in each host.
 Canonical row states are `pending`, `claimed`, `submitting`, `submitted`, `delivered`,
 `orphaned`, `withdrawn`, and `closed`.
 Canonical receipt dispositions are `accepted`, `delivered_current_turn`,
-`delivered_after_response`, `delivered_before_stop`, `not_delivered_turn_ended`, `not_delivered_turn_stopped`,
+`delivered_after_response`, `delivered_timing_unconfirmed`, `delivered_before_stop`, `not_delivered_turn_ended`, `not_delivered_turn_stopped`,
 `withdrawn`, `delivery_unconfirmed`, and `rejected`.
 Recovery flags are `redelivery_pending`, `delivered_again`, and `recovery_unconfirmed`.
+`delivered_timing_unconfirmed` means recovery found positive delivery evidence
+without a recorded delivery kind. Never invent current-turn or after-response
+timing, and never present this as unknown delivery.
 Historical delivery and snapshot inclusion remain separate from these workflow states.
 The shared SDK mapping derives recovery flags from ledger status, delivery attempts, inclusion,
 and recovery eligibility; they are not an independently mutable source of truth.
@@ -3072,6 +3075,7 @@ task (ST-I15); GitHub Copilot and Anthropic providers (ST-L03).
 | `accepted` | Accepted; "Waiting for a safe point" once handed to the SDK |
 | `delivered_current_turn` | Delivered to current turn |
 | `delivered_after_response` | Delivered after the earlier response |
+| `delivered_timing_unconfirmed` | Delivered - timing unconfirmed |
 | `delivered_before_stop` | Delivered before Stop |
 | `not_delivered_turn_ended` | Not delivered — turn ended |
 | `not_delivered_turn_stopped` | Not delivered — turn stopped |

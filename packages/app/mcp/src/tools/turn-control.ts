@@ -72,7 +72,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
         inputSchema: {
             session_id: sessionIdShape(), cursor: z.string().optional(),
             limit: z.number().int().min(1).max(200).optional(), expected_target: z.string().optional(),
-            dispositions: z.array(z.enum(["accepted", "delivered_current_turn", "delivered_after_response", "delivered_before_stop",
+            dispositions: z.array(z.enum(["accepted", "delivered_current_turn", "delivered_after_response", "delivered_timing_unconfirmed", "delivered_before_stop",
                 "not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed", "rejected"])).optional(),
         },
     }, withSteeringErrors(async ({ session_id, cursor, limit, expected_target, dispositions }) =>
