@@ -10,6 +10,13 @@ point.
 For the full keybinding reference, see [keybindings.md](./keybindings.md).
 This guide introduces keys as you need them.
 
+In the composer, Up on the first line recalls your own most recent input in
+this session, then older entries (up to ten, consecutive duplicates skipped).
+Down on the last line moves newer and restores your stashed unsent draft.
+Editing ends history navigation; sending or switching sessions resets it.
+Menus and reference autocomplete keep priority. Ordinary sends and delivered
+steering are included; new accepted sends are available immediately.
+
 The optional **Steer** action guides an already-running turn; ordinary Send
 still queues input. Tab from the prompt reaches distinct Send, Steer and Stop
 actions, plus Guidance for retained receipts. See

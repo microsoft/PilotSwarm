@@ -6131,10 +6131,10 @@ export function selectStatusBar(state) {
                         ? `cancelling prompt selected · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                         : `edit pending prompt · enter send batch · up/down cycle pending · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                 : hasPendingOutbox
-                    ? `type message · enter queues · enter on empty sends batch · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    ? `type message · enter queues · enter on empty sends batch · up/down input history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : hasOutbox
-                        ? `type message · enter queues behind durable items · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
-                        : `type message · enter send · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
+                        ? `type message · enter queues behind durable items · up/down input history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        : `type message · enter send · up/down input history at first/last line · alt-enter newline · arrows move · alt-left/right word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
     if (focus === FOCUS_REGIONS.PROMPT && state.ui.promptActionIndex != null) {
         return { left: state.ui.statusText, right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
@@ -9536,6 +9536,7 @@ const KEYBINDING_HELP = [
     ] },
     { section: "Prompt", bindings: [
         ["enter", "send"],
+        ["↑ / ↓", "own input history at first/last line; Down restores draft"],
         ["Tab", "autocomplete, else Send/Steer/Stop/Guidance actions"],
         ["actions: ← →", "choose · Enter activate · Esc/Shift+Tab prompt"],
         ["alt/ctrl-j", "newline"],

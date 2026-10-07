@@ -1,6 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { newClientId } from "./client-id.js";
 import { canReuseSteeringInDraft } from "./steering.js";
+import { promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary } from "./prompt-history.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -2233,6 +2234,7 @@ export class PilotSwarmUiController {
             this.exitPendingPromptEdit({ restoreDraft: true });
         }
 
+        const promptActor = this.getState().auth?.principal;
         const promise = (async () => {
             await this.transport.sendMessage(sessionId, mergedItem.text, {
                 enqueueOnly: true,
@@ -2241,6 +2243,7 @@ export class PilotSwarmUiController {
                     ? { attachments: mergedItem.attachments }
                     : {}),
             });
+            this.recordAcceptedPrompt(sessionId, mergedItem.text, mergedItem.clientMessageIds.map(id => `message:${id}`), promptActor);
 
             // Promote pending → queued for the merged item.
             const items = this.getSessionOutbox(sessionId);
@@ -6046,6 +6049,7 @@ export class PilotSwarmUiController {
             this.setStatus(eligibility.reason);
             return;
         }
+        this.dispatch({ type: "promptHistory/reset" });
         const sessionId = state.sessions.activeSessionId;
         const text = state.ui.prompt;
         const clientRequestId = newClientId();
@@ -6076,6 +6080,7 @@ export class PilotSwarmUiController {
                 throw new Error("The server returned no matching durable steering receipt");
             }
             this.dispatch({ type: "steering/receiptReceived", sessionId, receipt });
+            this.recordAcceptedPrompt(sessionId, receipt.text, [`steer:${receipt.requestId}`], receipt.actor);
             return receipt;
         } catch (error) {
             const rejected = ["stale_target", "no_active_turn", "unsupported", "forbidden", "too_large",
@@ -6126,6 +6131,7 @@ export class PilotSwarmUiController {
         if (this.steeringResends.has(key)) return;
         this.steeringResends.add(key);
         const entry = this.getState().steering?.bySessionId?.[sessionId];
+        const promptActor = this.getState().auth?.principal;
         const accessRevision = entry?.accessRevision || 0;
         const previous = entry?.resends?.[requestId];
         const clientMessageId = previous?.phase === "uncertain" ? previous.clientMessageId : newClientId();
@@ -6145,6 +6151,7 @@ export class PilotSwarmUiController {
                 enqueueOnly: true, clientMessageIds: [clientMessageId],
                 steeringRequestId: requestId,
             });
+            this.recordAcceptedPrompt(sessionId, receipt.text, [`message:${clientMessageId}`], promptActor);
             this.dispatch({ type: "steering/resendUpdated", sessionId, requestId, accessRevision,
                 resend: { clientMessageId, phase: "queued", error: null } });
             this.setStatus("Added guidance as a new message; earlier messages stay ahead.");
@@ -6702,6 +6709,7 @@ export class PilotSwarmUiController {
         }
         this.detachActiveSession();
         this.activeSessionSubscriptionId = sessionId;
+        void this.loadPromptHistory(sessionId);
         this.activeSessionUnsub = this.transport.subscribeSession(sessionId, (event) => {
             this.mergeSessionEvent(sessionId, event);
         }, () => {
@@ -9559,6 +9567,7 @@ export class PilotSwarmUiController {
     async sendPrompt() {
         const state = this.getState();
         const rawPrompt = state.ui.prompt;
+        this.dispatch({ type: "promptHistory/reset" });
         const promptAttachments = this.getPromptAttachments();
         const attachmentSessionId = promptAttachments[0]?.sessionId || null;
         const prompt = expandPromptAttachments(rawPrompt, promptAttachments);
@@ -9772,14 +9781,62 @@ export class PilotSwarmUiController {
 
     movePromptCursorVertical(direction) {
         const state = this.getState().ui;
+        if (!state.promptEdit && this.recallPromptHistory(direction)) return;
         const nextCursor = movePromptCursorVertically(state.prompt, state.promptCursor, direction);
         if (nextCursor !== state.promptCursor) {
             this.setPrompt(state.prompt, nextCursor);
             return;
         }
-        if (direction < 0 && this.selectPreviousPendingPrompt()) return;
-        if (direction > 0 && this.selectNextPendingPrompt()) return;
+        if (state.promptEdit && direction < 0 && this.selectPreviousPendingPrompt()) return;
+        if (state.promptEdit && direction > 0 && this.selectNextPendingPrompt()) return;
         this.setPrompt(state.prompt, nextCursor);
+    }
+
+    recordAcceptedPrompt(sessionId, text, ids, actor) {
+        this.dispatch({ type: "promptHistory/accepted", sessionId, text, ids, actor });
+    }
+
+    async loadPromptHistory(sessionId) {
+        const actor = this.getState().auth?.principal;
+        if (!promptHistoryActorKey(actor) || typeof this.transport.getSessionEventsBefore !== "function") return;
+        this.promptHistoryLoads ??= new Map();
+        const key = `${sessionId}:${promptHistoryActorKey(actor)}`;
+        if (this.promptHistoryLoads.has(key)) return this.promptHistoryLoads.get(key);
+        const load = (async () => {
+            let beforeSeq = Number.MAX_SAFE_INTEGER;
+            do {
+                const events = await this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, ["user.message"]);
+                if (promptHistoryActorKey(actor) !== promptHistoryActorKey(this.getState().auth?.principal)
+                    || this.getState().sessions.goneIds?.includes(sessionId)) return;
+                this.dispatch({ type: "promptHistory/eventsReceived", sessionId, actor, events });
+                const oldest = Math.min(...events.map(event => event.seq));
+                if (events.length < 100 || oldest >= beforeSeq
+                    || selectPromptHistory(this.getState(), sessionId).length >= 10) return;
+                beforeSeq = oldest;
+            } while (this.getState().sessions.activeSessionId === sessionId);
+        })().catch(error => {
+            if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
+            else this.setStatus(`Could not load your input history: ${error.message}`);
+        }).finally(() => this.promptHistoryLoads.delete(key));
+        this.promptHistoryLoads.set(key, load);
+        return load;
+    }
+
+    recallPromptHistory(direction) {
+        const state = this.getState();
+        if (![-1, 1].includes(direction) || state.ui.modal || state.ui.promptEdit
+            || state.ui.promptActionIndex != null || this.getPromptReferenceContext()
+            || state.ui.autocomplete?.open || state.ui.slashMenu?.open || state.ui.mentionMenu?.open
+            || state.sessions.byId[state.sessions.activeSessionId]?.isGroup
+            || !isPromptHistoryBoundary(state.ui.prompt, state.ui.promptCursor, direction)) return false;
+        const navigation = state.ui.promptHistoryNavigation;
+        if (navigation?.viewerKey && navigation.viewerKey !== promptHistoryActorKey(state.auth?.principal)) {
+            this.dispatch({ type: "promptHistory/reset" });
+        }
+        if (direction > 0 && !this.getState().ui.promptHistoryNavigation) return false;
+        if (direction < 0 && !this.getState().ui.promptHistoryNavigation && !selectPromptHistory(state).length) return false;
+        this.dispatch({ type: "promptHistory/navigate", direction });
+        return true;
     }
 
     getCurrentLayout(overrides = {}) {

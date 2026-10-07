@@ -961,8 +961,8 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             : promptState.editingPending
                 ? "Edit pending prompt, Enter sends batch, Esc cancels"
                 : promptState.hasOutbox
-                    ? "Type a message and press Enter to queue it"
-            : "Type a message and press Enter",
+                    ? "Enter queues · Up recalls your history"
+            : "Enter sends · Up recalls your history",
         rows,
     });
 });
