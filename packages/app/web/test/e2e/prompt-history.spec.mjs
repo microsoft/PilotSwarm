@@ -64,6 +64,32 @@ function browserCase(browserName, run) {
     };
 }
 
+async function reloadWithHistoryReady(page, input, texts) {
+    const entered = Promise.withResolvers();
+    const released = Promise.withResolvers();
+    const pattern = `**/sessions/${sessionId}/events?*`;
+    const holdHistory = async route => {
+        entered.resolve();
+        await released.promise;
+        await route.fallback();
+    };
+    await page.route(pattern, holdHistory);
+    try {
+        await page.reload();
+        await expect(input).toBeVisible();
+        await entered.promise;
+        const transcript = page.locator(".ps-chat-panel .ps-scroll-panel");
+        await expect(transcript.getByText(texts[0], { exact: true })).toHaveCount(0);
+        released.resolve();
+        // A rendered authoritative transcript page also supplies the recall
+        // selector's events. Input visibility or a network response alone does not.
+        for (const text of texts) await expect(transcript.getByText(text, { exact: true })).toBeVisible();
+    } finally {
+        released.resolve();
+        await page.unroute(pattern, holdHistory);
+    }
+}
+
 for (const browserName of ["chromium", "webkit"]) test.describe(browserName, () => {
 test("desktop recalls own ordinary and delivered steering input, protects draft, and exits on edit", browserCase(browserName, async page => {
     const input = await open(page);
@@ -155,8 +181,7 @@ test("reload recalls the viewer's accepted receipt before delivery and never ano
         } } },
     ];
     await page.route(`**/sessions/${sessionId}/events?*`, route => route.fulfill({ json: { ok: true, result: events } }));
-    await page.reload();
-    await expect(input).toBeVisible();
+    await reloadWithHistoryReady(page, input, ["Own accepted pending guidance", "Own ordinary before receipt"]);
     await input.fill("Reload unsent draft");
     await input.press("ArrowUp");
     await expect(input).toHaveValue("Own accepted pending guidance");
@@ -186,8 +211,7 @@ test("reload reconstructs viewer-owned input history without exposing the other 
     await input.fill("Draft before reload");
     await input.press("ArrowUp");
     await expect(input).toHaveValue("Own input 2");
-    await page.reload();
-    await expect(input).toBeVisible();
+    await reloadWithHistoryReady(page, input, ["Own input 1", "Other writer text"]);
     await input.fill("Fresh reload draft");
     await input.press("ArrowUp");
     await expect(input).toHaveValue("Own input 2");
