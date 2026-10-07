@@ -212,10 +212,12 @@ describe("Stop is never delayed by steering settlement (test-env timeline 79d544
         const managed = new ManagedSession("s", sdk, {});
         const turn = managed.runTurn("long essay", { turnIndex: 1, steering: channel(ROW),
             steeringQuiesce: async () => { quiescenceEntered.resolve(); await quiescenceRelease.promise; return true; } });
+        let pump;
         await until(() => sdk.pending === 1, 5_000, "the steer hand-off");
         // Reach the real deadline branch without a wall-clock wait; hold its
         // already-issued quiescence so Stop cuts this exact settlement phase.
         managed.steeringPump.o.settleMs = 0;
+        pump = managed.steeringPump;
         sdk.emit("assistant.turn_end", {});
         sdk.emit("session.idle", {});
         await quiescenceEntered.promise;
@@ -227,9 +229,13 @@ describe("Stop is never delayed by steering settlement (test-env timeline 79d544
             await new Promise(setImmediate);
             expect(returned).toBe(true);
             expect((await result).type).toBe("stopped");
+            expect(pump.quiesced).toBe(false, "interruption is not a positive cessation acknowledgment");
+            expect(pump.stats.quiesced).toBe(0);
         } finally {
             quiescenceRelease.resolve();
             await result;
+            await new Promise(setImmediate);
+            expect(pump.quiesced).toBe(false, "a late retired result cannot retroactively confirm the interrupted turn");
         }
     });
 
@@ -255,16 +261,22 @@ describe("Stop is never delayed by steering settlement (test-env timeline 79d544
 
 describe("an interrupted steering quiescence never reaches a later turn (Tess a474aba1 follow-up)", () => {
     it("a Stop during quiescence reuses quiescence's in-flight abort instead of sending a second one", async () => {
+        const entered = Promise.withResolvers();
         let releaseAbort;
         const sdk = fakeSdk(() => {});
-        sdk.abort = () => { sdk.aborts++; return new Promise((r) => { releaseAbort = r; }); };
+        sdk.abort = () => { sdk.aborts++; entered.resolve(); return new Promise((r) => { releaseAbort = r; }); };
         const managed = new ManagedSession("s", sdk, {});
         const quiesce = managed.abortForSteeringQuiescence(5_000);
-        managed.abort();                                                     // Stop's abort while quiescence's is on the wire
-        await sleep(10);
-        expect(sdk.aborts).toBe(1);
-        releaseAbort();
-        expect(await quiesce).toBe(true);
+        await entered.promise;
+        try {
+            managed.abort();                                                 // Stop's abort while quiescence's is on the wire
+            await new Promise(setImmediate);
+            expect(sdk.aborts).toBe(1);
+        } finally {
+            sdk.emit("session.idle", {});
+            releaseAbort();
+            expect(await quiesce).toBe(true);
+        }
     });
 
     it("the next turn never reuses a handle that steering quiescence retired; it waits for the disconnect", async () => {
@@ -272,23 +284,49 @@ describe("an interrupted steering quiescence never reaches a later turn (Tess a4
         m.sessions = new Map();
         m.sessionAgentCopies = new Map();
         m.sessionBindingFingerprints = new Map();
+        const destroyEntered = Promise.withResolvers();
         let releaseDestroy;
         const old = {
             getWorkspaceState: () => ({}),
             abortForSteeringQuiescence: async () => true,
-            destroy: () => new Promise((r) => { releaseDestroy = r; }),
+            destroy: () => new Promise((r) => { releaseDestroy = r; destroyEntered.resolve(); }),
         };
         m.sessions.set("s5", old);
         const quiescence = m.quiesceForSteering("s5");                      // the pump stopped waiting (Stop); this continues
-        await sleep(5);
+        await destroyEntered.promise;
         let ready = false;
         const nextTurn = m._awaitSteeringRetirement("s5").then(() => { ready = true; });
-        await sleep(20);
-        expect(ready).toBe(false);                                         // the next turn waits for the disconnect
-        releaseDestroy();
-        await nextTurn;
+        try {
+            await new Promise(setImmediate);
+            expect(ready).toBe(false);                                     // the next turn waits for the disconnect
+        } finally { releaseDestroy(); await nextTurn; }
         expect(await quiescence).toBe(true);
         expect(m.sessions.has("s5")).toBe(false);                          // the retired handle is never reused
         await m._awaitSteeringRetirement("s5");                             // nothing left to wait for
+    });
+
+    it("late completion of a retired handle cannot remove a replacement or its binding metadata", async () => {
+        const m = Object.create(SessionManager.prototype);
+        m.sessions = new Map();
+        m.sessionAgentCopies = new Map();
+        m.sessionBindingFingerprints = new Map();
+        const entered = Promise.withResolvers(), released = Promise.withResolvers();
+        const old = { getWorkspaceState: () => ({}), abortForSteeringQuiescence: async () => true,
+            destroy: async () => { entered.resolve(); await released.promise; } };
+        const replacement = { tag: "replacement" };
+        m.sessions.set("s", old);
+        const quiesce = m.quiesceForSteering("s");
+        await entered.promise;
+        const retiring = m._awaitSteeringRetirement("s");
+        m.sessions.set("s", replacement);
+        m.sessionAgentCopies.set("s", { tag: "replacement-copy" });
+        m.sessionBindingFingerprints.set("s", "replacement-fingerprint");
+        released.resolve();
+        await retiring;
+        expect(await quiesce).toBe(true);
+        expect(m.sessions.get("s")).toBe(replacement);
+        expect(m.sessionAgentCopies.get("s")).toEqual({ tag: "replacement-copy" });
+        expect(m.sessionBindingFingerprints.get("s")).toBe("replacement-fingerprint");
+        expect(m.steeringRetirements.has("s")).toBe(false);
     });
 });
