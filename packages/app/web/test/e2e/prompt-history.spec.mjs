@@ -115,6 +115,58 @@ test("IME composition retains the draft instead of recalling history", browserCa
     await expect(input).toHaveValue("Composition draft");
 }));
 
+test("composition lifecycle and legacy composing keycode retain drafts before Enter and Steer shortcuts", browserCase(browserName, async page => {
+    const input = await open(page);
+    const messages = [];
+    page.on("request", request => {
+        if (request.url().endsWith(`/sessions/${sessionId}/messages`)) messages.push(request);
+    });
+    await input.fill("Composition lifecycle draft");
+    await input.dispatchEvent("compositionstart", { data: "draft" });
+    await input.dispatchEvent("keydown", { key: "Enter", code: "Enter" });
+    await input.dispatchEvent("keydown", { key: "s", code: "KeyS", ctrlKey: true });
+    await input.dispatchEvent("keydown", { key: "ArrowUp", code: "ArrowUp" });
+    await expect(input).toHaveValue("Composition lifecycle draft");
+    await input.dispatchEvent("compositionend", { data: "draft" });
+    await input.dispatchEvent("keydown", { key: "ArrowUp", code: "ArrowUp", keyCode: 229 });
+    await expect(input).toHaveValue("Composition lifecycle draft");
+    expect(messages).toHaveLength(0);
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own input 2");
+}));
+
+test("reload recalls the viewer's accepted receipt before delivery and never another writer's receipt", browserCase(browserName, async page => {
+    const input = await open(page);
+    const own = {
+        schemaVersion: 1, sessionId, requestId: "accepted-own", clientRequestId: "caller-own",
+        expectedTarget: "old-target", sequence: 1, acceptedAt: new Date(2).toISOString(), actor,
+        text: "Own accepted pending guidance", revision: 1, status: "pending", disposition: "accepted",
+        eligibility: { state: "pending", reason: "awaiting_handoff" },
+        inclusion: { state: "not_included", snapshotVersion: null }, recoveryFlags: [],
+        attempts: { total: 0, items: [], nextCursor: null },
+    };
+    const events = [
+        { sessionId, seq: 1, eventType: "user.message", createdAt: 1, data: {
+            content: "Own ordinary before receipt", sender: actor, clientMessageIds: ["ordinary-one"],
+        } },
+        { sessionId, seq: 2, eventType: "session.steering_accepted", createdAt: 2, data: { receipt: own } },
+        { sessionId, seq: 3, eventType: "session.steering_accepted", createdAt: 3, data: { receipt: {
+            ...own, requestId: "accepted-other", sequence: 2, actor: { ...actor, subject: "other" }, text: "Other accepted private guidance",
+        } } },
+    ];
+    await page.route(`**/sessions/${sessionId}/events?*`, route => route.fulfill({ json: { ok: true, result: events } }));
+    await page.reload();
+    await expect(input).toBeVisible();
+    await input.fill("Reload unsent draft");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own accepted pending guidance");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own ordinary before receipt");
+    await input.press("ArrowDown");
+    await input.press("ArrowDown");
+    await expect(input).toHaveValue("Reload unsent draft");
+}));
+
 test("selected ranges and active suggestion menus retain native arrows", browserCase(browserName, async page => {
     const input = await open(page);
     await input.fill("Composition draft");
