@@ -351,8 +351,12 @@ describe("SteeringPump", () => {
         const session = new FakeSession(); const ch = new FakeChannel([]);
         ch.renewOk = false;
         const { pump } = makePump(session, ch, { options: { renewMs: 5 } });
-        await startTurn(session, pump, ch);
+        // The gate may open and close again within one poll interval: wait for the refused renewal.
+        session.emit("user.message", { messageId: "main", delivery: "idle" });
+        pump.noteMainPrompt("main");
+        await until(() => ch.names().includes("renew"));
         await until(() => !pump.gate.isOpen);
+        expect(ch.names()[0]).toBe("open");
         await pump.settle({ stopping: false });
         pump.dispose();
     });

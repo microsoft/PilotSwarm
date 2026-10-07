@@ -180,3 +180,43 @@ describe("Stop is never delayed by steering settlement (test-env timeline 79d544
         expect((await turn).type).toBe("stopped");
     });
 });
+
+describe("an interrupted steering quiescence never reaches a later turn (Tess a474aba1 follow-up)", () => {
+    it("a Stop during quiescence reuses quiescence's in-flight abort instead of sending a second one", async () => {
+        let releaseAbort;
+        const sdk = fakeSdk(() => {});
+        sdk.abort = () => { sdk.aborts++; return new Promise((r) => { releaseAbort = r; }); };
+        const managed = new ManagedSession("s", sdk, {});
+        const quiesce = managed.abortForSteeringQuiescence(5_000);
+        managed.abort();                                                     // Stop's abort while quiescence's is on the wire
+        await sleep(10);
+        expect(sdk.aborts).toBe(1);
+        releaseAbort();
+        expect(await quiesce).toBe(true);
+    });
+
+    it("the next turn never reuses a handle that steering quiescence retired; it waits for the disconnect", async () => {
+        const m = Object.create(SessionManager.prototype);
+        m.sessions = new Map();
+        m.sessionAgentCopies = new Map();
+        m.sessionBindingFingerprints = new Map();
+        let releaseDestroy;
+        const old = {
+            getWorkspaceState: () => ({}),
+            abortForSteeringQuiescence: async () => true,
+            destroy: () => new Promise((r) => { releaseDestroy = r; }),
+        };
+        m.sessions.set("s5", old);
+        const quiescence = m.quiesceForSteering("s5");                      // the pump stopped waiting (Stop); this continues
+        await sleep(5);
+        let ready = false;
+        const nextTurn = m._awaitSteeringRetirement("s5").then(() => { ready = true; });
+        await sleep(20);
+        expect(ready).toBe(false);                                         // the next turn waits for the disconnect
+        releaseDestroy();
+        await nextTurn;
+        expect(await quiescence).toBe(true);
+        expect(m.sessions.has("s5")).toBe(false);                          // the retired handle is never reused
+        await m._awaitSteeringRetirement("s5");                             // nothing left to wait for
+    });
+});
