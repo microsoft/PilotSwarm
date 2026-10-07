@@ -3388,9 +3388,14 @@ export class SessionManager {
         const session = this.sessions.get(sessionId);
         if (!session) return true;
         try {
+            // Cessation before disconnect (review F01): abort any run a late steer
+            // started and let it reach idle; disconnect alone leaves it running.
+            const aborted = typeof (session as any).abortForSteeringQuiescence === "function"
+                ? await (session as any).abortForSteeringQuiescence()
+                : true;
             await this._cancelWorkspaceShells(sessionId, session, "steering quiescence");
             await session.destroy();
-            return true;
+            return aborted;
         } catch {
             return false;
         } finally {
