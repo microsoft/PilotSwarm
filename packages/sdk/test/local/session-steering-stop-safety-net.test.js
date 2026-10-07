@@ -125,6 +125,50 @@ describe("Stop safety net for a steered turn", () => {
         expect(second.type).toBe("completed");
         expect(sdk.aborts).toBe(1);
     });
+
+    it("a held old-generation queue removal cannot continue draining or abort after a new ordinary turn starts", async () => {
+        const removalEntered = Promise.withResolvers();
+        const removalRelease = Promise.withResolvers();
+        const newTurnEntered = Promise.withResolvers();
+        let queueCalls = 0;
+        const sdk = fakeSdk(s => { s.emit("assistant.turn_end", {}); s.emit("session.idle", {}); });
+        sdk.rpc.queue.removeMostRecent = async () => {
+            queueCalls++;
+            if (queueCalls === 1) {
+                removalEntered.resolve();
+                await removalRelease.promise;
+                return { removed: true };
+            }
+            return { removed: false };
+        };
+        const managed = new ManagedSession("s", sdk, {});
+        await stopAndTime(managed, sdk);
+        // An old queued successor wakes the still-active Stop watch.
+        sdk.emit("assistant.turn_start", {});
+        await removalEntered.promise;
+        sdk.send = async input => {
+            if (input.mode !== "immediate") {
+                sdk.emit("user.message", { messageId: "new-main", delivery: "idle", content: input.prompt });
+                sdk.emit("assistant.turn_start", {});
+                newTurnEntered.resolve();
+            }
+            return "new-main";
+        };
+        const next = managed.runTurn("new ordinary turn", { turnIndex: 2 });
+        await newTurnEntered.promise;
+        try {
+            removalRelease.resolve();
+            // Drain the known Promise continuation; no wall-clock timing assumption.
+            await new Promise(setImmediate);
+            expect({ queueCalls, aborts: sdk.aborts, activeTurn: managed.getActiveTurn()?.turnIndex })
+                .toEqual({ queueCalls: 1, aborts: 1, activeTurn: 2 });
+        } finally {
+            removalRelease.resolve();
+            sdk.emit("assistant.message", { content: "new ordinary answer" });
+            sdk.emit("session.idle", {});
+            await next;
+        }
+    });
 });
 
 describe("Stop is never delayed by steering settlement (test-env timeline 79d544be)", () => {
