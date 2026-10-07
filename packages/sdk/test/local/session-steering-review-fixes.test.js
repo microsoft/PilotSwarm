@@ -475,3 +475,25 @@ describe("CMS pool pressure: one steering database call per turn", () => {
         expect(turn.callQueue.peak).toBe(1);
     });
 });
+
+describe("F18: steering support is detected through a procedure", () => {
+    it("supportsSteering calls cms_steer_capabilities; without it the schema reports no support", async () => {
+        expect(await catalog.supportsSteering()).toBe(true);
+        const other = `ps_test_steer_caps_${randomUUID().replaceAll("-", "")}`;
+        const probe = await PgSessionCatalog.create(url, other);
+        try {
+            await probe.initialize();
+            expect(await probe.supportsSteering()).toBe(true);
+            await pool.query(`DROP FUNCTION "${other}".cms_steer_capabilities()`);
+            const fresh = await PgSessionCatalog.create(url, other);
+            try {
+                expect(await fresh.supportsSteering()).toBe(false);
+            } finally {
+                await fresh.close();
+            }
+        } finally {
+            await probe.close();
+            await pool.query(`DROP SCHEMA IF EXISTS "${other}" CASCADE`);
+        }
+    });
+});

@@ -57,15 +57,56 @@ describe("read_session_steering", () => {
 
     it("returns state, aggregates and attempt evidence without message text", async () => {
         const t = tool(createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" }));
-        const out = await t.handler({ session_id: sessionId, include_requests: true }, {});
-        expect(out.supported).toBe(true);
-        expect(out.state).toMatchObject({ steerable: true, unresolved: 2 });
-        expect(out.stats.requests.accepted).toBe(2);
-        expect(out.stats.attempts).toMatchObject({ deliveries: 1, deliveredByKind: { steering: 1 } });
-        expect(out.requests.items).toHaveLength(2);
-        expect(out.requests.items[0].attempts.items[0]).toMatchObject({ deliveryKind: "steering", outcome: "delivered" });
-        expect(out.requests.truncated).toBe(false);
-        expect(JSON.stringify(out)).not.toContain(SECRET);
+        await pool.query(`UPDATE "${schema}".feature_flag_settings SET enabled = true WHERE feature_key = 'sessions.steering' AND scope = 'cluster'`);
+        try {
+            const out = await t.handler({ session_id: sessionId, include_requests: true }, {});
+            expect(out.supported).toBe(true);
+            expect(out.capability).toMatchObject({ schema: true, featureEnabled: true, serviceSession: false });
+            expect(out.stateScope).toBe("raw_window");
+            expect(out.state).toMatchObject({ steerable: true, unresolved: 2 });
+            expect(out.stats.requests.accepted).toBe(2);
+            expect(out.stats.attempts).toMatchObject({ deliveries: 1, deliveredByKind: { steering: 1 } });
+            expect(out.requests).toMatchObject({ order: "newest_first", total: 2, truncated: false });
+            expect(out.requests.items).toHaveLength(2);
+            expect(out.requests.items[0].sequence).toBeGreaterThan(out.requests.items[1].sequence);
+            expect(out.requests.items[1].attempts.items[0]).toMatchObject({ deliveryKind: "steering", outcome: "delivered" });
+            expect(JSON.stringify(out)).not.toContain(SECRET);
+        } finally {
+            await pool.query(`UPDATE "${schema}".feature_flag_settings SET enabled = false WHERE feature_key = 'sessions.steering' AND scope = 'cluster'`);
+        }
+    });
+
+    it("reports effective capability, not raw window state, when the feature is off (review F17)", async () => {
+        const t = tool(createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" }));
+        const out = await t.handler({ session_id: sessionId }, {});
+        expect(out.supported).toBe(false);
+        expect(out.capability).toMatchObject({ schema: true, featureEnabled: false });
+        expect(out.state.steerable).toBe(true);                       // the raw window is still open
+        expect(out.stateScope).toBe("raw_window");
+    });
+
+    it("lists the newest requests first beyond the old scan prefix (review F12)", async () => {
+        const sid = randomUUID();
+        const author = `recent-author-${randomUUID()}`;                    // its own per-actor rate budget
+        await catalog.createSession(sid, { model: "m", owner: { provider: "test", subject: author } });
+        const tg = { epoch: 0, turnIndex: 0, incarnation: randomUUID() };
+        await catalog.steerWindowOpen(sid, tg, randomUUID(), 60_000);
+        for (let i = 0; i < 230; i++) {
+            const text = `n${i}`;
+            await catalog.steerAccept({ sessionId: sid, requestId: `steer_${randomUUID()}`, idempotencyKey: `k${i}`,
+                actor: { kind: "user", provider: "test", subject: author }, content: text, contentHash: steeringContentHash(text),
+                ...tg, limits: { maxUnresolved: 10_000, ratePerMinute: 10_000 } });
+        }
+        const t = tool(createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" }));
+        const out = await t.handler({ session_id: sid, include_requests: true, limit: 5 }, {});
+        expect(out.requests.total).toBe(230);
+        expect(out.requests.truncated).toBe(true);
+        const seqs = out.requests.items.map((r) => r.sequence);
+        expect(seqs).toEqual([...seqs].sort((a, b) => b - a));
+        const newest = await catalog.steerListRecent(sid, 1);
+        expect(seqs[0]).toBe(newest.items[0].sequence);
+        const all = await catalog.steerList(sid, { limit: 200 });
+        expect(Math.min(...seqs)).toBeGreaterThan(Math.max(...all.items.map((r) => r.sequence)));   // not the first page
     });
 
     it("applies the viewer's visibility on every call", async () => {
