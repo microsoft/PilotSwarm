@@ -1458,6 +1458,8 @@ export interface SessionCatalog {
     steerGet(sessionId: string, requestId: string, opts?: { attemptAfter?: number; attemptLimit?: number }): Promise<SteeringReceiptRecord | null>;
     /** cms_steer_list: server-sequence page. */
     steerList(sessionId: string, opts?: { afterSeq?: number | null; limit?: number; dispositions?: SteeringDisposition[] | null; target?: SteeringTarget | null }): Promise<SteerListRecord>;
+    /** cms_steer_list_recent (0086): the latest receipts, newest first, and the session total. */
+    steerListRecent(sessionId: string, limit: number): Promise<{ items: SteeringReceiptRecord[]; total: number }>;
     /** cms_steer_state: current window and admission facts. */
     steerState(sessionId: string): Promise<SteeringStateRecord>;
     /** cms_steer_stats: §11 aggregates, no content. */
@@ -3881,15 +3883,25 @@ export class PgSessionCatalog implements SessionCatalog {
 
     private _steeringSupported: boolean | null = null;
 
+    private _steeringProbeFailedAt = 0;
+
+    /**
+     * Steering schema support through a procedure (review F18): cms_steer_capabilities()
+     * exists from migration 0086. A missing function (42883) means no support; any other
+     * error propagates. A positive answer is cached; a negative one for 60 s.
+     */
     async supportsSteering(): Promise<boolean> {
         if (this._steeringSupported) return true;
-        const { rows } = await this.pool.query(
-            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
-            [`"${this.sql.schema}".cms_steer_accept(text,text,text,jsonb,text,text,integer,integer,text,jsonb)`],
-        );
-        // Cache only a positive answer: a later migration can add the procedures.
-        this._steeringSupported = Boolean(rows[0]?.supported) || null;
-        return Boolean(rows[0]?.supported);
+        if (Date.now() - this._steeringProbeFailedAt < 60_000) return false;
+        try {
+            await this.steerQuery(`SELECT ${this.steerFn("cms_steer_capabilities")}() AS v`);
+            this._steeringSupported = true;
+            return true;
+        } catch (err: any) {
+            if (err?.code !== "42883") throw err;
+            this._steeringProbeFailedAt = Date.now();
+            return false;
+        }
     }
 
     private steerFn(name: string): string {
@@ -3981,6 +3993,12 @@ export class PgSessionCatalog implements SessionCatalog {
             [sessionId, opts?.afterSeq ?? null, opts?.limit ?? 50, dispositions,
                 opts?.target?.epoch ?? null, opts?.target?.turnIndex ?? null, opts?.target?.incarnation ?? null],
         );
+    }
+
+    async steerListRecent(sessionId: string, limit: number): Promise<{ items: SteeringReceiptRecord[]; total: number }> {
+        const v = await this.steerScalar<{ items: SteeringReceiptRecord[]; total: number | string }>(
+            `SELECT ${this.steerFn("cms_steer_list_recent")}($1,$2) AS v`, [sessionId, limit]);
+        return { items: v?.items ?? [], total: Number(v?.total ?? 0) };
     }
 
     async steerState(sessionId: string): Promise<SteeringStateRecord> {

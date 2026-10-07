@@ -15,7 +15,11 @@
  *   steering ⇒ delivered_current_turn, queued/idle ⇒ delivered_after_response,
  *   and the attempt keeps that kind. Unknown kind: the new disposition
  *   delivered_timing_unconfirmed. Inclusion stays a separate fact. Closure no
- *   longer turns a delivered attempt with no kind into delivered_current_turn.
+ *   longer turns a delivered attempt with no kind into delivered_current_turn,
+ *   and Stop never overrides delivered_timing_unconfirmed (it is terminal).
+ *
+ * F12: `cms_steer_list_recent` reads the newest receipts first (tuner diagnostics).
+ * F18: `cms_steer_capabilities` replaces the inline to_regprocedure probe.
  */
 export function sessionSteeringReviewMigration(schema: string): string {
     const s = `"${schema.replace(/"/g, '""')}"`;
@@ -116,8 +120,14 @@ BEGIN
       INTO v_delivered, v_possible, v_first_kind
       FROM ${s}.session_steering_attempts WHERE request_id = p_request_id;
     IF COALESCE(v_delivered, false) THEN
+        -- Timing unknown is terminal: Stop never overrides it (owner decision 2026-10-07).
+        -- Delivered with no recorded kind, or already labelled so, stays delivered_timing_unconfirmed;
+        -- a Stop-closed delivery_unconfirmed row that gains such evidence is corrected to it.
+        IF p_current = 'delivered_timing_unconfirmed' OR v_first_kind IS NULL THEN
+            RETURN 'delivered_timing_unconfirmed';
+        END IF;
         IF p_reason = 'stopped' THEN RETURN 'delivered_before_stop'; END IF;
-        IF p_current IN ('delivered_current_turn', 'delivered_after_response', 'delivered_timing_unconfirmed') THEN
+        IF p_current IN ('delivered_current_turn', 'delivered_after_response') THEN
             RETURN p_current;
         END IF;
         RETURN ${s}.cms_steer_delivered_disposition(v_first_kind);
@@ -179,5 +189,26 @@ BEGIN
     PERFORM ${s}.cms_steer_record_event(r.session_id, 'session.steering_updated', p_request_id);
     RETURN true;
 END $$;
+
+-- ─── F12: newest-first diagnostics read ─────────────────────────
+-- The latest p_limit receipts (max 100), newest first, plus the session total.
+CREATE OR REPLACE FUNCTION ${s}.cms_steer_list_recent(p_session_id TEXT, p_limit INT)
+RETURNS JSONB LANGUAGE plpgsql STABLE AS $$
+DECLARE v_limit INT := LEAST(GREATEST(COALESCE(p_limit, 20), 1), 100); v_total BIGINT;
+BEGIN
+    SELECT count(*) INTO v_total FROM ${s}.session_steering_requests WHERE session_id = p_session_id;
+    RETURN jsonb_build_object(
+        'items', COALESCE((SELECT jsonb_agg(${s}.cms_steer_projection(x.request_id, true, 0, 20) ORDER BY x.seq DESC)
+                             FROM (SELECT request_id, seq FROM ${s}.session_steering_requests
+                                    WHERE session_id = p_session_id ORDER BY seq DESC LIMIT v_limit) x), '[]'::JSONB),
+        'total', v_total);
+END $$;
+
+-- ─── F18: schema capability probe as a procedure ────────────────
+-- Callers detect steering support by calling this; a missing function (42883) means no support.
+CREATE OR REPLACE FUNCTION ${s}.cms_steer_capabilities()
+RETURNS JSONB LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_build_object('schemaVersion', 1, 'migration', '0086');
+$$;
 `;
 }
