@@ -95,3 +95,47 @@ test("changing canonical viewer identity clears completed scan state and searche
     assert.equal(reads, 2);
     assert.deepEqual(selectPromptHistory(store.getState()), ["bob input"]);
 });
+
+test("accepted-guidance history survives a later page timeout; explicit continuation keeps its cursor and late private pages do not land", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+    const alice = { provider: "test", subject: "alice" };
+    const accepted = (seq, requestId, actor = alice) => ({
+        sessionId: "s", seq, eventType: "session.steering_accepted", data: { receipt: {
+            schemaVersion: 1, sessionId: "s", requestId, actor, text: `guidance ${requestId}`,
+            disposition: "accepted", status: "pending",
+        } },
+    });
+    const secondEntered = Promise.withResolvers();
+    const heldPage = Promise.withResolvers();
+    const calls = [];
+    const { controller, store } = harness((...args) => {
+        calls.push(args);
+        if (calls.length === 1) {
+            const otherInputs = Array.from({ length: 99 }, (_, index) => ({ sessionId: "s", seq: 999 - index, eventType: "user.message",
+                data: { content: `Other ${index}`, sender: { kind: "user", provider: "test", subject: "bob" } } }));
+            return Promise.resolve([accepted(1000, "first-own"), ...otherInputs]);
+        }
+        if (calls.length === 2) { secondEntered.resolve(); return heldPage.promise; }
+        return Promise.resolve([accepted(900, "older-own"), accepted(899, "other-writer", { provider: "test", subject: "bob" })]);
+    });
+    const loading = controller.loadPromptHistory("s");
+    await secondEntered.promise;
+    assert.deepEqual(selectPromptHistory(store.getState()), ["guidance first-own"]);
+    assert.deepEqual(calls[1], ["s", 901, 100, ["user.message", "session.steering_accepted"]]);
+    t.mock.timers.tick(5000);
+    await loading;
+    const scan = store.getState().promptHistory.bySessionId.s.scan;
+    assert.equal(scan.partial, true);
+    assert.equal(scan.exhausted, false);
+    assert.equal(scan.loading, false);
+    assert.equal(scan.beforeSeq, 901);
+    assert.match(scan.error, /budget/);
+    heldPage.resolve([accepted(900, "late-own"), accepted(899, "late-private", { provider: "test", subject: "bob" })]);
+    await Promise.resolve();
+    assert.deepEqual(selectPromptHistory(store.getState()), ["guidance first-own"]);
+    await controller.loadPromptHistory("s", { more: true });
+    assert.deepEqual(calls[2], ["s", 901, 100, ["user.message", "session.steering_accepted"]]);
+    assert.deepEqual(selectPromptHistory(store.getState()), ["guidance first-own", "guidance older-own"]);
+    assert.equal(store.getState().promptHistory.bySessionId.s.scan.exhausted, true);
+    assert.equal(store.getState().promptHistory.bySessionId.s.scan.partial, false);
+});
