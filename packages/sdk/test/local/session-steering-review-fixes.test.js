@@ -10,9 +10,11 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { steeringContentHash } from "../../src/steering.ts";
-import { createCmsSteeringChannel } from "../../src/steering-channel.ts";
+import { SteeringTurn, createCmsSteeringChannel } from "../../src/steering-channel.ts";
 import { SteeringPump } from "../../src/steering-pump.ts";
 import { within } from "../helpers/steering-cli.mjs";
+import { SessionManager } from "../../src/session-manager.ts";
+import { withSteeringLedger } from "../helpers/steering-ledger.js";
 
 const url = process.env.PS_TEST_DATABASE_URL || process.env.TEST_DATABASE_URL || process.env.DATABASE_URL
     || "postgres://postgres:postgres@localhost:5432/pilotswarm";
@@ -206,5 +208,268 @@ describe.concurrent("F03: the final hand-off fence checks the lease", () => {
             await pump.settle({ stopping: false });
             pump.dispose();
         }
+    });
+});
+
+describe.concurrent("F04: steering quiescence cleanup is generation-safe", () => {
+    /** The real SessionManager methods over an in-memory handle map (no CLI, no I/O). */
+    function manager() {
+        const m = Object.create(SessionManager.prototype);
+        m.sessions = new Map();
+        m.sessionAgentCopies = new Map();
+        m.sessionBindingFingerprints = new Map();
+        return m;
+    }
+    function handle(name, destroyImpl) {
+        const h = {
+            name,
+            destroyed: false,
+            aborted: false,
+            getWorkspaceState: () => ({}),
+            getActiveTurn: () => (name === "replacement" && !h.aborted ? { turnIndex: 7, startedAt: Date.now() } : null),
+            requestStop: () => ({ turnIndex: 7 }),
+            abort: () => { h.aborted = true; },
+            destroy: destroyImpl ?? (async function () { this.destroyed = true; }),
+        };
+        return h;
+    }
+
+    it("a deferred old cleanup completing after recovery does not remove the replacement handle", async () => {
+        const m = manager();
+        const destroyEntered = Promise.withResolvers();
+        let finishOld;
+        const old = handle("old", function () {
+            destroyEntered.resolve();
+            return new Promise((r) => { finishOld = () => { this.destroyed = true; r(); }; });
+        });
+        m.sessions.set("s1", old);
+        m.sessionAgentCopies.set("s1", { tag: "old-copy" });
+        m.sessionBindingFingerprints.set("s1", "old-fp");
+
+        // Hold the actual manager's destroy boundary while recovery replaces it.
+        const late = m.quiesceForSteering("s1");
+        await within(destroyEntered.promise, "old handle destroy is issued and held");
+
+        // Recovery installs a replacement while the old cleanup is still outstanding.
+        const replacement = handle("replacement");
+        m.sessions.set("s1", replacement);
+        m.sessionAgentCopies.set("s1", { tag: "new-copy" });
+        m.sessionBindingFingerprints.set("s1", "new-fp");
+
+        finishOld();
+        expect(await late).toBe(true);
+        expect(old.destroyed).toBe(true);
+        expect(m.sessions.get("s1")).toBe(replacement);
+        expect(m.sessionAgentCopies.get("s1")).toEqual({ tag: "new-copy" });
+        expect(m.sessionBindingFingerprints.get("s1")).toBe("new-fp");
+
+        // Stop still reaches the replacement's running turn.
+        const stop = await m.abortWarmSessionTurn("s1", { reason: "test", unwindGraceMs: 1_000 });
+        expect(stop).toEqual({ outcome: "stopped", turnIndex: 7 });
+        expect(replacement.aborted).toBe(true);
+    });
+
+    it("without a replacement the cleanup still forgets its own handle", async () => {
+        const m = manager();
+        const old = handle("old");
+        m.sessions.set("s2", old);
+        m.sessionAgentCopies.set("s2", { tag: "copy" });
+        expect(await m.quiesceForSteering("s2")).toBe(true);
+        expect(m.sessions.has("s2")).toBe(false);
+        expect(m.sessionAgentCopies.has("s2")).toBe(false);
+    });
+});
+
+describe.concurrent("F05: steering database work is bounded", () => {
+    async function holdSessionLock(sessionId) {
+        const holder = new pg.Client({ connectionString: url });
+        await holder.connect();
+        await holder.query(`SELECT pg_advisory_lock(hashtextextended('steer-window:' || $1, 0))`, [sessionId]);
+        return { release: async () => { await holder.query(`SELECT pg_advisory_unlock_all()`); await holder.end(); } };
+    }
+
+    it("a blocked real statement is cancelled server-side within the budget; the pool stays usable", async () => {
+      await withSteeringLedger(async (h) => {
+        const catalog = h.catalog;
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m" });
+        const target = { epoch: 0, turnIndex: 0, incarnation: randomUUID() };
+        const owner = randomUUID();
+        await catalog.steerWindowOpen(sessionId, target, owner, LEASE);
+        const previous = catalog.steeringQueryTimeoutMs;
+        catalog.steeringQueryTimeoutMs = 400;
+        const lock = await holdSessionLock(sessionId);
+        try {
+            const started = Date.now();
+            const blocked = catalog.steerTurnFinalize(sessionId, target, owner, "published", [], 1).then(() => null, (e) => e);
+            const waitingHere = async () => (await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity
+                WHERE datname = current_database() AND wait_event_type = 'Lock'
+                  AND position($1 in query) > 0 AND query LIKE '%cms_steer_turn_finalize%'`, [h.schema])).rows[0].n;
+            await until(async () => (await waitingHere()) > 0, 3_000, "this exact schema's finalizer is blocked");
+            const err = await blocked;
+            const elapsed = Date.now() - started;
+            // Server-side cancellation: lock_timeout (55P03) or statement_timeout (57014), never a hang.
+            expect(["55P03", "57014"], String(err?.message)).toContain(err?.code);
+            expect(elapsed).toBeLessThan(2_500);
+            expect(await waitingHere()).toBe(0, "this exact schema's timed-out statement no longer waits on the held lock");
+            // Nothing committed: the window is still open, and the pool still serves calls.
+            expect((await catalog.steerState(sessionId)).steerable).toBe(true);
+        } finally {
+            await lock.release();
+            catalog.steeringQueryTimeoutMs = previous;
+        }
+      });
+    });
+
+    it("post-commit finalize returns within its budget while storage is blocked, and completes once unblocked", async () => {
+      await withSteeringLedger(async (h) => {
+        const catalog = h.catalog;
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m" });
+        const turn = await SteeringTurn.create({
+            catalog, sessionId, turnKey: randomUUID(), transcriptEpoch: 0, turnIndex: 3,
+            sessionRow: { owner: null }, featureCache: { resolve: () => ({ enabled: true }) },
+        });
+        const channel = turn.newChannel();
+        expect((await channel.openWindow()).ok).toBe(true);
+        const previous = catalog.steeringQueryTimeoutMs;
+        catalog.steeringQueryTimeoutMs = 300;
+        const lock = await holdSessionLock(sessionId);
+        try {
+            const started = Date.now();
+            await turn.finalize("published", { delivered: [] }, 1);           // traced, never thrown
+            expect(Date.now() - started).toBeLessThan(5_000);
+            expect((await catalog.steerState(sessionId)).window?.state).toBe("open");
+        } finally {
+            await lock.release();
+            catalog.steeringQueryTimeoutMs = previous;
+        }
+        await turn.finalize("published", { delivered: [] }, 1);
+        expect((await catalog.steerState(sessionId)).window).toBeNull();
+      });
+    });
+
+    it("lease renewals never overlap", async () => {
+        let calls = 0;
+        const entered = Promise.withResolvers();
+        const held = Promise.withResolvers();
+        const channel = {
+            sessionId: "s", target: { epoch: 0, turnIndex: 0, incarnation: "i" }, ownerToken: "o", recoverySource: "restored",
+            openWindow: async () => ({ ok: true, recovered: [] }),
+            renew: () => { calls++; entered.resolve(); return held.promise; },
+            claim: async () => [], quiesce: async () => {}, abandonWindow: async () => {},
+            recordRecoveryCheck: async () => {}, markSubmitting: async () => null, markReleased: async () => {},
+            markSubmitted: async () => {}, markDelivered: async () => {}, markUnconfirmed: async () => {},
+        };
+        const handlers = new Map();
+        const session = { on: (type, fn) => { handlers.set(type, fn); return () => {}; }, send: async () => "x", getEvents: async () => [] };
+        const pump = new SteeringPump(session, channel, {
+            stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true,
+            scanMs: 10, renewMs: 5, ioTimeoutMs: 100, settleMs: 50,
+        });
+        try {
+            handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+            pump.noteMainPrompt("main");
+            await until(() => pump.gate.isOpen, 2_000, "the gate");
+            await within(entered.promise, "first real pump renewal has been issued and is held");
+            await pump.renewLease();
+            await pump.renewLease();
+            await pump.renewLease();
+            expect(calls).toBe(1);
+        } finally {
+            held.resolve(false);
+            handlers.get("session.idle")({ type: "session.idle", data: {} });
+            await pump.settle({ stopping: false });
+            pump.dispose();
+        }
+    });
+});
+
+describe.concurrent("F06: recovery records the observed delivery timing, never an invented one", () => {
+    /** Accept → claim → write-ahead → SDK id persisted (delivery write lost) → same-target recovery. */
+    async function lostDeliveryRecovered() {
+        const { sessionId, target, owner, requestId } = await seededClaim();
+        const attemptId = await catalog.steerMarkSubmitting(requestId, owner);
+        const sdkId = `sdk-${randomUUID()}`;
+        await catalog.steerMarkSubmitted(attemptId, owner, sdkId);
+        const fresh = randomUUID();
+        const reopened = await catalog.steerWindowOpen(sessionId, target, fresh, LEASE);
+        expect(reopened.recovered.map((r) => r.requestId)).toEqual([requestId]);
+        return { sessionId, target, fresh, requestId, sdkId };
+    }
+
+    for (const [kind, disposition] of [["steering", "delivered_current_turn"], ["queued", "delivered_after_response"],
+        ["idle", "delivered_after_response"], [null, "delivered_timing_unconfirmed"], ["bogus", "delivered_timing_unconfirmed"]]) {
+        it(`restored history with delivery kind ${kind} ⇒ ${disposition}; inclusion stays separate`, async () => {
+            const { sessionId, target, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+            expect(await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", sdkId, kind)).toBe(true);
+            const r = await catalog.steerGet(sessionId, requestId);
+            const recorded = ["steering", "queued", "idle"].includes(kind) ? kind : null;
+            expect(r).toMatchObject({ status: "delivered", disposition, inclusion: { state: "included" } });
+            expect(r.attempts.items.at(-1)).toMatchObject({ outcome: "delivered", deliveryKind: recorded });
+            await catalog.steerTurnFinalize(sessionId, target, fresh, "published", [], 2);
+            const closed = await catalog.steerGet(sessionId, requestId);
+            expect(closed).toMatchObject({ status: "closed", disposition, inclusion: { state: "included" } });
+        });
+    }
+
+    it("present_local carries the kind too and leaves inclusion to finalize", async () => {
+        const { sessionId, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present_local", sdkId, "queued");
+        expect(await catalog.steerGet(sessionId, requestId)).toMatchObject({
+            disposition: "delivered_after_response", inclusion: { state: "unconfirmed" } });
+    });
+
+    it("a kind recorded from live evidence is never overwritten by recovery", async () => {
+        const { sessionId, target, owner, requestId } = await seededClaim();
+        const attemptId = await catalog.steerMarkSubmitting(requestId, owner);
+        await catalog.steerMarkSubmitted(attemptId, owner, "sdk-live");
+        await catalog.steerMarkDelivered(attemptId, "sdk-live", "queued");
+        const fresh = randomUUID();
+        await catalog.steerWindowOpen(sessionId, target, fresh, LEASE);
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", "sdk-live", "steering");
+        const r = await catalog.steerGet(sessionId, requestId);
+        expect(r.attempts.items[0].deliveryKind).toBe("queued");
+        expect(r.disposition).toBe("delivered_after_response");
+    });
+
+    it("Stop still closes a recovered delivery as delivered_before_stop (spec §6a.2)", async () => {
+        const { sessionId, target, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", sdkId, null);
+        await catalog.steerCloseStopped(sessionId, target.turnIndex);
+        expect((await catalog.steerGet(sessionId, requestId)).disposition).toBe("delivered_before_stop");
+    });
+
+    it("the pump passes the recorded kind of the found event", async () => {
+        const calls = [];
+        const channel = {
+            sessionId: "s", target: { epoch: 0, turnIndex: 0, incarnation: "i" }, ownerToken: "o", recoverySource: "restored",
+            openWindow: async () => ({ ok: true, recovery: true, recovered: [
+                { requestId: "a", sequence: 1, recoveryCheck: "pending", sdkMessageId: "m1", sdkMessageIds: ["m1"] },
+                { requestId: "b", sequence: 2, recoveryCheck: "pending", sdkMessageId: "m2", sdkMessageIds: ["m2"] },
+                { requestId: "c", sequence: 3, recoveryCheck: "pending", sdkMessageId: "m3", sdkMessageIds: ["m3"] }] }),
+            recordRecoveryCheck: async (...args) => { calls.push(args); },
+            renew: async () => true, claim: async () => [], quiesce: async () => {}, abandonWindow: async () => {},
+            markSubmitting: async () => null, markReleased: async () => {}, markSubmitted: async () => {},
+            markDelivered: async () => {}, markUnconfirmed: async () => {},
+        };
+        const handlers = new Map();
+        const session = {
+            on: (type, fn) => { handlers.set(type, fn); return () => {}; }, send: async () => "x",
+            getEvents: async () => [
+                { type: "user.message", data: { messageId: "m1", delivery: "queued" } },
+                { type: "user.message", data: { messageId: "m2", delivery: "idle" } },
+                { type: "user.message", data: { messageId: "m3" } }],
+        };
+        const pump = new SteeringPump(session, channel, {
+            stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true, scanMs: 10, settleMs: 50,
+        });
+        handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+        pump.noteMainPrompt("main");
+        await until(() => pump.gate.isOpen, 2_000, "the gate");
+        expect(calls).toEqual([["a", "present", "m1", "queued"], ["b", "present", "m2", "idle"], ["c", "present", "m3", null]]);
+        handlers.get("session.idle")({ type: "session.idle", data: {} });
+        await pump.settle({ stopping: false });
+        pump.dispose();
     });
 });

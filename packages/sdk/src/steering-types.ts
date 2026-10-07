@@ -16,6 +16,8 @@ export type SteeringDisposition =
     | "accepted"
     | "delivered_current_turn"
     | "delivered_after_response"
+    /** Delivered (found on recovery), but the CLI recorded no delivery kind: timing unknown (0086). */
+    | "delivered_timing_unconfirmed"
     | "delivered_before_stop"
     | "not_delivered_turn_ended"
     | "not_delivered_turn_stopped"
@@ -382,7 +384,8 @@ export interface SteeringChannel {
     /** Lease the window procedures grant (ms). The pump also enforces it locally. */
     readonly leaseMs?: number;
     openWindow(): Promise<SteerWindowOpenResult>;
-    recordRecoveryCheck(requestId: string, result: SteerRecoveryCheckResult, sdkMessageId?: string): Promise<void>;
+    /** `kind`: the delivery kind recorded with the found user.message, when recognized. */
+    recordRecoveryCheck(requestId: string, result: SteerRecoveryCheckResult, sdkMessageId?: string, kind?: SteeringDeliveryKind | null): Promise<void>;
     renew(): Promise<boolean>;
     quiesce(): Promise<void>;
     abandonWindow(): Promise<void>;
