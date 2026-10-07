@@ -4623,14 +4623,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Session steering (§7.4): finalize from the ACTUAL commit outcome
             // as the target's current owner (INV-R1..R4).
             if (steeringTurn) {
+                // A cancelled turn records inclusion from its commit; the closure (and its
+                // 'stopped' reason) belongs to whatever cancelled it.
+                const closeOpts = { close: bodyResult.type !== "cancelled" };
                 if (bodyResult.type === "stopped") {
                     await steeringTurn.finalize("stopped", bodyResult.steering, null);
                 } else if (committed.alreadyCommitted && committed.storedResult !== undefined) {
-                    await steeringTurn.finalize("adopted", (committed.storedResult as TurnResult).steering, committed.version ?? null);
+                    await steeringTurn.finalize("adopted", (committed.storedResult as TurnResult).steering, committed.version ?? null, undefined, closeOpts);
                 } else if (committed.published) {
-                    await steeringTurn.finalize("published", bodyResult.steering, committed.version ?? null);
+                    await steeringTurn.finalize("published", bodyResult.steering, committed.version ?? null, undefined, closeOpts);
                 } else {
-                    await steeringTurn.finalize("unpublished", bodyResult.steering, null);
+                    await steeringTurn.finalize("unpublished", bodyResult.steering, null, undefined, closeOpts);
                 }
             }
             if (committed.alreadyCommitted && committed.storedResult !== undefined) {
@@ -4652,7 +4655,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         }
         // No commit layout or no versioned store: the outcome is unknown.
         if (steeringTurn) {
-            await steeringTurn.finalize(bodyResult.type === "stopped" ? "stopped" : "unknown", bodyResult.steering, null);
+            await steeringTurn.finalize(bodyResult.type === "stopped" ? "stopped" : "unknown", bodyResult.steering, null, undefined,
+                { close: bodyResult.type !== "cancelled" });
         }
         return bodyResult;
             }, { trace });

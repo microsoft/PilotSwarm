@@ -1489,7 +1489,7 @@ export interface SessionCatalog {
     /** cms_steer_mark_unconfirmed. */
     steerMarkUnconfirmed(attemptId: string, owner: string): Promise<boolean>;
     /** cms_steer_turn_finalize: owner-fenced. `manifestRequestIds` null = result carried no manifest. */
-    steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null): Promise<SteerFinalizeResult>;
+    steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null, opts?: { close?: boolean }): Promise<SteerFinalizeResult>;
     /** cms_steer_close_stopped: target-scoped by turn index. */
     steerCloseStopped(sessionId: string, turnIndex: number): Promise<void>;
     /** cms_steer_add_counters (0085): durable, content-free runtime counters for §11. */
@@ -4076,11 +4076,11 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.steerFn("cms_steer_mark_unconfirmed")}($1,$2) AS v`, [attemptId, owner]));
     }
 
-    async steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null): Promise<SteerFinalizeResult> {
+    async steerTurnFinalize(sessionId: string, target: SteeringTarget, owner: string, outcome: SteerFinalizeOutcome, manifestRequestIds: string[] | null, snapshotVersion: number | null, opts?: { close?: boolean }): Promise<SteerFinalizeResult> {
         return this.steerScalar<SteerFinalizeResult>(
-            `SELECT ${this.steerFn("cms_steer_turn_finalize")}($1,$2,$3,$4,$5,$6,$7::text[],$8) AS v`,
+            `SELECT ${this.steerFn("cms_steer_turn_finalize")}($1,$2,$3,$4,$5,$6,$7::text[],$8,$9) AS v`,
             [sessionId, target.epoch, target.turnIndex, target.incarnation, owner, outcome,
-                manifestRequestIds, snapshotVersion]);
+                manifestRequestIds, snapshotVersion, opts?.close !== false]);
     }
 
     async steerRecordResendIntent(sessionId: string, requestId: string, clientMessageId: string, actor: Pick<SteeringActor, "provider" | "subject">, sender?: Record<string, unknown> | null): Promise<SteerResendIntentResult> {

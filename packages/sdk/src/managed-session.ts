@@ -908,6 +908,9 @@ export class ManagedSession {
     private settleTurnResolver: (() => void) | null = null;
     /** Session steering: the running turn's pump and admission gate (§6a.4). */
     private steeringPump: SteeringPump | null = null;
+    /** Stop safety net for steered turns (see armSteeringStopWatch). */
+    private steeringStopWatch: { dispose(): void } | null = null;
+    private steeringTrace: ((message: string) => void) | undefined;
 
     constructor(
         sessionId: string,
@@ -1459,6 +1462,9 @@ export class ManagedSession {
      * misclassified as a retryable error.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        // A new turn ends the previous Stop's watch: it must never abort this turn.
+        this.steeringStopWatch?.dispose();
+        this.steeringStopWatch = null;
         this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
         let result: TurnResult | undefined;
@@ -1525,6 +1531,7 @@ export class ManagedSession {
     requestStop(reason: string): { turnIndex: number } | null {
         if (!this.activeTurn) return null;
         this.steeringPump?.gate.close();   // INV-F2: before the caller's abort()
+        this.steeringPump?.interrupt();    // an in-progress settlement must not delay Stop
         this.stopRequest = { reason, requestedAt: Date.now() };
         return { turnIndex: this.activeTurn.turnIndex };
     }
@@ -1539,6 +1546,7 @@ export class ManagedSession {
     forceSettleTurn(reason: string): boolean {
         if (!this.activeTurn) return false;
         this.steeringPump?.gate.close();
+        this.steeringPump?.interrupt();
         if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
         try { this.settleTurnResolver?.(); } catch {}
         return true;
@@ -3661,6 +3669,7 @@ export class ManagedSession {
             // BEFORE the main send, so the main prompt's user.message cannot
             // be missed. Its gate opens only after that event and the window.
             if (opts?.steering) {
+                this.steeringTrace = opts.trace;
                 this.steeringPump?.dispose();
                 this.steeringPump = new SteeringPump(this.copilotSession as any, opts.steering, {
                     stopping: () => Boolean(this.stopRequest),
@@ -3945,7 +3954,74 @@ export class ManagedSession {
      */
     private async abortSdk(): Promise<void> {
         this.steeringPump?.gate.close();   // INV-F1
+        // Stop, activity cancellation, cap or watchdog: the abort ends the SDK work, so
+        // steering settlement must not wait for evidence the abort discarded.
+        this.steeringPump?.interrupt();
+        if (this.steeringPump) this.armSteeringStopWatch();             // Stop, cancellation, cap or watchdog
         try { await this.copilotSession.abort(); } catch {}
+    }
+
+    /**
+     * Stop safety net for a steered turn (owner Stop UX). A steer already queued in
+     * the CLI must not keep the stopped run alive or start a follow-up run:
+     *  - a run that starts after the Stop (assistant.turn_start), or a user.message
+     *    that arrives after it, is aborted at once;
+     *  - if no session.idle arrives within 1 s of the abort, the CLI's pending
+     *    items are removed (experimental queue RPC, when present) and the run is
+     *    aborted again; at most 3 re-aborts.
+     * The watch survives the turn's return (an orphan run can start after it) and
+     * is disposed when the next turn starts or after 10 s. Gate first, always.
+     */
+    private armSteeringStopWatch(): void {
+        if (this.steeringStopWatch) return;
+        const session = this.copilotSession;
+        const trace = (m: string) => { try { this.steeringTrace?.(m); } catch {} };
+        let reaborts = 0;
+        let idleSeen = false;
+        let disposed = false;
+        const timers: Array<ReturnType<typeof setTimeout>> = [];
+        const drainQueue = async () => {
+            const queue = (session as any).rpc?.queue;
+            if (typeof queue?.removeMostRecent !== "function") return;
+            for (let i = 0; i < 8; i++) {
+                const r = await Promise.race([
+                    Promise.resolve(queue.removeMostRecent()).catch(() => null),
+                    new Promise((res) => { const x = setTimeout(() => res(null), 500); (x as any).unref?.(); }),
+                ]) as { removed?: boolean } | null;
+                if (!r?.removed) return;
+            }
+        };
+        const reabort = (why: string) => {
+            if (disposed || reaborts >= 3) return;
+            reaborts++;
+            trace(`[steering] Stop safety net: ${why}; removing pending CLI items and aborting again (${reaborts}/3)`);
+            void drainQueue().then(() => session.abort()).catch(() => {});
+        };
+        const unsubscribe = session.on((event: any) => {
+            if (disposed || isNativeChildEvent(event)) return;
+            const type = event?.type;
+            if (type === "session.idle") { idleSeen = true; return; }
+            if (type === "assistant.turn_start") { idleSeen = false; reabort("a run started after Stop"); return; }
+            if (type === "user.message") reabort("input reached the model after Stop");
+        });
+        for (const ms of [1_000, 2_000, 3_000]) {
+            const timer = setTimeout(() => { if (!idleSeen) reabort(`no idle ${ms} ms after Stop's abort`); }, ms);
+            (timer as any).unref?.();
+            timers.push(timer);
+        }
+        const expiry = setTimeout(() => watch.dispose(), 10_000);
+        (expiry as any).unref?.();
+        const watch = {
+            dispose: () => {
+                if (disposed) return;
+                disposed = true;
+                unsubscribe();
+                for (const x of timers) clearTimeout(x);
+                clearTimeout(expiry);
+                if (this.steeringStopWatch === watch) this.steeringStopWatch = null;
+            },
+        };
+        this.steeringStopWatch = watch;
     }
 
     /**
