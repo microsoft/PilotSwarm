@@ -65,8 +65,7 @@ const workflowParentFreezeHashes = {
 };
 for (const [name, hash] of Object.entries(workflowParentFreezeHashes)) {
     test(`frozen 1.0.80 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_80/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+        assert.equal(sourceHash(new URL(`../../src/orchestration_1_0_80/${name}`, import.meta.url)), hash);
     });
 }
 
