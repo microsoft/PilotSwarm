@@ -13,6 +13,93 @@ import { ModelProviderRegistry } from "../../src/model-providers.ts";
 const TIMEOUT = 60_000;
 
 describe.concurrent("session steering real-CLI enablement gates", () => {
+    it("F01/ST-I18 normal-settlement partial gate: quiescence ceases an active owned late run before returning, without Stop", { timeout: 75_000 }, async () => {
+        const mainRelease = Promise.withResolvers();
+        const issuedRelease = Promise.withResolvers();
+        const sendEntered = Promise.withResolvers();
+        const lateRequest = Promise.withResolvers();
+        const lateRelease = Promise.withResolvers();
+        const originalIdle = Promise.withResolvers();
+        const sendFinished = Promise.withResolvers();
+        let closedGeneration = false;
+        const oldRequestsAfterBoundary = [];
+        await withSteeringCli(async (body, _position, record) => {
+            const texts = body.messages.filter((message) => message.role === "user")
+                .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content));
+            if (texts.some((text) => text.includes("unrelated normal-settlement peer"))) return { content: "peer usable" };
+            if (closedGeneration) {
+                oldRequestsAfterBoundary.push(record);
+                throw new Error("fixture: SDK work began after its normal-settlement generation ceased");
+            }
+            if (texts.some((text) => text.includes("Keep this guidance separate"))) {
+                lateRequest.resolve(record);
+                await lateRelease.promise;
+                return { content: "late owned answer" };
+            }
+            await mainRelease.promise;
+            return { content: "earlier response" };
+        }, async (h) => {
+            let manager;
+            try {
+                const registry = new ModelProviderRegistry({ providers: [{
+                    id: "normal-settlement-fixture", type: "openai", baseUrl: h.model.baseUrl, apiKey: "synthetic-key",
+                    models: ["fixture-model"],
+                }] });
+                manager = new SessionManager(undefined, null, { modelProviders: registry }, join(h.home, "session-state"));
+                manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+                const id = randomUUID();
+                const managed = await manager.getOrCreate(id, { model: "normal-settlement-fixture:fixture-model" }, { turnIndex: 0 });
+                const peer = await manager.getOrCreate(randomUUID(), { model: "normal-settlement-fixture:fixture-model" }, { turnIndex: 0 });
+                const sdk = managed.copilotSession;
+                const abort = vi.spyOn(sdk, "abort");
+                sdk.on("session.idle", () => originalIdle.resolve());
+                const actualSend = sdk.send.bind(sdk);
+                sdk.send = async (input) => {
+                    if (input.mode === "immediate") { sendEntered.resolve(); await issuedRelease.promise; }
+                    const returned = await actualSend(input);
+                    if (input.mode === "immediate") sendFinished.resolve(returned);
+                    return returned;
+                };
+                const product = makeSteeringTurnHarness({ sdkSession: sdk });
+                let atBoundary = null;
+                const quiesce = vi.fn(async () => {
+                    const active = await lateRequest.promise;
+                    assertEqual(active.connectionClosed, false, "the owned late model request is positively active before quiescence");
+                    const result = await manager.quiesceForSteering(id);
+                    atBoundary = active.connectionClosed;
+                    closedGeneration = true;
+                    return result;
+                });
+                const turn = managed.runTurn("normal-settlement original prompt", {
+                    turnIndex: 1, steering: product.channel, steeringQuiesce: quiesce,
+                });
+                await within(sendEntered.promise, "registered pre-issue send boundary");
+                mainRelease.resolve();
+                await within(originalIdle.promise, "real main session idle before late SDK invocation");
+                issuedRelease.resolve();
+                await within(sendFinished.promise, "actual issued late SDK send acknowledgment");
+                await within(lateRequest.promise, "actual owned late model HTTP work");
+                const result = await within(turn, "normal settlement bounded ownership resolution", 45_000);
+                assertEqual(result.type, "completed");
+                assertEqual(quiesce.mock.calls.length, 1);
+                assertEqual(abort.mock.calls.length, 0, "normal settlement proof uses no preceding Stop/abort");
+                assertEqual(managed.getActiveTurn(), null);
+                assertEqual(manager.get(id), null);
+                lateRelease.resolve();
+                const requestsAtBoundary = h.model.sessionRequests().length;
+                assertEqual((await peer.runTurn("unrelated normal-settlement peer", { turnIndex: 1 })).content, "peer usable");
+                assertEqual(oldRequestsAfterBoundary.length, 0);
+                assertEqual(h.model.sessionRequests().length, requestsAtBoundary + 1);
+                assertEqual(atBoundary, true, "positive cessation is sampled at quiescence return, not after unrelated peer work");
+            } finally {
+                mainRelease.resolve();
+                issuedRelease.resolve();
+                lateRelease.resolve();
+                await manager?.shutdown();
+            }
+        });
+    });
+
     it("ST-I07: a registered send arriving after the first idle stays owned until its own idle", { timeout: TIMEOUT }, async () => {
         const mainRequest = Promise.withResolvers();
         const mainRelease = Promise.withResolvers();
