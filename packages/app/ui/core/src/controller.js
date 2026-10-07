@@ -1,7 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { newClientId } from "./client-id.js";
 import { canReuseSteeringInDraft } from "./steering.js";
-import { promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary, PROMPT_HISTORY_EVENT_TYPES } from "./prompt-history.js";
+import { promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary, PROMPT_HISTORY_EVENT_TYPES, PROMPT_HISTORY_MAX_PAGES, PROMPT_HISTORY_READ_BUDGET_MS } from "./prompt-history.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -9855,27 +9855,59 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "promptHistory/accepted", sessionId, text, ids, actor });
     }
 
-    async loadPromptHistory(sessionId) {
+    async loadPromptHistory(sessionId, { more = false } = {}) {
         const actor = this.getState().auth?.principal;
         if (!promptHistoryActorKey(actor) || typeof this.transport.getSessionEventsBefore !== "function") return;
+        const previous = this.getState().promptHistory?.bySessionId?.[sessionId]?.scan;
+        if (previous && (!more || previous.exhausted)) return;
         this.promptHistoryLoads ??= new Map();
         const key = `${sessionId}:${promptHistoryActorKey(actor)}`;
         if (this.promptHistoryLoads.has(key)) return this.promptHistoryLoads.get(key);
+        let beforeSeq = more && previous?.beforeSeq ? previous.beforeSeq : Number.MAX_SAFE_INTEGER;
+        const deadline = Date.now() + PROMPT_HISTORY_READ_BUDGET_MS;
+        const report = scan => this.dispatch({ type: "promptHistory/scan", sessionId, actor,
+            scan: { beforeSeq, ...scan } });
+        report({ partial: previous?.partial || false, loading: true, exhausted: false });
         const load = (async () => {
-            let beforeSeq = Number.MAX_SAFE_INTEGER;
-            do {
-                const events = await this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, PROMPT_HISTORY_EVENT_TYPES);
+            for (let page = 0; page < PROMPT_HISTORY_MAX_PAGES; page++) {
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                let timer;
+                let events;
+                try {
+                    events = await Promise.race([
+                        this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, PROMPT_HISTORY_EVENT_TYPES),
+                        new Promise((_, reject) => {
+                            timer = setTimeout(() => reject(new Error("Input-history read budget reached")), remaining);
+                            timer?.unref?.();
+                        }),
+                    ]);
+                } finally { clearTimeout(timer); }
                 if (promptHistoryActorKey(actor) !== promptHistoryActorKey(this.getState().auth?.principal)
                     || this.getState().sessions.goneIds?.includes(sessionId)) return;
+                if (!Array.isArray(events)) {
+                    report({ exhausted: true, partial: false, loading: false, error: "History reader unavailable" });
+                    this.setStatus("Input history is unavailable on this server.");
+                    return;
+                }
                 this.dispatch({ type: "promptHistory/eventsReceived", sessionId, actor, events });
                 const oldest = Math.min(...events.map(event => event.seq));
-                if (events.length < 100 || oldest >= beforeSeq
-                    || selectPromptHistory(this.getState(), sessionId).length >= 10) return;
+                const exhausted = events.length < 100 || oldest >= beforeSeq;
+                if (exhausted || selectPromptHistory(this.getState(), sessionId).length >= 10) {
+                    report({ exhausted, partial: false, loading: false });
+                    return;
+                }
                 beforeSeq = oldest;
-            } while (this.getState().sessions.activeSessionId === sessionId);
+                if (this.getState().sessions.activeSessionId !== sessionId) break;
+            }
+            report({ exhausted: false, partial: true, loading: false });
+            this.setStatus("Input history is partial. Use More history to continue.");
         })().catch(error => {
             if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
-            else this.setStatus(`Could not load your input history: ${error.message}`);
+            else {
+                report({ exhausted: false, partial: true, loading: false, error: error.message });
+                this.setStatus(`Input history is partial: ${error.message}`);
+            }
         }).finally(() => this.promptHistoryLoads.delete(key));
         this.promptHistoryLoads.set(key, load);
         return load;
@@ -11607,6 +11639,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.SEND_PROMPT:
                 await this.sendPrompt();
+                return;
+            case UI_COMMANDS.LOAD_PROMPT_HISTORY:
+                await this.loadPromptHistory(this.getState().sessions.activeSessionId, { more: true });
                 return;
             case UI_COMMANDS.STEER_TURN:
                 await this.steerPrompt();

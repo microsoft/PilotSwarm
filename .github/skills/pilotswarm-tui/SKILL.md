@@ -193,6 +193,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   unaffected by the visual keyboard viewport); phone typing is unchanged.
   Share pure logic and reducer state in `prompt-history.js`, with no new storage
   or API. Existing transcript paging fills the viewer-filtered bounded cache.
+  Discovery is capped at three 100-event pages and five seconds per request.
+  Retain the continuation/exhaustion marker across selection; show partial
+  history and offer explicit More history rather than scanning whole shared
+  sessions automatically. Ignore late results after the budget expires.
 - Busy/system-session sends still use the shared outbox: Enter on an empty
   draft flushes pending input; explicit outbox-edit controls remain separate
   from recalled executed inputs. Keep Send/Stop and all help surfaces aligned.

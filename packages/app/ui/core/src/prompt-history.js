@@ -1,5 +1,7 @@
 export const PROMPT_HISTORY_LIMIT = 10;
 export const PROMPT_HISTORY_EVENT_TYPES = ["user.message", "session.steering_accepted"];
+export const PROMPT_HISTORY_MAX_PAGES = 3;
+export const PROMPT_HISTORY_READ_BUDGET_MS = 5000;
 
 export function promptDraftForPersistence(ui) {
     return ui.promptHistoryNavigation?.stash || {

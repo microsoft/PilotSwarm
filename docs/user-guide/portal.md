@@ -24,6 +24,11 @@ draft, caret and attachments remain that session's draft. Adding, removing or
 replacing an attachment counts as an edit and ends history navigation, so Down
 cannot discard the new attachment.
 
+Initial recall discovery reads at most three 100-event pages within five
+seconds. A mostly shared history can therefore be partial. **Load more input
+history** resumes from the saved cursor; reselecting the session does not
+restart the scan. It never fills your recall history with another writer's text.
+
 ## Prerequisites
 
 Follow the [local setup guide](../quickstart/local.md), then run

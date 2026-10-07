@@ -152,6 +152,9 @@ Notes:
   are unchanged.
 - When an outbox item is explicitly selected for editing, its existing controls
   still apply; Escape cancels that item before it becomes durable.
+- Partial input history exposes **More history** in the native prompt action
+  row and **Load more input history** in the portal. Each explicit load is
+  bounded; it continues the saved cursor without changing viewer filtering.
 
 ## Modals and Dialogs
 

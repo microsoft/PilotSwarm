@@ -9554,6 +9554,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // Raw reference (stable across renders) — image entries are
             // filtered at render time so the shallow-equal selector holds.
             promptAttachments: state.ui.promptAttachments || EMPTY_ARRAY,
+            historyScan: state.promptHistory?.bySessionId?.[activeSessionId]?.scan || null,
+            sessionId: activeSessionId,
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
@@ -9954,6 +9956,12 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             }, sendLabel),
         ),
         React.createElement(SteeringArchive, { controller }),
+        promptState.historyScan?.partial ? React.createElement("div", { className: "ps-prompt-history-partial", role: "status" },
+            "Input history is partial. ",
+            React.createElement("button", { type: "button", className: "ps-mini-button",
+                disabled: promptState.historyScan.loading,
+                onClick: () => controller.loadPromptHistory(promptState.sessionId, { more: true }) },
+            promptState.historyScan.loading ? "Loading input history..." : "Load more input history")) : null,
     );
 }
 

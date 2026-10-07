@@ -3623,13 +3623,16 @@ export function selectPromptActions(state) {
     const steering = selectSteeringComposer(state);
     const entry = state.steering?.bySessionId?.[state.sessions.activeSessionId];
     const hasReceipts = Object.keys(entry?.receipts || {}).length > 0 || Object.keys(entry?.pending || {}).length > 0;
-    if (!steering.visible && !hasReceipts) return [];
+    const historyScan = state.promptHistory?.bySessionId?.[state.sessions.activeSessionId]?.scan;
+    if (!steering.visible && !hasReceipts && !historyScan?.partial) return [];
     const session = selectActiveSession(state);
     return [
         { label: "Send", command: "sendPrompt", enabled: true },
         { label: "Steer", command: "steerTurn", enabled: steering.enabled, reason: steering.reason },
         { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session), reason: "No active turn to stop" },
         ...(hasReceipts ? [{ label: "Guidance", command: "steeringDetails", enabled: true }] : []),
+        ...(historyScan?.partial ? [{ label: "More history", command: "loadPromptHistory", enabled: !historyScan.loading,
+            reason: "Loading older input history" }] : []),
     ];
 }
 

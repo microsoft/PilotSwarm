@@ -1598,6 +1598,11 @@ function baseReducer(state, action) {
             return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
                 [action.sessionId]: { ...previous, accepted } } } };
         }
+        case "promptHistory/scan": {
+            if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: { ...state.promptHistory?.bySessionId?.[action.sessionId], scan: action.scan } } } };
+        }
         case "promptHistory/eventsReceived": {
             if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
             return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
