@@ -6012,6 +6012,7 @@ export class PilotSwarmUiController {
             if (!state || typeof state.supported !== "boolean" || typeof state.steerable !== "boolean") {
                 throw Object.assign(new Error("This server does not expose steering state."), { code: "unsupported" });
             }
+            if (!this.isCurrentSteeringRead(sessionId, accessRevision)) return;
             this.dispatch({ type: "steering/stateLoaded", sessionId, state, windowSeq: state.windowSeq ?? windowSeq, accessRevision });
             // A disabled feature or inactive window must not hide retained
             // receipts. Only audit-only deployments prohibit the read path.
@@ -6020,9 +6021,10 @@ export class PilotSwarmUiController {
                 await this.loadSteeringRequests(sessionId, { reset: true });
             }
         } catch (error) {
+            if (!this.isCurrentSteeringRead(sessionId, accessRevision)) return;
             if (this.isRetiredRead(error, sessionId)) return;
             if (isSessionGoneError(error)) {
-                await this.handleSteeringReadDenial(sessionId);
+                await this.handleSteeringReadDenial(sessionId, accessRevision);
                 return;
             }
             const unsupported = ["WEB_MODE_UNSUPPORTED", "UNKNOWN_OPERATION", "unsupported"].includes(error.code);
@@ -6035,14 +6037,24 @@ export class PilotSwarmUiController {
         }
     }
 
-    async handleSteeringReadDenial(sessionId) {
+    isCurrentSteeringRead(sessionId, accessRevision) {
+        return !this.viewStopped && !this.getState().sessions.goneIds?.includes(sessionId)
+            && (this.getState().steering?.bySessionId?.[sessionId]?.accessRevision || 0) === accessRevision;
+    }
+
+    async handleSteeringReadDenial(sessionId, accessRevision = this.getState().steering?.bySessionId?.[sessionId]?.accessRevision || 0) {
+        if (!this.isCurrentSteeringRead(sessionId, accessRevision)) return;
         this.dispatch({ type: "steering/accessLost", sessionId });
+        const deniedRevision = this.getState().steering?.bySessionId?.[sessionId]?.accessRevision;
+        const stillDenied = () => this.isCurrentSteeringRead(sessionId, deniedRevision)
+            && this.getState().steering?.bySessionId?.[sessionId]?.accessLost === true;
         // Steering always enforces access, even where legacy reads are audit
         // only. A steering refusal must not remove an otherwise readable row.
         try {
             const session = await this.transport.getSession(sessionId);
-            if (!session) this.handleSessionGone(sessionId);
+            if (stillDenied() && !session) this.handleSessionGone(sessionId);
         } catch (error) {
+            if (!stillDenied() || this.isRetiredRead(error, sessionId)) return;
             if (isSessionGoneError(error)) this.handleSessionGone(sessionId);
             else this.setStatus(`Could not refresh session access: ${error.message}`);
         }
@@ -6058,17 +6070,21 @@ export class PilotSwarmUiController {
         const accessRevision = entry?.accessRevision || 0;
         this.dispatch({ type: "steering/page", sessionId, accessRevision, page: { ...entry?.page, loading: true, error: null } });
         const load = this.transport.listSteeringRequests(sessionId, { limit: 50, cursor }).then(page => {
+            if (!this.isCurrentSteeringRead(sessionId, accessRevision)) return;
             for (const receipt of page.items) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
             this.dispatch({ type: "steering/page", sessionId, accessRevision,
                 page: { nextCursor: page.nextCursor, loading: false, error: null } });
             const modal = this.getState().ui.modal;
             if (modal?.type === "steeringReceipts" && modal.sessionId === sessionId) {
+                const selectedId = modal.items[modal.selectedIndex || 0];
+                const items = selectSteeringReceipts(this.getState(), sessionId).map(item => item.id);
                 this.dispatch({ type: "ui/modal", modal: { ...modal,
-                    items: selectSteeringReceipts(this.getState(), sessionId).map(item => item.id) } });
+                    items, selectedIndex: items.indexOf(selectedId) } });
             }
         }).catch(async error => {
+            if (!this.isCurrentSteeringRead(sessionId, accessRevision)) return;
             if (this.isRetiredRead(error, sessionId)) return;
-            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId);
+            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId, accessRevision);
             this.dispatch({ type: "steering/page", sessionId, accessRevision,
                 page: { ...entry?.page, loading: false, error: error.message } });
             this.setStatus(`Could not load guidance: ${error.message}`);
@@ -6109,10 +6125,16 @@ export class PilotSwarmUiController {
             return this.steeringReceiptLoads.get(key);
         }
         const load = this.transport.getSteeringRequest(sessionId, requestId).then(receipt => {
+            if (!this.isCurrentSteeringRead(sessionId, accessRevision)) {
+                throw Object.assign(new Error("Guidance read belongs to a retired access revision"), { name: "AbortError" });
+            }
             this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
             return receipt;
         }).catch(async error => {
-            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId);
+            if (!this.isCurrentSteeringRead(sessionId, accessRevision)) {
+                throw Object.assign(new Error("Guidance read belongs to a retired access revision"), { name: "AbortError" });
+            }
+            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId, accessRevision);
             throw error;
         }).finally(() => {
             this.steeringReceiptLoads.delete(key);
@@ -6150,6 +6172,7 @@ export class PilotSwarmUiController {
 
     async submitSteeringRequest(sessionId, request) {
         const { text, clientRequestId, expectedTarget } = request;
+        const accessRevision = this.getState().steering?.bySessionId?.[sessionId]?.accessRevision || 0;
         try {
             const result = await this.transport.steerSessionTurn(sessionId, { text, clientRequestId, expectedTarget });
             if (result?.ok === false) {
@@ -6162,7 +6185,7 @@ export class PilotSwarmUiController {
                 || receipt.expectedTarget !== expectedTarget || receipt.text !== text.trim()) {
                 throw new Error("The server returned no matching durable steering receipt");
             }
-            this.dispatch({ type: "steering/receiptReceived", sessionId, receipt });
+            this.dispatch({ type: "steering/receiptReceived", sessionId, receipt, accessRevision });
             this.recordAcceptedPrompt(sessionId, receipt.text, [`steer:${receipt.requestId}`], receipt.actor);
             return receipt;
         } catch (error) {
@@ -6170,7 +6193,7 @@ export class PilotSwarmUiController {
                 "rate_limited", "idempotency_conflict", "invalid", "not_found", "FORBIDDEN", "NOT_FOUND", "INVALID_REQUEST"].includes(error.code);
             this.dispatch({ type: "steering/submissionFailed", sessionId, clientRequestId, error: error.message, rejected });
             this.setStatus(`${rejected ? "Guidance rejected" : "Acceptance unconfirmed"}: ${error.message}`);
-            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId);
+            if (isSessionGoneError(error)) await this.handleSteeringReadDenial(sessionId, accessRevision);
             if (rejected) await this.refreshSteering(sessionId);
             // The retained row owns the text. Never overwrite a newer draft
             // or mint a new key because a transport response was lost.
