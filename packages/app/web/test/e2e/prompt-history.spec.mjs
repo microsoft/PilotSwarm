@@ -1,4 +1,4 @@
-import { test, expect, chromium, webkit } from "@playwright/test";
+import { test, expect, chromium, webkit, devices } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
 const sessionId = "11111110-2222-3333-4444-555555555550";
@@ -8,8 +8,8 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-async function open(page, mobile = false) {
-    await page.setViewportSize({ width: mobile ? 390 : 1440, height: 844 });
+async function open(page, mobile = false, viewport = null) {
+    await page.setViewportSize(viewport || { width: mobile ? 390 : 1440, height: 844 });
     await page.route("**/api/v1/bootstrap", async route => {
         const response = await route.fetch();
         const payload = await response.json();
@@ -18,6 +18,7 @@ async function open(page, mobile = false) {
             authorization: { allowed: true, role: "user" } };
         await route.fulfill({ json: payload });
     });
+
     const events = [1, 2].map(seq => ({ sessionId, seq, eventType: "user.message",
         createdAt: 1000 + seq, data: { content: `Own input ${seq}`, sender: actor,
             ...(seq === 2 ? { steering: { requestId: "delivered-guidance", revision: 2 } } : {}) } }));
@@ -32,6 +33,28 @@ async function open(page, mobile = false) {
     await expect(page.locator(".ps-chat-panel")).toContainText("Other writer text");
     return input;
 }
+
+test("iPad hardware arrows recall and restore drafts with the keyboard viewport open", async () => {
+    const browser = await webkit.launch();
+    const context = await browser.newContext({ ...devices["iPad (gen 7)"] });
+    try {
+        const page = await context.newPage();
+        const input = await open(page, true, { width: 810, height: 600 });
+        await input.fill("Tablet draft");
+        await input.press("ArrowUp");
+        await expect(input).toHaveValue("Own input 2");
+        await input.press("ArrowDown");
+        await expect(input).toHaveValue("Tablet draft");
+        await page.setViewportSize({ width: 1080, height: 600 });
+        await input.press("ArrowUp");
+        await expect(input).toHaveValue("Own input 2");
+        await input.press("ArrowDown");
+        await expect(input).toHaveValue("Tablet draft");
+    } finally {
+        await context.close();
+        await browser.close();
+    }
+});
 
 function browserCase(browserName, run) {
     return async () => {

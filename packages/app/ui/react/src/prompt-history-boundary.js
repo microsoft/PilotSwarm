@@ -1,3 +1,8 @@
+/** Tablet hardware arrows work even when the portal uses its touch layout. */
+export function supportsPromptHistoryKeyboard(mobile, screen = globalThis.screen) {
+    return !mobile || Math.min(screen?.width || 0, screen?.height || 0) >= 600;
+}
+
 /** Match the textarea's soft-wrapped visual lines, not only newline offsets. */
 export function isTextareaHistoryBoundary(textarea, direction) {
     if (!textarea.value) return true;

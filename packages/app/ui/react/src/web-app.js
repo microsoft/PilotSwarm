@@ -4,7 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { SteeringReceipt } from "./steering-receipt.js";
-import { isTextareaHistoryBoundary } from "./prompt-history-boundary.js";
+import { isTextareaHistoryBoundary, supportsPromptHistoryKeyboard } from "./prompt-history-boundary.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -9836,7 +9836,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     event.preventDefault();
                     return;
                 }
-                if (!mobile && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+                if (supportsPromptHistoryKeyboard(mobile) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
                     && !event.isComposing && ["ArrowUp", "ArrowDown"].includes(event.key)
                     && event.currentTarget.selectionStart === event.currentTarget.selectionEnd
                     && !event.currentTarget.hasAttribute("aria-activedescendant")
