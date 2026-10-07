@@ -24,6 +24,9 @@ The optional **Steer** action guides an already-running turn; ordinary Send
 still queues input. Tab from the prompt reaches distinct Send, Steer and Stop
 actions, plus Guidance for retained receipts. See
 [Guide a running turn](./session-steering.md).
+In the session stats view, press `r` to open permitted guidance receipt
+history. Retained requests count guidance not delivered because the turn ended
+or stopped, plus withdrawn guidance; uncertain delivery remains separate.
 
 ## Prerequisites
 

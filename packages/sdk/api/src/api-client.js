@@ -152,7 +152,7 @@ export class ApiClient {
     }
 
     /** Invoke a protocol operation by name with rpc-shaped params. */
-    async call(name, params = {}) {
+    async call(name, params = {}, { signal } = {}) {
         const { method, path, query, body } = buildOperationRequest(name, params);
         // Avoid URLSearchParams.prototype.size (absent on Safari 16 / iOS 16,
         // which the portal build targets); toString() is universally supported.
@@ -160,7 +160,9 @@ export class ApiClient {
         const suffix = queryString ? `?${queryString}` : "";
         if (method !== "GET") return this.request(method, `${path}${suffix}`, body !== null ? { body } : {});
         const abort = new AbortController();
-        if (this.stopped || this.readsClosed) abort.abort();
+        const onAbort = () => abort.abort();
+        if (this.stopped || this.readsClosed || signal?.aborted) abort.abort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
         this.readRequests.set(abort, params.sessionId || null);
         try {
             return await this.request(method, `${path}${suffix}`, { signal: abort.signal });
@@ -169,6 +171,7 @@ export class ApiClient {
             throw error;
         } finally {
             this.readRequests.delete(abort);
+            signal?.removeEventListener("abort", onAbort);
         }
     }
 

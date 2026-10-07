@@ -8,6 +8,73 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 for (const browserName of ["chromium", "webkit"]) {
+    test(`${browserName}: session stats expose retained count and permitted receipt history`, async () => {
+        const browser = await ({ chromium, webkit })[browserName].launch();
+        try {
+            const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+            await page.route("**/metric-summary", route => route.fulfill({ json: { ok: true, result: { sessionId: sid } } }));
+            await page.route("**/steering-state", route => route.fulfill({ json: { ok: true, result: { supported: true, steerable: false } } }));
+            await page.route("**/steering-stats", route => route.fulfill({ json: { ok: true, result: {
+                requests: { accepted: 7, unresolved: 0, claimable: 0, byDisposition: { not_delivered_turn_ended: 2, withdrawn: 1 },
+                    byInclusion: { unconfirmed: 0 } },
+                attempts: { deliveries: 4, deliveredByKind: { steering: 1, queued: 3, idle: 0 }, redeliveries: 0, unconfirmed: 0 },
+                latency: {},
+            } } }));
+            await page.route("**/steering?*", route => route.fulfill({ json: { ok: true, result: {
+                items: [{ sessionId: sid, requestId: "retained", revision: 1, sequence: 1, text: "Retained request",
+                    disposition: "withdrawn" }], nextCursor: null,
+            } } }));
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
+            await expect(page.locator(".ps-steering-archive")).toBeVisible();
+            await page.getByRole("button", { name: "Show diagnostics (inspector and activity)", exact: true }).click();
+            await page.getByRole("button", { name: "Stats", exact: true }).click();
+            await expect(page.locator(".ps-panel").filter({ has: page.getByRole("button", { name: "Guidance history", exact: true }) })).toContainText("Retained requests");
+            await page.getByRole("button", { name: "Guidance history", exact: true }).click();
+            await expect(page.getByRole("dialog")).toContainText("Retained request");
+        } finally { await browser.close(); }
+    });
+    test(`${browserName}: closing the cursor-reading panel re-enables its surviving peer`, async () => {
+        const browser = await ({ chromium, webkit })[browserName].launch();
+        const release = Promise.withResolvers(), issued = Promise.withResolvers();
+        try {
+            const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+            await page.route("**/api/v1/me/profile", route => route.fulfill({ json: { ok: true, result: {
+                isAdmin: false, profileSettings: { moa: normalizeMoa({ version: 3, activeDashboardId: "dash", dashboards: [{
+                    id: "dash", name: "Receipts", focusedPanelId: "a", tree: { id: "root", type: "split", direction: "row", ratio: 50,
+                        first: { id: "a", type: "chat", sessionId: sid }, second: { id: "b", type: "chat", sessionId: sid } },
+                }] }) },
+            } } }));
+            await page.route("**/steering-state", route => route.fulfill({ json: { ok: true, result: { supported: true, steerable: false } } }));
+            const cursors = [];
+            await page.route("**/steering?*", async route => {
+                const cursor = new URL(route.request().url()).searchParams.get("cursor");
+                if (cursor) {
+                    cursors.push(cursor);
+                    if (cursors.length === 1) { issued.resolve(); await release.promise; return route.abort("failed"); }
+                }
+                return route.fulfill({ json: { ok: true, result: { items: [{
+                    sessionId: sid, requestId: cursor ? "second" : "first", revision: 1, sequence: cursor ? 2 : 1,
+                    text: cursor ? "Next receipt" : "First receipt", disposition: "withdrawn",
+                }], nextCursor: cursor ? null : "next" } } });
+            });
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
+            await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
+            const a = page.locator('[data-moa-panel="a"]'), b = page.locator('[data-moa-panel="b"]');
+            await a.locator(".ps-steering-archive > summary").click();
+            await a.getByRole("button", { name: "Load more guidance", exact: true }).click();
+            await issued.promise;
+            await a.getByRole("button", { name: "Session control panel", exact: true }).click();
+            await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Close panel", exact: true }).click();
+            await expect(a).toHaveCount(0);
+            release.resolve();
+            await b.locator("header").first().click();
+            await b.locator(".ps-steering-archive > summary").click();
+            await expect(b.getByRole("button", { name: "Load more guidance", exact: true })).toBeEnabled();
+            await b.getByRole("button", { name: "Load more guidance", exact: true }).click();
+            await expect(b).toContainText("Next receipt");
+            expect(cursors).toEqual(["next", "next"]);
+        } finally { release.resolve(); await browser.close(); }
+    });
     test(`${browserName}: old guidance update stays unplaced until backward acceptance history loads`, async () => {
         const browser = await ({ chromium, webkit })[browserName].launch();
         try {
@@ -15,11 +82,17 @@ for (const browserName of ["chromium", "webkit"]) {
             const receipt = { sessionId: sid, requestId: "old", sequence: 1, revision: 2, text: "Old guidance",
                 schemaVersion: 1, status: "delivered", disposition: "delivered_after_response" };
             const newer = { sessionId: sid, seq: 50, eventType: "user.message", data: { content: "New conversation" } };
-            const update = { sessionId: sid, seq: 60, eventType: "session.steering_updated", data: { projection: receipt } };
+            const update = { sessionId: sid, seq: 51, eventType: "session.steering_updated", data: { projection: receipt } };
+            const recent = [newer, update, ...Array.from({ length: 298 }, (_, index) => ({
+                sessionId: sid, seq: index + 52, eventType: "user.message", data: { content: `Recent input ${index}` },
+            }))];
             await page.route("**/steering-state", route => route.fulfill({ json: { ok: true, result: { supported: true, steerable: false } } }));
             await page.route("**/steering?*", route => route.fulfill({ json: { ok: true, result: { items: [receipt], nextCursor: null } } }));
             await page.route("**/steering/old", route => route.fulfill({ json: { ok: true, result: receipt } }));
-            await page.route(`**/sessions/${sid}/events?*`, route => route.fulfill({ json: { ok: true, result: [newer, update] } }));
+            await page.route(`**/sessions/${sid}/events?*`, route => route.fulfill({ json: { ok: true, result: recent } }));
+            await page.route(`**/sessions/${sid}/events-before?*`, route => route.fulfill({ json: { ok: true, result: [{
+                sessionId: sid, seq: 2, eventType: "session.steering_accepted", data: { receipt: { ...receipt, revision: 1 } },
+            }] } }));
             await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
             const chat = page.locator(".ps-chat-panel .ps-scroll-panel");
             await expect(chat).toContainText("New conversation");
@@ -27,6 +100,13 @@ for (const browserName of ["chromium", "webkit"]) {
             await expect(chat).not.toContainText("Old guidance");
             await page.locator(".ps-steering-archive > summary").click();
             await expect(page.locator(".ps-steering-archive")).toContainText("Old guidance");
+            await chat.evaluate(node => { node.scrollTop = 0; });
+            await chat.dispatchEvent("wheel", { deltaY: -100 });
+            await chat.dispatchEvent("wheel", { deltaY: -100 });
+            await expect(chat.getByTestId("steering-request")).toContainText("Old guidance");
+            const order = await chat.innerText();
+            expect(order.indexOf("Old guidance")).toBeLessThan(order.indexOf("New conversation"));
+            await expect(page.locator(".ps-steering-archive")).toHaveCount(0);
         } finally { await browser.close(); }
     });
     for (const phase of ["pending", "queued"]) {

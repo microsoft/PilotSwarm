@@ -34,6 +34,7 @@ export const UI_COMMANDS = {
     RESEND_STEERING: "resendSteering",
     REUSE_STEERING: "reuseSteering",
     STEERING_DETAILS: "steeringDetails",
+    STEERING_HISTORY: "steeringHistory",
     FOCUS_NEXT: "focusNext",
     FOCUS_PREV: "focusPrev",
     FOCUS_LEFT: "focusLeft",
