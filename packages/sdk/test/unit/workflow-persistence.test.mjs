@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PgSessionCatalog } from "../../dist/cms.js";
+import { PilotSwarmManagementClient } from "../../dist/management-client.js";
+import { WebPilotSwarmManagementClient } from "../../dist/web/web-management-client.js";
 
 function createCatalogHarness() {
     const calls = [];
@@ -125,4 +127,41 @@ test("catalog maps workflow projections and executions for API consumers", async
         acceptedAt: new Date("2026-10-07T20:00:00.000Z"),
         updatedAt: new Date("2026-10-07T20:00:00.000Z"),
     }]);
+});
+
+test("management clients expose workflow projection and execution reads", async () => {
+    const projection = { workflowSessionId: "workflow-1", status: "running" };
+    const executions = [{ workflowSessionId: "workflow-1", executionSequence: 1 }];
+
+    const direct = Object.create(PilotSwarmManagementClient.prototype);
+    direct._started = true;
+    direct._catalog = {
+        getWorkflowProjection: async (sessionId) => {
+            assert.equal(sessionId, "workflow-1");
+            return projection;
+        },
+        listWorkflowExecutions: async (sessionId) => {
+            assert.equal(sessionId, "workflow-1");
+            return executions;
+        },
+    };
+
+    assert.equal(await direct.getWorkflow("workflow-1"), projection);
+    assert.equal(await direct.listWorkflowExecutions("workflow-1"), executions);
+
+    const calls = [];
+    const web = Object.create(WebPilotSwarmManagementClient.prototype);
+    web._api = {
+        call: async (name, params) => {
+            calls.push({ name, params });
+            return name === "getWorkflow" ? projection : executions;
+        },
+    };
+
+    assert.equal(await web.getWorkflow("workflow-1"), projection);
+    assert.equal(await web.listWorkflowExecutions("workflow-1"), executions);
+    assert.deepEqual(calls, [
+        { name: "getWorkflow", params: { sessionId: "workflow-1" } },
+        { name: "listWorkflowExecutions", params: { sessionId: "workflow-1" } },
+    ]);
 });

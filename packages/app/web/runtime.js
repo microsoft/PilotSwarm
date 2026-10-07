@@ -712,6 +712,10 @@ export class PortalRuntime {
                 });
             case "getSession":
                 return this.transport.mgmt.getSession(safeParams.sessionId, placementPrincipal(authContext));
+            case "getWorkflow":
+                return this.transport.mgmt.getWorkflow(safeParams.sessionId);
+            case "listWorkflowExecutions":
+                return this.transport.mgmt.listWorkflowExecutions(safeParams.sessionId);
             case "getOrchestrationStats":
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":

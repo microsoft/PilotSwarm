@@ -95,6 +95,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getUserFeatureFlags",
     "getUserStats",
     "getWorkerCount",
+    "getWorkflow",
     "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
@@ -120,6 +121,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionsPage",
     "listSessionWorkspaceFolders",
     "listWorkers",
+    "listWorkflowExecutions",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
@@ -961,6 +963,14 @@ export interface ManagementOps {
     getWorkerCount(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Get the workflow's current state, waiting reason, and terminal result when complete.
+     * @remarks `GET /management/workflows/:sessionId` — access: `session:read`
+     */
+    getWorkflow(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Grant a user write access to a SHARED package ({ user: { provider, subject } }): publish, republish into it, pin, enable/disable — not scope, delete, or the editor list. Owner or admin. Revoked when the package is demoted to user scope.
      * @remarks `POST /agent-packages/:name/editors` — access: `authed`
      */
@@ -1151,6 +1161,14 @@ export interface ManagementOps {
      * @remarks `GET /workers` — access: `fleet:admin` (admin)
      */
     listWorkers(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Authoritative workflow state executions in admission order.
+     * @remarks `GET /management/workflows/:sessionId/executions` — access: `session:read`
+     */
+    listWorkflowExecutions(params: {
+        sessionId: string;
+    }): Promise<any>;
 
     /**
      * Deprecated alias of placeSessionsInGroup.
@@ -1877,6 +1895,7 @@ export function createManagementOps(
         getUserFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getUserFeatureFlags", params),
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
+        getWorkflow: (params: Record<string, unknown> = {}) => callOp("getWorkflow", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
@@ -1902,6 +1921,7 @@ export function createManagementOps(
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
+        listWorkflowExecutions: (params: Record<string, unknown> = {}) => callOp("listWorkflowExecutions", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),

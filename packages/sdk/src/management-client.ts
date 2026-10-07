@@ -112,6 +112,8 @@ import type {
     PlacementViewer,
     SessionPlacementResult,
     ChildOutcomeRow,
+    WorkflowExecutionRow,
+    WorkflowProjectionRow,
     SessionVisibility,
     SessionShareInfo,
     SessionAccessSnapshot,
@@ -1358,6 +1360,20 @@ export class PilotSwarmManagementClient {
             contextUsage: normalizedContextUsage,
             statusVersion,
         };
+    }
+
+    // ─── Workflow Read Model ────────────────────────────────
+
+    /** Get the workflow's current externally visible state. */
+    async getWorkflow(sessionId: string): Promise<WorkflowProjectionRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowProjection(sessionId);
+    }
+
+    /** Read authoritative workflow state executions in admission order. */
+    async listWorkflowExecutions(sessionId: string): Promise<WorkflowExecutionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowExecutions(sessionId);
     }
 
     // ─── Child Contracts / Outcomes ────────────────────────

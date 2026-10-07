@@ -87,6 +87,11 @@ test("path, query, and body params are collected with declared types", async () 
         await fetch(`${baseUrl}/api/v1/management/sessions/s2/events?afterSeq=5`);
         const after = calls.find((call) => call.name === "getSessionEvents");
         assert.deepEqual(after.params, { sessionId: "s2", afterSeq: 5 }, "omitted eventTypes stays absent");
+
+        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1`);
+        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/executions`);
+        assert.deepEqual(calls.find((call) => call.name === "getWorkflow")?.params, { sessionId: "workflow-1" });
+        assert.deepEqual(calls.find((call) => call.name === "listWorkflowExecutions")?.params, { sessionId: "workflow-1" });
     } finally {
         await close();
     }

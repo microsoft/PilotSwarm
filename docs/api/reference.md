@@ -144,6 +144,15 @@ group membership is per-viewer state, not a property of the session. See
 | copyArtifact | `POST /api/v1/artifacts/copy` | fromSessionId, fromFilename, toSessionId, toFilename (body) | Server-side artifact copy between sessions (read access on the source, write on the target); result metadata carries `sha256` and copy provenance. |
 | setArtifactPinned | `PUT /api/v1/sessions/:sessionId/artifacts/:filename/pinned` | sessionId (path), filename (path), pinned (body) | Pin/unpin an artifact; pinned artifacts survive bulk session cleanup. |
 
+### Management: workflows
+
+These read-only endpoints expose the workflow query model. They do not drive workflow transitions; Duroxide orchestration history remains the control-flow authority.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| getWorkflow | `GET /api/v1/management/workflows/:sessionId` | sessionId (path) | Current workflow state, execution sequence, waiting reason, and terminal result when complete. |
+| listWorkflowExecutions | `GET /api/v1/management/workflows/:sessionId/executions` | sessionId (path) | Authoritative workflow state executions in admission order. |
+
 ### Management: sessions
 
 | Operation | Route | Parameters | Summary |

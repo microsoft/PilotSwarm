@@ -87,6 +87,14 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSession", { sessionId });
     }
 
+    async getWorkflow(sessionId: string): Promise<any> {
+        return this._api.call("getWorkflow", { sessionId });
+    }
+
+    async listWorkflowExecutions(sessionId: string): Promise<any[]> {
+        return this._api.call("listWorkflowExecutions", { sessionId });
+    }
+
     // ── Session actions ─────────────────────────────────────────────────
 
     async renameSession(sessionId: string, title: string): Promise<void> {

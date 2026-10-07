@@ -72,6 +72,10 @@ export const OPERATIONS = [
     { name: "sendSessionEvent", access: "session:write", method: "POST", path: "/sessions/:sessionId/events", params: { sessionId: path("sessionId"), eventName: body(), data: body() }, summary: "Send a custom event into the session." },
     { name: "cancelPendingMessage", access: "session:write", method: "POST", path: "/sessions/:sessionId/cancel-pending", params: { sessionId: path("sessionId"), clientMessageIds: body() }, summary: "Cancel queued messages by client message ids." },
 
+    // ── Workflows (read model) ─────────────────────────────────────────
+    { name: "getWorkflow", access: "session:read", method: "GET", path: "/management/workflows/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get the workflow's current state, waiting reason, and terminal result when complete." },
+    { name: "listWorkflowExecutions", access: "session:read", method: "GET", path: "/management/workflows/:sessionId/executions", params: { sessionId: path("sessionId") }, summary: "Authoritative workflow state executions in admission order." },
+
     // ── Session sharing (security model) ────────────────────────────────
     { name: "getSessionAccess", access: "session:read", method: "GET", path: "/sessions/:sessionId/access", params: { sessionId: path("sessionId") }, summary: "The caller's effective access to this session's tree: { visibility, relation, canWrite, canManage, owner }." },
     { name: "setSessionVisibility", access: "session:share", method: "PUT", path: "/sessions/:sessionId/visibility", params: { sessionId: path("sessionId"), visibility: body() }, summary: "Set the tree's sharing level (private | shared_read | shared_write). Owner or admin." },
