@@ -104,6 +104,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Steer uses normal composer-button typography, theme border/radius and a small
   icon beside its desktop label. Enabled uses the accent; disabled remains a
   visibly dimmed button. Never inherit the large toolbar-glyph font for its label.
+- Mobile textarea growth also respects the space left in its chat pane after
+  headers, Working/outbox strips and composer chrome, not just a viewport
+  fraction. Scroll text internally rather than pushing Send/Stop off-screen.
+  Landscape screens at most 450px high retain a 44px session strip and a
+  scrollable 24px status strip. Delivery details targets are at least 24px.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve

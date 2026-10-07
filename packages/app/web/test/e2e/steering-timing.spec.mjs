@@ -25,7 +25,9 @@ for (const browserName of ["chromium", "webkit"]) {
             await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
             const row = page.getByTestId("steering-request").filter({ hasText: "Recovered guidance" }).first();
             await expect(row.getByTestId("steering-status")).toHaveText(" — Delivered (timing unconfirmed)");
-            await row.getByText("Delivery details", { exact: true }).click();
+            const details = row.getByText("Delivery details", { exact: true });
+            expect((await details.boundingBox()).height).toBeGreaterThanOrEqual(24);
+            await details.click();
             await expect(row).toContainText("Delivered before recovery; whether it reached the turn or followed the response is not known.");
             await expect(row).toContainText("Included in the saved conversation.");
             await expect(row.getByRole("button", { name: "Reuse in draft", exact: true })).toHaveCount(0);
