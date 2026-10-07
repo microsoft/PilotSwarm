@@ -26,7 +26,11 @@ for (const event of [
         assert.equal(selectUnplacedSteeringReceipts(store.getState()).length, 1);
         const acceptance = { sessionId: "s", seq: 2, eventType: "session.steering_accepted", data: { receipt: { ...receipt, revision: 1 } } };
         store.dispatch({ type: "history/set", sessionId: "s", history: buildHistoryModel([acceptance, ordinary, event]) });
-        assert.deepEqual(selectActiveChat(store.getState()).map(row => row.text), ["Old guidance", "New conversation"]);
+        const anchored = selectActiveChat(store.getState());
+        assert.deepEqual(anchored.map(row => row.text), ["Old guidance", "New conversation"]);
+        assert.equal(anchored[0].steering.revision, 2, "older acceptance establishes position, not permission to regress delivery evidence");
+        assert.equal(anchored[0].steering.status, "delivered");
+        assert.equal(anchored[0].steering.disposition, "delivered_after_response");
         assert.equal(selectUnplacedSteeringReceipts(store.getState()).length, 0);
     });
 }
@@ -35,6 +39,7 @@ for (const phase of ["pending", "queued"]) {
         const { store, controller } = harness();
         const item = controller.buildOutboxItem("Queue text", phase);
         controller.setSessionOutboxItems("s", [item]);
+        const queueBeforeRecall = structuredClone(controller.getSessionOutbox("s"));
         controller.setPrompt("Original draft", 3);
         controller.setPromptAttachments([{ kind: "image", filename: "draft.png" }]);
         controller.recallPromptInput(-1);
@@ -52,7 +57,6 @@ for (const phase of ["pending", "queued"]) {
         assert.equal(store.getState().ui.promptCursor, 3);
         assert.equal(store.getState().ui.promptAttachments[0].filename, "draft.png");
         controller.setPrompt("Original draft typed");
-        assert.equal(controller.getSessionOutbox("s")[0].text, "Queue text");
-        assert.equal(controller.getSessionOutbox("s")[0].phase, phase);
+        assert.deepEqual(controller.getSessionOutbox("s"), queueBeforeRecall, "restore and subsequent typing retain every queue identity and phase field");
     });
 }
