@@ -1007,12 +1007,13 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, childSessionId?: string) {
             return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
                 ...(workspaceChosen ? { workspaceChosen: true } : {}),
+                ...(childSessionId ? { childSessionId } : {}),
             }), routingContract);
         },
         /** Spawn a controller-backed workflow child. The workflow result is observed separately through child outcomes. */
@@ -5306,16 +5307,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Goes through the full SDK path: CMS registration + orchestration startup.
     registerHandoffActivity(runtime, "spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; childSessionId?: string },
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
             activityCtx.traceInfo(`[spawnChildSession] +${Date.now() - startedAt}ms ${message}`);
         };
         const isDeterministicSystemChild = Boolean(input.isSystem && input.agentId);
-        const childSessionId = isDeterministicSystemChild
+        const childSessionId = input.childSessionId ?? (isDeterministicSystemChild
             ? systemChildAgentUUID(input.parentSessionId, input.agentId!)
-            : crypto.randomUUID();
+            : crypto.randomUUID());
         trace(`child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
@@ -5328,7 +5329,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             await sdkClient.start();
             trace(`sdkClient.start done (${Date.now() - clientStartAt}ms)`);
 
-            if (isDeterministicSystemChild && catalog) {
+            if ((isDeterministicSystemChild || input.childSessionId) && catalog) {
                 const existingCheckAt = Date.now();
                 // Critical: missing this read causes a duplicate child spawn for
                 // a deterministic system agent (same UUID, two creates).
@@ -5338,6 +5339,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     (msg) => activityCtx.traceInfo(msg),
                 );
                 trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
+                if (existing && input.childSessionId) {
+                    trace(`reusing existing replay-stable child: ${childSessionId} (${existing.state})`);
+                    return childSessionId;
+                }
                 if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
                     trace(`reusing existing live system child: ${childSessionId}`);
                     return childSessionId;

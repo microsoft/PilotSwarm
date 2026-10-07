@@ -35,10 +35,12 @@ export { WorkflowSession } from "./workflow-session.js";
 export type { WorkflowResultWaitOptions } from "./workflow-session.js";
 export { registerInMemoryWorkflowGraph } from "./workflow-orchestration/graph.js";
 export type {
+    InMemoryWorkflowAgentState,
     InMemoryWorkflowExecutableState,
     InMemoryWorkflowGraph,
     InMemoryWorkflowState,
     InMemoryWorkflowTerminalState,
+    WorkflowExecutionRecord,
     WorkflowStateExecutionContext,
     WorkflowStateExecutionResult,
     WorkflowTerminalContext,

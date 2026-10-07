@@ -7,11 +7,19 @@ export interface WorkflowStateExecutionResult<TOutput = unknown> {
     output: TOutput;
 }
 
+export interface WorkflowExecutionRecord<TOutput = unknown>
+    extends WorkflowStateExecutionResult<TOutput> {
+    stateId: WorkflowStateId;
+    executionSequence: number;
+}
+
 export interface WorkflowStateExecutionContext<TInputs = Record<string, unknown>> {
     sessionId: string;
     stateId: WorkflowStateId;
+    executionSequence: number;
     workflowInputs: Readonly<TInputs>;
-    recordedStateOutputs: Readonly<Record<WorkflowStateId, WorkflowStateExecutionResult>>;
+    latestStateOutputs: Readonly<Record<WorkflowStateId, WorkflowStateExecutionResult>>;
+    executionHistory: readonly WorkflowExecutionRecord[];
 }
 
 export interface WorkflowTransitionContext<
@@ -22,12 +30,14 @@ export interface WorkflowTransitionContext<
     currentStateId: WorkflowStateId;
     stateOutcome: string;
     stateOutput: TOutput;
-    recordedStateOutputs: Readonly<Record<WorkflowStateId, WorkflowStateExecutionResult>>;
+    latestStateOutputs: Readonly<Record<WorkflowStateId, WorkflowStateExecutionResult>>;
+    executionHistory: readonly WorkflowExecutionRecord[];
 }
 
 export interface WorkflowTerminalContext<TInputs = Record<string, unknown>> {
     workflowInputs: Readonly<TInputs>;
-    recordedStateOutputs: Readonly<Record<WorkflowStateId, WorkflowStateExecutionResult>>;
+    latestStateOutputs: Readonly<Record<WorkflowStateId, WorkflowStateExecutionResult>>;
+    executionHistory: readonly WorkflowExecutionRecord[];
 }
 
 export interface InMemoryWorkflowExecutableState {
@@ -40,6 +50,17 @@ export interface InMemoryWorkflowExecutableState {
     transition(context: WorkflowTransitionContext): WorkflowStateId;
 }
 
+export interface InMemoryWorkflowAgentState {
+    type: "agent";
+    agent: string;
+    prompt:
+        | string
+        | ((context: WorkflowStateExecutionContext) => string);
+    allowedOutcomes: readonly string[];
+    allowedTargets: readonly WorkflowStateId[];
+    transition(context: WorkflowTransitionContext): WorkflowStateId;
+}
+
 export interface InMemoryWorkflowTerminalState {
     type: "terminal";
     outcome: WorkflowSessionResult["outcome"];
@@ -49,6 +70,7 @@ export interface InMemoryWorkflowTerminalState {
 
 export type InMemoryWorkflowState =
     | InMemoryWorkflowExecutableState
+    | InMemoryWorkflowAgentState
     | InMemoryWorkflowTerminalState;
 
 export interface InMemoryWorkflowGraph {
@@ -116,7 +138,7 @@ function validateGraph(graph: InMemoryWorkflowGraph): void {
             }
             continue;
         }
-        if (state.type !== "activity") {
+        if (state.type !== "activity" && state.type !== "agent") {
             throw workflowGraphError(
                 `Workflow state '${stateId}' has unsupported type '${(state as { type?: unknown }).type}'.`,
                 "WORKFLOW_GRAPH_INVALID",
@@ -124,11 +146,31 @@ function validateGraph(graph: InMemoryWorkflowGraph): void {
         }
         requireNonEmptyStrings(state.allowedOutcomes, `Workflow state '${stateId}' allowedOutcomes`);
         requireNonEmptyStrings(state.allowedTargets, `Workflow state '${stateId}' allowedTargets`);
-        if (typeof state.execute !== "function" || typeof state.transition !== "function") {
+        if (typeof state.transition !== "function") {
             throw workflowGraphError(
-                `Workflow state '${stateId}' must declare execute and transition functions.`,
+                `Workflow state '${stateId}' must declare a transition function.`,
                 "WORKFLOW_GRAPH_INVALID",
             );
+        }
+        if (state.type === "activity" && typeof state.execute !== "function") {
+            throw workflowGraphError(
+                `Workflow activity state '${stateId}' must declare an execute function.`,
+                "WORKFLOW_GRAPH_INVALID",
+            );
+        }
+        if (state.type === "agent") {
+            if (typeof state.agent !== "string" || state.agent.length === 0) {
+                throw workflowGraphError(
+                    `Workflow agent state '${stateId}' must declare an agent.`,
+                    "WORKFLOW_GRAPH_INVALID",
+                );
+            }
+            if (typeof state.prompt !== "string" && typeof state.prompt !== "function") {
+                throw workflowGraphError(
+                    `Workflow agent state '${stateId}' must declare a prompt.`,
+                    "WORKFLOW_GRAPH_INVALID",
+                );
+            }
         }
         for (const target of state.allowedTargets) {
             if (!graph.states[target]) {

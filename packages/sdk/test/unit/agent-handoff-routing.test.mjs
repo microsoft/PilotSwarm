@@ -140,6 +140,29 @@ test("new handoff proxies route every critical activity with the capability tag"
     assert.equal(manager.listModels().tag, undefined, "unrelated activities retain their existing routing");
 });
 
+test("workflow agent spawning carries a replay-stable child session id", () => {
+    const manager = createSessionManagerProxy(context(), "agent-handoff-v2");
+    const task = wire(manager.spawnChildSession(
+        "workflow-parent",
+        { toolNames: ["submit_workflow_result"] },
+        "Inspect the change.",
+        1,
+        false,
+        "Inspector",
+        "inspector",
+        undefined,
+        false,
+        "submit_workflow_result",
+        false,
+        "child-fixed",
+    ));
+
+    assert.equal(task.name, "spawnChildSessionV2");
+    const input = JSON.parse(task.input);
+    assert.equal(input.childSessionId, "child-fixed");
+    assert.equal(input.requiredTool, "submit_workflow_result");
+});
+
 test("workflow child creation uses its dedicated routed activity contract", () => {
     const manager = createSessionManagerProxy(context(), "agent-handoff-v2");
     const task = wire(manager.spawnWorkflowSession(

@@ -223,12 +223,20 @@ The named module export implements this author-facing interface:
 ```typescript
 type StateId = string;
 
+interface WorkflowExecutionRecord {
+    stateId: StateId;
+    executionSequence: number;
+    outcome: string;
+    output: unknown;
+}
+
 interface TransitionContext<TInput, TOutput> {
     workflowInput: DeepReadonly<TInput>;
     configuration: DeepReadonly<unknown>;
     currentStateId: StateId;
     stateOutput: DeepReadonly<TOutput>;
-    recordedStateOutputs: DeepReadonly<Record<StateId, unknown>>;
+    latestStateOutputs: DeepReadonly<Record<StateId, unknown>>;
+    executionHistory: DeepReadonly<WorkflowExecutionRecord[]>;
 }
 
 type TransitionFunction<TInput, TOutput> = (
@@ -267,9 +275,13 @@ storage.
 The first executable controller defers package and YAML compilation. SDK code
 may register an `InMemoryWorkflowGraph` in the worker process and create a
 workflow with the returned `{ kind: "in-memory", graphId }` definition source.
-Executable states provide an activity handler plus declared outcomes, allowed
-targets, and a synchronous transition callback. Terminal states provide the
-workflow outcome, summary, and optional deterministic result function.
+Executable states currently support either an activity handler or a named
+one-shot agent. Both declare outcomes, allowed targets, and a synchronous
+transition callback. An agent state supplies a prompt string or deterministic
+prompt function. PilotSwarm starts a replay-stable child session and waits for
+that child to call `submit_workflow_result`; it never scrapes the child's final
+prose for JSON. Terminal states provide the workflow outcome, summary, and
+optional deterministic result function.
 
 ```typescript
 const definition = registerInMemoryWorkflowGraph({
@@ -277,10 +289,12 @@ const definition = registerInMemoryWorkflowGraph({
     initialState: "inspect",
     states: {
         inspect: {
-            type: "activity",
+            type: "agent",
+            agent: "candidate-inspector",
+            prompt: context =>
+                `Inspect candidate ${context.workflowInputs.candidateId}.`,
             allowedOutcomes: ["approved", "rejected"],
             allowedTargets: ["publish", "blocked"],
-            execute: async context => inspectCandidate(context.workflowInputs),
             transition: context =>
                 context.stateOutcome === "approved" ? "publish" : "blocked",
         },
@@ -300,7 +314,7 @@ const definition = registerInMemoryWorkflowGraph({
             type: "terminal",
             outcome: "succeeded",
             summary: "Candidate was published.",
-            result: context => context.recordedStateOutputs.publish.output,
+            result: context => context.latestStateOutputs.publish.output,
         },
     },
 });
@@ -316,3 +330,21 @@ unit tests and early runtime experiments, but it is not durable across worker
 restarts and cannot coordinate graphs across a worker fleet. The production
 compiler and immutable graph registry replace this temporary registration
 boundary without changing the execution loop.
+
+Each nonterminal state admission receives a workflow-scoped,
+monotonically-increasing `executionSequence`. For an agent state, the durable
+child creation config binds that sequence, state, graph, declared outcomes, and
+workflow session to the child. The result tool derives this binding from the
+authenticated child session rather than accepting identity fields from the
+model. Controller acceptance is then recorded through a durable activity
+before the transition callback runs.
+
+The controller exposes both `latestStateOutputs`, keyed by state ID for
+convenient transition lookups, and ordered `executionHistory`, keyed by each
+record's `executionSequence`. A loop therefore replaces the latest value for a
+state without losing earlier executions.
+
+The `1.0.0` orchestration, agent-dispatch plan, activity names, queue names, and
+tool-binding contracts live under a version-specific module. Once that version
+is deployed, replay-affecting changes require a new orchestration version
+rather than mutation of the existing contract.

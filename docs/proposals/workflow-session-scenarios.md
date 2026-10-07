@@ -448,7 +448,8 @@ function invokeTransitionFunction(ctx, definition, state, recordedOutput) {
         configuration: definition.configuration,
         currentStateId: state.id,
         stateOutput: recordedOutput,
-        recordedStateOutputs: ctx.recordedStateOutputs,
+        latestStateOutputs: ctx.latestStateOutputs,
+        executionHistory: ctx.executionHistory,
     }));
 
     if (!state.transition.allowedTargets.includes(requestedNextStateId)) {
@@ -782,14 +783,20 @@ The feature branch already provides:
 | Parent `subWorkflows`, check, wait, and result consumption | Implemented |
 | Dedicated workflow orchestration version boundary | Implemented; `1.0.0` runs the initial controller |
 | Basic workflow controller | Implemented for process-local in-memory graphs |
+| One-shot agent-state dispatch | Implemented for named agents with runtime-bound structured result submission |
 | Definition compiler and durable graph registry | Not implemented |
 
 The initial controller deliberately accepts only an `in-memory` definition
-that names a graph registered in the worker process. It executes each state
-behind a durable activity, validates declared outcomes and targets, invokes
-transition callbacks synchronously, enforces a transition limit, and records
-terminal child results. This is an executable seam for refining controller
-semantics, not the production definition-storage model.
+that names a graph registered in the worker process. Activity states execute
+behind durable activities. Agent states allocate a monotonically increasing
+`executionSequence`, create or reuse one replay-stable named-agent child, and
+wait on a sequence-specific Duroxide queue for `submit_workflow_result`.
+PilotSwarm derives the workflow binding from the child's durable creation
+config, validates declared outcomes, records controller acceptance through a
+durable activity, invokes transition callbacks synchronously, enforces a
+transition limit, and records terminal child results. This is an executable
+seam for refining controller semantics, not the production definition-storage
+model.
 
 ### 4.2 Definition subsystem
 

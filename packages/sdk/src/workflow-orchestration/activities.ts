@@ -2,26 +2,48 @@ import type { SessionCatalog } from "../cms.js";
 import type { WorkflowSessionResult } from "../types.js";
 import {
     resolveInMemoryWorkflowGraph,
+    type WorkflowExecutionRecord,
     type WorkflowStateExecutionResult,
 } from "./graph.js";
+import {
+    ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
+    COMPLETE_WORKFLOW_ACTIVITY,
+    EXECUTE_WORKFLOW_STATE_ACTIVITY,
+} from "../workflow-orchestration_1_0_0/contracts.js";
 
-export const EXECUTE_WORKFLOW_STATE_ACTIVITY = "executeWorkflowStateV1";
-export const COMPLETE_WORKFLOW_ACTIVITY = "completeWorkflowSessionV1";
+export {
+    ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
+    COMPLETE_WORKFLOW_ACTIVITY,
+    EXECUTE_WORKFLOW_STATE_ACTIVITY,
+};
 
 export interface ExecuteWorkflowStateActivityInput {
     graphId: string;
     sessionId: string;
     stateId: string;
+    executionSequence: number;
     workflowInputs: Record<string, unknown>;
-    recordedStateOutputs: Record<string, WorkflowStateExecutionResult>;
+    latestStateOutputs: Record<string, WorkflowStateExecutionResult>;
+    executionHistory: WorkflowExecutionRecord[];
 }
 
 export interface CompleteWorkflowActivityInput {
     result: WorkflowSessionResult;
 }
 
+export interface AcceptWorkflowStateResultActivityInput {
+    workflowSessionId: string;
+    childSessionId: string;
+    graphId: string;
+    stateId: string;
+    executionSequence: number;
+    outcome: string;
+    output: unknown;
+}
+
 export interface WorkflowActivityHandlers {
     executeState(input: ExecuteWorkflowStateActivityInput): Promise<WorkflowStateExecutionResult>;
+    acceptStateResult(input: AcceptWorkflowStateResultActivityInput): Promise<WorkflowStateExecutionResult>;
     completeWorkflow(input: CompleteWorkflowActivityInput): Promise<WorkflowSessionResult>;
 }
 
@@ -45,9 +67,39 @@ export function createWorkflowActivityHandlers(
             return await state.execute({
                 sessionId: input.sessionId,
                 stateId: input.stateId,
+                executionSequence: input.executionSequence,
                 workflowInputs: input.workflowInputs,
-                recordedStateOutputs: input.recordedStateOutputs,
+                latestStateOutputs: input.latestStateOutputs,
+                executionHistory: input.executionHistory,
             });
+        },
+
+        async acceptStateResult(input) {
+            if (!catalog) {
+                throw workflowActivityError(
+                    `Workflow state execution '${input.workflowSessionId}/${input.executionSequence}' cannot record its result without a session catalog.`,
+                    "WORKFLOW_RESULT_CATALOG_REQUIRED",
+                );
+            }
+            await catalog.upsertChildOutcome({
+                childSessionId: input.childSessionId,
+                parentSessionId: input.workflowSessionId,
+                resultJson: {
+                    kind: "workflow-state-result",
+                    graphId: input.graphId,
+                    stateId: input.stateId,
+                    executionSequence: input.executionSequence,
+                    outcome: input.outcome,
+                    output: input.output,
+                },
+                verdict: input.outcome,
+                summary: `Workflow state '${input.stateId}' completed with outcome '${input.outcome}'.`,
+                completedAt: new Date(),
+            });
+            return {
+                outcome: input.outcome,
+                output: input.output,
+            };
         },
 
         async completeWorkflow({ result }) {
@@ -94,6 +146,11 @@ export function registerWorkflowActivities(
         EXECUTE_WORKFLOW_STATE_ACTIVITY,
         async (_activityContext, input: ExecuteWorkflowStateActivityInput) =>
             handlers.executeState(input),
+    );
+    runtime.registerActivity(
+        ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
+        async (_activityContext, input: AcceptWorkflowStateResultActivityInput) =>
+            handlers.acceptStateResult(input),
     );
     runtime.registerActivity(
         COMPLETE_WORKFLOW_ACTIVITY,

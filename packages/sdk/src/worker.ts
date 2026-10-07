@@ -16,6 +16,7 @@ import {
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
 } from "./workflow-orchestration-registry.js";
 import { registerWorkflowActivities } from "./workflow-orchestration/activities.js";
+import { createSubmitWorkflowResultTool } from "./workflow-orchestration/result-tool.js";
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
@@ -940,6 +941,12 @@ export class PilotSwarmWorker {
             );
         }
         registerWorkflowActivities(this.runtime, this._catalog);
+        if (this._catalog) {
+            this.registerTools([createSubmitWorkflowResultTool({
+                catalog: this._catalog,
+                duroxideClient: new Client(this._provider),
+            })]);
+        }
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
