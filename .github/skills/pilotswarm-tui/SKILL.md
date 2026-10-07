@@ -109,6 +109,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   fraction. Scroll text internally rather than pushing Send/Stop off-screen.
   Landscape screens at most 450px high retain a 44px session strip and a
   scrollable 24px status strip. Delivery details targets are at least 24px.
+- Below a 360px composer container, hide only the Attach button when Stop and
+  Steer are both present. Keep input/Stop/Steer/Send on one row and all visible
+  buttons at least 44px. Attach returns when Stop disappears; staged attachment
+  chips remain visible/removable, and Steer stays text-only. At 360px and wider,
+  the Attach control is unchanged. Native TUI actions are unchanged.
 
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve

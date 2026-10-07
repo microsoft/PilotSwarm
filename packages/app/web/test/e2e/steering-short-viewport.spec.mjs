@@ -55,9 +55,59 @@ for (const browserName of ["chromium", "webkit"]) {
                 for (const measurement of measurements) {
                     expect(measurement.documentWidth).toBeLessThanOrEqual(width);
                     expect(measurement.actions.height).toBeGreaterThanOrEqual(44);
+                    if (width === 320) expect(measurement.input.width).toBeGreaterThanOrEqual(112);
                 }
                 await test.info().attach("composer-measurements", { body: JSON.stringify({ browserName, width, height, measurements }), contentType: "application/json" });
             } finally { await browser.close(); }
         });
     }
+
+    test(`${browserName}: Attach hides only below 360px while running, without dropping staged images`, async () => {
+        const browser = await ({ chromium, webkit })[browserName].launch();
+        try {
+            const page = await browser.newPage({ viewport: { width: 800, height: 844 }, isMobile: true, hasTouch: true });
+            let status = "running";
+            const row = () => ({ sessionId: sid, title: "Composer boundary", status, statusVersion: status === "running" ? 1 : 2,
+                createdAt: 1, updatedAt: status === "running" ? 2 : 3,
+                owner: { provider: "none", subject: "test" } });
+            await page.route("**/api/v1/**", route => {
+                const path = new URL(route.request().url()).pathname;
+                const answer = result => route.fulfill({ json: { ok: true, result } });
+                if (path.endsWith("/management/sessions")) return answer({ sessions: [row()], hasMore: false });
+                if (path.endsWith(`/sessions/${sid}`)) return answer(row());
+                if (path.endsWith("/steering-state")) return answer({
+                    supported: true, canWrite: true, steerable: status === "running", expectedTarget: "target", windowSeq: 1,
+                });
+                if (path.endsWith("/steering")) return answer({ items: [], nextCursor: null });
+                if (path.endsWith("/stop-turn")) { status = "idle"; return answer({ outcome: "stopped" }); }
+                return route.fallback();
+            });
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${sid}`);
+            const attach = page.getByRole("button", { name: "Attach images", exact: true });
+            const composer = page.locator(".ps-chat-composer");
+            const input = page.locator(".ps-prompt-input");
+            await expect(attach).toBeVisible();
+            await composer.evaluate(node => { node.style.boxSizing = "content-box"; node.style.width = "360px"; });
+            await expect(attach).toBeVisible();
+            await composer.evaluate(node => { node.style.width = "359px"; });
+            await expect(attach).toBeHidden();
+            await composer.evaluate(node => { node.style.removeProperty("width"); node.style.removeProperty("box-sizing"); });
+            await page.setViewportSize({ width: 320, height: 568 });
+            await input.fill("Keep my draft");
+            await page.locator(".ps-hidden-file-input").setInputFiles({
+                name: "retained.png", mimeType: "image/png",
+                buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aHH8AAAAASUVORK5CYII=", "base64"),
+            });
+            const remove = page.getByRole("button", { name: "Remove attachment retained.png", exact: true });
+            await expect(attach).toBeHidden();
+            await expect(remove).toBeVisible();
+            await expect(page.getByRole("button", { name: "Steer current turn", exact: true })).toBeDisabled();
+            await page.getByRole("button", { name: "Stop the current turn", exact: true }).click();
+            await expect(attach).toBeVisible();
+            await expect(remove).toBeVisible();
+            await remove.click();
+            await expect(remove).toHaveCount(0);
+            await expect(input).toHaveValue("Keep my draft");
+        } finally { await browser.close(); }
+    });
 }

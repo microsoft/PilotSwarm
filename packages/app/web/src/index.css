@@ -9848,6 +9848,12 @@ textarea.ps-link-input {
   }
 }
 
+@container prompt-composer (width < 360px) {
+  .ps-prompt-actions:has(.ps-stop-button):has(.ps-steer-button) > .ps-attach-button {
+    display: none;
+  }
+}
+
 /* Landscape phones must reserve a reachable composer before spending the
    remaining height on the session list and scrollable status history. */
 @media (max-width: 920px) and (max-height: 450px) {
