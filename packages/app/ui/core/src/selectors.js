@@ -3627,8 +3627,8 @@ export function selectPromptActions(state) {
     const session = selectActiveSession(state);
     return [
         { label: "Send", command: "sendPrompt", enabled: true },
-        { label: "Steer", command: "steerTurn", enabled: steering.enabled },
-        { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session) },
+        { label: "Steer", command: "steerTurn", enabled: steering.enabled, reason: steering.reason },
+        { label: "Stop", command: "stopTurn", enabled: canStopSessionTurn(session), reason: "No active turn to stop" },
         ...(hasReceipts ? [{ label: "Guidance", command: "steeringDetails", enabled: true }] : []),
     ];
 }
@@ -6154,7 +6154,9 @@ export function selectStatusBar(state) {
                         : `type message · enter send · up/down input history at first/last line · alt-enter newline · arrows move · alt-left/right word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
     if (focus === FOCUS_REGIONS.PROMPT && state.ui.promptActionIndex != null) {
-        return { left: state.ui.statusText, right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
+        const action = selectPromptActions(state)[state.ui.promptActionIndex];
+        return { left: action?.enabled === false ? action.reason : state.ui.statusText,
+            right: "left/right action · enter activate · tab next pane · shift-tab/esc prompt" };
     }
 
     let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];

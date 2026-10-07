@@ -85,6 +85,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   partial results and Load more guidance (`m` in the native receipt view).
   Main chat owns session steering pending/resend state; MoA panels share it,
   including results arriving after panel disposal.
+- Disabled native prompt actions show their shared eligibility reason in the
+  status hint and on Enter. Stop help must state that queued prompts and
+  schedules continue; do not imply Stop pauses all future work.
 - Portal composer buttons keep a minimum 44px touch target even inside panels.
   Keep mobile composers on one row with the label centered beside the textarea.
   At most 480px wide, use a 44px Steer icon with its accessible name and tooltip,

@@ -95,3 +95,9 @@ The command returns after acceptance, not after delivery. Read `steering-status`
 or `steering-list` for receipts. `withdraw-steering` has the same pre-claim rule
 as the UI. See the [API reference](../api/reference.md#session-steering) for the
 SDK and HTTP contracts.
+
+CLI and MCP results retain the canonical receipt fields and add a human
+`display` label, such as **Waiting for a safe point** for acknowledged but
+undelivered guidance. Oversized input uses typed `too_large` across surfaces.
+MCP steering requires authenticated Web API mode; direct-store MCP has no
+validated human actor and reports `unsupported`, not a missing session.

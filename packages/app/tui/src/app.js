@@ -634,6 +634,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             } else if (key.return) {
                 const action = actions[index];
                 if (action?.enabled) controller.handleCommand(action.command).catch(error => controller.setStatus(error.message));
+                else if (action?.reason) controller.setStatus(action.reason);
             }
             return;
         }

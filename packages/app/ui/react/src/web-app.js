@@ -9915,7 +9915,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
-                    title: "Stop the current turn (the session stays alive and returns to idle)",
+                    title: "Stop the current turn. Queued prompts and schedules continue; the session stays alive.",
                     "aria-label": "Stop the current turn",
                     disabled: stoppingTurn,
                     onPointerDown: (event) => event.preventDefault(),
