@@ -911,6 +911,8 @@ export class ManagedSession {
     /** Stop safety net for steered turns (see armSteeringStopWatch). */
     private steeringStopWatch: { dispose(): void } | null = null;
     private steeringTrace: ((message: string) => void) | undefined;
+    /** Incremented at every runTurn start; the Stop watch acts only within its own generation. */
+    private turnGeneration = 0;
 
     constructor(
         sessionId: string,
@@ -1463,6 +1465,7 @@ export class ManagedSession {
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         // A new turn ends the previous Stop's watch: it must never abort this turn.
+        this.turnGeneration++;
         this.steeringStopWatch?.dispose();
         this.steeringStopWatch = null;
         this.nativeFeatureRevoked = false;
@@ -3979,6 +3982,9 @@ export class ManagedSession {
         let reaborts = 0;
         let idleSeen = false;
         let disposed = false;
+        const generation = this.turnGeneration;
+        // Owned only while this watch is armed AND no newer turn has started.
+        const owned = () => !disposed && this.turnGeneration === generation;
         const timers: Array<ReturnType<typeof setTimeout>> = [];
         // Generation fence: every step re-checks `disposed` (the next turn disarms the watch),
         // so no queue removal or abort is issued for a turn this watch does not own. An RPC
@@ -3987,22 +3993,22 @@ export class ManagedSession {
             const queue = (session as any).rpc?.queue;
             if (typeof queue?.removeMostRecent !== "function") return;
             for (let i = 0; i < 8; i++) {
-                if (disposed) return;
+                if (!owned()) return;
                 const r = await Promise.race([
                     Promise.resolve(queue.removeMostRecent()).catch(() => null),
                     new Promise((res) => { const x = setTimeout(() => res(null), 500); (x as any).unref?.(); }),
                 ]) as { removed?: boolean } | null;
-                if (disposed || !r?.removed) return;
+                if (!owned() || !r?.removed) return;
             }
         };
         const reabort = (why: string) => {
-            if (disposed || reaborts >= 3) return;
+            if (!owned() || reaborts >= 3) return;
             reaborts++;
             trace(`[steering] Stop safety net: ${why}; removing pending CLI items and aborting again (${reaborts}/3)`);
-            void drainQueue().then(() => { if (!disposed) return session.abort(); }).catch(() => {});
+            void drainQueue().then(() => { if (owned()) return session.abort(); }).catch(() => {});
         };
         const unsubscribe = session.on((event: any) => {
-            if (disposed || isNativeChildEvent(event)) return;
+            if (!owned() || isNativeChildEvent(event)) return;
             const type = event?.type;
             if (type === "session.idle") { idleSeen = true; return; }
             if (type === "assistant.turn_start") { idleSeen = false; reabort("a run started after Stop"); return; }
