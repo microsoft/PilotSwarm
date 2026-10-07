@@ -6128,6 +6128,10 @@ export class PilotSwarmUiController {
     }
 
     async withdrawSteering(sessionId, requestId) {
+        this.steeringWithdrawals ??= new Set();
+        const key = `${sessionId}:${requestId}`;
+        if (this.steeringWithdrawals.has(key)) return;
+        this.steeringWithdrawals.add(key);
         try {
             const result = await this.transport.withdrawSteeringRequest(sessionId, requestId);
             if (result.receipt) this.dispatch({ type: "steering/receiptReceived", sessionId, receipt: result.receipt });
@@ -6147,6 +6151,8 @@ export class PilotSwarmUiController {
             }
             this.setStatus(`Could not withdraw guidance: ${error.message}`);
             throw error;
+        } finally {
+            this.steeringWithdrawals.delete(key);
         }
     }
 

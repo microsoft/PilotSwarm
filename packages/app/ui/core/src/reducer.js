@@ -2334,6 +2334,12 @@ function baseReducer(state, action) {
             };
         }
 
+        case "steering/sharedSession": {
+            const bySessionId = { ...state.steering?.bySessionId };
+            if (action.entry) bySessionId[action.sessionId] = action.entry;
+            else delete bySessionId[action.sessionId];
+            return { ...state, steering: { ...state.steering, bySessionId } };
+        }
         case "steering/accessLost": {
             const bySessionId = { ...state.steering?.bySessionId };
             bySessionId[action.sessionId] = {
