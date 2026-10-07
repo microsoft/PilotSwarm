@@ -489,8 +489,8 @@ describe.concurrent("SteeringPump", () => {
         ch.ordered(async () => { committed.push("after"); });
         release();                                                      // binds sdk-1, not someone-else
         session.emit("session.idle", {});
-        await pump.reconcileAfterIdle({ guards: [] }).catch(() => {});
-        await pump.settle({ stopping: false }).catch(() => {});
+        await expect(pump.reconcileAfterIdle({ guards: [] })).resolves.toBeUndefined();
+        await expect(pump.settle({ stopping: false })).resolves.toEqual({ delivered: [] });
         pump.dispose();
         await until(() => committed.includes("after"));
         expect(committed).toEqual(["after"]);

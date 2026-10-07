@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { FEATURE_FLAGS } from "../../src/feature-flags.ts";
+import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 import {
     STEERING_FEATURE, readSteeringEnabled, decodeSteeringTarget, encodeSteeringTarget, steeringContentHash, toSteeringReceipt,
     encodeSteeringListCursor, decodeSteeringListCursor,
@@ -43,6 +44,20 @@ async function newSession() {
     const id = randomUUID();
     await catalog.createSession(id, { model: "test-model" });
     return id;
+}
+
+async function withFeatureSchema(fn) {
+    const isolatedSchema = `ps_test_steer_feature_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = new pg.Pool({ connectionString: url, max: 4 });
+    const isolatedCatalog = await PgSessionCatalog.create(url, isolatedSchema);
+    try {
+        await isolatedCatalog.initialize();
+        await fn({ catalog: isolatedCatalog, pool: isolatedPool, schema: isolatedSchema });
+    } finally {
+        await isolatedCatalog.close();
+        await isolatedPool.query(`DROP SCHEMA IF EXISTS "${isolatedSchema}" CASCADE`);
+        await isolatedPool.end();
+    }
 }
 
 function target(turnIndex = 0, epoch = 0) {
@@ -83,6 +98,7 @@ async function deliverOne(sessionId, owner, kind = "steering") {
 
 describe.concurrent("session steering procedures (0082)", () => {
     it("publishes sessions.steering exactly as the code defines it: Off, no user override", async () => {
+      await withFeatureSchema(async ({ catalog, pool, schema }) => {
         const snapshot = await catalog.features.snapshot([STEERING_FEATURE]);
         expect(snapshot.definitions).toEqual([{ featureKey: STEERING_FEATURE, ...FEATURE_FLAGS[STEERING_FEATURE], revision: "1" }]);
         expect(FEATURE_FLAGS[STEERING_FEATURE].defaultEnabled).toBe(false);
@@ -97,6 +113,7 @@ describe.concurrent("session steering procedures (0082)", () => {
         expect(await readSteeringEnabled(catalog.features, { provider: "test", subject: "alice" })).toBe(true);
         expect(await readSteeringEnabled(catalog.features, null)).toBe(true);
         await pool.query(`UPDATE "${schema}".feature_flag_settings SET enabled = false WHERE feature_key = $1 AND scope = 'cluster'`, [STEERING_FEATURE]);
+      });
     });
 
     it("is idempotent when initialization is repeated", async () => {
@@ -446,6 +463,13 @@ describe.concurrent("session steering procedures (0082)", () => {
     });
 
     it("0084: resend intent links a retained steer to a fresh ordinary id, idempotently, and never enqueues", async () => {
+        const duroxideSchema = `ps_test_steer_queue_${randomUUID().replaceAll("-", "")}`;
+        const factsSchema = `ps_test_steer_queue_facts_${randomUUID().replaceAll("-", "")}`;
+        const management = new PilotSwarmManagementClient({ store: url, cmsSchema: schema, duroxideSchema, factsSchema });
+        await management.start();
+        try {
+        const queueCount = async () => (await pool.query(`SELECT count(*)::int AS n FROM "${duroxideSchema}".orchestrator_queue`)).rows[0].n;
+        expect(await queueCount()).toBe(0);
         const sid = await newSession(); const t = target(); const owner = randomUUID();
         await catalog.steerWindowOpen(sid, t, owner, LEASE);
         const kept = (await accept(sid, t, "retained")).receipt;
@@ -466,10 +490,19 @@ describe.concurrent("session steering procedures (0082)", () => {
         expect(ev.map((e) => e.data.clientMessageIds)).toEqual([["cm-1"], ["cm-3"]]);
         expect(ev[0].data).toMatchObject({ schemaVersion: 1, requestId: kept.requestId, actor: { subject: "alice" }, sender: { subject: "alice" } });
         const { rows } = await pool.query(`SELECT count(*)::int AS n FROM "${schema}".session_steering_requests WHERE session_id = $1`, [sid]);
-        expect(rows[0].n).toBe(2);                                   // no new steer, no queue row
+        expect(rows[0].n).toBe(2);                                   // no new accepted steering request
+        expect(await queueCount()).toBe(0);                         // actual durable queue, not the ledger
+        await management._duroxideClient.enqueueEvent(`session-${sid}`, "messages", JSON.stringify({ prompt: "queue-oracle-positive-control" }));
+        expect(await queueCount()).toBeGreaterThan(0);              // the oracle observes a real ordinary enqueue
+        } finally {
+            await management.stop();
+            await pool.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
+            await pool.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
+        }
     });
 
     it("0085: enabling sessions.steering is refused while a live worker lacks the capability (ST-M04)", async () => {
+      await withFeatureSchema(async ({ catalog, pool, schema }) => {
         const admin = { principal: { provider: "test", subject: "flag-admin" }, isAdmin: true };
         const rev = async () => (await catalog.features.revisions()).find((r) => r.featureKey === STEERING_FEATURE).revision;
         const mutate = async (enabled) => catalog.features.mutate(admin, "cluster",
@@ -492,6 +525,7 @@ describe.concurrent("session steering procedures (0082)", () => {
         await mutate(true);
         await mutate(false);
         await pool.query(`DELETE FROM "${schema}".workers WHERE worker_node_id = ANY($1)`, [[old, capable]]);
+      });
     });
 
     it("0085: runtime counters are durable, bounded and content-free", async () => {
