@@ -9919,11 +9919,11 @@ export class PilotSwarmUiController {
     async loadPromptHistory(sessionId, { more = false } = {}) {
         const actor = this.getState().auth?.principal;
         if (!promptHistoryActorKey(actor) || typeof this.transport.getSessionEventsBefore !== "function") return;
-        const previous = this.getState().promptHistory?.bySessionId?.[sessionId]?.scan;
-        if (previous && !previous.cancelled && (!more || previous.exhausted)) return;
         this.promptHistoryLoads ??= new Map();
         const key = `${sessionId}:${promptHistoryActorKey(actor)}`;
         if (this.promptHistoryLoads.has(key)) return this.promptHistoryLoads.get(key);
+        const previous = this.getState().promptHistory?.bySessionId?.[sessionId]?.scan;
+        if (previous && !previous.cancelled && (!more || previous.exhausted)) return;
         let beforeSeq = more && previous?.beforeSeq ? previous.beforeSeq : Number.MAX_SAFE_INTEGER;
         const deadline = Date.now() + PROMPT_HISTORY_READ_BUDGET_MS;
         const report = scan => this.dispatch({ type: "promptHistory/scan", sessionId, actor,
@@ -9951,9 +9951,12 @@ export class PilotSwarmUiController {
                     this.setStatus("Input history is unavailable on this server.");
                     return;
                 }
-                this.dispatch({ type: "promptHistory/eventsReceived", sessionId, actor, events });
                 const oldest = Math.min(...events.map(event => event.seq));
-                const exhausted = events.length < 100 || oldest >= beforeSeq;
+                if (events.length >= 100 && oldest >= beforeSeq) {
+                    throw new Error("Input-history cursor did not advance");
+                }
+                this.dispatch({ type: "promptHistory/eventsReceived", sessionId, actor, events });
+                const exhausted = events.length < 100;
                 if (exhausted || selectPromptHistory(this.getState(), sessionId).length >= 10) {
                     report({ exhausted, partial: false, loading: false });
                     return;
