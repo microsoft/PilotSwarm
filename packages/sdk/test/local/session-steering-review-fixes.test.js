@@ -433,11 +433,19 @@ describe.concurrent("F06: recovery records the observed delivery timing, never a
         expect(r.disposition).toBe("delivered_after_response");
     });
 
-    it("Stop still closes a recovered delivery as delivered_before_stop (spec §6a.2)", async () => {
+    it("owner decision F06: Stop closes unknown-timing recovery without inventing a delivered-before-Stop timing", async () => {
         const { sessionId, target, fresh, requestId, sdkId } = await lostDeliveryRecovered();
         await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", sdkId, null);
         await catalog.steerCloseStopped(sessionId, target.turnIndex);
-        expect((await catalog.steerGet(sessionId, requestId)).disposition).toBe("delivered_before_stop");
+        const closed = await catalog.steerGet(sessionId, requestId);
+        expect(closed).toMatchObject({
+            status: "closed", disposition: "delivered_timing_unconfirmed", closureReason: "stopped",
+            eligibility: { state: "terminal" }, inclusion: { state: "included" },
+        });
+        expect(closed.attempts.items.at(-1).deliveryKind).toBeNull();
+        const stats = await catalog.steerStats(sessionId);
+        expect(stats.requests.byDisposition.delivered_timing_unconfirmed).toBe(1);
+        expect(stats.requests.byDisposition.delivered_before_stop ?? 0).toBe(0);
     });
 
     it("the pump passes the recorded kind of the found event", async () => {
