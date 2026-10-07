@@ -7,9 +7,12 @@ The portal lives at `http://localhost:3001` by default. You can switch
 between the TUI and the portal at any time; they don't conflict.
 
 Desktop composers support shell-like input recall. Up on the first visual line
-recalls your own newest current-session input, then older entries (at most ten,
-consecutive duplicates skipped). Down on the last line moves newer, then restores
-your unsent draft. Editing ends navigation; the next Up starts from newest.
+visits pending and queued outbox inputs first, newest to oldest. They retain
+their existing edit/read-only and cancel controls. Beyond the oldest queued
+input, Up recalls your own executed current-session inputs (at most ten,
+consecutive duplicates skipped). Down on the last line walks back through
+history and the outbox, then restores your unsent draft and attachments.
+Editing history ends navigation; the next Up starts from newest.
 Sending and session switches reset navigation. Menus and reference autocomplete
 take priority. The history comes from durable user inputs, including delivered
 steering; new accepted sends appear immediately. Durable steering acceptance
