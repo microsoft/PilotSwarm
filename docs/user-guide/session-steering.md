@@ -15,6 +15,9 @@ In the portal, type guidance and select **Steer** beside Send and Stop. You can
 also press Ctrl+S while the message box has focus. Outside the message box,
 browser Save keeps its normal behavior. Mobile, focus mode, and Master of Agents
 use the same control and bind it to the message box's session.
+In composer containers narrower than 360 px, Attach temporarily hides while
+Stop and Steer are both shown. It returns when the turn stops. Already-staged
+attachments remain visible and removable; steering still accepts text only.
 
 In the native TUI, Tab first accepts a reference suggestion when one is present.
 Otherwise it focuses the action row. Use Left/Right to select **Steer**, then
