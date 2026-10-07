@@ -79,6 +79,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   as a new message, and `c` reuses undelivered/withdrawn/uncertain guidance in
   the draft (append on a new line if nonempty). Delivered receipts have no
   draft action; their text remains selectable. Escape closes.
+- Unedited recall is temporary: persist its stashed text/caret/attachments on
+  session or MoA view changes, not the recalled candidate. Attachment changes
+  end navigation just like text edits; history-driven clearing is separate.
   The portal uses the same shared controller methods through receipt-row buttons.
 - Receipt reads do not establish transcript position. Keep unanchored receipts
   in the paginated Guidance view until their acceptance history loads. Show
@@ -190,6 +193,14 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   unaffected by the visual keyboard viewport); phone typing is unchanged.
   Share pure logic and reducer state in `prompt-history.js`, with no new storage
   or API. Existing transcript paging fills the viewer-filtered bounded cache.
+  Discovery is capped at three 100-event pages and five seconds per request.
+  Retain the continuation/exhaustion marker across selection; show partial
+  history and offer explicit More history rather than scanning whole shared
+  sessions automatically. Ignore late results after the budget expires.
+- Background HTTP reads belong to their active view/session. Abort them on
+  retirement and handle WebKit navigation TypeErrors/AbortErrors without
+  unhandled page errors or stale-view notices. Real failures in a live view
+  remain visible. Never abort or silently retry accepted writes on navigation.
 - Busy/system-session sends still use the shared outbox: Enter on an empty
   draft flushes pending input; explicit outbox-edit controls remain separate
   from recalled executed inputs. Keep Send/Stop and all help surfaces aligned.

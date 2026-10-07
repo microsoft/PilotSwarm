@@ -3443,6 +3443,12 @@ body.is-resizing-pane-y iframe {
   overflow: auto;
   overflow-wrap: anywhere;
 }
+.ps-prompt-history-partial {
+  grid-column: 1 / -1;
+  min-width: 0;
+  font-size: var(--ps-font-size-dense);
+  color: var(--ps-muted);
+}
 
 .ps-hidden-file-input {
   display: none;
