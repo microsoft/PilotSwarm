@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { PilotSwarmManagementClient } from "pilotswarm-sdk";
 import { bootstrapApiAuth } from "./auth/cli.js";
+import { steeringResultDisplay } from "../../ui/core/src/steering-labels.js";
 
 export const SESSIONS_USAGE = `pilotswarm sessions — current-turn guidance
 
@@ -47,7 +48,7 @@ async function readStdin(stream) {
     for await (const chunk of stream) {
         const buffer = Buffer.from(chunk);
         bytes += buffer.length;
-        if (bytes > 2 * 1024 * 1024) throw new Error("Input exceeds the 2 MiB request envelope");
+        if (bytes > 2 * 1024 * 1024) throw Object.assign(new Error("Input exceeds the 2 MiB request envelope"), { code: "too_large", limit: 2 * 1024 * 1024 });
         chunks.push(buffer);
     }
     return Buffer.concat(chunks).toString("utf8");
@@ -87,7 +88,7 @@ export async function executeSessionsCommand(client, { positional, flags }, { st
     const text = flags.stdin ? await readStdin(stdin)
         : flags["text-file"] ? await loadText(flags["text-file"], "utf8") : flags.text;
     if (!text.trim()) throw new Error("Guidance must not be empty");
-    if (Buffer.byteLength(text.trim(), "utf8") > 8192) throw new Error("Guidance exceeds 8 KiB of UTF-8 text");
+    if (Buffer.byteLength(text.trim(), "utf8") > 8192) throw Object.assign(new Error("Guidance exceeds 8 KiB of UTF-8 text"), { code: "too_large", limit: 8192 });
     return client.steerSessionTurn(sessionId, {
         text, clientRequestId: flags["client-request-id"], expectedTarget: flags["expected-target"],
     });
@@ -109,13 +110,13 @@ export async function runSessionsCommand(argv, { output = console.log, errorOutp
         client = new PilotSwarmManagementClient({ apiUrl, getAccessToken });
         await client.start();
         const result = await executeSessionsCommand(client, parsed);
-        if (json) output(JSON.stringify(result));
-        else if (result?.receipt) output(`${result.receipt.requestId}: ${result.outcome || result.receipt.disposition} (target ${result.receipt.expectedTarget})`);
-        else if (result?.requestId) output(`${result.requestId}: ${result.disposition} (target ${result.expectedTarget})`);
-        else output(JSON.stringify(result, null, 2));
+        const display = steeringResultDisplay(result);
+        if (json) output(JSON.stringify({ ...result, display }));
+        else output(`${result?.receipt?.requestId || result?.requestId || "Guidance"}: ${display.label}${display.detail ? `\n${display.detail}` : ""}`);
         return result?.ok === false || ["forbidden", "not_found", "not_withdrawable"].includes(result?.outcome) ? 1 : 0;
     } catch (error) {
-        errorOutput(json ? JSON.stringify({ error: { code: error.code || "CLI_ERROR", message: error.message } }) : error.message);
+        errorOutput(json ? JSON.stringify({ error: { code: error.code || "CLI_ERROR", message: error.message,
+            ...(Number.isFinite(error.limit) ? { limit: error.limit } : {}) } }) : error.message);
         return 1;
     } finally {
         if (client) await client.stop();

@@ -2,7 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
-import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
+import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
+import { steeringResultDisplay } from "pilotswarm/ui-core/steering-labels";
 
 /**
  * Turn- and queue-level session control (proposal G3) — finer levers than
@@ -14,6 +15,15 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
  *   send_session_event      inject a custom event into the session
  */
 export function registerTurnControlTools(server: McpServer, ctx: ServerContext) {
+    const steeringResult = (result: object) => jsonResult({ ...result, display: steeringResultDisplay(result) });
+    function withSteeringErrors<A extends unknown[]>(fn: (...args: A) => Promise<ToolResult>) {
+        return withToolErrors(async (...args: A) => {
+            if (!ctx.api) return errorResult("Session steering is unsupported in direct-store MCP mode. Use authenticated Web API mode.", {
+                code: "unsupported", reason: "direct_mcp_unavailable",
+            });
+            return fn(...args);
+        });
+    }
     async function requireSession(session_id: string) {
         const existing = await ctx.mgmt.getSession(session_id);
         return existing ?? null;
@@ -24,7 +34,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
         description: "Read current-turn steering availability, the observed expectedTarget token and text/rate limits. "
             + "An open target grants no permission. Preserve the observed token when submitting guidance.",
         inputSchema: { session_id: sessionIdShape() },
-    }, withToolErrors(async ({ session_id }) => jsonResult(await ctx.mgmt.getSessionSteeringState(session_id))));
+    }, withSteeringErrors(async ({ session_id }) => steeringResult(await ctx.mgmt.getSessionSteeringState(session_id))));
 
     server.registerTool("steer_turn", {
         title: "Steer Current Turn",
@@ -38,11 +48,11 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             client_request_id: z.string().min(1).max(200),
             expected_target: z.string().min(1).max(1024),
         },
-    }, withToolErrors(async ({ session_id, text, client_request_id, expected_target }) => {
+    }, withSteeringErrors(async ({ session_id, text, client_request_id, expected_target }) => {
         const result = await ctx.mgmt.steerSessionTurn(session_id, {
             text, clientRequestId: client_request_id, expectedTarget: expected_target,
         });
-        return { ...jsonResult(result), ...(result.ok ? {} : { isError: true }) };
+        return { ...steeringResult(result), ...(result.ok ? {} : { isError: true }) };
     }));
 
     server.registerTool("get_steering_request", {
@@ -53,8 +63,8 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             session_id: sessionIdShape(), request_id: z.string().min(1),
             attempt_cursor: z.string().optional(), attempt_limit: z.number().int().min(1).max(200).optional(),
         },
-    }, withToolErrors(async ({ session_id, request_id, attempt_cursor, attempt_limit }) =>
-        jsonResult(await ctx.mgmt.getSteeringRequest(session_id, request_id, { attemptCursor: attempt_cursor, attemptLimit: attempt_limit }))));
+    }, withSteeringErrors(async ({ session_id, request_id, attempt_cursor, attempt_limit }) =>
+        steeringResult(await ctx.mgmt.getSteeringRequest(session_id, request_id, { attemptCursor: attempt_cursor, attemptLimit: attempt_limit }))));
 
     server.registerTool("list_steering_requests", {
         title: "List Steering Receipts",
@@ -65,17 +75,17 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             dispositions: z.array(z.enum(["accepted", "delivered_current_turn", "delivered_after_response", "delivered_before_stop",
                 "not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed", "rejected"])).optional(),
         },
-    }, withToolErrors(async ({ session_id, cursor, limit, expected_target, dispositions }) =>
-        jsonResult(await ctx.mgmt.listSteeringRequests(session_id, { cursor, limit, expectedTarget: expected_target, dispositions }))));
+    }, withSteeringErrors(async ({ session_id, cursor, limit, expected_target, dispositions }) =>
+        steeringResult(await ctx.mgmt.listSteeringRequests(session_id, { cursor, limit, expectedTarget: expected_target, dispositions }))));
 
     server.registerTool("withdraw_steering_request", {
         title: "Withdraw Guidance",
         description: "Withdraw only before worker claim, as the original author or effective session manager. "
             + "It never recalls submitted text. A losing withdrawal returns not_withdrawable and the current receipt.",
         inputSchema: { session_id: sessionIdShape(), request_id: z.string().min(1) },
-    }, withToolErrors(async ({ session_id, request_id }) => {
+    }, withSteeringErrors(async ({ session_id, request_id }) => {
         const result = await ctx.mgmt.withdrawSteeringRequest(session_id, request_id);
-        return { ...jsonResult(result), ...(["forbidden", "not_found", "not_withdrawable"].includes(result.outcome) ? { isError: true } : {}) };
+        return { ...steeringResult(result), ...(["forbidden", "not_found", "not_withdrawable"].includes(result.outcome) ? { isError: true } : {}) };
     }));
 
     server.registerTool(

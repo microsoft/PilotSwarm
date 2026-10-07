@@ -63,6 +63,11 @@ have no draft action; their text remains selectable.
 
 The TUI's **Guidance** action opens retained receipts. Up/Down selects a receipt;
 PageUp/PageDown scrolls its text.
+The receipt list is paged. **Load more guidance** (TUI `m`) loads the next
+bounded page; a partial-list notice remains until all pages are read.
+Receipts whose acceptance event is outside the loaded transcript appear under
+**Guidance outside this history page**, not at the end of newer conversation.
+Loading their original history page places them at the durable acceptance row.
 Enter refreshes it or reconciles an unknown acceptance. Use `w` to withdraw,
 `r` to send as a new message and `c` to reuse eligible guidance in the draft.
 Escape closes it.
@@ -90,3 +95,9 @@ The command returns after acceptance, not after delivery. Read `steering-status`
 or `steering-list` for receipts. `withdraw-steering` has the same pre-claim rule
 as the UI. See the [API reference](../api/reference.md#session-steering) for the
 SDK and HTTP contracts.
+
+CLI and MCP results retain the canonical receipt fields and add a human
+`display` label, such as **Waiting for a safe point** for acknowledged but
+undelivered guidance. Oversized input uses typed `too_large` across surfaces.
+MCP steering requires authenticated Web API mode; direct-store MCP has no
+validated human actor and reports `unsupported`, not a missing session.

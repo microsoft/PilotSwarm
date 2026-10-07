@@ -27,6 +27,10 @@
         "./host": "./tui/src/portal.js",
         "./web": "./web/server.js",
         "./ui-core": "./ui/core/src/index.js",
+        "./ui-core/steering-labels": {
+            "types": "./ui/core/src/steering-labels.d.ts",
+            "import": "./ui/core/src/steering-labels.js"
+        },
         "./ui-react": "./ui/react/src/index.js",
         "./package.json": "./package.json"
     },
