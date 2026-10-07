@@ -175,7 +175,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   Down at the last line moves newer then restores the stashed draft. Any edit
   ends navigation without mutating history; send/session switch resets it.
   Reference autocomplete, slash/mention menus and modals keep priority.
-  Portal soft-wrap boundaries use actual textarea geometry; mobile is unchanged.
+  Portal soft-wrap boundaries use actual textarea geometry. Tablet hardware
+  arrows work in the touch layout (device short screen edge at least 600px,
+  unaffected by the visual keyboard viewport); phone typing is unchanged.
   Share pure logic and reducer state in `prompt-history.js`, with no new storage
   or API. Existing transcript paging fills the viewer-filtered bounded cache.
 - Busy/system-session sends still use the shared outbox: Enter on an empty

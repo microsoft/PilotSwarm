@@ -147,8 +147,9 @@ Notes:
   are skipped. A newly accepted send is available immediately.
 - Editing a recalled entry ends navigation; the next Up starts from newest and
   Down no longer restores the old draft. Sending or switching sessions resets
-  navigation. Menus and reference autocomplete retain priority. Mobile/touch
-  composer behavior is unchanged.
+  navigation. Menus and reference autocomplete retain priority. Tablet hardware
+  arrows work in the touch layout too; phone typing and touch-keyboard behavior
+  are unchanged.
 - When an outbox item is explicitly selected for editing, its existing controls
   still apply; Escape cancels that item before it becomes durable.
 
