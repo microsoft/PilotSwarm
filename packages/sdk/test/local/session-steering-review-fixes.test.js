@@ -446,6 +446,32 @@ describe.concurrent("F06: recovery records the observed delivery timing, never a
         const stats = await catalog.steerStats(sessionId);
         expect(stats.requests.byDisposition.delivered_timing_unconfirmed).toBe(1);
         expect(stats.requests.byDisposition.delivered_before_stop ?? 0).toBe(0);
+        const b = await lostDeliveryRecovered();
+        await catalog.steerRecordRecoveryCheck(b.requestId, b.fresh, "present", b.sdkId, "queued");
+        await catalog.steerCloseStopped(b.sessionId, b.target.turnIndex);
+        expect((await catalog.steerGet(b.sessionId, b.requestId)).disposition).toBe("delivered_before_stop");
+    });
+
+    it("a still-pending row closed by Stop keeps the normal Stop dispositions", async () => {
+        const { sessionId, target, requestId } = await seededClaim(9);
+        await catalog.steerCloseStopped(sessionId, target.turnIndex);
+        expect((await catalog.steerGet(sessionId, requestId)).disposition).toBe("not_delivered_turn_stopped");
+    });
+
+    it("a Stop-closed delivery_unconfirmed row that gains timing-unknown evidence is corrected, never reopened", async () => {
+        const { sessionId, target, owner, requestId } = await seededClaim(10);
+        const attemptId = await catalog.steerMarkSubmitting(requestId, owner);
+        await catalog.steerMarkSubmitted(attemptId, owner, "sdk-late-unknown");
+        await catalog.steerCloseStopped(sessionId, target.turnIndex);
+        expect((await catalog.steerGet(sessionId, requestId)).disposition).toBe("delivery_unconfirmed");
+        // Late positive evidence without a recorded kind. No product path writes such evidence onto a
+        // Stop-closed row today (a stopped target never reopens for recovery), so this checks the
+        // closure rule every late-evidence correction uses.
+        await pool.query(`UPDATE "${schema}".session_steering_attempts SET delivered_at = now(), outcome = 'delivered'
+                           WHERE attempt_id = $1`, [attemptId]);
+        const { rows } = await pool.query(`SELECT "${schema}".cms_steer_closed_disposition($1, 'stopped', 'delivery_unconfirmed') AS d`, [requestId]);
+        expect(rows[0].d).toBe("delivered_timing_unconfirmed");
+        expect((await catalog.steerGet(sessionId, requestId)).status).toBe("closed");
     });
 
     it("the pump passes the recorded kind of the found event", async () => {
@@ -563,6 +589,28 @@ describe.concurrent("CMS pool pressure: one steering database call per turn", ()
             handlers.get("session.idle")?.({ type: "session.idle", data: {} });
             await pump.settle({ stopping: false });
             pump.dispose();
+        }
+    });
+});
+
+describe("F18: steering support is detected through a procedure", () => {
+    it("supportsSteering calls cms_steer_capabilities; without it the schema reports no support", async () => {
+        expect(await catalog.supportsSteering()).toBe(true);
+        const other = `ps_test_steer_caps_${randomUUID().replaceAll("-", "")}`;
+        const probe = await PgSessionCatalog.create(url, other);
+        try {
+            await probe.initialize();
+            expect(await probe.supportsSteering()).toBe(true);
+            await pool.query(`DROP FUNCTION "${other}".cms_steer_capabilities()`);
+            const fresh = await PgSessionCatalog.create(url, other);
+            try {
+                expect(await fresh.supportsSteering()).toBe(false);
+            } finally {
+                await fresh.close();
+            }
+        } finally {
+            await probe.close();
+            await pool.query(`DROP SCHEMA IF EXISTS "${other}" CASCADE`);
         }
     });
 });

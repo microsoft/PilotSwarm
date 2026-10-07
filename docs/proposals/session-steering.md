@@ -685,7 +685,15 @@ these runs, the UI shows the row's last state with "recovering".
 |---|---|---|
 | No attempt, or only `released` attempts | `not_delivered_turn_ended` | `not_delivered_turn_stopped` |
 | An attempt without delivery evidence (`submitting`, `acknowledged`, `unconfirmed`) | `delivery_unconfirmed` | `delivery_unconfirmed` ("Delivery unconfirmed — turn stopped") |
-| A delivered attempt | Keeps `delivered_current_turn` / `delivered_after_response` / `delivered_timing_unconfirmed` | `delivered_before_stop` |
+| A delivered attempt with a recorded delivery kind | Keeps `delivered_current_turn` / `delivered_after_response` | `delivered_before_stop` |
+| A delivered attempt without a recorded delivery kind (found by recovery), or a row already `delivered_timing_unconfirmed` | `delivered_timing_unconfirmed` | `delivered_timing_unconfirmed` (Stop never overrides it) |
+
+`delivered_timing_unconfirmed` is terminal and counts as delivered: delivery is proven (recovery
+found the steer's SDK id in the conversation), its timing relative to the earlier response is
+unknown (the CLI recorded no delivery kind), and snapshot inclusion is a separate fact. Stop never
+overrides it. A row that Stop closed as `delivery_unconfirmed` and that later gains timing-unknown
+delivery evidence is corrected to `delivered_timing_unconfirmed` by the usual late-evidence
+correction; a row with a recorded kind follows the columns above. (Owner decision, 2026-10-07.)
 
 **Recovery flags are derived, not stored** (the shared SDK mapping module computes them):
 
@@ -723,7 +731,7 @@ window procedures, `session.steering_window_changed { state, expectedTarget | nu
 | `cms_steer_window_renew(p_session_id, p_owner, p_lease_ms)` | Pump lease timer | Extends the lease if the owner matches and the window is `open` or `quiesced`; else `false`. |
 | `cms_steer_window_quiesce(p_session_id, p_owner)` | Pump settle | `open` → `quiesced`. Rows untouched. |
 | `cms_steer_claim(p_session_id, p_owner, p_limit)` | Pump | Only for the owner of an `open`, lease-fresh window: `pending` rows and `orphaned` rows with `recovery_check` null or `absent` → `claimed`, in `seq` order, `FOR UPDATE SKIP LOCKED`. |
-| `cms_steer_record_recovery_check(p_request_id, p_owner, p_result)` | Pump | `present` ⇒ delivered evidence and `included` from restored history; `absent` ⇒ eligible for re-claim; `failed` ⇒ stays unclaimable. |
+| `cms_steer_record_recovery_check(p_request_id, p_owner, p_result, p_sdk_message_id, p_kind)` | Pump | `present` ⇒ delivered evidence and `included` from restored history; `present_local` ⇒ delivered evidence from activity-local state, inclusion left to finalize; the attempt keeps a kind from live evidence, else the validated `p_kind`; the disposition follows that kind (`steering` ⇒ `delivered_current_turn`, `queued`/`idle` ⇒ `delivered_after_response`, none ⇒ `delivered_timing_unconfirmed`); `absent` ⇒ eligible for re-claim; `failed` ⇒ stays unclaimable. |
 | `cms_steer_mark_submitting(p_request_id, p_owner)` | Pump | Window `open` and owner match required. Inserts the attempt row with `submitting_at`; returns `attempt_id`. |
 | `cms_steer_mark_released(p_attempt_id, p_owner)` | Pump | Attempt `released`; row back to `pending`. |
 | `cms_steer_mark_submitted(p_attempt_id, p_owner, p_sdk_message_id)` | Pump | Records the SDK id. |
@@ -934,8 +942,9 @@ Canonical receipt dispositions are `accepted`, `delivered_current_turn`,
 `withdrawn`, `delivery_unconfirmed`, and `rejected`.
 Recovery flags are `redelivery_pending`, `delivered_again`, and `recovery_unconfirmed`.
 `delivered_timing_unconfirmed` means recovery found positive delivery evidence
-without a recorded delivery kind. Never invent current-turn or after-response
-timing, and never present this as unknown delivery.
+without a recorded delivery kind: delivery proven, timing unknown, inclusion separate. It counts
+as delivered, is terminal, and Stop never overrides it. Never invent current-turn or
+after-response timing, and never present this as unknown delivery.
 Historical delivery and snapshot inclusion remain separate from these workflow states.
 The shared SDK mapping derives recovery flags from ledger status, delivery attempts, inclusion,
 and recovery eligibility; they are not an independently mutable source of truth.
@@ -1382,7 +1391,14 @@ BEGIN
       status = 'closed', closure_reason = p_reason, settled_at = now(), revision = revision + 1,
       disposition = CASE
         WHEN EXISTS (SELECT 1 FROM ${s}.session_steering_attempts a WHERE a.request_id = r.request_id AND a.delivered_at IS NOT NULL)
-          THEN CASE WHEN p_reason = 'stopped' THEN 'delivered_before_stop' ELSE r.disposition END   -- history kept (FR-11)
+          THEN CASE                                                                                  -- history kept (FR-11)
+            -- Timing unknown is terminal: no recorded kind on the first delivered attempt, or already so labelled.
+            WHEN r.disposition = 'delivered_timing_unconfirmed'
+              OR (SELECT a.delivery_kind FROM ${s}.session_steering_attempts a
+                   WHERE a.request_id = r.request_id AND a.delivered_at IS NOT NULL
+                   ORDER BY a.delivered_at, a.attempt_no LIMIT 1) IS NULL THEN 'delivered_timing_unconfirmed'
+            WHEN p_reason = 'stopped' THEN 'delivered_before_stop'
+            ELSE r.disposition END
         WHEN EXISTS (SELECT 1 FROM ${s}.session_steering_attempts a WHERE a.request_id = r.request_id
                        AND (a.outcome IS NULL OR a.outcome <> 'released'))   -- NULL = still `submitting` (crash after the marker)
           THEN 'delivery_unconfirmed'                                                               -- write-ahead cut (D-29)

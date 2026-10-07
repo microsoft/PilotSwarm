@@ -37,6 +37,7 @@
  * @internal
  */
 
+import { readSteeringEnabled } from "./steering.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalog, SessionEvent, SessionRow } from "./cms.js";
@@ -817,37 +818,48 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             const id = normalizeSessionId(args.session_id);
             const denied = await ensureVisible("read_session_steering", id);   // RULE 2
             if (denied) return denied;
-            const steering = catalog as Partial<Pick<SessionCatalog, "supportsSteering" | "steerState" | "steerStats" | "steerList">>;
+            const steering = catalog as Partial<Pick<SessionCatalog, "supportsSteering" | "steerState" | "steerStats" | "steerListRecent" | "getSession">>
+                & { features?: Parameters<typeof readSteeringEnabled>[0] };
             try {
                 if (typeof steering.supportsSteering !== "function" || !(await steering.supportsSteering())) {
                     return { sessionId: id, supported: false, reason: "schema_missing" };
                 }
                 const since = args.since ? new Date(args.since) : null;
                 if (since && Number.isNaN(since.getTime())) return { error: "read_session_steering: since is not a valid timestamp" };
-                const [state, stats] = await Promise.all([
+                const [state, stats, row] = await Promise.all([
                     steering.steerState!(id),
                     steering.steerStats!(id, { since }),
+                    steering.getSession ? steering.getSession(id) : Promise.resolve(null),
                 ]);
-                const out: Record<string, unknown> = { sessionId: id, supported: true, state, stats };
+                // Effective capability (review F17), resolved like public discovery from schema,
+                // the sessions.steering flag for the session owner and the session kind. The
+                // deployment's authorization mode is a Web-edge gate and is not visible here.
+                const featureEnabled = await readSteeringEnabled(steering.features ?? null, (row as any)?.owner ?? null).catch(() => false);
+                const serviceSession = Boolean((row as any)?.serviceKind);
+                const supported = featureEnabled && !serviceSession;
+                const out: Record<string, unknown> = {
+                    sessionId: id,
+                    supported,
+                    capability: {
+                        schema: true,
+                        featureEnabled,
+                        serviceSession,
+                        scope: "schema + sessions.steering for the session owner + session kind; excludes the deployment authorization mode",
+                    },
+                    // Raw ledger/window facts, independent of the effective capability above.
+                    state,
+                    stateScope: "raw_window",
+                    stats,
+                };
                 if (args.include_requests) {
                     const limit = Math.min(Math.max(1, Number(args.limit) || 20), 100);
-                    // The latest `limit` requests in server order, reading at most 5 pages of 200.
-                    let tail: any[] = [];
-                    let afterSeq: number | null = null;
-                    let seen = 0;
-                    let complete = false;
-                    for (let pageNo = 0; pageNo < 5; pageNo++) {
-                        const page = await steering.steerList!(id, { afterSeq, limit: 200 });
-                        seen += page.items.length;
-                        tail = [...tail, ...page.items].slice(-limit);
-                        if (page.nextAfterSeq == null) { complete = true; break; }
-                        afterSeq = page.nextAfterSeq;
-                    }
-                    const items = tail.map((r) => {
+                    // Newest first (review F12): the latest `limit` requests, not a capped prefix.
+                    const recent = await steering.steerListRecent!(id, limit);
+                    const items = recent.items.map((r) => {
                         const { text: _omit, ...rest } = r as typeof r & { text?: string };
                         return rest;
                     });
-                    out.requests = { items, scanned: seen, truncated: !complete || seen > limit };
+                    out.requests = { order: "newest_first", items, total: recent.total, truncated: recent.total > items.length };
                 }
                 return out;
             } catch (err: any) {
