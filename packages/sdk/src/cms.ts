@@ -3896,8 +3896,48 @@ export class PgSessionCatalog implements SessionCatalog {
         return `"${this.sql.schema}".${name}`;
     }
 
+    /**
+     * Budget for one steering database call (review F05): pool acquisition, then a
+     * transaction with SET LOCAL statement_timeout and lock_timeout, plus a client
+     * query_timeout. A blocked statement is cancelled server-side and its
+     * connection destroyed instead of being awaited forever. Tests may lower it.
+     */
+    steeringQueryTimeoutMs = 5_000;
+
+    /** Bounded steering query: the FeatureStore.query pattern (feature-store.ts). */
+    private async steerQuery(text: string, values: unknown[] = []): Promise<{ rows: any[] }> {
+        const budget = Math.max(50, Math.floor(this.steeringQueryTimeoutMs));
+        let expired = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let client: any;
+        try {
+            client = await Promise.race([
+                this.pool.connect().then((connection: any) => {
+                    if (expired) { connection.release(); throw new Error("steering database connection acquired after deadline"); }
+                    return connection;
+                }),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => { expired = true; reject(new Error(`steering database connection timed out after ${budget} ms`)); }, budget);
+                }),
+            ]);
+        } finally { if (timer) clearTimeout(timer); }
+        const bounded = (sql: string, parameters: unknown[] = []) =>
+            client.query({ text: sql, values: parameters, query_timeout: budget + 1_000 });
+        try {
+            await bounded(`BEGIN; SET LOCAL statement_timeout = '${budget}ms'; SET LOCAL lock_timeout = '${budget}ms'`);
+            const result = await bounded(text, values);
+            await bounded("COMMIT");
+            client.release();
+            return result;
+        } catch (error) {
+            // Destroying the connection rolls back the transaction and cancels server work.
+            client.release(error instanceof Error ? error : new Error(String(error)));
+            throw error;
+        }
+    }
+
     private async steerScalar<T>(sql: string, params: unknown[]): Promise<T> {
-        const { rows } = await this.pool.query(sql, params);
+        const { rows } = await this.steerQuery(sql, params);
         return rows[0]?.v as T;
     }
 
@@ -4035,11 +4075,11 @@ export class PgSessionCatalog implements SessionCatalog {
     async steerAddCounters(sessionId: string, counts: Record<string, number>): Promise<void> {
         const clean = Object.fromEntries(Object.entries(counts).filter(([, v]) => Number.isSafeInteger(v) && v > 0));
         if (Object.keys(clean).length === 0) return;
-        await this.pool.query(`SELECT ${this.steerFn("cms_steer_add_counters")}($1,$2::jsonb)`, [sessionId, JSON.stringify(clean)]);
+        await this.steerQuery(`SELECT ${this.steerFn("cms_steer_add_counters")}($1,$2::jsonb)`, [sessionId, JSON.stringify(clean)]);
     }
 
     async steerCloseStopped(sessionId: string, turnIndex: number): Promise<void> {
-        await this.pool.query(`SELECT ${this.steerFn("cms_steer_close_stopped")}($1,$2)`, [sessionId, turnIndex]);
+        await this.steerQuery(`SELECT ${this.steerFn("cms_steer_close_stopped")}($1,$2)`, [sessionId, turnIndex]);
     }
 
     async close(): Promise<void> {

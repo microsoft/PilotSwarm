@@ -22,6 +22,23 @@ import type {
 
 export const STEERING_LEASE_MS = 10_000;
 
+/** Whole-operation budget for post-commit finalize and for adoption (review F05). */
+export const STEERING_FINALIZE_BUDGET_MS = 15_000;
+
+const DEADLINE: unique symbol = Symbol("steering-deadline");
+
+/** Race a promise against a budget; the loser keeps running only inside the catalog's own bounds. */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | typeof DEADLINE> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race<T | typeof DEADLINE>([
+        p,
+        new Promise<typeof DEADLINE>((resolve) => {
+            timer = setTimeout(() => resolve(DEADLINE), Math.max(0, ms));
+            (timer as any).unref?.();
+        }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 /** A source of notification wake-ups: subscribe to one session's hints. */
 export interface SteeringWakeSource {
     subscribe(sessionId: string, cb: () => void): () => void;
@@ -157,27 +174,35 @@ export class SteeringTurn {
      * session that never opened its window still finalizes. Failures are
      * traced, not thrown: the turn result already stands, and the target is
      * closed later by Stop, the next window open or a terminal state.
+     * Each database call is bounded by the catalog; the whole operation has
+     * one budget (review F05), so post-commit completion cannot hang.
      */
     async finalize(outcome: SteerFinalizeOutcome, manifest: SteeringManifest | undefined | null, snapshotVersion: number | null, owner?: string): Promise<void> {
         const owners = owner ? [owner] : [...this.owners].reverse();
         const ids = manifest ? manifest.delivered.map((d) => d.requestId) : null;
+        const deadline = Date.now() + STEERING_FINALIZE_BUDGET_MS;
         for (const candidate of owners) {
-            const r = await this.finalizeAs(candidate, outcome, ids, snapshotVersion);
+            const r = await this.finalizeAs(candidate, outcome, ids, snapshotVersion, deadline);
             if (r !== "not_owner") return;
         }
     }
 
-    private async finalizeAs(owner: string, outcome: SteerFinalizeOutcome, ids: string[] | null, snapshotVersion: number | null): Promise<string> {
+    private async finalizeAs(owner: string, outcome: SteerFinalizeOutcome, ids: string[] | null, snapshotVersion: number | null, deadline: number): Promise<string> {
         for (const delay of [0, 200, 800]) {
-            if (delay) await new Promise((r) => setTimeout(r, delay));
+            if (delay) await new Promise((r) => setTimeout(r, Math.min(delay, Math.max(0, deadline - Date.now()))));
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
             try {
-                const r = await this.catalog.steerTurnFinalize(this.sessionId, this.target, owner, outcome, ids, snapshotVersion);
+                const r = await withDeadline(
+                    this.catalog.steerTurnFinalize(this.sessionId, this.target, owner, outcome, ids, snapshotVersion), remaining);
+                if (r === DEADLINE) { this.trace(`[steering] finalize ${outcome} exceeded its budget`); return "failed"; }
                 if (r.finalized) return "finalized";
                 return r.reason ?? "refused";
             } catch (err: any) {
                 this.trace(`[steering] finalize ${outcome} failed: ${err?.message ?? String(err)}`);
             }
         }
+        this.trace(`[steering] finalize ${outcome} gave up within its budget`);
         return "failed";
     }
 
@@ -190,7 +215,9 @@ export class SteeringTurn {
         const owner = randomUUID();
         let adopted = false;
         try {
-            adopted = await this.catalog.steerWindowAdopt(this.sessionId, this.target, owner);
+            const r = await withDeadline(this.catalog.steerWindowAdopt(this.sessionId, this.target, owner), STEERING_FINALIZE_BUDGET_MS);
+            if (r === DEADLINE) { this.trace("[steering] adopt exceeded its budget"); return; }
+            adopted = r;
         } catch (err: any) {
             this.trace(`[steering] adopt failed: ${err?.message ?? String(err)}`);
             return;

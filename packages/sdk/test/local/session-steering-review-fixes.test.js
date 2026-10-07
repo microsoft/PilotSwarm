@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { steeringContentHash } from "../../src/steering.ts";
-import { createCmsSteeringChannel } from "../../src/steering-channel.ts";
+import { SteeringTurn, createCmsSteeringChannel } from "../../src/steering-channel.ts";
 import { SteeringPump } from "../../src/steering-pump.ts";
 import { SessionManager } from "../../src/session-manager.ts";
 
@@ -249,5 +249,90 @@ describe("F04: steering quiescence cleanup is generation-safe", () => {
         expect(await m.quiesceForSteering("s2")).toBe(true);
         expect(m.sessions.has("s2")).toBe(false);
         expect(m.sessionAgentCopies.has("s2")).toBe(false);
+    });
+});
+
+describe("F05: steering database work is bounded", () => {
+    async function holdSessionLock(sessionId) {
+        const holder = new pg.Client({ connectionString: url });
+        await holder.connect();
+        await holder.query(`SELECT pg_advisory_lock(hashtextextended('steer-window:' || $1, 0))`, [sessionId]);
+        return { release: async () => { await holder.query(`SELECT pg_advisory_unlock_all()`).catch(() => {}); await holder.end(); } };
+    }
+
+    it("a blocked real statement is cancelled server-side within the budget; the pool stays usable", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m" });
+        const target = { epoch: 0, turnIndex: 0, incarnation: randomUUID() };
+        const owner = randomUUID();
+        await catalog.steerWindowOpen(sessionId, target, owner, LEASE);
+        const previous = catalog.steeringQueryTimeoutMs;
+        catalog.steeringQueryTimeoutMs = 400;
+        const lock = await holdSessionLock(sessionId);
+        try {
+            const started = Date.now();
+            const err = await catalog.steerTurnFinalize(sessionId, target, owner, "published", [], 1).then(() => null, (e) => e);
+            const elapsed = Date.now() - started;
+            // Server-side cancellation: lock_timeout (55P03) or statement_timeout (57014), never a hang.
+            expect(["55P03", "57014"], String(err?.message)).toContain(err?.code);
+            expect(elapsed).toBeLessThan(2_500);
+            await until(async () => (await waitingBackends()) === 0, 3_000, "no backend left waiting");
+            // Nothing committed: the window is still open, and the pool still serves calls.
+            expect((await catalog.steerState(sessionId)).steerable).toBe(true);
+        } finally {
+            await lock.release();
+            catalog.steeringQueryTimeoutMs = previous;
+        }
+    });
+
+    it("post-commit finalize returns within its budget while storage is blocked, and completes once unblocked", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m" });
+        const turn = await SteeringTurn.create({
+            catalog, sessionId, turnKey: randomUUID(), transcriptEpoch: 0, turnIndex: 3,
+            sessionRow: { owner: null }, featureCache: { resolve: () => ({ enabled: true }) },
+        });
+        const channel = turn.newChannel();
+        expect((await channel.openWindow()).ok).toBe(true);
+        const previous = catalog.steeringQueryTimeoutMs;
+        catalog.steeringQueryTimeoutMs = 300;
+        const lock = await holdSessionLock(sessionId);
+        try {
+            const started = Date.now();
+            await turn.finalize("published", { delivered: [] }, 1);           // traced, never thrown
+            expect(Date.now() - started).toBeLessThan(5_000);
+            expect((await catalog.steerState(sessionId)).window?.state).toBe("open");
+        } finally {
+            await lock.release();
+            catalog.steeringQueryTimeoutMs = previous;
+        }
+        await turn.finalize("published", { delivered: [] }, 1);
+        expect((await catalog.steerState(sessionId)).window).toBeNull();
+    });
+
+    it("lease renewals never overlap", async () => {
+        let calls = 0;
+        const channel = {
+            sessionId: "s", target: { epoch: 0, turnIndex: 0, incarnation: "i" }, ownerToken: "o", recoverySource: "restored",
+            openWindow: async () => ({ ok: true, recovered: [] }),
+            renew: () => { calls++; return new Promise(() => {}); },              // held renewal
+            claim: async () => [], quiesce: async () => {}, abandonWindow: async () => {},
+            recordRecoveryCheck: async () => {}, markSubmitting: async () => null, markReleased: async () => {},
+            markSubmitted: async () => {}, markDelivered: async () => {}, markUnconfirmed: async () => {},
+        };
+        const handlers = new Map();
+        const session = { on: (type, fn) => { handlers.set(type, fn); return () => {}; }, send: async () => "x", getEvents: async () => [] };
+        const pump = new SteeringPump(session, channel, {
+            stopping: () => false, turnBoundaryScheduled: () => false, quiesceWarmSession: async () => true,
+            scanMs: 10, renewMs: 5, ioTimeoutMs: 100, settleMs: 50,
+        });
+        handlers.get("user.message")({ type: "user.message", data: { messageId: "main" } });
+        pump.noteMainPrompt("main");
+        await until(() => pump.gate.isOpen, 2_000, "the gate");
+        await sleep(100);
+        expect(calls).toBe(1);
+        handlers.get("session.idle")({ type: "session.idle", data: {} });
+        await pump.settle({ stopping: false });
+        pump.dispose();
     });
 });
