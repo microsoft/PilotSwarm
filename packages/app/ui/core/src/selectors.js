@@ -6146,14 +6146,14 @@ export function selectStatusBar(state) {
             ? `type answer · enter reply · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
             : editingPendingOutbox
                 ? selectedQueuedOutbox
-                    ? `queued prompt selected · d delete · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    ? `queued prompt selected · d delete · up/down outbox then history · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : selectedCancellingOutbox
-                        ? `cancelling prompt selected · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
-                        : `edit pending prompt · enter send batch · up/down cycle pending · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        ? `cancelling prompt selected · up/down outbox then history · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        : `edit pending prompt · enter send batch · up/down outbox then history · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                 : hasPendingOutbox
-                    ? `type message · enter queues · enter on empty sends batch · up/down input history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    ? `type message · enter queues · enter on empty sends batch · up/down outbox then history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : hasOutbox
-                        ? `type message · enter queues behind durable items · up/down input history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        ? `type message · enter queues behind durable items · up/down outbox then history · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                         : `type message · enter send · up/down input history at first/last line · alt-enter newline · arrows move · alt-left/right word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
     if (focus === FOCUS_REGIONS.PROMPT && state.ui.promptActionIndex != null) {
@@ -9558,7 +9558,7 @@ const KEYBINDING_HELP = [
     ] },
     { section: "Prompt", bindings: [
         ["enter", "send"],
-        ["↑ / ↓", "own input history at first/last line; Down restores draft"],
+        ["↑ / ↓", "outbox first, then own history at first/last line; Down restores draft"],
         ["Tab", "autocomplete, else Send/Steer/Stop/Guidance actions"],
         ["actions: ← →", "choose · Enter activate · Esc/Shift+Tab prompt"],
         ["alt/ctrl-j", "newline"],

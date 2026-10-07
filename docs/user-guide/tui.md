@@ -10,9 +10,12 @@ point.
 For the full keybinding reference, see [keybindings.md](./keybindings.md).
 This guide introduces keys as you need them.
 
-In the composer, Up on the first line recalls your own most recent input in
-this session, then older entries (up to ten, consecutive duplicates skipped).
-Down on the last line moves newer and restores your stashed unsent draft.
+In the composer, Up on the first line visits pending and queued outbox inputs
+first, newest to oldest, retaining their edit/read-only and cancel controls.
+Beyond the oldest queued input, it recalls your own executed inputs in this
+session (up to ten, consecutive duplicates skipped).
+Down on the last line walks back through history and the outbox, then restores
+your stashed unsent draft and attachments.
 Editing ends history navigation; sending or switching sessions resets it.
 Menus and reference autocomplete keep priority. Ordinary sends and delivered
 steering are included; new accepted sends are available immediately.

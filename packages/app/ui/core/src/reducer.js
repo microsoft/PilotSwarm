@@ -1577,7 +1577,9 @@ function baseReducer(state, action) {
 
         case "promptHistory/navigate": {
             if (![-1, 1].includes(action.direction) || state.ui.modal || state.ui.promptEdit) return state;
-            const next = navigatePromptHistory(state, action.direction, selectPromptHistory(state));
+            const next = navigatePromptHistory(state, action.direction,
+                selectPromptHistory(state, state.sessions.activeSessionId, { excludeOutbox: action.excludeOutbox }),
+                { stash: action.stash, outboxIds: action.outboxIds });
             if (!next) return state;
             return { ...state, ui: { ...state.ui, prompt: next.prompt, promptCursor: next.promptCursor,
                 promptRows: getPromptInputRows(next.prompt), promptAttachments: next.attachments || [],
@@ -1975,10 +1977,10 @@ function baseReducer(state, action) {
             let nextPromptEdit = state.ui.promptEdit ?? null;
             if (switchingSession) {
                 const editingPending = Boolean(state.ui.promptEdit);
-                if (!editingPending && previousActiveId) {
+                if ((!editingPending || state.ui.promptEdit.draftPrompt !== undefined) && previousActiveId) {
                     const savedDraft = promptDraftForPersistence(state.ui);
                     const outgoing = { prompt: savedDraft.prompt, attachments: savedDraft.attachments || [],
-                        ...(state.ui.promptHistoryNavigation ? { cursor: savedDraft.cursor } : {}) };
+                        ...(state.ui.promptHistoryNavigation || editingPending ? { cursor: savedDraft.cursor } : {}) };
                     if (outgoing.prompt || outgoing.attachments.length > 0) {
                         savedDrafts[previousActiveId] = outgoing;
                     } else {

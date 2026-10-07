@@ -112,7 +112,7 @@ These keys work whenever focus is not in the prompt editor.
 | Action row: `Tab` | Continue normal next-pane traversal |
 | `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
 | `←` / `→` | Move cursor by character |
-| `↑` / `↓` | On the first/last draft line, recall your own current-session input history; elsewhere move the caret normally |
+| `↑` / `↓` | On the first/last draft line, recall the outbox first, then your own current-session input history; elsewhere move the caret normally |
 | `Option+←` / `Option+→` | Move cursor by word |
 | `Backspace` / `Delete` | Delete one character |
 | `Option+Backspace` / `Option+Delete` | Delete the previous word |
@@ -141,9 +141,12 @@ Notes:
   - `✓` queued — durably enqueued to the orchestration, waiting to be processed
   - `✓✓` sent — persisted as a `user.message` in the durable transcript; the LLM has it
 - Multiple synchronous sends coalesce into a single durable enqueue. Pressing `Enter` on an empty draft forces an immediate dispatch of any still-pending items.
-- Up on the first line (or an empty draft) recalls your newest input, then older
-  entries, up to ten. Down on the last line moves newer and then restores the
-  unsaved draft. Other people's inputs, assistant output and system messages
+- Up on the first line (or an empty draft) visits pending and queued outbox
+  inputs first, newest to oldest, with their existing edit/read-only and cancel
+  controls. Beyond the oldest queue item, it recalls up to ten executed inputs.
+  Down on the last line walks back through history, then the outbox, and finally
+  restores the unsaved draft and attachments. The same queued message is not
+  repeated in executed history. Other people's inputs, assistant output and system messages
   are excluded; delivered steering counts as your input. Consecutive duplicates
   are skipped. A newly accepted send is available immediately.
 - Editing a recalled entry ends navigation; the next Up starts from newest and
@@ -151,8 +154,8 @@ Notes:
   navigation. Menus and reference autocomplete retain priority. Tablet hardware
   arrows work in the touch layout too; phone typing and touch-keyboard behavior
   are unchanged.
-- When an outbox item is explicitly selected for editing, its existing controls
-  still apply; Escape cancels that item before it becomes durable.
+- When an outbox item is selected, its existing controls still apply;
+  Escape cancels that item before it becomes durable.
 - Partial input history exposes **More history** in the native prompt action
   row and **Load more input history** in the portal. Each explicit load is
   bounded; it continues the saved cursor without changing viewer filtering.
