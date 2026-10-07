@@ -23,7 +23,8 @@ import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-syst
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
-import { evaluateRoleObservation } from "../api/src/session-authz.js";
+import { evaluateRoleObservation, evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
+import { SteeringTurn, closeStoppedSteering, createOrderedEventWriter, createSteeringAuthorizer } from "./steering-channel.js";
 import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
@@ -1486,6 +1487,41 @@ export function registerActivities(
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        // The worker's feature cache, fetched ONCE per turn: steering and model
+        // event logging both resolve from this one snapshot.
+        const turnFeatureCache = sessionManager.getFeatureFlagCache?.() ?? null;
+        // Session steering (§6a.6): only with a turn key, a non-service session
+        // and the flag on for the owner. No orchestration change (D-12).
+        const steeringTurn = await SteeringTurn.create({
+            catalog,
+            sessionId: input.sessionId,
+            turnKey: input.snapshot?.turnKey,
+            transcriptEpoch: input.transcriptEpoch,
+            turnIndex: input.turnIndex,
+            sessionRow: catalogSessionRow,
+            featureCache: turnFeatureCache,
+            wake: sessionManager.getSteeringWakeSource?.() ?? null,
+            trace: traceWarn,
+        }).catch((err: any) => {
+            traceWarn(`[runTurn] steering unavailable for this turn: ${err?.message ?? String(err)}`);
+            return null;
+        });
+        const steeringAuthorize = steeringTurn && catalog
+            ? createSteeringAuthorizer({
+                sessionId: input.sessionId,
+                getSessionAccess: (id, viewer) => catalog!.getSessionAccess(id, viewer),
+                isAdmin: async (principal) => {
+                    if (typeof (catalog as any).getUserRole !== "function") return false;
+                    const observation = await (catalog as any).getUserRole(principal);
+                    return evaluateRoleObservation(observation, { principal }).isAdmin;
+                },
+                decide: (snapshot, isAdmin) => evaluateSessionAccess("session:write", snapshot, {
+                    isAdmin,
+                    adminScope: snapshot?.isSystem ? "unrestricted" : loadAdminScope(),
+                    systemReadable: systemSessionsReadable(),
+                }).allowed === true,
+            })
+            : undefined;
         // Session workspaces: an orchestration older than 1.0.80 drops the
         // result of set_session_workspace, so its turns get no workspace
         // tools (review F3).
@@ -1637,6 +1673,11 @@ export function registerActivities(
                     `returning stored result without re-running the turn`,
                 );
                 await recordLifecycleHydration(pre.version);
+                // Session steering: this path opens no window; take authority
+                // over this target, then finalize from the stored manifest.
+                if (steeringTurn) {
+                    await steeringTurn.adoptAndFinalize((pre.result as TurnResult | undefined)?.steering, pre.version);
+                }
                 // Session workspaces: a committed turn got past the
                 // workspace check (a refusal returns before the commit).
                 return {
@@ -1646,6 +1687,9 @@ export function registerActivities(
                 };
             }
             lifecycleBaseVersion = pre.baseVersion;
+            // Session steering: the live conversation of THIS activity's first runTurn
+            // call is restored from / validated against the stored base (FR-13 oracle).
+            steeringTurn?.markRestoredBase();
             lifecycleRehydrated = pre.kind === "hydrated";
             lifecyclePreambleFresh = pre.kind === "fresh";
             if (lifecycleRehydrated) {
@@ -3788,6 +3832,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // insert and CMS will assign the smaller `seq` to turn_completed,
             // breaking event-ordering invariants downstream (see cms-seq-nodemap).
             const pendingEventWrites: Promise<unknown>[] = [];
+            // Session steering: in a steerable turn the SDK events and the steering
+            // delivery projection (user.message with data.steering) go through ONE
+            // ordered writer, so seq order is SDK emission order (a queued steer's
+            // user.message after the response it followed). Other turns keep today's
+            // concurrent writes.
+            const orderedEventWrite = steeringTurn ? createOrderedEventWriter() : null;
             const trackEventWrite = (promise: Promise<unknown> | undefined | null) => {
                 if (!promise || typeof (promise as Promise<unknown>).then !== "function") return;
                 pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
@@ -3796,7 +3846,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // debug.enable_model_event_logging feature is on for the session
             // owner. Resolved once per turn from the in-memory feature cache.
             const recordModelEvents = modelEventLoggingEnabled(
-                sessionManager.getFeatureFlagCache?.() ?? null,
+                turnFeatureCache,
                 catalogSessionRow?.owner ?? null,
             );
             const EPHEMERAL_TYPES = new Set([
@@ -3917,11 +3967,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the
                     // retry to settle before emitting turn_completed.
-                    const writePromise = cmsRetryBestEffort(
+                    const recordThisEvent = () => cmsRetryBestEffort(
                         `runTurn.onEvent recordEvent ${persistedEvent.eventType} session=${input.sessionId}`,
                         () => catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
                     );
+                    // A task-summary projection stays outside the ordered writer: a stuck
+                    // projection write must never delay transcript events.
+                    const writePromise = orderedEventWrite && event.eventType !== "native.task_updated"
+                        ? orderedEventWrite(recordThisEvent)
+                        : recordThisEvent();
                     // Task summaries are a redundant UI projection. The
                     // original tool/lifecycle events still use the barrier;
                     // a stuck projection write must not delay turn commit.
@@ -4192,6 +4247,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     turnIndex: input.turnIndex,
                     controlToolBridge,
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
+                    // A fresh owner per runTurn call: a retry on a new live
+                    // session recovers the same target as a new owner.
+                    ...(steeringTurn ? {
+                        steering: steeringTurn.newChannel({ ordered: orderedEventWrite ?? undefined }),
+                        steeringQuiesce: () => sessionManager.quiesceForSteering(input.sessionId),
+                        steeringAuthorize,
+                    } : {}),
                 });
             };
 
@@ -4361,7 +4423,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // long enough to deliver the final latest-value snapshot.
             }
 
-            if (cancelled) return { type: "cancelled" };
+            // Cancelled unwinds can publish (D-21): carry the steering manifest.
+            if (cancelled) return { type: "cancelled", ...((result as TurnResult)?.steering ? { steering: (result as TurnResult).steering } : {}) } as TurnResult;
 
             // ── Activity-level writeback: sync turn result → CMS ──
             // This lets listSessions() read entirely from CMS without
@@ -4557,6 +4620,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     (msg) => activityCtx.traceInfo(msg),
                 );
             }
+            // Session steering (§7.4): finalize from the ACTUAL commit outcome
+            // as the target's current owner (INV-R1..R4).
+            if (steeringTurn) {
+                // A cancelled turn records inclusion from its commit; the closure (and its
+                // 'stopped' reason) belongs to whatever cancelled it.
+                const closeOpts = { close: bodyResult.type !== "cancelled" };
+                if (bodyResult.type === "stopped") {
+                    await steeringTurn.finalize("stopped", bodyResult.steering, null);
+                } else if (committed.alreadyCommitted && committed.storedResult !== undefined) {
+                    await steeringTurn.finalize("adopted", (committed.storedResult as TurnResult).steering, committed.version ?? null, undefined, closeOpts);
+                } else if (committed.published) {
+                    await steeringTurn.finalize("published", bodyResult.steering, committed.version ?? null, undefined, closeOpts);
+                } else {
+                    await steeringTurn.finalize("unpublished", bodyResult.steering, null, undefined, closeOpts);
+                }
+            }
             if (committed.alreadyCommitted && committed.storedResult !== undefined) {
                 // A racing attempt of this same turn won the CAS. Its
                 // snapshot was restored (restore-not-replay, §3.2 r1–r3) —
@@ -4573,6 +4652,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 };
             }
             return { ...bodyResult, snapshotVersion: committed.version };
+        }
+        // No commit layout or no versioned store: the outcome is unknown.
+        if (steeringTurn) {
+            await steeringTurn.finalize(bodyResult.type === "stopped" ? "stopped" : "unknown", bodyResult.steering, null, undefined,
+                { close: bodyResult.type !== "cancelled" });
         }
         return bodyResult;
             }, { trace });
@@ -4669,6 +4753,23 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             reason,
             ...(input.expectedTurnIndex != null ? { expectedTurnIndex: input.expectedTurnIndex } : {}),
         });
+        // Session steering (§7.5): fast-path closure, target-scoped by the turn
+        // index, even when the warm result is no_active_turn. The authoritative
+        // close rides on the session.turn_stopped event (cms_record_events).
+        // Not awaited: Stop's acknowledgement never waits on steering storage (owner
+        // requirement). The fast path is bounded on its own; the durable
+        // session.turn_stopped close remains the authority if it fails.
+        if (input.expectedTurnIndex != null) {
+            const sessionId = input.sessionId;
+            void closeStoppedSteering(catalog, sessionId, input.expectedTurnIndex,
+                (msg) => activityCtx.traceInfo(msg)).then(async (closed) => {
+                if (closed) return;
+                activityCtx.traceInfo(`[abortTurn] session=${sessionId} steering_stop_close_failed`);
+                if (catalog && typeof (catalog as any).steerAddCounters === "function") {
+                    await (catalog as any).steerAddCounters(sessionId, { "stop:close_failed": 1 }).catch(() => {});
+                }
+            }, () => {});
+        }
         activityCtx.traceInfo(
             `[abortTurn] session=${input.sessionId} outcome=${result.outcome}${result.detail ? ` (${result.detail})` : ""}`,
         );

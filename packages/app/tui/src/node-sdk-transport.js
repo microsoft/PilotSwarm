@@ -1452,6 +1452,10 @@ export class NodeSdkTransport {
             // Server-stamped sender identity (security model) — set by the
             // portal runtime from the validated auth context.
             ...(options?.sender && typeof options.sender === "object" ? { sender: options.sender } : {}),
+            ...(options?.steeringRequestId !== undefined ? {
+                steeringRequestId: options.steeringRequestId,
+                steeringContext: this._steeringContext(options.steeringContext),
+            } : {}),
         };
 
         // Image attachments: clients send bare filenames; every other field is
@@ -1561,6 +1565,38 @@ export class NodeSdkTransport {
             reason: options.reason || "Stopped by user",
             ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
         });
+    }
+
+    _steeringContext(edge) {
+        return edge ?? {
+            sender: { kind: "user", provider: this.currentUser.provider, subject: this.currentUser.subject,
+                display: this.currentUser.displayName || this.currentUser.subject, origin: "tui" },
+            authzEnforced: true,
+        };
+    }
+
+    getSessionSteeringState(sessionId, edge) {
+        return this.mgmt.getSessionSteeringState(sessionId, this._steeringContext(edge));
+    }
+
+    steerSessionTurn(sessionId, options, edge) {
+        return this.mgmt.steerSessionTurn(sessionId, options, this._steeringContext(edge));
+    }
+
+    getSteeringRequest(sessionId, requestId, options = {}, edge) {
+        return this.mgmt.getSteeringRequest(sessionId, requestId, options, this._steeringContext(edge));
+    }
+
+    listSteeringRequests(sessionId, options = {}, edge) {
+        return this.mgmt.listSteeringRequests(sessionId, options, this._steeringContext(edge));
+    }
+
+    withdrawSteeringRequest(sessionId, requestId, edge) {
+        return this.mgmt.withdrawSteeringRequest(sessionId, requestId, this._steeringContext(edge));
+    }
+
+    getSessionSteeringStats(sessionId, options = {}, edge) {
+        return this.mgmt.getSessionSteeringStats(sessionId, options, this._steeringContext(edge));
     }
 
     async deleteSessionGroup(groupId) {

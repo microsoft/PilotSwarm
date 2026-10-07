@@ -3,7 +3,7 @@ import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
 import type { PilotSwarmSession } from "pilotswarm-sdk";
 import type { ServerContext } from "../context.js";
-import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
+import { jsonResult, errorResult, errorToResult, withToolErrors } from "../util/respond.js";
 
 // Cache session objects so send_and_wait can reuse them instead of
 // calling resumeSession() which incorrectly assumes the orchestration
@@ -162,18 +162,24 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "Send a fire-and-forget message to a PilotSwarm session. Pass client_message_ids to make the "
                 + "message(s) cancellable later via cancel_pending_messages; enqueue_only queues without waking the session. "
                 + "attachments references IMAGE artifacts already uploaded to this session (via upload_artifact) — "
-                + "vision-capable models receive them as true image input.",
+                + "vision-capable models receive them as true image input. For an explicit retained-guidance resend, "
+                + "pass steering_request_id and one fresh client_message_ids entry; this queues ordinary input and leaves the old receipt unchanged.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
                 client_message_ids: z.array(z.string().min(1)).optional().describe("Caller-chosen ids for this message — required later by cancel_pending_messages"),
+                steering_request_id: z.string().min(1).max(200).optional().describe("Original retained steering receipt for explicit resend provenance; requires exactly one fresh client_message_ids entry"),
                 enqueue_only: z.boolean().optional().describe("Queue the message without triggering processing (web mode only)"),
                 attachments: z.array(z.object({ filename: z.string().min(1) })).max(4).optional()
                     .describe("Image artifacts of this session to show the model (upload first via upload_artifact; png/jpeg/gif/webp, ≤4 MB each)"),
             },
         },
-        async ({ session_id, message, client_message_ids, enqueue_only, attachments }) => {
+        async ({ session_id, message, client_message_ids, steering_request_id, enqueue_only, attachments }) => {
             try {
+                if (steering_request_id !== undefined && !ctx.api) {
+                    return errorResult("Steering receipt resend is unsupported in direct-store MCP mode. Use authenticated Web API mode.",
+                        { code: "unsupported", reason: "direct_mcp_unavailable" });
+                }
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
                     return {
@@ -200,9 +206,11 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         options: {
                             enqueueOnly: true,
                             ...(client_message_ids ? { clientMessageIds: client_message_ids } : {}),
+                            ...(steering_request_id !== undefined ? { steeringRequestId: steering_request_id } : {}),
                             ...(attachments && attachments.length > 0 ? { attachments } : {}),
                         },
                     });
+                    if (steering_request_id !== undefined) return jsonResult({ enqueued: true, steering_request_id, client_message_ids });
                     return {
                         content: [
                             { type: "text" as const, text: JSON.stringify({ sent: true, enqueued: true, ...(client_message_ids ? { client_message_ids } : {}) }) },
@@ -223,18 +231,21 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 // direct); WebPilotSwarmSession.send accepts {filename} refs and
                 // the API edge resolves them — cast because the static type here
                 // is the direct-client union member.
-                await session.send(message, (client_message_ids || (attachments && attachments.length > 0))
+                await session.send(message, (client_message_ids || steering_request_id !== undefined || (attachments && attachments.length > 0))
                     ? ({
                         ...(client_message_ids ? { clientMessageIds: client_message_ids } : {}),
+                        ...(steering_request_id !== undefined ? { steeringRequestId: steering_request_id } : {}),
                         ...(attachments && attachments.length > 0 ? { attachments } : {}),
                     } as never)
                     : undefined);
+                if (steering_request_id !== undefined) return jsonResult({ enqueued: true, steering_request_id, client_message_ids });
                 return {
                     content: [
                         { type: "text" as const, text: JSON.stringify({ sent: true, ...(client_message_ids ? { client_message_ids } : {}) }) },
                     ],
                 };
             } catch (err: unknown) {
+                if (steering_request_id !== undefined) return errorToResult(err);
                 const msg = err instanceof Error ? err.message : String(err);
                 return {
                     content: [{ type: "text" as const, text: `Error: ${msg}` }],

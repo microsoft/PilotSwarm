@@ -62,6 +62,62 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 ## Product Rules
 
+- Session steering is separate from the ordinary outbox. Preserve the captured
+  session, target and caller identity across asynchronous responses and view
+  changes. Merge receipt revisions monotonically; `user.message.steering`
+  updates the same guidance row, never an equal-text queued prompt. An SDK
+  send acknowledgement is not delivery or inclusion.
+- The portal's Steer button and prompt-focused Ctrl+S use the shared command.
+  Native TUI Tab first accepts reference autocomplete, otherwise focuses the
+  Send/Steer/Stop action row when available. Left/Right select, Enter activates,
+  Tab continues pane traversal, and Shift+Tab/Escape returns to the editor.
+  Native Ctrl+S is gated on raw-mode coverage across supported terminal hosts;
+  do not advertise it before that gate passes. Send/newline/Stop stay unchanged.
+- The native action row includes Guidance when receipts exist, including after
+  feature disablement. Its receipt view uses Up/Down to select and
+  PageUp/PageDown to scroll; Enter refreshes/reconciles, `w` withdraws, `r` sends
+  as a new message, and `c` reuses undelivered/withdrawn/uncertain guidance in
+  the draft (append on a new line if nonempty). Delivered receipts have no
+  draft action; their text remains selectable. Escape closes.
+- Unedited recall is temporary: persist its stashed text/caret/attachments on
+  session or MoA view changes, not the recalled candidate. Attachment changes
+  end navigation just like text edits; history-driven clearing is separate.
+  The portal uses the same shared controller methods through receipt-row buttons.
+- Receipt reads do not establish transcript position. Keep unanchored receipts
+  in the paginated Guidance view until their acceptance history loads. Use
+  the same behavior for update/delivery-only history: only acceptance anchors
+  the row. Show partial results and Load more guidance (`m` in the native receipt view).
+  Main chat owns session steering pending/resend state; MoA panels share it,
+  including results arriving after panel disposal.
+- Restoring a MoA draft atomically clears both history navigation and the
+  pending/queued edit binding; typing must never alter the old queue item.
+- Receipt paging preserves the selected row ID, not its old list index.
+  Delayed read denials cannot clear a newer restored access grant.
+  Recovery-confirmed delivery without a recorded kind displays
+  **Delivered (timing unconfirmed)**; do not guess current-turn/after-response
+  timing or confuse it with missing delivery evidence.
+- Disabled native prompt actions show their shared eligibility reason in the
+  status hint and on Enter. Stop help must state that queued prompts and
+  schedules continue; do not imply Stop pauses all future work.
+- Portal composer buttons keep a minimum 44px touch target even inside panels.
+  Keep mobile composers on one row with the label centered beside the textarea.
+  At most 480px wide, use a 44px Steer icon with its accessible name and tooltip,
+  and tighter gaps, preserving Attach/Stop/Steer/Send order. Do not increase the
+  keyboard composer height or change the native TUI action row.
+- Steer uses normal composer-button typography, theme border/radius and a small
+  icon beside its desktop label. Enabled uses the accent; disabled remains a
+  visibly dimmed button. Never inherit the large toolbar-glyph font for its label.
+- Mobile textarea growth also respects the space left in its chat pane after
+  headers, Working/outbox strips and composer chrome, not just a viewport
+  fraction. Scroll text internally rather than pushing Send/Stop off-screen.
+  Landscape screens at most 450px high retain a 44px session strip and a
+  scrollable 24px status strip. Delivery details targets are at least 24px.
+- Below a 360px composer container, hide only the Attach button when Stop and
+  Steer are both present. Keep input/Stop/Steer/Send on one row and all visible
+  buttons at least 44px. Attach returns when Stop disappears; staged attachment
+  chips remain visible/removable, and Steer stays text-only. At 360px and wider,
+  the Attach control is unchanged. Native TUI actions are unchanged.
+
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
   app-specific guide overrides. Public source and package downloads do not
@@ -128,6 +184,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.
 - In the sessions pane, `V` toggles multi-select mode (seeded with the active session). `Space` toggles selection on the active row, `Ctrl+G` moves every selected top-level non-system session through the move-to-group picker, `c` cancels every selected session in one confirmation (system sessions and groups are skipped), `d` completes selected sessions, `D` hard-deletes selected sessions, and `Esc` exits select mode. The portal mirrors selection with Cmd/Ctrl-click and Shift-click on session rows; the panel header reveals `Clear`, `Group (n)`, and `Terminate (n)`. `Terminate (n)` opens the same three-disposition picker for Complete, Cancel, and Hard Delete.
 - In the stats inspector, `f` cycles between the session, fleet, and users views; keep terminal and portal behavior aligned.
+- In session stats, `r` opens permitted guidance history, equivalent to the portal
+  Guidance history action. Retained requests count not-delivered-ended,
+  not-delivered-stopped and withdrawn requests; uncertain delivery stays separate.
+  Receipt-list reads share ownership across panels; cancellation releases only
+  the owned loading state and never regresses another view's continuation.
 - In the sessions pane, `n` fast-starts a generic session with the default model when generic sessions are allowed; if generic sessions are disabled, it falls back to the model-first creation flow when models are available, or the agent picker. `Shift+N` opens the model picker, then reasoning effort when applicable, then the generic/named-agent picker.
 - The New/New+Model agent picker is fed by `transport.listCreatableAgents()`, not by worker logs. In remote mode, `packages/app/tui/src/node-sdk-transport.js` builds that metadata from `PLUGIN_DIRS`; if `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, the transport must expand those names from `packages/sdk/plugins/default-agents/` into `creatableAgents` so both native remote TUI and portal bootstrap show them.
 - The fleet stats view shows a compact `Fact Tombstones` card when facts tombstone
@@ -142,7 +203,36 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Persist portal theme, owner filter, pinned sessions, collapsed-session ids, active (selected) session id, chat transcript/summary mode, and pane split adjustments in `users.profile_settings` so browser/mobile sessions share the same preferences. The portal must not read or write browser localStorage/cookies for these preferences; it may only clear old legacy keys/cookies at startup. The native TUI persists the same `pinnedSessionIds`, `collapsedSessionIds`, `activeSessionId`, theme/filter/view mode, and pane adjustments in its user config file. If no stored `activeSessionId`/`collapsedSessionIds` exist yet, the shared default is the main PilotSwarm system session selected with every group/parent session collapsed.
 - A portal `?session=<id>` deep link is explicit navigation: it must select and visibly highlight that session in the Sessions list, expand its ancestors, and retain the transient filter exception when current filters would otherwise hide it. A prior empty-space list deselection must not suppress the linked row highlight.
 - In the native TUI, keep the session/chat divider shared and capped: it is the chat resize control, and it must not let the top sessions pane grow beyond 50% of the full window height.
-- Busy/system-session prompt sends now use a shared pending outbox: queued prompts render in chat as pending user items, `Enter` on an empty draft flushes the queued batch, `Up`/`Down` at the prompt boundary navigate queued items, and `Esc` cancels the selected queued item. Keep portal, TUI, status hints, and docs aligned with that behavior.
+- Prompt Up at the first line visits pending/queued outbox items first, newest
+  to oldest, with existing `promptEdit` states and edit/read-only/cancel actions.
+  Only beyond the oldest queue item does it recall the viewer's own executed current-session
+  inputs (ordinary plus delivered steering), newest first, at most ten with
+  consecutive duplicates skipped. Accepted sends enter recall immediately.
+  Durable `session.steering_accepted` events preserve the viewer's accepted
+  undelivered guidance after reload; later delivery shares the receipt identity.
+  Down reverses history, then the queue, then restores the original draft,
+  caret and attachments. Do not revisit a queued message's accepted history
+  echo; deduplicate by client message identity, not text. The shared
+  `recallPromptInput` controller owns this boundary arbitration for both hosts.
+  Any edit to a recalled history entry
+  ends navigation without mutating history; send/session switch resets it.
+  Reference autocomplete, slash/mention menus and modals keep priority.
+  Portal soft-wrap boundaries use actual textarea geometry. Tablet hardware
+  arrows work in the touch layout (device short screen edge at least 600px,
+  unaffected by the visual keyboard viewport); phone typing is unchanged.
+  Share pure logic and reducer state in `prompt-history.js`, with no new storage
+  or API. Existing transcript paging fills the viewer-filtered bounded cache.
+  Discovery is capped at three 100-event pages and five seconds per request.
+  Retain the continuation/exhaustion marker across selection; show partial
+  history and offer explicit More history rather than scanning whole shared
+  sessions automatically. Ignore late results after the budget expires.
+- Background HTTP reads belong to their active view/session. Abort them on
+  retirement and handle WebKit navigation TypeErrors/AbortErrors without
+  unhandled page errors or stale-view notices. Real failures in a live view
+  remain visible. Never abort or silently retry accepted writes on navigation.
+- Busy/system-session sends still use the shared outbox: Enter on an empty
+  draft flushes pending input; queue recall retains its existing controls before
+  moving into executed-input history. Keep Send/Stop and all help surfaces aligned.
 - Pending-question answers render an optimistic asked/answered transcript item as soon as the user submits. Keep that item visible while `sendAnswer` is in flight and after it is accepted, then let the durable `user.message` transcript replace it once history sync catches up; stale session refreshes must not restore the old question card or hide the submitted exchange. Recognize both legacy and `(answered by …)` wrappers: the question remains a Question card and only the answer is human-authored. Use event sender metadata for identity, not the wrapper text.
 - Session warnings, including provider/API errors, remain stable while retrying and across stale idle/waiting refreshes. Use server status versions before timestamps to recognize recovery. Recovery resolves the active status, not the historical warning: keep the notice at its original transcript position and append later chat below it. Durable `session.error` events belong in chat history and backward paging. Capture status-only notices once in shared state; reconcile them with their durable event without duplicating or remounting the card. Keep the card's DOM key independent of retry counts and error text. Do not special-case only lost Copilot connections.
 - Creating a session explicitly selects and reveals its chat, including from mobile diagnostics/canvas or the desktop Master of Agents workspace. Seed the returned session before catalog refresh, preserve the outgoing draft, and keep selection through paged/stale catalogs and filters. A late load of the previous session must not take over the live subscription. Do not alter saved Master of Agents layouts when returning to normal chat.

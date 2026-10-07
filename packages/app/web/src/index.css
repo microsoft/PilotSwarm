@@ -936,7 +936,7 @@ body.ps-kb-takeover .ps-mobile-workspace:has(.ps-mobile-chat-pane) > .ps-mobile-
 body.ps-kb-takeover .ps-prompt-shell.is-mobile .ps-prompt-input {
   /* The keyboard already halved the screen; past a quarter of what is left
    * the textarea scrolls internally and the transcript keeps the rest. */
-  max-height: calc(var(--ps-app-height, 100vh) * 0.25);
+  max-height: min(calc(var(--ps-app-height, 100vh) * 0.25), var(--ps-prompt-available-height, 100vh));
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -3365,6 +3365,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-chat-composer {
+  container: prompt-composer / inline-size;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -3393,6 +3394,66 @@ body.is-resizing-pane-y iframe {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.ps-prompt-shell .ps-prompt-actions > button {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.ps-steer-glyph { display: block; flex: none; }
+.ps-prompt-shell .ps-steer-button {
+  height: 44px;
+  padding: 0 10px;
+  font-size: var(--ps-control-font-size, 0.92rem);
+}
+.ps-steer-button .ps-icon-button-glyph {
+  gap: 6px;
+  font-size: inherit;
+  letter-spacing: normal;
+}
+
+.ps-steering-receipt {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--ps-muted);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.ps-steering-receipt header {
+  margin-bottom: 6px;
+}
+
+.ps-steering-receipt details {
+  margin-top: 8px;
+}
+
+.ps-steering-receipt details > summary {
+  min-height: 24px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.ps-steering-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ps-steering-archive {
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-height: 40vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.ps-prompt-history-partial {
+  grid-column: 1 / -1;
+  min-width: 0;
+  font-size: var(--ps-font-size-dense);
+  color: var(--ps-muted);
 }
 
 .ps-hidden-file-input {
@@ -3449,12 +3510,13 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-input {
+  min-height: 44px;
   font-size: 16px;
   line-height: 1.25;
   /* Cap against the VISUAL viewport — the keyboard already took half the
    * screen; the transcript must keep the rest. --ps-app-height tracks
    * visualViewport (see useVisualViewportHeight in the portal App). */
-  max-height: calc(var(--ps-app-height, 100vh) * 0.32);
+  max-height: min(calc(var(--ps-app-height, 100vh) * 0.32), var(--ps-prompt-available-height, 100vh));
 }
 
 
@@ -9750,6 +9812,66 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
+
+.ps-prompt-shell .ps-steer-button:not(:disabled) {
+  color: var(--ps-accent);
+  background: color-mix(in srgb, var(--ps-accent) 12%, var(--ps-surface));
+  box-shadow: inset 0 0 0 1px var(--ps-accent);
+}
+.ps-prompt-shell .ps-steer-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ps-prompt-shell .ps-steer-button:disabled:hover {
+  transform: none;
+}
+
+/* Keep input, label and controls on one row without increasing the keyboard
+   composer height. The narrow Steer icon retains its accessible name and tip. */
+@container prompt-composer (max-width: 480px) {
+  .ps-chat-composer .ps-prompt-shell {
+    gap: 2px;
+  }
+  .ps-prompt-shell > .ps-prompt-actions {
+    gap: 2px;
+  }
+  .ps-prompt-shell .ps-steer-button {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .ps-steer-label {
+    display: none;
+  }
+  .ps-steer-glyph {
+    display: block;
+  }
+}
+
+@container prompt-composer (width < 360px) {
+  .ps-prompt-actions:has(.ps-stop-button):has(.ps-steer-button) > .ps-attach-button {
+    display: none;
+  }
+}
+
+/* Landscape phones must reserve a reachable composer before spending the
+   remaining height on the session list and scrollable status history. */
+@media (max-width: 920px) and (max-height: 450px) {
+  .ps-mobile-workspace {
+    gap: 4px;
+  }
+  .ps-mobile-workspace .ps-mobile-session-pane {
+    max-height: 44px;
+  }
+  .ps-mobile-workspace .ps-chat-panel .ps-scroll-panel {
+    padding-block: 0;
+  }
+  .ps-mobile-workspace .ps-chat-panel .ps-panel-bottom-sticky {
+    min-height: 24px;
+    max-height: 24px;
+    padding-block: 2px;
+  }
+}
 
 /* Permanent desktop navigation geometry. Context controls may change, but
    neither a mode change nor a long canvas title can move Back / Forward. */

@@ -11,6 +11,9 @@ if (argv[0] === "auth") {
         console.error(`[pilotswarm] ${error?.message || error}`);
         return 1;
     });
+} else if (argv[0] === "sessions") {
+    const { runSessionsCommand } = await import("../src/sessions-cli.js");
+    process.exitCode = await runSessionsCommand(argv.slice(1));
 } else if (argv[0] === "agents") {
     const { runAgentsCommand } = await import("../src/agents-cli.js");
     process.exitCode = await runAgentsCommand(argv.slice(1)).catch((error) => {

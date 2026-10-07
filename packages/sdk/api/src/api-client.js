@@ -43,6 +43,8 @@ function errorExtras(error) {
     return {
         ...(Object.prototype.hasOwnProperty.call(error, "etag") && (error.etag === null || typeof error.etag === "string") ? { etag: error.etag } : {}),
         ...(Number.isFinite(error.size) ? { size: error.size } : {}),
+        ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
+        ...(Number.isFinite(error.retryAfterMs) ? { retryAfterMs: error.retryAfterMs } : {}),
     };
 }
 
@@ -82,6 +84,10 @@ export class ApiClient {
         this.liveRefetches = new Map();
         this.liveValues = new Map();
         this.liveRefetchTargets = new Map();
+        this.readRequests = new Map();
+        this.readsClosed = false;
+        this.onPageHide = () => { this.readsClosed = true; this.abortReadRequests(); };
+        this.onPageShow = () => { if (!this.stopped) this.readsClosed = false; };
     }
 
     // ── HTTP ────────────────────────────────────────────────────────────
@@ -102,14 +108,16 @@ export class ApiClient {
         return headers;
     }
 
-    async request(method, pathWithQuery, { body, headers, authProbe = false } = {}) {
+    async request(method, pathWithQuery, { body, headers, authProbe = false, signal } = {}) {
         const requestHeaders = await this.authHeaders(headers || {});
+        if (signal?.aborted) throw Object.assign(new Error("Read cancelled with its view"), { name: "AbortError" });
         if (body !== undefined && !requestHeaders["content-type"]) {
             requestHeaders["content-type"] = "application/json";
         }
         const response = await this.fetchImpl(`${this.apiUrl}${pathWithQuery}`, {
             method,
             headers: requestHeaders,
+            ...(signal ? { signal } : {}),
             ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         });
         if (response.status === 401) {
@@ -144,13 +152,33 @@ export class ApiClient {
     }
 
     /** Invoke a protocol operation by name with rpc-shaped params. */
-    async call(name, params = {}) {
+    async call(name, params = {}, { signal } = {}) {
         const { method, path, query, body } = buildOperationRequest(name, params);
         // Avoid URLSearchParams.prototype.size (absent on Safari 16 / iOS 16,
         // which the portal build targets); toString() is universally supported.
         const queryString = query.toString();
         const suffix = queryString ? `?${queryString}` : "";
-        return this.request(method, `${path}${suffix}`, body !== null ? { body } : {});
+        if (method !== "GET") return this.request(method, `${path}${suffix}`, body !== null ? { body } : {});
+        const abort = new AbortController();
+        const onAbort = () => abort.abort();
+        if (this.stopped || this.readsClosed || signal?.aborted) abort.abort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+        this.readRequests.set(abort, params.sessionId || null);
+        try {
+            return await this.request(method, `${path}${suffix}`, { signal: abort.signal });
+        } catch (error) {
+            if (abort.signal.aborted) throw Object.assign(new Error("Read cancelled with its view"), { name: "AbortError" });
+            throw error;
+        } finally {
+            this.readRequests.delete(abort);
+            signal?.removeEventListener("abort", onAbort);
+        }
+    }
+
+    abortReadRequests(sessionId) {
+        for (const [abort, owner] of this.readRequests) {
+            if (sessionId === undefined || owner === sessionId) abort.abort();
+        }
     }
 
     // ── Bespoke (non-table) endpoints ───────────────────────────────────
@@ -215,10 +243,21 @@ export class ApiClient {
 
     async start() {
         this.stopped = false;
+        this.readsClosed = false;
+        if (typeof window !== "undefined") {
+            window.addEventListener("pagehide", this.onPageHide);
+            window.addEventListener("pageshow", this.onPageShow);
+        }
     }
 
     async stop() {
         this.stopped = true;
+        this.readsClosed = true;
+        this.abortReadRequests();
+        if (typeof window !== "undefined") {
+            window.removeEventListener("pagehide", this.onPageHide);
+            window.removeEventListener("pageshow", this.onPageShow);
+        }
         this.hasConnected = false;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);

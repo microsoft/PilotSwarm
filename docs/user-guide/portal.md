@@ -6,6 +6,38 @@ sessions, same runtime as the [terminal UI](./tui.md) — different surface.
 The portal lives at `http://localhost:3001` by default. You can switch
 between the TUI and the portal at any time; they don't conflict.
 
+Desktop composers support shell-like input recall. Up on the first visual line
+visits pending and queued outbox inputs first, newest to oldest. They retain
+their existing edit/read-only and cancel controls. Beyond the oldest queued
+input, Up recalls your own executed current-session inputs (at most ten,
+consecutive duplicates skipped). Down on the last line walks back through
+history and the outbox, then restores your unsent draft and attachments.
+Editing history ends navigation; the next Up starts from newest.
+Sending and session switches reset navigation. Menus and reference autocomplete
+take priority. The history comes from durable user inputs, including delivered
+steering; new accepted sends appear immediately. Durable steering acceptance
+also preserves undelivered guidance in recall after reload, without duplicating
+its later delivery. No other writer's inputs are
+recalled. An iPad or other tablet also supports these hardware-arrow keys,
+including while its keyboard reduces the visible viewport. Phone typing and
+touch-keyboard behavior are unchanged.
+
+If you switch sessions while browsing unedited history, the original unsent
+draft, caret and attachments remain that session's draft. Adding, removing or
+replacing an attachment counts as an edit and ends history navigation, so Down
+cannot discard the new attachment.
+
+Initial recall discovery reads at most three 100-event pages within five
+seconds. A mostly shared history can therefore be partial. **Load more input
+history** resumes from the saved cursor; reselecting the session does not
+restart the scan. It never fills your recall history with another writer's text.
+When the time budget expires, the outstanding history fetch is cancelled;
+other reads and writes continue.
+
+Session stats includes a **Guidance history** action. It opens permitted
+receipts with a partial-list notice and **Load more guidance**, keeping
+retained-request counts separate from delivery attempts.
+
 ## Prerequisites
 
 Follow the [local setup guide](../quickstart/local.md), then run
@@ -63,6 +95,11 @@ record’s own update time, not the newest activity of its members. Expanding an
 collapsing a folder preserves the current order.
 
 ## Layout overview
+
+To redirect ongoing work without stopping it, use the explicit **Steer** action.
+It keeps a durable guidance receipt separate from ordinary queued input.
+See [Guide a running turn](./session-steering.md) for permissions, delivery
+labels, late input, recovery, and keyboard controls.
 
 When the portal opens you see three panes:
 

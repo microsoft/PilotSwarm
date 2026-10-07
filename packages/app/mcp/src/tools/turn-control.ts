@@ -2,7 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
-import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
+import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
+import { steeringResultDisplay } from "pilotswarm/ui-core/steering-labels";
 
 /**
  * Turn- and queue-level session control (proposal G3) — finer levers than
@@ -14,10 +15,78 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
  *   send_session_event      inject a custom event into the session
  */
 export function registerTurnControlTools(server: McpServer, ctx: ServerContext) {
+    const steeringResult = (result: object) => jsonResult({ ...result, display: steeringResultDisplay(result) });
+    function withSteeringErrors<A extends unknown[]>(fn: (...args: A) => Promise<ToolResult>) {
+        return withToolErrors(async (...args: A) => {
+            if (!ctx.api) return errorResult("Session steering is unsupported in direct-store MCP mode. Use authenticated Web API mode.", {
+                code: "unsupported", reason: "direct_mcp_unavailable",
+            });
+            return fn(...args);
+        });
+    }
     async function requireSession(session_id: string) {
         const existing = await ctx.mgmt.getSession(session_id);
         return existing ?? null;
     }
+
+    server.registerTool("get_steering_state", {
+        title: "Get Steering State",
+        description: "Read current-turn steering availability, the observed expectedTarget token and text/rate limits. "
+            + "An open target grants no permission. Preserve the observed token when submitting guidance.",
+        inputSchema: { session_id: sessionIdShape() },
+    }, withSteeringErrors(async ({ session_id }) => steeringResult(await ctx.mgmt.getSessionSteeringState(session_id))));
+
+    server.registerTool("steer_turn", {
+        title: "Steer Current Turn",
+        description: "Accept user guidance for this session's observed running turn without stopping it. Text only. "
+            + "Delivery waits for a supported model/tool boundary and may be retained if the turn ends. "
+            + "Acceptance is not delivery or compliance. This is not ordinary Send, a question answer, or a permission change. "
+            + "Reuse client_request_id and expected_target after a lost response; never silently retarget.",
+        inputSchema: {
+            session_id: sessionIdShape(),
+            text: z.string().min(1),
+            client_request_id: z.string().min(1).max(200),
+            expected_target: z.string().min(1).max(1024),
+        },
+    }, withSteeringErrors(async ({ session_id, text, client_request_id, expected_target }) => {
+        const result = await ctx.mgmt.steerSessionTurn(session_id, {
+            text, clientRequestId: client_request_id, expectedTarget: expected_target,
+        });
+        return { ...steeringResult(result), ...(result.ok ? {} : { isError: true }) };
+    }));
+
+    server.registerTool("get_steering_request", {
+        title: "Get Steering Receipt",
+        description: "Read one authoritative receipt, including separate delivery, future eligibility, inclusion and bounded attempt evidence. "
+            + "Use the server request ID, not the caller retry identity.",
+        inputSchema: {
+            session_id: sessionIdShape(), request_id: z.string().min(1),
+            attempt_cursor: z.string().optional(), attempt_limit: z.number().int().min(1).max(200).optional(),
+        },
+    }, withSteeringErrors(async ({ session_id, request_id, attempt_cursor, attempt_limit }) =>
+        steeringResult(await ctx.mgmt.getSteeringRequest(session_id, request_id, { attemptCursor: attempt_cursor, attemptLimit: attempt_limit }))));
+
+    server.registerTool("list_steering_requests", {
+        title: "List Steering Receipts",
+        description: "Read a bounded server-ordered receipt page (default 50, maximum 200). Cursors stay bound to this session and filters.",
+        inputSchema: {
+            session_id: sessionIdShape(), cursor: z.string().optional(),
+            limit: z.number().int().min(1).max(200).optional(), expected_target: z.string().optional(),
+            dispositions: z.array(z.enum(["accepted", "delivered_current_turn", "delivered_after_response", "delivered_timing_unconfirmed", "delivered_before_stop",
+                "not_delivered_turn_ended", "not_delivered_turn_stopped", "withdrawn", "delivery_unconfirmed", "rejected"])).optional(),
+        },
+    }, withSteeringErrors(async ({ session_id, cursor, limit, expected_target, dispositions }) =>
+        steeringResult(await ctx.mgmt.listSteeringRequests(session_id, { cursor, limit, expectedTarget: expected_target, dispositions }))));
+
+    server.registerTool("withdraw_steering_request", {
+        title: "Withdraw Guidance",
+        description: "Withdraw only before worker claim, as the original author or effective session manager. "
+            + "It never recalls submitted text. A losing withdrawal returns not_withdrawable and the current receipt.",
+        inputSchema: { session_id: sessionIdShape(), request_id: z.string().min(1) },
+    }, withSteeringErrors(async ({ session_id, request_id }) => {
+        const result = await ctx.mgmt.withdrawSteeringRequest(session_id, request_id);
+        return { ...steeringResult(result), ...(["forbidden", "not_found", "not_withdrawable"].includes(result.outcome) ? { isError: true } : {}) };
+    }));
 
     server.registerTool(
         "stop_turn",
@@ -25,7 +94,8 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             title: "Stop Turn",
             description:
                 "Abort the in-flight turn of a running PilotSwarm session without cancelling the session — it stays "
-                + "alive and accepts new messages. Use abort_session only when the whole session should end.",
+                + "alive and accepts new messages. Queued prompts and schedules continue. "
+                + "Use abort_session only when the whole session should end.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose current turn to stop"),
                 reason: z.string().optional().describe("Optional reason, surfaced to the session"),

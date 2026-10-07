@@ -477,6 +477,63 @@ async function main() {
         await client.close();
     }
 
+    // Steering tools preserve typed evidence instead of inventing delivery success.
+    {
+        const calls = [];
+        const ctx = makeCtx(calls, { api: {}, webMode: true });
+        const accepted = { ok: true, duplicate: false, receipt: {
+            requestId: "server-request", clientRequestId: "caller-id", expectedTarget: "observed-target",
+            disposition: "accepted", inclusion: { state: "unconfirmed", snapshotVersion: null },
+        } };
+        ctx.mgmt.getSessionSteeringState = async (id) => { calls.push(["state", id]); return { steerable: true, expectedTarget: "observed-target" }; };
+        ctx.mgmt.steerSessionTurn = async (...args) => { calls.push(["steer", ...args]); return accepted; };
+        ctx.mgmt.getSteeringRequest = async (...args) => { calls.push(["receipt", ...args]); return accepted.receipt; };
+        ctx.mgmt.listSteeringRequests = async (...args) => { calls.push(["list", ...args]); return { items: [accepted.receipt], nextCursor: "next-page" }; };
+        ctx.mgmt.withdrawSteeringRequest = async (...args) => { calls.push(["withdraw", ...args]); return { outcome: "not_withdrawable", receipt: accepted.receipt }; };
+        const client = await connect(ctx);
+        const list = await client.listTools();
+        const steerSchema = list.tools.find((tool) => tool.name === "steer_turn").inputSchema;
+        record("steer schema requires captured identity, target and text",
+            ["session_id", "text", "client_request_id", "expected_target"].every((key) => steerSchema.required.includes(key)));
+        let res = await client.callTool({ name: "steer_turn", arguments: {
+            session_id: UUID, text: "line one\nline two", client_request_id: "caller-id", expected_target: "observed-target",
+        } });
+        const { display, ...canonicalAccepted } = parse(res);
+        record("steer_turn preserves canonical receipt and human wording, never delivered:true",
+            !res.isError && JSON.stringify(canonicalAccepted) === JSON.stringify(accepted)
+            && display.label === "Accepted" && typeof display.detail === "string" && parse(res).delivered === undefined);
+        const call = calls.find(([name]) => name === "steer");
+        record("steer_turn calls canonical management operation",
+            call[1] === UUID && JSON.stringify(call[2]) === JSON.stringify({
+                text: "line one\nline two", clientRequestId: "caller-id", expectedTarget: "observed-target",
+            }));
+        res = await client.callTool({ name: "get_steering_state", arguments: { session_id: UUID } });
+        record("get_steering_state exposes observed target", parse(res).expectedTarget === "observed-target");
+        res = await client.callTool({ name: "get_steering_request", arguments: { session_id: UUID, request_id: "server-request", attempt_cursor: "20", attempt_limit: 2 } });
+        record("get_steering_request forwards bounded attempt options", calls.some(([name, id, request, opts]) =>
+            name === "receipt" && id === UUID && request === "server-request" && opts.attemptCursor === "20" && opts.attemptLimit === 2));
+        res = await client.callTool({ name: "list_steering_requests", arguments: {
+            session_id: UUID, limit: 2, cursor: "cursor", dispositions: ["accepted"], expected_target: "observed-target",
+        } });
+        record("list_steering_requests preserves opaque page and filter", parse(res).nextCursor === "next-page"
+            && calls.some(([name, id, opts]) => name === "list" && id === UUID && opts.limit === 2
+                && opts.dispositions[0] === "accepted" && opts.expectedTarget === "observed-target"));
+        res = await client.callTool({ name: "withdraw_steering_request", arguments: { session_id: UUID, request_id: "server-request" } });
+        record("withdraw loses honestly with current receipt", res.isError === true && parse(res).outcome === "not_withdrawable"
+            && parse(res).receipt.requestId === "server-request");
+        ctx.mgmt.steerSessionTurn = async () => ({ ok: false, code: "stale_target" });
+        res = await client.callTool({ name: "steer_turn", arguments: {
+            session_id: UUID, text: "retained", client_request_id: "caller-id", expected_target: "observed-target",
+        } });
+        record("steer stale_target is an error, not an unconditional success", res.isError === true
+            && parse(res).ok === false && parse(res).code === "stale_target" && parse(res).sent === undefined);
+        ctx.mgmt.getSteeringRequest = async () => ({ ...accepted.receipt, disposition: "delivery_unconfirmed" });
+        res = await client.callTool({ name: "get_steering_request", arguments: { session_id: UUID, request_id: "server-request" } });
+        record("receipt tool preserves uncertain evidence", parse(res).disposition === "delivery_unconfirmed"
+            && parse(res).delivered === undefined);
+        await client.close();
+    }
+
     const failed = results.filter((r) => !r.ok);
     console.log(`\n${results.length - failed.length}/${results.length} passed`);
     process.exit(failed.length ? 1 : 0);

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.3.0
+version: 1.4.0
 name: pilotswarm-portal-builder
 description: "Use when building or customizing a PilotSwarm browser portal app. Scaffolds portal branding, plugin metadata, auth add-on configuration, and deployment wiring."
 ---
@@ -57,6 +57,11 @@ remote mode (`pilotswarm remote --api-url`), SDK apps
   `https://github.com/microsoft/PilotSwarm/blob/main/docs/api/building-a-custom-ux.md`
 
 ## Constraints
+
+- Preserve the shared explicit Steer action across desktop, mobile, focus and
+  MoA composers. Bind submissions to the captured session and target; a late
+  response must not clear another draft. Show receipt evidence, not compliance,
+  and never enable steering from an open-window event without current access.
 
 - prefer `plugin.json.portal` for web branding and sign-in copy instead of hardcoding those values in app code
 - prefer `plugin.json.portal.branding.logoFile` for app-supplied logo assets, with `faviconFile` used only when the browser tab icon must differ from the in-app logo

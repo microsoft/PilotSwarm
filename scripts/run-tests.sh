@@ -138,6 +138,7 @@ Usage:
 Examples:
     ./scripts/run-tests.sh smoke
     ./scripts/run-tests.sh wait-affinity
+    ./scripts/run-tests.sh session-steering
     ./scripts/run-tests.sh session-policy
     ./scripts/run-tests.sh sub-agents reliability
     ./scripts/run-tests.sh --external-test-dir=../plugin-repo/tests/pilotswarm

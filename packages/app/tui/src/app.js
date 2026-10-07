@@ -1,7 +1,7 @@
 import React from "react";
 import { useInput, useStdin } from "ink";
 import { UiPlatformProvider, SharedPilotSwarmApp } from "pilotswarm/ui-react";
-import { UI_COMMANDS, selectAdminConsole, selectNodeMapView } from "pilotswarm/ui-core";
+import { UI_COMMANDS, selectAdminConsole, selectNodeMapView, selectPromptActions } from "pilotswarm/ui-core";
 import { PILOTSWARM_CLI_VERSION_LABEL } from "./version.js";
 
 const MOUSE_INPUT_PATTERN = /\u001b\[<(\d+);(\d+);(\d+)([mM])/gu;
@@ -290,6 +290,19 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
 
         if (key.name !== "escape") {
             clearQuitArm(true);
+        }
+        if (modal?.type === "steeringReceipts") {
+            const action = { w: "withdraw", r: "resend", c: "reuse" }[input];
+            if (key.escape) controller.closeModal();
+            else if (input === "m") controller.loadSteeringRequests(modal.sessionId);
+            else if (key.pageUp) controller.scrollSteeringReceipt(-10);
+            else if (key.pageDown) controller.scrollSteeringReceipt(10);
+            else if (key.upArrow || input === "k") controller.moveModalSelection(-1);
+            else if (key.downArrow || input === "j") controller.moveModalSelection(1);
+            else if (key.return || action) {
+                controller.actOnSelectedSteering(action || "refresh").catch(error => controller.setStatus(error.message));
+            }
+            return;
         }
 
         // ── Admin Console keybindings ─────────────────────────
@@ -604,6 +617,28 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
 
+        if (focus === "prompt" && controller.getState().ui.promptActionIndex != null) {
+            const actions = selectPromptActions(controller.getState());
+            const index = controller.getState().ui.promptActionIndex;
+            if (!actions.length) {
+                controller.dispatch({ type: "ui/promptAction", index: null });
+                return;
+            }
+            if (key.escape || key.tab && key.shift) {
+                controller.dispatch({ type: "ui/promptAction", index: null });
+            } else if (key.tab) {
+                controller.dispatch({ type: "ui/promptAction", index: null });
+                controller.handleCommand(UI_COMMANDS.FOCUS_NEXT).catch(() => {});
+            } else if (key.leftArrow || key.rightArrow) {
+                controller.dispatch({ type: "ui/promptAction", index: (index + (key.leftArrow ? -1 : 1) + actions.length) % actions.length });
+            } else if (key.return) {
+                const action = actions[index];
+                if (action?.enabled) controller.handleCommand(action.command).catch(error => controller.setStatus(error.message));
+                else if (action?.reason) controller.setStatus(action.reason);
+            }
+            return;
+        }
+
         if (focus !== "prompt" && isShiftT) {
             controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
             return;
@@ -624,6 +659,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (key.tab) {
             if (focus === "prompt" && controller.acceptPromptReferenceAutocomplete()) {
+                return;
+            }
+            if (focus === "prompt" && selectPromptActions(controller.getState()).length) {
+                controller.dispatch({ type: "ui/promptAction", index: 0 });
                 return;
             }
             controller.handleCommand(UI_COMMANDS.FOCUS_NEXT).catch(() => {});
@@ -736,6 +775,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (focus === "inspector" && inspectorTab === "stats" && input === "f") {
             controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {});
+            return;
+        }
+        if (focus === "inspector" && inspectorTab === "stats" && plainShortcut && input === "r") {
+            controller.handleCommand(UI_COMMANDS.STEERING_HISTORY).catch(() => {});
             return;
         }
         // Node Map: digits pick a node by its listed ordinal (toggle to clear).

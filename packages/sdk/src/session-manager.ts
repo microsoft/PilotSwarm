@@ -1,4 +1,5 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import type { SteeringWakeSource } from "./steering-channel.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
@@ -1191,6 +1192,17 @@ export class SessionManager {
     /** The worker's feature flag cache, or null when the worker has no CMS. */
     getFeatureFlagCache(): FeatureFlagCache | null {
         return this.featureFlags;
+    }
+
+    private steeringWake: SteeringWakeSource | null = null;
+
+    /** Session steering: the worker's single notification listener (§6a.7). */
+    setSteeringWakeSource(source: SteeringWakeSource | null): void {
+        this.steeringWake = source;
+    }
+
+    getSteeringWakeSource(): SteeringWakeSource | null {
+        return this.steeringWake;
     }
 
     /**
@@ -2643,6 +2655,8 @@ export class SessionManager {
 
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.
+        //    A handle retired by steering quiescence is never reused.
+        await this._awaitSteeringRetirement(sessionId);
         const existing = this.sessions.get(sessionId);
         if (existing) {
             if (turnIndex === 0) {
@@ -3362,6 +3376,72 @@ export class SessionManager {
             await session.destroy();
         } catch {}
         this._forgetWarmSession(sessionId);
+    }
+
+    /**
+     * Session steering (§7.6): per-session quiescence, called ONLY from inside
+     * the held runTurn lock (the ordinary invalidateWarmSession would wait for
+     * that lock and deadlock). Disconnects this session's handle and forgets
+     * it; never stops the shared CopilotClient, which serves other sessions.
+     * Resolves true only when the disconnect resolved; a failure is not
+     * swallowed into success (INV-P9).
+     */
+    async quiesceForSteering(sessionId: string): Promise<boolean> {
+        const session = this.sessions.get(sessionId);
+        if (!session) return true;
+        // Retirement (Tess, a474aba1): from here this handle is being aborted and disconnected.
+        // A Stop may release the turn before this finishes, so the handle must never host
+        // another turn: the next getOrCreate waits (bounded) for this to finish and creates a
+        // fresh handle. Nothing here touches a newer handle (F04 fence below).
+        let finish!: () => void;
+        const done = new Promise<void>((resolve) => { finish = resolve; });
+        this.steeringRetirements.set(sessionId, { handle: session, done });
+        try {
+            // Cessation before disconnect (review F01): abort any run a late steer
+            // started and let it reach idle; disconnect alone leaves it running.
+            const aborted = typeof (session as any).abortForSteeringQuiescence === "function"
+                ? await (session as any).abortForSteeringQuiescence()
+                : true;
+            await this._cancelWorkspaceShells(sessionId, session, "steering quiescence");
+            await session.destroy();
+            return aborted;
+        } catch {
+            return false;
+        } finally {
+            // Generation fence (review F04): the caller may have timed out and a
+            // replacement handle may be installed by now. Forget ONLY the handle
+            // this call captured; a late completion never removes its successor.
+            if (this.sessions.get(sessionId) === session) {
+                this._forgetWarmSession(sessionId);
+            } else {
+                emitSessionManagerTrace(sessionId, "steering quiescence completed after the handle was replaced; the current handle is kept");
+            }
+            if (this.steeringRetirements.get(sessionId)?.handle === session) this.steeringRetirements.delete(sessionId);
+            finish();
+        }
+    }
+
+    /** Handles retired by steering quiescence: never reused for another turn (created lazily). */
+    private _steeringRetirements?: Map<string, { handle: ManagedSession; done: Promise<void> }>;
+    private get steeringRetirements(): Map<string, { handle: ManagedSession; done: Promise<void> }> {
+        return (this._steeringRetirements ??= new Map());
+    }
+
+    /**
+     * Before a turn reuses the warm handle: if steering quiescence retired it, wait (bounded)
+     * for that abort/disconnect to finish and drop the handle, so the next turn gets a fresh
+     * one and a late disconnect can never hit it. Called with the session lock held.
+     */
+    private async _awaitSteeringRetirement(sessionId: string): Promise<void> {
+        const retiring = this.steeringRetirements.get(sessionId);
+        if (!retiring) return;
+        const bound = new Promise<"timeout">((resolve) => { const x = setTimeout(() => resolve("timeout"), 15_000); (x as any).unref?.(); });
+        const outcome = await Promise.race([retiring.done.then(() => "done" as const), bound]);
+        if (outcome === "timeout") {
+            emitSessionManagerTrace(sessionId, "steering quiescence of the previous handle did not finish within 15 s; the handle is dropped and not reused", { level: "warn" });
+        }
+        if (this.sessions.get(sessionId) === retiring.handle) this._forgetWarmSession(sessionId);
+        if (this.steeringRetirements.get(sessionId) === retiring) this.steeringRetirements.delete(sessionId);
     }
 
     /**

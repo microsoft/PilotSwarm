@@ -24,6 +24,8 @@ import type {
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
+import { SteeringManagement, type SteeringCallerContext, type SteeringResendOptions } from "./steering-client.js";
+import type { SteerSessionTurnOptions, SteerSessionTurnResult } from "./steering-types.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
@@ -609,6 +611,12 @@ export class PilotSwarmClient {
         );
     }
 
+    /** Accept current-turn guidance without queueing an ordinary message. */
+    steerSessionTurn(sessionId: string, options: SteerSessionTurnOptions, edge: SteeringCallerContext = {}): Promise<SteerSessionTurnResult> {
+        if (!this.started) throw new Error("PilotSwarmClient is not started");
+        return new SteeringManagement(this._catalog).accept(sessionId, options, edge);
+    }
+
     // ─── Lifecycle ───────────────────────────────────────────
 
     async start(): Promise<void> {
@@ -758,9 +766,14 @@ export class PilotSwarmClient {
     private async _ensureOrchestrationAndSend(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] } & SteeringResendOptions,
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        const resendContext = opts?.steeringRequestId !== undefined ? opts.steeringContext ?? { sender: opts.sender } : undefined;
+        if (opts?.steeringRequestId !== undefined) {
+            await new SteeringManagement(this._catalog).recordResendIntent(sessionId, opts.steeringRequestId,
+                prompt, opts.clientMessageIds, resendContext);
+        }
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
@@ -917,7 +930,7 @@ export class PilotSwarmClient {
                     ? { clientMessageIds: opts.clientMessageIds }
                     : {}),
                 ...(() => {
-                    const sender = normalizeMessageSender(opts?.sender);
+                    const sender = normalizeMessageSender(resendContext?.sender ?? opts?.sender);
                     return sender ? { sender } : {};
                 })(),
                 ...(() => {
@@ -961,7 +974,7 @@ export class PilotSwarmClient {
     async _startTurn(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] } & SteeringResendOptions,
     ): Promise<string> {
         // Match sendAndWait(): snapshot the durable response cursor before
         // enqueue so a following wait() cannot consume the prior turn.
@@ -1416,7 +1429,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] } & SteeringResendOptions): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 
@@ -1507,6 +1520,10 @@ export class PilotSwarmSession {
             "messages",
             JSON.stringify({ cancelPending: ids }),
         );
+    }
+
+    steer(text: string, options: Omit<SteerSessionTurnOptions, "text">, edge: SteeringCallerContext = {}): Promise<SteerSessionTurnResult> {
+        return this.client.steerSessionTurn(this.sessionId, { text, clientRequestId: options.clientRequestId, expectedTarget: options.expectedTarget }, edge);
     }
 
     async abort(): Promise<void> {

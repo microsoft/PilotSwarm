@@ -3,6 +3,9 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { SteeringReceipt } from "./steering-receipt.js";
+import { SteeringArchive, SteeringHistoryDialog } from "./steering-archive.js";
+import { isTextareaHistoryBoundary, supportsPromptHistoryKeyboard } from "./prompt-history-boundary.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -43,6 +46,7 @@ import {
     selectArtifactUploadModal,
     selectLiveActivityLines,
     selectActiveOutboxMessages,
+    selectSteeringComposer,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -902,7 +906,7 @@ function normalizeLines(lines) {
         // recognize and render them (e.g. markdownTable → HTML <table>,
         // cardStart/cardEnd → styled card with structured body,
         // imageAttachments → authenticated thumbnail strip).
-        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments") {
+        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments" || line?.kind === "steeringReceipt") {
             normalized.push(line);
             continue;
         }
@@ -3570,6 +3574,11 @@ function parseStructuredChatBlocks(lines = []) {
         // mode. The body lines between the bounds are UNWRAPPED, so parse
         // them recursively — box-drawn/markdown tables inside the card
         // become real HTML tables instead of hard-wrapped box art.
+        if (currentLine?.kind === "steeringReceipt") {
+            blocks.push({ type: "steeringReceipt", message: currentLine.message });
+            index += 1;
+            continue;
+        }
         if (currentLine?.kind === "cardStart") {
             const innerLines = [];
             index += 1;
@@ -3983,6 +3992,9 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
+            if (block.type === "steeringReceipt") {
+                return React.createElement(SteeringReceipt, { key: block.message.id, message: block.message, controller });
+            }
             if (block.type === "nativeTasks") {
                 return React.createElement(NativeTaskCard, { key: block.group.id, group: block.group,
                     colors: { starting: resolveColor(theme, "cyan"), running: resolveColor(theme, "cyan"),
@@ -7073,6 +7085,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeSteering: activeSessionId ? state.steering?.bySessionId?.[activeSessionId] || null : null,
             // A shared empty array, not a literal: a fresh [] per call failed
             // the shallow-equal check on every dispatch and re-rendered the
             // whole pane, transcript included, on every keystroke.
@@ -7114,11 +7127,14 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
                 ? { [viewState.activeSessionId]: viewState.activeOutbox }
                 : {},
         },
+        steering: { bySessionId: viewState.activeSessionId && viewState.activeSteering
+            ? { [viewState.activeSessionId]: viewState.activeSteering } : {} },
         ui: {
             inspectorTab: viewState.inspectorTab,
         },
     }), [
         viewState.activeHistory,
+        viewState.activeSteering,
         viewState.activeSessionId,
         viewState.activeOutbox,
         viewState.authPrincipal,
@@ -9342,6 +9358,13 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
                 onClick: () => controller.setStatsViewMode(mode),
             }));
         }
+        const steeringStats = viewState.sessionStats?.bySessionId?.[viewState.activeSessionId]?.steeringStats;
+        if ((!viewState.statsViewMode || viewState.statsViewMode === "session") && steeringStats?.data && !steeringStats.unsupported) {
+            actions.push(React.createElement(IconButton, {
+                key: "steering-history", icon: "↗", label: "Guidance history",
+                onClick: () => controller.handleCommand(UI_COMMANDS.STEERING_HISTORY).catch(() => {}),
+            }));
+        }
     }
 
     const panelActions = extraActions
@@ -9514,6 +9537,7 @@ function formatAttachmentSize(sizeBytes) {
 }
 
 function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
+    const steering = useControllerSelector(controller, selectSteeringComposer, shallowEqualObject);
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -9537,9 +9561,12 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // Raw reference (stable across renders) — image entries are
             // filtered at render time so the shallow-equal selector holds.
             promptAttachments: state.ui.promptAttachments || EMPTY_ARRAY,
+            historyScan: state.promptHistory?.bySessionId?.[activeSessionId]?.scan || null,
+            sessionId: activeSessionId,
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
+    const composingRef = React.useRef(false);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
@@ -9555,7 +9582,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     : "Edit the pending message, then send or cancel it"
             : promptState.hasOutbox
                 ? "Type a message and press Enter to queue it behind the pending batch"
-                : "Type a message and press Enter";
+                : "Type a message and press Enter (Up recalls history)";
 
     // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
     // sees soft wrap; counting "\n" does not). CSS max-height provides the
@@ -9572,10 +9599,27 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const growInput = React.useCallback((force = false) => {
         const node = inputRef.current;
         if (!node) return;
+        const composer = node.closest(".ps-chat-composer");
+        const body = composer?.parentElement;
+        if (mobile && body?.classList.contains("ps-panel-body")) {
+            // The viewport fraction alone ignores the session list, panel
+            // header and Working/outbox strips on short screens.
+            const bodyStyle = getComputedStyle(body);
+            const siblingsHeight = [...body.children].filter(child => child !== composer).reduce((total, child) => {
+                const style = getComputedStyle(child);
+                return total + (child.classList.contains("ps-scroll-panel")
+                    ? parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+                    : child.getBoundingClientRect().height);
+            }, 0);
+            const chrome = composer.getBoundingClientRect().height - node.getBoundingClientRect().height;
+            const available = Math.max(44, body.clientHeight - parseFloat(bodyStyle.paddingTop)
+                - parseFloat(bodyStyle.paddingBottom) - siblingsHeight - chrome);
+            node.style.setProperty("--ps-prompt-available-height", `${Math.floor(available)}px`);
+        }
         if (!force && node.scrollHeight <= node.clientHeight) return;
         node.style.height = "0px";
         node.style.height = `${node.scrollHeight + 2}px`;
-    }, []);
+    }, [mobile]);
     React.useLayoutEffect(() => {
         const length = String(promptState.value || "").length;
         // Equal length can still drop a wrapped line (a selection replaced by
@@ -9605,13 +9649,20 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 frame = requestAnimationFrame(() => growInput(true));
             })
             : null;
-        if (observer && node) observer.observe(node);
+        if (observer && node) {
+            observer.observe(node);
+            const body = node.closest(".ps-chat-composer")?.parentElement;
+            if (mobile && body?.classList.contains("ps-panel-body")) {
+                observer.observe(body);
+                for (const child of body.children) observer.observe(child);
+            }
+        }
         return () => {
             window.removeEventListener("resize", onResize);
             observer?.disconnect();
             cancelAnimationFrame(frame);
         };
-    }, [growInput]);
+    }, [growInput, mobile]);
 
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
         && controller.transport.supportsPromptImageAttachments()
@@ -9686,6 +9737,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 onAfterSend?.();
             });
     }, [controller, onAfterSend]);
+    const steerPrompt = React.useCallback(() => {
+        controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    }, [controller]);
 
     const [stoppingTurn, setStoppingTurn] = React.useState(false);
     const stopTurn = React.useCallback(() => {
@@ -9778,6 +9832,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",
+            "data-testid": "session-prompt",
             // One line at rest; a layout effect grows it to the rendered
             // content and CSS max-height caps it. Never a manual resize grip.
             rows: 1,
@@ -9790,6 +9845,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             onFocus: () => controller.setFocus("prompt"),
             onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
+            onCompositionStart: () => { composingRef.current = true; },
+            onCompositionEnd: () => { composingRef.current = false; },
             // Ctrl/Cmd+V of a copied image (or iOS/Android long-press → Paste):
             // clipboardData.items carries the image file(s). preventDefault only
             // when we actually staged one, so text pastes are untouched.
@@ -9806,15 +9863,31 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 }
                 : undefined,
             onKeyDown: (event) => {
+                if (composingRef.current || event.nativeEvent?.isComposing || event.isComposing
+                    || event.nativeEvent?.keyCode === 229) return;
+                if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "s") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    steerPrompt();
+                    return;
+                }
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {
                     event.preventDefault();
                     return;
                 }
-                // Arrow keys are NOT intercepted: the textarea's native cursor
-                // movement understands soft-wrapped lines and goal columns;
-                // onSelect mirrors every move into the shared model. (The old
-                // hijack routed through the TUI's logical-line cursor and made
-                // Down jump whole paragraphs inside wrapped text.)
+                if (supportsPromptHistoryKeyboard(mobile) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+                    && ["ArrowUp", "ArrowDown"].includes(event.key)
+                    && event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+                    && !event.currentTarget.hasAttribute("aria-activedescendant")
+                    && isTextareaHistoryBoundary(event.currentTarget, event.key === "ArrowUp" ? -1 : 1)) {
+                    controller.setPromptCursor(event.currentTarget.selectionStart);
+                    if (controller.recallPromptInput(event.key === "ArrowUp" ? -1 : 1)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        return;
+                    }
+                }
+                // Other arrows keep native textarea movement and soft wrapping.
                 if (event.key === "Escape" && promptState.editingPending) {
                     event.preventDefault();
                     if (selectedReadOnly) {
@@ -9875,21 +9948,35 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
-                    title: "Stop the current turn (the session stays alive and returns to idle)",
+                    title: "Stop the current turn. Queued prompts and schedules continue; the session stays alive.",
                     "aria-label": "Stop the current turn",
                     disabled: stoppingTurn,
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: stopTurn,
                 }, "■")
                 : null,
+            steering.visible ? React.createElement(IconButton, {
+                className: "ps-mini-button ps-steer-button",
+                testId: "steer-current-turn",
+                label: "Steer current turn",
+                tooltip: steering.enabled ? `Steer current turn. ${steering.help} (Ctrl+S)` : steering.reason,
+                preservePromptFocus: true,
+                disabled: !steering.enabled,
+                onClick: steerPrompt,
+                icon: React.createElement(React.Fragment, null,
+                    React.createElement("svg", { className: "ps-steer-glyph", viewBox: "0 0 24 24", width: 20, height: 20, fill: "none", stroke: "currentColor", strokeWidth: 2 },
+                        React.createElement("path", { d: "M6 20v-6a6 6 0 0 1 6-6h7M14 3l5 5-5 5" })),
+                    React.createElement("span", { className: "ps-steer-label" }, "Steer")),
+            }) : null,
             React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}`,
+                "data-testid": "send-prompt",
                 title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                     ? "Send all queued prompts"
                     : promptState.hasOutbox
                         ? "Queue prompt behind the pending batch"
-                        : "Send prompt",
+                        : promptState.canStopTurn ? "Queue for the next turn" : "Send prompt",
                 "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                     ? "Send queued prompts"
                     : promptState.hasOutbox
@@ -9899,6 +9986,13 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 onClick: sendPrompt,
             }, sendLabel),
         ),
+        React.createElement(SteeringArchive, { controller }),
+        promptState.historyScan?.partial ? React.createElement("div", { className: "ps-prompt-history-partial", role: "status" },
+            "Input history is partial. ",
+            React.createElement("button", { type: "button", className: "ps-mini-button",
+                disabled: promptState.historyScan.loading,
+                onClick: () => controller.loadPromptHistory(promptState.sessionId, { more: true }) },
+            promptState.historyScan.loading ? "Loading input history..." : "Load more input history")) : null,
     );
 }
 
@@ -9916,7 +10010,7 @@ function StatusStrip({ controller }) {
 // (hold ~450ms to see the label, release to dismiss — the long-press does not
 // fire onClick). aria-label carries the meaning for assistive tech.
 const ICON_HOVER_TOOLTIP_MS = 1000;
-function IconButton({ icon, label, onClick, disabled = false, active = false, pressed = undefined, className = "ps-toolbar-button" }) {
+function IconButton({ icon, label, tooltip = label, testId, preservePromptFocus = false, onClick, disabled = false, active = false, pressed = undefined, className = "ps-toolbar-button" }) {
     // The tooltip is portaled to <body> so it escapes the toolbar/pane
     // overflow-clipping and stacking contexts (nested tooltips were hidden
     // behind, or bled through by, the panes). Coordinates are computed from
@@ -9988,6 +10082,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
         setTip(null);
     };
     const startPress = (e) => {
+        if (preservePromptFocus) e.preventDefault();
         if (e.pointerType === "mouse") return;
         longPressRef.current = false;
         pressOriginRef.current = { x: e.clientX, y: e.clientY };
@@ -10048,7 +10143,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
                 className: `ps-icon-tooltip is-${tip.placement}`,
                 role: "tooltip",
                 style: { left: `${tip.x}px`, top: `${tip.y}px` },
-            }, label),
+            }, tooltip),
             document.body)
         : null;
 
@@ -10059,6 +10154,8 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
         onClick: handleClick,
         disabled,
         "aria-label": label,
+        "data-testid": testId,
+        title: preservePromptFocus ? tooltip : undefined,
         "aria-pressed": pressed,
         onPointerEnter: startHover,
         onPointerLeave: endHover,
@@ -13119,6 +13216,9 @@ function ModalLayer({ controller }) {
         ));
     };
 
+    if (modal.type === "steeringReceipts") {
+        return React.createElement(SteeringHistoryDialog, { controller, sessionId: modal.sessionId, onClose: close });
+    }
     if (modal.type === "confirm" && modalState.confirm) {
         const isAlert = Boolean(modal.alert);
         const isDestructive = !isAlert && (modal.action === "deleteSession" || modal.action === "removeSystemSession");

@@ -1,5 +1,7 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { promptHistoryActorKey, mergePromptHistorySession, navigatePromptHistory, selectPromptHistory, PROMPT_HISTORY_LIMIT, promptDraftForPersistence } from "./prompt-history.js";
+import { emptySteeringSession, mergeSteeringReceipt, mergeSteeringWindow } from "./steering.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -843,7 +845,7 @@ function normalizePromptAttachments(prompt, attachments) {
 
 export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
-    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
+    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox|steering|promptHistory)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
     const next = baseReducer(state, action);
     if (next === state) return next;
@@ -975,6 +977,8 @@ function baseReducer(state, action) {
         case "auth/context":
             return {
                 ...state,
+                ...(promptHistoryActorKey(state.auth?.principal) !== promptHistoryActorKey(action.principal)
+                    ? { promptHistory: { bySessionId: {} }, ui: { ...state.ui, promptHistoryNavigation: null } } : {}),
                 admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
                     ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin,
@@ -984,6 +988,8 @@ function baseReducer(state, action) {
                 },
             };
 
+        case "ui/promptAction":
+            return { ...state, ui: { ...state.ui, promptActionIndex: action.index } };
         case "ui/status":
             return {
                 ...state,
@@ -1569,12 +1575,56 @@ function baseReducer(state, action) {
                 },
             };
 
+        case "promptHistory/navigate": {
+            if (![-1, 1].includes(action.direction) || state.ui.modal || state.ui.promptEdit) return state;
+            const next = navigatePromptHistory(state, action.direction,
+                selectPromptHistory(state, state.sessions.activeSessionId, { excludeOutbox: action.excludeOutbox }),
+                { stash: action.stash, outboxIds: action.outboxIds });
+            if (!next) return state;
+            return { ...state, ui: { ...state.ui, prompt: next.prompt, promptCursor: next.promptCursor,
+                promptRows: getPromptInputRows(next.prompt), promptAttachments: next.attachments || [],
+                promptHistoryNavigation: next.navigation } };
+        }
+        case "promptHistory/reset":
+            return state.ui.promptHistoryNavigation
+                ? { ...state, ui: { ...state.ui, promptHistoryNavigation: null } } : state;
+        case "promptHistory/accepted": {
+            if (!promptHistoryActorKey(action.actor)
+                || promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)
+                || !action.text?.trim() || !action.ids?.length) return state;
+            const previous = state.promptHistory?.bySessionId?.[action.sessionId] || {};
+            const remaining = (previous.accepted || []).filter(item => !item.ids.some(id => action.ids.includes(id)));
+            const duplicate = remaining[0]?.text === action.text ? remaining.shift() : null;
+            const accepted = [{ text: action.text, ids: [...action.ids, ...(duplicate?.ids || [])].slice(0, 100) },
+                ...remaining].slice(0, PROMPT_HISTORY_LIMIT);
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: { ...previous, accepted } } } };
+        }
+        case "promptHistory/scan": {
+            if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: { ...state.promptHistory?.bySessionId?.[action.sessionId], scan: action.scan } } } };
+        }
+        case "promptHistory/eventsReceived": {
+            if (promptHistoryActorKey(action.actor) !== promptHistoryActorKey(state.auth?.principal)) return state;
+            return { ...state, promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                [action.sessionId]: mergePromptHistorySession(state.promptHistory?.bySessionId?.[action.sessionId],
+                    action.events, action.actor) } } };
+        }
+        case "ui/promptRestored": {
+            const prompt = action.draft.prompt || "";
+            return { ...state, ui: { ...state.ui, prompt, promptEdit: null, promptHistoryNavigation: null,
+                promptCursor: clampPromptCursor(prompt, action.draft.cursor, prompt.length),
+                promptRows: getPromptInputRows(prompt),
+                promptAttachments: normalizePromptAttachments(prompt, action.draft.attachments || []) } };
+        }
         case "ui/prompt":
             return {
                 ...state,
                 ui: {
                     ...state.ui,
                     prompt: action.prompt,
+                    promptHistoryNavigation: action.prompt !== state.ui.prompt ? null : state.ui.promptHistoryNavigation,
                     promptCursor: clampPromptCursor(action.prompt, action.promptCursor, state.ui.promptCursor),
                     promptRows: getPromptInputRows(action.prompt),
                     promptAttachments: normalizePromptAttachments(action.prompt, state.ui.promptAttachments),
@@ -1590,17 +1640,19 @@ function baseReducer(state, action) {
                 },
             };
 
-        case "ui/promptAttachments":
+        case "ui/promptAttachments": {
+            const attachments = normalizePromptAttachments(state.ui.prompt, action.attachments);
+            const old = state.ui.promptAttachments || [];
+            const changed = attachments.length !== old.length || attachments.some((item, index) => item !== old[index]);
             return {
                 ...state,
                 ui: {
                     ...state.ui,
-                    promptAttachments: normalizePromptAttachments(
-                        state.ui.prompt,
-                        action.attachments,
-                    ),
+                    promptAttachments: attachments,
+                    promptHistoryNavigation: changed ? null : state.ui.promptHistoryNavigation,
                 },
             };
+        }
 
         case "sessions/gone": {
             // Terminal eviction: the server answered 404 for this session (or
@@ -1613,7 +1665,7 @@ function baseReducer(state, action) {
             const hadRow = Boolean(state.sessions.byId[goneId]);
             const wasActive = state.sessions.activeSessionId === goneId;
             const hadContent = state.history.bySessionId.has(goneId)
-                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.sessionStats]
+                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.steering, state.sessionStats]
                     .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
             if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
@@ -1642,6 +1694,8 @@ function baseReducer(state, action) {
                 executionHistory: discard(state.executionHistory),
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
+                promptHistory: discard(state.promptHistory),
+                steering: discard(state.steering),
                 sessionStats: discard(state.sessionStats),
                 sessions: {
                     ...state.sessions,
@@ -1930,11 +1984,10 @@ function baseReducer(state, action) {
             let nextPromptEdit = state.ui.promptEdit ?? null;
             if (switchingSession) {
                 const editingPending = Boolean(state.ui.promptEdit);
-                if (!editingPending && previousActiveId) {
-                    const outgoing = {
-                        prompt: String(state.ui.prompt || ""),
-                        attachments: Array.isArray(state.ui.promptAttachments) ? state.ui.promptAttachments : [],
-                    };
+                if ((!editingPending || state.ui.promptEdit.draftPrompt !== undefined) && previousActiveId) {
+                    const savedDraft = promptDraftForPersistence(state.ui);
+                    const outgoing = { prompt: savedDraft.prompt, attachments: savedDraft.attachments || [],
+                        ...(state.ui.promptHistoryNavigation || editingPending ? { cursor: savedDraft.cursor } : {}) };
                     if (outgoing.prompt || outgoing.attachments.length > 0) {
                         savedDrafts[previousActiveId] = outgoing;
                     } else {
@@ -1944,7 +1997,7 @@ function baseReducer(state, action) {
                 const incoming = action.sessionId ? savedDrafts[action.sessionId] : null;
                 delete savedDrafts[action.sessionId];
                 nextPrompt = incoming?.prompt || "";
-                nextPromptCursor = nextPrompt.length;
+                nextPromptCursor = clampPromptCursor(nextPrompt, incoming?.cursor, nextPrompt.length);
                 nextPromptAttachments = Array.isArray(incoming?.attachments) ? incoming.attachments : [];
                 nextPromptEdit = null;
             }
@@ -1968,6 +2021,8 @@ function baseReducer(state, action) {
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
+                    promptHistoryNavigation: null,
+                    promptActionIndex: null,
                     prompt: nextPrompt,
                     promptCursor: nextPromptCursor,
                     promptRows: getPromptInputRows(nextPrompt),
@@ -2240,6 +2295,9 @@ function baseReducer(state, action) {
             });
             return {
                 ...state,
+                promptHistory: { bySessionId: { ...state.promptHistory?.bySessionId,
+                    [action.sessionId]: mergePromptHistorySession(state.promptHistory?.bySessionId?.[action.sessionId],
+                        action.history?.events, state.auth?.principal) } },
                 history: {
                     ...state.history,
                     bySessionId: nextHistory,
@@ -2263,6 +2321,8 @@ function baseReducer(state, action) {
             for (const id of ids) nextHistory.delete(id);
             const nextOutbox = cloneOutboxBySessionId(state.outbox?.bySessionId);
             for (const id of ids) delete nextOutbox[id];
+            const nextPromptHistory = { ...state.promptHistory?.bySessionId };
+            for (const id of ids) delete nextPromptHistory[id];
             const nextChatScroll = { ...(state.ui.chatScrollBySession || {}) };
             for (const id of ids) delete nextChatScroll[id];
             const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
@@ -2279,6 +2339,7 @@ function baseReducer(state, action) {
                     ...state.outbox,
                     bySessionId: nextOutbox,
                 },
+                promptHistory: { bySessionId: nextPromptHistory },
                 ui: {
                     ...state.ui,
                     chatScrollBySession: nextChatScroll,
@@ -2286,6 +2347,76 @@ function baseReducer(state, action) {
                     promptDraftBySession: nextDrafts,
                 },
             };
+        }
+
+        case "steering/sharedSession": {
+            const bySessionId = { ...state.steering?.bySessionId };
+            if (action.entry) bySessionId[action.sessionId] = action.entry;
+            else delete bySessionId[action.sessionId];
+            return { ...state, steering: { ...state.steering, bySessionId } };
+        }
+        case "steering/page": {
+            const entry = state.steering?.bySessionId?.[action.sessionId] || emptySteeringSession();
+            if (entry.accessLost || (action.accessRevision || 0) !== (entry.accessRevision || 0)) return state;
+            return { ...state, steering: { ...state.steering, bySessionId: { ...state.steering?.bySessionId,
+                [action.sessionId]: { ...entry, page: action.finishLoading ? { ...entry.page, loading: false } : action.page } } } };
+        }
+        case "steering/accessLost": {
+            const bySessionId = { ...state.steering?.bySessionId };
+            bySessionId[action.sessionId] = {
+                ...emptySteeringSession(), accessLost: true,
+                accessRevision: (bySessionId[action.sessionId]?.accessRevision || 0) + 1,
+            };
+            return { ...state, steering: { ...state.steering, bySessionId } };
+        }
+        case "steering/stateLoaded":
+        case "steering/windowChanged":
+        case "steering/receiptReceived":
+        case "steering/resendUpdated":
+        case "steering/submissionStarted":
+        case "steering/submissionFailed": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            let entry = state.steering?.bySessionId?.[sessionId] || emptySteeringSession();
+            if (action.type === "steering/stateLoaded") {
+                if ((action.accessRevision ?? 0) !== (entry.accessRevision || 0)) return state;
+                entry = { ...entry, accessLost: false };
+                // Reads are captured before awaiting; newer live events win.
+                if ((action.windowSeq ?? 0) >= entry.windowSeq) {
+                    entry = { ...entry, state: action.state, windowSeq: action.windowSeq ?? entry.windowSeq, error: action.error || null };
+                } else {
+                    // The read still supplies capability/access that window
+                    // events deliberately omit, including first-load races.
+                    entry = { ...entry, state: {
+                        ...action.state, ...entry.state,
+                        supported: action.state.supported,
+                        canWrite: action.state.canWrite,
+                        limits: action.state.limits,
+                        steerable: action.state.supported === true && entry.state?.windowState === "open",
+                    } };
+                }
+            } else if (action.type === "steering/windowChanged") {
+                if (entry.accessLost) return state;
+                entry = mergeSteeringWindow(entry, action.window, action.seq);
+            } else if (action.type === "steering/receiptReceived") {
+                if (entry.accessLost || action.accessRevision !== undefined && action.accessRevision !== (entry.accessRevision || 0)) return state;
+                if (action.receipt?.sessionId !== sessionId) return state;
+                entry = mergeSteeringReceipt(entry, action.receipt);
+            } else if (action.type === "steering/resendUpdated") {
+                if (entry.accessLost || (action.accessRevision || 0) !== (entry.accessRevision || 0)) return state;
+                entry = { ...entry, resends: { ...entry.resends, [action.requestId]: action.resend } };
+            } else if (action.type === "steering/submissionStarted") {
+                entry = { ...entry, pending: { ...entry.pending, [action.request.clientRequestId]: action.request } };
+            } else {
+                const pending = entry.pending[action.clientRequestId];
+                if (!pending) return state;
+                entry = { ...entry, pending: { ...entry.pending, [action.clientRequestId]: {
+                    ...pending, inFlight: false, error: action.error, rejected: action.rejected === true,
+                } } };
+            }
+            return { ...state, steering: { ...state.steering, bySessionId: {
+                ...state.steering?.bySessionId, [sessionId]: entry,
+            } } };
         }
 
         case "outbox/setSessionItems": {
@@ -2466,6 +2597,7 @@ function baseReducer(state, action) {
                 treeFactsStats: action.treeFactsStats || null,
                 // Session workspaces: getSessionWorkspace's view, or null when unknown.
                 workspace: action.workspace || null,
+                steeringStats: action.steeringStats || null,
             };
             return {
                 ...state,

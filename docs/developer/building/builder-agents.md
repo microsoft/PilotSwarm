@@ -72,6 +72,12 @@ cp -R templates/builder-agents/skills/* .github/skills/
 
 ## Design Intent
 
+The SDK, CLI and portal builders preserve explicit
+[session steering](../../user-guide/session-steering.md) through public clients.
+They keep ordinary Send/Stop behavior unchanged, retain observed target and
+retry identity, and distinguish acceptance, delivery, inclusion and no-resend
+evidence. Templates never enable the deployment feature automatically.
+
 - `pilotswarm-cli-builder` helps users build plugin-driven CLI/TUI apps on top of the shipped PilotSwarm UI.
 - `pilotswarm-portal-builder` helps users customize the shipped browser portal with plugin-driven branding, named-agent exposure, and optional auth add-ons.
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.

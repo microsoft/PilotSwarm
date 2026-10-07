@@ -32,6 +32,8 @@ import {
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectStatusBar,
+    selectPromptActions,
+    selectSteeringReceiptModal,
     selectThemePickerModal,
     selectHelpModal,
     selectConfirmModal,
@@ -348,6 +350,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
             activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
+            activeSteering: activeSessionId ? state.steering?.bySessionId?.[activeSessionId] || null : null,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages (and tag the owner) in shared sessions.
             authPrincipal: state.auth?.principal || null,
@@ -389,9 +392,12 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
                     ? { [chatView.activeSessionId]: chatView.activeOutbox }
                     : {},
             },
+            steering: { bySessionId: chatView.activeSessionId && chatView.activeSteering
+                ? { [chatView.activeSessionId]: chatView.activeSteering } : {} },
         };
     }, [
         chatView.activeHistory,
+        chatView.activeSteering,
         chatView.activeSessionId,
         chatView.activeSession,
         chatView.activeOutbox,
@@ -925,6 +931,7 @@ const ActivityPane = React.memo(function ActivityPane({ controller, width, heigh
 
 const PromptBar = React.memo(function PromptBar({ controller, rows }) {
     const platform = useUiPlatform();
+    const actions = useControllerSelector(controller, selectPromptActions);
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -935,6 +942,7 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             prompt: state.ui.prompt,
             promptCursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
+            actionIndex: state.ui.promptActionIndex,
             answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
             hasOutbox: outbox.length > 0,
@@ -945,14 +953,16 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
         label: promptState.answeringQuestion ? "answer" : promptState.editingPending ? "pending" : "you",
         value: promptState.prompt,
         cursorIndex: promptState.promptCursor,
-        focused: promptState.focused,
+        focused: promptState.focused && promptState.actionIndex == null,
+        actions,
+        actionIndex: promptState.focused ? promptState.actionIndex : null,
         placeholder: promptState.answeringQuestion
             ? "Type an answer and press Enter"
             : promptState.editingPending
                 ? "Edit pending prompt, Enter sends batch, Esc cancels"
                 : promptState.hasOutbox
-                    ? "Type a message and press Enter to queue it"
-            : "Type a message and press Enter",
+                    ? "Enter queues · Up recalls your history"
+            : "Enter sends · Up recalls your history",
         rows,
     });
 });
@@ -970,6 +980,8 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         filesFullscreen: Boolean(state.files.fullscreen),
         mode: state.connection.mode,
         statusText: state.ui.statusText,
+        promptActionIndex: state.ui.promptActionIndex,
+        steering: state.steering,
         modal: state.ui.modal,
         activeSessionId: state.sessions.activeSessionId,
         activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
@@ -987,6 +999,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
             inspectorTab: statusState.inspectorTab,
             fullscreenPane: statusState.fullscreenPane,
             statusText: statusState.statusText,
+            promptActionIndex: statusState.promptActionIndex,
             modal: statusState.modal,
         },
         logs: {
@@ -1004,6 +1017,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
                 ? { [statusState.activeSessionId]: statusState.activeSession }
                 : {},
         },
+        steering: statusState.steering,
     }), [statusState]);
     const status = React.useMemo(() => selectStatusBar(selectorState), [selectorState]);
     const viewport = typeof platform.getViewport === "function"
@@ -1800,6 +1814,26 @@ function HelpModalContainer({ controller }) {
     return React.createElement(HelpModal, { state });
 }
 
+function SteeringReceiptModalContainer({ controller }) {
+    const platform = useUiPlatform();
+    const state = useControllerSelector(controller, rootState => ({
+        ui: rootState.ui, sessions: rootState.sessions, history: rootState.history,
+        steering: rootState.steering, branding: rootState.branding,
+    }), shallowEqualObject);
+    const viewport = platform.getViewport?.() || { width: 120, height: 40 };
+    const width = Math.max(24, Math.min(84, viewport.width - 8));
+    const modal = selectSteeringReceiptModal(state, width - 4);
+    if (!modal) return null;
+    const height = Math.min(viewport.height - 4, modal.rows.length + 2);
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Panel, {
+            title: modal.title, color: "cyan", focused: true, width,
+            height,
+            lines: modal.rows, scrollOffset: Math.min(modal.scrollOffset, Math.max(0, modal.rows.length - height + 2)),
+            scrollMode: "top", fillColor: "surface",
+        }));
+}
+
 function renderFilterModal(platform, modal) {
     if (!modal) return null;
     const viewport = typeof platform.getViewport === "function"
@@ -2480,6 +2514,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         sessionPaneAdjust: state.ui.layout?.sessionPaneAdjust ?? 0,
         activityPaneAdjust: state.ui.layout?.activityPaneAdjust ?? 0,
         promptRows: getPromptInputRows(state.ui.prompt),
+        promptActionRows: selectPromptActions(state).length ? 1 : 0,
         inspectorTab: state.ui.inspectorTab,
         filesFullscreen: Boolean(state.files?.fullscreen),
         fullscreenPane: state.ui.fullscreenPane || null,
@@ -2492,8 +2527,8 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const viewportWidth = layoutState.viewportWidth;
     const viewportHeight = layoutState.viewportHeight;
     const layout = React.useMemo(
-        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.fullscreenPane),
-        [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
+        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.fullscreenPane, layoutState.promptActionRows),
+        [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.promptRows, layoutState.promptActionRows, viewportHeight, viewportWidth],
     );
     const frames = buildWorkspacePaneFrames(layout);
     const sessionRows = Math.max(3, (layout.fullscreenPane === "sessions" ? layout.bodyHeight : layout.sessionPaneHeight) - 2);
@@ -2605,6 +2640,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),
         React.createElement(HelpModalContainer, { controller }),
+        React.createElement(SteeringReceiptModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),

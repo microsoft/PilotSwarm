@@ -44,6 +44,13 @@ export type { PilotSwarmWebOptions } from "./web/api-connection.js";
 export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
 export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 export type { SharedManagementSurface } from "./web/web-management-client.js";
+export type * from "./steering-types.js";
+export { SteeringError } from "./steering-client.js";
+export type { SteeringCallerContext, SteeringResendOptions } from "./steering-client.js";
+export {
+    STEERING_FEATURE, DEFAULT_STEERING_LIMITS, STEERING_EVENT_TYPES,
+    encodeSteeringTarget, decodeSteeringTarget, toSteeringReceipt, normalizeSteerText,
+} from "./steering.js";
 export { createManagementOps } from "./web/generated-op-methods.js";
 export type { ManagementOps } from "./web/generated-op-methods.js";
 export { WebFactStore, WebEnhancedFactStore, createWebFactStore } from "./web/web-fact-store.js";

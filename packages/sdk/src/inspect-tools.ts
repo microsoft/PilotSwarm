@@ -37,6 +37,7 @@
  * @internal
  */
 
+import { readSteeringEnabled } from "./steering.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalog, SessionEvent, SessionRow } from "./cms.js";
@@ -795,6 +796,78 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
+    // Session steering (§11.3): summary plus bounded request/attempt diagnostics.
+    // Same CMS reads as getSessionSteeringStats / listSteeringRequests; message
+    // text is never returned here (read it through the authorized receipt APIs).
+    const readSessionSteeringTool = defineTool("read_session_steering", {
+        description:
+            "Read session steering diagnostics: window state, counts by disposition and inclusion, deliveries " +
+            "and redeliveries, uncertainty, latency distributions (hand-off, safe point), refusal counters, and " +
+            "optionally the most recent requests with their attempt evidence (no message text).",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                since: { type: "string", description: "ISO timestamp lower bound for request/attempt aggregates." },
+                include_requests: { type: "boolean", description: "Also return the latest requests (default false)." },
+                limit: { type: "number", description: "Requests to return when include_requests (default 20, max 100)." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; since?: string; include_requests?: boolean; limit?: number }) => {
+            const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_steering", id);   // RULE 2
+            if (denied) return denied;
+            const steering = catalog as Partial<Pick<SessionCatalog, "supportsSteering" | "steerState" | "steerStats" | "steerListRecent" | "getSession">>
+                & { features?: Parameters<typeof readSteeringEnabled>[0] };
+            try {
+                if (typeof steering.supportsSteering !== "function" || !(await steering.supportsSteering())) {
+                    return { sessionId: id, supported: false, reason: "schema_missing" };
+                }
+                const since = args.since ? new Date(args.since) : null;
+                if (since && Number.isNaN(since.getTime())) return { error: "read_session_steering: since is not a valid timestamp" };
+                const [state, stats, row] = await Promise.all([
+                    steering.steerState!(id),
+                    steering.steerStats!(id, { since }),
+                    steering.getSession ? steering.getSession(id) : Promise.resolve(null),
+                ]);
+                // Effective capability (review F17), resolved like public discovery from schema,
+                // the sessions.steering flag for the session owner and the session kind. The
+                // deployment's authorization mode is a Web-edge gate and is not visible here.
+                const featureEnabled = await readSteeringEnabled(steering.features ?? null, (row as any)?.owner ?? null).catch(() => false);
+                const serviceSession = Boolean((row as any)?.serviceKind);
+                const supported = featureEnabled && !serviceSession;
+                const out: Record<string, unknown> = {
+                    sessionId: id,
+                    supported,
+                    capability: {
+                        schema: true,
+                        featureEnabled,
+                        serviceSession,
+                        scope: "schema + sessions.steering for the session owner + session kind; excludes the deployment authorization mode",
+                    },
+                    // Raw ledger/window facts, independent of the effective capability above.
+                    state,
+                    stateScope: "raw_window",
+                    stats,
+                };
+                if (args.include_requests) {
+                    const limit = Math.min(Math.max(1, Number(args.limit) || 20), 100);
+                    // Newest first (review F12): the latest `limit` requests, not a capped prefix.
+                    const recent = await steering.steerListRecent!(id, limit);
+                    const items = recent.items.map((r) => {
+                        const { text: _omit, ...rest } = r as typeof r & { text?: string };
+                        return rest;
+                    });
+                    out.requests = { order: "newest_first", items, total: recent.total, truncated: recent.total > items.length };
+                }
+                return out;
+            } catch (err: any) {
+                return { error: `read_session_steering: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const readSessionTokensByModelTool = defineTool("read_session_tokens_by_model", {
         description:
             "Read per-session token totals grouped by provider:model:reasoning effort, with turn counts. " +
@@ -1406,6 +1479,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         contextHealthTool,
         ...systemReadTools,
         readSessionMetricSummaryTool,
+        readSessionSteeringTool,
         readSessionTokensByModelTool,
         readSessionGraphSearchesTool,
         readSessionTreeStatsTool,

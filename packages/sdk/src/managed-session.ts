@@ -20,6 +20,7 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
+import { SteeringPump, SteeringQuiesceFailedError } from "./steering-pump.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -905,6 +906,15 @@ export class ManagedSession {
     private stopRequest: { reason: string; requestedAt: number } | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
     private settleTurnResolver: (() => void) | null = null;
+    /** Session steering: the running turn's pump and admission gate (§6a.4). */
+    private steeringPump: SteeringPump | null = null;
+    /** Stop safety net for steered turns (see armSteeringStopWatch). */
+    private steeringStopWatch: { dispose(): void } | null = null;
+    private steeringTrace: ((message: string) => void) | undefined;
+    /** Incremented at every runTurn start; the Stop watch acts only within its own generation. */
+    private turnGeneration = 0;
+    /** The SDK abort issued by steering quiescence, while it is in flight (never doubled). */
+    private quiescenceAbort: Promise<unknown> | null = null;
 
     constructor(
         sessionId: string,
@@ -1456,6 +1466,10 @@ export class ManagedSession {
      * misclassified as a retryable error.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        // A new turn ends the previous Stop's watch: it must never abort this turn.
+        this.turnGeneration++;
+        this.steeringStopWatch?.dispose();
+        this.steeringStopWatch = null;
         this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
         let result: TurnResult | undefined;
@@ -1469,6 +1483,21 @@ export class ManagedSession {
             } catch (err) {
                 failed = true;
                 turnError = err;
+            }
+            // Session steering (§7.6): settle the pump before classification.
+            // INV-F3: after this, no steering send() can run for this turn.
+            let steeringManifest: TurnResult["steering"];
+            const pump = this.steeringPump;
+            if (pump) {
+                try {
+                    steeringManifest = await pump.settle({ stopping: Boolean(this.stopRequest) });
+                } catch (err) {
+                    // Unproven quiescence: fail before the snapshot commit.
+                    if (!this.stopRequest) { failed = true; turnError = err; result = undefined; }
+                } finally {
+                    pump.dispose();
+                    if (this.steeringPump === pump) this.steeringPump = null;
+                }
             }
             // Cleanup failures must escape stop/error classification: the
             // activity cannot commit a snapshot with native work still live.
@@ -1484,8 +1513,10 @@ export class ManagedSession {
                 };
             }
             if (failed) throw turnError;
-            return result!;
+            return steeringManifest ? { ...result!, steering: steeringManifest } : result!;
         } finally {
+            this.steeringPump?.dispose();
+            this.steeringPump = null;
             this.activeTurn = null;
             this.stopRequest = null;
             this.settleTurnResolver = null;
@@ -1504,6 +1535,8 @@ export class ManagedSession {
      */
     requestStop(reason: string): { turnIndex: number } | null {
         if (!this.activeTurn) return null;
+        this.steeringPump?.gate.close();   // INV-F2: before the caller's abort()
+        this.steeringPump?.interrupt();    // an in-progress settlement must not delay Stop
         this.stopRequest = { reason, requestedAt: Date.now() };
         return { turnIndex: this.activeTurn.turnIndex };
     }
@@ -1517,6 +1550,8 @@ export class ManagedSession {
      */
     forceSettleTurn(reason: string): boolean {
         if (!this.activeTurn) return false;
+        this.steeringPump?.gate.close();
+        this.steeringPump?.interrupt();
         if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
         try { this.settleTurnResolver?.(); } catch {}
         return true;
@@ -3554,6 +3589,7 @@ export class ManagedSession {
             unsubscribers.push(
                 this.copilotSession.on("session.idle", (event: any) => {
                     if (isNativeChildEvent(event)) return;
+                    this.steeringPump?.gate.close();   // before resolve(); never reopens this turn
                     flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
                     liveTurn?.finishTurn();
@@ -3634,11 +3670,27 @@ export class ManagedSession {
         try {
             normalizeCopilotSessionMessageHistory(this.copilotSession as any);
 
+            // Session steering (§6a.4): the pump and its observers exist
+            // BEFORE the main send, so the main prompt's user.message cannot
+            // be missed. Its gate opens only after that event and the window.
+            if (opts?.steering) {
+                this.steeringTrace = opts.trace;
+                this.steeringPump?.dispose();
+                this.steeringPump = new SteeringPump(this.copilotSession as any, opts.steering, {
+                    stopping: () => Boolean(this.stopRequest),
+                    turnBoundaryScheduled: () => hasTerminalTurnBoundary(turnState),
+                    // The turn lock is HELD here: quiescence must use the lock-held path.
+                    quiesceWarmSession: () => opts.steeringQuiesce ? opts.steeringQuiesce() : Promise.resolve(false),
+                    authorize: opts.steeringAuthorize,
+                    trace: opts.trace,
+                });
+            }
+
             // Fire the prompt — non-blocking. Image attachments arrive as
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
             // activity host); the Copilot runtime packs them into the
             // provider-specific multimodal content.
-            await this.copilotSession.send({
+            const mainMessageId = await this.copilotSession.send({
                 prompt: effectivePrompt,
                 ...(effectivePrompt !== prompt ? { displayPrompt: prompt } : {}),
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
@@ -3654,12 +3706,20 @@ export class ManagedSession {
                     : {}),
             });
 
+            if (this.steeringPump && typeof mainMessageId === "string") this.steeringPump.noteMainPrompt(mainMessageId);
+
             // Wait for session.idle, or a guard rejection (wall-clock cap /
             // inactivity watchdog) when enabled.
             if (guards.length > 0) {
                 await Promise.race([turnComplete, ...guards]);
             } else {
                 await turnComplete;
+            }
+
+            // Session steering: own every registered send and every run a late
+            // send started before the correction loops (§6a.4, D-11).
+            if (this.steeringPump && !this.stopRequest) {
+                await this.steeringPump.reconcileAfterIdle({ guards });
             }
 
             // ── Guard: tool call emitted as text instead of executed ──────────
@@ -3762,6 +3822,9 @@ export class ManagedSession {
                 } as any;
             }
         } catch (err: any) {
+            // Unproven steering quiescence: never an error RESULT, which would
+            // be committed with the untrusted local state. Throw before commit.
+            if (err instanceof SteeringQuiesceFailedError) throw err;
             const errMsg = err.message ?? String(err);
             // Session workspaces: set_session_workspace told the model the
             // change was accepted. A turn that then fails still carries the
@@ -3775,7 +3838,7 @@ export class ManagedSession {
             // retries on a fresh subprocess and lossy-hands-off after bounded
             // attempts. This is the zombie-turn fix — the activity must settle.
             if (errMsg.includes(TURN_INACTIVITY_ERROR_MARKER)) {
-                try { await this.copilotSession.abort(); } catch {}
+                await this.abortSdk();
                 return {
                     type: "error",
                     message: errMsg,
@@ -3785,7 +3848,7 @@ export class ManagedSession {
             }
             // Timeout — kill it
             if (errMsg.includes("timed out")) {
-                try { await this.copilotSession.abort(); } catch {}
+                await this.abortSdk();
                 // Session workspaces: a shell the turn started keeps writing
                 // into the checkout after the abort. Cancel it before the
                 // turn returns, so a retry does not race it (test F10).
@@ -3887,13 +3950,134 @@ export class ManagedSession {
      * Session remains alive for future runTurn() calls.
      */
     abort(): void {
-        void Promise.resolve(this.copilotSession.abort()).catch(() => {});
+        void this.abortSdk();
+    }
+
+    /**
+     * The ONLY path to the SDK abort (FR-18, D-27): the steering admission
+     * gate closes synchronously first, so no steering send() follows an abort.
+     */
+    private async abortSdk(): Promise<void> {
+        this.steeringPump?.gate.close();   // INV-F1
+        // Stop, activity cancellation, cap or watchdog: the abort ends the SDK work, so
+        // steering settlement must not wait for evidence the abort discarded.
+        this.steeringPump?.interrupt();
+        if (this.steeringPump) this.armSteeringStopWatch();             // Stop, cancellation, cap or watchdog
+        // Quiescence's own abort is already on the wire: reuse it rather than send a second one.
+        if (this.quiescenceAbort) { try { await this.quiescenceAbort; } catch {} return; }
+        try { await this.copilotSession.abort(); } catch {}
+    }
+
+    /**
+     * Stop safety net for a steered turn (owner Stop UX). A steer already queued in
+     * the CLI must not keep the stopped run alive or start a follow-up run:
+     *  - a run that starts after the Stop (assistant.turn_start), or a user.message
+     *    that arrives after it, is aborted at once;
+     *  - if no session.idle arrives within 1 s of the abort, the CLI's pending
+     *    items are removed (experimental queue RPC, when present) and the run is
+     *    aborted again; at most 3 re-aborts.
+     * The watch survives the turn's return (an orphan run can start after it) and
+     * is disposed when the next turn starts or after 10 s. Gate first, always.
+     */
+    private armSteeringStopWatch(): void {
+        if (this.steeringStopWatch) return;
+        const session = this.copilotSession;
+        const trace = (m: string) => { try { this.steeringTrace?.(m); } catch {} };
+        let reaborts = 0;
+        let idleSeen = false;
+        let disposed = false;
+        const generation = this.turnGeneration;
+        // Owned only while this watch is armed AND no newer turn has started.
+        const owned = () => !disposed && this.turnGeneration === generation;
+        const timers: Array<ReturnType<typeof setTimeout>> = [];
+        // Generation fence: every step re-checks `disposed` (the next turn disarms the watch),
+        // so no queue removal or abort is issued for a turn this watch does not own. An RPC
+        // already issued is ordered before anything the next turn sends on the same connection.
+        const drainQueue = async () => {
+            const queue = (session as any).rpc?.queue;
+            if (typeof queue?.removeMostRecent !== "function") return;
+            for (let i = 0; i < 8; i++) {
+                if (!owned()) return;
+                const r = await Promise.race([
+                    Promise.resolve(queue.removeMostRecent()).catch(() => null),
+                    new Promise((res) => { const x = setTimeout(() => res(null), 500); (x as any).unref?.(); }),
+                ]) as { removed?: boolean } | null;
+                if (!owned() || !r?.removed) return;
+            }
+        };
+        const reabort = (why: string) => {
+            if (!owned() || reaborts >= 3) return;
+            reaborts++;
+            trace(`[steering] Stop safety net: ${why}; removing pending CLI items and aborting again (${reaborts}/3)`);
+            void drainQueue().then(() => { if (owned()) return session.abort(); }).catch(() => {});
+        };
+        const unsubscribe = session.on((event: any) => {
+            if (!owned() || isNativeChildEvent(event)) return;
+            const type = event?.type;
+            if (type === "session.idle") { idleSeen = true; return; }
+            if (type === "assistant.turn_start") { idleSeen = false; reabort("a run started after Stop"); return; }
+            if (type === "user.message") reabort("input reached the model after Stop");
+        });
+        for (const ms of [1_000, 2_000, 3_000]) {
+            const timer = setTimeout(() => { if (!idleSeen) reabort(`no idle ${ms} ms after Stop's abort`); }, ms);
+            (timer as any).unref?.();
+            timers.push(timer);
+        }
+        const expiry = setTimeout(() => watch.dispose(), 10_000);
+        (expiry as any).unref?.();
+        const watch = {
+            dispose: () => {
+                if (disposed) return;
+                disposed = true;
+                unsubscribe();
+                for (const x of timers) clearTimeout(x);
+                clearTimeout(expiry);
+                if (this.steeringStopWatch === watch) this.steeringStopWatch = null;
+            },
+        };
+        this.steeringStopWatch = watch;
+    }
+
+    /**
+     * Steering quiescence (INV-P9, review F01): a disconnect alone does not end an
+     * SDK run a late steer may have started, nor its model request. Close the
+     * gate, abort through the single funnel and wait (bounded) for that run's
+     * session.idle before the caller disconnects. True when the abort RPC
+     * resolved within the bound; whether a run was active is not required.
+     */
+    async abortForSteeringQuiescence(timeoutMs = 5_000): Promise<boolean> {
+        this.steeringPump?.gate.close();
+        let unsubscribe: (() => void) | undefined;
+        const idle = new Promise<void>((resolve) => {
+            unsubscribe = this.copilotSession.on("session.idle", (event: any) => {
+                if (!isNativeChildEvent(event)) resolve();
+            });
+        });
+        const timer = (ms: number) => new Promise<"timeout">((resolve) => {
+            const t = setTimeout(() => resolve("timeout"), ms);
+            (t as any).unref?.();
+        });
+        try {
+            const abortCall = Promise.resolve(this.copilotSession.abort());
+            this.quiescenceAbort = abortCall;
+            void abortCall.then(() => {}, () => {}).finally(() => { if (this.quiescenceAbort === abortCall) this.quiescenceAbort = null; });
+            const aborted = await Promise.race([
+                abortCall.then(() => "ok" as const, () => "failed" as const),
+                timer(timeoutMs),
+            ]);
+            if (aborted !== "ok") return false;
+            await Promise.race([idle, timer(Math.min(timeoutMs, 2_000))]);   // drain, best effort
+            return true;
+        } finally {
+            unsubscribe?.();
+        }
     }
 
     /**
      * Destroy the session — release resources, flush to disk.
      */
     async destroy(): Promise<void> {
+        this.steeringPump?.gate.close();   // no steering send() after a disconnect starts
         await this.copilotSession.disconnect();
     }
 

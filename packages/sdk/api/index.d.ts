@@ -6,6 +6,7 @@ export declare const WS_PATH: string;
 export declare const WS_CLIENT_MESSAGES: string[];
 export declare const WS_SERVER_MESSAGES: string[];
 export declare const WEB_MODE_UNSUPPORTED: string;
+export declare function callSteeringOperation<T = unknown>(api: Pick<ApiClient, "call">, name: string, params: Record<string, unknown>): Promise<T>;
 
 export interface OperationParamSpec {
     in: "path" | "query" | "body";
@@ -19,6 +20,8 @@ export interface Operation {
     path: string;
     params?: Record<string, OperationParamSpec>;
     summary: string;
+    access?: string;
+    alwaysEnforce?: boolean;
 }
 
 export declare const OPERATIONS: Operation[];
@@ -40,7 +43,9 @@ export declare class ApiError extends Error {
     etag?: string | null;
     /** Workspace files: a too-large file's size in bytes. */
     size?: number;
-    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number });
+    reason?: string;
+    retryAfterMs?: number;
+    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number; reason?: string; retryAfterMs?: number });
 }
 
 export interface NonManagementOperationOwner {
@@ -86,8 +91,9 @@ export interface LiveStateRow {
 export declare class ApiClient {
     constructor(options: ApiClientOptions);
     apiUrl: string;
-    call(name: string, params?: Record<string, unknown>): Promise<any>;
-    request(method: string, pathWithQuery: string, opts?: { body?: unknown; headers?: Record<string, string> }): Promise<any>;
+    call(name: string, params?: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<any>;
+    request(method: string, pathWithQuery: string, opts?: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal }): Promise<any>;
+    abortReadRequests(sessionId?: string): void;
     health(): Promise<any>;
     getAuthConfig(): Promise<any>;
     getAuthContext(): Promise<any>;
@@ -129,6 +135,10 @@ export declare class HttpApiTransport {
     start(): Promise<void>;
     stop(): Promise<void>;
     getLive(sessionId: string, topics?: string[]): Promise<LiveStateRow[]>;
+    getSessionEventsBeforeCancellable(sessionId: string, beforeSeq: number, limit: number, eventTypes?: string[]): {
+        promise: Promise<any>;
+        cancel(): void;
+    };
     [method: string]: any;
 }
 

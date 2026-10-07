@@ -283,6 +283,12 @@ Known violations to fix rather than copy:
 
 ### TUI Keybindings
 
+Session steering is an explicit action, never a replacement for ordinary Send
+or Stop. Preserve its captured session, target, and caller identity across
+asynchronous responses. Receipt revisions and window event sequences are
+monotonic; an open-window event grants no permission. Neither SDK
+acknowledgement nor assistant prose proves delivery or compliance.
+
 If you add or change a TUI keybinding, you must update all user-facing keybinding surfaces together:
 
 - the actual binding in host input handling
@@ -307,9 +313,15 @@ Current overlap to preserve unless intentionally changed:
 - `t` in the logs inspector toggles log tailing
 - `s` in the chat pane toggles between the transcript and the current session summary view
 - `Ctrl+A` in the prompt opens the attach-file dialog
+- Prompt Up at the first line recalls the viewer's own current-session inputs (newest first, at most ten, consecutive duplicates skipped); Down at the last line moves newer and restores the stashed draft past newest. Editing ends navigation; sending or switching sessions resets it. Reference/menu/modals keep priority. Share reducer/controller behavior across TUI, desktop portal and tablet hardware keyboards; phone typing is unchanged. Use durable user.message authorship and immediate accepted-send memory, never other users' inputs or a new storage/API.
+- Portal `Ctrl+S` steers only while the textarea has focus; browser Save elsewhere is unchanged. Native `Ctrl+S` is not enabled or advertised until the supported-terminal raw-mode matrix passes. Its keyboard-accessible action row is the fallback.
+- Native prompt `Tab` accepts reference autocomplete first; otherwise it focuses Send/Steer/Stop, plus Guidance when receipts exist. Left/Right selects, Enter activates, Tab continues normal pane traversal, and Shift+Tab/Escape returns to editing. Send and newline keys stay unchanged.
+- Prompt Up at the first line visits the pending/queued outbox first, newest to oldest, preserving its existing edit/read-only/cancel controls; only then does it recall executed input history. Down reverses that path and restores the original draft/caret/attachments. Keep this arbitration shared by portal and TUI; menus and IME retain priority.
+- Guidance receipts use Up/Down to select and PageUp/PageDown to scroll. Enter refreshes or reconciles acceptance; `w` withdraws, `r` sends as a new message, `c` reuses undelivered/withdrawn/uncertain text in a draft (append on a new line when nonempty), `m` loads the next receipt page, and Escape closes. Show partial results until paging finishes. Delivered receipts have no draft actions. Keep permissions and help copy aligned with portal controls.
 - `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
+- `r` in session stats opens permitted guidance receipt history; the portal has a matching Guidance history action. Fleet/users stats do not open a selected session's history.
 - `Shift+A` opens or closes the Admin Console; in My Providers, `e` adds a personal provider and `Shift+U` updates the selected provider credential in place. The portal exposes the same action as `Update Key`. Keep credential drafts masked and clear them before awaiting the request; `r` refreshes and `Esc` returns to the workspace.
 
 ## TUI Maintenance

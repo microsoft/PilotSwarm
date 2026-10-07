@@ -12,6 +12,12 @@ import type { MigrationEntry } from "./pg-migrator.js";
 import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
+import { sessionSteeringMigration } from "./migrations/session-steering-0082.js";
+import { sessionSteeringRecoveryMigration } from "./migrations/session-steering-recovery-0083.js";
+import { sessionSteeringResendMigration } from "./migrations/session-steering-resend-0084.js";
+import { sessionSteeringEnablementMigration } from "./migrations/session-steering-enablement-0085.js";
+import { sessionSteeringReviewMigration } from "./migrations/session-steering-review-0086.js";
+import { sessionSteeringCancelledFinalizeMigration } from "./migrations/session-steering-cancelled-finalize-0087.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -404,6 +410,12 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
+        { version: "0082", name: "session_steering", sql: sessionSteeringMigration(schema) },
+        { version: "0083", name: "session_steering_local_recovery", sql: sessionSteeringRecoveryMigration(schema) },
+        { version: "0084", name: "session_steering_resend_intent", sql: sessionSteeringResendMigration(schema) },
+        { version: "0085", name: "session_steering_enablement", sql: sessionSteeringEnablementMigration(schema) },
+        { version: "0086", name: "session_steering_review_fixes", sql: sessionSteeringReviewMigration(schema) },
+        { version: "0087", name: "session_steering_cancelled_finalize", sql: sessionSteeringCancelledFinalizeMigration(schema) },
     ];
 }
 

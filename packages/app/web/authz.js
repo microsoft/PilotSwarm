@@ -53,7 +53,9 @@ export function loadAuthzConfig(env = process.env) {
 // setArtifactPinned and readArtifactBase64 were the last /api/rpc-only
 // stragglers (same access classes, now declared in the table). The legacy
 // /api/rpc path keeps working: it resolves access through this same map.
-const ACCESS_BY_METHOD = new Map(OPERATIONS.map((op) => [op.name, { access: op.access, sessionParam: op.sessionParam || "sessionId" }]));
+const ACCESS_BY_METHOD = new Map(OPERATIONS.map((op) => [op.name, {
+    access: op.access, sessionParam: op.sessionParam || "sessionId", alwaysEnforce: op.alwaysEnforce === true,
+}]));
 
 export function getMethodAccess(method) {
     return ACCESS_BY_METHOD.get(method) || null;
