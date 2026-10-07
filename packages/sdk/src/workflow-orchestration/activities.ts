@@ -9,12 +9,14 @@ import {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
+    RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
 } from "../workflow-orchestration_1_0_0/contracts.js";
 
 export {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
+    RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
 };
 
 export interface ExecuteWorkflowStateActivityInput {
@@ -31,9 +33,18 @@ export interface CompleteWorkflowActivityInput {
     result: WorkflowSessionResult;
 }
 
+export interface RecordWorkflowStateExecutionActivityInput {
+    workflowSessionId: string;
+    executionSequence: number;
+    graphId: string;
+    stateId: string;
+    childSessionId?: string;
+    waitingOn: "activity" | "agent-result";
+}
+
 export interface AcceptWorkflowStateResultActivityInput {
     workflowSessionId: string;
-    childSessionId: string;
+    childSessionId?: string;
     graphId: string;
     stateId: string;
     executionSequence: number;
@@ -42,6 +53,7 @@ export interface AcceptWorkflowStateResultActivityInput {
 }
 
 export interface WorkflowActivityHandlers {
+    recordStateExecution(input: RecordWorkflowStateExecutionActivityInput): Promise<void>;
     executeState(input: ExecuteWorkflowStateActivityInput): Promise<WorkflowStateExecutionResult>;
     acceptStateResult(input: AcceptWorkflowStateResultActivityInput): Promise<WorkflowStateExecutionResult>;
     completeWorkflow(input: CompleteWorkflowActivityInput): Promise<WorkflowSessionResult>;
@@ -52,9 +64,24 @@ function workflowActivityError(message: string, code: string): Error {
 }
 
 export function createWorkflowActivityHandlers(
-    catalog: Pick<SessionCatalog, "upsertChildOutcome"> | null,
+    catalog: Pick<
+        SessionCatalog,
+        | "acceptWorkflowExecution"
+        | "completeWorkflowProjection"
+        | "recordWorkflowExecution"
+    > | null,
 ): WorkflowActivityHandlers {
     return {
+        async recordStateExecution(input) {
+            if (!catalog) {
+                throw workflowActivityError(
+                    `Workflow state execution '${input.workflowSessionId}/${input.executionSequence}' cannot be admitted without a session catalog.`,
+                    "WORKFLOW_RESULT_CATALOG_REQUIRED",
+                );
+            }
+            await catalog.recordWorkflowExecution(input);
+        },
+
         async executeState(input) {
             const graph = resolveInMemoryWorkflowGraph(input.graphId);
             const state = graph.states[input.stateId];
@@ -81,20 +108,14 @@ export function createWorkflowActivityHandlers(
                     "WORKFLOW_RESULT_CATALOG_REQUIRED",
                 );
             }
-            await catalog.upsertChildOutcome({
+            await catalog.acceptWorkflowExecution({
+                workflowSessionId: input.workflowSessionId,
+                executionSequence: input.executionSequence,
+                graphId: input.graphId,
+                stateId: input.stateId,
                 childSessionId: input.childSessionId,
-                parentSessionId: input.workflowSessionId,
-                resultJson: {
-                    kind: "workflow-state-result",
-                    graphId: input.graphId,
-                    stateId: input.stateId,
-                    executionSequence: input.executionSequence,
-                    outcome: input.outcome,
-                    output: input.output,
-                },
-                verdict: input.outcome,
-                summary: `Workflow state '${input.stateId}' completed with outcome '${input.outcome}'.`,
-                completedAt: new Date(),
+                outcome: input.outcome,
+                output: input.output,
             });
             return {
                 outcome: input.outcome,
@@ -103,30 +124,37 @@ export function createWorkflowActivityHandlers(
         },
 
         async completeWorkflow({ result }) {
-            const resultCatalog = catalog;
-            if (result.parentSessionId && !resultCatalog) {
+            if (!catalog) {
                 throw workflowActivityError(
-                    `Workflow session '${result.sessionId}' cannot record its child result without a session catalog.`,
+                    `Workflow session '${result.sessionId}' cannot record completion without a session catalog.`,
                     "WORKFLOW_RESULT_CATALOG_REQUIRED",
                 );
             }
-            if (result.parentSessionId && resultCatalog) {
-                await resultCatalog.upsertChildOutcome({
-                    childSessionId: result.sessionId,
-                    parentSessionId: result.parentSessionId,
-                    resultJson: {
-                        outcome: result.outcome,
-                        summary: result.summary,
-                        ...(Object.prototype.hasOwnProperty.call(result, "result")
-                            ? { result: result.result }
-                            : {}),
-                        ...(result.metadata ? { metadata: result.metadata } : {}),
-                    },
-                    verdict: result.outcome,
-                    summary: result.summary,
-                    completedAt: new Date(result.completedAt),
-                });
+            const graphId = result.metadata?.graphId;
+            const terminalStateId = result.metadata?.terminalStateId;
+            if (typeof graphId !== "string" || typeof terminalStateId !== "string") {
+                throw workflowActivityError(
+                    `Workflow session '${result.sessionId}' completion metadata is invalid.`,
+                    "WORKFLOW_COMPLETION_INVALID",
+                );
             }
+            await catalog.completeWorkflowProjection({
+                workflowSessionId: result.sessionId,
+                parentSessionId: result.parentSessionId,
+                graphId,
+                terminalStateId,
+                outcome: result.outcome,
+                summary: result.summary,
+                result: {
+                    outcome: result.outcome,
+                    summary: result.summary,
+                    ...(Object.prototype.hasOwnProperty.call(result, "result")
+                        ? { result: result.result }
+                        : {}),
+                    ...(result.metadata ? { metadata: result.metadata } : {}),
+                },
+                completedAt: new Date(result.completedAt),
+            });
             return result;
         },
     };
@@ -139,9 +167,19 @@ export function registerWorkflowActivities(
             handler: (activityContext: any, input: any) => Promise<unknown>,
         ): void;
     },
-    catalog: Pick<SessionCatalog, "upsertChildOutcome"> | null,
+    catalog: Pick<
+        SessionCatalog,
+        | "acceptWorkflowExecution"
+        | "completeWorkflowProjection"
+        | "recordWorkflowExecution"
+    > | null,
 ): void {
     const handlers = createWorkflowActivityHandlers(catalog);
+    runtime.registerActivity(
+        RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
+        async (_activityContext, input: RecordWorkflowStateExecutionActivityInput) =>
+            handlers.recordStateExecution(input),
+    );
     runtime.registerActivity(
         EXECUTE_WORKFLOW_STATE_ACTIVITY,
         async (_activityContext, input: ExecuteWorkflowStateActivityInput) =>

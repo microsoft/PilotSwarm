@@ -1,6 +1,7 @@
 export const WORKFLOW_ORCHESTRATION_VERSION = "1.0.0";
 
 export const EXECUTE_WORKFLOW_STATE_ACTIVITY = "executeWorkflowStateV1";
+export const RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY = "recordWorkflowStateExecutionV1";
 export const ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY = "acceptWorkflowStateResultV1";
 export const COMPLETE_WORKFLOW_ACTIVITY = "completeWorkflowSessionV1";
 

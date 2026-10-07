@@ -351,7 +351,8 @@ executable state types are omitted from this pseudocode. A `terminal` state is
 not executed; reaching it exits the loop and produces the workflow result.
 The controller durably admits each invocation, records its accepted output,
 records the effective transition, and records terminal workflow completion.
-Mutable monitoring projections are omitted.
+The implementation also maintains a rebuildable current-state projection for
+API and portal reads. The projection is not a second workflow state machine.
 
 ```typescript
 interface TransitionRequest<TOutput> {
@@ -784,6 +785,7 @@ The feature branch already provides:
 | Dedicated workflow orchestration version boundary | Implemented; `1.0.0` runs the initial controller |
 | Basic workflow controller | Implemented for process-local in-memory graphs |
 | One-shot agent-state dispatch | Implemented for named agents with runtime-bound structured result submission |
+| Authoritative execution records and current projection | Implemented in CMS migration `0083` |
 | Definition compiler and durable graph registry | Not implemented |
 
 The initial controller deliberately accepts only an `in-memory` definition
@@ -794,9 +796,14 @@ wait on a sequence-specific Duroxide queue for `submit_workflow_result`.
 PilotSwarm derives the workflow binding from the child's durable creation
 config, validates declared outcomes, records controller acceptance through a
 durable activity, invokes transition callbacks synchronously, enforces a
-transition limit, and records terminal child results. This is an executable
-seam for refining controller semantics, not the production definition-storage
-model.
+transition limit, and records terminal child results. CMS stores immutable
+execution admissions and accepted outputs keyed by
+`(workflowSessionId, executionSequence)`, stores terminal completion
+separately, and updates a rebuildable current projection in the same
+transactions. Operational `session_events` are emitted alongside these writes
+for diagnostics, but are not the authoritative record and are not an audit
+log. This is an executable seam for refining controller semantics, not the
+production definition-storage model.
 
 ### 4.2 Definition subsystem
 

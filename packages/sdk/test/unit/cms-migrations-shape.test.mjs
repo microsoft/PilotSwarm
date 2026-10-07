@@ -80,3 +80,20 @@ test("0082: workflow sessions are additive and existing rows remain agent sessio
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent'/);
     assert.match(migration.sql, /CHECK \(session_kind IN \('agent', 'workflow'\)\)/);
 });
+
+test("0083: workflow facts are authoritative and lifecycle events are transactional", () => {
+    const migration = migrations.find((m) => m.version === "0083");
+    assert.ok(migration, "migration 0083 must be registered");
+    assert.equal(migration.name, "workflow_executions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_state_executions/);
+    assert.match(migration.sql, /PRIMARY KEY \(workflow_session_id, execution_sequence\)/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_projections/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_completions/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_record_workflow_execution/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_accept_workflow_execution/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_complete_workflow/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_rebuild_workflow_projection/);
+    assert.match(migration.sql, /'workflow\.execution_admitted'/);
+    assert.match(migration.sql, /'workflow\.execution_accepted'/);
+    assert.match(migration.sql, /'workflow\.completed'/);
+});

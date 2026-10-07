@@ -1,5 +1,8 @@
 import type { WorkflowDefinitionSource, WorkflowSessionResult } from "../types.js";
-import type { ExecuteWorkflowStateActivityInput } from "../workflow-orchestration/activities.js";
+import type {
+    ExecuteWorkflowStateActivityInput,
+    RecordWorkflowStateExecutionActivityInput,
+} from "../workflow-orchestration/activities.js";
 import {
     resolveInMemoryWorkflowGraph,
     type WorkflowExecutionRecord,
@@ -13,6 +16,7 @@ import {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
+    RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
     WORKFLOW_ORCHESTRATION_VERSION,
     type WorkflowResultEvent,
 } from "./contracts.js";
@@ -160,6 +164,15 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
                 executionHistory,
                 state,
             });
+            const admission: RecordWorkflowStateExecutionActivityInput = {
+                workflowSessionId: input.sessionId,
+                executionSequence,
+                graphId: graph.id,
+                stateId: currentStateId,
+                childSessionId,
+                waitingOn: "agent-result",
+            };
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, admission);
             yield routeAgentStateDispatch(
                 ctx.scheduleActivity(dispatch.activityName, dispatch.activityInput),
                 dispatch.activityTag,
@@ -209,6 +222,14 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
                 ),
             );
         } else {
+            const admission: RecordWorkflowStateExecutionActivityInput = {
+                workflowSessionId: input.sessionId,
+                executionSequence,
+                graphId: graph.id,
+                stateId: currentStateId,
+                waitingOn: "activity",
+            };
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, admission);
             const activityInput: ExecuteWorkflowStateActivityInput = {
                 graphId: graph.id,
                 sessionId: input.sessionId,
@@ -218,12 +239,30 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
                 latestStateOutputs: { ...latestStateOutputs },
                 executionHistory: [...executionHistory],
             };
-            recordedOutput = requireDeclaredOutcome(
+            const executedOutput = requireDeclaredOutcome(
                 currentStateId,
                 state.allowedOutcomes,
                 requireExecutionResult(
                     currentStateId,
                     yield ctx.scheduleActivity(EXECUTE_WORKFLOW_STATE_ACTIVITY, activityInput),
+                ),
+            );
+            recordedOutput = requireDeclaredOutcome(
+                currentStateId,
+                state.allowedOutcomes,
+                requireExecutionResult(
+                    currentStateId,
+                    yield ctx.scheduleActivity(
+                        ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
+                        {
+                            workflowSessionId: input.sessionId,
+                            graphId: graph.id,
+                            stateId: currentStateId,
+                            executionSequence,
+                            outcome: executedOutput.outcome,
+                            output: executedOutput.output,
+                        },
+                    ),
                 ),
             );
         }

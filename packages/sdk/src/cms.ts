@@ -301,6 +301,34 @@ export interface ChildOutcomeRow {
     updatedAt: Date;
 }
 
+export interface WorkflowExecutionRow {
+    workflowSessionId: string;
+    executionSequence: number;
+    graphId: string;
+    stateId: string;
+    childSessionId: string | null;
+    waitingOn: "activity" | "agent-result";
+    status: "admitted" | "accepted";
+    outcome: string | null;
+    output: unknown;
+    admittedAt: Date;
+    acceptedAt: Date | null;
+    updatedAt: Date;
+}
+
+export interface WorkflowProjectionRow {
+    workflowSessionId: string;
+    graphId: string;
+    status: string;
+    currentStateId: string | null;
+    currentExecutionSequence: number | null;
+    waitingOn: "activity" | "agent-result" | null;
+    terminalOutcome: string | null;
+    result: unknown;
+    completedAt: Date | null;
+    updatedAt: Date;
+}
+
 // ─── Session Metric Summary Types ────────────────────────────────
 
 /** Per-session metric summary — one row per session, updated in place. */
@@ -1285,6 +1313,48 @@ export interface SessionCatalog {
     /** List child outcome records for a parent session. */
     listChildOutcomes(parentSessionId: string): Promise<ChildOutcomeRow[]>;
 
+    /** Idempotently admit one durable workflow state execution. */
+    recordWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        waitingOn: "activity" | "agent-result";
+    }): Promise<void>;
+
+    /** Atomically accept one execution result and update its current projection. */
+    acceptWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        outcome: string;
+        output: unknown;
+    }): Promise<void>;
+
+    /** Atomically record terminal workflow state and its parent child outcome. */
+    completeWorkflowProjection(input: {
+        workflowSessionId: string;
+        parentSessionId?: string | null;
+        graphId: string;
+        terminalStateId: string;
+        outcome: string;
+        summary: string;
+        result: Record<string, unknown>;
+        completedAt: Date;
+    }): Promise<void>;
+
+    /** Read the current rebuildable workflow projection. */
+    getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null>;
+
+    /** Rebuild the current projection from authoritative execution/completion facts. */
+    rebuildWorkflowProjection(workflowSessionId: string): Promise<void>;
+
+    /** Read authoritative workflow executions in admission order. */
+    listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]>;
+
     // ── Events (written from worker, read from client) ───────
 
     /** Record a batch of events for a session. */
@@ -1491,6 +1561,10 @@ function sqlForSchema(schema: string) {
             upsertChildOutcome:         `${s}.cms_upsert_child_outcome`,
             getChildOutcome:            `${s}.cms_get_child_outcome`,
             listChildOutcomes:          `${s}.cms_list_child_outcomes`,
+            recordWorkflowExecution:    `${s}.cms_record_workflow_execution`,
+            acceptWorkflowExecution:    `${s}.cms_accept_workflow_execution`,
+            completeWorkflowProjection: `${s}.cms_complete_workflow`,
+            rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
@@ -2286,6 +2360,100 @@ export class PgSessionCatalog implements SessionCatalog {
             [parentSessionId],
         );
         return rows.map(rowToChildOutcomeRow);
+    }
+
+    async recordWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        waitingOn: "activity" | "agent-result";
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.recordWorkflowExecution}($1, $2, $3, $4, $5, $6)`,
+            [
+                input.workflowSessionId,
+                input.executionSequence,
+                input.graphId,
+                input.stateId,
+                input.childSessionId ?? null,
+                input.waitingOn,
+            ],
+        );
+    }
+
+    async acceptWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        outcome: string;
+        output: unknown;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.acceptWorkflowExecution}($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                input.workflowSessionId,
+                input.executionSequence,
+                input.graphId,
+                input.stateId,
+                input.childSessionId ?? null,
+                input.outcome,
+                JSON.stringify(input.output),
+            ],
+        );
+    }
+
+    async completeWorkflowProjection(input: {
+        workflowSessionId: string;
+        parentSessionId?: string | null;
+        graphId: string;
+        terminalStateId: string;
+        outcome: string;
+        summary: string;
+        result: Record<string, unknown>;
+        completedAt: Date;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.completeWorkflowProjection}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                input.workflowSessionId,
+                input.parentSessionId ?? null,
+                input.graphId,
+                input.terminalStateId,
+                input.outcome,
+                input.summary,
+                JSON.stringify(input.result),
+                input.completedAt,
+            ],
+        );
+    }
+
+    async getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_projections WHERE workflow_session_id = $1`,
+            [workflowSessionId],
+        );
+        return rows.length > 0 ? rowToWorkflowProjectionRow(rows[0]) : null;
+    }
+
+    async rebuildWorkflowProjection(workflowSessionId: string): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.rebuildWorkflowProjection}($1)`,
+            [workflowSessionId],
+        );
+    }
+
+    async listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_state_executions
+              WHERE workflow_session_id = $1
+              ORDER BY execution_sequence`,
+            [workflowSessionId],
+        );
+        return rows.map(rowToWorkflowExecutionRow);
     }
 
     // ── Events ───────────────────────────────────────────────
@@ -3894,6 +4062,40 @@ function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
         summary: row.summary ?? null,
         completedAt: row.completed_at ? new Date(row.completed_at) : null,
         createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowExecutionRow(row: any): WorkflowExecutionRow {
+    return {
+        workflowSessionId: row.workflow_session_id,
+        executionSequence: Number(row.execution_sequence),
+        graphId: row.graph_id,
+        stateId: row.state_id,
+        childSessionId: row.child_session_id ?? null,
+        waitingOn: row.waiting_on,
+        status: row.status,
+        outcome: row.outcome ?? null,
+        output: row.output_json ?? null,
+        admittedAt: new Date(row.admitted_at),
+        acceptedAt: row.accepted_at ? new Date(row.accepted_at) : null,
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowProjectionRow(row: any): WorkflowProjectionRow {
+    return {
+        workflowSessionId: row.workflow_session_id,
+        graphId: row.graph_id,
+        status: row.status,
+        currentStateId: row.current_state_id ?? null,
+        currentExecutionSequence: row.current_execution_sequence === null
+            ? null
+            : Number(row.current_execution_sequence),
+        waitingOn: row.waiting_on ?? null,
+        terminalOutcome: row.terminal_outcome ?? null,
+        result: row.result_json ?? null,
+        completedAt: row.completed_at ? new Date(row.completed_at) : null,
         updatedAt: new Date(row.updated_at),
     };
 }

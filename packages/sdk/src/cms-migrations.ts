@@ -12,6 +12,7 @@ import type { MigrationEntry } from "./pg-migrator.js";
 import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
+import { workflowExecutionsMigration } from "./migrations/workflow-executions-0083.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -405,6 +406,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
         { version: "0082", name: "workflow_session_kind", sql: migration_0082_workflow_session_kind(schema) },
+        { version: "0083", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
     ];
 }
 

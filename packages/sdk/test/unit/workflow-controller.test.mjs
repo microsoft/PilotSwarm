@@ -8,6 +8,7 @@ import {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
+    RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
     createWorkflowActivityHandlers,
 } from "../../dist/workflow-orchestration/activities.js";
 import {
@@ -45,8 +46,19 @@ function createContext() {
     };
 }
 
-async function runController(input, catalog = null, options = {}) {
-    const handlers = createWorkflowActivityHandlers(catalog);
+function testCatalog(overrides = {}) {
+    return {
+        recordWorkflowExecution: async () => {},
+        acceptWorkflowExecution: async () => {},
+        completeWorkflowProjection: async () => {},
+        upsertChildOutcome: async () => {},
+        ...overrides,
+    };
+}
+
+async function runController(input, catalog = undefined, options = {}) {
+    const effectiveCatalog = catalog === null ? null : testCatalog(catalog);
+    const handlers = createWorkflowActivityHandlers(effectiveCatalog);
     const execution = durableWorkflowSessionOrchestration_1_0_0(createContext(), input);
     const operations = [];
     let childNumber = 0;
@@ -89,6 +101,10 @@ async function runController(input, catalog = null, options = {}) {
         }
         if (operation.name === EXECUTE_WORKFLOW_STATE_ACTIVITY) {
             step = execution.next(await handlers.executeState(operation.input));
+            continue;
+        }
+        if (operation.name === RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY) {
+            step = execution.next(await handlers.recordStateExecution(operation.input));
             continue;
         }
         if (operation.name === ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY) {
@@ -150,7 +166,9 @@ test("executes states and deterministic transitions until a terminal state", asy
             },
         },
     });
-    const writes = [];
+    const admissions = [];
+    const acceptances = [];
+    const completions = [];
 
     const firstRun = await runController({
         sessionId: "workflow-1",
@@ -158,7 +176,9 @@ test("executes states and deterministic transitions until a terminal state", asy
         definition,
         inputs: { approved: true },
     }, {
-        upsertChildOutcome: async input => writes.push(input),
+        recordWorkflowExecution: async input => admissions.push(input),
+        acceptWorkflowExecution: async input => acceptances.push(input),
+        completeWorkflowProjection: async input => completions.push(input),
     });
     const secondRun = await runController({
         sessionId: "workflow-2",
@@ -168,7 +188,16 @@ test("executes states and deterministic transitions until a terminal state", asy
 
     assert.deepEqual(
         firstRun.operations.map(operation => operation.name ?? operation.kind),
-        [EXECUTE_WORKFLOW_STATE_ACTIVITY, EXECUTE_WORKFLOW_STATE_ACTIVITY, "utcNow", COMPLETE_WORKFLOW_ACTIVITY],
+        [
+            RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
+            EXECUTE_WORKFLOW_STATE_ACTIVITY,
+            ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
+            RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
+            EXECUTE_WORKFLOW_STATE_ACTIVITY,
+            ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
+            "utcNow",
+            COMPLETE_WORKFLOW_ACTIVITY,
+        ],
     );
     assert.deepEqual(
         firstRun.operations
@@ -193,10 +222,30 @@ test("executes states and deterministic transitions until a terminal state", asy
             transitionCount: 2,
         },
     });
-    assert.deepEqual(writes, [{
-        childSessionId: "workflow-1",
+    assert.deepEqual(admissions.map(({ executionSequence, stateId, waitingOn }) => ({
+        executionSequence,
+        stateId,
+        waitingOn,
+    })), [
+        { executionSequence: 1, stateId: "inspect", waitingOn: "activity" },
+        { executionSequence: 2, stateId: "publish", waitingOn: "activity" },
+    ]);
+    assert.deepEqual(acceptances.map(({ executionSequence, stateId, childSessionId }) => ({
+        executionSequence,
+        stateId,
+        childSessionId: childSessionId ?? null,
+    })), [
+        { executionSequence: 1, stateId: "inspect", childSessionId: null },
+        { executionSequence: 2, stateId: "publish", childSessionId: null },
+    ]);
+    assert.deepEqual(completions, [{
+        workflowSessionId: "workflow-1",
         parentSessionId: "parent-1",
-        resultJson: {
+        graphId: "basic-controller",
+        terminalStateId: "done",
+        outcome: "succeeded",
+        summary: "Workflow completed.",
+        result: {
             outcome: "succeeded",
             summary: "Workflow completed.",
             result: { revision: 7, url: "https://example.test/pull/7" },
@@ -206,10 +255,38 @@ test("executes states and deterministic transitions until a terminal state", asy
                 transitionCount: 2,
             },
         },
-        verdict: "succeeded",
-        summary: "Workflow completed.",
         completedAt: new Date("2026-10-07T18:00:00.000Z"),
     }]);
+});
+
+test("requires the authoritative workflow catalog before state admission", async () => {
+    const definition = registerInMemoryWorkflowGraph({
+        id: "catalog-required",
+        initialState: "run",
+        states: {
+            run: {
+                type: "activity",
+                allowedOutcomes: ["done"],
+                allowedTargets: ["complete"],
+                execute: () => ({ outcome: "done", output: {} }),
+                transition: () => "complete",
+            },
+            complete: {
+                type: "terminal",
+                outcome: "succeeded",
+                summary: "Done.",
+            },
+        },
+    });
+
+    await assert.rejects(
+        runController({
+            sessionId: "workflow-no-catalog",
+            definition,
+            inputs: {},
+        }, null),
+        error => error?.code === "WORKFLOW_RESULT_CATALOG_REQUIRED",
+    );
 });
 
 test("preserves execution history when a workflow revisits the same state", async () => {
@@ -294,7 +371,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         definition,
         inputs: { pullRequestId: 42 },
     }, {
-        upsertChildOutcome: async input => acceptedResults.push(input),
+        acceptWorkflowExecution: async input => acceptedResults.push(input),
     }, {
         agentResult: {
             outcome: "succeeded",
@@ -306,6 +383,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         run.operations.map(operation => operation.name ?? operation.kind),
         [
             "newGuid",
+            RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
             HANDOFF_ACTIVITY_NAMES.spawnChildSession,
             workflowResultQueueName(1),
             ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
@@ -313,7 +391,16 @@ test("dispatches a named agent and waits for its bound workflow result", async (
             COMPLETE_WORKFLOW_ACTIVITY,
         ],
     );
-    const spawn = run.operations[1];
+    const admission = run.operations[1];
+    assert.deepEqual(admission.input, {
+        workflowSessionId: "workflow-agent-1",
+        executionSequence: 1,
+        graphId: "agent-controller",
+        stateId: "inspect",
+        childSessionId: "child-1",
+        waitingOn: "agent-result",
+    });
+    const spawn = run.operations[2];
     assert.equal(spawn.input.childSessionId, "child-1");
     assert.equal(spawn.input.parentSessionId, "workflow-agent-1");
     assert.equal(spawn.input.task, "Inspect pull request 42; execution 1.");
@@ -327,8 +414,8 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         executionSequence: 1,
         allowedOutcomes: ["succeeded", "blocked"],
     });
-    assert.equal(run.operations[2].name, workflowResultQueueName(1));
-    assert.deepEqual(run.operations[3].input, {
+    assert.equal(run.operations[3].name, workflowResultQueueName(1));
+    assert.deepEqual(run.operations[4].input, {
         workflowSessionId: "workflow-agent-1",
         childSessionId: "child-1",
         graphId: "agent-controller",
@@ -339,7 +426,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
     });
     assert.equal(acceptedResults.length, 1);
     assert.equal(acceptedResults[0].childSessionId, "child-1");
-    assert.equal(acceptedResults[0].resultJson.executionSequence, 1);
+    assert.equal(acceptedResults[0].executionSequence, 1);
     assert.deepEqual(run.result.result, { sourceCommit: "abc123" });
 });
 
@@ -369,7 +456,7 @@ test("rejects an agent result that does not match the active execution", async (
             sessionId: "workflow-agent-2",
             definition,
             inputs: {},
-        }, null, {
+        }, {}, {
             agentResult: {
                 outcome: "succeeded",
                 output: {},
