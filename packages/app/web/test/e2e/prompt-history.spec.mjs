@@ -104,6 +104,50 @@ test("desktop only captures first/last visual lines and respects reference menus
     await expect(input).toHaveValue("@artifact");
 }));
 
+test("IME composition retains the draft instead of recalling history", browserCase(browserName, async page => {
+    const input = await open(page);
+    await input.fill("Composition draft");
+    await input.evaluate(node => node.addEventListener("keydown", event => {
+        node.dataset.observedComposition = String(event.isComposing);
+    }, { once: true }));
+    await input.dispatchEvent("keydown", { key: "ArrowUp", code: "ArrowUp", isComposing: true });
+    await expect(input).toHaveAttribute("data-observed-composition", "true");
+    await expect(input).toHaveValue("Composition draft");
+}));
+
+test("selected ranges and active suggestion menus retain native arrows", browserCase(browserName, async page => {
+    const input = await open(page);
+    await input.fill("Composition draft");
+    await input.evaluate(node => node.setSelectionRange(0, 5));
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Composition draft");
+    await input.evaluate(node => { node.setSelectionRange(0, 0); node.setAttribute("aria-activedescendant", "fixture-option"); });
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Composition draft");
+    await input.evaluate(node => node.removeAttribute("aria-activedescendant"));
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own input 2");
+}));
+
+test("reload reconstructs viewer-owned input history without exposing the other participant", browserCase(browserName, async page => {
+    const input = await open(page);
+    await input.fill("Draft before reload");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own input 2");
+    await page.reload();
+    await expect(input).toBeVisible();
+    await input.fill("Fresh reload draft");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own input 2");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own input 1");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Own input 1");
+    await input.press("ArrowDown");
+    await input.press("ArrowDown");
+    await expect(input).toHaveValue("Fresh reload draft");
+}));
+
 test("accepted input enters recall immediately; session changes reset navigation", browserCase(browserName, async page => {
     const input = await open(page);
     await input.fill("New accepted input");
