@@ -50,9 +50,7 @@ function restoreDraft(controller, draft) {
     if (!draft) return;
     restoringDraft.add(controller);
     try {
-        controller.dispatch({ type: "promptHistory/reset" });
-        controller.dispatch({ type: "ui/prompt", prompt: draft.prompt, promptCursor: draft.cursor ?? draft.prompt.length });
-        controller.dispatch({ type: "ui/promptAttachments", attachments: draft.attachments });
+        controller.dispatch({ type: "ui/promptRestored", draft });
     } finally { restoringDraft.delete(controller); }
 }
 function retainOutbox(store, key, items) {

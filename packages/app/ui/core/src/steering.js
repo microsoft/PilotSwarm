@@ -139,6 +139,9 @@ export function appendSteeringEvent(chat, event) {
     const requestId = receipt?.requestId || data?.steering?.requestId;
     if (!requestId) return false;
     const index = chat.findIndex(item => item.kind === "steering" && item.steering.requestId === requestId);
+    // Updates and delivery references establish evidence, not acceptance's
+    // transcript position. Their receipt remains in the separate archive.
+    if (index < 0 && event.eventType !== "session.steering_accepted") return true;
     const previous = index >= 0 ? chat[index].steering : null;
     if (!receipt && previous) return true;
     const entry = mergeSteeringReceipt(
