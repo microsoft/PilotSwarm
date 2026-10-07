@@ -49,6 +49,7 @@
         "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
         "test:local:scripted": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/scripted-harness.test.js test/local/request-capture.test.js",
         "test:local:steering": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/session-steering*.test.js",
+        "test:local:steering-stop-matrix": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/session-steering-stop-matrix.test.js",
         "test:differential": "node scripts/differential-capture.mjs",
         "test:differential:mutate": "node scripts/differential-capture.mjs --mutate",
         "test:local": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",
