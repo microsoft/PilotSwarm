@@ -428,9 +428,15 @@ describe.concurrent("session steering actual turn / steer / Stop matrix", () => 
             assertEqual(positive.expectedTarget, newer);
             assertEqual(positive.inclusion.state, "included");
             assertEqual(positive.attempts.total, 1);
-            const events = await h.ledger();
+            const events = await h.assertLedger([positive.requestId], [positive.requestId]);
             assertEqual(events.filter((event) => event.eventType === "session.steering_accepted").length, 1);
             assertEqual(events.filter((event) => event.eventType === "user.message" && event.data?.steering?.requestId === positive.requestId).length, 1);
+            const stopped = events.find((event) => event.eventType === "session.turn_stopped");
+            const newWindow = events.find((event) => event.eventType === "session.steering_window_changed"
+                && event.data?.state === "open" && event.data?.expectedTarget === newer);
+            const acceptance = events.find((event) => event.eventType === "session.steering_accepted");
+            assert(stopped.seq < newWindow.seq && newWindow.seq < acceptance.seq,
+                "old Stop -> new window -> new-target acceptance follows durable order");
             assertEqual(await h.session.sendAndWait("matrix-convergence-C7", 30_000), "session usable after Stop");
             assertEqual((await h.catalog.steerGet(h.session.sessionId, positive.requestId)).attempts.total, 1);
             h.assertNoStoppedWork();
