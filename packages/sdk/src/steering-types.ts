@@ -333,7 +333,7 @@ export type SteerFinalizeOutcome = "published" | "adopted" | "unpublished" | "st
 
 export interface SteerFinalizeResult {
     finalized: boolean;
-    reason?: "no_window" | "not_owner" | "closed";
+    reason?: "no_window" | "not_owner" | "closed" | "left_open";
     /** On an already-closed target: rows whose inclusion this owner recorded. */
     inclusionUpdated?: number;
 }

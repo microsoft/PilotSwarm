@@ -188,6 +188,9 @@ export class SteeringPump {
      */
     private leaseValidUntil = 0;
     private renewing = false;
+    /** Set by interrupt(): an abort or Stop ended the turn's SDK work; settlement must not wait. */
+    private interrupted = false;
+    private interruptWaiters: Array<() => void> = [];
     /** Steers found in resumed LOCAL state on recovery: in this attempt's conversation, so in its manifest. */
     private readonly recoveredLocal: Array<{ requestId: string; sdkMessageId: string; kind: SteeringDeliveryKind | null }> = [];
     private needsQuiesce = false;
@@ -400,6 +403,26 @@ export class SteeringPump {
 
     private nextChange(): Promise<void> { return new Promise((resolve) => this.waiters.push(resolve)); }
 
+    /**
+     * An abort (Stop or activity cancellation) or force-settle ended this turn's SDK work.
+     * Admission closes; an in-progress reconcileAfterIdle returns at once; settle takes the
+     * fast path. Never waits for delivery evidence the abort may have discarded.
+     */
+    interrupt(): void {
+        if (this.interrupted) return;
+        this.interrupted = true;
+        this.gate.close();
+        this.wake();
+        this.notify();
+        const ws = this.interruptWaiters;
+        this.interruptWaiters = [];
+        for (const w of ws) w();
+    }
+
+    private whenInterrupted(): Promise<void> {
+        return this.interrupted ? Promise.resolve() : new Promise((resolve) => this.interruptWaiters.push(resolve));
+    }
+
     private onUserMessage(e: any): void {
         const id: string | undefined = e?.data?.messageId;
         if (!id) return;
@@ -523,6 +546,7 @@ export class SteeringPump {
     async reconcileAfterIdle(o: { guards: Promise<void>[] }): Promise<void> {
         this.gate.close();
         this.wake();
+        if (this.interrupted) return;
         const settled = (): boolean => this.unresolved().length === 0 && this.idleCount >= 1 + this.runsStartedBySteer;
         // An unconfirmed hand-off (send timeout, unclassified delivery) may still run: ownership
         // ends only with positively confirmed quiescence, never by returning early (INV-P6).
@@ -535,11 +559,13 @@ export class SteeringPump {
         let guardError: unknown;
         const outcome = await Promise.race([
             done,
+            this.whenInterrupted().then(() => "interrupted" as const),
             sleep(this.o.settleMs).then(() => "deadline" as const),
             ...o.guards.map((g) => g.then(() => "guard" as const, (err) => { guardError = err; return "guard" as const; })),
         ]);
         stop = true;
         this.notify();
+        if (outcome === "interrupted") return;                       // the abort owns the SDK work now
         if (outcome !== "settled" || this.needsQuiesce) {
             this.trace(`[steering] settle ${outcome}: ${this.unresolved().length} send(s) without evidence; quiescing the session`);
             await this.quiesceSession();                              // INV-P6
@@ -570,8 +596,14 @@ export class SteeringPump {
      */
     async settle(o: { stopping: boolean }): Promise<SteeringManifest | undefined> {
         if (o.stopping) {
-            this.settleForStop();
+            this.settleForStop({ stopping: true });
             return undefined;
+        }
+        if (this.interrupted) {
+            // Aborted without a Stop (activity cancellation, cap, watchdog): same fast path; the
+            // result may still be committed (D-21), so it carries the deliveries already observed.
+            this.settleForStop({ stopping: false });
+            return this.windowOpened ? this.currentManifest() : undefined;
         }
         try {
             return await this.settleInner(o);
@@ -592,19 +624,19 @@ export class SteeringPump {
      * startup is tombstoned, pending writes drain, counters flush. No history read and
      * no quiescence: the warm session belongs to Stop now.
      */
-    private settleForStop(): void {
+    private settleForStop(o: { stopping: boolean }): void {
         if (this.stopReconciliation) return;
         this.released = true;                                         // INV-P13
         this.gate.close();
         if (this.leaseTimer) clearInterval(this.leaseTimer);
         this.wake();
         for (const slot of this.earlySlots.values()) slot.settle(null);
-        this.stopReconciliation = this.reconcileAfterStop().catch((err) => {
+        this.stopReconciliation = this.reconcileAfterStop(o).catch((err) => {
             this.trace(`[steering] reconciliation after Stop failed: ${err?.message ?? String(err)}`);
         });
     }
 
-    private async reconcileAfterStop(): Promise<void> {
+    private async reconcileAfterStop(o: { stopping: boolean }): Promise<void> {
         const budgetEnd = performance.now() + this.o.sendTimeoutMs + 3 * this.o.ioTimeoutMs;
         const left = () => Math.max(0, budgetEnd - performance.now());
         if ((await bounded(this.startup, Math.min(this.o.ioTimeoutMs, left()))) === TIMEOUT) {
@@ -618,6 +650,8 @@ export class SteeringPump {
         if ((await bounded(allWrites, Math.min(this.o.ioTimeoutMs, left()))) === TIMEOUT) {
             this.trace("[steering] receipt writes after Stop did not drain in time; they stay unconfirmed");
         }
+        // Not a Stop: the turn's outcome is decided by its commit; quiesce the window for finalize.
+        if (!o.stopping && this.windowOpened) await bounded(this.ch.quiesce(), Math.min(this.o.ioTimeoutMs, left()));
         await this.flushCounters();
     }
 
@@ -682,6 +716,11 @@ export class SteeringPump {
             }
         }
         if (o.stopping || !this.windowOpened) return undefined;
+        return this.currentManifest();
+    }
+
+    /** Deliveries observed so far (handed off by this pump, or found in resumed local state). */
+    private currentManifest(): SteeringManifest {
         const delivered: SteeringManifest["delivered"] = [...this.attempts.values()]
             .filter((a) => a.event && a.sdkMessageId)
             .map((a) => ({

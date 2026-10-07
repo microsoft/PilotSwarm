@@ -223,26 +223,26 @@ export class SteeringTurn {
      * Each database call is bounded by the catalog; the whole operation has
      * one budget (review F05), so post-commit completion cannot hang.
      */
-    async finalize(outcome: SteerFinalizeOutcome, manifest: SteeringManifest | undefined | null, snapshotVersion: number | null, owner?: string): Promise<void> {
+    async finalize(outcome: SteerFinalizeOutcome, manifest: SteeringManifest | undefined | null, snapshotVersion: number | null, owner?: string, opts: { close?: boolean } = {}): Promise<void> {
         const owners = owner ? [owner] : [...this.owners].reverse();
         const ids = manifest ? manifest.delivered.map((d) => d.requestId) : null;
         const deadline = Date.now() + STEERING_FINALIZE_BUDGET_MS;
         for (const candidate of owners) {
-            const r = await this.finalizeAs(candidate, outcome, ids, snapshotVersion, deadline);
+            const r = await this.finalizeAs(candidate, outcome, ids, snapshotVersion, deadline, opts);
             if (r !== "not_owner") return;
         }
     }
 
-    private async finalizeAs(owner: string, outcome: SteerFinalizeOutcome, ids: string[] | null, snapshotVersion: number | null, deadline: number): Promise<string> {
+    private async finalizeAs(owner: string, outcome: SteerFinalizeOutcome, ids: string[] | null, snapshotVersion: number | null, deadline: number, opts: { close?: boolean } = {}): Promise<string> {
         for (const delay of [0, 200, 800]) {
             if (delay) await new Promise((r) => setTimeout(r, Math.min(delay, Math.max(0, deadline - Date.now()))));
             const remaining = deadline - Date.now();
             if (remaining <= 0) break;
             try {
                 const r = await withDeadline(
-                    this.callQueue.run(() => this.catalog.steerTurnFinalize(this.sessionId, this.target, owner, outcome, ids, snapshotVersion)), remaining);
+                    this.callQueue.run(() => this.catalog.steerTurnFinalize(this.sessionId, this.target, owner, outcome, ids, snapshotVersion, opts)), remaining);
                 if (r === DEADLINE) { this.trace(`[steering] finalize ${outcome} exceeded its budget`); return "failed"; }
-                if (r.finalized) return "finalized";
+                if (r.finalized || r.reason === "left_open") return "finalized";
                 return r.reason ?? "refused";
             } catch (err: any) {
                 this.trace(`[steering] finalize ${outcome} failed: ${err?.message ?? String(err)}`);
