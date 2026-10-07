@@ -79,6 +79,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   as a new message, and `c` reuses undelivered/withdrawn/uncertain guidance in
   the draft (append on a new line if nonempty). Delivered receipts have no
   draft action; their text remains selectable. Escape closes.
+- Unedited recall is temporary: persist its stashed text/caret/attachments on
+  session or MoA view changes, not the recalled candidate. Attachment changes
+  end navigation just like text edits; history-driven clearing is separate.
   The portal uses the same shared controller methods through receipt-row buttons.
 - Receipt reads do not establish transcript position. Keep unanchored receipts
   in the paginated Guidance view until their acceptance history loads. Show
