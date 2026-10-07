@@ -90,7 +90,8 @@
         "duroxide": "https://github.com/microsoft/duroxide-node/releases/download/v0.2.0/duroxide-0.2.0.tgz",
         "fflate": "^0.8.3",
         "file-type": "^20.5.0",
-        "pg": "^8.18.0"
+        "pg": "^8.18.0",
+        "yaml": "^2.9.0"
     },
     "optionalDependencies": {
         "duroxide-darwin-arm64": "https://github.com/microsoft/duroxide-node/releases/download/v0.2.0/duroxide-darwin-arm64-0.2.0.tgz",

@@ -34,6 +34,11 @@ export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export { WorkflowSession } from "./workflow-session.js";
 export type { WorkflowResultWaitOptions } from "./workflow-session.js";
 export { registerInMemoryWorkflowGraph } from "./workflow-orchestration/graph.js";
+export {
+    WorkflowTransitionRegistry,
+    compileAndRegisterWorkflowYaml,
+    compileWorkflowYaml,
+} from "./workflow-orchestration/compiler.js";
 export type {
     InMemoryWorkflowAgentState,
     InMemoryWorkflowExecutableState,
@@ -46,6 +51,16 @@ export type {
     WorkflowTerminalContext,
     WorkflowTransitionContext,
 } from "./workflow-orchestration/graph.js";
+export type {
+    CompiledWorkflowYaml,
+    WorkflowAdvanceDirective,
+    WorkflowPackageMetadata,
+    WorkflowResumeProducerDirective,
+    WorkflowTransitionDirective,
+    WorkflowTransitionHandler,
+    WorkflowTransitionHandlerContext,
+    WorkflowTransitionRegistration,
+} from "./workflow-orchestration/compiler.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";

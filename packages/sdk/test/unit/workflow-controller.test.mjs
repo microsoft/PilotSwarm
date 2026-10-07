@@ -5,6 +5,10 @@ import {
     registerInMemoryWorkflowGraph,
 } from "../../dist/workflow-orchestration/graph.js";
 import {
+    WorkflowTransitionRegistry,
+    compileAndRegisterWorkflowYaml,
+} from "../../dist/workflow-orchestration/compiler.js";
+import {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
@@ -166,6 +170,7 @@ test("executes states and deterministic transitions until a terminal state", asy
             },
         },
     });
+
     const admissions = [];
     const acceptances = [];
     const completions = [];
@@ -257,6 +262,71 @@ test("executes states and deterministic transitions until a terminal state", asy
         },
         completedAt: new Date("2026-10-07T18:00:00.000Z"),
     }]);
+});
+
+test("executes a YAML-compiled agent workflow through structured result submission", async () => {
+    const transitions = new WorkflowTransitionRegistry()
+        .register("delivery.inspect", {
+            allowedTargets: ["done", "blocked"],
+            handler: ({ stateOutcome }) => ({
+                kind: "advance",
+                target: stateOutcome === "succeeded" ? "done" : "blocked",
+            }),
+        });
+    const { definition } = compileAndRegisterWorkflowYaml(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: delivery
+  version: 0.1.0
+initial: inspect
+states:
+  inspect:
+    type: agent
+    agent: delivery-inspector
+    input:
+      pullRequestId: \${inputs.pullRequestId}
+    result:
+      schema: delivery/inspection/v1
+    completion:
+      mode: one-shot
+      outcomes:
+        - succeeded
+        - blocked
+    transition:
+      handler: delivery.inspect
+  done:
+    type: terminal
+    outcome: succeeded
+    output: \${states.inspect.result}
+  blocked:
+    type: terminal
+    outcome: blocked
+    output: \${states.inspect.result}
+`, { transitions });
+
+    const { result, operations } = await runController({
+        sessionId: "workflow-yaml-1",
+        definition,
+        inputs: { pullRequestId: 116 },
+    }, undefined, {
+        agentResult: {
+            outcome: "succeeded",
+            output: { pullRequestId: 116, sourceCommit: "abc" },
+        },
+    });
+
+    assert.equal(result.outcome, "succeeded");
+    assert.deepEqual(result.result, {
+        pullRequestId: 116,
+        sourceCommit: "abc",
+    });
+    const spawn = operations.find(operation => operation.name === HANDOFF_ACTIVITY_NAMES.spawnChildSession);
+    assert.match(spawn.input.task, /"pullRequestId": 116/);
+    assert.equal(spawn.input.config.boundAgentName, "delivery-inspector");
+    assert.equal(spawn.input.requiredTool, SUBMIT_WORKFLOW_RESULT_TOOL);
+    assert.deepEqual(spawn.input.config.toolNames, [SUBMIT_WORKFLOW_RESULT_TOOL]);
+    assert.deepEqual(spawn.input.config.childContract.allowedOutcomes, ["succeeded", "blocked"]);
 });
 
 test("requires the authoritative workflow catalog before state admission", async () => {

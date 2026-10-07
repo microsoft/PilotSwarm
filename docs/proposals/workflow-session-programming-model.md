@@ -191,14 +191,12 @@ states:
     result:
       schema: example/state-output/v1
     completion:
+      mode: one-shot
       outcomes:
         - succeeded
         - failed
     transition:
-      use: after-state-a
-      allowedTargets:
-        - state-b
-        - state-c
+      handler: after-state-a
 ```
 
 The agent definition describes instructions and capabilities, while the prompt
@@ -206,19 +204,20 @@ describes the state-specific task.
 
 ## Transition callback declaration
 
-Complex transition logic is packaged as deterministic code rather than
-embedded as an unrestricted script string in YAML. The workflow package
-manifest registers a stable callback name to a module export:
+Transition logic is packaged as deterministic code rather than embedded as an
+expression language or outcome map in YAML. Package initialization registers a
+stable handler name, its allowed targets, and the synchronous function:
 
-```yaml
-transitions:
-  after-state-a:
-    module: ./transitions.mjs
-    export: afterStateA
+```typescript
+transitions.register("after-state-a", {
+    allowedTargets: ["state-b", "state-c"],
+    handler: afterStateA,
+});
 ```
 
-The workflow YAML references the registered name through `transition.use`.
-The named module export implements this author-facing interface:
+The workflow YAML references the registered name through
+`transition.handler`. The registered function implements this author-facing
+interface:
 
 ```typescript
 type StateId = string;
@@ -234,29 +233,38 @@ interface TransitionContext<TInput, TOutput> {
     workflowInput: DeepReadonly<TInput>;
     configuration: DeepReadonly<unknown>;
     currentStateId: StateId;
+    stateOutcome: string;
     stateOutput: DeepReadonly<TOutput>;
+    completion: DeepReadonly<{
+        feedback?: unknown;
+    }>;
     latestStateOutputs: DeepReadonly<Record<StateId, unknown>>;
     executionHistory: DeepReadonly<WorkflowExecutionRecord[]>;
 }
 
 type TransitionFunction<TInput, TOutput> = (
     ctx: TransitionContext<TInput, TOutput>,
-) => StateId;
+) =>
+    | { kind: "advance"; target: StateId }
+    | { kind: "resume-producer"; feedback: unknown };
 
 export const afterStateA: TransitionFunction<WorkflowInput, StateAOutput> =
     ctx => {
         if (ctx.stateOutput.result.matchesCondition) {
-            return "state-b";
+            return { kind: "advance", target: "state-b" };
         }
 
-        return "state-c";
+        return { kind: "advance", target: "state-c" };
     };
 ```
 
 Transition code must be synchronous and deterministic over the immutable
 context. It must not use tools, network, filesystem, clocks, randomness, model
-calls, mutable module globals, or other side effects, and it may return only
-one of the state's declared `allowedTargets`.
+calls, mutable module globals, or other side effects. An `advance` directive
+may target only one of the state's declared `allowedTargets`. A reviewed state
+may instead return `resume-producer` with the recorded review feedback; the
+runtime resumes the same producer revision chain rather than entering the
+state as a new execution.
 
 ## Runtime boundary
 
@@ -270,10 +278,17 @@ handler identities. Workflow code does not directly control durable history,
 invocation admission, retries, completion-policy enforcement, or lifecycle
 storage.
 
-### Initial in-memory prototype
+### Initial compiler and in-memory graph
 
-The first executable controller defers package and YAML compilation. SDK code
-may register an `InMemoryWorkflowGraph` in the worker process and create a
+The initial `v1alpha1` compiler parses YAML agent and terminal states, resolves
+mandatory transition handlers from `WorkflowTransitionRegistry`, and lowers
+the result into the same `InMemoryWorkflowGraph` used by the controller. It
+supports one-shot package-local agent states, terminal outputs, and exact-value
+references rooted at `inputs`, `configuration`, or prior
+`states.<stateId>.result`. Other state types and package persistence remain
+future work.
+
+SDK code may also register an `InMemoryWorkflowGraph` directly and create a
 workflow with the returned `{ kind: "in-memory", graphId }` definition source.
 Executable states currently support either an activity handler or a named
 one-shot agent. Both declare outcomes, allowed targets, and a synchronous
@@ -282,6 +297,21 @@ prompt function. PilotSwarm starts a replay-stable child session and waits for
 that child to call `submit_workflow_result`; it never scrapes the child's final
 prose for JSON. Terminal states provide the workflow outcome, summary, and
 optional deterministic result function.
+
+```typescript
+const transitions = new WorkflowTransitionRegistry()
+    .register("approval.inspect", {
+        allowedTargets: ["publish", "blocked"],
+        handler: context => ({
+            kind: "advance",
+            target: context.stateOutcome === "approved" ? "publish" : "blocked",
+        }),
+    });
+
+const { definition } = compileAndRegisterWorkflowYaml(workflowYaml, {
+    transitions,
+});
+```
 
 ```typescript
 const definition = registerInMemoryWorkflowGraph({

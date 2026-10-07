@@ -395,27 +395,35 @@ function* runWorkflow(ctx, input) {
             },
         );
 
-        const requestedNextStateId = invokeTransitionFunction(
+        const completion = yield* state.completionPolicy.resolve(ctx, {
+            currentStateId,
+            stateOutput: recordedOutput,
+        });
+
+        const directive = invokeTransitionFunction(
             ctx,
             definition,
             state,
             recordedOutput,
+            completion,
         );
 
-        const effectiveNextStateId = yield* state.completionPolicy.resolve(ctx, {
-            currentStateId,
-            requestedNextStateId,
-            stateOutput: recordedOutput,
-        });
+        if (directive.kind === "resume-producer") {
+            yield* recordProducerResume(ctx, {
+                invocationId: invocation.id,
+                feedback: directive.feedback,
+            });
+            yield* resumeAgentProducer(ctx, invocation, directive.feedback);
+            continue;
+        }
 
         yield* recordTransition(ctx, {
             invocationId: invocation.id,
             fromStateId: currentStateId,
-            requestedNextStateId,
-            effectiveNextStateId,
+            effectiveNextStateId: directive.target,
         });
 
-        currentStateId = effectiveNextStateId;
+        currentStateId = directive.target;
     }
 
     return yield* completeWorkflow(ctx, {
@@ -439,44 +447,36 @@ function* executeAgentState(ctx, state, invocation) {
     });
 }
 
-function invokeTransitionFunction(ctx, definition, state, recordedOutput) {
+function invokeTransitionFunction(
+    ctx,
+    definition,
+    state,
+    recordedOutput,
+    completion,
+) {
     const transitionFunction = definition.transitionRegistry.resolve(
         state.transition.callbackId,
     );
 
-    const requestedNextStateId = transitionFunction(deepFreeze({
+    const directive = transitionFunction(deepFreeze({
         workflowInput: ctx.workflowInput,
         configuration: definition.configuration,
         currentStateId: state.id,
+        stateOutcome: completion.outcome,
         stateOutput: recordedOutput,
+        completion,
         latestStateOutputs: ctx.latestStateOutputs,
         executionHistory: ctx.executionHistory,
     }));
 
-    if (!state.transition.allowedTargets.includes(requestedNextStateId)) {
-        throw new InvalidTransitionTargetError(requestedNextStateId);
+    if (
+        directive.kind === "advance"
+        && !state.transition.allowedTargets.includes(directive.target)
+    ) {
+        throw new InvalidTransitionTargetError(directive.target);
     }
 
-    return requestedNextStateId;
-}
-
-function* oneShotCompletionPolicy<TOutput>(
-    ctx,
-    request: TransitionRequest<TOutput>,
-) {
-    return request.requestedNextStateId;
-}
-
-function* reviewedCompletionPolicy<TOutput>(
-    ctx,
-    request: TransitionRequest<TOutput>,
-) {
-    const reviewDecision = yield* requestTransitionReview(ctx, {
-        requestedNextStateId: request.requestedNextStateId,
-        stateOutput: request.stateOutput,
-    });
-
-    return resolveReview(request, reviewDecision);
+    return directive;
 }
 
 function* executeAgenticTransition(ctx, state, recordedOutput) {
@@ -523,16 +523,17 @@ interface TransitionRegistry {
 
 Every nonterminal state has a workflow-author-supplied transition function.
 That function is deterministic code, pinned with the registered definition,
-that gives semantic meaning to the state's declared outputs by mapping each
-one to a declared next state.
+that gives semantic meaning to the state's accepted completion by returning
+either an `advance` directive to a declared next state or, for reviewed
+producers, a `resume-producer` directive carrying recorded feedback.
 
 The controller does not `yield` the transition function. Replay calls it again
-with the same frozen context and must receive the same next state. Package
+with the same frozen context and must receive the same directive. Package
 registration rejects missing callbacks and unknown allowed targets; the
-controller rejects callback results outside those targets.
+controller rejects `advance` directives outside those targets.
 
-The completion policy then decides whether the requested next state becomes
-effective. Multiple policy implementations share the same interface without
+The completion policy seals the accepted completion before transition
+evaluation. Multiple policy implementations share the same interface without
 changing the controller.
 
 State execution may be nondeterministic. PilotSwarm validates and durably
@@ -664,10 +665,12 @@ External writes are separate action nodes with explicit authorization and
 idempotency. Accepting a reviewed candidate may authorize a later action; it
 does not make the producing agent authoritative for that write.
 
-The exact YAML, provider registration, and request/response types remain open.
-The
+The initial `v1alpha1` YAML subset now requires every nonterminal state to name
+a package-registered transition handler; it deliberately provides no inline
+transition expression or case-map syntax. Provider registration and the
+remaining state-type request/response contracts continue to evolve. The
 [ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md)
-is one candidate encoding, not the normative schema.
+is the concrete acceptance encoding.
 
 ### 2.8 Nested workflows and limits
 
@@ -732,7 +735,7 @@ being copied into orchestration state.
   state outcomes, and selected transitions.
 - [ ] Define runtime-bound identity fields.
 - [ ] Define producer authority for declared outcomes.
-- [ ] Define normalized advance and producer-resume directives.
+- [x] Define normalized advance and producer-resume directives.
 - [ ] Define atomic outcome/transition persistence and race handling.
 - [ ] Define reviewed revision, rejection, acceptance, abort, and invalidation.
 - [ ] Define agentic transition admission, allowed routes, bounds, and replay.
@@ -786,10 +789,12 @@ The feature branch already provides:
 | Basic workflow controller | Implemented for process-local in-memory graphs |
 | One-shot agent-state dispatch | Implemented for named agents with runtime-bound structured result submission |
 | Authoritative execution records and current projection | Implemented in CMS migration `0083` |
-| Definition compiler and durable graph registry | Not implemented |
+| Definition compiler and durable graph registry | Initial `v1alpha1` YAML-to-in-memory compiler implemented for one-shot agent and terminal states; durable registry not implemented |
 
-The initial controller deliberately accepts only an `in-memory` definition
-that names a graph registered in the worker process. Activity states execute
+The initial controller accepts an `in-memory` definition that names a graph
+registered in the worker process. The compiler now parses the first
+`v1alpha1` subset, resolves mandatory registered transition handlers, and
+registers its output through that same graph boundary. Activity states execute
 behind durable activities. Agent states allocate a monotonically increasing
 `executionSequence`, create or reuse one replay-stable named-agent child, and
 wait on a sequence-specific Duroxide queue for `submit_workflow_result`.
@@ -813,7 +818,7 @@ Add a definition subsystem responsible for:
 - pinning mutable package and Git references;
 - resolving and hashing agent definitions, prompts, and transition modules;
 - validating schema, references, expressions, and bounds;
-- compiling the graph, case mappings, and callback registrations;
+- compiling the graph and resolving required transition registrations;
 - rejecting transition-module imports or capabilities that violate
   deterministic execution;
 - rejecting unsupported nodes, missing outcomes, invalid targets, and cycles;
@@ -1011,8 +1016,10 @@ boundary used by production integrations.
 2. `parentSessionId` is the authoritative relationship edge.
 3. Workflow execution state is separate from conversational `subAgents`.
 4. Agents produce outcomes; workflow authors define transition functions.
-5. Transition callbacks are immutable package exports executed in a restricted
-   deterministic host; declarative outcome maps are compiler sugar.
+5. Every nonterminal state names a registered transition handler. Transition
+   callbacks are immutable package exports executed in a restricted
+   deterministic host; inline transition expressions and outcome maps are not
+   part of the YAML contract.
 6. Agentic transitions are explicit durable invocations with bounded routes.
 7. Reviewed candidates, decisions, accepted outcomes, and transitions are
    distinct immutable facts.
