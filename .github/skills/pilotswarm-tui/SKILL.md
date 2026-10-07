@@ -85,6 +85,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   The portal uses the same shared controller methods through receipt-row buttons.
 - Receipt reads do not establish transcript position. Keep unanchored receipts
   in the paginated Guidance view until their acceptance history loads. Show
+  the same behavior for update/delivery-only history: only acceptance anchors
+  the row. Restoring a MoA draft atomically clears both history navigation and
+  the pending/queued edit binding; typing must never alter the old queue item.
   partial results and Load more guidance (`m` in the native receipt view).
   Main chat owns session steering pending/resend state; MoA panels share it,
   including results arriving after panel disposal.

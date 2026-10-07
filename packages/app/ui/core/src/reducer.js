@@ -1611,6 +1611,13 @@ function baseReducer(state, action) {
                 [action.sessionId]: mergePromptHistorySession(state.promptHistory?.bySessionId?.[action.sessionId],
                     action.events, action.actor) } } };
         }
+        case "ui/promptRestored": {
+            const prompt = action.draft.prompt || "";
+            return { ...state, ui: { ...state.ui, prompt, promptEdit: null, promptHistoryNavigation: null,
+                promptCursor: clampPromptCursor(prompt, action.draft.cursor, prompt.length),
+                promptRows: getPromptInputRows(prompt),
+                promptAttachments: normalizePromptAttachments(prompt, action.draft.attachments || []) } };
+        }
         case "ui/prompt":
             return {
                 ...state,
