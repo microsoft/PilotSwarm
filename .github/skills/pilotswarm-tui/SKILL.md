@@ -172,6 +172,8 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Prompt Up at the first line recalls the viewer's own executed current-session
   inputs (ordinary plus delivered steering), newest first, at most ten with
   consecutive duplicates skipped. Accepted sends enter recall immediately.
+  Durable `session.steering_accepted` events preserve the viewer's accepted
+  undelivered guidance after reload; later delivery shares the receipt identity.
   Down at the last line moves newer then restores the stashed draft. Any edit
   ends navigation without mutating history; send/session switch resets it.
   Reference autocomplete, slash/mention menus and modals keep priority.

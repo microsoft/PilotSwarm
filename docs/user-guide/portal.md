@@ -12,7 +12,9 @@ consecutive duplicates skipped). Down on the last line moves newer, then restore
 your unsent draft. Editing ends navigation; the next Up starts from newest.
 Sending and session switches reset navigation. Menus and reference autocomplete
 take priority. The history comes from durable user inputs, including delivered
-steering; new accepted sends appear immediately. No other writer's inputs are
+steering; new accepted sends appear immediately. Durable steering acceptance
+also preserves undelivered guidance in recall after reload, without duplicating
+its later delivery. No other writer's inputs are
 recalled. An iPad or other tablet also supports these hardware-arrow keys,
 including while its keyboard reduces the visible viewport. Phone typing and
 touch-keyboard behavior are unchanged.

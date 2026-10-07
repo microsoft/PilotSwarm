@@ -1,7 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { newClientId } from "./client-id.js";
 import { canReuseSteeringInDraft } from "./steering.js";
-import { promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary } from "./prompt-history.js";
+import { promptHistoryActorKey, selectPromptHistory, isPromptHistoryBoundary, PROMPT_HISTORY_EVENT_TYPES } from "./prompt-history.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -9805,7 +9805,7 @@ export class PilotSwarmUiController {
         const load = (async () => {
             let beforeSeq = Number.MAX_SAFE_INTEGER;
             do {
-                const events = await this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, ["user.message"]);
+                const events = await this.transport.getSessionEventsBefore(sessionId, beforeSeq, 100, PROMPT_HISTORY_EVENT_TYPES);
                 if (promptHistoryActorKey(actor) !== promptHistoryActorKey(this.getState().auth?.principal)
                     || this.getState().sessions.goneIds?.includes(sessionId)) return;
                 this.dispatch({ type: "promptHistory/eventsReceived", sessionId, actor, events });
