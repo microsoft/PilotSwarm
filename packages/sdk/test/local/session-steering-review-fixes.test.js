@@ -433,13 +433,19 @@ describe.concurrent("F06: recovery records the observed delivery timing, never a
         expect(r.disposition).toBe("delivered_after_response");
     });
 
-    it("Stop never overrides delivered_timing_unconfirmed (owner decision); a known kind still becomes delivered_before_stop", async () => {
-        const a = await lostDeliveryRecovered();
-        await catalog.steerRecordRecoveryCheck(a.requestId, a.fresh, "present", a.sdkId, null);
-        await catalog.steerCloseStopped(a.sessionId, a.target.turnIndex);
-        expect(await catalog.steerGet(a.sessionId, a.requestId)).toMatchObject({
-            status: "closed", closureReason: "stopped", disposition: "delivered_timing_unconfirmed", inclusion: { state: "included" } });
-
+    it("owner decision F06: Stop closes unknown-timing recovery without inventing a delivered-before-Stop timing", async () => {
+        const { sessionId, target, fresh, requestId, sdkId } = await lostDeliveryRecovered();
+        await catalog.steerRecordRecoveryCheck(requestId, fresh, "present", sdkId, null);
+        await catalog.steerCloseStopped(sessionId, target.turnIndex);
+        const closed = await catalog.steerGet(sessionId, requestId);
+        expect(closed).toMatchObject({
+            status: "closed", disposition: "delivered_timing_unconfirmed", closureReason: "stopped",
+            eligibility: { state: "terminal" }, inclusion: { state: "included" },
+        });
+        expect(closed.attempts.items.at(-1).deliveryKind).toBeNull();
+        const stats = await catalog.steerStats(sessionId);
+        expect(stats.requests.byDisposition.delivered_timing_unconfirmed).toBe(1);
+        expect(stats.requests.byDisposition.delivered_before_stop ?? 0).toBe(0);
         const b = await lostDeliveryRecovered();
         await catalog.steerRecordRecoveryCheck(b.requestId, b.fresh, "present", b.sdkId, "queued");
         await catalog.steerCloseStopped(b.sessionId, b.target.turnIndex);

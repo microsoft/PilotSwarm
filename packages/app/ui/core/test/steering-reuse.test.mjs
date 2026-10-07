@@ -14,7 +14,7 @@ test("only undelivered, withdrawn and uncertain receipts offer one reuse action"
         assert.match(html, /aria-label="Reuse in draft"/);
         assert.doesNotMatch(html, /Copy to draft|Append to draft/);
     }
-    for (const disposition of ["accepted", "delivered_current_turn", "delivered_after_response", "delivered_before_stop"]) {
+    for (const disposition of ["accepted", "delivered_current_turn", "delivered_after_response", "delivered_timing_unconfirmed", "delivered_before_stop"]) {
         const row = { ...receipt, disposition };
         assert.equal(canReuseSteeringInDraft(row), false);
         assert.doesNotMatch(renderToStaticMarkup(React.createElement(SteeringReceipt, { message: buildSteeringMessage(row), controller: {} })), /Reuse in draft/);

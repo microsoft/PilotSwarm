@@ -9,8 +9,29 @@ import { writeTurnSentinel } from "../../src/snapshot-protocol.ts";
 import { barrier, makeSteeringTurnHarness } from "../helpers/steering-turn-harness.mjs";
 import { SessionManager } from "../../src/session-manager.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
+import { createCmsSteeringChannel } from "../../src/steering-channel.ts";
+import { withSteeringLedger } from "../helpers/steering-ledger.js";
 
 const TIMEOUT = 60_000;
+
+function recordedSteeringProduct(sdk, ledger) {
+    const product = makeSteeringTurnHarness({ sdkSession: sdk });
+    const real = createCmsSteeringChannel(ledger.catalog, ledger.sessionId,
+        { epoch: ledger.target.epoch, turnIndex: ledger.target.turn, incarnation: ledger.target.incarnation },
+        ledger.target.owner, { recoverySource: "restored" });
+    Object.assign(product.channel, real);
+    for (const [name, value] of Object.entries(real)) {
+        if (typeof value === "function") product.channel[name] = vi.fn(value);
+    }
+    const open = product.channel.openWindow;
+    product.channel.openWindow = vi.fn(async () => {
+        const result = await open();
+        product.accepted = await ledger.accept({ content: "Keep this guidance separate" });
+        assertEqual(product.accepted.result.outcome, "accepted");
+        return result;
+    });
+    return product;
+}
 
 describe.concurrent("session steering real-CLI enablement gates", () => {
     it("F01/ST-I18 normal-settlement partial gate: quiescence ceases an active owned late run before returning, without Stop", { timeout: 75_000 }, async () => {
@@ -23,7 +44,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
         const sendFinished = Promise.withResolvers();
         let closedGeneration = false;
         const oldRequestsAfterBoundary = [];
-        await withSteeringCli(async (body, _position, record) => {
+        await withSteeringLedger(async ledger => { await withSteeringCli(async (body, _position, record) => {
             const texts = body.messages.filter((message) => message.role === "user")
                 .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content));
             if (texts.some((text) => text.includes("unrelated normal-settlement peer"))) return { content: "peer usable" };
@@ -47,11 +68,13 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 }] });
                 manager = new SessionManager(undefined, null, { modelProviders: registry }, join(h.home, "session-state"));
                 manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
-                const id = randomUUID();
+                const id = ledger.sessionId;
                 const managed = await manager.getOrCreate(id, { model: "normal-settlement-fixture:fixture-model" }, { turnIndex: 0 });
                 const peer = await manager.getOrCreate(randomUUID(), { model: "normal-settlement-fixture:fixture-model" }, { turnIndex: 0 });
                 const sdk = managed.copilotSession;
                 const abort = vi.spyOn(sdk, "abort");
+                const observedSdkEvents = [];
+                sdk.on(event => observedSdkEvents.push(event));
                 sdk.on("session.idle", () => originalIdle.resolve());
                 const actualSend = sdk.send.bind(sdk);
                 sdk.send = async (input) => {
@@ -60,7 +83,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                     if (input.mode === "immediate") sendFinished.resolve(returned);
                     return returned;
                 };
-                const product = makeSteeringTurnHarness({ sdkSession: sdk });
+                const product = recordedSteeringProduct(sdk, ledger);
                 let atBoundary = null;
                 let abortsBeforeQuiescence = null;
                 const quiesce = vi.fn(async () => {
@@ -85,10 +108,23 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 assertEqual(result.type, "completed");
                 assertEqual(quiesce.mock.calls.length, 1);
                 assertEqual(abortsBeforeQuiescence, 0, "normal settlement proof uses no preceding Stop/abort; quiescence may use its own cessation primitive");
+                assertEqual(abort.mock.calls.length, 1, "quiescence issues exactly one isolated funnel abort for the late owned run");
                 assertEqual(managed.getActiveTurn(), null);
                 assertEqual(manager.get(id), null);
+                const receipt = await ledger.catalog.steerGet(id, product.accepted.requestId);
+                assertEqual(receipt.attempts.total, 1);
+                const storedAttempt = (await ledger.attempts(product.accepted.requestId))[0];
+                const deliveredEvent = observedSdkEvents.find(event => event.type === "user.message"
+                    && event.data?.messageId === storedAttempt.sdk_message_id);
+                assert(deliveredEvent, "positive delivery has the exact correlated SDK user.message, not an acknowledgment");
+                assert(["queued", "idle"].includes(deliveredEvent.data.delivery), "delivery follows the naturally ended earlier response");
+                assertEqual(receipt.attempts.items[0].deliveryKind, deliveredEvent.data.delivery);
+                assertEqual(receipt.inclusion.state, "unconfirmed", "without snapshot publication, local receipt does not invent saved inclusion");
+                await ledger.finalize({ manifest: result.steering?.delivered.map(item => item.requestId) });
+                assertEqual((await ledger.catalog.steerGet(id, product.accepted.requestId)).disposition, "delivered_after_response");
                 lateRelease.resolve();
                 const requestsAtBoundary = h.model.sessionRequests().length;
+                assertEqual(manager.clients.size, 1);
                 assertEqual((await peer.runTurn("unrelated normal-settlement peer", { turnIndex: 1 })).content, "peer usable");
                 assertEqual(oldRequestsAfterBoundary.length, 0);
                 assertEqual(h.model.sessionRequests().length, requestsAtBoundary + 1);
@@ -99,7 +135,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 lateRelease.resolve();
                 await manager?.shutdown();
             }
-        });
+        }); });
     });
 
     it("ST-I07: a registered send arriving after the first idle stays owned until its own idle", { timeout: TIMEOUT }, async () => {
@@ -212,7 +248,9 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
         });
     });
 
-    it("ST-I18 partial gate: actual SessionManager quiescence owns a delayed issued-send response", { timeout: TIMEOUT }, async () => {
+    for (const steering of [true, false]) it(steering
+        ? "ST-I18 fast-Stop: cessation and post-release tripwire preserve the warm handle"
+        : "non-steering Stop preserves its existing cessation and reusable-handle contract", { timeout: TIMEOUT }, async () => {
         const modelEntered = Promise.withResolvers();
         const modelRelease = Promise.withResolvers();
         const sendIssued = Promise.withResolvers();
@@ -220,7 +258,8 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
         const responseContinuation = Promise.withResolvers();
         let generationClosed = false;
         const oldGenerationRequests = [];
-        await withSteeringCli(async (_body, position, record) => {
+        await withSteeringLedger(async ledger => { await withSteeringCli(async (_body, position, record) => {
+            if (position.lastUserText.includes("next ordinary turn on the same warm handle")) return { content: "same handle remains usable" };
             if (position.firstUserText.includes("original prompt")) {
                 if (generationClosed) {
                     oldGenerationRequests.push(record);
@@ -242,7 +281,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 }] });
                 manager = new SessionManager(undefined, null, { modelProviders: registry }, join(h.home, "session-state"));
                 manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
-                const sessionId = randomUUID();
+                const sessionId = ledger.sessionId;
                 managed = await manager.getOrCreate(sessionId, { model: "steering-fixture:fixture-model" }, { turnIndex: 0 });
                 const other = await manager.getOrCreate(randomUUID(), { model: "steering-fixture:fixture-model" }, { turnIndex: 0 });
                 const sdk = managed.copilotSession;
@@ -259,21 +298,21 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 };
                 const lateEvents = [];
                 sdk.on((event) => lateEvents.push(event));
-                product = makeSteeringTurnHarness({ sdkSession: sdk });
+                product = recordedSteeringProduct(sdk, ledger);
                 const disconnect = vi.fn(() => manager.quiesceForSteering(sessionId));
                 const turn = managed.runTurn("original prompt", {
-                    turnIndex: 1, steering: product.channel, steeringQuiesce: disconnect,
+                    turnIndex: 1, ...(steering ? { steering: product.channel, steeringQuiesce: disconnect } : {}),
                 });
                 const request = await within(modelEntered.promise, "active product model request");
-                await within(sendIssued.promise, "actual already-issued immediate RPC");
+                const issuedId = steering ? await within(sendIssued.promise, "actual already-issued immediate RPC") : null;
                 assertEqual(request.connectionClosed, false);
                 managed.requestStop("Stop delayed-send fixture");
                 managed.abort();
                 const result = await within(turn, "bounded product Stop/quiescence", 30_000);
                 assertEqual(result.type, "stopped");
                 assertEqual(managed.getActiveTurn(), null);
-                assertEqual(manager.get(sessionId), null, "actual manager forgot the quiesced target session");
-                assertEqual(disconnect.mock.calls.length, 1, "unresolved issued work is quiesced per session");
+                assertEqual(manager.get(sessionId) === managed, true, "fast Stop preserves its successfully ceased warm handle");
+                assertEqual(disconnect.mock.calls.length, 0, "Stop does not await steering quiescence");
                 assertEqual(request.connectionClosed, true, "actual main model work has ceased before ownership returns");
                 const requestsAtReturn = h.model.sessionRequests().length;
                 const eventsAtReturn = lateEvents.length;
@@ -282,7 +321,18 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 generationClosed = true;
                 sendResponse.resolve();
                 modelRelease.resolve();
-                await within(responseContinuation.promise, "registered response continuation after quiescence");
+                if (steering) {
+                    assertEqual(await within(responseContinuation.promise, "registered response continuation after Stop"), issuedId);
+                    await ledger.catalog.steerCloseStopped(sessionId, 1);
+                    const receipt = await ledger.catalog.steerGet(sessionId, product.accepted.requestId);
+                    assertEqual(receipt.status, "closed");
+                    assertEqual(receipt.closureReason, "stopped");
+                    assert(["delivery_unconfirmed", "delivered_before_stop", "delivered_timing_unconfirmed"].includes(receipt.disposition));
+                    if (receipt.disposition !== "delivery_unconfirmed") {
+                        assert(lateEvents.some(event => event.type === "user.message" && event.data?.messageId === issuedId),
+                            "any positive delivery requires correlated SDK history");
+                    }
+                }
                 const answer = await other.runTurn("unrelated second session prompt", { turnIndex: 1 });
                 assertEqual(answer.content, "second session still works");
                 assertEqual(h.model.sessionRequests().length, requestsAtReturn + 1, "late send response starts no orphan model work");
@@ -293,6 +343,12 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 assertEqual(product.channel.renew.mock.calls.length, renewalsAtReturn, "disposed pump never rearms its lease");
                 assertEqual(product.channel.markSubmitting.mock.calls.length, handoffsAtReturn, "late continuation cannot authorize another handoff");
                 assertEqual(product.copilot.send === sdk.send, true);
+                const next = await managed.runTurn("next ordinary turn on the same warm handle", { turnIndex: 2 });
+                assertEqual(next.type, "completed");
+                assertEqual(next.content, "same handle remains usable");
+                assertEqual(manager.get(sessionId) === managed, true);
+                assertEqual(manager.clients.size, 1, "the shared client remains in service");
+                assertEqual(oldGenerationRequests.length, 0, "intentional next input is allowed; old-generation work remains fenced");
             } finally {
                 sendResponse.resolve();
                 modelRelease.resolve();
@@ -300,7 +356,7 @@ describe.concurrent("session steering real-CLI enablement gates", () => {
                 managed?.abort();
                 await manager?.shutdown();
             }
-        });
+        }); });
     });
 
     it("ST-I12 prerequisite: getEvents after PilotSwarm preamble reflects the restored snapshot, not dirty warm memory", { timeout: TIMEOUT }, async () => {

@@ -305,6 +305,10 @@ describe.concurrent("session steering actual direct/Web API contract", () => {
                 assertEqual(filtered.items.length, 1);
                 assertEqual(filtered.items[0].disposition, "delivered_timing_unconfirmed");
                 assertEqual(filtered.items[0].inclusion.state, "included");
+                assertEqual(filtered.items[0].actions.canSendAsNewMessage, false, "delivery uncertainty is timing only, not an invitation to resend");
+                assertEqual(filtered.items[0].actions.canWithdraw, false);
+                const stats = await remote.getSessionSteeringStats(h.sessionId);
+                assertEqual(stats.requests.byDisposition.delivered_timing_unconfirmed, 1);
                 await withRegisteredSteeringMcp(remote, async (mcp) => {
                     const result = await mcp.callTool({ name: "list_steering_requests", arguments: {
                         session_id: h.sessionId, dispositions: ["delivered_timing_unconfirmed"],
