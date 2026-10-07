@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, newClientId, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { canvasKey, newClientId, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows, linkSessionSteering } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes } from "./pane-layout.js";
@@ -331,6 +331,7 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
         const cached = resources.current;
         if (!cached) return;
         cached.disposed = true;
+        cached.steeringLink?.();
         clearInterval(cached.timer);
         cached.child.stop().catch(() => {});
     }, []);
@@ -342,6 +343,7 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
             const transport = createTransport();
             const child = createWebPilotSwarmController({ transport, branding: parent.getState().branding });
             resources.current = { child, transport, started: false, disposed: false, generation: 0, timer: null, polling: false,
+                steeringLink: linkSessionSteering(parent, child, node.sessionId),
                 send: child.sendPrompt.bind(child), scheduleDispatch: child.scheduleOutboxDispatch.bind(child) };
         }
         const cached = resources.current, { child, transport } = cached;
