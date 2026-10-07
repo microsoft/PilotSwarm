@@ -539,7 +539,8 @@ export type SessionKind = "agent" | "workflow";
  */
 export type WorkflowDefinitionSource =
     | { kind: "package"; packageName: string; workflowName: string; version?: string }
-    | { kind: "inline"; yaml: string };
+    | { kind: "inline"; yaml: string }
+    | { kind: "in-memory"; graphId: string };
 
 /** Additive creation contract for a controller-backed, non-conversational session. */
 export interface WorkflowSessionConfig {
@@ -555,7 +556,7 @@ export interface WorkflowSessionConfig {
 /** Terminal result returned by a child workflow session to its caller. */
 export interface WorkflowSessionResult<TResult = unknown> {
     sessionId: string;
-    parentSessionId: string;
+    parentSessionId?: string;
     outcome: "succeeded" | "blocked" | "failed" | "cancelled";
     summary: string;
     result?: TResult;

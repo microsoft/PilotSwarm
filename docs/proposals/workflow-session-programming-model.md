@@ -261,3 +261,58 @@ deterministic functions and dispatches external work only through registered
 handler identities. Workflow code does not directly control durable history,
 invocation admission, retries, completion-policy enforcement, or lifecycle
 storage.
+
+### Initial in-memory prototype
+
+The first executable controller defers package and YAML compilation. SDK code
+may register an `InMemoryWorkflowGraph` in the worker process and create a
+workflow with the returned `{ kind: "in-memory", graphId }` definition source.
+Executable states provide an activity handler plus declared outcomes, allowed
+targets, and a synchronous transition callback. Terminal states provide the
+workflow outcome, summary, and optional deterministic result function.
+
+```typescript
+const definition = registerInMemoryWorkflowGraph({
+    id: "approval-example/v1",
+    initialState: "inspect",
+    states: {
+        inspect: {
+            type: "activity",
+            allowedOutcomes: ["approved", "rejected"],
+            allowedTargets: ["publish", "blocked"],
+            execute: async context => inspectCandidate(context.workflowInputs),
+            transition: context =>
+                context.stateOutcome === "approved" ? "publish" : "blocked",
+        },
+        publish: {
+            type: "activity",
+            allowedOutcomes: ["published"],
+            allowedTargets: ["done"],
+            execute: async context => publishCandidate(context.workflowInputs),
+            transition: () => "done",
+        },
+        blocked: {
+            type: "terminal",
+            outcome: "blocked",
+            summary: "Candidate was rejected.",
+        },
+        done: {
+            type: "terminal",
+            outcome: "succeeded",
+            summary: "Candidate was published.",
+            result: context => context.recordedStateOutputs.publish.output,
+        },
+    },
+});
+
+await client.createWorkflowSession({
+    definition,
+    inputs: { candidateId: "candidate-42" },
+});
+```
+
+This registry is intentionally process-local: it is suitable for controller
+unit tests and early runtime experiments, but it is not durable across worker
+restarts and cannot coordinate graphs across a worker fleet. The production
+compiler and immutable graph registry replace this temporary registration
+boundary without changing the execution loop.

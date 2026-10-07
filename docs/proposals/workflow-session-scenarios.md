@@ -780,8 +780,16 @@ The feature branch already provides:
 | Top-level SDK creation | Implemented |
 | Conversational `spawn_workflow` | Implemented as durable action |
 | Parent `subWorkflows`, check, wait, and result consumption | Implemented |
-| Dedicated workflow orchestration version boundary | Scaffolded; fails explicitly |
-| Definition compiler and controller | Not implemented |
+| Dedicated workflow orchestration version boundary | Implemented; `1.0.0` runs the initial controller |
+| Basic workflow controller | Implemented for process-local in-memory graphs |
+| Definition compiler and durable graph registry | Not implemented |
+
+The initial controller deliberately accepts only an `in-memory` definition
+that names a graph registered in the worker process. It executes each state
+behind a durable activity, validates declared outcomes and targets, invokes
+transition callbacks synchronously, enforces a transition limit, and records
+terminal child results. This is an executable seam for refining controller
+semantics, not the production definition-storage model.
 
 ### 4.2 Definition subsystem
 

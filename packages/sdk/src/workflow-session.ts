@@ -48,7 +48,7 @@ export function toWorkflowResult<TResult>(
 
 /**
  * A controller-backed session handle. It intentionally exposes no chat methods.
- * The future controller writes the terminal child outcome consumed here.
+ * The workflow controller writes the terminal child outcome consumed here.
  */
 export class WorkflowSession<TResult = unknown> {
     constructor(

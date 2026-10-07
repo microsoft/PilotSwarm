@@ -5,6 +5,9 @@ import {
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
 } from "../../dist/workflow-orchestration-registry.js";
+import {
+    durableWorkflowSessionOrchestration_1_0_0,
+} from "../../dist/workflow-orchestration/index.js";
 
 test("workflow orchestration has an independent durable name and version registry", () => {
     assert.equal(WORKFLOW_SESSION_ORCHESTRATION_NAME, "workflow-session-v1");
@@ -15,17 +18,7 @@ test("workflow orchestration has an independent durable name and version registr
     );
 });
 
-test("workflow orchestration scaffold fails explicitly instead of running conversation logic", () => {
+test("workflow orchestration registry points to the initial controller", () => {
     const [{ handler }] = WORKFLOW_SESSION_ORCHESTRATION_REGISTRY;
-    const execution = handler({}, {
-        sessionId: "workflow-1",
-        parentSessionId: "parent-1",
-        definition: { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
-        inputs: {},
-    });
-
-    assert.throws(
-        () => execution.next(),
-        error => error?.code === "WORKFLOW_CONTROLLER_NOT_IMPLEMENTED",
-    );
+    assert.equal(handler, durableWorkflowSessionOrchestration_1_0_0);
 });

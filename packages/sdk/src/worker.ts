@@ -15,6 +15,7 @@ import {
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
 } from "./workflow-orchestration-registry.js";
+import { registerWorkflowActivities } from "./workflow-orchestration/activities.js";
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
@@ -938,6 +939,7 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
+        registerWorkflowActivities(this.runtime, this._catalog);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

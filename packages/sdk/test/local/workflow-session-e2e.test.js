@@ -2,8 +2,8 @@
  * Real parent-agent to workflow-child integration boundary.
  *
  * The synthetic markdown agent invokes the production spawn_workflow tool.
- * Until the workflow controller is implemented, the child orchestration is
- * expected to fail explicitly after the parent has created it successfully.
+ * Until the YAML compiler is implemented, the child orchestration is expected
+ * to fail explicitly at the definition boundary after creation succeeds.
  *
  * Run: npx vitest run test/local/workflow-session-e2e.test.js
  */
@@ -95,7 +95,7 @@ describe("Workflow Session: Agent E2E", () => {
 
                 const failed = await waitForFailedOrchestration(client, child.sessionId);
                 expect(String(failed.error ?? failed.output ?? "")).toMatch(
-                    /WORKFLOW_CONTROLLER_NOT_IMPLEMENTED|Workflow session controller is not implemented/i,
+                    /WORKFLOW_DEFINITION_COMPILER_REQUIRED|requires the workflow compiler/i,
                 );
             });
         } finally {
