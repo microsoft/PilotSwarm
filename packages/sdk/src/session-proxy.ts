@@ -771,24 +771,14 @@ export function createSessionProxy(
             }
             const runTurnTask = routeHandoffActivity(task, routingContract);
             // Routing tag for the runTurn activity (duroxide worker affinity).
-            // Two mutually-exclusive cases, and crucially runTurn is NEVER left
-            // untagged -- an untagged runTurn is served by ANY worker in
-            // `defaultAnd` mode (every repository worker), which would let a repo
-            // fleet steal a repo-less turn and run it inside that repo's
-            // enlistment (leaking its cwd, skills, and MCP servers):
-            //   - config.repo set  -> `repo:<name>`: only a repository worker whose
-            //     workerTagFilter includes that tag can dequeue it (repo affinity).
-            //   - config.repo unset -> `generic`: only the generic worker pool
-            //     (PILOTSWARM_WORKER_TAGS=generic) serves it, so a repo-less
-            //     session runs in a clean, repo-free worker. Repository workers
-            //     (`defaultAnd:[repo:<name>]`) reject a `generic`-tagged turn
-            //     because it is tagged (not untagged) and does not match their
-            //     repo. Support activities stay UNTAGGED (below) so any worker
-            //     can serve them -- only the runTurn is pinned.
-            // Duroxide carries ONE tag per activity, so the repo/owner affinity
-            // tag is applied last and is the tag a worker matches on; the
-            // handoff contract above still validates tag-routing support and
-            // selects the versioned activity name.
+            // runTurn is never left untagged because an untagged activity can be
+            // served by any worker in defaultAnd mode.
+            // Repository selection is workspace metadata, not placement. Both
+            // repo-bearing and repo-less sessions use the generic route; the
+            // worker lifecycle prepares the requested repository before a turn.
+            // Duroxide carries one tag per activity, so generic/owner affinity
+            // is applied last. The handoff contract still selects the versioned
+            // activity name.
             if (typeof runTurnTask?.withTag !== "function") return runTurnTask;
             return runTurnTask.withTag(runTurnRoutingTag(config));
         },

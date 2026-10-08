@@ -218,45 +218,12 @@ function normalizeWorkflowRunCreateParams(params, owner) {
     };
 }
 
-// ── Repo-affinity fail-fast (git-hydration) ──────────────────────────────
-// A session may declare a target repo enlistment; turns are then routed only
-// to repository workers tagged for that repo. If the repo is unknown/unserviced
-// the turn would enqueue with a tag no worker matches and hang forever, so we
-// reject at create time instead.
-//
-// The serviceable-repo allowlist is derived at runtime from the live worker
-// registry: a repo is serviceable iff at least one ready worker advertises it
-// (each worker stamps its `repo:<name>` routing tags into its heartbeat, which
-// surfaces as `info.repos` on listWorkers() rows). See PortalRuntime._serviceableRepos.
-//
-// PILOTSWARM_KNOWN_REPOS (comma/space-separated repo short-names) is kept as an
-// optional static SEED that is unioned with the registry-derived set. It lets an
-// operator force a repo serviceable (e.g. during a rollout window before the
-// worker heartbeat lands, or as a break-glass override) without baking enlistment
-// names into source. Leave it unset in steady state — the registry is authoritative.
-const SEED_REPOS = new Set(
-    (process.env.PILOTSWARM_KNOWN_REPOS || "")
-        .split(/[\s,]+/)
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean),
-);
-
-// How long a derived serviceable-repo set is trusted before the worker registry
-// is re-scanned. Bounds how stale the allowlist can be against a just-rolled-out
-// (or just-drained) repo worker, while keeping create requests off the
-// per-request registry-scan path.
-const REPO_ALLOWLIST_TTL_MS = 30 * 1000;
-
 const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const WORKFLOW_GENERATOR_SOURCE_PROVIDER_ID_RE = /^[a-z][a-z0-9._-]{0,127}$/;
 
 /**
- * Validate an optional `repo` create-param against a resolved allowlist.
- * Returns the normalized repo name (or undefined when unset). Throws
- * INVALID_REQUEST for malformed or unknown repos so an un-routable turn never
- * gets enqueued. `serviceableRepos` is the Set derived from the worker
- * registry (see PortalRuntime._serviceableRepos); kept as a pure param so this
- * stays trivially testable.
+ * Validate and normalize optional repository workspace metadata. Authorization
+ * is enforced by the generic worker against its source-controlled inventory.
  */
 function normalizeRepoParam(raw) {
     if (raw == null || raw === "") return undefined;
@@ -270,21 +237,8 @@ function normalizeRepoParam(raw) {
     return repo;
 }
 
-function validateRepoParam(raw, serviceableRepos) {
-    const repo = normalizeRepoParam(raw);
-    if (!repo) return undefined;
-    if (!serviceableRepos.has(repo)) {
-        throw Object.assign(
-            new Error(`repo "${repo}" is not a known git-hydration enlistment`),
-            { code: "INVALID_REQUEST" },
-        );
-    }
-    return repo;
-}
-
 // A git ref (branch/tag/commit-ish) permitted for a session's target
-// enlistment. Unlike `repo` (a routing tag validated against the serviceable
-// allowlist), `gitRef` is a free-form ref string consumed by the worker at
+// enlistment. `gitRef` is a free-form ref string consumed by the worker at
 // turn-0 pin time. We keep it to a conservative, injection-safe charset so a
 // malformed value can never smuggle git option flags or path traversal into
 // the worker's `git rev-parse`/`checkout`.
@@ -745,76 +699,6 @@ export class PortalRuntime {
         // Last role written per principal, so the sign-in write does not fire
         // on every poll. See noteSignInRole.
         this._signInRoleSeen = new Map(); // key -> { role, at }
-        // TTL-cached serviceable-repo allowlist derived from the worker
-        // registry. See _serviceableRepos. `null` until first resolve.
-        this._repoAllowlist = null; // { at: epochMs, repos: Set<string> }
-    }
-
-    // ── Repo-affinity allowlist ─────────────────────────────────────────
-
-    /**
-     * Resolve the set of git-hydration repos that are currently serviceable,
-     * derived from the live worker registry and unioned with the optional
-     * PILOTSWARM_KNOWN_REPOS seed.
-     *
-     * A repo is serviceable iff at least one ready worker advertises a
-     * `repo:<name>` routing tag; each worker stamps those into its heartbeat,
-     * surfacing as `info.repos` on listWorkers() rows. Draining/starting
-     * workers are ignored — only `ready` workers actually dequeue tagged turns.
-     *
-     * Result is cached for REPO_ALLOWLIST_TTL_MS so the create path does not
-     * scan the worker registry per request. On a registry read failure we fall
-     * back to the last-known-good set (if any) unioned with the seed, so a
-     * transient CMS blip does not spuriously reject every repo-targeted create.
-     */
-    async _serviceableRepos() {
-        const now = Date.now();
-        if (this._repoAllowlist && now - this._repoAllowlist.at < REPO_ALLOWLIST_TTL_MS) {
-            return this._repoAllowlist.repos;
-        }
-        try {
-            const rows = (await this.transport.listWorkers()) ?? [];
-            const repos = new Set(SEED_REPOS);
-            for (const row of rows) {
-                if (row?.phase !== "ready") continue;
-                const advertised = row?.info?.repos;
-                if (!Array.isArray(advertised)) continue;
-                for (const r of advertised) {
-                    if (typeof r === "string" && r) repos.add(r.trim().toLowerCase());
-                }
-            }
-            this._repoAllowlist = { at: now, repos };
-            return repos;
-        } catch (err) {
-            // Registry unavailable: prefer last-known-good, else the bare seed.
-            // Do not cache the fallback — retry on the next request.
-            const fallback = this._repoAllowlist
-                ? new Set([...SEED_REPOS, ...this._repoAllowlist.repos])
-                : new Set(SEED_REPOS);
-            return fallback;
-        }
-    }
-
-    /**
-     * The session-creation policy the transport reports, augmented with the
-     * set of repos this deployment can currently service (sorted). Clients
-     * render the new-session repo picker from `policy.repos`; an empty list
-     * means "generic sessions only" and the picker step is skipped. `repos`
-     * is advisory for the UI — validateRepoParam stays the enforcement point
-     * on create, so a stale list can never widen what the server accepts.
-     */
-    async _sessionCreationPolicyWithRepos() {
-        const base = typeof this.transport.getSessionCreationPolicy === "function"
-            ? this.transport.getSessionCreationPolicy()
-            : null;
-        let repos = [];
-        try {
-            repos = [...(await this._serviceableRepos())].sort();
-        } catch {
-            repos = [];
-        }
-        if (!base && repos.length === 0) return null;
-        return { ...(base || {}), repos };
     }
 
     async _modelsForDevbox(owner, repo, isAdmin) {
@@ -832,12 +716,14 @@ export class PortalRuntime {
             const routingTags = Array.isArray(worker?.info?.routingTags)
                 ? worker.info.routingTags
                 : [];
-            const supportsPlacement = repo
-                ? repos.some((candidate) => String(candidate).toLowerCase() === repo)
-                : routingTags.some((tag) => (
-                    isOwnerScopedRoutingTag(String(tag))
-                    && String(tag).endsWith("|generic")
-                ));
+            const supportsGeneric = routingTags.some((tag) => (
+                isOwnerScopedRoutingTag(String(tag))
+                && String(tag).endsWith("|generic")
+            ));
+            const supportsLegacyRepo = repo && repos.some(
+                (candidate) => String(candidate).toLowerCase() === repo,
+            );
+            const supportsPlacement = supportsGeneric || supportsLegacyRepo;
             return worker?.phase === "ready"
                 && Number.isFinite(updatedAt)
                 && now - updatedAt <= 90_000
@@ -1471,11 +1357,9 @@ export class PortalRuntime {
                 // viewer-scoped union per open via the listCreatableAgents op.
                 ? await this.transport.listCreatableAgents(null, false)
                 : [],
-            // Serviceable-repo list rides along the policy so the portal can
-            // render the new-session repo picker straight from bootstrap
-            // (getSessionCreationPolicy is synchronous on the client and reads
-            // this cached payload).
-            sessionCreationPolicy: await this._sessionCreationPolicyWithRepos(),
+            sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
+                ? this.transport.getSessionCreationPolicy()
+                : null,
             // Ownership/visibility posture (security model) so clients (portal,
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.
@@ -1946,9 +1830,7 @@ export class PortalRuntime {
                         "devbox workers acquire delegated credentials locally.",
                     );
                 }
-                const repo = compute === "devbox"
-                    ? normalizeRepoParam(safeParams.repo)
-                    : validateRepoParam(safeParams.repo, await this._serviceableRepos());
+                const repo = normalizeRepoParam(safeParams.repo);
                 const gitRef = validateGitRefParam(safeParams.gitRef);
                 const model = compute === "devbox"
                     ? await this._resolveDevboxModel(owner, repo, isAdmin, safeParams.model)
@@ -1976,9 +1858,7 @@ export class PortalRuntime {
                         "devbox workers acquire delegated credentials locally.",
                     );
                 }
-                const repo = compute === "devbox"
-                    ? normalizeRepoParam(safeParams.repo)
-                    : validateRepoParam(safeParams.repo, await this._serviceableRepos());
+                const repo = normalizeRepoParam(safeParams.repo);
                 const gitRef = validateGitRefParam(safeParams.gitRef);
                 const model = compute === "devbox"
                     ? await this._resolveDevboxModel(owner, repo, isAdmin, safeParams.model)
@@ -2005,7 +1885,7 @@ export class PortalRuntime {
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents(owner, resourceAdmin);
             case "getSessionCreationPolicy":
-                return this._sessionCreationPolicyWithRepos();
+                return this.transport.getSessionCreationPolicy();
 
             // ── Agent packages (docs/proposals/agent-packages.md) ────
             // access "authed" + creator-or-admin enforcement in the registry

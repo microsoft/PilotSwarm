@@ -510,7 +510,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
-            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession" || modal.type === "repoBranchInput" || modal.type === "repoAgentInput" || modal.type === "sessionWorkspace") {
+            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession" || modal.type === "sessionWorkspace") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                     return;
@@ -524,8 +524,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursor(-1);
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(-1);
                     else if (modal.type === "shareSession") controller.moveShareSessionCursor(-1);
-                    else if (modal.type === "repoBranchInput") controller.moveRepoBranchCursor(-1);
-                    else if (modal.type === "repoAgentInput") controller.moveRepoAgentCursor(-1);
                     else controller.moveArtifactUploadCursor(-1);
                     return;
                 }
@@ -534,8 +532,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursor(1);
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(1);
                     else if (modal.type === "shareSession") controller.moveShareSessionCursor(1);
-                    else if (modal.type === "repoBranchInput") controller.moveRepoBranchCursor(1);
-                    else if (modal.type === "repoAgentInput") controller.moveRepoAgentCursor(1);
                     else controller.moveArtifactUploadCursor(1);
                     return;
                 }
@@ -544,8 +540,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursorToBoundary("start");
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("start");
                     else if (modal.type === "shareSession") controller.moveShareSessionCursorToBoundary("start");
-                    else if (modal.type === "repoBranchInput") controller.moveRepoBranchCursorToBoundary("start");
-                    else if (modal.type === "repoAgentInput") controller.moveRepoAgentCursorToBoundary("start");
                     else controller.moveArtifactUploadCursorToBoundary("start");
                     return;
                 }
@@ -554,8 +548,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     else if (modal.type === "sessionWorkspace") controller.moveSetWorkspaceCursorToBoundary("end");
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("end");
                     else if (modal.type === "shareSession") controller.moveShareSessionCursorToBoundary("end");
-                    else if (modal.type === "repoBranchInput") controller.moveRepoBranchCursorToBoundary("end");
-                    else if (modal.type === "repoAgentInput") controller.moveRepoAgentCursorToBoundary("end");
                     else controller.moveArtifactUploadCursorToBoundary("end");
                     return;
                 }
@@ -564,8 +556,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     else if (modal.type === "sessionWorkspace") controller.deleteSetWorkspaceChar();
                     else if (modal.type === "sessionGroupName") controller.deleteSessionGroupNameChar();
                     else if (modal.type === "shareSession") controller.deleteShareSessionChar();
-                    else if (modal.type === "repoBranchInput") controller.deleteRepoBranchChar();
-                    else if (modal.type === "repoAgentInput") controller.deleteRepoAgentChar();
                     else controller.deleteArtifactUploadChar();
                     return;
                 }
@@ -574,8 +564,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     else if (modal.type === "sessionWorkspace") controller.insertSetWorkspaceText(input);
                     else if (modal.type === "sessionGroupName") controller.insertSessionGroupNameText(input);
                     else if (modal.type === "shareSession") controller.insertShareSessionText(input);
-                    else if (modal.type === "repoBranchInput") controller.insertRepoBranchText(input);
-                    else if (modal.type === "repoAgentInput") controller.insertRepoAgentText(input);
                     else controller.insertArtifactUploadText(input);
                 }
                 return;

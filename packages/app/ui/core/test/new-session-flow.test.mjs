@@ -84,39 +84,6 @@ test("New falls back to the agent picker when generic sessions are disabled and 
     assert.deepEqual(modal.catalog.map((item) => item.agentName), ["alpha"]);
 });
 
-test("repo-bound New selects a model before creating the session", async () => {
-    const model = { qualifiedName: "openai:gpt-test", providerId: "openai", modelName: "gpt-test" };
-    const { controller, calls, store } = makeController({
-        getSessionCreationPolicy: () => ({
-            creation: { allowGeneric: true },
-            repos: ["example-repo"],
-        }),
-        listModels: async () => [model],
-        getDefaultModel: () => "openai:gpt-test",
-        getModelsByProvider: () => [{ providerId: "openai", type: "openai", models: [model] }],
-    });
-
-    await controller.openNewSessionFlow();
-    let modal = store.getState().ui.modal;
-    assert.equal(modal?.type, "repoPicker");
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 1 } });
-    await controller.confirmModal();
-    assert.equal(store.getState().ui.modal?.type, "repoBranchInput");
-    await controller.confirmModal();
-    assert.equal(store.getState().ui.modal?.type, "repoAgentInput");
-    await controller.confirmModal();
-    assert.equal(store.getState().ui.modal?.type, "modelPicker");
-
-    await controller.confirmModal();
-
-    assert.equal(store.getState().ui.modal, null);
-    assert.equal(calls.createSession.length, 1);
-    assert.deepEqual(calls.createSession[0], {
-        repo: "example-repo",
-        model: "openai:gpt-test",
-    });
-});
-
 test("New fast-start inherits the active group", async () => {
     const { controller, calls, store } = makeController({
         sessions: [

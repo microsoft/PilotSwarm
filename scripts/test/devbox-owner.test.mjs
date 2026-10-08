@@ -76,6 +76,7 @@ function runPreload(env) {
     `GITHUB_TOKEN: process.env.GITHUB_TOKEN ?? null,` +
     `POD_NAME: process.env.POD_NAME ?? null,` +
     `OWNER_SUBJECT: process.env.PILOTSWARM_WORKER_OWNER_SUBJECT ?? null,` +
+    `WORKER_TAGS: process.env.PILOTSWARM_WORKER_TAGS ?? null,` +
     `}));`;
   const res = spawnSync(
     process.execPath,
@@ -99,8 +100,7 @@ function baseEnv(stubDir) {
   delete env.POD_NAME;
   delete env.PILOTSWARM_WORKER_OWNER_PROVIDER;
   delete env.PILOTSWARM_WORKER_OWNER_SUBJECT;
-  // Silence the cosmetic "no tags" warning; irrelevant to this test.
-  env.PILOTSWARM_WORKER_TAGS = "repo:test";
+  delete env.PILOTSWARM_WORKER_TAGS;
   return env;
 }
 
@@ -127,6 +127,23 @@ test("devbox preload does not inject GITHUB_TOKEN — signed-in-user auth is pre
       STUB_SUBJECT,
       "worker owner should still be resolved from the signed-in az identity",
     );
+    assert.equal(
+      out.WORKER_TAGS,
+      "generic",
+      "devbox workers should claim owner-scoped generic run-turn work",
+    );
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
+  }
+});
+
+test("devbox preload honors an explicitly set worker tag list", () => {
+  const stubDir = makeStubBinDir();
+  try {
+    const env = baseEnv(stubDir);
+    env.PILOTSWARM_WORKER_TAGS = "custom";
+    const out = runPreload(env);
+    assert.equal(out.WORKER_TAGS, "custom");
   } finally {
     rmSync(stubDir, { recursive: true, force: true });
   }

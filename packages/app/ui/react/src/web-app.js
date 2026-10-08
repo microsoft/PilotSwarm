@@ -86,9 +86,6 @@ import {
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
-    selectRepoPickerModal,
-    selectRepoBranchInputModal,
-    selectRepoAgentInputModal,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
     selectSessionWorkspaceModal,
@@ -16115,9 +16112,6 @@ function ModalLayer({ controller }) {
         modelPicker: selectModelPickerModal(state),
         reasoningEffortPicker: selectReasoningEffortPickerModal(state),
         contextTierPicker: selectContextTierPickerModal(state),
-        repoPicker: selectRepoPickerModal(state),
-        repoBranchInput: selectRepoBranchInputModal(state),
-        repoAgentInput: selectRepoAgentInputModal(state),
         sessionAgentPicker: selectSessionAgentPickerModal(state),
         sessionGroupPicker: selectSessionGroupPickerModal(state),
         sessionGroupName: selectSessionGroupNameModal(state),
@@ -16137,8 +16131,6 @@ function ModalLayer({ controller }) {
     const modal = modalState.rawModal;
     const renameInputRef = React.useRef(null);
     const groupNameInputRef = React.useRef(null);
-    const repoBranchInputRef = React.useRef(null);
-    const repoAgentInputRef = React.useRef(null);
     const workspaceInputRef = React.useRef(null);
     const listModalRef = React.useRef(null);
     // Full-text search for the people list in the session filter.
@@ -16175,34 +16167,6 @@ function ModalLayer({ controller }) {
     }, [modal?.type, modalState.sessionGroupName?.cursorIndex, modalState.sessionGroupName?.value]);
 
     React.useEffect(() => {
-        if (modal?.type !== "repoBranchInput" || !modalState.repoBranchInput) return;
-        const inputNode = repoBranchInputRef.current;
-        if (!inputNode) return;
-        if (document.activeElement !== inputNode) {
-            try {
-                inputNode.focus({ preventScroll: true });
-            } catch {
-                inputNode.focus();
-            }
-        }
-        inputNode.setSelectionRange(modalState.repoBranchInput.cursorIndex, modalState.repoBranchInput.cursorIndex);
-    }, [modal?.type, modalState.repoBranchInput?.cursorIndex, modalState.repoBranchInput?.value]);
-
-    React.useEffect(() => {
-        if (modal?.type !== "repoAgentInput" || !modalState.repoAgentInput) return;
-        const inputNode = repoAgentInputRef.current;
-        if (!inputNode) return;
-        if (document.activeElement !== inputNode) {
-            try {
-                inputNode.focus({ preventScroll: true });
-            } catch {
-                inputNode.focus();
-            }
-        }
-        inputNode.setSelectionRange(modalState.repoAgentInput.cursorIndex, modalState.repoAgentInput.cursorIndex);
-    }, [modal?.type, modalState.repoAgentInput?.cursorIndex, modalState.repoAgentInput?.value]);
-
-    React.useEffect(() => {
         if (modal?.type !== "sessionWorkspace" || !modalState.sessionWorkspace) return;
         const inputNode = workspaceInputRef.current;
         if (!inputNode) return;
@@ -16223,7 +16187,6 @@ function ModalLayer({ controller }) {
             "modelPicker",
             "reasoningEffortPicker",
             "contextTierPicker",
-            "repoPicker",
             "sessionAgentPicker",
             "sessionGroupPicker",
             "artifactPicker",
@@ -16248,7 +16211,6 @@ function ModalLayer({ controller }) {
         modalState.modelPicker?.selectedRowIndex,
         modalState.reasoningEffortPicker?.selectedRowIndex,
         modalState.contextTierPicker?.selectedRowIndex,
-        modalState.repoPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
         modalState.sessionGroupPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
@@ -16432,13 +16394,6 @@ function ModalLayer({ controller }) {
     if (modal.type === "contextTierPicker" && modalState.contextTierPicker) {
         return renderListModal(modalState.contextTierPicker, pickerConfirmLabel);
     }
-    if (modal.type === "repoPicker" && modalState.repoPicker) {
-        // The primary button follows the selection: the generic row creates a
-        // session directly, while a repo row advances to the branch step.
-        const picked = modal.items?.[modal.selectedIndex || 0];
-        const confirmLabel = picked?.kind === "repo" ? "Continue" : "Create Session";
-        return renderListModal(modalState.repoPicker, confirmLabel);
-    }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         // Every row is an agent now, so Enter always creates.
         const SORTS = [
@@ -16612,39 +16567,6 @@ function ModalLayer({ controller }) {
                     }, modalState.sessionGroupName.mode === "rename" ? "Rename" : "Create and Move")),
             ));
     }
-    if (modal.type === "repoBranchInput" && modalState.repoBranchInput) {
-        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
-                React.createElement("div", { className: "ps-modal-header" },
-                    React.createElement("div", { className: "ps-modal-title" }, modalState.repoBranchInput.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
-                ),
-                React.createElement("input", {
-                    ref: repoBranchInputRef,
-                    className: "ps-modal-input",
-                    value: modalState.repoBranchInput.value,
-                    placeholder: modalState.repoBranchInput.placeholder,
-                    onChange: (event) => controller.setRepoBranchInputValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
-                    onKeyDown: (event) => {
-                        if (event.key === "Enter") {
-                            event.preventDefault();
-                            controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
-                        }
-                    },
-                    autoFocus: true,
-                }),
-                React.createElement("div", { className: "ps-modal-details" },
-                    normalizeLines(modalState.repoBranchInput.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
-                ),
-                React.createElement("div", { className: "ps-modal-footer" },
-                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
-                    React.createElement("button", {
-                        type: "button",
-                        className: "ps-modal-button is-primary",
-                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
-                    }, "Continue")),
-            ));
-    }
     if (modal.type === "sessionWorkspace" && modalState.sessionWorkspace) {
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
@@ -16677,39 +16599,6 @@ function ModalLayer({ controller }) {
                         className: "ps-modal-button is-primary",
                         onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
                     }, modalState.sessionWorkspace.confirmLabel)),
-            ));
-    }
-    if (modal.type === "repoAgentInput" && modalState.repoAgentInput) {
-        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
-                React.createElement("div", { className: "ps-modal-header" },
-                    React.createElement("div", { className: "ps-modal-title" }, modalState.repoAgentInput.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
-                ),
-                React.createElement("input", {
-                    ref: repoAgentInputRef,
-                    className: "ps-modal-input",
-                    value: modalState.repoAgentInput.value,
-                    placeholder: modalState.repoAgentInput.placeholder,
-                    onChange: (event) => controller.setRepoAgentInputValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
-                    onKeyDown: (event) => {
-                        if (event.key === "Enter") {
-                            event.preventDefault();
-                            controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
-                        }
-                    },
-                    autoFocus: true,
-                }),
-                React.createElement("div", { className: "ps-modal-details" },
-                    normalizeLines(modalState.repoAgentInput.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
-                ),
-                React.createElement("div", { className: "ps-modal-footer" },
-                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
-                    React.createElement("button", {
-                        type: "button",
-                        className: "ps-modal-button is-primary",
-                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
-                    }, "Create Session")),
             ));
     }
     if (modal.type === "terminatePicker") {

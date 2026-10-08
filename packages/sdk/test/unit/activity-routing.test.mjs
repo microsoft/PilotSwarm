@@ -15,23 +15,23 @@ import {
 const alice = { provider: "dev", subject: "alice" };
 const bob = { provider: "dev", subject: "bob" };
 
-test("owner affinity composes with repo routing without exposing the subject", () => {
+test("owner affinity composes with generic routing without exposing the subject", () => {
     const tag = runTurnRoutingTag({
         repo: "sample-repo",
         ownerAffinity: alice,
         model: "github-copilot:claude-sonnet-5",
     });
-    assert.match(tag, /^owner:v1:[0-9a-f]{32}\|repo:sample-repo\|model:v1:[0-9a-f]{16}$/);
+    assert.match(tag, /^owner:v1:[0-9a-f]{32}\|generic\|model:v1:[0-9a-f]{16}$/);
     assert.equal(tag.includes("alice"), false);
     assert.equal(isOwnerScopedRoutingTag(tag), true);
     assert.equal(isOwnerScopedRoutingTag("repo:sample-repo"), false);
-    assert.equal(repoFromRoutingTag(tag), "sample-repo");
+    assert.equal(repoFromRoutingTag(tag), null);
     assert.notEqual(ownerAffinityKey(alice), ownerAffinityKey(bob));
 });
 
 test("personal workers advertise compact model-specific route variants", () => {
     const base = scopeWorkerTagFilter(
-        { defaultAnd: ["repo:sample-repo"] },
+        { defaultAnd: ["generic"] },
         alice,
     );
     const filter = addWorkerModelRoutingTags(base, [
@@ -56,23 +56,26 @@ test("personal workers advertise compact model-specific route variants", () => {
     assert.equal(modelCapabilityTag("x").length, "model:v1:".length + 16);
 });
 
-test("unowned sessions retain legacy repo and generic routing", () => {
-    assert.equal(runTurnRoutingTag({ repo: "sample-repo" }), "repo:sample-repo");
+test("repository metadata does not change generic routing", () => {
+    assert.equal(runTurnRoutingTag({ repo: "sample-repo" }), "generic");
     assert.equal(runTurnRoutingTag({}), "generic");
     assert.equal(repoFromRoutingTag("gpu|repo:sample-repo"), null);
 });
 
-test("personal workers advertise the same composite repo and generic tags", () => {
+test("personal workers retain explicitly advertised legacy tags", () => {
     const filter = scopeWorkerTagFilter(
         { defaultAnd: ["repo:sample-repo", "generic"] },
         alice,
     );
-    assert.deepEqual(filter, {
-        defaultAnd: [
-            runTurnRoutingTag({ repo: "sample-repo", ownerAffinity: alice }),
-            runTurnRoutingTag({ ownerAffinity: alice }),
-        ],
-    });
+    assert.equal(filter.defaultAnd.length, 2);
+    assert.match(
+        filter.defaultAnd[0],
+        /^owner:v1:[0-9a-f]{32}\|repo:sample-repo$/,
+    );
+    assert.equal(
+        filter.defaultAnd[1],
+        runTurnRoutingTag({ ownerAffinity: alice }),
+    );
 });
 
 test("required capability tags compose with repo filters without changing their mode", () => {

@@ -29,7 +29,6 @@ function createRuntime() {
         systemVisibility: "read",
     };
     runtime._breakGlassSeen = new Map();
-    runtime._repoAllowlist = null;
     runtime.transport = {
         async listWorkers() {
             return [{

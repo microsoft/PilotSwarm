@@ -368,7 +368,7 @@ export class PilotSwarmClient {
         splash?: string;
         splashMobile?: string;
         initialPrompt?: string;
-        /** Repo-affinity routing: target repo enlistment for this session. */
+        /** Repository workspace the generic worker prepares for this session. */
         repo?: string;
         /** Web API placement. Direct-mode clients must omit this option. */
         compute?: "cluster" | "devbox";

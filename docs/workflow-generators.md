@@ -174,10 +174,10 @@ the Generator owner for a generated Run. The public Workflow Run remains
 service-owned. The inducer stamps the root and child Sessions with the private
 principal only as an owner-routing boundary. Cluster and null Session placement
 use normal routing without an owner-affinity requirement. Duroxide combines
-owner and repository constraints into one exact `runTurn` routing tag when
-owner affinity is required. Configure a personal worker with
+owner and generic placement into one exact `runTurn` routing tag when owner
+affinity is required. Configure a personal worker with
 `PILOTSWARM_WORKER_OWNER_PROVIDER`, `PILOTSWARM_WORKER_OWNER_SUBJECT`, and its
-normal `PILOTSWARM_WORKER_TAGS` repo or `generic` tags. Partial owner
+normal `PILOTSWARM_WORKER_TAGS=generic` tag. Partial owner
 configuration and an owner-affined worker using the unrestricted `any` tag
 filter fail at startup.
 
