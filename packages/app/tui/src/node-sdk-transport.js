@@ -1390,6 +1390,13 @@ export class NodeSdkTransport {
         };
     }
 
+    async startWorkflow(request, { owner, isAdmin } = {}) {
+        return this.client._startWorkflow(request, {
+            owner: owner ?? null,
+            isAdmin: isAdmin === true,
+        });
+    }
+
     async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
         // resolve the union, enforce user-scope ownership, then delegate the

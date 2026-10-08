@@ -275,6 +275,35 @@ At definition registration, PilotSwarm validates references, schemas, declared
 outcomes, transition exports, and allowed targets. It compiles the package into
 an immutable graph and pins the compiled definition by ID.
 
+Workflow owners may declare logical execution identity from required scalar
+inputs:
+
+```yaml
+inputs:
+  repository:
+    type: string
+    required: true
+  changeId:
+    type: integer
+    required: true
+identity:
+  primaryKey:
+    - inputs.repository
+    - inputs.changeId
+```
+
+The compiler rejects keys outside top-level required scalar inputs. Start
+admission validates inputs, resolves and canonically hashes the composite key,
+and atomically enforces one logical execution per immutable definition. An
+ordinary duplicate returns the existing owner-visible execution. A different
+caller receives a generic conflict rather than its session identity. An
+explicit rerun requires a reason and may be requested only by the original
+execution owner or a fleet administrator. Request idempotency remains separate:
+each start carries a caller-scoped idempotency key, and reusing that key with a
+different execution request is rejected. Session-group placement is private to
+the caller and happens after admission, so it is not part of the workflow
+request identity.
+
 At execution, PilotSwarm supplies recorded inputs and outputs to the packaged
 deterministic functions and dispatches external work only through registered
 handler identities. Workflow code does not directly control durable history,
@@ -406,9 +435,10 @@ durable production path for registered definitions: a definition-provider activi
 compiled manifest, the generic controller interprets that serializable plan,
 and transition activities execute hash-verified module exports from the pinned
 package artifact. Duroxide records both activity results, so replay does not
-depend on process-local graph registration. A user-facing start API for
-registered definitions remains a separate change. In this initial runtime
-slice, agent names resolve through the worker's installed agent catalog;
+depend on process-local graph registration. Registered definitions start
+through the SDK or `POST /api/v1/workflows`; admission is persisted before the
+idempotent Duroxide start so a retry can repair a crash between those steps.
+In this initial runtime slice, agent names resolve through the worker's installed agent catalog;
 loading agent definitions, skills, and MCP configuration from the workflow
 package is a later portability extension.
 

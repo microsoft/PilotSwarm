@@ -14,6 +14,7 @@ import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-def
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { workflowExecutionsMigration } from "./migrations/workflow-executions-0083.js";
 import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0084.js";
+import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0085.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -409,6 +410,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0082", name: "workflow_session_kind", sql: migration_0082_workflow_session_kind(schema) },
         { version: "0083", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
         { version: "0084", name: "workflow_definitions", sql: workflowDefinitionsMigration(schema) },
+        { version: "0085", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
     ];
 }
 

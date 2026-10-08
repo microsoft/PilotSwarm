@@ -44,7 +44,7 @@ function createContext() {
 }
 
 const manifest = {
-    compilerVersion: "v1alpha1-2",
+    compilerVersion: "v1alpha1-3",
     apiVersion: "pilotswarm.dev/v1alpha1",
     kind: "Workflow",
     graphId: "registered-controller@0.1.0",

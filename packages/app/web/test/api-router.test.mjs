@@ -93,6 +93,26 @@ test("path, query, and body params are collected with declared types", async () 
         assert.deepEqual(calls.find((call) => call.name === "getWorkflow")?.params, { sessionId: "workflow-1" });
         assert.deepEqual(calls.find((call) => call.name === "listWorkflowExecutions")?.params, { sessionId: "workflow-1" });
 
+        await fetch(`${baseUrl}/api/v1/workflows`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                definitionId: "definition-1",
+                inputs: { entityId: "entity-1" },
+                idempotencyKey: "request-1",
+                groupId: "group-1",
+                visibility: "private",
+                ignored: "x",
+            }),
+        });
+        assert.deepEqual(calls.find((call) => call.name === "startWorkflow")?.params, {
+            definitionId: "definition-1",
+            inputs: { entityId: "entity-1" },
+            idempotencyKey: "request-1",
+            groupId: "group-1",
+            visibility: "private",
+        });
+
         const source = {
             kind: "git",
             repositoryUrl: "https://github.com/microsoft/PilotSwarm",

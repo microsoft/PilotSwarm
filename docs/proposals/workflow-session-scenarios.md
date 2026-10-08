@@ -791,6 +791,7 @@ The feature branch already provides:
 | Authoritative execution records and current projection | Implemented in CMS migration `0083` |
 | Definition compiler and durable graph registry | Initial `v1alpha1` compiler implemented; migration `0084` stores authored YAML, Git provenance, package artifact identity, and one normalized compiled-manifest snapshot |
 | Git-backed definition registration API | Implemented as an authenticated `fleet:admin` REST operation with allowlisted repository resolution, immutable commit pinning, and definition lookup |
+| Registered workflow start admission | Implemented through SDK and `POST /api/v1/workflows`; migration `0085` atomically enforces request idempotency, owner-declared primary keys, and explicit rerun attempts |
 
 The initial controller accepts an `in-memory` definition that names a graph
 registered in the worker process. The same workflow orchestration additionally
@@ -821,8 +822,14 @@ source identities. It deliberately does not copy `pg_durable`'s per-node table
 until PilotSwarm has a concrete node-level query or mutation requirement.
 Duroxide history still owns the running cursor and replay. Registered
 transition decisions execute through durable activities that load
-hash-verified module exports from the pinned package artifact. A user-facing
-REST start operation remains separate from this internal execution path.
+hash-verified module exports from the pinned package artifact. Workflow owners
+may define a composite primary key from required scalar inputs. Start admission
+validates those inputs, globally deduplicates `(definition, primary key)`,
+returns owner-visible duplicates, rejects cross-owner duplicates without
+revealing the session ID, and permits reasoned reruns only to the original
+owner or a fleet administrator. Caller-scoped request idempotency remains
+independent so retries of either normal starts or reruns cannot create another
+attempt.
 
 ### 4.2 Definition subsystem
 

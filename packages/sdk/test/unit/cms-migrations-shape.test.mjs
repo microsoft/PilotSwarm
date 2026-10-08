@@ -121,3 +121,38 @@ test("0084: workflow definitions retain source and normalized compiled manifests
     assert.match(migration.sql, /transition,handler,moduleSha256/);
     assert.match(migration.sql, /transition,handler,packageSha256/);
 });
+
+test("0085: workflow admission atomically enforces logical and request idempotency", () => {
+    const migration = migrations.find((m) => m.version === "0085");
+    assert.ok(migration, "migration 0085 must be registered");
+    assert.equal(migration.name, "workflow_admissions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admissions/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admission_requests/);
+    assert.match(
+        migration.sql,
+        /UNIQUE INDEX IF NOT EXISTS idx_shape_check_workflow_admission_logical_attempt/,
+    );
+    assert.match(migration.sql, /PRIMARY KEY \(owner_provider, owner_subject, idempotency_key\)/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_admit_workflow/);
+    assert.match(migration.sql, /pg_advisory_xact_lock/);
+    assert.match(migration.sql, /WORKFLOW_IDEMPOTENCY_CONFLICT/);
+    assert.match(migration.sql, /WORKFLOW_DUPLICATE_CONFLICT/);
+    assert.match(migration.sql, /WORKFLOW_RERUN_FORBIDDEN/);
+    assert.match(migration.sql, /v_attempt := v_existing\.attempt \+ 1/);
+    assert.match(
+        migration.sql,
+        /THEN v_existing\.owner_provider ELSE p_owner_provider END/,
+    );
+    assert.match(
+        migration.sql,
+        /THEN v_existing\.owner_subject ELSE p_owner_subject END/,
+    );
+    assert.match(
+        migration.sql,
+        /THEN v_existing\.group_id ELSE p_group_id END/,
+    );
+    assert.match(
+        migration.sql,
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_mark_workflow_admission_started/,
+    );
+});

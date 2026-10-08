@@ -22,6 +22,8 @@ import type {
     PromptAttachmentRef,
     SessionWorkspace,
     WorkflowSessionConfig,
+    WorkflowStartRequest,
+    WorkflowStartResult,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
@@ -40,6 +42,15 @@ import {
 } from "./workflow-orchestration-registry.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
+import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
+import {
+    resolveWorkflowPrimaryKey,
+    validateWorkflowInputs,
+    workflowCanonicalJsonSha256,
+} from "./workflow-orchestration/admission.js";
+import {
+    requireCompatibleWorkflowDefinition,
+} from "./workflow-orchestration/definition-provider.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -170,6 +181,118 @@ export class PilotSwarmClient {
     }
 
     // ─── Session Management ──────────────────────────────────
+
+    async startWorkflow(
+        request: WorkflowStartRequest,
+    ): Promise<WorkflowStartResult> {
+        return this._startWorkflow(request);
+    }
+
+    /** @internal Server-side admission with authenticated actor context. */
+    async _startWorkflow(
+        request: WorkflowStartRequest,
+        context: {
+            owner?: SessionOwnerInfo | null;
+            isAdmin?: boolean;
+        } = {},
+    ): Promise<WorkflowStartResult> {
+        if (!this.duroxideClient) throw new Error("Not started.");
+        const definitionId = request.definitionId?.trim();
+        const idempotencyKey = request.idempotencyKey?.trim();
+        if (!definitionId) {
+            throw Object.assign(
+                new Error("Workflow start requires a registered definition ID."),
+                { code: "WORKFLOW_DEFINITION_SOURCE_INVALID" },
+            );
+        }
+        if (!idempotencyKey || idempotencyKey.length > 200) {
+            throw Object.assign(
+                new Error("Workflow start requires an idempotency key of at most 200 characters."),
+                { code: "WORKFLOW_IDEMPOTENCY_KEY_INVALID" },
+            );
+        }
+        const definition = requireCompatibleWorkflowDefinition(
+            await this._catalog.getWorkflowDefinition(definitionId),
+            definitionId,
+        );
+        const inputs = request.inputs ?? {};
+        validateWorkflowInputs(definition.compiledManifest, inputs);
+        const primaryKey = resolveWorkflowPrimaryKey(
+            definition.compiledManifest,
+            inputs,
+        );
+        const rerunReason = request.rerun?.reason?.trim() || null;
+        if (request.rerun && !rerunReason) {
+            throw Object.assign(
+                new Error("Workflow reruns require a non-empty reason."),
+                { code: "WORKFLOW_RERUN_REASON_REQUIRED" },
+            );
+        }
+        if (request.rerun && !primaryKey) {
+            throw Object.assign(
+                new Error("Only workflows with a declared primary key can be rerun."),
+                { code: "WORKFLOW_RERUN_REQUIRED" },
+            );
+        }
+        const owner = context.owner?.provider && context.owner?.subject
+            ? context.owner
+            : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+        const requestSha256 = workflowCanonicalJsonSha256({
+            definitionId,
+            inputs,
+            visibility: request.visibility ?? null,
+            rerunReason,
+        });
+        const admission = await this._catalog.admitWorkflow({
+            sessionId: crypto.randomUUID(),
+            definitionId,
+            inputs,
+            primaryKeyValues: primaryKey?.values ? [...primaryKey.values] : null,
+            primaryKeySha256: primaryKey?.sha256 ?? null,
+            owner,
+            groupId: request.groupId ?? null,
+            visibility: request.visibility ?? null,
+            idempotencyKey,
+            requestSha256,
+            forceRerun: Boolean(request.rerun),
+            rerunReason,
+            isAdmin: context.isAdmin === true,
+        });
+        if (admission.needsStart) {
+            await this.createWorkflowSession({
+                sessionId: admission.sessionId,
+                definition: {
+                    kind: "registered",
+                    definitionId: admission.definitionId,
+                },
+                inputs: admission.inputs,
+                owner: admission.owner,
+                groupId: admission.groupId,
+                visibility: admission.visibility,
+            });
+            await this._catalog.markWorkflowAdmissionStarted(
+                admission.sessionId,
+                admission.orchestrationId,
+            );
+        }
+        const placementGroupId = request.groupId?.trim();
+        if (placementGroupId) {
+            await this._catalog.placeSessionsInGroup({
+                provider: owner.provider,
+                subject: owner.subject,
+                isAdmin: context.isAdmin === true,
+            }, [admission.sessionId], placementGroupId);
+        }
+        return {
+            sessionId: admission.sessionId,
+            definitionId: admission.definitionId,
+            attempt: admission.attempt,
+            primaryKeyValues: admission.primaryKeyValues,
+            created: admission.created,
+            deduplicated: admission.deduplicated,
+            rerun: admission.attempt > 1,
+        };
+    }
 
     async createWorkflowSession<TResult = unknown>(
         config: WorkflowSessionConfig,

@@ -77,6 +77,7 @@ export type {
 } from "./workflow-orchestration/graph.js";
 export type {
     CompiledWorkflowAgentStateManifest,
+    CompiledWorkflowIdentityManifest,
     CompiledWorkflowManifest,
     CompiledWorkflowStateManifest,
     CompiledWorkflowTerminalStateManifest,
@@ -229,6 +230,8 @@ export type {
     WorkflowDefinitionSource,
     WorkflowSessionConfig,
     WorkflowSessionResult,
+    WorkflowStartRequest,
+    WorkflowStartResult,
     SessionOwnerInfo,
     SessionContextUsage,
     SessionCompactionSnapshot,

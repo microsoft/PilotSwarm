@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PgSessionCatalog } from "../../dist/cms.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { WebPilotSwarmManagementClient } from "../../dist/web/web-management-client.js";
+import { WebPilotSwarmClient } from "../../dist/web/web-client.js";
 
 function createCatalogHarness() {
     const calls = [];
@@ -197,4 +198,44 @@ test("web management registers Git workflow definitions and reads them by id", a
         { name: "registerWorkflowDefinition", params: { source: request.source } },
         { name: "getWorkflowDefinition", params: { definitionId: "definition-1" } },
     ]);
+});
+
+test("web client starts a registered workflow through the canonical API operation", async () => {
+    const calls = [];
+    const web = Object.create(WebPilotSwarmClient.prototype);
+    web._api = {
+        call: async (name, params) => {
+            calls.push({ name, params });
+            return {
+                sessionId: "workflow-1",
+                definitionId: params.definitionId,
+                attempt: 1,
+                primaryKeyValues: ["entity-1"],
+                created: true,
+                deduplicated: false,
+                rerun: false,
+            };
+        },
+    };
+
+    const result = await web.startWorkflow({
+        definitionId: "definition-1",
+        inputs: { entityId: "entity-1" },
+        idempotencyKey: "request-1",
+        groupId: "group-1",
+        visibility: "private",
+    });
+
+    assert.equal(result.sessionId, "workflow-1");
+    assert.deepEqual(calls, [{
+        name: "startWorkflow",
+        params: {
+            definitionId: "definition-1",
+            inputs: { entityId: "entity-1" },
+            idempotencyKey: "request-1",
+            groupId: "group-1",
+            visibility: "private",
+            rerun: undefined,
+        },
+    }]);
 });

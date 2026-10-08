@@ -554,6 +554,27 @@ export interface WorkflowSessionConfig {
     visibility?: "private" | "shared_read" | "shared_write" | null;
 }
 
+export interface WorkflowStartRequest {
+    definitionId: string;
+    inputs?: Record<string, unknown>;
+    idempotencyKey: string;
+    groupId?: string | null;
+    visibility?: "private" | "shared_read" | "shared_write" | null;
+    rerun?: {
+        reason: string;
+    };
+}
+
+export interface WorkflowStartResult {
+    sessionId: string;
+    definitionId: string;
+    attempt: number;
+    primaryKeyValues: readonly unknown[] | null;
+    created: boolean;
+    deduplicated: boolean;
+    rerun: boolean;
+}
+
 /** Terminal result returned by a child workflow session to its caller. */
 export interface WorkflowSessionResult<TResult = unknown> {
     sessionId: string;

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
+import { workflowCanonicalJsonSha256 } from "./admission.js";
 import type { WorkflowDefinitionSource } from "../types.js";
 import {
     registerInMemoryWorkflowGraph,
@@ -14,7 +14,7 @@ const SUPPORTED_KIND = "Workflow";
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const EXACT_EXPRESSION = /^\$\{([^{}]+)\}$/;
 
-export const WORKFLOW_COMPILER_VERSION = "v1alpha1-2";
+export const WORKFLOW_COMPILER_VERSION = "v1alpha1-3";
 
 type JsonObject = Record<string, unknown>;
 
@@ -106,6 +106,10 @@ export type CompiledWorkflowStateManifest =
     | CompiledWorkflowAgentStateManifest
     | CompiledWorkflowTerminalStateManifest;
 
+export interface CompiledWorkflowIdentityManifest {
+    primaryKey: readonly string[];
+}
+
 export interface CompiledWorkflowManifest {
     compilerVersion: typeof WORKFLOW_COMPILER_VERSION;
     apiVersion: typeof SUPPORTED_API_VERSION;
@@ -114,6 +118,7 @@ export interface CompiledWorkflowManifest {
     packageSha256?: string;
     metadata: Readonly<WorkflowPackageMetadata>;
     inputSchema: Readonly<JsonObject>;
+    identity?: Readonly<CompiledWorkflowIdentityManifest>;
     configuration: Readonly<JsonObject>;
     initialState: string;
     states: readonly CompiledWorkflowStateManifest[];
@@ -127,27 +132,10 @@ export interface CompiledWorkflowYaml {
     configuration: Readonly<JsonObject>;
 }
 
-function canonicalizeJson(value: unknown): unknown {
-    if (Array.isArray(value)) {
-        return value.map(item => canonicalizeJson(item));
-    }
-    if (isObject(value)) {
-        return Object.fromEntries(
-            Object.keys(value)
-                .sort()
-                .filter(key => value[key] !== undefined)
-                .map(key => [key, canonicalizeJson(value[key])]),
-        );
-    }
-    return value;
-}
-
 export function workflowCompiledManifestSha256(
     manifest: CompiledWorkflowManifest,
 ): string {
-    return createHash("sha256")
-        .update(JSON.stringify(canonicalizeJson(manifest)), "utf8")
-        .digest("hex");
+    return workflowCanonicalJsonSha256(manifest);
 }
 
 function compilerError(message: string, code = "WORKFLOW_COMPILER_INVALID"): Error {
@@ -174,13 +162,74 @@ function requireString(value: unknown, path: string): string {
 
 function requireStringArray(value: unknown, path: string): string[] {
     if (!Array.isArray(value) || value.length === 0) {
-        throw compilerError(`${path} must contain at least one outcome.`);
+        throw compilerError(`${path} must contain at least one string.`);
     }
     const values = value.map((item, index) => requireString(item, `${path}[${index}]`));
     if (new Set(values).size !== values.length) {
-        throw compilerError(`${path} must not contain duplicate outcomes.`);
+        throw compilerError(`${path} must not contain duplicate values.`);
     }
     return values;
+}
+
+function compileWorkflowInputSchema(value: unknown): JsonObject {
+    const schema = value == null ? {} : requireObject(value, "inputs");
+    for (const [name, rawDeclaration] of Object.entries(schema)) {
+        const declaration = requireObject(rawDeclaration, `inputs.${name}`);
+        const type = requireString(declaration.type, `inputs.${name}.type`);
+        if (!["string", "number", "integer", "boolean", "object", "array"].includes(type)) {
+            throw compilerError(
+                `inputs.${name}.type '${type}' is not supported.`,
+                "WORKFLOW_INPUT_SCHEMA_INVALID",
+            );
+        }
+        if (
+            declaration.required !== undefined
+            && typeof declaration.required !== "boolean"
+        ) {
+            throw compilerError(
+                `inputs.${name}.required must be a boolean when provided.`,
+                "WORKFLOW_INPUT_SCHEMA_INVALID",
+            );
+        }
+    }
+    return schema;
+}
+
+function compileWorkflowIdentity(
+    value: unknown,
+    inputSchema: JsonObject,
+): CompiledWorkflowIdentityManifest | undefined {
+    if (value == null) return undefined;
+    const identity = requireObject(value, "identity");
+    const primaryKey = requireStringArray(identity.primaryKey, "identity.primaryKey");
+    for (const [index, expression] of primaryKey.entries()) {
+        const inputName = Object.keys(inputSchema)
+            .find(name => expression === `inputs.${name}`);
+        if (inputName === undefined) {
+            throw compilerError(
+                `identity.primaryKey[${index}] must reference one top-level input as inputs.<name>.`,
+                "WORKFLOW_PRIMARY_KEY_INVALID",
+            );
+        }
+        const declaration = requireObject(
+            inputSchema[inputName],
+            `inputs.${inputName}`,
+        );
+        if (declaration.required !== true) {
+            throw compilerError(
+                `Primary-key input '${inputName}' must be required.`,
+                "WORKFLOW_PRIMARY_KEY_INVALID",
+            );
+        }
+        const type = requireString(declaration.type, `inputs.${inputName}.type`);
+        if (!["string", "number", "integer", "boolean"].includes(type)) {
+            throw compilerError(
+                `Primary-key input '${inputName}' must use a scalar type.`,
+                "WORKFLOW_PRIMARY_KEY_INVALID",
+            );
+        }
+    }
+    return { primaryKey };
 }
 
 function requireTransitionReference(
@@ -493,7 +542,8 @@ export function compileWorkflowYaml(
         version: requireString(metadataValue.version, "metadata.version"),
     };
     const graphId = `${metadata.name}@${metadata.version}`;
-    const inputSchema = root.inputs == null ? {} : requireObject(root.inputs, "inputs");
+    const inputSchema = compileWorkflowInputSchema(root.inputs);
+    const identity = compileWorkflowIdentity(root.identity, inputSchema);
     const configuration = root.configuration == null
         ? {}
         : requireObject(root.configuration, "configuration");
@@ -657,6 +707,7 @@ export function compileWorkflowYaml(
         ...(options.packageSha256 ? { packageSha256: options.packageSha256 } : {}),
         metadata,
         inputSchema,
+        ...(identity ? { identity } : {}),
         configuration,
         initialState,
         states: stateManifests,

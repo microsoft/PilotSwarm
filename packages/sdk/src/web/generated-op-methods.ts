@@ -173,6 +173,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setUserFeatureFlag",
     "similarFacts",
     "startFactsEmbedder",
+    "startWorkflow",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
@@ -1678,6 +1679,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Validate, atomically admit, and start one registered workflow execution. Definition-declared primary keys deduplicate logical entities.
+     * @remarks `POST /workflows` — access: `session:create`
+     */
+    startWorkflow(params: {
+        definitionId?: any;
+        inputs?: any;
+        idempotencyKey?: any;
+        groupId?: any;
+        visibility?: any;
+        rerun?: any;
+    }): Promise<any>;
+
+    /**
      * Stop the durable embedder loop. [enhanced, admin]
      * @remarks `POST /facts/embedder/stop` — access: `fleet:admin` (admin)
      */
@@ -1991,6 +2005,7 @@ export function createManagementOps(
         setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        startWorkflow: (params: Record<string, unknown> = {}) => callOp("startWorkflow", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),

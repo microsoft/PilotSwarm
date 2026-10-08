@@ -59,7 +59,7 @@ function requireRegisteredSource(
     return source;
 }
 
-function requireCompatibleDefinition(
+export function requireCompatibleWorkflowDefinition(
     record: WorkflowDefinitionRecord | null,
     definitionId: string,
 ): WorkflowDefinitionRecord {
@@ -176,7 +176,7 @@ export class CmsWorkflowDefinitionProvider implements WorkflowDefinitionProvider
         let pending = this.records.get(definitionId);
         if (!pending) {
             pending = this.catalog.getWorkflowDefinition(definitionId)
-                .then(record => requireCompatibleDefinition(record, definitionId))
+                .then(record => requireCompatibleWorkflowDefinition(record, definitionId))
                 .catch(error => {
                     this.records.delete(definitionId);
                     throw error;

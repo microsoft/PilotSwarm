@@ -37,6 +37,9 @@ inputs:
   changeId:
     type: string
     required: true
+identity:
+  primaryKey:
+    - inputs.changeId
 configuration:
   policy:
     retries: 2
@@ -140,13 +143,16 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
     });
     assert.deepEqual(compiled.configuration, { policy: { retries: 2 } });
     assert.deepEqual(compiled.manifest, {
-        compilerVersion: "v1alpha1-2",
+        compilerVersion: "v1alpha1-3",
         apiVersion: "pilotswarm.dev/v1alpha1",
         kind: "Workflow",
         graphId: "delivery@0.1.0",
         metadata: { name: "delivery", version: "0.1.0" },
         inputSchema: {
             changeId: { type: "string", required: true },
+        },
+        identity: {
+            primaryKey: ["inputs.changeId"],
         },
         configuration: { policy: { retries: 2 } },
         initialState: "inspect",
@@ -240,6 +246,53 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
         },
         executionHistory: [],
     }), { pullRequest: 17 });
+});
+
+test("requires workflow primary keys to reference required scalar inputs", () => {
+    assert.throws(
+        () => compileWorkflowYaml(
+            VALID_WORKFLOW.replace("required: true", "required: false"),
+            { transitions: createRegistry() },
+        ),
+        error => error?.code === "WORKFLOW_PRIMARY_KEY_INVALID",
+    );
+    assert.throws(
+        () => compileWorkflowYaml(
+            VALID_WORKFLOW.replace(
+                "- inputs.changeId",
+                "- configuration.policy",
+            ),
+            { transitions: createRegistry() },
+        ),
+        error => error?.code === "WORKFLOW_PRIMARY_KEY_INVALID",
+    );
+    assert.throws(
+        () => compileWorkflowYaml(
+            VALID_WORKFLOW.replace("type: string", "type: timestamp"),
+            { transitions: createRegistry() },
+        ),
+        error => error?.code === "WORKFLOW_INPUT_SCHEMA_INVALID",
+    );
+    assert.throws(
+        () => compileWorkflowYaml(
+            VALID_WORKFLOW.replace(
+                "- inputs.changeId",
+                "- inputs. changeId",
+            ),
+            { transitions: createRegistry() },
+        ),
+        error => error?.code === "WORKFLOW_PRIMARY_KEY_INVALID",
+    );
+    assert.throws(
+        () => compileWorkflowYaml(
+            VALID_WORKFLOW.replace(
+                "- inputs.changeId",
+                "- inputs..changeId",
+            ),
+            { transitions: createRegistry() },
+        ),
+        error => error?.code === "WORKFLOW_PRIMARY_KEY_INVALID",
+    );
 });
 
 test("registered handlers receive immutable workflow context and choose the next state", () => {

@@ -5,6 +5,8 @@ import type {
     SessionResponsePayload,
     UserInputHandler,
     WorkflowSessionConfig,
+    WorkflowStartRequest,
+    WorkflowStartResult,
 } from "../types.js";
 import type { WorkflowSession } from "../workflow-session.js";
 import {
@@ -64,6 +66,19 @@ export class WebPilotSwarmClient {
             "createWorkflowSession()",
             "workflow controller and authenticated parent-child creation are not implemented yet",
         );
+    }
+
+    async startWorkflow(
+        request: WorkflowStartRequest,
+    ): Promise<WorkflowStartResult> {
+        return this._api.call("startWorkflow", {
+            definitionId: request.definitionId,
+            inputs: request.inputs,
+            idempotencyKey: request.idempotencyKey,
+            groupId: request.groupId,
+            visibility: request.visibility,
+            rerun: request.rerun,
+        }) as Promise<WorkflowStartResult>;
     }
 
     async createSession(config?: {

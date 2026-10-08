@@ -352,6 +352,24 @@ export interface WorkflowDefinitionRow {
 
 export type WorkflowDefinitionRecord = WorkflowDefinitionRow;
 
+export interface WorkflowAdmissionRecord {
+    sessionId: string;
+    definitionId: string;
+    primaryKeyValues: unknown[] | null;
+    primaryKeySha256: string | null;
+    attempt: number;
+    inputs: Record<string, unknown>;
+    parentSessionId: string | null;
+    owner: SessionOwnerInfo;
+    groupId: string | null;
+    visibility: SessionVisibility | null;
+    rerunReason: string | null;
+    orchestrationId: string;
+    created: boolean;
+    deduplicated: boolean;
+    needsStart: boolean;
+}
+
 // ─── Session Metric Summary Types ────────────────────────────────
 
 /** Per-session metric summary — one row per session, updated in place. */
@@ -1393,6 +1411,27 @@ export interface SessionCatalog {
     /** Read one immutable workflow definition and its ordered compiled states. */
     getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
 
+    /** Atomically reserve or deduplicate one registered workflow execution. */
+    admitWorkflow(input: {
+        sessionId: string;
+        definitionId: string;
+        inputs: Record<string, unknown>;
+        primaryKeyValues: unknown[] | null;
+        primaryKeySha256: string | null;
+        owner: SessionOwnerInfo;
+        parentSessionId?: string | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+        idempotencyKey: string;
+        requestSha256: string;
+        forceRerun: boolean;
+        rerunReason?: string | null;
+        isAdmin: boolean;
+    }): Promise<WorkflowAdmissionRecord>;
+
+    /** Mark a reserved workflow admission started after idempotent Duroxide start. */
+    markWorkflowAdmissionStarted(sessionId: string, orchestrationId: string): Promise<void>;
+
     // ── Events (written from worker, read from client) ───────
 
     /** Record a batch of events for a session. */
@@ -1604,6 +1643,8 @@ function sqlForSchema(schema: string) {
             completeWorkflowProjection: `${s}.cms_complete_workflow`,
             rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
             registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
+            admitWorkflow:               `${s}.cms_admit_workflow`,
+            markWorkflowAdmissionStarted: `${s}.cms_mark_workflow_admission_started`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
@@ -2548,6 +2589,77 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         if (definitionResult.rows.length === 0) return null;
         return rowToWorkflowDefinitionRow(definitionResult.rows[0]);
+    }
+
+    async admitWorkflow(input: {
+        sessionId: string;
+        definitionId: string;
+        inputs: Record<string, unknown>;
+        primaryKeyValues: unknown[] | null;
+        primaryKeySha256: string | null;
+        owner: SessionOwnerInfo;
+        parentSessionId?: string | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+        idempotencyKey: string;
+        requestSha256: string;
+        forceRerun: boolean;
+        rerunReason?: string | null;
+        isAdmin: boolean;
+    }): Promise<WorkflowAdmissionRecord> {
+        let rows: any[];
+        try {
+            ({ rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.admitWorkflow}(
+                    $1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9,
+                    $10, $11, $12, $13, $14, $15, $16, $17
+                )`,
+                [
+                    input.sessionId,
+                    input.definitionId,
+                    JSON.stringify(input.inputs),
+                    input.primaryKeyValues === null
+                        ? null
+                        : JSON.stringify(input.primaryKeyValues),
+                    input.primaryKeySha256,
+                    input.owner.provider,
+                    input.owner.subject,
+                    input.owner.email ?? null,
+                    input.owner.displayName ?? null,
+                    input.parentSessionId ?? null,
+                    input.groupId ?? null,
+                    input.visibility ?? null,
+                    input.idempotencyKey,
+                    input.requestSha256,
+                    input.forceRerun,
+                    input.rerunReason ?? null,
+                    input.isAdmin,
+                ],
+            ));
+        } catch (error) {
+            throw normalizeWorkflowCatalogError(error);
+        }
+        if (rows.length !== 1) {
+            throw Object.assign(
+                new Error("Workflow admission did not return exactly one execution."),
+                { code: "WORKFLOW_ADMISSION_FAILED" },
+            );
+        }
+        return rowToWorkflowAdmissionRecord(rows[0]);
+    }
+
+    async markWorkflowAdmissionStarted(
+        sessionId: string,
+        orchestrationId: string,
+    ): Promise<void> {
+        try {
+            await this.pool.query(
+                `SELECT ${this.sql.fn.markWorkflowAdmissionStarted}($1, $2)`,
+                [sessionId, orchestrationId],
+            );
+        } catch (error) {
+            throw normalizeWorkflowCatalogError(error);
+        }
     }
 
     // ── Events ───────────────────────────────────────────────
@@ -4214,6 +4326,43 @@ function rowToWorkflowDefinitionRow(row: any): WorkflowDefinitionRow {
         compiledManifest: row.compiled_manifest_json,
         createdAt: new Date(row.created_at),
     };
+}
+
+function rowToWorkflowAdmissionRecord(row: any): WorkflowAdmissionRecord {
+    return {
+        sessionId: row.session_id,
+        definitionId: row.definition_id,
+        primaryKeyValues: Array.isArray(row.primary_key_json)
+            ? row.primary_key_json
+            : null,
+        primaryKeySha256: row.primary_key_sha256 ?? null,
+        attempt: Number(row.attempt),
+        inputs: row.inputs_json ?? {},
+        parentSessionId: row.parent_session_id ?? null,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        groupId: row.group_id ?? null,
+        visibility: row.visibility ?? null,
+        rerunReason: row.rerun_reason ?? null,
+        orchestrationId: row.orchestration_id,
+        created: row.created === true,
+        deduplicated: row.deduplicated === true,
+        needsStart: row.needs_start === true,
+    };
+}
+
+function normalizeWorkflowCatalogError(error: unknown): Error {
+    if (!(error instanceof Error)) return new Error(String(error));
+    const match = /^([A-Z][A-Z0-9_]+):\s*(.+)$/s.exec(error.message);
+    if (!match?.[1].startsWith("WORKFLOW_")) return error;
+    return Object.assign(new Error(match[2]), {
+        code: match[1],
+        cause: error,
+    });
 }
 
 /** Map a PG row to SessionEvent. */

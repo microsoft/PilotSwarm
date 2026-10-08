@@ -62,7 +62,7 @@ function definitionRow() {
         name: "registered-example",
         version: "0.1.0",
         api_version: "pilotswarm.dev/v1alpha1",
-        compiler_version: "v1alpha1-2",
+        compiler_version: "v1alpha1-3",
         source_yaml: TERMINAL_WORKFLOW,
         source_sha256: "source-hash",
         package_sha256: "a".repeat(64),
@@ -73,7 +73,7 @@ function definitionRow() {
         input_schema_json: {},
         configuration_json: {},
         compiled_manifest_json: {
-            compilerVersion: "v1alpha1-2",
+            compilerVersion: "v1alpha1-3",
             apiVersion: "pilotswarm.dev/v1alpha1",
             kind: "Workflow",
             graphId: "registered-example@0.1.0",
@@ -103,6 +103,30 @@ function createCatalogHarness() {
             if (sql.includes("cms_register_workflow_definition")) {
                 return { rows: [{ definition_id: "definition-1" }] };
             }
+            if (sql.includes("cms_admit_workflow")) {
+                return {
+                    rows: [{
+                        session_id: "workflow-1",
+                        definition_id: "definition-1",
+                        primary_key_json: ["change-42"],
+                        primary_key_sha256: "c".repeat(64),
+                        attempt: "1",
+                        inputs_json: { changeId: "change-42" },
+                        parent_session_id: null,
+                        owner_provider: "entra",
+                        owner_subject: "user-1",
+                        owner_email: "user@example.test",
+                        owner_display_name: "User One",
+                        group_id: null,
+                        visibility: "private",
+                        rerun_reason: null,
+                        orchestration_id: "session-workflow-1",
+                        created: true,
+                        deduplicated: false,
+                        needs_start: true,
+                    }],
+                };
+            }
             if (sql.includes("workflow_definitions WHERE")) {
                 return { rows: [definitionRow()] };
             }
@@ -118,7 +142,7 @@ function createCatalogHarness() {
 test("catalog persists authored YAML and the normalized compiled manifest", async () => {
     const { catalog, calls } = createCatalogHarness();
     const manifest = {
-        compilerVersion: "v1alpha1-2",
+        compilerVersion: "v1alpha1-3",
         apiVersion: "pilotswarm.dev/v1alpha1",
         kind: "Workflow",
         graphId: "registered-example@0.1.0",
@@ -159,6 +183,57 @@ test("catalog persists authored YAML and the normalized compiled manifest", asyn
     assert.equal(registered.graphId, "registered-example@0.1.0");
     assert.equal(registered.packageSha256, "a".repeat(64));
     assert.deepEqual(registered.compiledManifest, manifest);
+});
+
+test("catalog admits and marks a workflow start through migration procedures", async () => {
+    const { catalog, calls } = createCatalogHarness();
+    const admitted = await catalog.admitWorkflow({
+        sessionId: "workflow-1",
+        definitionId: "definition-1",
+        inputs: { changeId: "change-42" },
+        primaryKeyValues: ["change-42"],
+        primaryKeySha256: "c".repeat(64),
+        owner: {
+            provider: "entra",
+            subject: "user-1",
+            email: "user@example.test",
+            displayName: "User One",
+        },
+        visibility: "private",
+        idempotencyKey: "request-1",
+        requestSha256: "d".repeat(64),
+        forceRerun: false,
+        isAdmin: false,
+    });
+    await catalog.markWorkflowAdmissionStarted(
+        admitted.sessionId,
+        admitted.orchestrationId,
+    );
+
+    assert.deepEqual(admitted, {
+        sessionId: "workflow-1",
+        definitionId: "definition-1",
+        primaryKeyValues: ["change-42"],
+        primaryKeySha256: "c".repeat(64),
+        attempt: 1,
+        inputs: { changeId: "change-42" },
+        parentSessionId: null,
+        owner: {
+            provider: "entra",
+            subject: "user-1",
+            email: "user@example.test",
+            displayName: "User One",
+        },
+        groupId: null,
+        visibility: "private",
+        rerunReason: null,
+        orchestrationId: "session-workflow-1",
+        created: true,
+        deduplicated: false,
+        needsStart: true,
+    });
+    assert.ok(calls.some(call => call.sql.includes("cms_admit_workflow")));
+    assert.ok(calls.some(call => call.sql.includes("cms_mark_workflow_admission_started")));
 });
 
 test("management registration invokes the compiler before persistence", async () => {
