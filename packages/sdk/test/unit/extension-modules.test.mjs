@@ -41,6 +41,29 @@ test("loads modules in order and calls register(worker, context) on each export 
     assert.equal(logs.length, 3);
 });
 
+test("extension modules can register lifecycle providers in load order", async (t) => {
+    const dir = moduleDir(t, {
+        "first.mjs": "export function register(worker) { worker.registerTurnLifecycleProvider({ name: 'first', beforeTurn() {} }); }",
+        "second.mjs": "export function register(worker) { worker.registerTurnLifecycleProvider({ name: 'second', afterTurn() {} }); }",
+    });
+    const worker = {
+        providers: [],
+        registerTurnLifecycleProvider(provider) {
+            this.providers.push(provider);
+        },
+    };
+
+    await loadExtensionModules(worker, [
+        path.join(dir, "first.mjs"),
+        path.join(dir, "second.mjs"),
+    ]);
+
+    assert.deepEqual(
+        worker.providers.map((provider) => provider.name),
+        ["first", "second"],
+    );
+});
+
 test("a module that fails to load, has no register, or throws in register stops the load", async (t) => {
     const dir = moduleDir(t, {
         "none.mjs": "export const x = 1;",

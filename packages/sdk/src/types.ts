@@ -1243,6 +1243,16 @@ export interface PilotSwarmWorkerOptions {
     sessionLockRenewalBufferMs?: number;
     workerNodeId?: string;
     /**
+     * Process-local lifecycle providers. Providers enter in array order and
+     * unwind in reverse order around each complete run-turn activity attempt.
+     */
+    turnLifecycleProviders?: ReadonlyArray<
+        import("./turn-lifecycle-hooks.js").TurnLifecycleProvider<
+            SerializableSessionConfig,
+            TurnResult
+        >
+    >;
+    /**
      * Dynamically install registry agent packages
      * (docs/proposals/agent-packages.md). When set, the worker materializes
      * every enabled package's active version into `cacheDir` before plugin
