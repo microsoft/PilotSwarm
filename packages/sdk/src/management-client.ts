@@ -112,6 +112,7 @@ import type {
     PlacementViewer,
     SessionPlacementResult,
     ChildOutcomeRow,
+    WorkflowDefinitionRecord,
     WorkflowExecutionRow,
     WorkflowProjectionRow,
     SessionVisibility,
@@ -120,6 +121,22 @@ import type {
     AuthzAuditEntry,
     KnownUserInfo,
 } from "./cms.js";
+import {
+    compileWorkflowPackageSnapshotYaml,
+    materializeWorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+import {
+    resolveWorkflowGitPackage,
+    type WorkflowGitSource,
+} from "./workflow-orchestration/git-source.js";
+import {
+    workflowPackageArtifactFilename,
+    workflowPackagesArtifactSessionId,
+} from "./workflow-orchestration/package-artifact.js";
+import {
+    loadImportPolicy,
+    type ImportPolicy,
+} from "./agent-package-import-policy.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
     StoredFactResult, ReadFactsQuery, DeleteFactInput, DeletedFactResult, DeletedFactsResult,
@@ -161,6 +178,7 @@ import {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -736,6 +754,12 @@ export interface PilotSwarmManagementClientOptions {
     aadDbUser?: string;
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
+    /** Allowlist policy for server-side Git-backed workflow registration. */
+    workflowGitImportPolicy?: ImportPolicy;
+}
+
+export interface WorkflowDefinitionRegistrationRequest {
+    source: WorkflowGitSource;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1363,6 +1387,88 @@ export class PilotSwarmManagementClient {
     }
 
     // ─── Workflow Read Model ────────────────────────────────
+
+    /**
+     * Compile and durably register one immutable workflow definition.
+     *
+     * Transition functions remain trusted package code. Registration snapshots
+     * the package, resolves its declared module exports, and persists only the
+     * resulting data-oriented identities and manifest.
+     */
+    async registerWorkflowDefinition(
+        requestOrYaml: WorkflowDefinitionRegistrationRequest | string,
+        options?: { packageRoot: string },
+    ): Promise<WorkflowDefinitionRecord> {
+        this._ensureStarted();
+        if (typeof requestOrYaml === "string") {
+            if (!options?.packageRoot) {
+                throw Object.assign(
+                    new Error("Local workflow registration requires packageRoot."),
+                    { code: "WORKFLOW_PACKAGE_ROOT_REQUIRED" },
+                );
+            }
+            return this._registerResolvedWorkflowPackage(
+                requestOrYaml,
+                options.packageRoot,
+                { kind: "local-package" },
+            );
+        }
+        const policy = this.config.workflowGitImportPolicy ?? loadImportPolicy();
+        const resolved = await resolveWorkflowGitPackage(requestOrYaml.source, policy);
+        try {
+            return await this._registerResolvedWorkflowPackage(
+                resolved.workflowYaml,
+                resolved.packageRoot,
+                { ...resolved.source },
+            );
+        } finally {
+            await resolved.cleanup();
+        }
+    }
+
+    private async _registerResolvedWorkflowPackage(
+        yaml: string,
+        packageRoot: string,
+        packageSource: Record<string, unknown>,
+    ): Promise<WorkflowDefinitionRecord> {
+        const snapshot = await materializeWorkflowPackageSnapshot(packageRoot);
+        const compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        const packageSha256 = compiled.manifest.packageSha256;
+        if (!packageSha256) {
+            throw Object.assign(
+                new Error("Workflow package compilation did not produce a package identity."),
+                { code: "WORKFLOW_PACKAGE_IDENTITY_MISSING" },
+            );
+        }
+        const packageArtifactFilename = workflowPackageArtifactFilename(packageSha256);
+        await this._requireWorkflowPackageArtifacts().uploadArtifact(
+            workflowPackagesArtifactSessionId(),
+            packageArtifactFilename,
+            snapshot.artifactTarGz,
+            "application/gzip",
+            { pinned: true },
+        );
+        const sourceSha256 = createHash("sha256").update(yaml, "utf8").digest("hex");
+        const compiledSha256 = createHash("sha256")
+            .update(JSON.stringify(compiled.manifest), "utf8")
+            .digest("hex");
+        return this._catalog!.registerWorkflowDefinition({
+            definitionId: randomUUID(),
+            sourceYaml: yaml,
+            sourceSha256,
+            packageSha256,
+            packageArtifactFilename,
+            packageSource,
+            compiledSha256,
+            manifest: compiled.manifest,
+        });
+    }
+
+    /** Read one immutable registered definition and its compiled state rows. */
+    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowDefinition(definitionId);
+    }
 
     /** Get the workflow's current externally visible state. */
     async getWorkflow(sessionId: string): Promise<WorkflowProjectionRow | null> {
@@ -4917,6 +5023,16 @@ export class PilotSwarmManagementClient {
     private _requireAgentPackageArtifacts(): ArtifactStore {
         if (!this._artifactStore) {
             throw new Error("agent-package artifact operations require an artifact store in direct mode");
+        }
+        return this._artifactStore;
+    }
+
+    private _requireWorkflowPackageArtifacts(): ArtifactStore {
+        if (!this._artifactStore) {
+            throw Object.assign(
+                new Error("workflow definition registration requires an artifact store"),
+                { code: "WORKFLOW_PACKAGE_ARTIFACT_STORE_REQUIRED" },
+            );
         }
         return this._artifactStore;
     }

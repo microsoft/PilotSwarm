@@ -165,3 +165,36 @@ test("management clients expose workflow projection and execution reads", async 
         { name: "listWorkflowExecutions", params: { sessionId: "workflow-1" } },
     ]);
 });
+
+test("web management registers Git workflow definitions and reads them by id", async () => {
+    const calls = [];
+    const web = Object.create(WebPilotSwarmManagementClient.prototype);
+    web._api = {
+        call: async (name, params) => {
+            calls.push({ name, params });
+            return { definitionId: "definition-1" };
+        },
+    };
+    const request = {
+        source: {
+            kind: "git",
+            repositoryUrl: "https://github.com/microsoft/PilotSwarm",
+            gitRef: "refs/heads/main",
+            workflowPath: "workflows/example.yaml",
+        },
+    };
+
+    await web.registerWorkflowDefinition(request);
+    await web.getWorkflowDefinition("definition-1");
+    await assert.rejects(
+        () => web.registerWorkflowDefinition("apiVersion: pilotswarm.dev/v1alpha1", {
+            packageRoot: "C:\\workflow",
+        }),
+        error => error?.code === "WEB_MODE_UNSUPPORTED",
+    );
+
+    assert.deepEqual(calls, [
+        { name: "registerWorkflowDefinition", params: { source: request.source } },
+        { name: "getWorkflowDefinition", params: { definitionId: "definition-1" } },
+    ]);
+});

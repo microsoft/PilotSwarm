@@ -139,6 +139,86 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
         changeId: { type: "string", required: true },
     });
     assert.deepEqual(compiled.configuration, { policy: { retries: 2 } });
+    assert.deepEqual(compiled.manifest, {
+        compilerVersion: "v1alpha1-2",
+        apiVersion: "pilotswarm.dev/v1alpha1",
+        kind: "Workflow",
+        graphId: "delivery@0.1.0",
+        metadata: { name: "delivery", version: "0.1.0" },
+        inputSchema: {
+            changeId: { type: "string", required: true },
+        },
+        configuration: { policy: { retries: 2 } },
+        initialState: "inspect",
+        states: [
+            {
+                id: "inspect",
+                type: "agent",
+                agent: "delivery-inspector",
+                input: {
+                    changeId: "${inputs.changeId}",
+                    retries: "${configuration.policy.retries}",
+                },
+                resultSchema: "delivery/inspection/v1",
+                completion: {
+                    mode: "one-shot",
+                    outcomes: ["succeeded", "blocked"],
+                },
+                transition: {
+                    handler: {
+                        module: "./transitions.mjs",
+                        export: "inspect",
+                    },
+                    allowedTargets: ["publish", "needs-attention"],
+                },
+            },
+            {
+                id: "publish",
+                type: "agent",
+                agent: "delivery-publisher",
+                input: {
+                    inspection: "${states.inspect.result}",
+                },
+                resultSchema: "delivery/publication/v1",
+                completion: {
+                    mode: "one-shot",
+                    outcomes: ["succeeded", "failed"],
+                },
+                transition: {
+                    handler: {
+                        module: "./transitions.mjs",
+                        export: "publish",
+                    },
+                    allowedTargets: ["committed", "failed"],
+                },
+            },
+            {
+                id: "committed",
+                type: "terminal",
+                outcome: "succeeded",
+                summary: "Workflow 'delivery' completed with outcome 'succeeded'.",
+                hasOutput: true,
+                output: "${states.publish.result}",
+            },
+            {
+                id: "needs-attention",
+                type: "terminal",
+                outcome: "blocked",
+                summary: "Workflow 'delivery' completed with outcome 'blocked'.",
+                hasOutput: true,
+                output: {
+                    inspection: "${states.inspect.result}",
+                },
+            },
+            {
+                id: "failed",
+                type: "terminal",
+                outcome: "failed",
+                summary: "Workflow 'delivery' completed with outcome 'failed'.",
+                hasOutput: false,
+            },
+        ],
+    });
 
     const inspect = compiled.graph.states.inspect;
     assert.equal(inspect.type, "agent");
@@ -458,6 +538,20 @@ test("loads package-relative transition modules before compilation", async () =>
     });
 
     assert.equal(target, "publish");
+    assert.match(compiled.manifest.packageSha256, /^[a-f0-9]{64}$/);
+    assert.deepEqual(
+        compiled.manifest.states[0].transition.handler,
+        {
+            module: "./transitions.mjs",
+            export: "inspect",
+            moduleSha256: compiled.manifest.states[0].transition.handler.moduleSha256,
+            packageSha256: compiled.manifest.packageSha256,
+        },
+    );
+    assert.match(
+        compiled.manifest.states[0].transition.handler.moduleSha256,
+        /^[a-f0-9]{64}$/,
+    );
 });
 
 test("identifies transition code by both module and package content", async () => {

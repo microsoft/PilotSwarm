@@ -125,4 +125,61 @@ describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
             "workflow.completed",
         ]);
     });
+
+    it("registers immutable authored definitions with normalized compiled manifests", async () => {
+        const manifest = {
+            compilerVersion: "v1alpha1-2",
+            apiVersion: "pilotswarm.dev/v1alpha1",
+            kind: "Workflow",
+            graphId: "registered-example@0.1.0",
+            packageSha256: "a".repeat(64),
+            metadata: { name: "registered-example", version: "0.1.0" },
+            inputSchema: {},
+            configuration: {},
+            initialState: "done",
+            states: [{
+                id: "done",
+                type: "terminal",
+                outcome: "succeeded",
+                summary: "Done.",
+                hasOutput: false,
+            }],
+        };
+        const registration = {
+            definitionId: "definition-1",
+            sourceYaml: "workflow-yaml",
+            sourceSha256: "source-hash",
+            packageSha256: "a".repeat(64),
+            packageArtifactFilename: `workflow-package.${"a".repeat(64)}.tar.gz`,
+            packageSource: { kind: "local-package" },
+            compiledSha256: "compiled-hash",
+            manifest,
+        };
+
+        const first = await catalog.registerWorkflowDefinition(registration);
+        const duplicate = await catalog.registerWorkflowDefinition({
+            ...registration,
+            definitionId: "definition-retry",
+        });
+
+        expect(first.definitionId).toBe("definition-1");
+        expect(duplicate.definitionId).toBe("definition-1");
+        expect(first).toMatchObject({
+            graphId: "registered-example@0.1.0",
+            sourceYaml: "workflow-yaml",
+            sourceSha256: "source-hash",
+            packageSha256: "a".repeat(64),
+            packageArtifactFilename: `workflow-package.${"a".repeat(64)}.tar.gz`,
+            packageSource: { kind: "local-package" },
+            compiledSha256: "compiled-hash",
+            initialStateId: "done",
+            compiledManifest: manifest,
+        });
+
+        await expect(catalog.registerWorkflowDefinition({
+            ...registration,
+            definitionId: "definition-conflict",
+            sourceSha256: "different-source",
+        })).rejects.toThrow(/WORKFLOW_DEFINITION_CONFLICT/);
+    });
 });

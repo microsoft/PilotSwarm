@@ -13,6 +13,8 @@ const SUPPORTED_KIND = "Workflow";
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const EXACT_EXPRESSION = /^\$\{([^{}]+)\}$/;
 
+export const WORKFLOW_COMPILER_VERSION = "v1alpha1-2";
+
 type JsonObject = Record<string, unknown>;
 
 export interface WorkflowPackageMetadata {
@@ -69,8 +71,56 @@ export interface WorkflowTransitionRegistration {
     moduleIdentity?: Readonly<WorkflowTransitionModuleIdentity>;
 }
 
+export interface CompiledWorkflowTransitionHandlerManifest extends WorkflowTransitionReference {
+    moduleSha256?: string;
+    packageSha256?: string;
+}
+
+export interface CompiledWorkflowAgentStateManifest {
+    id: string;
+    type: "agent";
+    agent: string;
+    input: unknown;
+    resultSchema: string;
+    completion: {
+        mode: "one-shot";
+        outcomes: readonly string[];
+    };
+    transition: {
+        handler: Readonly<CompiledWorkflowTransitionHandlerManifest>;
+        allowedTargets: readonly string[];
+    };
+}
+
+export interface CompiledWorkflowTerminalStateManifest {
+    id: string;
+    type: "terminal";
+    outcome: "succeeded" | "blocked" | "failed" | "cancelled";
+    summary: string;
+    hasOutput: boolean;
+    output?: unknown;
+}
+
+export type CompiledWorkflowStateManifest =
+    | CompiledWorkflowAgentStateManifest
+    | CompiledWorkflowTerminalStateManifest;
+
+export interface CompiledWorkflowManifest {
+    compilerVersion: typeof WORKFLOW_COMPILER_VERSION;
+    apiVersion: typeof SUPPORTED_API_VERSION;
+    kind: typeof SUPPORTED_KIND;
+    graphId: string;
+    packageSha256?: string;
+    metadata: Readonly<WorkflowPackageMetadata>;
+    inputSchema: Readonly<JsonObject>;
+    configuration: Readonly<JsonObject>;
+    initialState: string;
+    states: readonly CompiledWorkflowStateManifest[];
+}
+
 export interface CompiledWorkflowYaml {
     graph: InMemoryWorkflowGraph;
+    manifest: Readonly<CompiledWorkflowManifest>;
     metadata: Readonly<WorkflowPackageMetadata>;
     inputSchema: Readonly<JsonObject>;
     configuration: Readonly<JsonObject>;
@@ -325,6 +375,18 @@ export class WorkflowTransitionRegistry {
                 "WORKFLOW_TRANSITION_HANDLER_ALREADY_REGISTERED",
             );
         }
+        if (
+            registration.moduleIdentity
+            && (
+                registration.moduleIdentity.module !== reference.module
+                || registration.moduleIdentity.export !== reference.export
+            )
+        ) {
+            throw compilerError(
+                `Transition handler ${label} module identity does not match its reference.`,
+                "WORKFLOW_TRANSITION_IDENTITY_INVALID",
+            );
+        }
         this.registrations.set(key, deepFreeze({
             allowedTargets: [...allowedTargets],
             handler: registration.handler,
@@ -354,7 +416,10 @@ export class WorkflowTransitionRegistry {
 
 export function compileWorkflowYaml(
     yaml: string,
-    options: { transitions: WorkflowTransitionRegistry },
+    options: {
+        transitions: WorkflowTransitionRegistry;
+        packageSha256?: string;
+    },
 ): CompiledWorkflowYaml {
     if (typeof yaml !== "string" || yaml.trim().length === 0) {
         throw compilerError("Workflow YAML must be a non-empty string.");
@@ -406,6 +471,7 @@ export function compileWorkflowYaml(
 
     const states: Record<string, InMemoryWorkflowGraph["states"][string]> =
         Object.create(null);
+    const stateManifests: CompiledWorkflowStateManifest[] = [];
     for (const [stateId, rawState] of Object.entries(stateDocuments)) {
         const path = `states.${stateId}`;
         const state = requireObject(rawState, path);
@@ -418,12 +484,13 @@ export function compileWorkflowYaml(
             }
             const outputTemplate = state.output;
             validateTemplate(outputTemplate, `${path}.output`, stateIds);
+            const summary = typeof state.summary === "string" && state.summary.trim()
+                ? state.summary.trim()
+                : `Workflow '${metadata.name}' completed with outcome '${outcome}'.`;
             states[stateId] = {
                 type: "terminal",
                 outcome: outcome as "succeeded" | "blocked" | "failed" | "cancelled",
-                summary: typeof state.summary === "string" && state.summary.trim()
-                    ? state.summary.trim()
-                    : `Workflow '${metadata.name}' completed with outcome '${outcome}'.`,
+                summary,
                 ...(Object.prototype.hasOwnProperty.call(state, "output")
                     ? {
                         result: context => resolveTemplate(
@@ -438,6 +505,16 @@ export function compileWorkflowYaml(
                     }
                     : {}),
             };
+            stateManifests.push({
+                id: stateId,
+                type: "terminal",
+                outcome: outcome as "succeeded" | "blocked" | "failed" | "cancelled",
+                summary,
+                hasOutput: Object.prototype.hasOwnProperty.call(state, "output"),
+                ...(Object.prototype.hasOwnProperty.call(state, "output")
+                    ? { output: outputTemplate }
+                    : {}),
+            });
             continue;
         }
 
@@ -515,7 +592,37 @@ export function compileWorkflowYaml(
                 registration,
             }),
         };
+        stateManifests.push({
+            id: stateId,
+            type: "agent",
+            agent,
+            input: inputTemplate,
+            resultSchema,
+            completion: {
+                mode: "one-shot",
+                outcomes,
+            },
+            transition: {
+                handler: registration.moduleIdentity
+                    ? { ...registration.moduleIdentity }
+                    : { ...handlerReference },
+                allowedTargets: [...registration.allowedTargets],
+            },
+        });
     }
+
+    const manifest: CompiledWorkflowManifest = {
+        compilerVersion: WORKFLOW_COMPILER_VERSION,
+        apiVersion: SUPPORTED_API_VERSION,
+        kind: SUPPORTED_KIND,
+        graphId,
+        ...(options.packageSha256 ? { packageSha256: options.packageSha256 } : {}),
+        metadata,
+        inputSchema,
+        configuration,
+        initialState,
+        states: stateManifests,
+    };
 
     return deepFreeze({
         graph: {
@@ -523,6 +630,7 @@ export function compileWorkflowYaml(
             initialState,
             states,
         },
+        manifest,
         metadata,
         inputSchema,
         configuration,
@@ -531,7 +639,10 @@ export function compileWorkflowYaml(
 
 export function compileAndRegisterWorkflowYaml(
     yaml: string,
-    options: { transitions: WorkflowTransitionRegistry },
+    options: {
+        transitions: WorkflowTransitionRegistry;
+        packageSha256?: string;
+    },
 ): {
     compiled: CompiledWorkflowYaml;
     definition: Extract<WorkflowDefinitionSource, { kind: "in-memory" }>;

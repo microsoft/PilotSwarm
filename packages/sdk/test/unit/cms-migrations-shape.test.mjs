@@ -97,3 +97,27 @@ test("0083: workflow facts are authoritative and lifecycle events are transactio
     assert.match(migration.sql, /'workflow\.execution_accepted'/);
     assert.match(migration.sql, /'workflow\.completed'/);
 });
+
+test("0084: workflow definitions retain source and normalized compiled manifests", () => {
+    const migration = migrations.find((m) => m.version === "0084");
+    assert.ok(migration, "migration 0084 must be registered");
+    assert.equal(migration.name, "workflow_definitions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_definitions/);
+    assert.match(migration.sql, /source_yaml\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /source_sha256\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /package_sha256\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /package_artifact_filename TEXT NOT NULL/);
+    assert.match(migration.sql, /package_source_json\s+JSONB NOT NULL/);
+    assert.match(migration.sql, /pg_advisory_xact_lock\(hashtextextended\(p_graph_id, 0\)\)/);
+    assert.match(migration.sql, /'workflow-package\.' \|\| p_package_sha256 \|\| '\.tar\.gz'/);
+    assert.match(migration.sql, /p_package_source_json->>'kind' NOT IN \('local-package', 'git'\)/);
+    assert.match(migration.sql, /compiled_sha256\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /compiled_manifest_json JSONB NOT NULL/);
+    assert.doesNotMatch(migration.sql, /workflow_definition_states/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_register_workflow_definition/);
+    assert.match(migration.sql, /WORKFLOW_DEFINITION_CONFLICT/);
+    assert.match(migration.sql, /p_compiled_manifest_json->'states'/);
+    assert.match(migration.sql, /p_compiled_manifest_json->>'packageSha256'/);
+    assert.match(migration.sql, /transition,handler,moduleSha256/);
+    assert.match(migration.sql, /transition,handler,packageSha256/);
+});

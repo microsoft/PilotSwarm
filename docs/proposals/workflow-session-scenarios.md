@@ -789,7 +789,8 @@ The feature branch already provides:
 | Basic workflow controller | Implemented for process-local in-memory graphs |
 | One-shot agent-state dispatch | Implemented for named agents with runtime-bound structured result submission |
 | Authoritative execution records and current projection | Implemented in CMS migration `0083` |
-| Definition compiler and durable graph registry | Initial `v1alpha1` YAML-to-in-memory compiler implemented for one-shot agent and terminal states; durable registry not implemented |
+| Definition compiler and durable graph registry | Initial `v1alpha1` compiler implemented; migration `0084` stores authored YAML, Git provenance, package artifact identity, and one normalized compiled-manifest snapshot |
+| Git-backed definition registration API | Implemented as an authenticated `fleet:admin` REST operation with allowlisted repository resolution, immutable commit pinning, and definition lookup |
 
 The initial controller accepts an `in-memory` definition that names a graph
 registered in the worker process. The compiler now parses the first
@@ -807,22 +808,34 @@ execution admissions and accepted outputs keyed by
 separately, and updates a rebuildable current projection in the same
 transactions. Operational `session_events` are emitted alongside these writes
 for diagnostics, but are not the authoritative record and are not an audit
-log. This is an executable seam for refining controller semantics, not the
-production definition-storage model.
+log. The definition registry retains authored YAML and its hash for audit and
+recompilation, plus one normalized data-only compiled-manifest snapshot with
+the content-addressed package identity and each transition's module path,
+named export, and module hash. Git-backed registration resolves the requested
+ref to a commit, uploads the canonical package tarball under a pinned
+content-addressed artifact name, and persists both requested and resolved
+source identities. It deliberately does not copy `pg_durable`'s per-node table
+until PilotSwarm has a concrete node-level query or mutation requirement.
+Duroxide history still owns the running cursor and replay. Runtime loading of a
+pinned definition with its package-owned handlers is not yet connected to the
+controller.
 
 ### 4.2 Definition subsystem
 
-Add a definition subsystem responsible for:
+Continue the definition subsystem with:
 
 - resolving packaged and inline sources;
-- pinning mutable package and Git references;
 - resolving and hashing agent definitions, prompts, and transition modules;
 - validating schema, references, expressions, and bounds;
-- compiling the graph and resolving required transition registrations;
+- loading registered definitions and their pinned transition modules into the
+  controller;
 - rejecting transition-module imports or capabilities that violate
   deterministic execution;
-- rejecting unsupported nodes, missing outcomes, invalid targets, and cycles;
-- persisting definition identity, source hash, and compiled version.
+- rejecting unsupported nodes, missing outcomes, invalid targets, and cycles.
+
+Git-backed sources already publish content-addressed package snapshots through
+the artifact layer, pin mutable refs to commits, and expose authenticated
+registration and lookup over HTTP.
 
 Packaged and inline sources use the same compiler.
 Runtime-generated definitions, if admitted, also use this compiler and receive

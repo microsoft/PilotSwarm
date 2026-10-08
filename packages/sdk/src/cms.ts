@@ -19,6 +19,7 @@ import {
     type SessionOwnerInfo,
     type SessionSummaryState,
 } from "./types.js";
+import type { CompiledWorkflowManifest } from "./workflow-orchestration/compiler.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -328,6 +329,28 @@ export interface WorkflowProjectionRow {
     completedAt: Date | null;
     updatedAt: Date;
 }
+
+export interface WorkflowDefinitionRow {
+    definitionId: string;
+    graphId: string;
+    name: string;
+    version: string;
+    apiVersion: string;
+    compilerVersion: string;
+    sourceYaml: string;
+    sourceSha256: string;
+    packageSha256: string;
+    packageArtifactFilename: string;
+    packageSource: Record<string, unknown>;
+    compiledSha256: string;
+    initialStateId: string;
+    inputSchema: Record<string, unknown>;
+    configuration: Record<string, unknown>;
+    compiledManifest: CompiledWorkflowManifest;
+    createdAt: Date;
+}
+
+export type WorkflowDefinitionRecord = WorkflowDefinitionRow;
 
 // ─── Session Metric Summary Types ────────────────────────────────
 
@@ -1355,6 +1378,21 @@ export interface SessionCatalog {
     /** Read authoritative workflow executions in admission order. */
     listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]>;
 
+    /** Persist one immutable authored definition and its normalized compiled states. */
+    registerWorkflowDefinition(input: {
+        definitionId: string;
+        sourceYaml: string;
+        sourceSha256: string;
+        packageSha256: string;
+        packageArtifactFilename: string;
+        packageSource: Record<string, unknown>;
+        compiledSha256: string;
+        manifest: CompiledWorkflowManifest;
+    }): Promise<WorkflowDefinitionRecord>;
+
+    /** Read one immutable workflow definition and its ordered compiled states. */
+    getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
+
     // ── Events (written from worker, read from client) ───────
 
     /** Record a batch of events for a session. */
@@ -1565,6 +1603,7 @@ function sqlForSchema(schema: string) {
             acceptWorkflowExecution:    `${s}.cms_accept_workflow_execution`,
             completeWorkflowProjection: `${s}.cms_complete_workflow`,
             rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
+            registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
@@ -2454,6 +2493,61 @@ export class PgSessionCatalog implements SessionCatalog {
             [workflowSessionId],
         );
         return rows.map(rowToWorkflowExecutionRow);
+    }
+
+    async registerWorkflowDefinition(input: {
+        definitionId: string;
+        sourceYaml: string;
+        sourceSha256: string;
+        packageSha256: string;
+        packageArtifactFilename: string;
+        packageSource: Record<string, unknown>;
+        compiledSha256: string;
+        manifest: CompiledWorkflowManifest;
+    }): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.registerWorkflowDefinition}(
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+            ) AS definition_id`,
+            [
+                input.definitionId,
+                input.manifest.graphId,
+                input.manifest.metadata.name,
+                input.manifest.metadata.version,
+                input.manifest.apiVersion,
+                input.manifest.compilerVersion,
+                input.sourceYaml,
+                input.sourceSha256,
+                input.packageSha256,
+                input.packageArtifactFilename,
+                JSON.stringify(input.packageSource),
+                input.compiledSha256,
+                input.manifest.initialState,
+                JSON.stringify(input.manifest.inputSchema),
+                JSON.stringify(input.manifest.configuration),
+                JSON.stringify(input.manifest),
+            ],
+        );
+        const persistedDefinitionId = rows[0]?.definition_id;
+        const registered = typeof persistedDefinitionId === "string"
+            ? await this.getWorkflowDefinition(persistedDefinitionId)
+            : null;
+        if (!registered) {
+            throw Object.assign(
+                new Error(`Workflow definition '${input.manifest.graphId}' was not persisted.`),
+                { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
+            );
+        }
+        return registered;
+    }
+
+    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        const definitionResult = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_definitions WHERE definition_id = $1`,
+            [definitionId],
+        );
+        if (definitionResult.rows.length === 0) return null;
+        return rowToWorkflowDefinitionRow(definitionResult.rows[0]);
     }
 
     // ── Events ───────────────────────────────────────────────
@@ -4097,6 +4191,28 @@ function rowToWorkflowProjectionRow(row: any): WorkflowProjectionRow {
         result: row.result_json ?? null,
         completedAt: row.completed_at ? new Date(row.completed_at) : null,
         updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowDefinitionRow(row: any): WorkflowDefinitionRow {
+    return {
+        definitionId: row.definition_id,
+        graphId: row.graph_id,
+        name: row.name,
+        version: row.version,
+        apiVersion: row.api_version,
+        compilerVersion: row.compiler_version,
+        sourceYaml: row.source_yaml,
+        sourceSha256: row.source_sha256,
+        packageSha256: row.package_sha256,
+        packageArtifactFilename: row.package_artifact_filename,
+        packageSource: row.package_source_json ?? {},
+        compiledSha256: row.compiled_sha256,
+        initialStateId: row.initial_state_id,
+        inputSchema: row.input_schema_json ?? {},
+        configuration: row.configuration_json ?? {},
+        compiledManifest: row.compiled_manifest_json,
+        createdAt: new Date(row.created_at),
     };
 }
 

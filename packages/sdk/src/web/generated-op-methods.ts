@@ -96,6 +96,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getUserStats",
     "getWorkerCount",
     "getWorkflow",
+    "getWorkflowDefinition",
     "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
@@ -130,6 +131,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readCanvasKv",
     "readFacts",
     "regenerateSession",
+    "registerWorkflowDefinition",
     "removeCanvasShareLink",
     "removeProviderLimit",
     "renameSession",
@@ -971,6 +973,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read one immutable registered workflow definition.
+     * @remarks `GET /management/workflow-definitions/:definitionId` — access: `fleet:admin`
+     */
+    getWorkflowDefinition(params: {
+        definitionId: string;
+    }): Promise<any>;
+
+    /**
      * Grant a user write access to a SHARED package ({ user: { provider, subject } }): publish, republish into it, pin, enable/disable — not scope, delete, or the editor list. Owner or admin. Revoked when the package is demoted to user scope.
      * @remarks `POST /agent-packages/:name/editors` — access: `authed`
      */
@@ -1252,6 +1262,14 @@ export interface ManagementOps {
     regenerateSession(params: {
         sessionId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Resolve a Git-backed workflow package, pin its artifact, compile it, and persist an immutable definition.
+     * @remarks `POST /management/workflow-definitions` — access: `fleet:admin`
+     */
+    registerWorkflowDefinition(params: {
+        source?: any;
     }): Promise<any>;
 
     /**
@@ -1896,6 +1914,7 @@ export function createManagementOps(
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         getWorkflow: (params: Record<string, unknown> = {}) => callOp("getWorkflow", params),
+        getWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getWorkflowDefinition", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
@@ -1930,6 +1949,7 @@ export function createManagementOps(
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
+        registerWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("registerWorkflowDefinition", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),

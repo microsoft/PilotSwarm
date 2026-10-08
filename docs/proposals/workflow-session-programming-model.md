@@ -289,8 +289,52 @@ into an internal `WorkflowTransitionRegistry`, and the compiler lowers the
 result into the same `InMemoryWorkflowGraph` used by the controller. It
 supports one-shot package-local agent states, terminal outputs, and exact-value
 references rooted at `inputs`, `configuration`, or prior
-`states.<stateId>.result`. Other state types and package persistence remain
-future work.
+`states.<stateId>.result`. Other state types remain future work.
+
+Compilation produces two related outputs:
+
+- an executable process-local graph used by the current controller; and
+- a normalized, data-only manifest suitable for durable registration.
+
+`PilotSwarmManagementClient.registerWorkflowDefinition(yaml, { packageRoot })`
+snapshots the complete package, resolves transition exports through the same
+compiler, and persists an immutable definition. The Web API exposes the same
+operation for Git-backed packages:
+
+```typescript
+const registered = await management.registerWorkflowDefinition({
+    source: {
+        kind: "git",
+        repositoryUrl: "https://github.com/example/workflows",
+        gitRef: "refs/heads/main",
+        workflowPath: "change-delivery/workflow.yaml",
+    },
+});
+```
+
+PilotSwarm checks the repository against the configured import allowlist,
+resolves the requested ref to an immutable commit, checks out that commit
+without submodules or Git LFS smudging, and treats the workflow file's directory
+as the package root. Git credentials come from the server environment; the
+request cannot carry credentials, query parameters, or fragments. Registration
+is currently a `fleet:admin` operation.
+
+CMS migration `0084` retains the authored YAML, source hash, requested Git ref,
+resolved commit, and package artifact identity for audit and recompilation. It
+stores the package hash as a first-class definition invariant and stores the
+normalized data-only manifest as JSONB with the compiler version, graph
+identity, templates, declared outcomes, allowed targets, and module/export
+identities with their module hashes. The canonical package tarball is uploaded
+to the existing artifact store under a content-addressed filename and pinned
+before the CMS row is written. JavaScript handler functions, Git credentials,
+and machine-local package paths are not serialized. Workers must load the
+pinned package artifact that owns those identities.
+
+Unlike `pg_durable`, the initial registry does not split each node into its own
+row. PilotSwarm already has a complete authored YAML artifact, and Duroxide
+history remains authoritative for the execution cursor and replay. A per-node
+schema can be introduced later if node-level querying, indexing, mutation, or
+independent versioning becomes a concrete requirement.
 
 SDK code may also register an `InMemoryWorkflowGraph` directly and create a
 workflow with the returned `{ kind: "in-memory", graphId }` definition source.
@@ -306,6 +350,11 @@ optional deterministic result function.
 const { definition } = await compileAndRegisterWorkflowPackageYaml(workflowYaml, {
     packageRoot,
 });
+
+const registered = await management.registerWorkflowDefinition(
+    workflowYaml,
+    { packageRoot },
+);
 ```
 
 ```typescript
@@ -350,11 +399,12 @@ await client.createWorkflowSession({
 });
 ```
 
-This registry is intentionally process-local: it is suitable for controller
-unit tests and early runtime experiments, but it is not durable across worker
-restarts and cannot coordinate graphs across a worker fleet. The production
-compiler and immutable graph registry replace this temporary registration
-boundary without changing the execution loop.
+The executable graph registry remains process-local: it is suitable for
+controller unit tests and early runtime experiments, but it is not durable
+across worker restarts and cannot coordinate executable handlers across a
+worker fleet. The durable definition registry now stores source and a normalized compiled
+manifest; loading that manifest with its pinned package handler registrations
+into the controller remains the next execution-path step.
 
 Each nonterminal state admission receives a workflow-scoped,
 monotonically-increasing `executionSequence`. For an agent state, the durable
