@@ -196,7 +196,9 @@ states:
         - succeeded
         - failed
     transition:
-      handler: after-state-a
+      handler:
+        module: ./transitions.mjs
+        export: afterStateA
 ```
 
 The agent definition describes instructions and capabilities, while the prompt
@@ -205,19 +207,28 @@ describes the state-specific task.
 ## Transition callback declaration
 
 Transition logic is packaged as deterministic code rather than embedded as an
-expression language or outcome map in YAML. Package initialization registers a
-stable handler name, its allowed targets, and the synchronous function:
+expression language or outcome map in YAML. The workflow references a
+package-relative module and named export:
 
 ```typescript
-transitions.register("after-state-a", {
+export const afterStateA = {
     allowedTargets: ["state-b", "state-c"],
-    handler: afterStateA,
-});
+    handler: (ctx: TransitionContext<WorkflowInput, StateAOutput>) => {
+        if (ctx.stateOutput.result.matchesCondition) {
+            return { kind: "advance", target: "state-b" };
+        }
+
+        return { kind: "advance", target: "state-c" };
+    },
+};
 ```
 
-The workflow YAML references the registered name through
-`transition.handler`. The registered function implements this author-facing
-interface:
+The package loader hashes the complete package and materializes a
+content-addressed snapshot before importing transition code. It then resolves
+the path within that immutable snapshot, hashes the entry module, validates the
+export, and registers it internally for the compiler. Absolute paths, symbolic
+links, and paths that escape the package are rejected.
+The handler implements this author-facing interface:
 
 ```typescript
 type StateId = string;
@@ -248,14 +259,6 @@ type TransitionFunction<TInput, TOutput> = (
     | { kind: "advance"; target: StateId }
     | { kind: "resume-producer"; feedback: unknown };
 
-export const afterStateA: TransitionFunction<WorkflowInput, StateAOutput> =
-    ctx => {
-        if (ctx.stateOutput.result.matchesCondition) {
-            return { kind: "advance", target: "state-b" };
-        }
-
-        return { kind: "advance", target: "state-c" };
-    };
 ```
 
 Transition code must be synchronous and deterministic over the immutable
@@ -280,9 +283,10 @@ storage.
 
 ### Initial compiler and in-memory graph
 
-The initial `v1alpha1` compiler parses YAML agent and terminal states, resolves
-mandatory transition handlers from `WorkflowTransitionRegistry`, and lowers
-the result into the same `InMemoryWorkflowGraph` used by the controller. It
+The initial `v1alpha1` compiler parses YAML agent and terminal states. The
+package loader resolves mandatory package-relative transition module exports
+into an internal `WorkflowTransitionRegistry`, and the compiler lowers the
+result into the same `InMemoryWorkflowGraph` used by the controller. It
 supports one-shot package-local agent states, terminal outputs, and exact-value
 references rooted at `inputs`, `configuration`, or prior
 `states.<stateId>.result`. Other state types and package persistence remain
@@ -299,17 +303,8 @@ prose for JSON. Terminal states provide the workflow outcome, summary, and
 optional deterministic result function.
 
 ```typescript
-const transitions = new WorkflowTransitionRegistry()
-    .register("approval.inspect", {
-        allowedTargets: ["publish", "blocked"],
-        handler: context => ({
-            kind: "advance",
-            target: context.stateOutcome === "approved" ? "publish" : "blocked",
-        }),
-    });
-
-const { definition } = compileAndRegisterWorkflowYaml(workflowYaml, {
-    transitions,
+const { definition } = await compileAndRegisterWorkflowPackageYaml(workflowYaml, {
+    packageRoot,
 });
 ```
 

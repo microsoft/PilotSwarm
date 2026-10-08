@@ -53,9 +53,20 @@ export type WorkflowTransitionHandler = (
     context: WorkflowTransitionHandlerContext,
 ) => WorkflowTransitionDirective;
 
+export interface WorkflowTransitionReference {
+    module: string;
+    export: string;
+}
+
+export interface WorkflowTransitionModuleIdentity extends WorkflowTransitionReference {
+    moduleSha256: string;
+    packageSha256: string;
+}
+
 export interface WorkflowTransitionRegistration {
     allowedTargets: readonly string[];
     handler: WorkflowTransitionHandler;
+    moduleIdentity?: Readonly<WorkflowTransitionModuleIdentity>;
 }
 
 export interface CompiledWorkflowYaml {
@@ -96,6 +107,25 @@ function requireStringArray(value: unknown, path: string): string[] {
         throw compilerError(`${path} must not contain duplicate outcomes.`);
     }
     return values;
+}
+
+function requireTransitionReference(
+    value: unknown,
+    path: string,
+): WorkflowTransitionReference {
+    const reference = requireObject(value, path);
+    return {
+        module: requireString(reference.module, `${path}.module`),
+        export: requireString(reference.export, `${path}.export`),
+    };
+}
+
+function transitionReferenceKey(reference: WorkflowTransitionReference): string {
+    return `${reference.module}#${reference.export}`;
+}
+
+function transitionReferenceLabel(reference: WorkflowTransitionReference): string {
+    return `'${reference.module}' export '${reference.export}'`;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -269,37 +299,52 @@ function transitionFromRegistration(input: {
 export class WorkflowTransitionRegistry {
     private readonly registrations = new Map<string, WorkflowTransitionRegistration>();
 
-    register(name: string, registration: WorkflowTransitionRegistration): this {
-        const normalizedName = requireString(name, "Transition handler name");
+    register(
+        referenceValue: WorkflowTransitionReference,
+        registration: WorkflowTransitionRegistration,
+    ): this {
+        const reference = requireTransitionReference(
+            referenceValue,
+            "Transition handler reference",
+        );
+        const key = transitionReferenceKey(reference);
+        const label = transitionReferenceLabel(reference);
         if (!registration || typeof registration.handler !== "function") {
             throw compilerError(
-                `Transition handler '${normalizedName}' must provide a handler function.`,
+                `Transition handler ${label} must provide a handler function.`,
                 "WORKFLOW_TRANSITION_HANDLER_INVALID",
             );
         }
         const allowedTargets = requireStringArray(
             registration.allowedTargets,
-            `Transition handler '${normalizedName}' allowedTargets`,
+            `Transition handler ${label} allowedTargets`,
         );
-        if (this.registrations.has(normalizedName)) {
+        if (this.registrations.has(key)) {
             throw compilerError(
-                `Transition handler '${normalizedName}' is already registered.`,
+                `Transition handler ${label} is already registered.`,
                 "WORKFLOW_TRANSITION_HANDLER_ALREADY_REGISTERED",
             );
         }
-        this.registrations.set(normalizedName, deepFreeze({
+        this.registrations.set(key, deepFreeze({
             allowedTargets: [...allowedTargets],
             handler: registration.handler,
+            ...(registration.moduleIdentity
+                ? { moduleIdentity: { ...registration.moduleIdentity } }
+                : {}),
         }));
         return this;
     }
 
-    resolve(name: string): WorkflowTransitionRegistration {
-        const normalizedName = requireString(name, "Transition handler name");
-        const registration = this.registrations.get(normalizedName);
+    resolve(referenceValue: WorkflowTransitionReference): WorkflowTransitionRegistration {
+        const reference = requireTransitionReference(
+            referenceValue,
+            "Transition handler reference",
+        );
+        const key = transitionReferenceKey(reference);
+        const registration = this.registrations.get(key);
         if (!registration) {
             throw compilerError(
-                `Transition handler '${normalizedName}' is not registered.`,
+                `Transition handler ${transitionReferenceLabel(reference)} is not registered.`,
                 "WORKFLOW_TRANSITION_HANDLER_NOT_REGISTERED",
             );
         }
@@ -424,12 +469,15 @@ export function compileWorkflowYaml(
         }
         const outcomes = requireStringArray(completion.outcomes, `${path}.completion.outcomes`);
         const transition = requireObject(state.transition, `${path}.transition`);
-        const handlerName = requireString(transition.handler, `${path}.transition.handler`);
-        const registration = options.transitions.resolve(handlerName);
+        const handlerReference = requireTransitionReference(
+            transition.handler,
+            `${path}.transition.handler`,
+        );
+        const registration = options.transitions.resolve(handlerReference);
         for (const target of registration.allowedTargets) {
             if (!stateIds.has(target)) {
                 throw compilerError(
-                    `Transition handler '${handlerName}' for state '${stateId}' declares unknown target '${target}'.`,
+                    `Transition handler ${transitionReferenceLabel(handlerReference)} for state '${stateId}' declares unknown target '${target}'.`,
                     "WORKFLOW_TRANSITION_TARGET_INVALID",
                 );
             }

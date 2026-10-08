@@ -665,9 +665,9 @@ External writes are separate action nodes with explicit authorization and
 idempotency. Accepting a reviewed candidate may authorize a later action; it
 does not make the producing agent authoritative for that write.
 
-The initial `v1alpha1` YAML subset now requires every nonterminal state to name
-a package-registered transition handler; it deliberately provides no inline
-transition expression or case-map syntax. Provider registration and the
+The initial `v1alpha1` YAML subset now requires every nonterminal state to
+reference a package-relative transition module and export; it deliberately
+provides no inline transition expression or case-map syntax. Provider registration and the
 remaining state-type request/response contracts continue to evolve. The
 [ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md)
 is the concrete acceptance encoding.
@@ -793,7 +793,7 @@ The feature branch already provides:
 
 The initial controller accepts an `in-memory` definition that names a graph
 registered in the worker process. The compiler now parses the first
-`v1alpha1` subset, resolves mandatory registered transition handlers, and
+`v1alpha1` subset, resolves mandatory package-relative transition exports, and
 registers its output through that same graph boundary. Activity states execute
 behind durable activities. Agent states allocate a monotonically increasing
 `executionSequence`, create or reuse one replay-stable named-agent child, and
@@ -1016,8 +1016,8 @@ boundary used by production integrations.
 2. `parentSessionId` is the authoritative relationship edge.
 3. Workflow execution state is separate from conversational `subAgents`.
 4. Agents produce outcomes; workflow authors define transition functions.
-5. Every nonterminal state names a registered transition handler. Transition
-   callbacks are immutable package exports executed in a restricted
+5. Every nonterminal state references a package-relative transition module and
+   export. Transition callbacks are immutable package exports executed in a restricted
    deterministic host; inline transition expressions and outcome maps are not
    part of the YAML contract.
 6. Agentic transitions are explicit durable invocations with bounded routes.

@@ -266,7 +266,10 @@ test("executes states and deterministic transitions until a terminal state", asy
 
 test("executes a YAML-compiled agent workflow through structured result submission", async () => {
     const transitions = new WorkflowTransitionRegistry()
-        .register("delivery.inspect", {
+        .register({
+            module: "./transitions.mjs",
+            export: "inspect",
+        }, {
             allowedTargets: ["done", "blocked"],
             handler: ({ stateOutcome }) => ({
                 kind: "advance",
@@ -294,7 +297,9 @@ states:
         - succeeded
         - blocked
     transition:
-      handler: delivery.inspect
+      handler:
+        module: ./transitions.mjs
+        export: inspect
   done:
     type: terminal
     outcome: succeeded

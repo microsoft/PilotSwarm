@@ -39,6 +39,11 @@ export {
     compileAndRegisterWorkflowYaml,
     compileWorkflowYaml,
 } from "./workflow-orchestration/compiler.js";
+export {
+    compileAndRegisterWorkflowPackageYaml,
+    compileWorkflowPackageYaml,
+    loadWorkflowTransitionRegistry,
+} from "./workflow-orchestration/package-loader.js";
 export type {
     InMemoryWorkflowAgentState,
     InMemoryWorkflowExecutableState,
@@ -59,6 +64,8 @@ export type {
     WorkflowTransitionDirective,
     WorkflowTransitionHandler,
     WorkflowTransitionHandlerContext,
+    WorkflowTransitionModuleIdentity,
+    WorkflowTransitionReference,
     WorkflowTransitionRegistration,
 } from "./workflow-orchestration/compiler.js";
 export type { SessionEventHandler } from "./client.js";

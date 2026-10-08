@@ -1,14 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import {
     WorkflowTransitionRegistry,
     compileAndRegisterWorkflowYaml,
     compileWorkflowYaml,
 } from "../../dist/workflow-orchestration/compiler.js";
 import {
+    compileWorkflowPackageYaml,
+    loadWorkflowTransitionRegistry,
+} from "../../dist/workflow-orchestration/package-loader.js";
+import {
     clearInMemoryWorkflowGraphs,
     resolveInMemoryWorkflowGraph,
 } from "../../dist/workflow-orchestration/graph.js";
+
+const PACKAGE_ROOT = fileURLToPath(
+    new URL("../fixtures/workflow-package/", import.meta.url),
+);
+const INSPECT_HANDLER = {
+    module: "./transitions.mjs",
+    export: "inspect",
+};
+const PUBLISH_HANDLER = {
+    module: "./transitions.mjs",
+    export: "publish",
+};
 
 const VALID_WORKFLOW = `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -39,7 +56,9 @@ states:
         - succeeded
         - blocked
     transition:
-      handler: delivery.inspect
+      handler:
+        module: ./transitions.mjs
+        export: inspect
   publish:
     type: agent
     agent: delivery-publisher
@@ -53,7 +72,9 @@ states:
         - succeeded
         - failed
     transition:
-      handler: delivery.publish
+      handler:
+        module: ./transitions.mjs
+        export: publish
   committed:
     type: terminal
     outcome: succeeded
@@ -70,7 +91,7 @@ states:
 
 function createRegistry(calls = []) {
     return new WorkflowTransitionRegistry()
-        .register("delivery.inspect", {
+        .register(INSPECT_HANDLER, {
             allowedTargets: ["publish", "needs-attention"],
             handler: context => {
                 calls.push(context);
@@ -82,7 +103,7 @@ function createRegistry(calls = []) {
                 };
             },
         })
-        .register("delivery.publish", {
+        .register(PUBLISH_HANDLER, {
             allowedTargets: ["committed", "failed"],
             handler: context => ({
                 kind: "advance",
@@ -193,13 +214,14 @@ test("requires every agent state to reference a registered transition handler", 
             transitions: new WorkflowTransitionRegistry(),
         }),
         error => error?.code === "WORKFLOW_TRANSITION_HANDLER_NOT_REGISTERED"
-            && /delivery\.inspect/.test(error.message),
+            && /transitions\.mjs/.test(error.message)
+            && /inspect/.test(error.message),
     );
 });
 
 test("rejects inline transition syntax instead of maintaining two programming models", () => {
     const yaml = VALID_WORKFLOW.replace(
-        "    transition:\n      handler: delivery.inspect",
+        "    transition:\n      handler:\n        module: ./transitions.mjs\n        export: inspect",
         "    next:\n      cases:\n        succeeded:\n          to: publish",
     );
 
@@ -225,13 +247,13 @@ test("rejects unsupported state and completion types with specific errors", () =
 
 test("validates transition registration names, targets, and duplicates", () => {
     const registry = new WorkflowTransitionRegistry();
-    registry.register("delivery.inspect", {
+    registry.register(INSPECT_HANDLER, {
         allowedTargets: ["missing-state"],
         handler: () => ({ kind: "advance", target: "missing-state" }),
     });
 
     assert.throws(
-        () => registry.register("delivery.inspect", {
+        () => registry.register(INSPECT_HANDLER, {
             allowedTargets: ["publish"],
             handler: () => ({ kind: "advance", target: "publish" }),
         }),
@@ -246,11 +268,11 @@ test("validates transition registration names, targets, and duplicates", () => {
 
 test("rejects asynchronous and invalid transition handler results at execution time", () => {
     const asyncRegistry = new WorkflowTransitionRegistry()
-        .register("delivery.inspect", {
+        .register(INSPECT_HANDLER, {
             allowedTargets: ["publish"],
             handler: async () => ({ kind: "advance", target: "publish" }),
         })
-        .register("delivery.publish", {
+        .register(PUBLISH_HANDLER, {
             allowedTargets: ["committed", "failed"],
             handler: () => ({ kind: "advance", target: "committed" }),
         });
@@ -270,11 +292,11 @@ test("rejects asynchronous and invalid transition handler results at execution t
     );
 
     const invalidRegistry = new WorkflowTransitionRegistry()
-        .register("delivery.inspect", {
+        .register(INSPECT_HANDLER, {
             allowedTargets: ["publish"],
             handler: () => "",
         })
-        .register("delivery.publish", {
+        .register(PUBLISH_HANDLER, {
             allowedTargets: ["committed", "failed"],
             handler: () => ({ kind: "advance", target: "committed" }),
         });
@@ -296,14 +318,14 @@ test("rejects asynchronous and invalid transition handler results at execution t
 
 test("rejects producer-resume directives for the initial one-shot subset", () => {
     const registry = new WorkflowTransitionRegistry()
-        .register("delivery.inspect", {
+        .register(INSPECT_HANDLER, {
             allowedTargets: ["publish"],
             handler: () => ({
                 kind: "resume-producer",
                 feedback: "Revise the candidate.",
             }),
         })
-        .register("delivery.publish", {
+        .register(PUBLISH_HANDLER, {
             allowedTargets: ["committed", "failed"],
             handler: () => ({ kind: "advance", target: "committed" }),
         });
@@ -420,4 +442,89 @@ states:
     assert.equal(compiled.graph.states.__proto__.type, "terminal");
     assert.equal(compiled.graph.states.constructor.type, "terminal");
     assert.equal(compiled.graph.states.prototype.type, "terminal");
+});
+
+test("loads package-relative transition modules before compilation", async () => {
+    const compiled = await compileWorkflowPackageYaml(VALID_WORKFLOW, {
+        packageRoot: PACKAGE_ROOT,
+    });
+    const target = compiled.graph.states.inspect.transition({
+        workflowInputs: {},
+        currentStateId: "inspect",
+        stateOutcome: "succeeded",
+        stateOutput: {},
+        latestStateOutputs: {},
+        executionHistory: [],
+    });
+
+    assert.equal(target, "publish");
+});
+
+test("identifies transition code by both module and package content", async () => {
+    const registry = await loadWorkflowTransitionRegistry(
+        VALID_WORKFLOW,
+        PACKAGE_ROOT,
+    );
+    const identity = registry.resolve(INSPECT_HANDLER).moduleIdentity;
+
+    assert.equal(identity.module, "./transitions.mjs");
+    assert.equal(identity.export, "inspect");
+    assert.match(identity.moduleSha256, /^[a-f0-9]{64}$/);
+    assert.match(identity.packageSha256, /^[a-f0-9]{64}$/);
+    assert.notEqual(identity.moduleSha256, identity.packageSha256);
+});
+
+test("rejects transition modules outside the workflow package", async () => {
+    const yaml = VALID_WORKFLOW.replaceAll(
+        "./transitions.mjs",
+        "../outside.mjs",
+    );
+
+    await assert.rejects(
+        () => compileWorkflowPackageYaml(yaml, { packageRoot: PACKAGE_ROOT }),
+        error => error?.code === "WORKFLOW_TRANSITION_MODULE_PATH_INVALID",
+    );
+});
+
+test("rejects missing transition modules and package roots", async () => {
+    const yaml = VALID_WORKFLOW.replaceAll(
+        "./transitions.mjs",
+        "./missing.mjs",
+    );
+
+    await assert.rejects(
+        () => compileWorkflowPackageYaml(yaml, { packageRoot: PACKAGE_ROOT }),
+        error => error?.code === "WORKFLOW_TRANSITION_MODULE_NOT_FOUND",
+    );
+    await assert.rejects(
+        () => compileWorkflowPackageYaml(VALID_WORKFLOW, {
+            packageRoot: `${PACKAGE_ROOT}-missing`,
+        }),
+        error => error?.code === "WORKFLOW_PACKAGE_ROOT_NOT_FOUND",
+    );
+});
+
+test("reports transition module evaluation failures explicitly", async () => {
+    const yaml = VALID_WORKFLOW.replaceAll(
+        "./transitions.mjs",
+        "./invalid-transitions.mjs",
+    );
+
+    await assert.rejects(
+        () => compileWorkflowPackageYaml(yaml, { packageRoot: PACKAGE_ROOT }),
+        error => error?.code === "WORKFLOW_TRANSITION_MODULE_LOAD_FAILED"
+            && error.cause?.message === "fixture module failed during evaluation",
+    );
+});
+
+test("rejects missing transition module exports", async () => {
+    const yaml = VALID_WORKFLOW.replace(
+        "export: inspect",
+        "export: missing",
+    );
+
+    await assert.rejects(
+        () => compileWorkflowPackageYaml(yaml, { packageRoot: PACKAGE_ROOT }),
+        error => error?.code === "WORKFLOW_TRANSITION_EXPORT_INVALID",
+    );
 });
