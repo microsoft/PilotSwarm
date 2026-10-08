@@ -551,15 +551,11 @@ export interface SerializableSessionConfig {
     systemContextInPrompt?: boolean;
     workingDirectory?: string;
     /**
-     * Target repo enlistment this session must run against (git-hydration).
-     * When set, the orchestration stamps a `repo:<repo>` duroxide routing tag
-     * on each runTurn activity so only a repository worker that declares that
-     * tag (via `workerTagFilter`) can dequeue the turn. When OMITTED, the
-     * orchestration instead stamps a `generic` tag so the runTurn routes to the
-     * dedicated generic worker pool (PILOTSWARM_WORKER_TAGS=generic) rather than
-     * being served by any repository worker in `defaultAnd` mode -- which would
-     * run a repo-less turn inside that repo's enlistment. Either way the runTurn
-     * is tagged; only untagged SUPPORT activities are served by any worker.
+     * Target repository the worker workspace lifecycle must prepare before the
+     * turn. Repository selection does not affect worker placement: orchestration
+     * stamps the `generic` Duroxide routing tag so a generic worker dequeues the
+     * turn and clones or hydrates the requested repository. When OMITTED, the
+     * same generic route runs without a repository workspace.
      * DNS-safe short name (e.g. "my-repo", "example-service").
      */
     repo?: string;

@@ -100,7 +100,7 @@ export function registerHandoffActivity(runtime: any, name: keyof typeof HANDOFF
     runtime.registerActivity(HANDOFF_ACTIVITY_NAMES[name], versionedHandler);
 }
 
-// ─── Owner / repo affinity routing ───────────────────────────────
+// ─── Owner / activity affinity routing ───────────────────────────
 
 export type OwnerAffinityPrincipal = Pick<SessionOwnerInfo, "provider" | "subject">;
 
@@ -162,14 +162,14 @@ export function isOwnerScopedRoutingTag(tag: string): boolean {
 /**
  * Resolve the one duroxide tag that must match before a worker can run a turn.
  *
- * This tag is applied LAST on the runTurn path (see the module header): repo
- * and owner isolation outrank the handoff capability tag, which the contract
- * still represents through the versioned activity name.
+ * Repository selection is session metadata consumed by the worker workspace
+ * lifecycle, not worker placement. All cluster turns use the generic route;
+ * owner affinity and model capability remain placement constraints.
  */
 export function runTurnRoutingTag(
     config: Pick<SerializableSessionConfig, "repo" | "ownerAffinity" | "model">,
 ): string {
-    const baseTag = config.repo ? `repo:${config.repo}` : "generic";
+    const baseTag = "generic";
     const routedTag = config.ownerAffinity && config.model
         ? `${baseTag}|${modelCapabilityTag(config.model)}`
         : baseTag;

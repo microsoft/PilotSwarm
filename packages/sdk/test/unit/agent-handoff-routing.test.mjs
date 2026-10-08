@@ -134,7 +134,7 @@ test("new handoff proxies route every critical activity with the capability tag"
     assert.equal(tasks[3].sessionId, "affinity");
     assert.equal(tasks[4].sessionId, "affinity");
     const repoProxy = createSessionProxy(ctx, "child", "affinity", { repo: "sample-repo" }, "agent-handoff-v2");
-    assert.equal(repoProxy.runTurn("work").tag, "repo:sample-repo", "a repo session's turn stays inside its fleet");
+    assert.equal(repoProxy.runTurn("work").tag, "generic", "a repo session is prepared by a generic worker");
     assert.equal(repoProxy.runTurn("work").name, "runTurnV3", "…without losing the handoff contract's activity name");
     assert.equal(manager.listModels().tag, undefined, "unrelated activities retain their existing routing");
 });

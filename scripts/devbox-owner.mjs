@@ -11,9 +11,8 @@
 //     running this devbox and injects it as the worker owner, so the worker
 //     claims owner-scoped work induced for generators this user registered.
 //     Owner alone is a no-op: scopeWorkerTagFilter only applies the owner by
-//     rewriting a concrete tag list. PILOTSWARM_WORKER_TAGS (e.g. repo:myrepo)
-//     must also be set for the owner to take effect. That stays in the env
-//     file so each devbox declares which repo(s) its generators target.
+//     rewriting a concrete tag list. Default PILOTSWARM_WORKER_TAGS to
+//     `generic`, matching run-turn routing; explicit tag lists remain honored.
 //     Skipped if PILOTSWARM_WORKER_OWNER_SUBJECT is already set.
 //
 //  2. Node id. Pins POD_NAME to `devbox-<hostname>` so every restart reuses
@@ -46,9 +45,15 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 
 const PROVIDER = "entra";
+const DEFAULT_WORKER_TAGS = "generic";
 
 function log(message) {
     console.log(`[devbox-owner] ${message}`);
+}
+
+if (!process.env.PILOTSWARM_WORKER_TAGS?.trim()) {
+    process.env.PILOTSWARM_WORKER_TAGS = DEFAULT_WORKER_TAGS;
+    log(`worker tags defaulted to ${DEFAULT_WORKER_TAGS}.`);
 }
 
 // 2. Pin the canonical worker node id so restarts reuse one registration.
@@ -79,13 +84,6 @@ if (process.env.PILOTSWARM_WORKER_OWNER_SUBJECT?.trim()) {
         process.env.PILOTSWARM_WORKER_OWNER_PROVIDER = PROVIDER;
         process.env.PILOTSWARM_WORKER_OWNER_SUBJECT = subject;
         log(`worker owner set to ${PROVIDER}:${subject} (signed-in az identity).`);
-
-        if (!process.env.PILOTSWARM_WORKER_TAGS?.trim()) {
-            log(
-                "WARNING: PILOTSWARM_WORKER_TAGS is not set. Owner has no effect without a tag list; "
-                + "set e.g. PILOTSWARM_WORKER_TAGS=repo:myrepo so the owner scopes a concrete tag.",
-            );
-        }
     } catch (error) {
         log(
             `WARNING: could not resolve signed-in az identity (${error?.message ?? error}). `

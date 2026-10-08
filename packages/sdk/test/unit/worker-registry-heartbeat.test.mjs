@@ -112,7 +112,7 @@ test("graceful shutdown publishes draining whenever a registry catalog exists", 
     assert.equal(instance._catalog, null);
 });
 
-test("owner-scoped repo workers do not advertise global repo serviceability", () => {
+test("owner-scoped generic workers do not advertise repo serviceability", () => {
     const instance = new PilotSwarmWorker({
         store: "sqlite::memory:",
         blobUseManagedIdentity: false,
@@ -129,7 +129,7 @@ test("owner-scoped repo workers do not advertise global repo serviceability", ()
 
     const info = instance._buildRegistrarInfo();
     assert.equal(info.repos, undefined);
-    assert.deepEqual(info.ownerScopedRepos, ["sample-repo"]);
+    assert.equal(info.ownerScopedRepos, undefined);
 });
 
 test("worker heartbeat advertises a compact model capability list", async () => {

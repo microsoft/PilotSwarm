@@ -11,7 +11,7 @@ const owner = {
     displayName: "Alice",
 };
 
-test("portal discovers models from an owner-scoped worker heartbeat", async () => {
+test("portal discovers models from an owner-scoped generic worker heartbeat", async () => {
     const worker = new PilotSwarmWorker({
         store: "sqlite::memory:",
         blobUseManagedIdentity: false,
@@ -73,7 +73,7 @@ test("portal discovers models from an owner-scoped worker heartbeat", async () =
 
     const models = await runtime._modelsForDevbox(owner, "sample-repo", false);
 
-    assert.deepEqual(heartbeat.info.ownerScopedRepos, ["sample-repo"]);
+    assert.equal(heartbeat.info.ownerScopedRepos, undefined);
     assert.equal(heartbeat.info.repos, undefined);
     assert.deepEqual(
         models.map((model) => model.qualifiedName),

@@ -95,8 +95,8 @@ function parseNonNegativeInt(raw: unknown): number | undefined {
  *
  * Tag mode (`PILOTSWARM_WORKER_TAG_MODE`, default `"defaultAnd"`):
  *   - `"defaultAnd"` -> `{ defaultAnd: [...] }` — untagged activities PLUS the
- *     listed tags. This is the correct mode for repo affinity: a session's
- *     turn is a mix of the repo-tagged `runTurn`/`runTurn2` activity and many
+ *     listed tags. This is the correct mode for worker affinity: a session's
+ *     turn is a mix of the tagged `runTurn`/`runTurn2` activity and many
  *     UNTAGGED on-session support activities (hydrate/dehydrate/checkpoint/
  *     updateCmsState/recordSessionEvent/...). A `{ tags: [...] }` worker would
  *     serve only `runTurn` and hang the turn on every support activity, so a
@@ -407,7 +407,7 @@ export class PilotSwarmWorker {
     /**
      * Resolved duroxide activity-routing tag filter (from `workerTagFilter`
      * option / `PILOTSWARM_WORKER_TAGS`). Captured at runtime start so the
-     * heartbeat can advertise this worker's repo affinity in the registry row.
+     * heartbeat can advertise this worker's routing tags in the registry row.
      */
     private _workerTagFilter: PilotSwarmWorkerOptions["workerTagFilter"] | undefined;
     /** Event-loop delay histogram for health reporting (reset each beat). */
@@ -1001,9 +1001,9 @@ export class PilotSwarmWorker {
 
         // Resolve this worker's activity-routing tag filter BEFORE the first
         // heartbeat below, because refreshAgentPackages({force}) triggers the
-        // process-stable registrar info build — which advertises repo affinity
-        // (info.repos / info.routingTags) derived from this filter. Resolving
-        // it afterwards permanently locks repos:null into the registry row.
+        // process-stable registrar info build, which advertises routing tags
+        // derived from this filter. Resolve it first so the registry row does
+        // not permanently capture an empty routing tag list.
         const workerModels = this.sessionManager.configuredWorkerModels();
         const workerTagFilter = addWorkerModelRoutingTags(resolveWorkerTagFilter(
             this.config.workerTagFilter,
@@ -1754,15 +1754,9 @@ export class PilotSwarmWorker {
             configuredProvenance.imageDigest,
             process.env.PILOTSWARM_IMAGE_DIGEST,
         );
-        // Advertise this worker's repo affinity so consumers (e.g. the portal's
-        // serviceable-repo allowlist) can derive which repos have live workers
-        // straight from the registry, instead of a hand-maintained env list.
-        //
-        // The affinity lives only as a duroxide activity-routing tag filter
-        // (workerTagFilter: { defaultAnd: ["repo:<name>"] }) built from
-        // PILOTSWARM_WORKER_TAGS at start — it is NOT otherwise persisted.
-        // Flatten it back into the tag strings and pull out the `repo:` ones so
-        // the row carries both the raw tags and a clean `repos` list.
+        // Advertise this worker's routing tags from the duroxide activity
+        // filter built from PILOTSWARM_WORKER_TAGS. Legacy repository-pinned
+        // workers also retain clean repo lists for registry compatibility.
         //
         // TODO(worker-registry): this reverse-derivation (filter -> tags ->
         // repos) is brittle. Prefer threading the *raw* resolved tag list
