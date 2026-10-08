@@ -1,14 +1,20 @@
 import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
+import {
+    defaultHttpDeps,
+    discoverServerAudience,
+    type HttpDeps,
+} from "./mcp-auth-discovery.js";
 
 export interface McpWorkloadIdentityScopeBinding {
     serverName: string;
-    scope: string;
+    scope: string | "auto";
 }
 
 export interface McpWorkloadIdentityServerConfig {
     type?: unknown;
     url?: unknown;
     command?: unknown;
+    headers?: unknown;
 }
 
 export type McpServerHeadersProvider = () => Promise<
@@ -25,7 +31,7 @@ const BEARER_SCHEME = ["Bear", "er"].join("");
 
 /**
  * Parses comma-delimited deployment bindings in the form
- * `serverName=resource/.default`.
+ * `serverName=resource/.default` or `serverName=auto`.
  */
 export function parseMcpWorkloadIdentityScopes(
     value: unknown,
@@ -60,16 +66,16 @@ export function parseMcpWorkloadIdentityScopes(
                 `MCP workload identity server name is invalid: '${serverName}'.`,
             );
         }
-        if (
+        if (scope !== "auto" && (
             !scope
             || /\s/.test(scope)
             || scope.includes("$")
             || scope.includes("{")
             || scope.includes("}")
             || !scope.endsWith("/.default")
-        ) {
+        )) {
             throw new Error(
-                `MCP workload identity scope for '${serverName}' must be a single Entra scope ending in '/.default'.`,
+                `MCP workload identity scope for '${serverName}' must be 'auto' or a single Entra scope ending in '/.default'.`,
             );
         }
         if (seenNames.has(serverName)) {
@@ -121,16 +127,53 @@ function deploymentMcpUrl(
     return config.url;
 }
 
+function deploymentMcpHeaders(
+    config: McpWorkloadIdentityServerConfig,
+): Record<string, string> {
+    if (
+        config.headers === undefined
+        || config.headers === null
+    ) {
+        return {};
+    }
+    if (
+        typeof config.headers !== "object"
+        || Array.isArray(config.headers)
+    ) {
+        throw new Error(
+            "MCP workload identity server headers must be an object.",
+        );
+    }
+    const headers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(config.headers)) {
+        if (typeof value !== "string") {
+            throw new Error(
+                `MCP workload identity server header '${name}' must be a string.`,
+            );
+        }
+        if (name.toLowerCase() === "authorization") {
+            throw new Error(
+                "MCP workload identity cannot discover an audience for a server with an explicit Authorization header.",
+            );
+        }
+        headers[name] = value;
+    }
+    return headers;
+}
+
 /**
  * Creates fresh worker-owned authorization headers for explicitly mapped,
  * deployment-owned MCP servers. HTTPS is required except for exact Kubernetes
  * Service FQDNs on the cluster-local network. The SessionManager additionally
- * binds each returned header to `expectedUrl` before injecting it.
+ * binds each returned header to `expectedUrl` before injecting it. Bindings
+ * using `auto` discover their Entra scope through the server's RFC 6750 bearer
+ * challenge and RFC 9728 protected-resource metadata.
  */
 export function createMcpWorkloadIdentityHeadersProvider(options: {
     scopeBindings: unknown;
     deploymentMcpServers: Record<string, McpWorkloadIdentityServerConfig>;
     credential?: TokenCredential;
+    http?: HttpDeps;
     trace?: (message: string) => void;
 }): McpServerHeadersProvider | undefined {
     const bindings = parseMcpWorkloadIdentityScopes(options.scopeBindings);
@@ -145,23 +188,70 @@ export function createMcpWorkloadIdentityHeadersProvider(options: {
                 `MCP workload identity server '${binding.serverName}' is not present in deployment-owned DEFAULT_MCP_JSON.`,
             );
         }
+        const config = options.deploymentMcpServers[binding.serverName];
         return {
             ...binding,
             expectedUrl: deploymentMcpUrl(
                 binding.serverName,
-                options.deploymentMcpServers[binding.serverName],
+                config,
             ),
+            headers: binding.scope === "auto"
+                ? deploymentMcpHeaders(config)
+                : {},
         };
     });
 
     const credential = options.credential ?? new DefaultAzureCredential();
+    const http = options.http ?? defaultHttpDeps();
+    const discoveredScopes = new Map<string, Promise<string>>();
     options.trace?.(
         `MCP workload identity enabled for deployment servers: ${resolvedBindings.map(({ serverName }) => serverName).join(", ")}`,
     );
 
     return async () => {
+        const bindingScopes = await Promise.all(
+            resolvedBindings.map(async (binding) => {
+                if (binding.scope !== "auto") {
+                    return { ...binding, resolvedScope: binding.scope };
+                }
+                let discovery = discoveredScopes.get(binding.serverName);
+                if (!discovery) {
+                    discovery = discoverServerAudience(
+                        binding.expectedUrl,
+                        binding.headers,
+                        http,
+                        options.trace ?? (() => {}),
+                    ).then((audience) => {
+                        if (!audience) {
+                            throw new Error(
+                                `MCP workload identity audience discovery for '${binding.serverName}' returned no bearer scope.`,
+                            );
+                        }
+                        if (!audience.scope.endsWith("/.default")) {
+                            throw new Error(
+                                `MCP workload identity audience discovery for '${binding.serverName}' returned a non-default scope '${audience.scope}'.`,
+                            );
+                        }
+                        options.trace?.(
+                            `MCP workload identity discovered scope '${audience.scope}' for '${binding.serverName}'.`,
+                        );
+                        return audience.scope;
+                    });
+                    discoveredScopes.set(binding.serverName, discovery);
+                    discovery.catch(() => {
+                        if (discoveredScopes.get(binding.serverName) === discovery) {
+                            discoveredScopes.delete(binding.serverName);
+                        }
+                    });
+                }
+                return {
+                    ...binding,
+                    resolvedScope: await discovery,
+                };
+            }),
+        );
         const uniqueScopes = [
-            ...new Set(resolvedBindings.map(({ scope }) => scope)),
+            ...new Set(bindingScopes.map(({ resolvedScope }) => resolvedScope)),
         ];
         const tokenEntries = await Promise.all(
             uniqueScopes.map(async (scope) => {
@@ -186,14 +276,18 @@ export function createMcpWorkloadIdentityHeadersProvider(options: {
         const tokensByScope = new Map(tokenEntries);
 
         return Object.fromEntries(
-            resolvedBindings.map(({ serverName, scope, expectedUrl }) => [
+            bindingScopes.map(({
+                serverName,
+                resolvedScope,
+                expectedUrl,
+            }) => [
                 serverName,
                 {
                     expectedUrl,
                     headers: {
                         Authorization: [
                             BEARER_SCHEME,
-                            tokensByScope.get(scope),
+                            tokensByScope.get(resolvedScope),
                         ].join(" "),
                     },
                 },

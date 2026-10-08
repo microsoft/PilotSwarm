@@ -39,7 +39,7 @@
  *   PILOTSWARM_EXTENSION_MODULES    — Comma-separated modules; each exports register(worker), called
  *                                     before start (for example a session workspace provider)
  *   DEFAULT_MCP_JSON                — Deployment-owned remote MCP server catalog
- *   MCP_WORKLOAD_IDENTITY_SCOPES    — Comma-separated server=scope bindings for worker identity
+ *   MCP_WORKLOAD_IDENTITY_SCOPES    — Comma-separated server=scope or server=auto bindings for worker identity
  *
  * Usage:
  *   node --env-file=.env.remote examples/worker.js
