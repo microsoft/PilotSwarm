@@ -39,14 +39,23 @@ export {
     WorkflowTransitionRegistry,
     compileAndRegisterWorkflowYaml,
     compileWorkflowYaml,
+    executeWorkflowTransitionRegistration,
+    resolveWorkflowTemplate,
+    workflowCompiledManifestSha256,
 } from "./workflow-orchestration/compiler.js";
 export {
     compileAndRegisterWorkflowPackageYaml,
     compileWorkflowPackageSnapshotYaml,
     compileWorkflowPackageYaml,
     loadWorkflowTransitionRegistry,
+    loadWorkflowTransitionRegistryFromSnapshot,
+    loadWorkflowTransitionRegistrationFromSnapshot,
+    materializeWorkflowPackageArtifactSnapshot,
     materializeWorkflowPackageSnapshot,
 } from "./workflow-orchestration/package-loader.js";
+export {
+    CmsWorkflowDefinitionProvider,
+} from "./workflow-orchestration/definition-provider.js";
 export {
     resolveWorkflowGitPackage,
 } from "./workflow-orchestration/git-source.js";
@@ -83,7 +92,15 @@ export type {
     WorkflowTransitionReference,
     WorkflowTransitionRegistration,
 } from "./workflow-orchestration/compiler.js";
-export type { WorkflowPackageSnapshot } from "./workflow-orchestration/package-loader.js";
+export type {
+    WorkflowPackageMaterialization,
+    WorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+export type {
+    ExecuteWorkflowTransitionInput,
+    ResolvedWorkflowExecutionPlan,
+    WorkflowDefinitionProvider,
+} from "./workflow-orchestration/definition-provider.js";
 export type {
     ResolvedWorkflowGitPackage,
     ResolvedWorkflowGitSource,

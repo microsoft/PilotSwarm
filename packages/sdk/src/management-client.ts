@@ -126,6 +126,9 @@ import {
     materializeWorkflowPackageSnapshot,
 } from "./workflow-orchestration/package-loader.js";
 import {
+    workflowCompiledManifestSha256,
+} from "./workflow-orchestration/compiler.js";
+import {
     resolveWorkflowGitPackage,
     type WorkflowGitSource,
 } from "./workflow-orchestration/git-source.js";
@@ -1449,9 +1452,7 @@ export class PilotSwarmManagementClient {
             { pinned: true },
         );
         const sourceSha256 = createHash("sha256").update(yaml, "utf8").digest("hex");
-        const compiledSha256 = createHash("sha256")
-            .update(JSON.stringify(compiled.manifest), "utf8")
-            .digest("hex");
+        const compiledSha256 = workflowCompiledManifestSha256(compiled.manifest);
         return this._catalog!.registerWorkflowDefinition({
             definitionId: randomUUID(),
             sourceYaml: yaml,

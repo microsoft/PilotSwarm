@@ -281,19 +281,20 @@ handler identities. Workflow code does not directly control durable history,
 invocation admission, retries, completion-policy enforcement, or lifecycle
 storage.
 
-### Initial compiler and in-memory graph
+### Initial compiler and execution plans
 
 The initial `v1alpha1` compiler parses YAML agent and terminal states. The
 package loader resolves mandatory package-relative transition module exports
 into an internal `WorkflowTransitionRegistry`, and the compiler lowers the
 result into the same `InMemoryWorkflowGraph` used by the controller. It
-supports one-shot package-local agent states, terminal outputs, and exact-value
+supports one-shot named-agent states, terminal outputs, and exact-value
 references rooted at `inputs`, `configuration`, or prior
 `states.<stateId>.result`. Other state types remain future work.
 
 Compilation produces two related outputs:
 
-- an executable process-local graph used by the current controller; and
+- an executable process-local graph retained for unit tests and embedded use;
+  and
 - a normalized, data-only manifest suitable for durable registration.
 
 `PilotSwarmManagementClient.registerWorkflowDefinition(yaml, { packageRoot })`
@@ -399,12 +400,17 @@ await client.createWorkflowSession({
 });
 ```
 
-The executable graph registry remains process-local: it is suitable for
-controller unit tests and early runtime experiments, but it is not durable
-across worker restarts and cannot coordinate executable handlers across a
-worker fleet. The durable definition registry now stores source and a normalized compiled
-manifest; loading that manifest with its pinned package handler registrations
-into the controller remains the next execution-path step.
+The executable graph registry remains process-local and is retained for
+controller unit tests and embedded use. The same workflow orchestration adds a
+durable production path for registered definitions: a definition-provider activity loads the registered
+compiled manifest, the generic controller interprets that serializable plan,
+and transition activities execute hash-verified module exports from the pinned
+package artifact. Duroxide records both activity results, so replay does not
+depend on process-local graph registration. A user-facing start API for
+registered definitions remains a separate change. In this initial runtime
+slice, agent names resolve through the worker's installed agent catalog;
+loading agent definitions, skills, and MCP configuration from the workflow
+package is a later portability extension.
 
 Each nonterminal state admission receives a workflow-scoped,
 monotonically-increasing `executionSequence`. For an agent state, the durable

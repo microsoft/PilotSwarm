@@ -37,7 +37,7 @@ test("createWorkflowSession persists a non-conversational child and returns its 
     const workflow = await client.createWorkflowSession({
         sessionId: "workflow-1",
         parentSessionId: "parent-1",
-        definition: { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+        definition: { kind: "registered", definitionId: "definition-1" },
         inputs: { target: "staging" },
     });
 
@@ -51,7 +51,7 @@ test("createWorkflowSession persists a non-conversational child and returns its 
             visibility: null,
             creationConfig: {
                 workflow: {
-                    definition: { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+                    definition: { kind: "registered", definitionId: "definition-1" },
                     inputs: { target: "staging" },
                 },
             },
@@ -63,7 +63,7 @@ test("createWorkflowSession persists a non-conversational child and returns its 
         input: {
             sessionId: "workflow-1",
             parentSessionId: "parent-1",
-            definition: { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+            definition: { kind: "registered", definitionId: "definition-1" },
             inputs: { target: "staging" },
         },
         version: "1.0.0",

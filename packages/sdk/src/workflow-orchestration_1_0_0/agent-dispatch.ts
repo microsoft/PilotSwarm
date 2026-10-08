@@ -56,7 +56,10 @@ export function createAgentStateDispatchPlan(input: {
     workflowInputs: Record<string, unknown>;
     latestStateOutputs: Record<string, WorkflowStateExecutionResult>;
     executionHistory: WorkflowExecutionRecord[];
-    state: InMemoryWorkflowAgentState;
+    state: Pick<
+        InMemoryWorkflowAgentState,
+        "agent" | "allowedOutcomes" | "prompt"
+    >;
 }): AgentStateDispatchPlan {
     const promptContext = deepFreeze({
         sessionId: input.workflowSessionId,

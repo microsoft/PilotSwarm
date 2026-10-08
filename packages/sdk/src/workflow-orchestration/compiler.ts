@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import type { WorkflowDefinitionSource } from "../types.js";
 import {
@@ -126,6 +127,29 @@ export interface CompiledWorkflowYaml {
     configuration: Readonly<JsonObject>;
 }
 
+function canonicalizeJson(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(item => canonicalizeJson(item));
+    }
+    if (isObject(value)) {
+        return Object.fromEntries(
+            Object.keys(value)
+                .sort()
+                .filter(key => value[key] !== undefined)
+                .map(key => [key, canonicalizeJson(value[key])]),
+        );
+    }
+    return value;
+}
+
+export function workflowCompiledManifestSha256(
+    manifest: CompiledWorkflowManifest,
+): string {
+    return createHash("sha256")
+        .update(JSON.stringify(canonicalizeJson(manifest)), "utf8")
+        .digest("hex");
+}
+
 function compilerError(message: string, code = "WORKFLOW_COMPILER_INVALID"): Error {
     return Object.assign(new Error(message), { code });
 }
@@ -247,7 +271,7 @@ function validateTemplate(value: unknown, path: string, stateIds: ReadonlySet<st
     }
 }
 
-function resolveTemplate(
+export function resolveWorkflowTemplate(
     value: unknown,
     path: string,
     context: {
@@ -280,17 +304,72 @@ function resolveTemplate(
         );
     }
     if (Array.isArray(value)) {
-        return value.map((item, index) => resolveTemplate(item, `${path}[${index}]`, context));
+        return value.map((item, index) => resolveWorkflowTemplate(item, `${path}[${index}]`, context));
     }
     if (isObject(value)) {
         return Object.fromEntries(
             Object.entries(value).map(([key, nested]) => [
                 key,
-                resolveTemplate(nested, `${path}.${key}`, context),
+                resolveWorkflowTemplate(nested, `${path}.${key}`, context),
             ]),
         );
     }
     return value;
+}
+
+export function executeWorkflowTransitionRegistration(input: {
+    graphId: string;
+    metadata: WorkflowPackageMetadata;
+    configuration: JsonObject;
+    registration: WorkflowTransitionRegistration;
+    context: WorkflowTransitionContext;
+}): WorkflowAdvanceDirective {
+    const directive = input.registration.handler(deepFreeze({
+        graphId: input.graphId,
+        metadata: { ...input.metadata },
+        configuration: input.configuration,
+        workflowInputs: input.context.workflowInputs,
+        currentStateId: input.context.currentStateId,
+        stateOutcome: input.context.stateOutcome,
+        stateOutput: input.context.stateOutput,
+        completion: {},
+        latestStateOutputs: input.context.latestStateOutputs,
+        executionHistory: input.context.executionHistory,
+    }));
+    if (
+        directive
+        && typeof (directive as unknown as PromiseLike<unknown>).then === "function"
+    ) {
+        throw compilerError(
+            `Transition handler for state '${input.context.currentStateId}' returned a promise; transition handlers must be synchronous.`,
+            "WORKFLOW_TRANSITION_ASYNC",
+        );
+    }
+    if (!isObject(directive) || typeof directive.kind !== "string") {
+        throw compilerError(
+            `Transition handler for state '${input.context.currentStateId}' must return a transition directive.`,
+            "WORKFLOW_TRANSITION_RESULT_INVALID",
+        );
+    }
+    if (directive.kind === "resume-producer") {
+        throw compilerError(
+            `Transition handler for state '${input.context.currentStateId}' returned resume-producer, which is not supported for one-shot states.`,
+            "WORKFLOW_TRANSITION_DIRECTIVE_UNSUPPORTED",
+        );
+    }
+    if (directive.kind !== "advance") {
+        throw compilerError(
+            `Transition handler for state '${input.context.currentStateId}' returned unknown directive '${directive.kind}'.`,
+            "WORKFLOW_TRANSITION_RESULT_INVALID",
+        );
+    }
+    return {
+        kind: "advance",
+        target: requireString(
+            directive.target,
+            `Transition handler for state '${input.context.currentStateId}' advance target`,
+        ),
+    };
 }
 
 function transitionFromRegistration(input: {
@@ -299,51 +378,10 @@ function transitionFromRegistration(input: {
     configuration: JsonObject;
     registration: WorkflowTransitionRegistration;
 }): (context: WorkflowTransitionContext) => string {
-    return context => {
-        const directive = input.registration.handler(deepFreeze({
-            graphId: input.graphId,
-            metadata: { ...input.metadata },
-            configuration: input.configuration,
-            workflowInputs: context.workflowInputs,
-            currentStateId: context.currentStateId,
-            stateOutcome: context.stateOutcome,
-            stateOutput: context.stateOutput,
-            completion: {},
-            latestStateOutputs: context.latestStateOutputs,
-            executionHistory: context.executionHistory,
-        }));
-        if (
-            directive
-            && typeof (directive as unknown as PromiseLike<unknown>).then === "function"
-        ) {
-            throw compilerError(
-                `Transition handler for state '${context.currentStateId}' returned a promise; transition handlers must be synchronous.`,
-                "WORKFLOW_TRANSITION_ASYNC",
-            );
-        }
-        if (!isObject(directive) || typeof directive.kind !== "string") {
-            throw compilerError(
-                `Transition handler for state '${context.currentStateId}' must return a transition directive.`,
-                "WORKFLOW_TRANSITION_RESULT_INVALID",
-            );
-        }
-        if (directive.kind === "resume-producer") {
-            throw compilerError(
-                `Transition handler for state '${context.currentStateId}' returned resume-producer, which is not supported for one-shot states.`,
-                "WORKFLOW_TRANSITION_DIRECTIVE_UNSUPPORTED",
-            );
-        }
-        if (directive.kind !== "advance") {
-            throw compilerError(
-                `Transition handler for state '${context.currentStateId}' returned unknown directive '${directive.kind}'.`,
-                "WORKFLOW_TRANSITION_RESULT_INVALID",
-            );
-        }
-        return requireString(
-            directive.target,
-            `Transition handler for state '${context.currentStateId}' advance target`,
-        );
-    };
+    return context => executeWorkflowTransitionRegistration({
+        ...input,
+        context,
+    }).target;
 }
 
 export class WorkflowTransitionRegistry {
@@ -493,7 +531,7 @@ export function compileWorkflowYaml(
                 summary,
                 ...(Object.prototype.hasOwnProperty.call(state, "output")
                     ? {
-                        result: context => resolveTemplate(
+                        result: context => resolveWorkflowTemplate(
                             outputTemplate,
                             `${path}.output`,
                             {
@@ -566,7 +604,7 @@ export function compileWorkflowYaml(
             allowedOutcomes: outcomes,
             allowedTargets: [...registration.allowedTargets],
             prompt: context => {
-                const resolvedInput = resolveTemplate(
+                const resolvedInput = resolveWorkflowTemplate(
                     inputTemplate,
                     `${path}.input`,
                     {

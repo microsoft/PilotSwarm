@@ -1,5 +1,14 @@
 import type { SessionCatalog } from "../cms.js";
+import type { ArtifactStore } from "../session-store.js";
 import type { WorkflowSessionResult } from "../types.js";
+import type {
+    ExecuteWorkflowTransitionInput,
+    ResolvedWorkflowExecutionPlan,
+    WorkflowDefinitionProvider,
+} from "./definition-provider.js";
+import {
+    CmsWorkflowDefinitionProvider,
+} from "./definition-provider.js";
 import {
     resolveInMemoryWorkflowGraph,
     type WorkflowExecutionRecord,
@@ -11,12 +20,18 @@ import {
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
     RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
 } from "../workflow-orchestration_1_0_0/contracts.js";
+import {
+    EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+    RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
+} from "./registered-contracts.js";
 
 export {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
     RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
+    EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+    RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
 };
 
 export interface ExecuteWorkflowStateActivityInput {
@@ -53,6 +68,12 @@ export interface AcceptWorkflowStateResultActivityInput {
 }
 
 export interface WorkflowActivityHandlers {
+    resolveDefinition(
+        source: import("../types.js").WorkflowDefinitionSource,
+    ): Promise<ResolvedWorkflowExecutionPlan>;
+    executeTransition(
+        input: ExecuteWorkflowTransitionInput,
+    ): ReturnType<WorkflowDefinitionProvider["executeTransition"]>;
     recordStateExecution(input: RecordWorkflowStateExecutionActivityInput): Promise<void>;
     executeState(input: ExecuteWorkflowStateActivityInput): Promise<WorkflowStateExecutionResult>;
     acceptStateResult(input: AcceptWorkflowStateResultActivityInput): Promise<WorkflowStateExecutionResult>;
@@ -70,8 +91,29 @@ export function createWorkflowActivityHandlers(
         | "completeWorkflowProjection"
         | "recordWorkflowExecution"
     > | null,
+    definitionProvider: WorkflowDefinitionProvider | null = null,
 ): WorkflowActivityHandlers {
     return {
+        async resolveDefinition(source) {
+            if (!definitionProvider) {
+                throw workflowActivityError(
+                    "Registered workflow definitions require a configured definition provider.",
+                    "WORKFLOW_DEFINITION_PROVIDER_REQUIRED",
+                );
+            }
+            return definitionProvider.resolve(source);
+        },
+
+        async executeTransition(input) {
+            if (!definitionProvider) {
+                throw workflowActivityError(
+                    "Registered workflow transitions require a configured definition provider.",
+                    "WORKFLOW_DEFINITION_PROVIDER_REQUIRED",
+                );
+            }
+            return definitionProvider.executeTransition(input);
+        },
+
         async recordStateExecution(input) {
             if (!catalog) {
                 throw workflowActivityError(
@@ -171,10 +213,25 @@ export function registerWorkflowActivities(
         SessionCatalog,
         | "acceptWorkflowExecution"
         | "completeWorkflowProjection"
+        | "getWorkflowDefinition"
         | "recordWorkflowExecution"
     > | null,
+    artifactStore: ArtifactStore | null = null,
 ): void {
-    const handlers = createWorkflowActivityHandlers(catalog);
+    const definitionProvider = catalog && artifactStore
+        ? new CmsWorkflowDefinitionProvider(catalog, artifactStore)
+        : null;
+    const handlers = createWorkflowActivityHandlers(catalog, definitionProvider);
+    runtime.registerActivity(
+        RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
+        async (_activityContext, input: { source: import("../types.js").WorkflowDefinitionSource }) =>
+            handlers.resolveDefinition(input.source),
+    );
+    runtime.registerActivity(
+        EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+        async (_activityContext, input: ExecuteWorkflowTransitionInput) =>
+            handlers.executeTransition(input),
+    );
     runtime.registerActivity(
         RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
         async (_activityContext, input: RecordWorkflowStateExecutionActivityInput) =>

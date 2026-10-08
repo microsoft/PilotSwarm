@@ -13,6 +13,9 @@ import {
     routeAgentStateDispatch,
 } from "./agent-dispatch.js";
 import {
+    durableRegisteredWorkflowSessionOrchestration,
+} from "../workflow-orchestration/registered-controller.js";
+import {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
@@ -80,8 +83,9 @@ function requireDeclaredOutcome(
 /**
  * First executable workflow controller.
  *
- * Graphs are resolved from the temporary process-local registry. Definition
- * compilation and durable graph storage are intentionally deferred.
+ * In-memory definitions resolve through the process-local graph registry.
+ * Registered definitions resolve their persisted compiled plan through durable
+ * activities without changing the orchestration version.
  *
  * @internal
  */
@@ -94,6 +98,13 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
     },
     input: WorkflowOrchestrationInput,
 ): Generator<unknown, WorkflowSessionResult, unknown> {
+    if (input.definition.kind === "registered") {
+        return yield* durableRegisteredWorkflowSessionOrchestration(ctx, {
+            ...input,
+            definition: input.definition,
+        });
+    }
+
     if (input.definition.kind !== "in-memory") {
         throw workflowControllerError(
             `Workflow definition kind '${input.definition.kind}' requires the workflow compiler.`,

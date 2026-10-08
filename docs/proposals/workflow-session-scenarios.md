@@ -785,15 +785,18 @@ The feature branch already provides:
 | Top-level SDK creation | Implemented |
 | Conversational `spawn_workflow` | Implemented as durable action |
 | Parent `subWorkflows`, check, wait, and result consumption | Implemented |
-| Dedicated workflow orchestration version boundary | Implemented; `1.0.0` runs the initial controller |
-| Basic workflow controller | Implemented for process-local in-memory graphs |
+| Dedicated workflow orchestration version boundary | Implemented as `1.0.0`; definition kinds select process-local or registered compiled execution without another version |
+| Basic workflow controller | Implemented for process-local graphs and persisted compiled manifests |
 | One-shot agent-state dispatch | Implemented for named agents with runtime-bound structured result submission |
 | Authoritative execution records and current projection | Implemented in CMS migration `0083` |
 | Definition compiler and durable graph registry | Initial `v1alpha1` compiler implemented; migration `0084` stores authored YAML, Git provenance, package artifact identity, and one normalized compiled-manifest snapshot |
 | Git-backed definition registration API | Implemented as an authenticated `fleet:admin` REST operation with allowlisted repository resolution, immutable commit pinning, and definition lookup |
 
 The initial controller accepts an `in-memory` definition that names a graph
-registered in the worker process. The compiler now parses the first
+registered in the worker process. The same workflow orchestration additionally
+accepts a registered definition ID, resolves its persisted compiled manifest
+through a durable provider activity, and interprets that data-only execution
+plan without requiring process-local graph registration. The compiler parses the first
 `v1alpha1` subset, resolves mandatory package-relative transition exports, and
 registers its output through that same graph boundary. Activity states execute
 behind durable activities. Agent states allocate a monotonically increasing
@@ -816,9 +819,10 @@ ref to a commit, uploads the canonical package tarball under a pinned
 content-addressed artifact name, and persists both requested and resolved
 source identities. It deliberately does not copy `pg_durable`'s per-node table
 until PilotSwarm has a concrete node-level query or mutation requirement.
-Duroxide history still owns the running cursor and replay. Runtime loading of a
-pinned definition with its package-owned handlers is not yet connected to the
-controller.
+Duroxide history still owns the running cursor and replay. Registered
+transition decisions execute through durable activities that load
+hash-verified module exports from the pinned package artifact. A user-facing
+REST start operation remains separate from this internal execution path.
 
 ### 4.2 Definition subsystem
 
@@ -827,15 +831,15 @@ Continue the definition subsystem with:
 - resolving packaged and inline sources;
 - resolving and hashing agent definitions, prompts, and transition modules;
 - validating schema, references, expressions, and bounds;
-- loading registered definitions and their pinned transition modules into the
-  controller;
 - rejecting transition-module imports or capabilities that violate
   deterministic execution;
 - rejecting unsupported nodes, missing outcomes, invalid targets, and cycles.
 
 Git-backed sources already publish content-addressed package snapshots through
 the artifact layer, pin mutable refs to commits, and expose authenticated
-registration and lookup over HTTP.
+registration and lookup over HTTP. The controller now loads registered
+compiled manifests and executes their pinned transition modules through
+provider-backed activities.
 
 Packaged and inline sources use the same compiler.
 Runtime-generated definitions, if admitted, also use this compiler and receive

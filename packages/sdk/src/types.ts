@@ -540,6 +540,7 @@ export type SessionKind = "agent" | "workflow";
 export type WorkflowDefinitionSource =
     | { kind: "package"; packageName: string; workflowName: string; version?: string }
     | { kind: "inline"; yaml: string }
+    | { kind: "registered"; definitionId: string }
     | { kind: "in-memory"; graphId: string };
 
 /** Additive creation contract for a controller-backed, non-conversational session. */

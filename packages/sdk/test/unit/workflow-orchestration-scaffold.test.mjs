@@ -18,7 +18,9 @@ test("workflow orchestration has an independent durable name and version registr
     );
 });
 
-test("workflow orchestration registry points to the initial controller", () => {
-    const [{ handler }] = WORKFLOW_SESSION_ORCHESTRATION_REGISTRY;
-    assert.equal(handler, durableWorkflowSessionOrchestration_1_0_0);
+test("workflow orchestration registry preserves the initial controller", () => {
+    assert.equal(
+        WORKFLOW_SESSION_ORCHESTRATION_REGISTRY[0].handler,
+        durableWorkflowSessionOrchestration_1_0_0,
+    );
 });

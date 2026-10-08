@@ -54,9 +54,12 @@ function requireString(value: unknown, pathLabel: string): string {
     return value.trim();
 }
 
-export interface WorkflowPackageSnapshot {
+export interface WorkflowPackageMaterialization {
     root: string;
     packageSha256: string;
+}
+
+export interface WorkflowPackageSnapshot extends WorkflowPackageMaterialization {
     artifactTarGz: Buffer;
 }
 
@@ -82,7 +85,34 @@ export async function materializeWorkflowPackageSnapshot(
             { cause },
         );
     }
-    const packageSha256 = packed.sha256;
+    return materializeWorkflowPackageArtifactSnapshot(packed.targz, packed.sha256);
+}
+
+export async function materializeWorkflowPackageArtifactSnapshot(
+    artifactTarGz: Buffer,
+    expectedPackageSha256: string,
+): Promise<WorkflowPackageSnapshot> {
+    let packageSha256: string;
+    try {
+        packageSha256 = agentPackageTarSha256(artifactTarGz);
+    } catch (cause) {
+        throw Object.assign(
+            packageError(
+                "Workflow package artifact is not a valid canonical package archive.",
+                "WORKFLOW_PACKAGE_ARTIFACT_INVALID",
+            ),
+            { cause },
+        );
+    }
+    if (
+        !/^[a-f0-9]{64}$/.test(expectedPackageSha256)
+        || packageSha256 !== expectedPackageSha256
+    ) {
+        throw packageError(
+            "Workflow package artifact does not match its registered package identity.",
+            "WORKFLOW_PACKAGE_ARTIFACT_HASH_MISMATCH",
+        );
+    }
     const snapshotsRoot = path.join(tmpdir(), "pilotswarm-workflow-packages");
     const snapshotRoot = path.join(snapshotsRoot, packageSha256);
     const existingSnapshot = await stat(snapshotRoot).catch(() => null);
@@ -93,7 +123,7 @@ export async function materializeWorkflowPackageSnapshot(
             `${packageSha256}-${randomUUID()}`,
         );
         try {
-            extractAgentPackageTarGz(packed.targz, candidateRoot);
+            extractAgentPackageTarGz(artifactTarGz, candidateRoot);
             await rename(candidateRoot, snapshotRoot).catch(async error => {
                 if (!await stat(snapshotRoot).catch(() => null)) throw error;
             });
@@ -107,10 +137,7 @@ export async function materializeWorkflowPackageSnapshot(
         );
     }
     const snapshotPacked = packAgentPackage(snapshotRoot);
-    if (
-        snapshotPacked.sha256 !== packageSha256
-        || agentPackageTarSha256(packed.targz) !== packageSha256
-    ) {
+    if (snapshotPacked.sha256 !== packageSha256) {
         throw packageError(
             `Workflow package snapshot '${packageSha256}' failed content verification.`,
             "WORKFLOW_PACKAGE_SNAPSHOT_INVALID",
@@ -119,7 +146,7 @@ export async function materializeWorkflowPackageSnapshot(
     return {
         root: snapshotRoot,
         packageSha256,
-        artifactTarGz: packed.targz,
+        artifactTarGz: Buffer.from(artifactTarGz),
     };
 }
 
@@ -209,7 +236,7 @@ async function resolvePackageModule(packageRoot: string, modulePath: string): Pr
 }
 
 async function loadRegistration(
-    snapshot: WorkflowPackageSnapshot,
+    snapshot: WorkflowPackageMaterialization,
     reference: WorkflowTransitionReference,
 ): Promise<WorkflowTransitionRegistration> {
     const resolvedModule = await resolvePackageModule(snapshot.root, reference.module);
@@ -220,6 +247,7 @@ async function loadRegistration(
             "WORKFLOW_TRANSITION_MODULE_NOT_FOUND",
         );
     }
+
     const bytes = await readFile(resolvedModule);
     const moduleSha256 = createHash("sha256").update(bytes).digest("hex");
     const moduleUrl = pathToFileURL(resolvedModule);
@@ -251,6 +279,13 @@ async function loadRegistration(
     };
 }
 
+export async function loadWorkflowTransitionRegistrationFromSnapshot(
+    snapshot: WorkflowPackageMaterialization,
+    reference: WorkflowTransitionReference,
+): Promise<WorkflowTransitionRegistration> {
+    return loadRegistration(snapshot, reference);
+}
+
 export async function loadWorkflowTransitionRegistry(
     yaml: string,
     packageRoot: string,
@@ -259,7 +294,7 @@ export async function loadWorkflowTransitionRegistry(
     return loadWorkflowTransitionRegistryFromSnapshot(yaml, snapshot);
 }
 
-async function loadWorkflowTransitionRegistryFromSnapshot(
+export async function loadWorkflowTransitionRegistryFromSnapshot(
     yaml: string,
     snapshot: WorkflowPackageSnapshot,
 ): Promise<WorkflowTransitionRegistry> {

@@ -940,7 +940,7 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
-        registerWorkflowActivities(this.runtime, this._catalog);
+        registerWorkflowActivities(this.runtime, this._catalog, this.artifactStore);
         if (this._catalog) {
             this.registerTools([createSubmitWorkflowResultTool({
                 catalog: this._catalog,
