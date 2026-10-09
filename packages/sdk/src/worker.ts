@@ -13,6 +13,12 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
+import {
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+} from "./workflow-orchestration-registry.js";
+import { registerWorkflowActivities } from "./workflow-orchestration/activities.js";
+import { createSubmitWorkflowResultTool } from "./workflow-orchestration/result-tool.js";
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
@@ -31,7 +37,6 @@ import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
-import { createWorkflowRunLifecycleTools } from "./workflow-run-lifecycle-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, DEFAULT_TURN_INACTIVITY_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
@@ -1156,6 +1161,25 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
+        for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
+            this.runtime.registerOrchestrationVersioned(
+                WORKFLOW_SESSION_ORCHESTRATION_NAME,
+                registration.version,
+                registration.handler,
+            );
+        }
+        registerWorkflowActivities(
+            this.runtime,
+            this._catalog,
+            this.artifactStore,
+            this.config.workflowStateProviders ?? null,
+        );
+        if (this._catalog) {
+            this.registerTools([createSubmitWorkflowResultTool({
+                catalog: this._catalog,
+                duroxideClient: new Client(this._provider),
+            })]);
+        }
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
@@ -1168,7 +1192,6 @@ export class PilotSwarmWorker {
                 storeUrl: storage.duroxide.url,
             });
             this.registerTools(sweeperTools);
-            this.registerTools(createWorkflowRunLifecycleTools(this._catalog));
         }
 
         // Auto-register artifact tools (blob storage or local filesystem)

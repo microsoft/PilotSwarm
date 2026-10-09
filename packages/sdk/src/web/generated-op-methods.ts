@@ -8,6 +8,7 @@
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
     "adoptLegacySystemGitHubCopilotKey",
+    "answerWorkflowQuestion",
     "assignSessionsToGroup",
     "cancelPendingMessage",
     "cancelSession",
@@ -25,7 +26,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "createSessionGroup",
     "createWorkflowDefinition",
     "createWorkflowGenerator",
-    "createWorkflowRun",
     "deleteAgentPackage",
     "deleteArtifact",
     "deleteFact",
@@ -37,7 +37,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteSession",
     "deleteSessionGroup",
     "deleteWorkflowGenerator",
-    "deleteWorkflowRun",
     "downloadArtifact",
     "exportExecutionHistory",
     "factsCapabilities",
@@ -74,6 +73,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getProviderUsageAgents",
     "getProviderUsageGrid",
     "getProviderUsageSummary",
+    "getRegisteredWorkflowDefinition",
     "getSession",
     "getSessionAccess",
     "getSessionCreationPolicy",
@@ -101,9 +101,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getUserStats",
     "getWorkerCount",
     "getWorkerTimeline",
+    "getWorkflow",
     "getWorkflowDefinition",
     "getWorkflowGenerator",
-    "getWorkflowRun",
     "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
@@ -130,16 +130,10 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionWorkspaceFolders",
     "listWorkers",
     "listWorkflowDefinitions",
+    "listWorkflowExecutions",
     "listWorkflowGeneratorCycles",
-    "listWorkflowGeneratorRuns",
     "listWorkflowGenerators",
     "listWorkflowGeneratorsPage",
-    "listWorkflowRunJournal",
-    "listWorkflowRuns",
-    "listWorkflowRunSessions",
-    "listWorkflowRunsPage",
-    "listWorkflowRunStateRuns",
-    "listWorkflowRunWaits",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
@@ -148,6 +142,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readCanvasKv",
     "readFacts",
     "regenerateSession",
+    "registerWorkflowDefinition",
     "removeCanvasShareLink",
     "removeProviderLimit",
     "renameSession",
@@ -188,9 +183,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setSystemSessionModel",
     "setUserFeatureFlag",
     "setWorkflowGeneratorDefinition",
-    "setWorkflowRunWaitConditionOverride",
     "similarFacts",
     "startFactsEmbedder",
+    "startWorkflow",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
@@ -224,6 +219,17 @@ export interface ManagementOps {
      */
     adoptLegacySystemGitHubCopilotKey(params?: {
         name?: any;
+    }): Promise<any>;
+
+    /**
+     * Answer the workflow's currently pending durable question.
+     * @remarks `POST /management/workflows/:sessionId/questions/:executionSequence/answer` — access: `session:write`
+     */
+    answerWorkflowQuestion(params: {
+        sessionId: string;
+        executionSequence: string;
+        outcome?: any;
+        output?: any;
     }): Promise<any>;
 
     /**
@@ -406,16 +412,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Start one service-owned durable Workflow Run using the immutable Workflow Definition's entry state and affinities.
-     * @remarks `POST /workflow-runs` — access: `workflow-run:create`
-     */
-    createWorkflowRun(params?: {
-        workflowDefinitionId?: any;
-        input?: any;
-        workflowRunKey?: any;
-    }): Promise<any>;
-
-    /**
      * Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn. `scope` picks which same-named copy.
      * @remarks `DELETE /agent-packages/:name` — access: `authed`
      */
@@ -509,14 +505,6 @@ export interface ManagementOps {
      */
     deleteWorkflowGenerator(params: {
         workflowGeneratorId: string;
-    }): Promise<any>;
-
-    /**
-     * Logically delete one authorized Workflow Run and terminate its sessions.
-     * @remarks `DELETE /workflow-runs/:workflowRunId` — access: `workflow-run:manage`
-     */
-    deleteWorkflowRun(params: {
-        workflowRunId: string;
     }): Promise<any>;
 
     /**
@@ -818,6 +806,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read one immutable registered workflow definition.
+     * @remarks `GET /management/workflow-definitions/:definitionId` — access: `fleet:admin`
+     */
+    getRegisteredWorkflowDefinition(params: {
+        definitionId: string;
+    }): Promise<any>;
+
+    /**
      * Get one Session view; scope=fleet returns administrative metadata without summaries, results, pending prompts, context, or routing configuration.
      * @remarks `GET /sessions/:sessionId` — access: `session:read`
      */
@@ -1048,6 +1044,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Get the workflow's current state, waiting reason, and terminal result when complete.
+     * @remarks `GET /management/workflows/:sessionId` — access: `session:read`
+     */
+    getWorkflow(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Get one immutable Workflow Definition; scope=fleet returns an administrative projection without executable definition content.
      * @remarks `GET /workflow-definitions/:workflowDefinitionId` — access: `workflow-definition:read`
      */
@@ -1062,15 +1066,6 @@ export interface ManagementOps {
      */
     getWorkflowGenerator(params: {
         workflowGeneratorId: string;
-        scope?: string;
-    }): Promise<any>;
-
-    /**
-     * Get one durable Workflow Run; scope=fleet omits input and effective configuration.
-     * @remarks `GET /workflow-runs/:workflowRunId` — access: `workflow-run:read`
-     */
-    getWorkflowRun(params: {
-        workflowRunId: string;
         scope?: string;
     }): Promise<any>;
 
@@ -1285,21 +1280,20 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Authoritative workflow state executions in admission order.
+     * @remarks `GET /management/workflows/:sessionId/executions` — access: `session:read`
+     */
+    listWorkflowExecutions(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * List recent materialization cycles for a WorkflowGenerator.
      * @remarks `GET /workflow-generators/:workflowGeneratorId/cycles` — access: `workflow-generator:read`
      */
     listWorkflowGeneratorCycles(params: {
         workflowGeneratorId: string;
         limit?: number;
-    }): Promise<any>;
-
-    /**
-     * List durable WorkflowRuns materialized by a WorkflowGenerator; scope=fleet returns reduced administrative rows.
-     * @remarks `GET /workflow-generators/:workflowGeneratorId/workflow-runs` — access: `workflow-generator:read`
-     */
-    listWorkflowGeneratorRuns(params: {
-        workflowGeneratorId: string;
-        scope?: string;
     }): Promise<any>;
 
     /**
@@ -1323,73 +1317,6 @@ export interface ManagementOps {
         repository?: string;
         placement?: string;
         updatedAfter?: string;
-        scope?: string;
-    }): Promise<any>;
-
-    /**
-     * List the transition journal; scope=fleet omits summaries and idempotency keys.
-     * @remarks `GET /workflow-runs/:workflowRunId/journal` — access: `workflow-run:read`
-     */
-    listWorkflowRunJournal(params: {
-        workflowRunId: string;
-        scope?: string;
-    }): Promise<any>;
-
-    /**
-     * List durable Workflow Runs visible to the caller; scope=fleet requires resource administration. viewerOnly is a deprecated compatibility alias.
-     * @remarks `GET /workflow-runs` — access: `workflow-run:read`
-     */
-    listWorkflowRuns(params?: {
-        workflowType?: string;
-        workflowRunKey?: string;
-        limit?: number;
-        scope?: string;
-        viewerOnly?: boolean;
-    }): Promise<any>;
-
-    /**
-     * List a Workflow Run's PilotSwarm session history; scope=fleet omits errors.
-     * @remarks `GET /workflow-runs/:workflowRunId/sessions` — access: `workflow-run:read`
-     */
-    listWorkflowRunSessions(params: {
-        workflowRunId: string;
-        scope?: string;
-    }): Promise<any>;
-
-    /**
-     * Keyset-paginated Workflow Run catalog with operational filters; scope=fleet requires resource administration.
-     * @remarks `GET /management/workflow-runs` — access: `workflow-run:read`
-     */
-    listWorkflowRunsPage(params?: {
-        limit?: number;
-        cursorUpdatedAt?: number;
-        cursorId?: string;
-        owner?: string;
-        status?: string;
-        repository?: string;
-        placement?: string;
-        origin?: string;
-        workflow?: string;
-        workflowRunKey?: string;
-        updatedAfter?: string;
-        scope?: string;
-    }): Promise<any>;
-
-    /**
-     * List durable lifecycle state runs; scope=fleet returns operational transition metadata only.
-     * @remarks `GET /workflow-runs/:workflowRunId/state-runs` — access: `workflow-run:read`
-     */
-    listWorkflowRunStateRuns(params: {
-        workflowRunId: string;
-        scope?: string;
-    }): Promise<any>;
-
-    /**
-     * List durable waits; scope=fleet omits prompts, responses, observations, targets, and evidence.
-     * @remarks `GET /workflow-runs/:workflowRunId/waits` — access: `workflow-run:read`
-     */
-    listWorkflowRunWaits(params: {
-        workflowRunId: string;
         scope?: string;
     }): Promise<any>;
 
@@ -1475,6 +1402,14 @@ export interface ManagementOps {
     regenerateSession(params: {
         sessionId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Resolve a Git-backed workflow package, pin its artifact, compile it, and persist an immutable definition.
+     * @remarks `POST /management/workflow-definitions` — access: `fleet:admin`
+     */
+    registerWorkflowDefinition(params?: {
+        source?: any;
     }): Promise<any>;
 
     /**
@@ -1874,17 +1809,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Set or clear an operator override that mocks a single observed-condition check as satisfied so the wait can resume.
-     * @remarks `POST /workflow-runs/:workflowRunId/waits/:waitId/condition-overrides` — access: `workflow-run:manage`
-     */
-    setWorkflowRunWaitConditionOverride(params: {
-        workflowRunId: string;
-        waitId: string;
-        conditionKey?: any;
-        overridden?: any;
-    }): Promise<any>;
-
-    /**
      * Semantic nearest-neighbours of a known fact. [enhanced]
      * @remarks `POST /facts/similar` — access: `facts:read`
      */
@@ -1900,6 +1824,19 @@ export interface ManagementOps {
     startFactsEmbedder(params?: {
         intervalSeconds?: any;
         batch?: any;
+    }): Promise<any>;
+
+    /**
+     * Validate, atomically admit, and start one registered workflow execution. Definition-declared primary keys deduplicate logical entities.
+     * @remarks `POST /workflows` — access: `session:create`
+     */
+    startWorkflow(params?: {
+        definitionId?: any;
+        inputs?: any;
+        idempotencyKey?: any;
+        groupId?: any;
+        visibility?: any;
+        rerun?: any;
     }): Promise<any>;
 
     /**
@@ -2051,6 +1988,7 @@ export function createManagementOps(
 ): ManagementOps {
     return {
         adoptLegacySystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("adoptLegacySystemGitHubCopilotKey", params),
+        answerWorkflowQuestion: (params: Record<string, unknown> = {}) => callOp("answerWorkflowQuestion", params),
         assignSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("assignSessionsToGroup", params),
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
         cancelSession: (params: Record<string, unknown> = {}) => callOp("cancelSession", params),
@@ -2068,7 +2006,6 @@ export function createManagementOps(
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
         createWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("createWorkflowDefinition", params),
         createWorkflowGenerator: (params: Record<string, unknown> = {}) => callOp("createWorkflowGenerator", params),
-        createWorkflowRun: (params: Record<string, unknown> = {}) => callOp("createWorkflowRun", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
@@ -2080,7 +2017,6 @@ export function createManagementOps(
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
         deleteSessionGroup: (params: Record<string, unknown> = {}) => callOp("deleteSessionGroup", params),
         deleteWorkflowGenerator: (params: Record<string, unknown> = {}) => callOp("deleteWorkflowGenerator", params),
-        deleteWorkflowRun: (params: Record<string, unknown> = {}) => callOp("deleteWorkflowRun", params),
         downloadArtifact: (params: Record<string, unknown> = {}) => callOp("downloadArtifact", params),
         exportExecutionHistory: (params: Record<string, unknown> = {}) => callOp("exportExecutionHistory", params),
         factsCapabilities: (params: Record<string, unknown> = {}) => callOp("factsCapabilities", params),
@@ -2117,6 +2053,7 @@ export function createManagementOps(
         getProviderUsageAgents: (params: Record<string, unknown> = {}) => callOp("getProviderUsageAgents", params),
         getProviderUsageGrid: (params: Record<string, unknown> = {}) => callOp("getProviderUsageGrid", params),
         getProviderUsageSummary: (params: Record<string, unknown> = {}) => callOp("getProviderUsageSummary", params),
+        getRegisteredWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getRegisteredWorkflowDefinition", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),
         getSessionAccess: (params: Record<string, unknown> = {}) => callOp("getSessionAccess", params),
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
@@ -2144,9 +2081,9 @@ export function createManagementOps(
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         getWorkerTimeline: (params: Record<string, unknown> = {}) => callOp("getWorkerTimeline", params),
+        getWorkflow: (params: Record<string, unknown> = {}) => callOp("getWorkflow", params),
         getWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getWorkflowDefinition", params),
         getWorkflowGenerator: (params: Record<string, unknown> = {}) => callOp("getWorkflowGenerator", params),
-        getWorkflowRun: (params: Record<string, unknown> = {}) => callOp("getWorkflowRun", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
@@ -2173,16 +2110,10 @@ export function createManagementOps(
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
         listWorkflowDefinitions: (params: Record<string, unknown> = {}) => callOp("listWorkflowDefinitions", params),
+        listWorkflowExecutions: (params: Record<string, unknown> = {}) => callOp("listWorkflowExecutions", params),
         listWorkflowGeneratorCycles: (params: Record<string, unknown> = {}) => callOp("listWorkflowGeneratorCycles", params),
-        listWorkflowGeneratorRuns: (params: Record<string, unknown> = {}) => callOp("listWorkflowGeneratorRuns", params),
         listWorkflowGenerators: (params: Record<string, unknown> = {}) => callOp("listWorkflowGenerators", params),
         listWorkflowGeneratorsPage: (params: Record<string, unknown> = {}) => callOp("listWorkflowGeneratorsPage", params),
-        listWorkflowRunJournal: (params: Record<string, unknown> = {}) => callOp("listWorkflowRunJournal", params),
-        listWorkflowRuns: (params: Record<string, unknown> = {}) => callOp("listWorkflowRuns", params),
-        listWorkflowRunSessions: (params: Record<string, unknown> = {}) => callOp("listWorkflowRunSessions", params),
-        listWorkflowRunsPage: (params: Record<string, unknown> = {}) => callOp("listWorkflowRunsPage", params),
-        listWorkflowRunStateRuns: (params: Record<string, unknown> = {}) => callOp("listWorkflowRunStateRuns", params),
-        listWorkflowRunWaits: (params: Record<string, unknown> = {}) => callOp("listWorkflowRunWaits", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
@@ -2191,6 +2122,7 @@ export function createManagementOps(
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
+        registerWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("registerWorkflowDefinition", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
@@ -2231,9 +2163,9 @@ export function createManagementOps(
         setSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("setSystemSessionModel", params),
         setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         setWorkflowGeneratorDefinition: (params: Record<string, unknown> = {}) => callOp("setWorkflowGeneratorDefinition", params),
-        setWorkflowRunWaitConditionOverride: (params: Record<string, unknown> = {}) => callOp("setWorkflowRunWaitConditionOverride", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        startWorkflow: (params: Record<string, unknown> = {}) => callOp("startWorkflow", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),

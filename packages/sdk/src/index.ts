@@ -31,6 +31,98 @@
  */
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
+export { WorkflowSession } from "./workflow-session.js";
+export type { WorkflowResultWaitOptions } from "./workflow-session.js";
+export { registerInMemoryWorkflowGraph } from "./workflow-orchestration/graph.js";
+export {
+    WORKFLOW_COMPILER_VERSION,
+    WorkflowTransitionRegistry,
+    compileAndRegisterWorkflowYaml,
+    compileWorkflowYaml,
+    executeWorkflowTransitionRegistration,
+    resolveWorkflowTemplate,
+    workflowCompiledManifestSha256,
+} from "./workflow-orchestration/compiler.js";
+export {
+    compileAndRegisterWorkflowPackageYaml,
+    compileWorkflowPackageSnapshotYaml,
+    compileWorkflowPackageYaml,
+    loadWorkflowTransitionRegistry,
+    loadWorkflowTransitionRegistryFromSnapshot,
+    loadWorkflowTransitionRegistrationFromSnapshot,
+    materializeWorkflowPackageArtifactSnapshot,
+    materializeWorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+export {
+    CmsWorkflowDefinitionProvider,
+} from "./workflow-orchestration/definition-provider.js";
+export {
+    WorkflowStateProviderRegistry,
+} from "./workflow-orchestration/state-providers.js";
+export {
+    resolveWorkflowGitPackage,
+} from "./workflow-orchestration/git-source.js";
+export {
+    workflowPackageArtifactFilename,
+    workflowPackagesArtifactSessionId,
+} from "./workflow-orchestration/package-artifact.js";
+export type {
+    InMemoryWorkflowAgentState,
+    InMemoryWorkflowExecutableState,
+    InMemoryWorkflowGraph,
+    InMemoryWorkflowState,
+    InMemoryWorkflowTerminalState,
+    WorkflowExecutionRecord,
+    WorkflowStateExecutionContext,
+    WorkflowStateExecutionResult,
+    WorkflowTerminalContext,
+    WorkflowTransitionContext,
+} from "./workflow-orchestration/graph.js";
+export type {
+    CompiledWorkflowAgentStateManifest,
+    CompiledWorkflowActionStateManifest,
+    CompiledWorkflowExecutableStateManifest,
+    CompiledWorkflowIdentityManifest,
+    CompiledWorkflowManifest,
+    CompiledWorkflowObservedConditionStateManifest,
+    CompiledWorkflowQuestionStateManifest,
+    CompiledWorkflowStateManifest,
+    CompiledWorkflowTerminalStateManifest,
+    CompiledWorkflowTransitionHandlerManifest,
+    CompiledWorkflowYaml,
+    WorkflowAdvanceDirective,
+    WorkflowPackageMetadata,
+    WorkflowResumeProducerDirective,
+    WorkflowTransitionDirective,
+    WorkflowTransitionHandler,
+    WorkflowTransitionHandlerContext,
+    WorkflowTransitionModuleIdentity,
+    WorkflowTransitionReference,
+    WorkflowTransitionRegistration,
+} from "./workflow-orchestration/compiler.js";
+export type {
+    WorkflowActionHandler,
+    WorkflowActionRequest,
+    WorkflowObservationResult,
+    WorkflowObservedConditionHandler,
+    WorkflowObservedConditionRequest,
+    WorkflowProviderExecutionContext,
+    WorkflowProviderResult,
+} from "./workflow-orchestration/state-providers.js";
+export type {
+    WorkflowPackageMaterialization,
+    WorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+export type {
+    ExecuteWorkflowTransitionInput,
+    ResolvedWorkflowExecutionPlan,
+    WorkflowDefinitionProvider,
+} from "./workflow-orchestration/definition-provider.js";
+export type {
+    ResolvedWorkflowGitPackage,
+    ResolvedWorkflowGitSource,
+    WorkflowGitSource,
+} from "./workflow-orchestration/git-source.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export {
@@ -59,6 +151,7 @@ export { FeatureStore } from "./feature-store.js";
 export { FEATURE_OPERATION_SPECS, featureToolParameters } from "./feature-tools.js";
 export type { FeatureViewer, FeatureView, FeatureMutation, FeatureMutationResult } from "./feature-store.js";
 export { PilotSwarmManagementClient, createManagementClient } from "./management-client.js";
+export type { WorkflowDefinitionRegistrationRequest } from "./management-client.js";
 export type { PilotSwarmWebOptions } from "./web/api-connection.js";
 export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
 export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
@@ -189,43 +282,7 @@ export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
-export type { WorkflowRunSourceSessionContext } from "./cms.js";
-export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkerTimelineEntryKind, WorkerTimelineEntry, WorkflowGeneratorSourceType, WorkflowComputeAffinity, WorkflowGeneratorOperationalState, WorkflowRunLifecycleState, WorkflowRunSessionStatus, WorkflowRunStateRunStatus, WorkflowRunWaitKind, WorkflowRunWaitStatus, WorkflowRunWaitDetectionMode, WorkflowRunWaitCheckDisposition, WorkflowRunExternalOperationStatus, WorkflowRunExternalOperationSignalStatus, WorkflowGeneratorRow, WorkflowDefinitionRow, WorkflowGeneratorCycleRow, WorkflowRunRow, WorkflowRunSessionRow, WorkflowRunStateOutcome, WorkflowRunStateRunRow, WorkflowRunJournalEntryRow, WorkflowRunWaitResponder, WorkflowRunWaitRow, WorkflowRunWaitObserverSelector, WorkflowRunExternalOperationRow, WorkflowRunCleanupPlan, WorkflowRunCleanupResult, StartWorkflowRunResponseWaitInput, AcceptWorkflowRunResponseInput, StartWorkflowRunExternalOperationInput, StartWorkflowRunTimerWaitInput, CompleteWorkflowRunWaitCheckInput, CompleteWorkflowRunExternalOperationInput, PrepareWorkflowRunStateRunInput, CompleteWorkflowRunStateInput, WorkflowRunDiscovery, ReconciledWorkflowRun, CreateWorkflowGeneratorInput } from "./cms.js";
-export {
-    AZURE_DEVOPS_WORKFLOW_RUN_WAIT_PROVIDER,
-    AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
-    AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
-    azureDevOpsPullRequestApprovalOperationKey,
-    azureDevOpsPullRequestCompletionOperationKey,
-    azureDevOpsPullRequestResourceKey,
-    normalizeAzureDevOpsOrganization,
-    parseAzureDevOpsPullRequestIdentity,
-    parseAzureDevOpsPullRequestApprovalTarget,
-    parseAzureDevOpsApprovalConditions,
-    type AzureDevOpsPullRequestIdentity,
-    type AzureDevOpsPullRequestApprovalTarget,
-    type AzureDevOpsApprovalConditions,
-    type AzureDevOpsCodeReviewRecommendation,
-} from "./azure-devops-workflow-run-waits.js";
-export { createWorkflowRunLifecycleTools } from "./workflow-run-lifecycle-tools.js";
-export {
-    WorkflowRunWaitScheduler,
-    MockWorkflowRunWaitObserver,
-    MockWorkflowRunExternalOperationProducer,
-    type WorkflowRunWaitSchedulerStore,
-    type WorkflowRunWaitSignalSender,
-    type WorkflowRunWaitObservation,
-    type WorkflowRunWaitObserver,
-    type WorkflowRunWaitSchedulerOptions,
-    type WorkflowRunWaitSchedulerRunResult,
-    type WorkflowRunExternalOperationProducerStore,
-    type WorkflowRunExternalOperationSignalSender,
-    type MockWorkflowRunExternalOperationProducerOptions,
-} from "./workflow-run-external-operation-producer.js";
-export {
-    assertExternalOperationValidationGatesSatisfied,
-    type ExternalOperationGateRecord,
-} from "./workflow-run-validation-gates.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkerTimelineEntryKind, WorkerTimelineEntry, WorkflowGeneratorSourceType, WorkflowComputeAffinity, WorkflowGeneratorOperationalState, WorkflowRunLifecycleState, WorkflowRunSessionStatus, WorkflowRunStateRunStatus, WorkflowRunWaitKind, WorkflowRunWaitStatus, WorkflowRunWaitDetectionMode, WorkflowRunWaitCheckDisposition, WorkflowRunExternalOperationStatus, WorkflowRunExternalOperationSignalStatus, WorkflowGeneratorRow, WorkflowDefinitionRow, RegisteredWorkflowDefinitionRow, WorkflowGeneratorCycleRow, WorkflowRunRow, WorkflowRunSessionRow, WorkflowRunStateOutcome, WorkflowRunStateRunRow, WorkflowRunJournalEntryRow, WorkflowRunWaitResponder, WorkflowRunWaitRow, WorkflowRunWaitObserverSelector, WorkflowRunExternalOperationRow, WorkflowRunCleanupPlan, WorkflowRunCleanupResult, StartWorkflowRunResponseWaitInput, AcceptWorkflowRunResponseInput, StartWorkflowRunExternalOperationInput, StartWorkflowRunTimerWaitInput, CompleteWorkflowRunWaitCheckInput, CompleteWorkflowRunExternalOperationInput, PrepareWorkflowRunStateRunInput, CompleteWorkflowRunStateInput, WorkflowRunDiscovery, ReconciledWorkflowRun, CreateWorkflowGeneratorInput, WorkflowDefinitionRecord, WorkflowExecutionRow, WorkflowProjectionRow } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
@@ -293,7 +350,13 @@ export type {
     AfterRunTurnHook,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
+    SessionKind,
     PilotSwarmSessionInfo,
+    WorkflowDefinitionSource,
+    WorkflowSessionConfig,
+    WorkflowSessionResult,
+    WorkflowStartRequest,
+    WorkflowStartResult,
     SessionOwnerInfo,
     SessionContextUsage,
     SessionCompactionSnapshot,
@@ -307,6 +370,7 @@ export type {
     CommandResponse,
     OrchestrationInput,
     SubAgentEntry,
+    SubWorkflowEntry,
     SessionPolicy,
     SendAttachmentInput,
     PromptAttachmentRef,

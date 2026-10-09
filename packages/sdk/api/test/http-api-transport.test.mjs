@@ -82,7 +82,7 @@ test("move/assign alias wrappers return the per-root result array", async () => 
     assert.deepEqual(await transport.assignSessionsToGroup("g1", ["a"]), results);
 });
 
-test("Workflow transport publishes Definitions, registers Generators, and creates Runs", async () => {
+test("Workflow transport publishes Definitions and registers Generators", async () => {
     const created = {
         generator: { workflowGeneratorId: "g1", name: "HelloWorld" },
     };
@@ -90,8 +90,6 @@ test("Workflow transport publishes Definitions, registers Generators, and create
         responses: [
             jsonResponse({ ok: true, result: { workflowDefinitionId: "d1", version: 1 } }),
             jsonResponse({ ok: true, result: created }),
-            jsonResponse({ ok: true, result: { workflowRun: { workflowRunId: "r1" }, created: true } }),
-            jsonResponse({ ok: true, result: [{ workflowRunId: "r1", workflowRunKey: "issue:123" }] }),
             jsonResponse({ ok: true, result: [created.generator] }),
         ],
     });
@@ -118,39 +116,15 @@ test("Workflow transport publishes Definitions, registers Generators, and create
     assert.deepEqual(JSON.parse(calls[1].options.body), generator);
     assert.equal(new URL(calls[1].url).pathname, `${API_PREFIX}/workflow-generators`);
 
-    const run = {
-        workflowDefinitionId: "d1",
-        input: { issueId: 123 },
-        workflowRunKey: "issue:123",
-    };
-    assert.equal((await transport.createWorkflowRun(run)).workflowRun.workflowRunId, "r1");
-    assert.deepEqual(JSON.parse(calls[2].options.body), run);
-    assert.equal(new URL(calls[2].url).pathname, `${API_PREFIX}/workflow-runs`);
-
-    assert.deepEqual(await transport.listWorkflowRuns({
-        workflowType: "hello-world",
-        workflowRunKey: "issue:123",
-        limit: 1,
-        scope: "fleet",
-    }), [{ workflowRunId: "r1", workflowRunKey: "issue:123" }]);
-    const runLookupUrl = new URL(calls[3].url);
-    assert.equal(runLookupUrl.pathname, `${API_PREFIX}/workflow-runs`);
-    assert.equal(runLookupUrl.searchParams.get("workflowType"), "hello-world");
-    assert.equal(runLookupUrl.searchParams.get("workflowRunKey"), "issue:123");
-    assert.equal(runLookupUrl.searchParams.get("limit"), "1");
-    assert.equal(runLookupUrl.searchParams.get("scope"), "fleet");
-    assert.equal(calls[3].options.method, "GET");
-
     assert.deepEqual(await transport.listWorkflowGenerators({ scope: "fleet" }), [created.generator]);
-    assert.equal(new URL(calls[4].url).pathname, `${API_PREFIX}/workflow-generators`);
-    assert.equal(new URL(calls[4].url).searchParams.get("scope"), "fleet");
-    assert.equal(calls[4].options.method, "GET");
+    assert.equal(new URL(calls[2].url).pathname, `${API_PREFIX}/workflow-generators`);
+    assert.equal(new URL(calls[2].url).searchParams.get("scope"), "fleet");
+    assert.equal(calls[2].options.method, "GET");
 });
 
 test("catalog page transport flattens cursors and forwards filters", async () => {
     const { transport, calls } = createTransport({
         responses: [
-            jsonResponse({ ok: true, result: { items: [], hasMore: false, nextCursor: null } }),
             jsonResponse({ ok: true, result: { items: [], hasMore: false, nextCursor: null } }),
             jsonResponse({ ok: true, result: { sessions: [], hasMore: false, nextCursor: null } }),
         ],
@@ -161,12 +135,6 @@ test("catalog page transport flattens cursors and forwards filters", async () =>
         cursor: { updatedAt: 10, id: "g1" },
         owner: "alice",
         repository: "repo",
-    });
-    await transport.listWorkflowRunsPage({
-        scope: "fleet",
-        cursor: { updatedAt: 20, id: "r1" },
-        origin: "direct",
-        placement: "cluster",
     });
     await transport.listSessionsPage({
         scope: "fleet",
@@ -182,20 +150,14 @@ test("catalog page transport flattens cursors and forwards filters", async () =>
     assert.equal(generatorUrl.searchParams.get("owner"), "alice");
     assert.equal(generatorUrl.searchParams.has("cursor"), false);
 
-    const runUrl = new URL(calls[1].url);
-    assert.equal(runUrl.searchParams.get("cursorUpdatedAt"), "20");
-    assert.equal(runUrl.searchParams.get("cursorId"), "r1");
-    assert.equal(runUrl.searchParams.get("origin"), "direct");
-    assert.equal(runUrl.searchParams.get("placement"), "cluster");
-
-    const sessionUrl = new URL(calls[2].url);
+    const sessionUrl = new URL(calls[1].url);
     assert.equal(sessionUrl.searchParams.get("cursorUpdatedAt"), "30");
     assert.equal(sessionUrl.searchParams.get("cursorSessionId"), "s1");
     assert.equal(sessionUrl.searchParams.get("status"), "running");
     assert.equal(sessionUrl.searchParams.get("updatedAfter"), "2026-01-01T00:00:00.000Z");
 });
 
-test("Workflow transport deletes generators and individual WorkflowRuns through resource routes", async () => {
+test("Workflow transport deletes generators through resource routes", async () => {
     const result = {
         aggregateType: "generator",
         aggregateId: "g1",
@@ -203,41 +165,25 @@ test("Workflow transport deletes generators and individual WorkflowRuns through 
         deletedSessionCount: 2,
     };
     const { transport, calls } = createTransport({
-        responses: [
-            jsonResponse({ ok: true, result }),
-            jsonResponse({
-                ok: true,
-                result: { ...result, aggregateType: "workflowRun", aggregateId: "j1", deletedSessionCount: 1 },
-            }),
-        ],
-    });
-
-    test("Fleet detail transport forwards scope on projected resource reads", async () => {
-        const { transport, calls } = createTransport({
-            responses: Array.from({ length: 9 }, () => jsonResponse({ ok: true, result: [] })),
-        });
-
-        await transport.getWorkflowGenerator("g1", { scope: "fleet" });
-        await transport.getWorkflowDefinition("d1", { scope: "fleet" });
-        await transport.listWorkflowGeneratorRuns("g1", { scope: "fleet" });
-        await transport.getWorkflowRun("r1", { scope: "fleet" });
-        await transport.listWorkflowRunSessions("r1", { scope: "fleet" });
-        await transport.listWorkflowRunStateRuns("r1", { scope: "fleet" });
-        await transport.listWorkflowRunWaits("r1", { scope: "fleet" });
-        await transport.listWorkflowRunJournal("r1", { scope: "fleet" });
-        await transport.getSession("s1", { scope: "fleet" });
-
-        for (const call of calls) {
-            assert.equal(new URL(call.url).searchParams.get("scope"), "fleet");
-            assert.equal(call.options.method, "GET");
-        }
+        responses: [jsonResponse({ ok: true, result })],
     });
 
     assert.deepEqual(await transport.deleteWorkflowGenerator("g1"), result);
     assert.equal(new URL(calls[0].url).pathname, `${API_PREFIX}/workflow-generators/g1`);
     assert.equal(calls[0].options.method, "DELETE");
+});
 
-    assert.equal((await transport.deleteWorkflowRun("j1")).aggregateType, "workflowRun");
-    assert.equal(new URL(calls[1].url).pathname, `${API_PREFIX}/workflow-runs/j1`);
-    assert.equal(calls[1].options.method, "DELETE");
+test("fleet detail transport forwards scope on retained resource reads", async () => {
+    const { transport, calls } = createTransport({
+        responses: Array.from({ length: 3 }, () => jsonResponse({ ok: true, result: [] })),
+    });
+
+    await transport.getWorkflowGenerator("g1", { scope: "fleet" });
+    await transport.getWorkflowDefinition("d1", { scope: "fleet" });
+    await transport.getSession("s1", { scope: "fleet" });
+
+    for (const call of calls) {
+        assert.equal(new URL(call.url).searchParams.get("scope"), "fleet");
+        assert.equal(call.options.method, "GET");
+    }
 });

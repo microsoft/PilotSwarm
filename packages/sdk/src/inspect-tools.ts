@@ -651,7 +651,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const readSessionInfoTool = defineTool("read_session_info", {
         description:
             "Read the full CMS row for a session (any session — not just descendants). " +
-            "Title, owner, agent, model, parent, status, iterations, last error, wait reason, timestamps.",
+            "Kind, title, owner, agent, model, parent, status, iterations, last error, wait reason, timestamps.",
         parameters: {
             type: "object" as const,
             properties: { session_id: { type: "string" } },
@@ -667,6 +667,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 return {
                     sessionId: row.sessionId,
                     exists: true,
+                    sessionKind: row.sessionKind ?? "agent",
                     title: row.title ?? null,
                     ownerKind: getSessionOwnerKind(row),
                     ownerLabel: formatSessionOwnerLabel(row),

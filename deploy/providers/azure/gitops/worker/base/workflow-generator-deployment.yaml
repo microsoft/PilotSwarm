@@ -6,7 +6,9 @@ metadata:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: workflow-generator
 spec:
-  replicas: 1
+  # Legacy Workflow Run materialization is disabled until generators admit
+  # registered workflow sessions through the new workflow admission contract.
+  replicas: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: pilotswarm

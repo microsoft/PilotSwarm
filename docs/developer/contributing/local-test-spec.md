@@ -548,6 +548,27 @@ Hardening ideas:
 - add partial-spawn diagnostics so failures identify which child agent is missing and what pilotswarm last emitted
 - add deterministic-id restart assertions to prove system children are reused rather than recreated incorrectly
 
+### `workflow-session-e2e.test.js`
+
+Purpose:
+
+- exercise the real conversational-parent to workflow-child boundary through a
+  synthetic markdown agent
+
+Tests:
+
+- `a markdown agent starts a durable workflow child that reaches the explicit scaffold failure`
+  - forces the real `spawn_workflow` tool during an agent turn
+  - verifies the CMS workflow child, parent lineage, orchestration ID, durable
+    definition, and inputs
+  - verifies the current scaffold fails with
+    `WORKFLOW_CONTROLLER_NOT_IMPLEMENTED`
+
+Future assertion:
+
+- replace the expected scaffold failure with a controller-written durable
+  outcome and verify that `wait_for_workflows` feeds it into the parent turn
+
 ## Sub-Agent Focused Files
 
 The sub-agent suite is split into dedicated files under `packages/sdk/test/local/sub-agents/`.

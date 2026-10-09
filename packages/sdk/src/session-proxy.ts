@@ -33,7 +33,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type GitWorkspaceState } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type GitWorkspaceState, type WorkflowDefinitionSource } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { SessionBlobStore } from "./blob-store.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -43,6 +43,8 @@ import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./ma
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
+import { orchestrationSupportsWorkflowTools } from "./workflow-tools.js";
+import { toWorkflowResult } from "./workflow-session.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
@@ -1131,7 +1133,7 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, childSessionId?: string) {
             // The handoff contract (when present) selects the versioned name and
             // capability tag; without it the owner-aware orchestration keeps its
             // own "2" name so the durable yield sequence stays version-stable.
@@ -1143,6 +1145,23 @@ export function createSessionManagerProxy(
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
                 ...(workspaceChosen ? { workspaceChosen: true } : {}),
+                ...(childSessionId ? { childSessionId } : {}),
+            }), routingContract);
+        },
+        /** Spawn a controller-backed workflow child. The workflow result is observed separately through child outcomes. */
+        spawnWorkflowSession(parentSessionId: string, definition: WorkflowDefinitionSource, inputs: Record<string, unknown> = {}, childSessionId?: string) {
+            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnWorkflowSession", routingContract), {
+                parentSessionId,
+                definition,
+                inputs,
+                ...(childSessionId ? { childSessionId } : {}),
+            }), routingContract);
+        },
+        /** Read a workflow child's controller-written durable result. */
+        getWorkflowResult(parentSessionId: string, childSessionId: string) {
+            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("getWorkflowResult", routingContract), {
+                parentSessionId,
+                childSessionId,
             }), routingContract);
         },
     /**
@@ -1367,6 +1386,56 @@ export function registerActivities(
         ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
         ...(clientConfig?.modelProvidersPath != null && { modelProvidersPath: clientConfig.modelProvidersPath }),
     });
+    const startWorkflowChild = async (
+        parentSessionId: string,
+        childSessionId: string,
+        definition: WorkflowDefinitionSource,
+        inputs: Record<string, unknown>,
+        trace: (message: string) => void,
+    ): Promise<string> => {
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
+        if (catalog) {
+            const existing = await cmsRetryCritical(
+                `startWorkflowChild.getSession existing-check session=${childSessionId}`,
+                () => catalog.getSession(childSessionId),
+                trace,
+            );
+            if (existing) {
+                if (existing.parentSessionId !== parentSessionId || existing.sessionKind !== "workflow") {
+                    throw new Error(
+                        `Workflow session id collision: ${childSessionId} is not a workflow child of ${parentSessionId}`,
+                    );
+                }
+                trace(`[startWorkflowChild] reusing existing child=${childSessionId} parent=${parentSessionId}`);
+                return childSessionId;
+            }
+        }
+        const inheritedOwner = catalog
+            ? await resolveEffectiveSpawnOwner(
+                (id) => cmsRetryCritical(
+                    `startWorkflowChild.getSession ancestor=${id}`,
+                    () => catalog.getSession(id),
+                    trace,
+                ),
+                parentSessionId,
+            )
+            : null;
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
+        try {
+            await sdkClient.start();
+            await sdkClient.createWorkflowSession({
+                sessionId: childSessionId,
+                parentSessionId,
+                definition,
+                inputs,
+                ...(inheritedOwner ? { owner: inheritedOwner } : {}),
+            });
+            trace(`[startWorkflowChild] child=${childSessionId} parent=${parentSessionId}`);
+            return childSessionId;
+        } finally {
+            await sdkClient.stop();
+        }
+    };
 
     /**
      * Session workspaces: the attach and path check behind a change, on this
@@ -1826,6 +1895,9 @@ export function registerActivities(
         // tools (review F3).
         if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
             (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
+        }
+        if (!orchestrationSupportsWorkflowTools(activityCtx?.orchestrationVersion)) {
+            (runConfig as ManagedSessionConfig).workflowToolsBlocked = true;
         }
         // Session workspaces: a cleared workspace still sends its revision;
         // the worker then passes an explicit folder and keeps hooks off.
@@ -3318,6 +3390,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}]`;
                 }
             },
+
             setSessionModel: async (args: { model: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
                 try {
                     const requestedModel = String(args.model || "").trim();
@@ -5714,16 +5787,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Goes through the full SDK path: CMS registration + orchestration startup.
     const spawnChildSessionActivity = async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; childSessionId?: string },
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
             activityCtx.traceInfo(`[spawnChildSession] +${Date.now() - startedAt}ms ${message}`);
         };
         const isDeterministicSystemChild = Boolean(input.isSystem && input.agentId);
-        const childSessionId = isDeterministicSystemChild
+        const childSessionId = input.childSessionId ?? (isDeterministicSystemChild
             ? systemChildAgentUUID(input.parentSessionId, input.agentId!)
-            : crypto.randomUUID();
+            : crypto.randomUUID());
         trace(`child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
@@ -5736,7 +5809,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             await sdkClient.start();
             trace(`sdkClient.start done (${Date.now() - clientStartAt}ms)`);
 
-            if (isDeterministicSystemChild && catalog) {
+            if ((isDeterministicSystemChild || input.childSessionId) && catalog) {
                 const existingCheckAt = Date.now();
                 // Critical: missing this read causes a duplicate child spawn for
                 // a deterministic system agent (same UUID, two creates).
@@ -5746,6 +5819,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     (msg) => activityCtx.traceInfo(msg),
                 );
                 trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
+                if (existing && input.childSessionId) {
+                    trace(`reusing existing replay-stable child: ${childSessionId} (${existing.state})`);
+                    return childSessionId;
+                }
                 if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
                     trace(`reusing existing live system child: ${childSessionId}`);
                     return childSessionId;
@@ -5904,6 +5981,48 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // the version. Register the same handler under both names so every
     // orchestration version replays safely.
     runtime.registerActivity("spawnChildSession2", spawnChildSessionActivity);
+
+    // ── spawnWorkflowSession ──────────────────────────────────
+    // Establishes the deterministic orchestration-to-activity seam for a
+    // conversational parent to create a controller-backed workflow child.
+    // Parent tracking, waiting, and result wake-up are intentionally separate.
+    registerHandoffActivity(runtime, "spawnWorkflowSession", async (
+        activityCtx: any,
+        input: {
+            parentSessionId: string;
+            childSessionId?: string;
+            definition: WorkflowDefinitionSource;
+            inputs?: Record<string, unknown>;
+        },
+    ): Promise<string> => {
+        return startWorkflowChild(
+            input.parentSessionId,
+            input.childSessionId ?? crypto.randomUUID(),
+            input.definition,
+            input.inputs ?? {},
+            (message) => activityCtx.traceInfo(message),
+        );
+    });
+
+    registerHandoffActivity(runtime, "getWorkflowResult", async (
+        _activityCtx: any,
+        input: { parentSessionId: string; childSessionId: string },
+    ): Promise<string> => {
+        if (!catalog) throw new Error("No session catalog — cannot read workflow results");
+        const child = await catalog.getSession(input.childSessionId);
+        if (!child || child.parentSessionId !== input.parentSessionId || child.sessionKind !== "workflow") {
+            throw new Error(`Workflow child ${input.childSessionId} is not a direct child of ${input.parentSessionId}`);
+        }
+        const row = await catalog.getChildOutcome(input.childSessionId);
+        const result = row
+            ? toWorkflowResult(input.childSessionId, input.parentSessionId, row)
+            : null;
+        return JSON.stringify({
+            sessionId: input.childSessionId,
+            status: result?.outcome ?? "running",
+            ...(result ? { result } : {}),
+        });
+    });
 
     // ── sendToSession ───────────────────────────────────────
     // Sends a message to any session's orchestration event queue directly.

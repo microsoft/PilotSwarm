@@ -17,6 +17,7 @@ import { FeatureStore } from "./feature-store.js";
 import {
     systemSessionProtectedError,
     type GitWorkspaceState,
+    type SessionKind,
     type SessionOwnerInfo,
     type SessionSummaryState,
 } from "./types.js";
@@ -29,6 +30,7 @@ import {
     compileLifecycleStateMachine,
     validateLifecycleStateMachineSnapshot,
 } from "./lifecycle-state-machine.js";
+import type { CompiledWorkflowManifest } from "./workflow-orchestration/compiler.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -132,6 +134,7 @@ export interface HourlyTokenBucketRow {
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
+    sessionKind: SessionKind;
     orchestrationId: string | null;
     title: string | null;
     titleLocked: boolean;
@@ -315,6 +318,76 @@ export interface ChildOutcomeRow {
     completedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
+}
+
+export interface WorkflowExecutionRow {
+    workflowSessionId: string;
+    executionSequence: number;
+    graphId: string;
+    stateId: string;
+    childSessionId: string | null;
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+    waitingDetails: unknown;
+    status: "admitted" | "accepted";
+    outcome: string | null;
+    output: unknown;
+    admittedAt: Date;
+    acceptedAt: Date | null;
+    updatedAt: Date;
+}
+
+export interface WorkflowProjectionRow {
+    workflowSessionId: string;
+    graphId: string;
+    status: string;
+    currentStateId: string | null;
+    currentExecutionSequence: number | null;
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition" | null;
+    waitingDetails: unknown;
+    terminalOutcome: string | null;
+    result: unknown;
+    completedAt: Date | null;
+    updatedAt: Date;
+}
+
+export interface RegisteredWorkflowDefinitionRow {
+    definitionId: string;
+    graphId: string;
+    name: string;
+    version: string;
+    apiVersion: string;
+    compilerVersion: string;
+    sourceYaml: string;
+    sourceSha256: string;
+    packageSha256: string;
+    packageArtifactFilename: string;
+    packageSource: Record<string, unknown>;
+    compiledSha256: string;
+    initialStateId: string;
+    inputSchema: Record<string, unknown>;
+    configuration: Record<string, unknown>;
+    compiledManifest: CompiledWorkflowManifest;
+    createdAt: Date;
+}
+
+export type WorkflowDefinitionRecord = RegisteredWorkflowDefinitionRow;
+
+export interface WorkflowAdmissionRecord {
+    sessionId: string;
+    definitionId: string;
+    primaryKeyValues: unknown[] | null;
+    primaryKeySha256: string | null;
+    attempt: number;
+    inputs: Record<string, unknown>;
+    parentSessionId: string | null;
+    owner: SessionOwnerInfo;
+    groupId: string | null;
+    visibility: SessionVisibility | null;
+    rerunReason: string | null;
+    orchestrationId: string;
+    created: boolean;
+    deduplicated: boolean;
+    needsStart: boolean;
 }
 
 // ─── Session Metric Summary Types ────────────────────────────────
@@ -1892,6 +1965,7 @@ export interface SessionCatalog {
 
     /** Insert a new session. No-op if session already exists. */
     createSession(sessionId: string, opts?: {
+        sessionKind?: SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -2054,6 +2128,85 @@ export interface SessionCatalog {
 
     /** List child outcome records for a parent session. */
     listChildOutcomes(parentSessionId: string): Promise<ChildOutcomeRow[]>;
+
+    /** Idempotently admit one durable workflow state execution. */
+    recordWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+        waitingDetails?: unknown;
+    }): Promise<void>;
+
+    /** Atomically accept one execution result and update its current projection. */
+    acceptWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        outcome: string;
+        output: unknown;
+    }): Promise<void>;
+
+    /** Atomically record terminal workflow state and its parent child outcome. */
+    completeWorkflowProjection(input: {
+        workflowSessionId: string;
+        parentSessionId?: string | null;
+        graphId: string;
+        terminalStateId: string;
+        outcome: string;
+        summary: string;
+        result: Record<string, unknown>;
+        completedAt: Date;
+    }): Promise<void>;
+
+    /** Read the current rebuildable workflow projection. */
+    getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null>;
+
+    /** Rebuild the current projection from authoritative execution/completion facts. */
+    rebuildWorkflowProjection(workflowSessionId: string): Promise<void>;
+
+    /** Read authoritative workflow executions in admission order. */
+    listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]>;
+
+    /** Persist one immutable authored definition and its normalized compiled states. */
+    registerWorkflowDefinition(input: {
+        definitionId: string;
+        sourceYaml: string;
+        sourceSha256: string;
+        packageSha256: string;
+        packageArtifactFilename: string;
+        packageSource: Record<string, unknown>;
+        compiledSha256: string;
+        manifest: CompiledWorkflowManifest;
+    }): Promise<WorkflowDefinitionRecord>;
+
+    /** Read one immutable workflow definition and its ordered compiled states. */
+    getRegisteredWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
+
+    /** Atomically reserve or deduplicate one registered workflow execution. */
+    admitWorkflow(input: {
+        sessionId: string;
+        definitionId: string;
+        inputs: Record<string, unknown>;
+        primaryKeyValues: unknown[] | null;
+        primaryKeySha256: string | null;
+        owner: SessionOwnerInfo;
+        parentSessionId?: string | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+        idempotencyKey: string;
+        requestSha256: string;
+        forceRerun: boolean;
+        rerunReason?: string | null;
+        isAdmin: boolean;
+    }): Promise<WorkflowAdmissionRecord>;
+
+    /** Mark a reserved workflow admission started after idempotent Duroxide start. */
+    markWorkflowAdmissionStarted(sessionId: string, orchestrationId: string): Promise<void>;
 
     // ── Events (written from worker, read from client) ───────
 
@@ -2277,6 +2430,13 @@ function sqlForSchema(schema: string) {
             upsertChildOutcome:         `${s}.cms_upsert_child_outcome`,
             getChildOutcome:            `${s}.cms_get_child_outcome`,
             listChildOutcomes:          `${s}.cms_list_child_outcomes`,
+            recordWorkflowExecution:    `${s}.cms_record_workflow_execution`,
+            acceptWorkflowExecution:    `${s}.cms_accept_workflow_execution`,
+            completeWorkflowProjection: `${s}.cms_complete_workflow`,
+            rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
+            registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
+            admitWorkflow:               `${s}.cms_admit_workflow`,
+            markWorkflowAdmissionStarted: `${s}.cms_mark_workflow_admission_started`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
@@ -6111,6 +6271,7 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Writes ───────────────────────────────────────────────
 
     async createSession(sessionId: string, opts?: {
+        sessionKind?: SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -6212,6 +6373,13 @@ export class PgSessionCatalog implements SessionCatalog {
                 if (!rows[0]?.matches) {
                     throw new Error(`SESSION_ROUTING_CONFLICT: immutable routing differs for session ${sessionId}`);
                 }
+            }
+
+            if (opts?.sessionKind === "workflow") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET session_kind = 'workflow' WHERE session_id = $1`,
+                    [sessionId],
+                );
             }
 
             // Service columns ride the same transaction as a raw UPDATE — the
@@ -6419,7 +6587,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // Service columns join the raw table (same reasoning as getSession —
         // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessions}($1, $2) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
@@ -6440,7 +6608,7 @@ export class PgSessionCatalog implements SessionCatalog {
         updatedAfter?: Date | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
@@ -6467,7 +6635,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
@@ -6494,7 +6662,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
+                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
                     s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
@@ -6749,7 +6917,9 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1, $2, $3)`,
+            `SELECT g.*, s.session_kind
+               FROM ${this.sql.fn.listGroupSessions}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [groupId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -6816,6 +6986,228 @@ export class PgSessionCatalog implements SessionCatalog {
             [parentSessionId],
         );
         return rows.map(rowToChildOutcomeRow);
+    }
+
+    async recordWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+        waitingDetails?: unknown;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.recordWorkflowExecution}($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                input.workflowSessionId,
+                input.executionSequence,
+                input.graphId,
+                input.stateId,
+                input.childSessionId ?? null,
+                input.waitingOn,
+                JSON.stringify(input.waitingDetails ?? null),
+            ],
+        );
+    }
+
+    async acceptWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        outcome: string;
+        output: unknown;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.acceptWorkflowExecution}($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                input.workflowSessionId,
+                input.executionSequence,
+                input.graphId,
+                input.stateId,
+                input.childSessionId ?? null,
+                input.outcome,
+                JSON.stringify(input.output),
+            ],
+        );
+    }
+
+    async completeWorkflowProjection(input: {
+        workflowSessionId: string;
+        parentSessionId?: string | null;
+        graphId: string;
+        terminalStateId: string;
+        outcome: string;
+        summary: string;
+        result: Record<string, unknown>;
+        completedAt: Date;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.completeWorkflowProjection}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                input.workflowSessionId,
+                input.parentSessionId ?? null,
+                input.graphId,
+                input.terminalStateId,
+                input.outcome,
+                input.summary,
+                JSON.stringify(input.result),
+                input.completedAt,
+            ],
+        );
+    }
+
+    async getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_projections WHERE workflow_session_id = $1`,
+            [workflowSessionId],
+        );
+        return rows.length > 0 ? rowToWorkflowProjectionRow(rows[0]) : null;
+    }
+
+    async rebuildWorkflowProjection(workflowSessionId: string): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.rebuildWorkflowProjection}($1)`,
+            [workflowSessionId],
+        );
+    }
+
+    async listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_state_executions
+              WHERE workflow_session_id = $1
+              ORDER BY execution_sequence`,
+            [workflowSessionId],
+        );
+        return rows.map(rowToWorkflowExecutionRow);
+    }
+
+    async registerWorkflowDefinition(input: {
+        definitionId: string;
+        sourceYaml: string;
+        sourceSha256: string;
+        packageSha256: string;
+        packageArtifactFilename: string;
+        packageSource: Record<string, unknown>;
+        compiledSha256: string;
+        manifest: CompiledWorkflowManifest;
+    }): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.registerWorkflowDefinition}(
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+            ) AS definition_id`,
+            [
+                input.definitionId,
+                input.manifest.graphId,
+                input.manifest.metadata.name,
+                input.manifest.metadata.version,
+                input.manifest.apiVersion,
+                input.manifest.compilerVersion,
+                input.sourceYaml,
+                input.sourceSha256,
+                input.packageSha256,
+                input.packageArtifactFilename,
+                JSON.stringify(input.packageSource),
+                input.compiledSha256,
+                input.manifest.initialState,
+                JSON.stringify(input.manifest.inputSchema),
+                JSON.stringify(input.manifest.configuration),
+                JSON.stringify(input.manifest),
+            ],
+        );
+        const persistedDefinitionId = rows[0]?.definition_id;
+        const registered = typeof persistedDefinitionId === "string"
+            ? await this.getRegisteredWorkflowDefinition(persistedDefinitionId)
+            : null;
+        if (!registered) {
+            throw Object.assign(
+                new Error(`Workflow definition '${input.manifest.graphId}' was not persisted.`),
+                { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
+            );
+        }
+        return registered;
+    }
+
+    async getRegisteredWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        const definitionResult = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".registered_workflow_definitions WHERE definition_id = $1`,
+            [definitionId],
+        );
+        if (definitionResult.rows.length === 0) return null;
+        return rowToWorkflowDefinitionRow(definitionResult.rows[0]);
+    }
+
+    async admitWorkflow(input: {
+        sessionId: string;
+        definitionId: string;
+        inputs: Record<string, unknown>;
+        primaryKeyValues: unknown[] | null;
+        primaryKeySha256: string | null;
+        owner: SessionOwnerInfo;
+        parentSessionId?: string | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+        idempotencyKey: string;
+        requestSha256: string;
+        forceRerun: boolean;
+        rerunReason?: string | null;
+        isAdmin: boolean;
+    }): Promise<WorkflowAdmissionRecord> {
+        let rows: any[];
+        try {
+            ({ rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.admitWorkflow}(
+                    $1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9,
+                    $10, $11, $12, $13, $14, $15, $16, $17
+                )`,
+                [
+                    input.sessionId,
+                    input.definitionId,
+                    JSON.stringify(input.inputs),
+                    input.primaryKeyValues === null
+                        ? null
+                        : JSON.stringify(input.primaryKeyValues),
+                    input.primaryKeySha256,
+                    input.owner.provider,
+                    input.owner.subject,
+                    input.owner.email ?? null,
+                    input.owner.displayName ?? null,
+                    input.parentSessionId ?? null,
+                    input.groupId ?? null,
+                    input.visibility ?? null,
+                    input.idempotencyKey,
+                    input.requestSha256,
+                    input.forceRerun,
+                    input.rerunReason ?? null,
+                    input.isAdmin,
+                ],
+            ));
+        } catch (error) {
+            throw normalizeWorkflowCatalogError(error);
+        }
+        if (rows.length !== 1) {
+            throw Object.assign(
+                new Error("Workflow admission did not return exactly one execution."),
+                { code: "WORKFLOW_ADMISSION_FAILED" },
+            );
+        }
+        return rowToWorkflowAdmissionRecord(rows[0]);
+    }
+
+    async markWorkflowAdmissionStarted(
+        sessionId: string,
+        orchestrationId: string,
+    ): Promise<void> {
+        try {
+            await this.pool.query(
+                `SELECT ${this.sql.fn.markWorkflowAdmissionStarted}($1, $2)`,
+                [sessionId, orchestrationId],
+            );
+        } catch (error) {
+            throw normalizeWorkflowCatalogError(error);
+        }
     }
 
     // ── Events ───────────────────────────────────────────────
@@ -8901,6 +9293,7 @@ function rowToSessionRow(row: any): SessionRow {
         : null;
     return {
         sessionId: row.session_id,
+        sessionKind: row.session_kind === "workflow" ? "workflow" : "agent",
         orchestrationId: row.orchestration_id ?? null,
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,
@@ -9267,6 +9660,101 @@ function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
     };
+}
+
+function rowToWorkflowExecutionRow(row: any): WorkflowExecutionRow {
+    return {
+        workflowSessionId: row.workflow_session_id,
+        executionSequence: Number(row.execution_sequence),
+        graphId: row.graph_id,
+        stateId: row.state_id,
+        childSessionId: row.child_session_id ?? null,
+        waitingOn: row.waiting_on,
+        waitingDetails: row.waiting_details_json ?? null,
+        status: row.status,
+        outcome: row.outcome ?? null,
+        output: row.output_json ?? null,
+        admittedAt: new Date(row.admitted_at),
+        acceptedAt: row.accepted_at ? new Date(row.accepted_at) : null,
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowProjectionRow(row: any): WorkflowProjectionRow {
+    return {
+        workflowSessionId: row.workflow_session_id,
+        graphId: row.graph_id,
+        status: row.status,
+        currentStateId: row.current_state_id ?? null,
+        currentExecutionSequence: row.current_execution_sequence === null
+            ? null
+            : Number(row.current_execution_sequence),
+        waitingOn: row.waiting_on ?? null,
+        waitingDetails: row.waiting_details_json ?? null,
+        terminalOutcome: row.terminal_outcome ?? null,
+        result: row.result_json ?? null,
+        completedAt: row.completed_at ? new Date(row.completed_at) : null,
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowDefinitionRow(row: any): RegisteredWorkflowDefinitionRow {
+    return {
+        definitionId: row.definition_id,
+        graphId: row.graph_id,
+        name: row.name,
+        version: row.version,
+        apiVersion: row.api_version,
+        compilerVersion: row.compiler_version,
+        sourceYaml: row.source_yaml,
+        sourceSha256: row.source_sha256,
+        packageSha256: row.package_sha256,
+        packageArtifactFilename: row.package_artifact_filename,
+        packageSource: row.package_source_json ?? {},
+        compiledSha256: row.compiled_sha256,
+        initialStateId: row.initial_state_id,
+        inputSchema: row.input_schema_json ?? {},
+        configuration: row.configuration_json ?? {},
+        compiledManifest: row.compiled_manifest_json,
+        createdAt: new Date(row.created_at),
+    };
+}
+
+function rowToWorkflowAdmissionRecord(row: any): WorkflowAdmissionRecord {
+    return {
+        sessionId: row.session_id,
+        definitionId: row.definition_id,
+        primaryKeyValues: Array.isArray(row.primary_key_json)
+            ? row.primary_key_json
+            : null,
+        primaryKeySha256: row.primary_key_sha256 ?? null,
+        attempt: Number(row.attempt),
+        inputs: row.inputs_json ?? {},
+        parentSessionId: row.parent_session_id ?? null,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        groupId: row.group_id ?? null,
+        visibility: row.visibility ?? null,
+        rerunReason: row.rerun_reason ?? null,
+        orchestrationId: row.orchestration_id,
+        created: row.created === true,
+        deduplicated: row.deduplicated === true,
+        needsStart: row.needs_start === true,
+    };
+}
+
+function normalizeWorkflowCatalogError(error: unknown): Error {
+    if (!(error instanceof Error)) return new Error(String(error));
+    const match = /^([A-Z][A-Z0-9_]+):\s*(.+)$/s.exec(error.message);
+    if (!match?.[1].startsWith("WORKFLOW_")) return error;
+    return Object.assign(new Error(match[2]), {
+        code: match[1],
+        cause: error,
+    });
 }
 
 /** Map a PG row to SessionEvent. */

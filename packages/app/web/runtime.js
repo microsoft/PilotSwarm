@@ -678,6 +678,19 @@ const PROVIDER_ERROR_STATUS = {
     // routing first" — a refusal whose message is the whole value. Without
     // a status it falls to the 500 branch, which scrubs the message.
     PROVIDER_IN_USE: 409,
+    WORKFLOW_DEFINITION_NOT_FOUND: 404,
+    WORKFLOW_DEFINITION_SOURCE_INVALID: 400,
+    WORKFLOW_INPUT_INVALID: 400,
+    WORKFLOW_INPUT_REQUIRED: 400,
+    WORKFLOW_INPUT_SCHEMA_INVALID: 400,
+    WORKFLOW_PRIMARY_KEY_INVALID: 400,
+    WORKFLOW_IDEMPOTENCY_KEY_INVALID: 400,
+    WORKFLOW_ADMISSION_INVALID: 400,
+    WORKFLOW_RERUN_REASON_REQUIRED: 400,
+    WORKFLOW_RERUN_REQUIRED: 409,
+    WORKFLOW_IDEMPOTENCY_CONFLICT: 409,
+    WORKFLOW_DUPLICATE_CONFLICT: 409,
+    WORKFLOW_RERUN_FORBIDDEN: 403,
 };
 
 /** `?names=a,b` off the wire, or an array from the legacy /api/rpc caller. */
@@ -942,20 +955,7 @@ export class PortalRuntime {
             return { snapshot: null };
         }
 
-        if (method === "listWorkflowRuns" || method === "listWorkflowRunsPage") {
-            if (!owner && !isAdmin) requireUserPrincipal(authContext, method);
-            return { snapshot: null };
-        }
 
-        if (access === "workflow-run:read" || access === "workflow-run:manage") {
-            const workflowRun = await this._authorizeWorkflowRunAccess(
-                method,
-                safeParams,
-                authContext,
-                { owner, isAdmin },
-            );
-            return { snapshot: null, workflowRun };
-        }
 
         if (access === "workflow-generator:read" || access === "workflow-generator:manage"
             || access === "workflow-definition:read") {
@@ -1174,36 +1174,6 @@ export class PortalRuntime {
             });
             throw Object.assign(new Error("WorkflowGenerator not found."), { code: "NOT_FOUND", status: 404 });
         }
-    }
-
-    async _authorizeWorkflowRunAccess(method, safeParams, authContext, { owner, isAdmin }) {
-        const workflowRunId = safeParams.workflowRunId ? String(safeParams.workflowRunId) : "";
-        const includeDeleted = method === "deleteWorkflowRun";
-        const workflowRun = workflowRunId
-            ? await this.transport.getWorkflowRun(workflowRunId, includeDeleted)
-            : null;
-        if (!workflowRun) {
-            throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
-        }
-        if (this._resourceAdmin(isAdmin)) return workflowRun;
-
-        const requester = normalizeOwnerPrincipal(workflowRun.requestedBy);
-        const allowed = Boolean(
-            owner
-            && requester
-            && owner.provider === requester.provider
-            && owner.subject === requester.subject,
-        );
-        if (allowed) return workflowRun;
-
-        this._recordAudit({
-            actor: this._auditActor(authContext),
-            action: method,
-            target: workflowRunId,
-            decision: "deny",
-            reason: "WorkflowRun requester access required.",
-        });
-        throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
     }
 
     /**
@@ -1432,43 +1402,6 @@ export class PortalRuntime {
                     normalizeWorkflowDefinitionCreateParams(safeParams, definitionOwner),
                 );
             }
-            case "createWorkflowRun": {
-                const workflowRunOwner = owner ?? (isAdmin
-                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
-                    : requireUserPrincipal(authContext, method));
-                return this.transport.createWorkflowRun(
-                    normalizeWorkflowRunCreateParams(safeParams, workflowRunOwner),
-                );
-            }
-            case "listWorkflowRuns": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
-                const workflowRuns = await this.transport.listWorkflowRuns({
-                    workflowType: safeParams.workflowType == null
-                        ? undefined
-                        : String(safeParams.workflowType).trim(),
-                    workflowRunKey: safeParams.workflowRunKey == null
-                        ? undefined
-                        : String(safeParams.workflowRunKey).trim(),
-                    limit: clampInteger(safeParams.limit, 100, 1, 1000),
-                }, scope === "visible" && owner
-                    ? { provider: owner.provider, subject: owner.subject }
-                    : null);
-                return scope === "fleet"
-                    ? workflowRuns.map(projectFleetWorkflowRun)
-                    : workflowRuns;
-            }
-            case "listWorkflowRunsPage": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
-                const page = await this.transport.listWorkflowRunsPage(
-                    normalizeWorkflowCatalogPageOptions(safeParams, { runs: true }),
-                    scope === "visible" && owner
-                        ? { provider: owner.provider, subject: owner.subject }
-                        : null,
-                );
-                return scope === "fleet"
-                    ? { ...page, workflowRuns: page.workflowRuns.map(projectFleetWorkflowRun) }
-                    : page;
-            }
             case "getWorkflowGenerator": {
                 const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Generator");
                 const generator = await this.transport.getWorkflowGenerator(safeParams.workflowGeneratorId);
@@ -1500,71 +1433,11 @@ export class PortalRuntime {
                 const definition = await this.transport.getWorkflowDefinition(safeParams.workflowDefinitionId);
                 return scope === "fleet" ? projectFleetWorkflowDefinition(definition) : definition;
             }
-            case "listWorkflowGeneratorRuns": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
-                const workflowRuns = await this.transport.listWorkflowGeneratorRuns(safeParams.workflowGeneratorId);
-                return scope === "fleet"
-                    ? workflowRuns.map(projectFleetWorkflowRun)
-                    : workflowRuns;
-            }
             case "listWorkflowGeneratorCycles":
                 return this.transport.listWorkflowGeneratorCycles(
                     safeParams.workflowGeneratorId,
                     clampInteger(safeParams.limit, 50, 1, 200),
                 );
-            case "getWorkflowRun": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run");
-                const workflowRun = gate.workflowRun;
-                if (!workflowRun) {
-                    throw Object.assign(new Error("WorkflowRun not found."), { code: "NOT_FOUND", status: 404 });
-                }
-                return scope === "fleet" ? projectFleetWorkflowRun(workflowRun) : workflowRun;
-            }
-            case "deleteWorkflowRun": {
-                const actor = owner ?? (isAdmin
-                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
-                    : requireUserPrincipal(authContext, method));
-                return this.transport.deleteWorkflowRun(
-                    safeParams.workflowRunId,
-                    actor,
-                    isAdmin,
-                );
-            }
-            case "listWorkflowRunSessions": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run session");
-                const sessions = await this.transport.listWorkflowRunSessions(safeParams.workflowRunId);
-                return scope === "fleet"
-                    ? sessions.map(projectFleetWorkflowRunSession)
-                    : sessions;
-            }
-            case "listWorkflowRunStateRuns": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run state");
-                const stateRuns = await this.transport.listWorkflowRunStateRuns(safeParams.workflowRunId);
-                return scope === "fleet"
-                    ? stateRuns.map(projectFleetWorkflowRunStateRun)
-                    : stateRuns;
-            }
-            case "listWorkflowRunWaits": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run wait");
-                const waits = await this.transport.listWorkflowRunWaits(safeParams.workflowRunId);
-                return scope === "fleet"
-                    ? waits.map(projectFleetWorkflowRunWait)
-                    : waits;
-            }
-            case "setWorkflowRunWaitConditionOverride":
-                return this.transport.setWorkflowRunWaitConditionOverride(
-                    safeParams.workflowRunId,
-                    safeParams.waitId,
-                    safeParams.conditionKey,
-                    Boolean(safeParams.overridden),
-                );
-            case "listWorkflowRunJournal": {
-                const scope = requireCatalogScope(safeParams, resourceAdmin, "Workflow Run journal");
-                const journal = await this.transport.listWorkflowRunJournal(safeParams.workflowRunId);
-                return scope === "fleet"
-                    ? journal.map(projectFleetWorkflowRunJournal)
-                    : journal;
-            }
             case "listSessions": {
                 const scope = requireCatalogScope(safeParams, resourceAdmin, "Session");
                 const sessionViewer = scope === "visible" && owner
@@ -1624,6 +1497,46 @@ export class PortalRuntime {
                 );
                 return scope === "fleet" ? projectFleetSession(session) : session;
             }
+            case "startWorkflow": {
+                await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const started = await this.transport.startWorkflow({
+                    definitionId: safeParams.definitionId,
+                    inputs: safeParams.inputs,
+                    idempotencyKey: safeParams.idempotencyKey,
+                    visibility: normalizeVisibility(
+                        safeParams.visibility,
+                        this.authz.defaultVisibility,
+                    ),
+                    ...(safeParams.rerun ? { rerun: safeParams.rerun } : {}),
+                }, {
+                    owner,
+                    isAdmin: resourceAdmin,
+                });
+                await this._ensureCreatedPlacement(
+                    started,
+                    safeParams.groupId,
+                    authContext,
+                    isAdmin,
+                );
+                return started;
+            }
+            case "registerWorkflowDefinition":
+                return this.transport.mgmt.registerWorkflowDefinition({
+                    source: safeParams.source,
+                });
+            case "getRegisteredWorkflowDefinition":
+                return this.transport.mgmt.getRegisteredWorkflowDefinition(safeParams.definitionId);
+            case "getWorkflow":
+                return this.transport.mgmt.getWorkflow(safeParams.sessionId);
+            case "listWorkflowExecutions":
+                return this.transport.mgmt.listWorkflowExecutions(safeParams.sessionId);
+            case "answerWorkflowQuestion":
+                return this.transport.mgmt.answerWorkflowQuestion(
+                    safeParams.sessionId,
+                    Number(safeParams.executionSequence),
+                    safeParams.outcome,
+                    safeParams.output,
+                );
             case "getOrchestrationStats":
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":

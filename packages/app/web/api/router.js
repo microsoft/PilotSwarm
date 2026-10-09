@@ -54,6 +54,11 @@ const CLIENT_ERROR_MESSAGE = /must be|is required|cannot be|Unsupported|is not s
 function statusForError(error) {
     const byCode = ERROR_STATUS_BY_CODE[error?.code];
     if (byCode) return byCode;
+    if (error?.code === "WORKFLOW_GIT_REPOSITORY_REFUSED") return 403;
+    if (error?.code === "WORKFLOW_GIT_RESOLUTION_FAILED") return 502;
+    if (
+        /^WORKFLOW_(?:GIT_(?:SOURCE|REF|PATH|WORKFLOW|COMMIT)|YAML|PACKAGE|TRANSITION)_/.test(error?.code || "")
+    ) return 400;
     if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return error.status;
     const message = String(error?.message || "");
     if (/is not started|terminal orchestration|cannot accept new messages|already/i.test(message)) return 409;
@@ -249,16 +254,6 @@ export function createApiRouter({ runtime, requireAuth }) {
                 }
                 assertNoUnknownWorkflowDefinitionBodyParams(op, req);
                 assertNoCallerAuth(op, req);
-                if (op.name === "createWorkflowRun"
-                    && req.body && typeof req.body === "object"
-                    && (Object.hasOwn(req.body, "initialState") || Object.hasOwn(req.body, "affinities"))) {
-                    throw Object.assign(
-                        new Error(
-                            "Direct Workflow Runs inherit initialState and affinities from their Workflow Definition.",
-                        ),
-                        { code: "INVALID_REQUEST" },
-                    );
-                }
                 const params = collectParams(op, req);
                 assertSafeIdParams(op, params);
                 const result = await runtime.call(op.name, params, req.auth);

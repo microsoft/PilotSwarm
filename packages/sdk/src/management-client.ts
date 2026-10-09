@@ -114,25 +114,41 @@ import type {
     PlacementViewer,
     SessionPlacementResult,
     ChildOutcomeRow,
+    WorkflowDefinitionRecord,
+    WorkflowExecutionRow,
+    WorkflowProjectionRow,
     SessionVisibility,
     SessionShareInfo,
     SessionAccessSnapshot,
     AuthzAuditEntry,
     KnownUserInfo,
     CreateWorkflowGeneratorInput,
-    CreateWorkflowRunInput,
-    CreateWorkflowRunResult,
     WorkflowGeneratorRow,
     WorkflowDefinitionRow,
     WorkflowGeneratorCycleRow,
-    WorkflowRunRow,
-    WorkflowRunSessionRow,
-    WorkflowRunStateRunRow,
-    WorkflowRunJournalEntryRow,
-    WorkflowRunWaitRow,
     WorkflowRunCleanupPlan,
     WorkflowRunCleanupResult,
 } from "./cms.js";
+import {
+    compileWorkflowPackageSnapshotYaml,
+    materializeWorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+import {
+    workflowCompiledManifestSha256,
+} from "./workflow-orchestration/compiler.js";
+import {
+    resolveWorkflowGitPackage,
+    type WorkflowGitSource,
+} from "./workflow-orchestration/git-source.js";
+import {
+    workflowPackageArtifactFilename,
+    workflowPackagesArtifactSessionId,
+} from "./workflow-orchestration/package-artifact.js";
+import { workflowQuestionQueueName } from "./workflow-orchestration/registered-contracts.js";
+import {
+    loadImportPolicy,
+    type ImportPolicy,
+} from "./agent-package-import-policy.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
     StoredFactResult, ReadFactsQuery, DeleteFactInput, DeletedFactResult, DeletedFactsResult,
@@ -174,6 +190,7 @@ import {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -378,6 +395,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
     const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
     return {
         sessionId: row.sessionId,
+        sessionKind: row.sessionKind ?? "agent",
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
@@ -413,6 +431,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
 /** Merged view of a session for management UIs. */
 export interface PilotSwarmSessionView {
     sessionId: string;
+    sessionKind: import("./types.js").SessionKind;
     title?: string;
     agentId?: string;
     splash?: string;
@@ -509,20 +528,8 @@ export interface WorkflowCatalogPageOptions {
     updatedAfter?: number | string | Date | null;
 }
 
-export interface ListWorkflowRunPageOptions extends WorkflowCatalogPageOptions {
-    workflow?: string;
-    workflowRunKey?: string;
-    origin?: "direct" | "workflow_generator";
-}
-
 export interface WorkflowGeneratorPage {
     generators: WorkflowGeneratorRow[];
-    hasMore: boolean;
-    nextCursor?: WorkflowCatalogPageCursor;
-}
-
-export interface WorkflowRunPage {
-    workflowRuns: WorkflowRunRow[];
     hasMore: boolean;
     nextCursor?: WorkflowCatalogPageCursor;
 }
@@ -793,6 +800,12 @@ export interface PilotSwarmManagementClientOptions {
     aadDbUser?: string;
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
+    /** Allowlist policy for server-side Git-backed workflow registration. */
+    workflowGitImportPolicy?: ImportPolicy;
+}
+
+export interface WorkflowDefinitionRegistrationRequest {
+    source: WorkflowGitSource;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1153,83 +1166,9 @@ export class PilotSwarmManagementClient {
         return this._catalog!.setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId);
     }
 
-    async listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowGeneratorRuns(workflowGeneratorId);
-    }
-
     async listWorkflowGeneratorCycles(workflowGeneratorId: string, limit?: number): Promise<WorkflowGeneratorCycleRow[]> {
         this._ensureStarted();
         return this._catalog!.listWorkflowGeneratorCycles(workflowGeneratorId, limit);
-    }
-
-    async listWorkflowRuns(
-        options?: import("./cms.js").ListWorkflowRunsOptions,
-        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
-    ): Promise<WorkflowRunRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRuns(options, viewer);
-    }
-
-    async listWorkflowRunsPage(
-        options: ListWorkflowRunPageOptions = {},
-        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
-    ): Promise<WorkflowRunPage> {
-        this._ensureStarted();
-        const limit = clampInteger(options.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
-        const cursor = options.cursor ?? null;
-        const requiresPagedCatalog = Boolean(
-            cursor
-            || options.owner
-            || options.status
-            || options.repository
-            || options.placement
-            || options.updatedAfter != null
-            || options.workflow
-            || options.workflowRunKey
-            || options.origin,
-        );
-        if (!this._catalog!.listWorkflowRunsPage && requiresPagedCatalog) {
-            throw new Error("The configured catalog does not support paged Workflow Run queries.");
-        }
-        const rows = this._catalog!.listWorkflowRunsPage
-            ? await this._catalog!.listWorkflowRunsPage({
-                limit: limit + 1,
-                cursorUpdatedAt: cursor ? optionalDate(cursor.updatedAt, "cursor.updatedAt") : null,
-                cursorId: cursor?.id ?? null,
-                ownerQuery: options.owner,
-                status: options.status,
-                repository: options.repository,
-                placement: options.placement,
-                updatedAfter: optionalDate(options.updatedAfter, "updatedAfter"),
-                workflowQuery: options.workflow,
-                workflowRunKey: options.workflowRunKey,
-                origin: options.origin,
-            }, viewer)
-            : await this._catalog!.listWorkflowRuns({
-                workflowRunKey: options.workflowRunKey,
-                limit: limit + 1,
-            }, viewer);
-        const visibleRows = rows.slice(0, limit);
-        const hasMore = rows.length > limit;
-        const last = visibleRows[visibleRows.length - 1];
-        return {
-            workflowRuns: visibleRows,
-            hasMore,
-            ...(hasMore && last
-                ? { nextCursor: { updatedAt: last.updatedAt.getTime(), id: last.workflowRunId } }
-                : {}),
-        };
-    }
-
-    async getWorkflowRun(workflowRunId: string, includeDeleted = false): Promise<WorkflowRunRow | null> {
-        this._ensureStarted();
-        return this._catalog!.getWorkflowRun(workflowRunId, includeDeleted);
-    }
-
-    async createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult> {
-        this._ensureStarted();
-        return this._catalog!.createWorkflowRun(input);
     }
 
     async deleteWorkflowGenerator(
@@ -1240,20 +1179,6 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         const plan = await this._catalog!.beginWorkflowGeneratorCleanup({
             workflowGeneratorId,
-            actor,
-            isAdmin,
-        });
-        return this._executeWorkflowRunCleanup(plan);
-    }
-
-    async deleteWorkflowRun(
-        workflowRunId: string,
-        actor: SessionOwnerInfo,
-        isAdmin = false,
-    ): Promise<WorkflowRunCleanupResult> {
-        this._ensureStarted();
-        const plan = await this._catalog!.beginWorkflowRunCleanup({
-            workflowRunId,
             actor,
             isAdmin,
         });
@@ -1411,36 +1336,6 @@ export class PilotSwarmManagementClient {
             alreadyDeleted: plan.alreadyDeleted,
             deletedSessionCount: allSessionIds.size,
         };
-    }
-
-    async listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunSessions(workflowRunId);
-    }
-
-    async listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunStateRuns(workflowRunId);
-    }
-
-    async listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunJournal(workflowRunId);
-    }
-
-    async listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunWaits(workflowRunId);
-    }
-
-    async setWorkflowRunWaitConditionOverride(
-        workflowRunId: string,
-        waitId: string,
-        conditionKey: string,
-        overridden: boolean,
-    ): Promise<WorkflowRunWaitRow> {
-        this._ensureStarted();
-        return this._catalog!.setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden);
     }
 
     // ─── Session Listing ─────────────────────────────────────
@@ -1782,6 +1677,7 @@ export class PilotSwarmManagementClient {
 
         return {
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
@@ -1824,6 +1720,135 @@ export class PilotSwarmManagementClient {
             statusVersion,
             routing,
         };
+    }
+
+    // ─── Workflow Read Model ────────────────────────────────
+
+    /**
+     * Compile and durably register one immutable workflow definition.
+     *
+     * Transition functions remain trusted package code. Registration snapshots
+     * the package, resolves its declared module exports, and persists only the
+     * resulting data-oriented identities and manifest.
+     */
+    async registerWorkflowDefinition(
+        requestOrYaml: WorkflowDefinitionRegistrationRequest | string,
+        options?: { packageRoot: string },
+    ): Promise<WorkflowDefinitionRecord> {
+        this._ensureStarted();
+        if (typeof requestOrYaml === "string") {
+            if (!options?.packageRoot) {
+                throw Object.assign(
+                    new Error("Local workflow registration requires packageRoot."),
+                    { code: "WORKFLOW_PACKAGE_ROOT_REQUIRED" },
+                );
+            }
+            return this._registerResolvedWorkflowPackage(
+                requestOrYaml,
+                options.packageRoot,
+                { kind: "local-package" },
+            );
+        }
+        const policy = this.config.workflowGitImportPolicy ?? loadImportPolicy();
+        const resolved = await resolveWorkflowGitPackage(requestOrYaml.source, policy);
+        try {
+            return await this._registerResolvedWorkflowPackage(
+                resolved.workflowYaml,
+                resolved.packageRoot,
+                { ...resolved.source },
+            );
+        } finally {
+            await resolved.cleanup();
+        }
+    }
+
+    private async _registerResolvedWorkflowPackage(
+        yaml: string,
+        packageRoot: string,
+        packageSource: Record<string, unknown>,
+    ): Promise<WorkflowDefinitionRecord> {
+        const snapshot = await materializeWorkflowPackageSnapshot(packageRoot);
+        const compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        const packageSha256 = compiled.manifest.packageSha256;
+        if (!packageSha256) {
+            throw Object.assign(
+                new Error("Workflow package compilation did not produce a package identity."),
+                { code: "WORKFLOW_PACKAGE_IDENTITY_MISSING" },
+            );
+        }
+        const packageArtifactFilename = workflowPackageArtifactFilename(packageSha256);
+        await this._requireWorkflowPackageArtifacts().uploadArtifact(
+            workflowPackagesArtifactSessionId(),
+            packageArtifactFilename,
+            snapshot.artifactTarGz,
+            "application/gzip",
+            { pinned: true },
+        );
+        const sourceSha256 = createHash("sha256").update(yaml, "utf8").digest("hex");
+        const compiledSha256 = workflowCompiledManifestSha256(compiled.manifest);
+        return this._catalog!.registerWorkflowDefinition({
+            definitionId: randomUUID(),
+            sourceYaml: yaml,
+            sourceSha256,
+            packageSha256,
+            packageArtifactFilename,
+            packageSource,
+            compiledSha256,
+            manifest: compiled.manifest,
+        });
+    }
+
+    /** Read one immutable registered definition and its compiled state rows. */
+    async getRegisteredWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        this._ensureStarted();
+        return this._catalog!.getRegisteredWorkflowDefinition(definitionId);
+    }
+
+    /** Get the workflow's current externally visible state. */
+    async getWorkflow(sessionId: string): Promise<WorkflowProjectionRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowProjection(sessionId);
+    }
+
+    /** Read authoritative workflow state executions in admission order. */
+    async listWorkflowExecutions(sessionId: string): Promise<WorkflowExecutionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowExecutions(sessionId);
+    }
+
+    /** Answer the workflow's currently pending durable question. */
+    async answerWorkflowQuestion(
+        sessionId: string,
+        executionSequence: number,
+        outcome: string,
+        output: unknown,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!Number.isInteger(executionSequence) || executionSequence < 1) {
+            throw new Error("executionSequence must be a positive integer.");
+        }
+        if (typeof outcome !== "string" || !outcome.trim()) {
+            throw new Error("outcome is required.");
+        }
+        const projection = await this._catalog!.getWorkflowProjection(sessionId);
+        if (
+            !projection
+            || projection.status !== "running"
+            || projection.waitingOn !== "question"
+            || projection.currentExecutionSequence !== executionSequence
+        ) {
+            throw Object.assign(
+                new Error(
+                    `Workflow '${sessionId}' is not waiting on question execution ${executionSequence}.`,
+                ),
+                { code: "WORKFLOW_QUESTION_NOT_PENDING" },
+            );
+        }
+        await this._duroxideClient.enqueueEvent(
+            `session-${sessionId}`,
+            workflowQuestionQueueName(executionSequence),
+            JSON.stringify({ outcome: outcome.trim(), output }),
+        );
     }
 
     // ─── Child Contracts / Outcomes ────────────────────────
@@ -2856,6 +2881,12 @@ export class PilotSwarmManagementClient {
         if ((session as any).serviceKind) {
             throw Object.assign(
                 new Error("Service sessions are runtime machinery and are excluded from regeneration"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions are controller-backed and cannot be regenerated as conversations"),
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
@@ -4337,6 +4368,12 @@ export class PilotSwarmManagementClient {
                 `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is a workflow session and does not accept chat messages.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -4435,6 +4472,13 @@ export class PilotSwarmManagementClient {
      */
     async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
+        const session = await this.getSession(sessionId);
+        if (session?.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; controller questions require a workflow decision API.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined
@@ -5471,6 +5515,16 @@ export class PilotSwarmManagementClient {
     private _requireAgentPackageArtifacts(): ArtifactStore {
         if (!this._artifactStore) {
             throw new Error("agent-package artifact operations require an artifact store in direct mode");
+        }
+        return this._artifactStore;
+    }
+
+    private _requireWorkflowPackageArtifacts(): ArtifactStore {
+        if (!this._artifactStore) {
+            throw Object.assign(
+                new Error("workflow definition registration requires an artifact store"),
+                { code: "WORKFLOW_PACKAGE_ARTIFACT_STORE_REQUIRED" },
+            );
         }
         return this._artifactStore;
     }
