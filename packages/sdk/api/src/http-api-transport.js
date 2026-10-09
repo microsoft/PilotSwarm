@@ -205,58 +205,8 @@ export class HttpApiTransport {
         });
     }
 
-    async createWorkflowRun(input) {
-        return this.api.call("createWorkflowRun", input);
-    }
-
-    async listWorkflowRuns(options = {}) {
-        return this.api.call("listWorkflowRuns", options);
-    }
-
-    async listWorkflowRunsPage(options = {}) {
-        const cursor = options.cursor ?? null;
-        return this.api.call("listWorkflowRunsPage", {
-            ...options,
-            cursor: undefined,
-            cursorUpdatedAt: cursor?.updatedAt,
-            cursorId: cursor?.id,
-        });
-    }
-
-    async listWorkflowGeneratorRuns(workflowGeneratorId, options = {}) {
-        return this.api.call("listWorkflowGeneratorRuns", { workflowGeneratorId, scope: options.scope });
-    }
-
     async listWorkflowGeneratorCycles(workflowGeneratorId, limit) {
         return this.api.call("listWorkflowGeneratorCycles", { workflowGeneratorId, limit });
-    }
-
-    async getWorkflowRun(workflowRunId, options = {}) {
-        return this.api.call("getWorkflowRun", { workflowRunId, scope: options.scope });
-    }
-
-    async deleteWorkflowRun(workflowRunId) {
-        return this.api.call("deleteWorkflowRun", { workflowRunId });
-    }
-
-    async listWorkflowRunSessions(workflowRunId, options = {}) {
-        return this.api.call("listWorkflowRunSessions", { workflowRunId, scope: options.scope });
-    }
-
-    async listWorkflowRunStateRuns(workflowRunId, options = {}) {
-        return this.api.call("listWorkflowRunStateRuns", { workflowRunId, scope: options.scope });
-    }
-
-    async listWorkflowRunWaits(workflowRunId, options = {}) {
-        return this.api.call("listWorkflowRunWaits", { workflowRunId, scope: options.scope });
-    }
-
-    async listWorkflowRunJournal(workflowRunId, options = {}) {
-        return this.api.call("listWorkflowRunJournal", { workflowRunId, scope: options.scope });
-    }
-
-    async setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden) {
-        return this.api.call("setWorkflowRunWaitConditionOverride", { workflowRunId, waitId, conditionKey, overridden });
     }
 
     // ── Sessions ────────────────────────────────────────────────────────

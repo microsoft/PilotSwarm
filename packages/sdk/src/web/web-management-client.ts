@@ -9,16 +9,9 @@ import type {
     CreateWorkflowGeneratorInput,
     CreateWorkflowDefinitionInput,
     CreateWorkflowDefinitionResult,
-    CreateWorkflowRunInput,
-    CreateWorkflowRunResult,
     WorkflowGeneratorRow,
     WorkflowDefinitionRow,
     WorkflowGeneratorCycleRow,
-    WorkflowRunRow,
-    WorkflowRunSessionRow,
-    WorkflowRunStateRunRow,
-    WorkflowRunWaitRow,
-    WorkflowRunJournalEntryRow,
     WorkerTimelineEntry,
 } from "../cms.js";
 import type { SessionOwnerInfo } from "../types.js";
@@ -137,14 +130,6 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getWorkflowDefinition", { workflowDefinitionId });
     }
 
-    async createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult> {
-        return this._api.call("createWorkflowRun", {
-            workflowDefinitionId: input.workflowDefinitionId,
-            input: input.input,
-            workflowRunKey: input.workflowRunKey,
-        });
-    }
-
     async createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<CreateWorkflowDefinitionResult> {
         return this._api.call("createWorkflowDefinition", {
             workflowType: input.workflowType,
@@ -173,66 +158,8 @@ export class WebPilotSwarmManagementClient {
         });
     }
 
-    async listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]> {
-        return this._api.call("listWorkflowGeneratorRuns", { workflowGeneratorId });
-    }
-
     async listWorkflowGeneratorCycles(workflowGeneratorId: string, limit?: number): Promise<WorkflowGeneratorCycleRow[]> {
         return this._api.call("listWorkflowGeneratorCycles", { workflowGeneratorId, limit });
-    }
-
-    async listWorkflowRuns(
-        options: import("../cms.js").ListWorkflowRunsOptions & { scope?: "visible" | "fleet"; viewerOnly?: boolean } = {},
-    ): Promise<WorkflowRunRow[]> {
-        return this._api.call("listWorkflowRuns", { ...options });
-    }
-
-    async listWorkflowRunsPage(
-        options: import("../management-client.js").ListWorkflowRunPageOptions = {},
-        _viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
-    ): Promise<import("../management-client.js").WorkflowRunPage> {
-        return this._api.call("listWorkflowRunsPage", {
-            ...options,
-            cursor: undefined,
-            cursorUpdatedAt: options.cursor?.updatedAt,
-            cursorId: options.cursor?.id,
-            updatedAfter: options.updatedAfter == null
-                ? undefined
-                : new Date(options.updatedAfter).toISOString(),
-        });
-    }
-
-    async getWorkflowRun(workflowRunId: string): Promise<WorkflowRunRow | null> {
-        return this._api.call("getWorkflowRun", { workflowRunId });
-    }
-
-    async deleteWorkflowRun(workflowRunId: string): Promise<import("../cms.js").WorkflowRunCleanupResult> {
-        return this._api.call("deleteWorkflowRun", { workflowRunId });
-    }
-
-    async listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]> {
-        return this._api.call("listWorkflowRunSessions", { workflowRunId });
-    }
-
-    async listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]> {
-        return this._api.call("listWorkflowRunStateRuns", { workflowRunId });
-    }
-
-    async listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]> {
-        return this._api.call("listWorkflowRunWaits", { workflowRunId });
-    }
-
-    async setWorkflowRunWaitConditionOverride(
-        workflowRunId: string,
-        waitId: string,
-        conditionKey: string,
-        overridden: boolean,
-    ): Promise<WorkflowRunWaitRow> {
-        return this._api.call("setWorkflowRunWaitConditionOverride", { workflowRunId, waitId, conditionKey, overridden });
-    }
-
-    async listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]> {
-        return this._api.call("listWorkflowRunJournal", { workflowRunId });
     }
 
     async getWorkerTimeline(

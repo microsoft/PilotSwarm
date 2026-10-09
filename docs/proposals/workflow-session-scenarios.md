@@ -6,9 +6,6 @@
 
 **Implementation foundation:** `feature/workflow-sessions`
 
-**Concrete acceptance workload:**
-[ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md&version=GBmain&_a=preview)
-
 **In one sentence:** add a deterministic controller for repeatable process
 invariants while continuing to use ordinary PilotSwarm agents for reasoning and
 tool execution.
@@ -48,7 +45,7 @@ tool execution.
   - [5.1 Unit and compiler tests](#51-unit-and-compiler-tests)
   - [5.2 Deterministic orchestration tests](#52-deterministic-orchestration-tests)
   - [5.3 Scenario tests](#53-scenario-tests)
-  - [5.4 ChangeDelivery acceptance](#54-changedelivery-acceptance)
+  - [5.4 End-to-end acceptance](#54-end-to-end-acceptance)
 - [6. Decisions](#6-decisions)
 
 ## Motivation
@@ -668,9 +665,9 @@ does not make the producing agent authoritative for that write.
 The initial `v1alpha1` YAML subset now requires every nonterminal state to
 reference a package-relative transition module and export; it deliberately
 provides no inline transition expression or case-map syntax. Provider registration and the
-remaining state-type request/response contracts continue to evolve. The
-[ChangeDelivery PoC](https://msdata.visualstudio.com/Database%20Systems/_git/sqlmort?path=/docs/workflow-sessions/change-delivery-poc/README.md)
-is the concrete acceptance encoding.
+remaining state-type request/response contracts continue to evolve. Concrete
+acceptance packages belong in adopting repositories rather than the normative
+PilotSwarm schema.
 
 ### 2.8 Nested workflows and limits
 
@@ -1013,10 +1010,10 @@ Cover:
 Each scenario verifies lineage, correlation, current status, and exactly-once
 result delivery.
 
-### 5.4 ChangeDelivery acceptance
+### 5.4 End-to-end acceptance
 
-The checked-in sqlmort PoC is the concrete acceptance fixture. It must exercise
-the production compiler and controller, not a test-only interpreter.
+A repository-owned acceptance fixture must exercise the production compiler
+and controller, not a test-only interpreter.
 
 Acceptance requires:
 
@@ -1051,8 +1048,8 @@ boundary used by production integrations.
 9. External waits do not reserve workers or consume model turns.
 10. External writes are separate authorized, idempotent actions.
 11. Packaged and inline definitions use one compiler.
-12. The sqlmort ChangeDelivery PoC is the concrete acceptance workload, not the
-    normative PilotSwarm schema.
+12. Concrete acceptance workloads remain repository-owned and do not become
+    part of the normative PilotSwarm schema.
 13. Starts may use registered references or inline definitions; every admitted
     run freezes an immutable compiled definition identity.
 14. Long-running operations remain in the current state across durable waits;

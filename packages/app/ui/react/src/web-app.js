@@ -6373,7 +6373,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 function WorkIndexTabs({ activeTab, onChange, panelId, isAdmin = false, scope = "visible", onScopeChange }) {
     const tabs = [
         { id: "sessions", label: "Sessions" },
-        { id: "workflowRuns", label: "Workflow Runs" },
         { id: "workflowGenerators", label: "Workflow Generators" },
     ];
     const selectRelative = (currentId, delta) => {
@@ -6769,19 +6768,9 @@ async function loadPersistedWorkflowGenerators(transport, scope = "visible", opt
             nextCursor: null,
         };
     const generators = await Promise.all(page.generators.map(async (generator) => {
-        const [activeDefinition, workflowRunRows] = await Promise.all([
-            generator.activeDefinitionId
-                ? transport.getWorkflowDefinition(generator.activeDefinitionId, { scope })
-                : null,
-            transport.listWorkflowGeneratorRuns(generator.workflowGeneratorId, { scope }),
-        ]);
-        const workflowRuns = await Promise.all(workflowRunRows.map((workflowRun) => (
-            loadPersistedWorkflowRunDetail(transport, workflowRun, {
-                label: `${generator.name}_${workflowRun.workflowRunKey}`,
-                definition: activeDefinition,
-                scope,
-            })
-        )));
+        const activeDefinition = generator.activeDefinitionId
+            ? await transport.getWorkflowDefinition(generator.activeDefinitionId, { scope })
+            : null;
         return {
             id: generator.workflowGeneratorId,
             name: generator.name,
@@ -6799,7 +6788,7 @@ async function loadPersistedWorkflowGenerators(transport, scope = "visible", opt
             definition: activeDefinition,
             sourceType: generator.sourceType,
             sourceConfig: scope === "fleet" ? null : generator.sourceConfig,
-            workflowRuns,
+            workflowRuns: [],
         };
     }));
     return {

@@ -558,11 +558,6 @@ export class WorkflowGeneratorController {
                 throw new Error(`Provider returned ${discoveredCount} items, exceeding maxItemsPerCycle=${maxItems}`);
             }
 
-            const reconciledWorkflowRuns = await this.store.reconcileWorkflowGeneratorDiscoveries(
-                cycle.cycleId,
-                evaluation.discoveries,
-            );
-            createdCount = reconciledWorkflowRuns.filter((workflowRun) => workflowRun.created).length;
             await this.store.completeWorkflowGeneratorCycle({
                 cycleId: cycle.cycleId,
                 workerId: this.workerId,
@@ -572,7 +567,8 @@ export class WorkflowGeneratorController {
                 createdCount,
             });
             this.logger.info(
-                `[workflow-generator] ${generator.name}: discovered=${discoveredCount} created=${createdCount}`,
+                `[workflow-generator] ${generator.name}: discovered=${discoveredCount}`
+                + " admission=disabled",
             );
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

@@ -254,16 +254,6 @@ export function createApiRouter({ runtime, requireAuth }) {
                 }
                 assertNoUnknownWorkflowDefinitionBodyParams(op, req);
                 assertNoCallerAuth(op, req);
-                if (op.name === "createWorkflowRun"
-                    && req.body && typeof req.body === "object"
-                    && (Object.hasOwn(req.body, "initialState") || Object.hasOwn(req.body, "affinities"))) {
-                    throw Object.assign(
-                        new Error(
-                            "Direct Workflow Runs inherit initialState and affinities from their Workflow Definition.",
-                        ),
-                        { code: "INVALID_REQUEST" },
-                    );
-                }
                 const params = collectParams(op, req);
                 assertSafeIdParams(op, params);
                 const result = await runtime.call(op.name, params, req.auth);

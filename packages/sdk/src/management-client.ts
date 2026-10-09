@@ -123,16 +123,9 @@ import type {
     AuthzAuditEntry,
     KnownUserInfo,
     CreateWorkflowGeneratorInput,
-    CreateWorkflowRunInput,
-    CreateWorkflowRunResult,
     WorkflowGeneratorRow,
     WorkflowDefinitionRow,
     WorkflowGeneratorCycleRow,
-    WorkflowRunRow,
-    WorkflowRunSessionRow,
-    WorkflowRunStateRunRow,
-    WorkflowRunJournalEntryRow,
-    WorkflowRunWaitRow,
     WorkflowRunCleanupPlan,
     WorkflowRunCleanupResult,
 } from "./cms.js";
@@ -535,20 +528,8 @@ export interface WorkflowCatalogPageOptions {
     updatedAfter?: number | string | Date | null;
 }
 
-export interface ListWorkflowRunPageOptions extends WorkflowCatalogPageOptions {
-    workflow?: string;
-    workflowRunKey?: string;
-    origin?: "direct" | "workflow_generator";
-}
-
 export interface WorkflowGeneratorPage {
     generators: WorkflowGeneratorRow[];
-    hasMore: boolean;
-    nextCursor?: WorkflowCatalogPageCursor;
-}
-
-export interface WorkflowRunPage {
-    workflowRuns: WorkflowRunRow[];
     hasMore: boolean;
     nextCursor?: WorkflowCatalogPageCursor;
 }
@@ -1185,83 +1166,9 @@ export class PilotSwarmManagementClient {
         return this._catalog!.setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId);
     }
 
-    async listWorkflowGeneratorRuns(workflowGeneratorId: string): Promise<WorkflowRunRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowGeneratorRuns(workflowGeneratorId);
-    }
-
     async listWorkflowGeneratorCycles(workflowGeneratorId: string, limit?: number): Promise<WorkflowGeneratorCycleRow[]> {
         this._ensureStarted();
         return this._catalog!.listWorkflowGeneratorCycles(workflowGeneratorId, limit);
-    }
-
-    async listWorkflowRuns(
-        options?: import("./cms.js").ListWorkflowRunsOptions,
-        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
-    ): Promise<WorkflowRunRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRuns(options, viewer);
-    }
-
-    async listWorkflowRunsPage(
-        options: ListWorkflowRunPageOptions = {},
-        viewer?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
-    ): Promise<WorkflowRunPage> {
-        this._ensureStarted();
-        const limit = clampInteger(options.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
-        const cursor = options.cursor ?? null;
-        const requiresPagedCatalog = Boolean(
-            cursor
-            || options.owner
-            || options.status
-            || options.repository
-            || options.placement
-            || options.updatedAfter != null
-            || options.workflow
-            || options.workflowRunKey
-            || options.origin,
-        );
-        if (!this._catalog!.listWorkflowRunsPage && requiresPagedCatalog) {
-            throw new Error("The configured catalog does not support paged Workflow Run queries.");
-        }
-        const rows = this._catalog!.listWorkflowRunsPage
-            ? await this._catalog!.listWorkflowRunsPage({
-                limit: limit + 1,
-                cursorUpdatedAt: cursor ? optionalDate(cursor.updatedAt, "cursor.updatedAt") : null,
-                cursorId: cursor?.id ?? null,
-                ownerQuery: options.owner,
-                status: options.status,
-                repository: options.repository,
-                placement: options.placement,
-                updatedAfter: optionalDate(options.updatedAfter, "updatedAfter"),
-                workflowQuery: options.workflow,
-                workflowRunKey: options.workflowRunKey,
-                origin: options.origin,
-            }, viewer)
-            : await this._catalog!.listWorkflowRuns({
-                workflowRunKey: options.workflowRunKey,
-                limit: limit + 1,
-            }, viewer);
-        const visibleRows = rows.slice(0, limit);
-        const hasMore = rows.length > limit;
-        const last = visibleRows[visibleRows.length - 1];
-        return {
-            workflowRuns: visibleRows,
-            hasMore,
-            ...(hasMore && last
-                ? { nextCursor: { updatedAt: last.updatedAt.getTime(), id: last.workflowRunId } }
-                : {}),
-        };
-    }
-
-    async getWorkflowRun(workflowRunId: string, includeDeleted = false): Promise<WorkflowRunRow | null> {
-        this._ensureStarted();
-        return this._catalog!.getWorkflowRun(workflowRunId, includeDeleted);
-    }
-
-    async createWorkflowRun(input: CreateWorkflowRunInput): Promise<CreateWorkflowRunResult> {
-        this._ensureStarted();
-        return this._catalog!.createWorkflowRun(input);
     }
 
     async deleteWorkflowGenerator(
@@ -1272,20 +1179,6 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         const plan = await this._catalog!.beginWorkflowGeneratorCleanup({
             workflowGeneratorId,
-            actor,
-            isAdmin,
-        });
-        return this._executeWorkflowRunCleanup(plan);
-    }
-
-    async deleteWorkflowRun(
-        workflowRunId: string,
-        actor: SessionOwnerInfo,
-        isAdmin = false,
-    ): Promise<WorkflowRunCleanupResult> {
-        this._ensureStarted();
-        const plan = await this._catalog!.beginWorkflowRunCleanup({
-            workflowRunId,
             actor,
             isAdmin,
         });
@@ -1443,36 +1336,6 @@ export class PilotSwarmManagementClient {
             alreadyDeleted: plan.alreadyDeleted,
             deletedSessionCount: allSessionIds.size,
         };
-    }
-
-    async listWorkflowRunSessions(workflowRunId: string): Promise<WorkflowRunSessionRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunSessions(workflowRunId);
-    }
-
-    async listWorkflowRunStateRuns(workflowRunId: string): Promise<WorkflowRunStateRunRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunStateRuns(workflowRunId);
-    }
-
-    async listWorkflowRunJournal(workflowRunId: string): Promise<WorkflowRunJournalEntryRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunJournal(workflowRunId);
-    }
-
-    async listWorkflowRunWaits(workflowRunId: string): Promise<WorkflowRunWaitRow[]> {
-        this._ensureStarted();
-        return this._catalog!.listWorkflowRunWaits(workflowRunId);
-    }
-
-    async setWorkflowRunWaitConditionOverride(
-        workflowRunId: string,
-        waitId: string,
-        conditionKey: string,
-        overridden: boolean,
-    ): Promise<WorkflowRunWaitRow> {
-        this._ensureStarted();
-        return this._catalog!.setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden);
     }
 
     // ─── Session Listing ─────────────────────────────────────

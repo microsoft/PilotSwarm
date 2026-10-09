@@ -282,43 +282,7 @@ export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
-export type { WorkflowRunSourceSessionContext } from "./cms.js";
 export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkerTimelineEntryKind, WorkerTimelineEntry, WorkflowGeneratorSourceType, WorkflowComputeAffinity, WorkflowGeneratorOperationalState, WorkflowRunLifecycleState, WorkflowRunSessionStatus, WorkflowRunStateRunStatus, WorkflowRunWaitKind, WorkflowRunWaitStatus, WorkflowRunWaitDetectionMode, WorkflowRunWaitCheckDisposition, WorkflowRunExternalOperationStatus, WorkflowRunExternalOperationSignalStatus, WorkflowGeneratorRow, WorkflowDefinitionRow, RegisteredWorkflowDefinitionRow, WorkflowGeneratorCycleRow, WorkflowRunRow, WorkflowRunSessionRow, WorkflowRunStateOutcome, WorkflowRunStateRunRow, WorkflowRunJournalEntryRow, WorkflowRunWaitResponder, WorkflowRunWaitRow, WorkflowRunWaitObserverSelector, WorkflowRunExternalOperationRow, WorkflowRunCleanupPlan, WorkflowRunCleanupResult, StartWorkflowRunResponseWaitInput, AcceptWorkflowRunResponseInput, StartWorkflowRunExternalOperationInput, StartWorkflowRunTimerWaitInput, CompleteWorkflowRunWaitCheckInput, CompleteWorkflowRunExternalOperationInput, PrepareWorkflowRunStateRunInput, CompleteWorkflowRunStateInput, WorkflowRunDiscovery, ReconciledWorkflowRun, CreateWorkflowGeneratorInput, WorkflowDefinitionRecord, WorkflowExecutionRow, WorkflowProjectionRow } from "./cms.js";
-export {
-    AZURE_DEVOPS_WORKFLOW_RUN_WAIT_PROVIDER,
-    AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
-    AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
-    azureDevOpsPullRequestApprovalOperationKey,
-    azureDevOpsPullRequestCompletionOperationKey,
-    azureDevOpsPullRequestResourceKey,
-    normalizeAzureDevOpsOrganization,
-    parseAzureDevOpsPullRequestIdentity,
-    parseAzureDevOpsPullRequestApprovalTarget,
-    parseAzureDevOpsApprovalConditions,
-    type AzureDevOpsPullRequestIdentity,
-    type AzureDevOpsPullRequestApprovalTarget,
-    type AzureDevOpsApprovalConditions,
-    type AzureDevOpsCodeReviewRecommendation,
-} from "./azure-devops-workflow-run-waits.js";
-export { createWorkflowRunLifecycleTools } from "./workflow-run-lifecycle-tools.js";
-export {
-    WorkflowRunWaitScheduler,
-    MockWorkflowRunWaitObserver,
-    MockWorkflowRunExternalOperationProducer,
-    type WorkflowRunWaitSchedulerStore,
-    type WorkflowRunWaitSignalSender,
-    type WorkflowRunWaitObservation,
-    type WorkflowRunWaitObserver,
-    type WorkflowRunWaitSchedulerOptions,
-    type WorkflowRunWaitSchedulerRunResult,
-    type WorkflowRunExternalOperationProducerStore,
-    type WorkflowRunExternalOperationSignalSender,
-    type MockWorkflowRunExternalOperationProducerOptions,
-} from "./workflow-run-external-operation-producer.js";
-export {
-    assertExternalOperationValidationGatesSatisfied,
-    type ExternalOperationGateRecord,
-} from "./workflow-run-validation-gates.js";
 export type {
     FactStore,
     FactRecord,

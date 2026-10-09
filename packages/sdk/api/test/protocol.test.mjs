@@ -103,58 +103,12 @@ test("WorkflowGenerator operations use resource-shaped REST paths and bodies", (
         },
     });
 
-    const directRun = buildOperationRequest("createWorkflowRun", {
-        workflowDefinitionId: "d1",
-        input: { issueId: 123 },
-        workflowRunKey: "issue:123",
-        idempotencyKey: "ignored",
-        initialState: "SkippedAhead",
-        affinities: { repo: "ignored" },
-    });
-    assert.deepEqual(directRun.body, {
-        workflowDefinitionId: "d1",
-        input: { issueId: 123 },
-        workflowRunKey: "issue:123",
-    });
-
-    const runLookup = buildOperationRequest("listWorkflowRuns", {
-        workflowType: "MockSmoke",
-        workflowRunKey: "issue:123",
-        limit: 1,
-        scope: "fleet",
-    });
-    assert.equal(runLookup.method, "GET");
-    assert.equal(runLookup.path, `${API_PREFIX}/workflow-runs`);
-    assert.equal(runLookup.query.get("workflowType"), "MockSmoke");
-    assert.equal(runLookup.query.get("workflowRunKey"), "issue:123");
-    assert.equal(runLookup.query.get("limit"), "1");
-    assert.equal(runLookup.query.get("scope"), "fleet");
-
-    const workflowRuns = buildOperationRequest("listWorkflowGeneratorRuns", {
-        workflowGeneratorId: "g/1",
-        scope: "fleet",
-    });
-    assert.equal(workflowRuns.path, `${API_PREFIX}/workflow-generators/g%2F1/workflow-runs`);
-    assert.equal(workflowRuns.query.get("scope"), "fleet");
     const deleteGenerator = buildOperationRequest("deleteWorkflowGenerator", { workflowGeneratorId: "g/1" });
     assert.equal(deleteGenerator.method, "DELETE");
     assert.equal(deleteGenerator.path, `${API_PREFIX}/workflow-generators/g%2F1`);
 
     const cycles = buildOperationRequest("listWorkflowGeneratorCycles", { workflowGeneratorId: "g1", limit: 25 });
     assert.equal(cycles.query.get("limit"), "25");
-
-    const sessions = buildOperationRequest("listWorkflowRunSessions", {
-        workflowRunId: "workflowRun-1",
-        scope: "fleet",
-    });
-    assert.equal(sessions.path, `${API_PREFIX}/workflow-runs/workflowRun-1/sessions`);
-    assert.equal(sessions.query.get("scope"), "fleet");
-    const stateRuns = buildOperationRequest("listWorkflowRunStateRuns", {
-        workflowRunId: "workflowRun-1",
-        scope: "fleet",
-    });
-    assert.equal(stateRuns.path, `${API_PREFIX}/workflow-runs/workflowRun-1/state-runs`);
-    assert.equal(stateRuns.query.get("scope"), "fleet");
 
     const fleetDefinition = buildOperationRequest("getWorkflowDefinition", {
         workflowDefinitionId: "definition-1",
@@ -167,13 +121,6 @@ test("WorkflowGenerator operations use resource-shaped REST paths and bodies", (
         scope: "fleet",
     });
     assert.equal(fleetSession.query.get("scope"), "fleet");
-    const waits = buildOperationRequest("listWorkflowRunWaits", { workflowRunId: "workflowRun-1" });
-    assert.equal(waits.path, `${API_PREFIX}/workflow-runs/workflowRun-1/waits`);
-    const journal = buildOperationRequest("listWorkflowRunJournal", { workflowRunId: "workflowRun-1" });
-    assert.equal(journal.path, `${API_PREFIX}/workflow-runs/workflowRun-1/journal`);
-    const deleteWorkflowRun = buildOperationRequest("deleteWorkflowRun", { workflowRunId: "workflowRun/1" });
-    assert.equal(deleteWorkflowRun.method, "DELETE");
-    assert.equal(deleteWorkflowRun.path, `${API_PREFIX}/workflow-runs/workflowRun%2F1`);
 });
 
 test("session page query params round-trip through encode + coerce", () => {
@@ -213,24 +160,6 @@ test("catalog page operations encode scalar cursors and server filters", () => {
     assert.equal(generators.query.get("repository"), "repo");
     assert.ok(!/%7B|%22/i.test(generators.query.toString()));
 
-    const runs = buildOperationRequest("listWorkflowRunsPage", {
-        scope: "fleet",
-        limit: 50,
-        cursorUpdatedAt: 1751500000000,
-        cursorId: "r1",
-        owner: "alice",
-        status: "blocked",
-        repository: "repo",
-        placement: "devbox",
-        origin: "workflow_generator",
-        workflowType: "test",
-        workflowRunKey: "issue:123",
-        updatedAfter: "2026-01-01T00:00:00.000Z",
-    });
-    assert.equal(runs.path, `${API_PREFIX}/management/workflow-runs`);
-    assert.equal(runs.query.get("origin"), "workflow_generator");
-    assert.equal(runs.query.get("workflowRunKey"), "issue:123");
-    assert.equal(runs.query.get("scope"), "fleet");
 });
 
 test("missing required path params throw", () => {

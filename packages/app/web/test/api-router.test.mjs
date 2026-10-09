@@ -237,29 +237,6 @@ test("path, query, and body params are collected with declared types", async () 
     }
 });
 
-test("direct Workflow Run REST creation rejects Definition execution overrides", async () => {
-    const { baseUrl, calls, close } = await createHarness();
-    try {
-        const response = await fetch(`${baseUrl}/api/v1/workflow-runs`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-                workflowDefinitionId: "definition-1",
-                workflowRunKey: "request-1",
-                input: {},
-                affinities: { repo: "other-repo" },
-            }),
-        });
-        assert.equal(response.status, 400);
-        const payload = await response.json();
-        assert.equal(payload.error.code, "INVALID_REQUEST");
-        assert.match(payload.error.message, /inherit initialState and affinities/);
-        assert.equal(calls.some((call) => call.name === "createWorkflowRun"), false);
-    } finally {
-        await close();
-    }
-});
-
 test("Workflow Definition REST publication rejects unsupported content instead of persisting an empty definition", async () => {
     const definitionRuntime = createWorkflowDefinitionRuntime();
     const { baseUrl, close } = await createHarness({
@@ -309,82 +286,6 @@ test("Workflow Definition REST publication rejects unsupported content instead o
         assert.equal(definitionRuntime.calls.length, 0);
     } finally {
         await close();
-    }
-});
-
-test("Workflow Run HTTP details are requester-scoped with indistinguishable not-found responses", async () => {
-    const requests = [
-        { method: "GET", path: "/workflow-runs/run-bob" },
-        { method: "GET", path: "/workflow-runs/run-bob/sessions" },
-        { method: "GET", path: "/workflow-runs/run-bob/state-runs" },
-        { method: "GET", path: "/workflow-runs/run-bob/waits" },
-        { method: "GET", path: "/workflow-runs/run-bob/journal" },
-        {
-            method: "POST",
-            path: "/workflow-runs/run-bob/waits/wait-1/condition-overrides",
-            body: { conditionKey: "approved", overridden: true },
-        },
-        { method: "DELETE", path: "/workflow-runs/run-bob" },
-    ];
-    const alicePrincipal = {
-        provider: "dev",
-        subject: "alice",
-        email: "alice@example.test",
-        displayName: "Alice",
-    };
-    const alice = await createHarness({
-        runtime: createWorkflowAuthorizationRuntime(),
-        principal: alicePrincipal,
-    });
-    try {
-        const ownRun = await fetch(`${alice.baseUrl}/api/v1/workflow-runs/run-alice`);
-        assert.equal(ownRun.status, 200);
-        assert.equal((await ownRun.json()).result.workflowRunId, "run-alice");
-
-        for (const request of requests) {
-            const options = {
-                method: request.method,
-                headers: { "content-type": "application/json" },
-                ...(request.body ? { body: JSON.stringify(request.body) } : {}),
-            };
-            const denied = await fetch(`${alice.baseUrl}/api/v1${request.path}`, options);
-            const missing = await fetch(
-                `${alice.baseUrl}/api/v1${request.path.replace("run-bob", "run-missing")}`,
-                options,
-            );
-            assert.equal(denied.status, 404, `${request.method} ${request.path}`);
-            assert.equal(missing.status, 404, `${request.method} missing comparison`);
-            assert.deepEqual(
-                await denied.json(),
-                await missing.json(),
-                `${request.method} ${request.path} must not reveal whether another requester's Run exists`,
-            );
-        }
-    } finally {
-        await alice.close();
-    }
-
-    const resourceAdmin = await createHarness({
-        runtime: createWorkflowAuthorizationRuntime(),
-        principal: {
-            provider: "dev",
-            subject: "admin",
-            email: "admin@example.test",
-            displayName: "Admin",
-        },
-        role: "admin",
-    });
-    try {
-        for (const request of requests) {
-            const response = await fetch(`${resourceAdmin.baseUrl}/api/v1${request.path}`, {
-                method: request.method,
-                headers: { "content-type": "application/json" },
-                ...(request.body ? { body: JSON.stringify(request.body) } : {}),
-            });
-            assert.equal(response.status, 200, `resource admin ${request.method} ${request.path}`);
-        }
-    } finally {
-        await resourceAdmin.close();
     }
 });
 

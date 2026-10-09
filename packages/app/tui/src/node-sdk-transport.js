@@ -1135,52 +1135,8 @@ export class NodeSdkTransport {
         return this.mgmt.setWorkflowGeneratorDefinition(workflowGeneratorId, workflowDefinitionId);
     }
 
-    async listWorkflowGeneratorRuns(workflowGeneratorId) {
-        return this.mgmt.listWorkflowGeneratorRuns(workflowGeneratorId);
-    }
-
     async listWorkflowGeneratorCycles(workflowGeneratorId, limit) {
         return this.mgmt.listWorkflowGeneratorCycles(workflowGeneratorId, limit);
-    }
-
-    async getWorkflowRun(workflowRunId, includeDeleted = false) {
-        return this.mgmt.getWorkflowRun(workflowRunId, includeDeleted);
-    }
-
-    async createWorkflowRun(input) {
-        return this.mgmt.createWorkflowRun(input);
-    }
-
-    async listWorkflowRuns(options, viewer = null) {
-        return this.mgmt.listWorkflowRuns(options, viewer);
-    }
-
-    async listWorkflowRunsPage(options, viewer = null) {
-        return this.mgmt.listWorkflowRunsPage(options, viewer);
-    }
-
-    async deleteWorkflowRun(workflowRunId, actor, isAdmin = false) {
-        return this.mgmt.deleteWorkflowRun(workflowRunId, actor, isAdmin);
-    }
-
-    async listWorkflowRunSessions(workflowRunId) {
-        return this.mgmt.listWorkflowRunSessions(workflowRunId);
-    }
-
-    async listWorkflowRunStateRuns(workflowRunId) {
-        return this.mgmt.listWorkflowRunStateRuns(workflowRunId);
-    }
-
-    async listWorkflowRunWaits(workflowRunId) {
-        return this.mgmt.listWorkflowRunWaits(workflowRunId);
-    }
-
-    async setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden) {
-        return this.mgmt.setWorkflowRunWaitConditionOverride(workflowRunId, waitId, conditionKey, overridden);
-    }
-
-    async listWorkflowRunJournal(workflowRunId) {
-        return this.mgmt.listWorkflowRunJournal(workflowRunId);
     }
 
     async listSessionGroups() {

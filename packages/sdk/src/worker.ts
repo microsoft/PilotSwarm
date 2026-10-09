@@ -37,7 +37,6 @@ import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
-import { createWorkflowRunLifecycleTools } from "./workflow-run-lifecycle-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, DEFAULT_TURN_INACTIVITY_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
@@ -1193,7 +1192,6 @@ export class PilotSwarmWorker {
                 storeUrl: storage.duroxide.url,
             });
             this.registerTools(sweeperTools);
-            this.registerTools(createWorkflowRunLifecycleTools(this._catalog));
         }
 
         // Auto-register artifact tools (blob storage or local filesystem)
