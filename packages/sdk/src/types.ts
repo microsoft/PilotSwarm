@@ -8,6 +8,7 @@ import type { StorageConfig } from "./storage-config.js";
 // carry them so the worker's beforeRunTurn/afterRunTurn are thin callers of
 // hydrate/dehydrate. Type-only import (erased at compile) — no runtime cycle.
 import type { GitBlobIO, GitStateIO } from "./git-workspace.js";
+import type { WorkflowStateProviderRegistry } from "./workflow-orchestration/state-providers.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -1430,6 +1431,8 @@ export interface WorkerProvenanceOptions {
 
 export interface PilotSwarmWorkerOptions {
     store: string;
+    /** Registered handlers for workflow action and observed-condition states. */
+    workflowStateProviders?: WorkflowStateProviderRegistry;
     /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a

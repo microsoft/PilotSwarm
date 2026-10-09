@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS ${s}.workflow_state_executions (
     graph_id             TEXT NOT NULL,
     state_id             TEXT NOT NULL,
     child_session_id     TEXT,
-    waiting_on           TEXT NOT NULL CHECK (waiting_on IN ('activity', 'agent-result')),
+    waiting_on           TEXT NOT NULL CHECK (waiting_on IN ('activity', 'agent-result', 'question', 'observed-condition')),
+    waiting_details_json JSONB,
     status               TEXT NOT NULL DEFAULT 'admitted' CHECK (status IN ('admitted', 'accepted')),
     outcome              TEXT,
     output_json          JSONB,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS ${s}.workflow_projections (
     current_state_id          TEXT,
     current_execution_sequence BIGINT,
     waiting_on                TEXT,
+    waiting_details_json      JSONB,
     terminal_outcome          TEXT,
     result_json               JSONB,
     completed_at              TIMESTAMPTZ,
@@ -59,7 +61,8 @@ CREATE OR REPLACE FUNCTION ${s}.cms_record_workflow_execution(
     p_graph_id            TEXT,
     p_state_id            TEXT,
     p_child_session_id    TEXT,
-    p_waiting_on          TEXT
+    p_waiting_on          TEXT,
+    p_waiting_details_json JSONB
 ) RETURNS VOID AS $$
 DECLARE
     v_existing ${s}.workflow_state_executions%ROWTYPE;
@@ -68,7 +71,7 @@ BEGIN
     IF p_execution_sequence < 1 THEN
         RAISE EXCEPTION 'WORKFLOW_EXECUTION_INVALID: execution sequence must be positive';
     END IF;
-    IF p_waiting_on NOT IN ('activity', 'agent-result') THEN
+    IF p_waiting_on NOT IN ('activity', 'agent-result', 'question', 'observed-condition') THEN
         RAISE EXCEPTION 'WORKFLOW_EXECUTION_INVALID: unsupported waiting target %', p_waiting_on;
     END IF;
     IF NOT EXISTS (
@@ -82,10 +85,10 @@ BEGIN
 
     INSERT INTO ${s}.workflow_state_executions (
         workflow_session_id, execution_sequence, graph_id, state_id,
-        child_session_id, waiting_on
+        child_session_id, waiting_on, waiting_details_json
     ) VALUES (
         p_workflow_session_id, p_execution_sequence, p_graph_id, p_state_id,
-        p_child_session_id, p_waiting_on
+        p_child_session_id, p_waiting_on, p_waiting_details_json
     )
     ON CONFLICT (workflow_session_id, execution_sequence) DO NOTHING;
     GET DIAGNOSTICS v_inserted = ROW_COUNT;
@@ -99,6 +102,7 @@ BEGIN
             OR v_existing.state_id IS DISTINCT FROM p_state_id
             OR v_existing.child_session_id IS DISTINCT FROM p_child_session_id
             OR v_existing.waiting_on IS DISTINCT FROM p_waiting_on
+            OR v_existing.waiting_details_json IS DISTINCT FROM p_waiting_details_json
         THEN
             RAISE EXCEPTION 'WORKFLOW_EXECUTION_CONFLICT: execution %/% has different identity',
                 p_workflow_session_id, p_execution_sequence;
@@ -113,17 +117,18 @@ BEGIN
                 'stateId', p_state_id,
                 'executionSequence', p_execution_sequence,
                 'childSessionId', p_child_session_id,
-                'waitingOn', p_waiting_on
+                'waitingOn', p_waiting_on,
+                'waitingDetails', p_waiting_details_json
             )
         );
     END IF;
 
     INSERT INTO ${s}.workflow_projections (
         workflow_session_id, graph_id, status, current_state_id,
-        current_execution_sequence, waiting_on
+        current_execution_sequence, waiting_on, waiting_details_json
     ) VALUES (
         p_workflow_session_id, p_graph_id, 'running', p_state_id,
-        p_execution_sequence, p_waiting_on
+        p_execution_sequence, p_waiting_on, p_waiting_details_json
     )
     ON CONFLICT (workflow_session_id) DO UPDATE
     SET graph_id = EXCLUDED.graph_id,
@@ -131,6 +136,7 @@ BEGIN
         current_state_id = EXCLUDED.current_state_id,
         current_execution_sequence = EXCLUDED.current_execution_sequence,
         waiting_on = EXCLUDED.waiting_on,
+        waiting_details_json = EXCLUDED.waiting_details_json,
         terminal_outcome = NULL,
         result_json = NULL,
         completed_at = NULL,
@@ -191,6 +197,7 @@ BEGIN
 
     UPDATE ${s}.workflow_projections
        SET waiting_on = NULL,
+           waiting_details_json = NULL,
            updated_at = now()
      WHERE workflow_session_id = p_workflow_session_id
        AND current_execution_sequence = p_execution_sequence
@@ -282,7 +289,7 @@ BEGIN
 
     INSERT INTO ${s}.workflow_projections (
         workflow_session_id, graph_id, status, current_state_id,
-        current_execution_sequence, waiting_on, terminal_outcome,
+        current_execution_sequence, waiting_on, waiting_details_json, terminal_outcome,
         result_json, completed_at
     ) VALUES (
         p_workflow_session_id, p_graph_id, p_outcome, p_terminal_state_id,
@@ -291,7 +298,7 @@ BEGIN
               FROM ${s}.workflow_state_executions
              WHERE workflow_session_id = p_workflow_session_id
         ),
-        NULL, p_outcome,
+        NULL, NULL, p_outcome,
         p_result_json, p_completed_at
     )
     ON CONFLICT (workflow_session_id) DO UPDATE
@@ -299,6 +306,7 @@ BEGIN
         status = EXCLUDED.status,
         current_state_id = EXCLUDED.current_state_id,
         waiting_on = NULL,
+        waiting_details_json = NULL,
         terminal_outcome = EXCLUDED.terminal_outcome,
         result_json = EXCLUDED.result_json,
         completed_at = EXCLUDED.completed_at,
@@ -345,7 +353,7 @@ BEGIN
 
     INSERT INTO ${s}.workflow_projections (
         workflow_session_id, graph_id, status, current_state_id,
-        current_execution_sequence, waiting_on, terminal_outcome,
+        current_execution_sequence, waiting_on, waiting_details_json, terminal_outcome,
         result_json, completed_at
     )
     SELECT c.workflow_session_id, c.graph_id, c.outcome, c.terminal_state_id,
@@ -354,7 +362,7 @@ BEGIN
                  FROM ${s}.workflow_state_executions e
                 WHERE e.workflow_session_id = c.workflow_session_id
            ),
-           NULL, c.outcome, c.result_json, c.completed_at
+           NULL, NULL, c.outcome, c.result_json, c.completed_at
       FROM ${s}.workflow_completions c
      WHERE c.workflow_session_id = p_workflow_session_id;
 
@@ -364,11 +372,12 @@ BEGIN
 
     INSERT INTO ${s}.workflow_projections (
         workflow_session_id, graph_id, status, current_state_id,
-        current_execution_sequence, waiting_on
+        current_execution_sequence, waiting_on, waiting_details_json
     )
     SELECT e.workflow_session_id, e.graph_id, 'running', e.state_id,
            e.execution_sequence,
-           CASE WHEN e.status = 'accepted' THEN NULL ELSE e.waiting_on END
+           CASE WHEN e.status = 'accepted' THEN NULL ELSE e.waiting_on END,
+           CASE WHEN e.status = 'accepted' THEN NULL ELSE e.waiting_details_json END
       FROM ${s}.workflow_state_executions e
      WHERE e.workflow_session_id = p_workflow_session_id
      ORDER BY e.execution_sequence DESC

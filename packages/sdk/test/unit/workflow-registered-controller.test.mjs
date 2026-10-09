@@ -13,8 +13,11 @@ import {
     RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
 } from "../../dist/workflow-orchestration_1_0_0/contracts.js";
 import {
+    EXECUTE_WORKFLOW_ACTION_ACTIVITY,
     EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+    OBSERVE_WORKFLOW_CONDITION_ACTIVITY,
     RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
+    workflowQuestionQueueName,
 } from "../../dist/workflow-orchestration/registered-contracts.js";
 
 function createContext() {
@@ -34,6 +37,9 @@ function createContext() {
         dequeueEvent(name) {
             return { kind: "dequeue", name };
         },
+        scheduleTimer(delayMs) {
+            return { kind: "timer", delayMs };
+        },
         newGuid() {
             return { kind: "newGuid" };
         },
@@ -44,7 +50,7 @@ function createContext() {
 }
 
 const manifest = {
-    compilerVersion: "v1alpha1-3",
+    compilerVersion: "v1alpha1-4",
     apiVersion: "pilotswarm.dev/v1alpha1",
     kind: "Workflow",
     graphId: "registered-controller@0.1.0",
@@ -93,6 +99,116 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
         sessionId: "workflow-registered",
         definition: { kind: "registered", definitionId: "definition-1" },
         inputs: { changeId: "change-42" },
+    });
+
+    test("executes question, action, and observed-condition states durably", () => {
+        const controlManifest = {
+            ...manifest,
+            initialState: "approve",
+            states: [{
+                id: "approve",
+                type: "question",
+                prompt: "Publish?",
+                context: { changeId: "${inputs.changeId}" },
+                authorization: { mode: "session-write" },
+                completion: { outcomes: ["publish"] },
+                transition: {
+                    handler: { module: "./transitions.mjs", export: "approve" },
+                    allowedTargets: ["publish"],
+                },
+            }, {
+                id: "publish",
+                type: "action",
+                provider: "test",
+                operation: "publish",
+                input: { changeId: "${inputs.changeId}" },
+                completion: { outcomes: ["succeeded"] },
+                transition: {
+                    handler: { module: "./transitions.mjs", export: "publish" },
+                    allowedTargets: ["observe"],
+                },
+            }, {
+                id: "observe",
+                type: "observed-condition",
+                provider: "test",
+                operation: { changeId: "${inputs.changeId}" },
+                conditions: { state: "complete" },
+                pollIntervalMs: 250,
+                completion: { outcomes: ["satisfied"] },
+                transition: {
+                    handler: { module: "./transitions.mjs", export: "observe" },
+                    allowedTargets: ["done"],
+                },
+            }, {
+                id: "done",
+                type: "terminal",
+                outcome: "succeeded",
+                summary: "Done.",
+                hasOutput: true,
+                output: "${states.observe.result}",
+            }],
+        };
+        const execution = durableWorkflowSessionOrchestration_1_0_0(createContext(), {
+            sessionId: "workflow-control",
+            definition: { kind: "registered", definitionId: "definition-control" },
+            inputs: { changeId: "change-9" },
+        });
+        const targets = ["publish", "observe", "done"];
+        let observationCount = 0;
+        let step = execution.next();
+        while (!step.done) {
+            const operation = step.value;
+            if (operation.name === RESOLVE_WORKFLOW_DEFINITION_ACTIVITY) {
+                step = execution.next({
+                    definitionId: "definition-control",
+                    manifest: controlManifest,
+                });
+            } else if (operation.name === RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY) {
+                step = execution.next(undefined);
+            } else if (
+                operation.kind === "dequeue"
+                && operation.name === workflowQuestionQueueName(1)
+            ) {
+                step = execution.next(JSON.stringify({
+                    outcome: "publish",
+                    output: { decisionId: "decision-1" },
+                }));
+            } else if (operation.name === EXECUTE_WORKFLOW_ACTION_ACTIVITY) {
+                step = execution.next({
+                    outcome: "succeeded",
+                    output: { publicationId: "publication-1" },
+                });
+            } else if (operation.name === OBSERVE_WORKFLOW_CONDITION_ACTIVITY) {
+                observationCount += 1;
+                step = execution.next(observationCount === 1
+                    ? { status: "pending" }
+                    : {
+                        status: "completed",
+                        outcome: "satisfied",
+                        output: { observed: true },
+                    });
+            } else if (operation.kind === "timer") {
+                assert.equal(operation.delayMs, 250);
+                step = execution.next(undefined);
+            } else if (operation.name === ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY) {
+                step = execution.next({
+                    outcome: operation.input.outcome,
+                    output: operation.input.output,
+                });
+            } else if (operation.name === EXECUTE_WORKFLOW_TRANSITION_ACTIVITY) {
+                step = execution.next({ kind: "advance", target: targets.shift() });
+            } else if (operation.kind === "utcNow") {
+                step = execution.next("2026-10-07T00:00:00.000Z");
+            } else if (operation.name === COMPLETE_WORKFLOW_ACTIVITY) {
+                step = execution.next(operation.input.result);
+            } else {
+                throw new Error(`Unexpected operation: ${JSON.stringify(operation)}`);
+            }
+        }
+
+        assert.equal(step.value.outcome, "succeeded");
+        assert.deepEqual(step.value.result, { observed: true });
+        assert.equal(observationCount, 2);
     });
 
     const operations = [];

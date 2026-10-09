@@ -57,6 +57,18 @@ export {
     CmsWorkflowDefinitionProvider,
 } from "./workflow-orchestration/definition-provider.js";
 export {
+    WorkflowStateProviderRegistry,
+} from "./workflow-orchestration/state-providers.js";
+export type {
+    WorkflowActionHandler,
+    WorkflowActionRequest,
+    WorkflowObservationResult,
+    WorkflowObservedConditionHandler,
+    WorkflowObservedConditionRequest,
+    WorkflowProviderExecutionContext,
+    WorkflowProviderResult,
+} from "./workflow-orchestration/state-providers.js";
+export {
     resolveWorkflowGitPackage,
 } from "./workflow-orchestration/git-source.js";
 export {
@@ -77,8 +89,11 @@ export type {
 } from "./workflow-orchestration/graph.js";
 export type {
     CompiledWorkflowAgentStateManifest,
+    CompiledWorkflowActionStateManifest,
     CompiledWorkflowIdentityManifest,
     CompiledWorkflowManifest,
+    CompiledWorkflowObservedConditionStateManifest,
+    CompiledWorkflowQuestionStateManifest,
     CompiledWorkflowStateManifest,
     CompiledWorkflowTerminalStateManifest,
     CompiledWorkflowTransitionHandlerManifest,

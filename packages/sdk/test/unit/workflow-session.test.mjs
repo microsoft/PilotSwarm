@@ -7,7 +7,7 @@ import {
 
 function registeredDefinition(definitionId, inputSchema, identity) {
     const manifest = {
-        compilerVersion: "v1alpha1-3",
+        compilerVersion: "v1alpha1-4",
         apiVersion: "pilotswarm.dev/v1alpha1",
         kind: "Workflow",
         graphId: `workflow-${definitionId}@1.0.0`,

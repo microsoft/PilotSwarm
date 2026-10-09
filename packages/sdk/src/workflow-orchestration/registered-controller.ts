@@ -1,5 +1,5 @@
 import type {
-    CompiledWorkflowAgentStateManifest,
+    CompiledWorkflowTransitionState,
     CompiledWorkflowStateManifest,
     WorkflowAdvanceDirective,
 } from "./compiler.js";
@@ -31,9 +31,13 @@ import {
     createCompiledAgentStateDispatchPlan,
 } from "./registered-agent-dispatch.js";
 import {
+    EXECUTE_WORKFLOW_ACTION_ACTIVITY,
     EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+    OBSERVE_WORKFLOW_CONDITION_ACTIVITY,
     RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
+    workflowQuestionQueueName,
 } from "./registered-contracts.js";
+import type { WorkflowObservationResult } from "./state-providers.js";
 
 function workflowControllerError(message: string, code: string): Error {
     return Object.assign(new Error(message), { code });
@@ -72,7 +76,7 @@ function requireExecutionResult(
 }
 
 function requireDeclaredOutcome(
-    state: CompiledWorkflowAgentStateManifest,
+    state: CompiledWorkflowTransitionState,
     result: WorkflowStateExecutionResult,
 ): WorkflowStateExecutionResult {
     if (!state.completion.outcomes.includes(result.outcome)) {
@@ -102,6 +106,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
     ctx: {
         scheduleActivity(name: string, input: unknown): unknown;
         dequeueEvent(name: string): unknown;
+        scheduleTimer(delayMs: number): unknown;
         newGuid(): unknown;
         utcNow(): unknown;
     },
@@ -184,59 +189,207 @@ export function* durableRegisteredWorkflowSessionOrchestration(
         }
 
         executionSequence += 1;
-        const childSessionId = String(yield ctx.newGuid());
-        const dispatch = createCompiledAgentStateDispatchPlan({
-            workflowSessionId: input.sessionId,
-            graphId: manifest.graphId,
-            stateId: currentStateId,
-            executionSequence,
-            childSessionId,
-            workflowInputs: input.inputs,
-            configuration: manifest.configuration,
-            latestStateOutputs,
-            executionHistory,
-            state,
-        });
-        const admission: RecordWorkflowStateExecutionActivityInput = {
-            workflowSessionId: input.sessionId,
-            executionSequence,
-            graphId: manifest.graphId,
-            stateId: currentStateId,
-            childSessionId,
-            waitingOn: "agent-result",
-        };
-        yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, admission);
-        yield routeAgentStateDispatch(
-            ctx.scheduleActivity(dispatch.activityName, dispatch.activityInput),
-            dispatch.activityTag,
-        );
-        const rawEvent = yield ctx.dequeueEvent(dispatch.resultQueueName);
-        const event = typeof rawEvent === "string"
-            ? JSON.parse(rawEvent) as WorkflowResultEvent
-            : rawEvent as WorkflowResultEvent;
-        if (
-            !event
-            || event.workflowSessionId !== input.sessionId
-            || event.childSessionId !== childSessionId
-            || event.graphId !== manifest.graphId
-            || event.stateId !== currentStateId
-            || event.executionSequence !== executionSequence
-        ) {
-            throw workflowControllerError(
-                `Workflow state '${currentStateId}' received a result for a different execution.`,
-                "WORKFLOW_STATE_RESULT_MISMATCH",
+        let childSessionId: string | undefined;
+        let submittedOutput: WorkflowStateExecutionResult;
+        if (state.type === "agent") {
+            childSessionId = String(yield ctx.newGuid());
+            const dispatch = createCompiledAgentStateDispatchPlan({
+                workflowSessionId: input.sessionId,
+                graphId: manifest.graphId,
+                stateId: currentStateId,
+                executionSequence,
+                childSessionId,
+                workflowInputs: input.inputs,
+                configuration: manifest.configuration,
+                latestStateOutputs,
+                executionHistory,
+                state,
+            });
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, {
+                workflowSessionId: input.sessionId,
+                executionSequence,
+                graphId: manifest.graphId,
+                stateId: currentStateId,
+                childSessionId,
+                waitingOn: "agent-result",
+            } satisfies RecordWorkflowStateExecutionActivityInput);
+            yield routeAgentStateDispatch(
+                ctx.scheduleActivity(dispatch.activityName, dispatch.activityInput),
+                dispatch.activityTag,
             );
+            const rawEvent = yield ctx.dequeueEvent(dispatch.resultQueueName);
+            const event = typeof rawEvent === "string"
+                ? JSON.parse(rawEvent) as WorkflowResultEvent
+                : rawEvent as WorkflowResultEvent;
+            if (
+                !event
+                || event.workflowSessionId !== input.sessionId
+                || event.childSessionId !== childSessionId
+                || event.graphId !== manifest.graphId
+                || event.stateId !== currentStateId
+                || event.executionSequence !== executionSequence
+            ) {
+                throw workflowControllerError(
+                    `Workflow state '${currentStateId}' received a result for a different execution.`,
+                    "WORKFLOW_STATE_RESULT_MISMATCH",
+                );
+            }
+            submittedOutput = requireDeclaredOutcome(
+                state,
+                requireExecutionResult(currentStateId, {
+                    outcome: event.outcome,
+                    output: event.output,
+                }),
+            );
+        } else if (state.type === "question") {
+            const questionContext = resolveWorkflowTemplate(
+                state.context,
+                `states.${state.id}.context`,
+                {
+                    inputs: input.inputs,
+                    configuration: manifest.configuration,
+                    latestStateOutputs,
+                },
+            );
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, {
+                workflowSessionId: input.sessionId,
+                executionSequence,
+                graphId: manifest.graphId,
+                stateId: currentStateId,
+                waitingOn: "question",
+                waitingDetails: {
+                    prompt: state.prompt,
+                    context: questionContext,
+                    authorization: state.authorization,
+                    outcomes: state.completion.outcomes,
+                },
+            } satisfies RecordWorkflowStateExecutionActivityInput);
+            const rawAnswer = yield ctx.dequeueEvent(
+                workflowQuestionQueueName(executionSequence),
+            );
+            submittedOutput = requireDeclaredOutcome(
+                state,
+                requireExecutionResult(
+                    currentStateId,
+                    typeof rawAnswer === "string"
+                        ? JSON.parse(rawAnswer)
+                        : rawAnswer,
+                ),
+            );
+        } else if (state.type === "action") {
+            const actionInput = resolveWorkflowTemplate(
+                state.input,
+                `states.${state.id}.input`,
+                {
+                    inputs: input.inputs,
+                    configuration: manifest.configuration,
+                    latestStateOutputs,
+                },
+            );
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, {
+                workflowSessionId: input.sessionId,
+                executionSequence,
+                graphId: manifest.graphId,
+                stateId: currentStateId,
+                waitingOn: "activity",
+                waitingDetails: {
+                    provider: state.provider,
+                    operation: state.operation,
+                    input: actionInput,
+                },
+            } satisfies RecordWorkflowStateExecutionActivityInput);
+            submittedOutput = requireDeclaredOutcome(
+                state,
+                requireExecutionResult(
+                    currentStateId,
+                    yield ctx.scheduleActivity(EXECUTE_WORKFLOW_ACTION_ACTIVITY, {
+                        workflowSessionId: input.sessionId,
+                        graphId: manifest.graphId,
+                        stateId: currentStateId,
+                        executionSequence,
+                        workflowInputs: input.inputs,
+                        provider: state.provider,
+                        operation: state.operation,
+                        input: actionInput,
+                    }),
+                ),
+            );
+        } else {
+            const operation = resolveWorkflowTemplate(
+                state.operation,
+                `states.${state.id}.operation`,
+                {
+                    inputs: input.inputs,
+                    configuration: manifest.configuration,
+                    latestStateOutputs,
+                },
+            );
+            const conditions = resolveWorkflowTemplate(
+                state.conditions,
+                `states.${state.id}.conditions`,
+                {
+                    inputs: input.inputs,
+                    configuration: manifest.configuration,
+                    latestStateOutputs,
+                },
+            );
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, {
+                workflowSessionId: input.sessionId,
+                executionSequence,
+                graphId: manifest.graphId,
+                stateId: currentStateId,
+                waitingOn: "observed-condition",
+                waitingDetails: {
+                    provider: state.provider,
+                    operation,
+                    conditions,
+                    pollIntervalMs: state.pollIntervalMs,
+                },
+            } satisfies RecordWorkflowStateExecutionActivityInput);
+            let observationAttempt = 0;
+            while (true) {
+                observationAttempt += 1;
+                const observation = (yield ctx.scheduleActivity(
+                    OBSERVE_WORKFLOW_CONDITION_ACTIVITY,
+                    {
+                        workflowSessionId: input.sessionId,
+                        graphId: manifest.graphId,
+                        stateId: currentStateId,
+                        executionSequence,
+                        workflowInputs: input.inputs,
+                        provider: state.provider,
+                        operation,
+                        conditions,
+                        observationAttempt,
+                    },
+                )) as WorkflowObservationResult;
+                if (observation?.status === "completed") {
+                    submittedOutput = requireDeclaredOutcome(
+                        state,
+                        requireExecutionResult(currentStateId, observation),
+                    );
+                    break;
+                }
+                if (observation?.status !== "pending") {
+                    throw workflowControllerError(
+                        `Workflow observed-condition state '${currentStateId}' returned an invalid observation.`,
+                        "WORKFLOW_OBSERVATION_INVALID",
+                    );
+                }
+                const retryAfterMs = observation.retryAfterMs
+                    ?? state.pollIntervalMs;
+                if (!Number.isInteger(retryAfterMs) || retryAfterMs < 100) {
+                    throw workflowControllerError(
+                        `Workflow observed-condition state '${currentStateId}' returned an invalid retry delay.`,
+                        "WORKFLOW_OBSERVATION_INVALID",
+                    );
+                }
+                yield ctx.scheduleTimer(retryAfterMs);
+            }
         }
-        const submittedOutput = requireDeclaredOutcome(
-            state,
-            requireExecutionResult(currentStateId, {
-                outcome: event.outcome,
-                output: event.output,
-            }),
-        );
         const acceptInput: AcceptWorkflowStateResultActivityInput = {
             workflowSessionId: input.sessionId,
-            childSessionId,
+            ...(childSessionId ? { childSessionId } : {}),
             graphId: manifest.graphId,
             stateId: currentStateId,
             executionSequence,

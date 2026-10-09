@@ -19,6 +19,7 @@ function createCatalogHarness() {
                         current_state_id: "inspect",
                         current_execution_sequence: "3",
                         waiting_on: "agent-result",
+                        waiting_details_json: null,
                         terminal_outcome: null,
                         result_json: null,
                         completed_at: null,
@@ -35,6 +36,7 @@ function createCatalogHarness() {
                         state_id: "inspect",
                         child_session_id: "child-1",
                         waiting_on: "agent-result",
+                        waiting_details_json: null,
                         status: "accepted",
                         outcome: "succeeded",
                         output_json: { commit: "abc123" },
@@ -88,6 +90,7 @@ test("catalog writes authoritative workflow facts through migration procedures",
     assert.match(calls[0].sql, /cms_record_workflow_execution/);
     assert.deepEqual(calls[0].params, [
         "workflow-1", 3, "graph-1", "inspect", "child-1", "agent-result",
+        "null",
     ]);
     assert.match(calls[1].sql, /cms_accept_workflow_execution/);
     assert.equal(calls[1].params[6], JSON.stringify({ commit: "abc123" }));
@@ -109,6 +112,7 @@ test("catalog maps workflow projections and executions for API consumers", async
         currentStateId: "inspect",
         currentExecutionSequence: 3,
         waitingOn: "agent-result",
+        waitingDetails: null,
         terminalOutcome: null,
         result: null,
         completedAt: null,
@@ -121,6 +125,7 @@ test("catalog maps workflow projections and executions for API consumers", async
         stateId: "inspect",
         childSessionId: "child-1",
         waitingOn: "agent-result",
+        waitingDetails: null,
         status: "accepted",
         outcome: "succeeded",
         output: { commit: "abc123" },
@@ -165,6 +170,43 @@ test("management clients expose workflow projection and execution reads", async 
         { name: "getWorkflow", params: { sessionId: "workflow-1" } },
         { name: "listWorkflowExecutions", params: { sessionId: "workflow-1" } },
     ]);
+});
+
+test("answers only the currently pending workflow question", async () => {
+    const events = [];
+    const direct = Object.create(PilotSwarmManagementClient.prototype);
+    direct._started = true;
+    direct._catalog = {
+        getWorkflowProjection: async () => ({
+            status: "running",
+            currentExecutionSequence: 3,
+            waitingOn: "question",
+        }),
+    };
+    direct._duroxideClient = {
+        enqueueEvent: async (instanceId, queueName, payload) => {
+            events.push({ instanceId, queueName, payload });
+        },
+    };
+
+    await direct.answerWorkflowQuestion(
+        "workflow-1",
+        3,
+        "publish",
+        { approved: true },
+    );
+    assert.deepEqual(events, [{
+        instanceId: "session-workflow-1",
+        queueName: "workflow-question-3",
+        payload: JSON.stringify({
+            outcome: "publish",
+            output: { approved: true },
+        }),
+    }]);
+    await assert.rejects(
+        () => direct.answerWorkflowQuestion("workflow-1", 2, "publish", null),
+        error => error?.code === "WORKFLOW_QUESTION_NOT_PENDING",
+    );
 });
 
 test("web management registers Git workflow definitions and reads them by id", async () => {
