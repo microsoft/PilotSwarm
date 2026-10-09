@@ -31,7 +31,7 @@ const VALID_WORKFLOW = `
 apiVersion: pilotswarm.dev/v1alpha1
 kind: Workflow
 metadata:
-  name: delivery
+  name: sample-workflow
   version: 0.1.0
 inputs:
   changeId:
@@ -47,12 +47,12 @@ initial: inspect
 states:
   inspect:
     type: agent
-    agent: delivery-inspector
+    agent: sample-inspector
     input:
       changeId: \${inputs.changeId}
       retries: \${configuration.policy.retries}
     result:
-      schema: delivery/inspection/v1
+      schema: sample/inspection/v1
     completion:
       mode: one-shot
       outcomes:
@@ -64,11 +64,11 @@ states:
         export: inspect
   publish:
     type: agent
-    agent: delivery-publisher
+    agent: sample-publisher
     input:
       inspection: \${states.inspect.result}
     result:
-      schema: delivery/publication/v1
+      schema: sample/publication/v1
     completion:
       mode: one-shot
       outcomes:
@@ -192,6 +192,14 @@ states:
         mode: "session-write",
     });
     assert.equal(compiled.manifest.states[2].pollIntervalMs, 250);
+    assert.deepEqual(
+        Object.keys(compiled.graph.states),
+        ["approve", "publish", "observe", "done"],
+    );
+    assert.throws(
+        () => compiled.graph.states.approve.execute({}),
+        error => error?.code === "WORKFLOW_REGISTERED_STATE_REQUIRED",
+    );
 });
 
 test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", () => {
@@ -199,9 +207,9 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
         transitions: createRegistry(),
     });
 
-    assert.equal(compiled.graph.id, "delivery@0.1.0");
+    assert.equal(compiled.graph.id, "sample-workflow@0.1.0");
     assert.equal(compiled.graph.initialState, "inspect");
-    assert.deepEqual(compiled.metadata, { name: "delivery", version: "0.1.0" });
+    assert.deepEqual(compiled.metadata, { name: "sample-workflow", version: "0.1.0" });
     assert.deepEqual(compiled.inputSchema, {
         changeId: { type: "string", required: true },
     });
@@ -210,8 +218,8 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
         compilerVersion: "v1alpha1-4",
         apiVersion: "pilotswarm.dev/v1alpha1",
         kind: "Workflow",
-        graphId: "delivery@0.1.0",
-        metadata: { name: "delivery", version: "0.1.0" },
+        graphId: "sample-workflow@0.1.0",
+        metadata: { name: "sample-workflow", version: "0.1.0" },
         inputSchema: {
             changeId: { type: "string", required: true },
         },
@@ -224,12 +232,12 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
             {
                 id: "inspect",
                 type: "agent",
-                agent: "delivery-inspector",
+                agent: "sample-inspector",
                 input: {
                     changeId: "${inputs.changeId}",
                     retries: "${configuration.policy.retries}",
                 },
-                resultSchema: "delivery/inspection/v1",
+                resultSchema: "sample/inspection/v1",
                 completion: {
                     mode: "one-shot",
                     outcomes: ["succeeded", "blocked"],
@@ -245,11 +253,11 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
             {
                 id: "publish",
                 type: "agent",
-                agent: "delivery-publisher",
+                agent: "sample-publisher",
                 input: {
                     inspection: "${states.inspect.result}",
                 },
-                resultSchema: "delivery/publication/v1",
+                resultSchema: "sample/publication/v1",
                 completion: {
                     mode: "one-shot",
                     outcomes: ["succeeded", "failed"],
@@ -266,7 +274,7 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
                 id: "committed",
                 type: "terminal",
                 outcome: "succeeded",
-                summary: "Workflow 'delivery' completed with outcome 'succeeded'.",
+                summary: "Workflow 'sample-workflow' completed with outcome 'succeeded'.",
                 hasOutput: true,
                 output: "${states.publish.result}",
             },
@@ -274,7 +282,7 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
                 id: "needs-attention",
                 type: "terminal",
                 outcome: "blocked",
-                summary: "Workflow 'delivery' completed with outcome 'blocked'.",
+                summary: "Workflow 'sample-workflow' completed with outcome 'blocked'.",
                 hasOutput: true,
                 output: {
                     inspection: "${states.inspect.result}",
@@ -284,7 +292,7 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
                 id: "failed",
                 type: "terminal",
                 outcome: "failed",
-                summary: "Workflow 'delivery' completed with outcome 'failed'.",
+                summary: "Workflow 'sample-workflow' completed with outcome 'failed'.",
                 hasOutput: false,
             },
         ],
@@ -292,17 +300,17 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
 
     const inspect = compiled.graph.states.inspect;
     assert.equal(inspect.type, "agent");
-    assert.equal(inspect.agent, "delivery-inspector");
+    assert.equal(inspect.agent, "sample-inspector");
     assert.deepEqual(inspect.allowedOutcomes, ["succeeded", "blocked"]);
     assert.deepEqual(inspect.allowedTargets, ["publish", "needs-attention"]);
     assert.match(inspect.prompt(executionContext()), /"changeId": "change-7"/);
     assert.match(inspect.prompt(executionContext()), /"retries": 2/);
     assert.match(inspect.prompt(executionContext()), /submit_workflow_result/);
-    assert.match(inspect.prompt(executionContext()), /delivery\/inspection\/v1/);
+    assert.match(inspect.prompt(executionContext()), /sample\/inspection\/v1/);
 
     const committed = compiled.graph.states.committed;
     assert.equal(committed.type, "terminal");
-    assert.equal(committed.summary, "Workflow 'delivery' completed with outcome 'succeeded'.");
+    assert.equal(committed.summary, "Workflow 'sample-workflow' completed with outcome 'succeeded'.");
     assert.deepEqual(committed.result({
         workflowInputs: { changeId: "change-7" },
         latestStateOutputs: {
@@ -383,8 +391,8 @@ test("registered handlers receive immutable workflow context and choose the next
 
     assert.equal(target, "publish");
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].graphId, "delivery@0.1.0");
-    assert.deepEqual(calls[0].metadata, { name: "delivery", version: "0.1.0" });
+    assert.equal(calls[0].graphId, "sample-workflow@0.1.0");
+    assert.deepEqual(calls[0].metadata, { name: "sample-workflow", version: "0.1.0" });
     assert.deepEqual(calls[0].configuration, { policy: { retries: 2 } });
     assert.equal(calls[0].stateOutcome, "succeeded");
     assert.deepEqual(calls[0].completion, {});
@@ -400,7 +408,7 @@ test("compiles and registers a graph for the existing orchestration lookup", () 
 
     assert.deepEqual(definition, {
         kind: "in-memory",
-        graphId: "delivery@0.1.0",
+        graphId: "sample-workflow@0.1.0",
     });
     assert.equal(resolveInMemoryWorkflowGraph(definition.graphId), compiled.graph);
 });

@@ -286,11 +286,11 @@ initial: inspect
 states:
   inspect:
     type: agent
-    agent: delivery-inspector
+    agent: sample-inspector
     input:
       pullRequestId: \${inputs.pullRequestId}
     result:
-      schema: delivery/inspection/v1
+      schema: sample/inspection/v1
     completion:
       mode: one-shot
       outcomes:
@@ -328,7 +328,7 @@ states:
     });
     const spawn = operations.find(operation => operation.name === HANDOFF_ACTIVITY_NAMES.spawnChildSession);
     assert.match(spawn.input.task, /"pullRequestId": 116/);
-    assert.equal(spawn.input.config.boundAgentName, "delivery-inspector");
+    assert.equal(spawn.input.config.boundAgentName, "sample-inspector");
     assert.equal(spawn.input.requiredTool, SUBMIT_WORKFLOW_RESULT_TOOL);
     assert.deepEqual(spawn.input.config.toolNames, [SUBMIT_WORKFLOW_RESULT_TOOL]);
     assert.deepEqual(spawn.input.config.childContract.allowedOutcomes, ["succeeded", "blocked"]);

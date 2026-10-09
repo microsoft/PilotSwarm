@@ -62,12 +62,12 @@ const manifest = {
     states: [{
         id: "inspect",
         type: "agent",
-        agent: "delivery-inspector",
+        agent: "sample-inspector",
         input: {
             changeId: "${inputs.changeId}",
             retries: "${configuration.retryCount}",
         },
-        resultSchema: "delivery/inspection/v1",
+        resultSchema: "sample/inspection/v1",
         completion: { mode: "one-shot", outcomes: ["succeeded", "blocked"] },
         transition: {
             handler: {
@@ -101,7 +101,7 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
         inputs: { changeId: "change-42" },
     });
 
-    test("executes question, action, and observed-condition states durably", () => {
+    {
         const controlManifest = {
             ...manifest,
             initialState: "approve",
@@ -209,7 +209,7 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
         assert.equal(step.value.outcome, "succeeded");
         assert.deepEqual(step.value.result, { observed: true });
         assert.equal(observationCount, 2);
-    });
+    }
 
     const operations = [];
     let step = execution.next();

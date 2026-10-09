@@ -26,12 +26,23 @@ initial: inspect
 states:
   inspect:
     type: agent
-    agent: delivery-inspector
+    agent: sample-inspector
     input: {}
     result:
-      schema: delivery/inspection/v1
+      schema: sample/inspection/v1
     completion:
       mode: one-shot
+      outcomes:
+        - succeeded
+        - blocked
+    transition:
+      handler:
+        module: ./transitions.mjs
+        export: inspect
+  approve:
+    type: question
+    prompt: Publish?
+    completion:
       outcomes:
         - succeeded
         - blocked
@@ -123,6 +134,28 @@ test("loads a persisted compiled plan and executes its pinned transition", async
     });
 
     assert.deepEqual(directive, { kind: "advance", target: "publish" });
+
+    const questionDirective = await provider.executeTransition({
+        definitionId,
+        stateId: "approve",
+        context: {
+            workflowInputs: {},
+            currentStateId: "approve",
+            stateOutcome: "succeeded",
+            stateOutput: { approved: true },
+            latestStateOutputs: {
+                approve: { outcome: "succeeded", output: { approved: true } },
+            },
+            executionHistory: [{
+                stateId: "approve",
+                executionSequence: 2,
+                outcome: "succeeded",
+                output: { approved: true },
+            }],
+        },
+    });
+
+    assert.deepEqual(questionDirective, { kind: "advance", target: "publish" });
     assert.equal(downloads.length, 1, "the verified package snapshot is cached by hash");
 });
 

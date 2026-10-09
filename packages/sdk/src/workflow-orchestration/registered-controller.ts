@@ -1,5 +1,5 @@
 import type {
-    CompiledWorkflowTransitionState,
+    CompiledWorkflowExecutableStateManifest,
     CompiledWorkflowStateManifest,
     WorkflowAdvanceDirective,
 } from "./compiler.js";
@@ -76,7 +76,7 @@ function requireExecutionResult(
 }
 
 function requireDeclaredOutcome(
-    state: CompiledWorkflowTransitionState,
+    state: CompiledWorkflowExecutableStateManifest,
     result: WorkflowStateExecutionResult,
 ): WorkflowStateExecutionResult {
     if (!state.completion.outcomes.includes(result.outcome)) {

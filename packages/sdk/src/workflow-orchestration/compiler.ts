@@ -143,6 +143,11 @@ export type CompiledWorkflowStateManifest =
     | CompiledWorkflowObservedConditionStateManifest
     | CompiledWorkflowTerminalStateManifest;
 
+export type CompiledWorkflowExecutableStateManifest = Exclude<
+    CompiledWorkflowStateManifest,
+    CompiledWorkflowTerminalStateManifest
+>;
+
 export interface CompiledWorkflowIdentityManifest {
     primaryKey: readonly string[];
 }
@@ -643,6 +648,13 @@ export function compileWorkflowYaml(
             continue;
         }
 
+        if (state.next != null || state.transitions != null || state.events != null) {
+            throw compilerError(
+                `${path} uses inline transition syntax; declare transition.handler instead.`,
+                "WORKFLOW_INLINE_TRANSITION_UNSUPPORTED",
+            );
+        }
+
         if (type === "question" || type === "action" || type === "observed-condition") {
             const completion = requireObject(state.completion, `${path}.completion`);
             const outcomes = requireStringArray(
@@ -668,6 +680,23 @@ export function compileWorkflowYaml(
                     ? { ...registration.moduleIdentity }
                     : { ...handlerReference },
                 allowedTargets: [...registration.allowedTargets],
+            };
+            states[stateId] = {
+                type: "activity",
+                allowedOutcomes: outcomes,
+                allowedTargets: [...registration.allowedTargets],
+                execute: () => {
+                    throw compilerError(
+                        `Workflow state '${stateId}' requires registered workflow orchestration.`,
+                        "WORKFLOW_REGISTERED_STATE_REQUIRED",
+                    );
+                },
+                transition: transitionFromRegistration({
+                    graphId,
+                    metadata,
+                    configuration,
+                    registration,
+                }),
             };
 
             if (type === "question") {
@@ -748,13 +777,6 @@ export function compileWorkflowYaml(
                 "WORKFLOW_STATE_TYPE_UNSUPPORTED",
             );
         }
-        if (state.next != null || state.transitions != null || state.events != null) {
-            throw compilerError(
-                `${path} uses inline transition syntax; declare transition.handler instead.`,
-                "WORKFLOW_INLINE_TRANSITION_UNSUPPORTED",
-            );
-        }
-
         const agent = requireString(state.agent, `${path}.agent`);
         const inputTemplate = state.input ?? {};
         validateTemplate(inputTemplate, `${path}.input`, stateIds);

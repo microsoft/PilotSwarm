@@ -8,7 +8,7 @@ import {
     WORKFLOW_COMPILER_VERSION,
     executeWorkflowTransitionRegistration,
     workflowCompiledManifestSha256,
-    type CompiledWorkflowAgentStateManifest,
+    type CompiledWorkflowExecutableStateManifest,
     type CompiledWorkflowManifest,
     type WorkflowAdvanceDirective,
 } from "./compiler.js";
@@ -100,14 +100,14 @@ export function requireCompatibleWorkflowDefinition(
     return record;
 }
 
-function requireAgentState(
+function requireExecutableState(
     manifest: CompiledWorkflowManifest,
     stateId: string,
-): CompiledWorkflowAgentStateManifest {
+): CompiledWorkflowExecutableStateManifest {
     const state = manifest.states.find(candidate => candidate.id === stateId);
-    if (!state || state.type !== "agent") {
+    if (!state || state.type === "terminal") {
         throw providerError(
-            `Workflow state '${stateId}' is not a compiled agent state.`,
+            `Workflow state '${stateId}' is not executable.`,
             "WORKFLOW_STATE_NOT_EXECUTABLE",
         );
     }
@@ -137,7 +137,7 @@ export class CmsWorkflowDefinitionProvider implements WorkflowDefinitionProvider
         input: ExecuteWorkflowTransitionInput,
     ): Promise<WorkflowAdvanceDirective> {
         const record = await this.getDefinition(input.definitionId);
-        const state = requireAgentState(record.compiledManifest, input.stateId);
+        const state = requireExecutableState(record.compiledManifest, input.stateId);
         if (input.context.currentStateId !== input.stateId) {
             throw providerError(
                 `Workflow transition context does not match state '${input.stateId}'.`,
