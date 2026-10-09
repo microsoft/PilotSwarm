@@ -137,6 +137,9 @@ import {
     workflowPackagesArtifactSessionId,
 } from "./workflow-orchestration/package-artifact.js";
 import {
+    workflowQuestionQueueName,
+} from "./workflow-orchestration/registered-contracts.js";
+import {
     loadImportPolicy,
     type ImportPolicy,
 } from "./agent-package-import-policy.js";
@@ -1481,6 +1484,41 @@ export class PilotSwarmManagementClient {
     async listWorkflowExecutions(sessionId: string): Promise<WorkflowExecutionRow[]> {
         this._ensureStarted();
         return this._catalog!.listWorkflowExecutions(sessionId);
+    }
+
+    /** Answer the workflow's currently pending durable question. */
+    async answerWorkflowQuestion(
+        sessionId: string,
+        executionSequence: number,
+        outcome: string,
+        output: unknown,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!Number.isInteger(executionSequence) || executionSequence < 1) {
+            throw new Error("executionSequence must be a positive integer.");
+        }
+        if (typeof outcome !== "string" || !outcome.trim()) {
+            throw new Error("outcome is required.");
+        }
+        const projection = await this._catalog!.getWorkflowProjection(sessionId);
+        if (
+            !projection
+            || projection.status !== "running"
+            || projection.waitingOn !== "question"
+            || projection.currentExecutionSequence !== executionSequence
+        ) {
+            throw Object.assign(
+                new Error(
+                    `Workflow '${sessionId}' is not waiting on question execution ${executionSequence}.`,
+                ),
+                { code: "WORKFLOW_QUESTION_NOT_PENDING" },
+            );
+        }
+        await this._duroxideClient.enqueueEvent(
+            `session-${sessionId}`,
+            workflowQuestionQueueName(executionSequence),
+            JSON.stringify({ outcome: outcome.trim(), output }),
+        );
     }
 
     // ─── Child Contracts / Outcomes ────────────────────────

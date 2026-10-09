@@ -308,7 +308,8 @@ export interface WorkflowExecutionRow {
     graphId: string;
     stateId: string;
     childSessionId: string | null;
-    waitingOn: "activity" | "agent-result";
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+    waitingDetails: unknown;
     status: "admitted" | "accepted";
     outcome: string | null;
     output: unknown;
@@ -323,7 +324,8 @@ export interface WorkflowProjectionRow {
     status: string;
     currentStateId: string | null;
     currentExecutionSequence: number | null;
-    waitingOn: "activity" | "agent-result" | null;
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition" | null;
+    waitingDetails: unknown;
     terminalOutcome: string | null;
     result: unknown;
     completedAt: Date | null;
@@ -1361,7 +1363,8 @@ export interface SessionCatalog {
         graphId: string;
         stateId: string;
         childSessionId?: string | null;
-        waitingOn: "activity" | "agent-result";
+        waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+        waitingDetails?: unknown;
     }): Promise<void>;
 
     /** Atomically accept one execution result and update its current projection. */
@@ -2448,10 +2451,11 @@ export class PgSessionCatalog implements SessionCatalog {
         graphId: string;
         stateId: string;
         childSessionId?: string | null;
-        waitingOn: "activity" | "agent-result";
+        waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+        waitingDetails?: unknown;
     }): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.recordWorkflowExecution}($1, $2, $3, $4, $5, $6)`,
+            `SELECT ${this.sql.fn.recordWorkflowExecution}($1, $2, $3, $4, $5, $6, $7)`,
             [
                 input.workflowSessionId,
                 input.executionSequence,
@@ -2459,6 +2463,7 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.stateId,
                 input.childSessionId ?? null,
                 input.waitingOn,
+                JSON.stringify(input.waitingDetails ?? null),
             ],
         );
     }
@@ -4280,6 +4285,7 @@ function rowToWorkflowExecutionRow(row: any): WorkflowExecutionRow {
         stateId: row.state_id,
         childSessionId: row.child_session_id ?? null,
         waitingOn: row.waiting_on,
+        waitingDetails: row.waiting_details_json ?? null,
         status: row.status,
         outcome: row.outcome ?? null,
         output: row.output_json ?? null,
@@ -4299,6 +4305,7 @@ function rowToWorkflowProjectionRow(row: any): WorkflowProjectionRow {
             ? null
             : Number(row.current_execution_sequence),
         waitingOn: row.waiting_on ?? null,
+        waitingDetails: row.waiting_details_json ?? null,
         terminalOutcome: row.terminal_outcome ?? null,
         result: row.result_json ?? null,
         completedAt: row.completed_at ? new Date(row.completed_at) : null,

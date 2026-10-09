@@ -8,6 +8,7 @@
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
     "adoptLegacySystemGitHubCopilotKey",
+    "answerWorkflowQuestion",
     "assignSessionsToGroup",
     "cancelPendingMessage",
     "cancelSession",
@@ -207,6 +208,17 @@ export interface ManagementOps {
      */
     adoptLegacySystemGitHubCopilotKey(params: {
         name?: any;
+    }): Promise<any>;
+
+    /**
+     * Answer the workflow's currently pending durable question.
+     * @remarks `POST /management/workflows/:sessionId/questions/:executionSequence/answer` — access: `session:write`
+     */
+    answerWorkflowQuestion(params: {
+        sessionId: string;
+        executionSequence: string;
+        outcome?: any;
+        output?: any;
     }): Promise<any>;
 
     /**
@@ -1840,6 +1852,7 @@ export function createManagementOps(
 ): ManagementOps {
     return {
         adoptLegacySystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("adoptLegacySystemGitHubCopilotKey", params),
+        answerWorkflowQuestion: (params: Record<string, unknown> = {}) => callOp("answerWorkflowQuestion", params),
         assignSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("assignSessionsToGroup", params),
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
         cancelSession: (params: Record<string, unknown> = {}) => callOp("cancelSession", params),

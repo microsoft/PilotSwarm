@@ -130,6 +130,70 @@ function executionContext(overrides = {}) {
 test.beforeEach(() => clearInMemoryWorkflowGraphs());
 test.afterEach(() => clearInMemoryWorkflowGraphs());
 
+test("compiles durable question, action, and observed-condition states", () => {
+    const registry = new WorkflowTransitionRegistry()
+        .register({ module: "./control.mjs", export: "question" }, {
+            allowedTargets: ["publish"],
+            handler: () => ({ kind: "advance", target: "publish" }),
+        })
+        .register({ module: "./control.mjs", export: "publish" }, {
+            allowedTargets: ["observe"],
+            handler: () => ({ kind: "advance", target: "observe" }),
+        })
+        .register({ module: "./control.mjs", export: "observe" }, {
+            allowedTargets: ["done"],
+            handler: () => ({ kind: "advance", target: "done" }),
+        });
+    const compiled = compileWorkflowYaml(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: control-states
+  version: 0.1.0
+initial: approve
+states:
+  approve:
+    type: question
+    prompt: Publish the change?
+    authorization:
+      mode: session-write
+    completion:
+      outcomes: [publish]
+    transition:
+      handler: { module: ./control.mjs, export: question }
+  publish:
+    type: action
+    provider: ado
+    operation: publish
+    completion:
+      outcomes: [succeeded]
+    transition:
+      handler: { module: ./control.mjs, export: publish }
+  observe:
+    type: observed-condition
+    provider: ado
+    operation: {}
+    conditions: {}
+    pollIntervalMs: 250
+    completion:
+      outcomes: [satisfied]
+    transition:
+      handler: { module: ./control.mjs, export: observe }
+  done:
+    type: terminal
+    outcome: succeeded
+`, { transitions: registry });
+
+    assert.deepEqual(
+        compiled.manifest.states.map(state => state.type),
+        ["question", "action", "observed-condition", "terminal"],
+    );
+    assert.deepEqual(compiled.manifest.states[0].authorization, {
+        mode: "session-write",
+    });
+    assert.equal(compiled.manifest.states[2].pollIntervalMs, 250);
+});
+
 test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", () => {
     const compiled = compileWorkflowYaml(VALID_WORKFLOW, {
         transitions: createRegistry(),
@@ -143,7 +207,7 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
     });
     assert.deepEqual(compiled.configuration, { policy: { retries: 2 } });
     assert.deepEqual(compiled.manifest, {
-        compilerVersion: "v1alpha1-3",
+        compilerVersion: "v1alpha1-4",
         apiVersion: "pilotswarm.dev/v1alpha1",
         kind: "Workflow",
         graphId: "delivery@0.1.0",
@@ -365,7 +429,7 @@ test("rejects inline transition syntax instead of maintaining two programming mo
 });
 
 test("rejects unsupported state and completion types with specific errors", () => {
-    const actionYaml = VALID_WORKFLOW.replace("type: agent", "type: action");
+    const actionYaml = VALID_WORKFLOW.replace("type: agent", "type: parallel");
     assert.throws(
         () => compileWorkflowYaml(actionYaml, { transitions: createRegistry() }),
         error => error?.code === "WORKFLOW_STATE_TYPE_UNSUPPORTED",

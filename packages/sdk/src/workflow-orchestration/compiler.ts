@@ -14,7 +14,7 @@ const SUPPORTED_KIND = "Workflow";
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const EXACT_EXPRESSION = /^\$\{([^{}]+)\}$/;
 
-export const WORKFLOW_COMPILER_VERSION = "v1alpha1-3";
+export const WORKFLOW_COMPILER_VERSION = "v1alpha1-4";
 
 type JsonObject = Record<string, unknown>;
 
@@ -77,8 +77,19 @@ export interface CompiledWorkflowTransitionHandlerManifest extends WorkflowTrans
     packageSha256?: string;
 }
 
-export interface CompiledWorkflowAgentStateManifest {
+export interface CompiledWorkflowTransitionState {
     id: string;
+    completion: {
+        outcomes: readonly string[];
+    };
+    transition: {
+        handler: Readonly<CompiledWorkflowTransitionHandlerManifest>;
+        allowedTargets: readonly string[];
+    };
+}
+
+export interface CompiledWorkflowAgentStateManifest
+    extends CompiledWorkflowTransitionState {
     type: "agent";
     agent: string;
     input: unknown;
@@ -87,10 +98,33 @@ export interface CompiledWorkflowAgentStateManifest {
         mode: "one-shot";
         outcomes: readonly string[];
     };
-    transition: {
-        handler: Readonly<CompiledWorkflowTransitionHandlerManifest>;
-        allowedTargets: readonly string[];
-    };
+}
+
+export interface CompiledWorkflowQuestionStateManifest
+    extends CompiledWorkflowTransitionState {
+    type: "question";
+    prompt: unknown;
+    context: unknown;
+    authorization: Readonly<{
+        mode: "session-write";
+    }>;
+}
+
+export interface CompiledWorkflowActionStateManifest
+    extends CompiledWorkflowTransitionState {
+    type: "action";
+    provider: string;
+    operation: string;
+    input: unknown;
+}
+
+export interface CompiledWorkflowObservedConditionStateManifest
+    extends CompiledWorkflowTransitionState {
+    type: "observed-condition";
+    provider: string;
+    operation: unknown;
+    conditions: unknown;
+    pollIntervalMs: number;
 }
 
 export interface CompiledWorkflowTerminalStateManifest {
@@ -104,6 +138,9 @@ export interface CompiledWorkflowTerminalStateManifest {
 
 export type CompiledWorkflowStateManifest =
     | CompiledWorkflowAgentStateManifest
+    | CompiledWorkflowQuestionStateManifest
+    | CompiledWorkflowActionStateManifest
+    | CompiledWorkflowObservedConditionStateManifest
     | CompiledWorkflowTerminalStateManifest;
 
 export interface CompiledWorkflowIdentityManifest {
@@ -606,9 +643,108 @@ export function compileWorkflowYaml(
             continue;
         }
 
+        if (type === "question" || type === "action" || type === "observed-condition") {
+            const completion = requireObject(state.completion, `${path}.completion`);
+            const outcomes = requireStringArray(
+                completion.outcomes,
+                `${path}.completion.outcomes`,
+            );
+            const transition = requireObject(state.transition, `${path}.transition`);
+            const handlerReference = requireTransitionReference(
+                transition.handler,
+                `${path}.transition.handler`,
+            );
+            const registration = options.transitions.resolve(handlerReference);
+            for (const target of registration.allowedTargets) {
+                if (!stateIds.has(target)) {
+                    throw compilerError(
+                        `Transition handler ${transitionReferenceLabel(handlerReference)} for state '${stateId}' declares unknown target '${target}'.`,
+                        "WORKFLOW_TRANSITION_TARGET_INVALID",
+                    );
+                }
+            }
+            const transitionManifest = {
+                handler: registration.moduleIdentity
+                    ? { ...registration.moduleIdentity }
+                    : { ...handlerReference },
+                allowedTargets: [...registration.allowedTargets],
+            };
+
+            if (type === "question") {
+                const prompt = state.prompt;
+                if (typeof prompt !== "string" || prompt.trim().length === 0) {
+                    throw compilerError(`${path}.prompt must be a non-empty string.`);
+                }
+                const context = state.context ?? {};
+                validateTemplate(context, `${path}.context`, stateIds);
+                const authorization = state.authorization == null
+                    ? { mode: "session-write" as const }
+                    : requireObject(state.authorization, `${path}.authorization`);
+                if (
+                    authorization.mode !== "session-write"
+                    || Object.keys(authorization).some(key => key !== "mode")
+                ) {
+                    throw compilerError(
+                        `${path}.authorization must be { mode: "session-write" }.`,
+                    );
+                }
+                stateManifests.push({
+                    id: stateId,
+                    type,
+                    prompt: prompt.trim(),
+                    context,
+                    authorization: { mode: "session-write" },
+                    completion: { outcomes },
+                    transition: transitionManifest,
+                });
+                continue;
+            }
+
+            const provider = requireString(state.provider, `${path}.provider`);
+            if (type === "action") {
+                const operation = requireString(state.operation, `${path}.operation`);
+                const inputTemplate = state.input ?? {};
+                validateTemplate(inputTemplate, `${path}.input`, stateIds);
+                stateManifests.push({
+                    id: stateId,
+                    type,
+                    provider,
+                    operation,
+                    input: inputTemplate,
+                    completion: { outcomes },
+                    transition: transitionManifest,
+                });
+                continue;
+            }
+
+            const operationTemplate = state.operation ?? {};
+            const conditionsTemplate = state.conditions ?? {};
+            validateTemplate(operationTemplate, `${path}.operation`, stateIds);
+            validateTemplate(conditionsTemplate, `${path}.conditions`, stateIds);
+            const pollIntervalMs = state.pollIntervalMs == null
+                ? 5_000
+                : Number(state.pollIntervalMs);
+            if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
+                throw compilerError(
+                    `${path}.pollIntervalMs must be an integer of at least 100.`,
+                );
+            }
+            stateManifests.push({
+                id: stateId,
+                type,
+                provider,
+                operation: operationTemplate,
+                conditions: conditionsTemplate,
+                pollIntervalMs,
+                completion: { outcomes },
+                transition: transitionManifest,
+            });
+            continue;
+        }
+
         if (type !== "agent") {
             throw compilerError(
-                `${path}.type '${type}' is not supported by the initial compiler; only agent and terminal states are supported.`,
+                `${path}.type '${type}' is not supported.`,
                 "WORKFLOW_STATE_TYPE_UNSUPPORTED",
             );
         }

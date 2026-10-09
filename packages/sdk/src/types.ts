@@ -3,6 +3,7 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+import type { WorkflowStateProviderRegistry } from "./workflow-orchestration/state-providers.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -1270,6 +1271,8 @@ export interface SessionPolicy {
 
 export interface PilotSwarmWorkerOptions {
     store: string;
+    /** Registered handlers for workflow action and observed-condition states. */
+    workflowStateProviders?: WorkflowStateProviderRegistry;
     /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a

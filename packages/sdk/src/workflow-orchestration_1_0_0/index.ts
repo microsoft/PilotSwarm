@@ -93,6 +93,7 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
     ctx: {
         scheduleActivity(name: string, input: unknown): unknown;
         dequeueEvent(name: string): unknown;
+        scheduleTimer(delayMs: number): unknown;
         newGuid(): unknown;
         utcNow(): unknown;
     },

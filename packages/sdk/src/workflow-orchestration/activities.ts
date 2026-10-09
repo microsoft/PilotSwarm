@@ -21,9 +21,16 @@ import {
     RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
 } from "../workflow-orchestration_1_0_0/contracts.js";
 import {
+    EXECUTE_WORKFLOW_ACTION_ACTIVITY,
     EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+    OBSERVE_WORKFLOW_CONDITION_ACTIVITY,
     RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
 } from "./registered-contracts.js";
+import {
+    WorkflowStateProviderRegistry,
+    type WorkflowActionRequest,
+    type WorkflowObservedConditionRequest,
+} from "./state-providers.js";
 
 export {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
@@ -31,6 +38,8 @@ export {
     EXECUTE_WORKFLOW_STATE_ACTIVITY,
     RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
     EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
+    EXECUTE_WORKFLOW_ACTION_ACTIVITY,
+    OBSERVE_WORKFLOW_CONDITION_ACTIVITY,
     RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
 };
 
@@ -54,7 +63,8 @@ export interface RecordWorkflowStateExecutionActivityInput {
     graphId: string;
     stateId: string;
     childSessionId?: string;
-    waitingOn: "activity" | "agent-result";
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+    waitingDetails?: unknown;
 }
 
 export interface AcceptWorkflowStateResultActivityInput {
@@ -74,6 +84,10 @@ export interface WorkflowActivityHandlers {
     executeTransition(
         input: ExecuteWorkflowTransitionInput,
     ): ReturnType<WorkflowDefinitionProvider["executeTransition"]>;
+    executeAction(input: WorkflowActionRequest): ReturnType<WorkflowStateProviderRegistry["executeAction"]>;
+    observeCondition(
+        input: WorkflowObservedConditionRequest,
+    ): ReturnType<WorkflowStateProviderRegistry["observeCondition"]>;
     recordStateExecution(input: RecordWorkflowStateExecutionActivityInput): Promise<void>;
     executeState(input: ExecuteWorkflowStateActivityInput): Promise<WorkflowStateExecutionResult>;
     acceptStateResult(input: AcceptWorkflowStateResultActivityInput): Promise<WorkflowStateExecutionResult>;
@@ -92,6 +106,7 @@ export function createWorkflowActivityHandlers(
         | "recordWorkflowExecution"
     > | null,
     definitionProvider: WorkflowDefinitionProvider | null = null,
+    stateProviders: WorkflowStateProviderRegistry | null = null,
 ): WorkflowActivityHandlers {
     return {
         async resolveDefinition(source) {
@@ -112,6 +127,26 @@ export function createWorkflowActivityHandlers(
                 );
             }
             return definitionProvider.executeTransition(input);
+        },
+
+        async executeAction(input) {
+            if (!stateProviders) {
+                throw workflowActivityError(
+                    `Workflow action provider '${input.provider}' is not configured.`,
+                    "WORKFLOW_STATE_PROVIDER_REGISTRY_REQUIRED",
+                );
+            }
+            return stateProviders.executeAction(input);
+        },
+
+        async observeCondition(input) {
+            if (!stateProviders) {
+                throw workflowActivityError(
+                    `Workflow observed-condition provider '${input.provider}' is not configured.`,
+                    "WORKFLOW_STATE_PROVIDER_REGISTRY_REQUIRED",
+                );
+            }
+            return stateProviders.observeCondition(input);
         },
 
         async recordStateExecution(input) {
@@ -217,11 +252,16 @@ export function registerWorkflowActivities(
         | "recordWorkflowExecution"
     > | null,
     artifactStore: ArtifactStore | null = null,
+    stateProviders: WorkflowStateProviderRegistry | null = null,
 ): void {
     const definitionProvider = catalog && artifactStore
         ? new CmsWorkflowDefinitionProvider(catalog, artifactStore)
         : null;
-    const handlers = createWorkflowActivityHandlers(catalog, definitionProvider);
+    const handlers = createWorkflowActivityHandlers(
+        catalog,
+        definitionProvider,
+        stateProviders,
+    );
     runtime.registerActivity(
         RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
         async (_activityContext, input: { source: import("../types.js").WorkflowDefinitionSource }) =>
@@ -231,6 +271,16 @@ export function registerWorkflowActivities(
         EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
         async (_activityContext, input: ExecuteWorkflowTransitionInput) =>
             handlers.executeTransition(input),
+    );
+    runtime.registerActivity(
+        EXECUTE_WORKFLOW_ACTION_ACTIVITY,
+        async (_activityContext, input: WorkflowActionRequest) =>
+            handlers.executeAction(input),
+    );
+    runtime.registerActivity(
+        OBSERVE_WORKFLOW_CONDITION_ACTIVITY,
+        async (_activityContext, input: WorkflowObservedConditionRequest) =>
+            handlers.observeCondition(input),
     );
     runtime.registerActivity(
         RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,

@@ -62,7 +62,7 @@ function definitionRow() {
         name: "registered-example",
         version: "0.1.0",
         api_version: "pilotswarm.dev/v1alpha1",
-        compiler_version: "v1alpha1-3",
+        compiler_version: "v1alpha1-4",
         source_yaml: TERMINAL_WORKFLOW,
         source_sha256: "source-hash",
         package_sha256: "a".repeat(64),
@@ -73,7 +73,7 @@ function definitionRow() {
         input_schema_json: {},
         configuration_json: {},
         compiled_manifest_json: {
-            compilerVersion: "v1alpha1-3",
+            compilerVersion: "v1alpha1-4",
             apiVersion: "pilotswarm.dev/v1alpha1",
             kind: "Workflow",
             graphId: "registered-example@0.1.0",
@@ -142,7 +142,7 @@ function createCatalogHarness() {
 test("catalog persists authored YAML and the normalized compiled manifest", async () => {
     const { catalog, calls } = createCatalogHarness();
     const manifest = {
-        compilerVersion: "v1alpha1-3",
+        compilerVersion: "v1alpha1-4",
         apiVersion: "pilotswarm.dev/v1alpha1",
         kind: "Workflow",
         graphId: "registered-example@0.1.0",

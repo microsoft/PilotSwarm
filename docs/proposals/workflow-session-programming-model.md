@@ -53,6 +53,7 @@ The proposed authoring model currently names five state types:
 | Type | Author supplies | Abstract example |
 |---|---|---|
 | `agent` | Agent-definition Markdown, a state prompt, input mappings, allowed outcomes, and a result schema. | State A asks an agent to produce a structured value. |
+| `question` | A prompt, structured context, declared outcomes, and `authorization: { mode: session-write }`. | State B durably waits for a caller with write access to answer. |
 | `observed-condition` | An opaque registered handler reference, operation data, and declared outcomes. The environment owner separately registers an `evaluate` implementation. | State B waits until an external condition reaches a terminal status. |
 | `action` | An opaque registered handler and operation reference, structured input, idempotency key, allowed outcomes, and result schema. The environment owner separately registers an `execute` implementation. | State C applies one external operation and records its result. |
 | `result` | A declarative value template or deterministic packaged result function plus its result schema. | State D combines earlier outputs into a final value. |
@@ -162,7 +163,13 @@ The action starts or mutates remote work. The observed condition reads
 authoritative remote state and either remains waiting or returns a declared
 terminal outcome. A polling timer or authenticated callback may wake the
 observation, but every wake invokes `evaluate` again; the callback itself does
-not authoritatively complete the state.
+not authoritatively complete the state. The registered provider owns timeout
+and retry bounds and must eventually return a declared terminal outcome when
+its policy is exhausted.
+
+Question answers use the workflow session's existing `session:write`
+authorization boundary. Workflow YAML cannot introduce arbitrary permission
+names; the compiled authorization mode is always `session-write`.
 
 Observed-condition and action handlers may perform external I/O because they
 run behind the generic handler boundary. PilotSwarm knows only the registered

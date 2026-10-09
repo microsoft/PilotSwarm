@@ -113,6 +113,20 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("listWorkflowExecutions", { sessionId });
     }
 
+    async answerWorkflowQuestion(
+        sessionId: string,
+        executionSequence: number,
+        outcome: string,
+        output: unknown,
+    ): Promise<void> {
+        await this._api.call("answerWorkflowQuestion", {
+            sessionId,
+            executionSequence,
+            outcome,
+            output,
+        });
+    }
+
     // ── Session actions ─────────────────────────────────────────────────
 
     async renameSession(sessionId: string, title: string): Promise<void> {
