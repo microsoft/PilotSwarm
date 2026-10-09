@@ -1432,11 +1432,6 @@ export interface PilotSwarmWorkerOptions {
      */
     beforeTurn?: import("./turn-lifecycle-hooks.js").BeforeTurnHook<SerializableSessionConfig>;
     /**
-     * Refines provider-neutral Copilot session configuration after specialized
-     * workspace preparation and before the session is created or resumed.
-     */
-    configureSession?: import("./turn-lifecycle-hooks.js").ConfigureSessionHook<SerializableSessionConfig>;
-    /**
      * Runs once after the complete run-turn activity attempt finishes,
      * including specialized cleanup. Failures propagate to the runtime.
      */
@@ -1745,18 +1740,6 @@ export interface PilotSwarmWorkerOptions {
      * scoped grants.
      */
     mcpServers?: Record<string, any>;
-
-    /**
-     * Resolves worker-owned HTTP headers bound to an MCP server name and its
-     * expected deployment URL. Called for each turn so short-lived credentials
-     * can rotate without following a same-name repository override elsewhere.
-     */
-    mcpServerHeadersProvider?: () => Promise<
-        Record<string, {
-            expectedUrl: string;
-            headers: Record<string, string>;
-        }>
-    >;
 
     /**
      * Whether caller-owned repository workspaces may contribute MCP servers.

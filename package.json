@@ -74,7 +74,6 @@
     "@opentelemetry/resources": "^2.7.1",
     "@opentelemetry/sdk-node": "^0.217.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
-    "jsonc-parser": "^3.3.1",
     "papaparse": "^5.5.4"
   },
   "devDependencies": {

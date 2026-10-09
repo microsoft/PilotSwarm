@@ -78,7 +78,6 @@ import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } fro
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import {
     runWithTurnLifecycleHooks,
-    validateSessionConfigurationOverrides,
 } from "./turn-lifecycle-hooks.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -1326,9 +1325,7 @@ export function registerActivities(
     /** Worker node identifier — written on every CMS event for worker tracking. */
     workerNodeId?: string,
     /** Process-local hooks around each complete run-turn activity attempt. */
-    turnHooks?: import("./turn-lifecycle-hooks.js").TurnLifecycleHooks<SerializableSessionConfig, TurnResult> & {
-        configureSession?: import("./turn-lifecycle-hooks.js").ConfigureSessionHook<SerializableSessionConfig>;
-    },
+    turnHooks?: import("./turn-lifecycle-hooks.js").TurnLifecycleHooks<SerializableSessionConfig, TurnResult>,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
     /**
@@ -1768,24 +1765,6 @@ export function registerActivities(
             }
         } else if (beforeRunTurn) {
             activityCtx.traceInfo(`[runTurn] enlistment reconcile skipped (warm turn) session=${input.sessionId} turn=${input.turnIndex ?? 0}`);
-        }
-
-        let sessionConfiguration = {};
-        if (turnHooks?.configureSession) {
-            try {
-                sessionConfiguration = validateSessionConfigurationOverrides(
-                    await turnHooks.configureSession({
-                        sessionId: input.sessionId,
-                        turnIndex: input.turnIndex,
-                        config: input.config,
-                        trace: (message) => activityCtx.traceInfo(message),
-                    }),
-                );
-            } catch (error) {
-                const message = `configureSession failed: ${error instanceof Error ? error.message : String(error)}`;
-                activityCtx.traceInfo(`[runTurn] ${message}`);
-                return { type: "error", message } as TurnResult;
-            }
         }
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
@@ -2446,7 +2425,6 @@ export function registerActivities(
                 ...(epochCreate ? { epochStart: true } : {}),
                 trace,
                 lockHeld: true,
-                sessionConfiguration,
             });
         } catch (err: any) {
             if (isCallerAuthConfigurationError(err)) {
@@ -2505,7 +2483,6 @@ export function registerActivities(
                                 turnIndex: input.turnIndex,
                                 trace,
                                 lockHeld: true,
-                                sessionConfiguration,
                             });
                             lifecycleBaseVersion = recoveredVersion;
                             lifecycleRehydrated = true;
@@ -2559,7 +2536,6 @@ export function registerActivities(
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
-                        sessionConfiguration,
                     });
                 } catch (recoveryErr: any) {
                     const recoveryMessage = recoveryErr?.message || String(recoveryErr);
@@ -4637,7 +4613,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: input.turnIndex,
                         trace,
                         lockHeld: true,
-                        sessionConfiguration,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -4708,7 +4683,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
-                        sessionConfiguration,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);

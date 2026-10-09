@@ -14,14 +14,6 @@
             "types": "./api/index.d.ts",
             "import": "./api/index.js"
         },
-        "./mcp-auth-discovery": {
-            "types": "./dist/mcp-auth-discovery.d.ts",
-            "import": "./dist/mcp-auth-discovery.js"
-        },
-        "./mcp-auth": {
-            "types": "./dist/mcp-auth.d.ts",
-            "import": "./dist/mcp-auth.js"
-        },
         "./node-auth": {
             "types": "./dist/node-auth.d.ts",
             "import": "./dist/node-auth.js"
@@ -104,7 +96,6 @@
         "duroxide": "https://github.com/microsoft/duroxide-node/releases/download/v0.2.0/duroxide-0.2.0.tgz",
         "fflate": "^0.8.3",
         "file-type": "^20.5.0",
-        "jsonc-parser": "^3.3.1",
         "pg": "^8.18.0",
         "yaml": "^2.9.0"
     },

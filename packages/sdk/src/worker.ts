@@ -515,7 +515,6 @@ export class PilotSwarmWorker {
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
-                mcpServerHeadersProvider: options.mcpServerHeadersProvider,
                 repositoryMcpEnabled: options.repositoryMcpEnabled,
                 mcpAllowedAgents: this._mcpAllowedAgents,
                 deploymentMcpNames: this._deploymentMcpNames,
@@ -1142,7 +1141,6 @@ export class PilotSwarmWorker {
             {
                 beforeTurn: this.config.beforeTurn,
                 afterTurn: this.config.afterTurn,
-                configureSession: this.config.configureSession,
             },
             this.artifactStore,
             this.config.beforeRunTurn,

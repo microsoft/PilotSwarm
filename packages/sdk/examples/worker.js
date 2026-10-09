@@ -38,8 +38,6 @@
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
  *   PILOTSWARM_EXTENSION_MODULES    — Comma-separated modules; each exports register(worker), called
  *                                     before start (for example a session workspace provider)
- *   DEFAULT_MCP_JSON                — Deployment-owned remote MCP server catalog
- *   MCP_WORKLOAD_IDENTITY_SCOPES    — Comma-separated server=scope or server=auto bindings for worker identity
  *
  * Usage:
  *   node --env-file=.env.remote examples/worker.js
@@ -55,8 +53,6 @@ import {
     loadExtensionModules,
     parseExtensionModules,
     loadTurnLifecycleHooksFromEnv,
-    loadWorkerStartupModuleFromEnv,
-    resolveDeploymentMcpWorkerOptions,
 } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
@@ -98,27 +94,9 @@ if (pluginDirs.length === 0 && fs.existsSync("/app/packages/cli/plugins/plugin.j
 if (pluginDirs.length === 0 && fs.existsSync("/app/plugin/plugin.json")) {
     pluginDirs.push("/app/plugin");
 }
-const workerStartup = await loadWorkerStartupModuleFromEnv({
-    env: process.env,
-    pluginDirs,
-    trace: (message) => console.log(`[worker-startup] ${message}`),
-});
-const deploymentMcpWorkerOptions = resolveDeploymentMcpWorkerOptions({
-    env: process.env,
-    startupWorkerOptions: workerStartup?.workerOptions,
-    trace: (message) => console.log(`[deployment-mcp] ${message}`),
-});
-const effectivePluginDirs = [
-    ...new Set([
-        ...pluginDirs,
-        ...(workerStartup?.additionalPluginDirs ?? []),
-    ]),
-];
-
 console.log(`[worker] Pod: ${podName}`);
 console.log(`[worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
-if (workerStartup) console.log("[worker] Startup module initialized");
-if (effectivePluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${effectivePluginDirs.join(", ")}`);
+if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(", ")}`);
 if (process.env.SESSION_STATE_DIR) console.log(`[worker] Session state dir: ${process.env.SESSION_STATE_DIR}`);
 if (process.env.DUROXIDE_PG_POOL_MAX) console.log(`[worker] Duroxide PG pool max: ${process.env.DUROXIDE_PG_POOL_MAX}`);
 if (process.env.PILOTSWARM_CMS_PG_POOL_MAX) console.log(`[worker] CMS PG pool max: ${process.env.PILOTSWARM_CMS_PG_POOL_MAX}`);
@@ -161,8 +139,7 @@ const worker = new PilotSwarmWorker({
     modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH || undefined,
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
-    pluginDirs: effectivePluginDirs,
-    ...deploymentMcpWorkerOptions,
+    pluginDirs,
     ...turnLifecycleHooks,
     // Bicep-deploy MI flow (set in worker-env ConfigMap by the overlay
     // .env). Unset on the legacy `scripts/deploy-aks.sh` path, local
@@ -212,11 +189,6 @@ async function shutdown(signal) {
         const shutdownErrors = [];
         try {
             await worker.gracefulShutdown();
-        } catch (error) {
-            shutdownErrors.push(error);
-        }
-        try {
-            await workerStartup?.shutdown?.();
         } catch (error) {
             shutdownErrors.push(error);
         }

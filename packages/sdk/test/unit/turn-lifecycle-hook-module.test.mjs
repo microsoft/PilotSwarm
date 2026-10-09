@@ -17,7 +17,6 @@ test("returns no hooks when the module environment variable is absent", async ()
 test("loads named non-Git hooks from a relative module path", async () => {
     const beforeTurn = () => {};
     const afterTurn = () => {};
-    const configureSession = () => ({ enableConfigDiscovery: false });
     let importedSpecifier;
     const cwd = path.resolve("worker-root");
 
@@ -27,7 +26,7 @@ test("loads named non-Git hooks from a relative module path", async () => {
             cwd,
             importModule: async (specifier) => {
                 importedSpecifier = specifier;
-                return { beforeTurn, afterTurn, configureSession };
+                return { beforeTurn, afterTurn };
             },
         },
     );
@@ -38,7 +37,6 @@ test("loads named non-Git hooks from a relative module path", async () => {
     );
     assert.equal(hooks.beforeTurn, beforeTurn);
     assert.equal(hooks.afterTurn, afterTurn);
-    assert.equal(hooks.configureSession, configureSession);
     assert.equal(hooks.beforeRunTurn, undefined);
     assert.equal(hooks.afterRunTurn, undefined);
 });
@@ -143,7 +141,7 @@ test("fails closed when the module exports no lifecycle hooks", async () => {
             { [TURN_LIFECYCLE_HOOK_MODULE_ENV]: "empty-hooks" },
             { importModule: async () => ({}) },
         ),
-        /must export beforeTurn, afterTurn, configureSession, beforeRunTurn, or afterRunTurn/,
+        /must export beforeTurn, afterTurn, beforeRunTurn, or afterRunTurn/,
     );
 });
 

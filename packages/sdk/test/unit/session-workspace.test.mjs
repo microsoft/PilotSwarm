@@ -204,6 +204,13 @@ test("SessionManager denies repository MCP while preserving instructions and con
 
     const manager = new SessionManager(undefined, null, {
         repositoryMcpEnabled: false,
+        baseMcpServers: {
+            curated: {
+                type: "http",
+                url: "https://example.test/mcp",
+                tools: ["*"],
+            },
+        },
     }, path.join(root, "state"));
     manager.setFactStore({
         readFacts: async () => ({ count: 0, facts: [] }),
@@ -226,19 +233,7 @@ test("SessionManager denies repository MCP while preserving instructions and con
     await manager.getOrCreate(
         "repo-mcp-denied",
         { workingDirectory },
-        {
-            turnIndex: 0,
-            sessionConfiguration: {
-                enableConfigDiscovery: false,
-                mcpServers: {
-                    curated: {
-                        type: "http",
-                        url: "https://example.test/mcp",
-                        tools: ["*"],
-                    },
-                },
-            },
-        },
+        { turnIndex: 0 },
     );
 
     assert.equal(captured.enableConfigDiscovery, false);
@@ -248,78 +243,6 @@ test("SessionManager denies repository MCP while preserving instructions and con
     assert.deepEqual(captured.skillDirectories, [fs.realpathSync.native(skill)]);
     assert.equal(captured.mcpServers.curated.url, "https://example.test/mcp");
     assert.equal(captured.disabledMcpServers, undefined);
-});
-
-test("SessionManager recycles a warm session when configured MCP changes", async (t) => {
-    const root = temporaryRoot(t);
-    const stateRoot = path.join(root, "state");
-    const manager = new SessionManager(undefined, null, {
-        baseMcpServers: {
-            deployment: {
-                type: "http",
-                url: "https://deployment.example.test/mcp",
-                tools: ["*"],
-            },
-        },
-    }, stateRoot);
-    manager.setFactStore({
-        readFacts: async () => ({ count: 0, facts: [] }),
-        storeFact: async () => ({ stored: true }),
-        deleteFact: async () => ({ deleted: true }),
-    });
-    const created = [];
-    const resumed = [];
-    manager.ensureClient = async () => ({
-        createSession: async (config) => {
-            created.push(config);
-            fs.mkdirSync(path.join(stateRoot, config.sessionId), { recursive: true });
-            return { disconnect: async () => {} };
-        },
-        resumeSession: async (_id, config) => {
-            resumed.push(config);
-            return { disconnect: async () => {} };
-        },
-        deleteSession: async () => {},
-    });
-    t.after(async () => manager.shutdown());
-
-    await manager.getOrCreate("dynamic-mcp", {}, {
-        turnIndex: 0,
-        sessionConfiguration: {
-            enableConfigDiscovery: false,
-            mcpServers: {
-                first: {
-                    type: "http",
-                    url: "https://first.example.test/mcp",
-                    tools: ["*"],
-                },
-            },
-        },
-    });
-    await manager.getOrCreate("dynamic-mcp", {}, {
-        turnIndex: 1,
-        sessionConfiguration: {
-            enableConfigDiscovery: false,
-            mcpServers: {
-                second: {
-                    type: "http",
-                    url: "https://second.example.test/mcp",
-                    tools: ["*"],
-                },
-            },
-        },
-    });
-
-    assert.equal(created.length, 1);
-    assert.equal(resumed.length, 1);
-    assert.deepEqual(
-        Object.keys(created[0].mcpServers).sort(),
-        ["deployment", "first"],
-    );
-    assert.deepEqual(
-        Object.keys(resumed[0].mcpServers).sort(),
-        ["deployment", "second"],
-    );
 });
 
 test("session ids reject traversal and non-portable Windows names", (t) => {
