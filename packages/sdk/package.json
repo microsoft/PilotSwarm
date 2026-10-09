@@ -49,7 +49,7 @@
         "test:local:cache-observability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cache-observability.test.js",
         "test:local:facts-stats": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/facts-stats.test.js",
         "test:local:git-lifecycle": "node ../../node_modules/vitest/vitest.mjs run test/local/git-store.test.js test/local/git-workspace-cross-pod.test.js --no-file-parallelism --maxConcurrency=1",
-        "test:local:storage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/storage-config.test.js test/local/duroxide-schema-migration.test.js",
+        "test:local:storage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/storage-config.test.js test/local/duroxide-schema-migration.test.js test/local/workflow-persistence.test.js",
         "test:local:sdk-disk-format": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sdk-disk-format.test.js",
         "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
         "test:local:scripted": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/scripted-harness.test.js test/local/request-capture.test.js",

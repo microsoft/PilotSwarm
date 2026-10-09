@@ -23,6 +23,7 @@ import type {
 } from "../cms.js";
 import type { SessionOwnerInfo } from "../types.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
+import type { WorkflowDefinitionRegistrationRequest } from "../management-client.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -271,6 +272,31 @@ export class WebPilotSwarmManagementClient {
 
     async getSession(sessionId: string): Promise<any> {
         return this._api.call("getSession", { sessionId });
+    }
+
+    async registerWorkflowDefinition(
+        requestOrYaml: WorkflowDefinitionRegistrationRequest | string,
+        _options?: { packageRoot: string },
+    ): Promise<any> {
+        if (typeof requestOrYaml === "string") {
+            throw Object.assign(
+                new Error("Web registration requires a Git-backed source request."),
+                { code: "WEB_MODE_UNSUPPORTED" },
+            );
+        }
+        return this._api.call("registerWorkflowDefinition", { source: requestOrYaml.source });
+    }
+
+    async getWorkflowDefinition(definitionId: string): Promise<any> {
+        return this._api.call("getWorkflowDefinition", { definitionId });
+    }
+
+    async getWorkflow(sessionId: string): Promise<any> {
+        return this._api.call("getWorkflow", { sessionId });
+    }
+
+    async listWorkflowExecutions(sessionId: string): Promise<any[]> {
+        return this._api.call("listWorkflowExecutions", { sessionId });
     }
 
     // ── Session actions ─────────────────────────────────────────────────

@@ -8,6 +8,7 @@
 export const NON_MANAGEMENT_OPERATION_OWNERS = Object.freeze({
     createSession: { owner: "PilotSwarmClient", file: "packages/sdk/src/client.ts", className: "PilotSwarmClient", method: "createSession", reason: "session creation handle" },
     createSessionForAgent: { owner: "PilotSwarmClient", file: "packages/sdk/src/client.ts", className: "PilotSwarmClient", method: "createSessionForAgent", reason: "agent-bound session creation handle" },
+    startWorkflow: { owner: "PilotSwarmClient", file: "packages/sdk/src/client.ts", className: "PilotSwarmClient", method: "startWorkflow", reason: "registered workflow admission" },
     sendSessionEvent: { owner: "PilotSwarmSession", file: "packages/sdk/src/client.ts", className: "PilotSwarmSession", method: "sendEvent", reason: "session event write" },
 
     listArtifacts: { owner: "HttpApiTransport", file: "packages/sdk/api/src/http-api-transport.js", className: "HttpApiTransport", method: "listArtifacts", reason: "session artifact data plane" },

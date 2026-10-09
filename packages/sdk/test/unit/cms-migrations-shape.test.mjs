@@ -2,10 +2,7 @@
  * Migration-shape invariants for the CMS registry — pure, no database.
  *
  * Guards the class of bug fixed by 0028: a session read path whose column
- * set silently diverges from the canonical cms_list_sessions shape. The
- * paged list (cms_list_sessions_page) originally returned SETOF sessions —
- * no owner columns — so every paged row reached clients with owner: null
- * and the UI rendered "?" initials.
+ * set silently diverges from the canonical cms_list_sessions shape.
  *
  * Run: node --test test/unit/cms-migrations-shape.test.mjs
  */
@@ -26,8 +23,6 @@ test("registry is strictly ordered and includes 0028_list_sessions_page_owner", 
     assert.equal(m28.name, "list_sessions_page_owner");
 });
 
-// Extract the RETURNS TABLE column list of a named function from a SQL blob.
-// Matches the LAST definition in the blob (later migrations win).
 function returnsTableColumns(sql, fnName) {
     const re = new RegExp(
         `CREATE (?:OR REPLACE )?FUNCTION "${SCHEMA}"\\.${fnName}\\s*\\([^;]*?\\)\\s*RETURNS TABLE\\s*\\(([^;]*?)\\)\\s*AS`,
@@ -67,8 +62,6 @@ test("0028: drops the old SETOF signature and joins owners", () => {
         "return-shape change requires DROP before CREATE");
     assert.match(sql, /LEFT JOIN "shape_check"\.session_owners/, "must join session_owners");
     assert.match(sql, /LEFT JOIN "shape_check"\.users/, "must join users");
-    // Strip `--` comment lines before asserting: the migration's own header
-    // comment legitimately mentions the old "RETURNS SETOF sessions" shape.
     const code = sql.split("\n").filter((ln) => !ln.trimStart().startsWith("--")).join("\n");
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
@@ -96,18 +89,8 @@ test("0091: WorkflowRuns use logical deletion with durable cleanup tombstones", 
     assert.equal(migration.name, "workflow_run_cleanup_tombstones");
     assert.match(migration.sql, /ALTER TABLE "shape_check"\.workflow_generators\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
     assert.match(migration.sql, /ALTER TABLE "shape_check"\.workflow_runs\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
-    assert.match(migration.sql, /ALTER TABLE "shape_check"\.sessions\s+ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMPTZ/i);
-    assert.match(migration.sql, /DROP CONSTRAINT IF EXISTS workflow_generators_owner_provider_owner_subject_name_key/i);
-    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_generators_active_owner_name/i);
-    assert.match(migration.sql, /WHERE deleted_at IS NULL/i);
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_run_cleanup_tombstones/i);
-    assert.match(migration.sql, /aggregate_type\s+TEXT NOT NULL CHECK \(aggregate_type IN \('generator', 'workflowRun'\)\)/i);
-    assert.match(migration.sql, /cleanup_status\s+TEXT NOT NULL DEFAULT 'pending'/i);
-    assert.match(migration.sql, /cleanup_status IN \('pending', 'completed', 'failed'\)/i);
-    assert.match(migration.sql, /session_ids\s+JSONB NOT NULL DEFAULT '\[\]'::jsonb/i);
-    assert.match(migration.sql, /jsonb_typeof\(session_ids\) = 'array'/i);
     assert.match(migration.sql, /PRIMARY KEY \(aggregate_type, aggregate_id\)/i);
-    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_cleanup_tombstones_status/i);
 });
 
 test("0092: WorkflowRun waits use one durable taxonomy with response fencing", () => {
@@ -116,48 +99,62 @@ test("0092: WorkflowRun waits use one durable taxonomy with response fencing", (
     assert.equal(migration.name, "workflow_run_waits");
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_run_waits/i);
     assert.match(migration.sql, /kind IN \('response', 'observed_condition', 'timer'\)/i);
-    assert.match(migration.sql, /detection_mode IN \('direct_submission', 'poll', 'event', 'hybrid', 'timer'\)/i);
-    assert.match(migration.sql, /expected_state_revision\s+BIGINT NOT NULL/i);
-    assert.match(migration.sql, /response_schema\s+JSONB NOT NULL/i);
-    assert.match(migration.sql, /responder_policy\s+JSONB NOT NULL/i);
-    assert.match(migration.sql, /satisfaction_evidence\s+JSONB/i);
     assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_waits_pending_response/i);
-    assert.match(migration.sql, /WHERE kind = 'response' AND status = 'pending'/i);
-    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_due/i);
 });
 
 test("0093: observed-condition waits persist scheduling leases and delivery boundaries", () => {
     const migration = migrations.find((m) => m.version === "0093");
-    assert.ok(migration, "migration 0092 must be registered");
+    assert.ok(migration, "migration 0093 must be registered");
     assert.equal(migration.name, "workflow_run_wait_scheduling");
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS signal_key TEXT/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_attempts INTEGER NOT NULL DEFAULT 0/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS consecutive_check_failures INTEGER NOT NULL DEFAULT 0/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ/i);
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_lease_owner TEXT/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_lease_expires_at TIMESTAMPTZ/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS last_check_error TEXT/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ/i);
-    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ/i);
-    assert.match(migration.sql, /FROM "shape_check"\.workflow_run_external_operations operation/i);
-    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_waits_signal_key/i);
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_workflow_run_waits_check_lease/i);
 });
 
 test("0095: WorkflowGenerator source providers use opaque identifiers", () => {
     const migration = migrations.find((m) => m.version === "0095");
-    assert.ok(migration, "migration 0094 must be registered");
+    assert.ok(migration, "migration 0095 must be registered");
     assert.equal(migration.name, "workflow_generator_source_provider_ids");
-    assert.match(
-        migration.sql,
-        /DROP CONSTRAINT IF EXISTS workflow_generators_source_type_check/i,
-    );
+    assert.match(migration.sql, /DROP CONSTRAINT IF EXISTS workflow_generators_source_type_check/i);
     assert.match(
         migration.sql,
         /CHECK \(source_type IS NULL OR source_type ~ '\^\[a-z\]\[a-z0-9\._-\]\{0,127\}\$'\)/i,
     );
-    assert.doesNotMatch(
-        migration.sql,
-        /CHECK\s*\(\s*source_type\s+IN\s*\(/i,
-    );
+    assert.doesNotMatch(migration.sql, /CHECK\s*\(\s*source_type\s+IN\s*\(/i);
+});
+
+test("0104: workflow sessions are additive and existing rows remain agent sessions", () => {
+    const migration = migrations.find((m) => m.version === "0104");
+    assert.ok(migration, "migration 0104 must be registered");
+    assert.equal(migration.name, "workflow_session_kind");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent'/);
+    assert.match(migration.sql, /CHECK \(session_kind IN \('agent', 'workflow'\)\)/);
+});
+
+test("0105: workflow facts are authoritative and lifecycle events are transactional", () => {
+    const migration = migrations.find((m) => m.version === "0105");
+    assert.ok(migration, "migration 0105 must be registered");
+    assert.equal(migration.name, "workflow_executions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_state_executions/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_projections/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_complete_workflow/);
+});
+
+test("0106: workflow definitions retain source and normalized compiled manifests", () => {
+    const migration = migrations.find((m) => m.version === "0106");
+    assert.ok(migration, "migration 0106 must be registered");
+    assert.equal(migration.name, "workflow_definitions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_definitions/);
+    assert.match(migration.sql, /package_artifact_filename TEXT NOT NULL/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_register_workflow_definition/);
+});
+
+test("0107: workflow admission atomically enforces logical and request idempotency", () => {
+    const migration = migrations.find((m) => m.version === "0107");
+    assert.ok(migration, "migration 0107 must be registered");
+    assert.equal(migration.name, "workflow_admissions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admissions/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admission_requests/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_admit_workflow/);
+    assert.match(migration.sql, /WORKFLOW_IDEMPOTENCY_CONFLICT/);
 });

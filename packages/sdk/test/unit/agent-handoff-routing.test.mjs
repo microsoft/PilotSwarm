@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { createSessionManagerProxy, createSessionProxy } from "../../dist/session-proxy.js";
+import { createSessionManagerProxy, createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
@@ -87,6 +87,15 @@ test("legacy proxy descriptors retain their serialized names, inputs and affinit
     assert.deepEqual(wire(manager.spawnChildSession("parent", {}, "work", 1, false)), {
         type: "activity", name: "spawnChildSession", input: '{"parentSessionId":"parent","config":{},"task":"work","nestingLevel":1,"isSystem":false}',
     });
+    assert.deepEqual(wire(manager.spawnWorkflowSession(
+        "parent",
+        { kind: "package", packageName: "ops", workflowName: "deploy", version: "1.0.0" },
+        { target: "staging" },
+    )), {
+        type: "activity",
+        name: "spawnWorkflowSession",
+        input: '{"parentSessionId":"parent","definition":{"kind":"package","packageName":"ops","workflowName":"deploy","version":"1.0.0"},"inputs":{"target":"staging"}}',
+    });
     for (const historical of [manager, createSessionManagerProxy(ctx, "agent-handoff-v2")]) {
         assert.deepEqual(wire(historical.getSessionStatus("child")), {
             type: "activity", name: "getSessionStatus", input: '{"sessionId":"child"}',
@@ -137,6 +146,66 @@ test("new handoff proxies route every critical activity with the capability tag"
     assert.equal(repoProxy.runTurn("work").tag, "generic", "a repo session is prepared by a generic worker");
     assert.equal(repoProxy.runTurn("work").name, "runTurnV3", "…without losing the handoff contract's activity name");
     assert.equal(manager.listModels().tag, undefined, "unrelated activities retain their existing routing");
+});
+
+test("workflow agent spawning carries a replay-stable child session id", () => {
+    const manager = createSessionManagerProxy(context(), "agent-handoff-v2");
+    const task = wire(manager.spawnChildSession(
+        "workflow-parent",
+        { toolNames: ["submit_workflow_result"] },
+        "Inspect the change.",
+        1,
+        false,
+        "Inspector",
+        "inspector",
+        undefined,
+        false,
+        "submit_workflow_result",
+        false,
+        "child-fixed",
+    ));
+
+    assert.equal(task.name, "spawnChildSessionV2");
+    const input = JSON.parse(task.input);
+    assert.equal(input.childSessionId, "child-fixed");
+    assert.equal(input.requiredTool, "submit_workflow_result");
+});
+
+test("workflow child creation uses its dedicated routed activity contract", () => {
+    const manager = createSessionManagerProxy(context(), "agent-handoff-v2");
+    const task = wire(manager.spawnWorkflowSession(
+        "parent",
+        { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+        {},
+        "workflow-1",
+    ));
+    assert.deepEqual(task, {
+        type: "activity",
+        name: "spawnWorkflowSessionV1",
+        input: '{"parentSessionId":"parent","definition":{"kind":"inline","yaml":"kind: workflow\\nversion: 1\\n"},"inputs":{},"childSessionId":"workflow-1"}',
+        tag: AGENT_HANDOFF_CAPABILITY,
+    });
+    assert.deepEqual(wire(manager.getWorkflowResult("parent", "workflow-1")), {
+        type: "activity",
+        name: "getWorkflowResultV1",
+        input: '{"parentSessionId":"parent","childSessionId":"workflow-1"}',
+        tag: AGENT_HANDOFF_CAPABILITY,
+    });
+});
+
+test("workers register legacy and routed workflow child activities", () => {
+    const handlers = new Map();
+    registerActivities(
+        { registerActivity: (name, handler) => handlers.set(name, handler) },
+        {},
+        null,
+        undefined,
+        null,
+        undefined,
+        "postgres://unused",
+    );
+    assert.equal(typeof handlers.get("spawnWorkflowSession"), "function");
+    assert.equal(typeof handlers.get("spawnWorkflowSessionV1"), "function");
 });
 
 test("routing fails closed if the SDK cannot express capability tags", () => {

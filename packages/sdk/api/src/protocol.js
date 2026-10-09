@@ -102,6 +102,13 @@ export const OPERATIONS = [
     { name: "sendSessionEvent", access: "session:write", method: "POST", path: "/sessions/:sessionId/events", params: { sessionId: path("sessionId"), eventName: body(), data: body() }, summary: "Send a custom event into the session." },
     { name: "cancelPendingMessage", access: "session:write", method: "POST", path: "/sessions/:sessionId/cancel-pending", params: { sessionId: path("sessionId"), clientMessageIds: body() }, summary: "Cancel queued messages by client message ids." },
 
+    // ── Workflows (read model) ─────────────────────────────────────────
+    { name: "startWorkflow", access: "session:create", method: "POST", path: "/workflows", params: { definitionId: body(), inputs: body(), idempotencyKey: body(), groupId: body(), visibility: body(), rerun: body() }, summary: "Validate, atomically admit, and start one registered workflow execution. Definition-declared primary keys deduplicate logical entities." },
+    { name: "registerWorkflowDefinition", access: "fleet:admin", method: "POST", path: "/management/workflow-definitions", params: { source: body() }, summary: "Resolve a Git-backed workflow package, pin its artifact, compile it, and persist an immutable definition." },
+    { name: "getWorkflowDefinition", access: "fleet:admin", method: "GET", path: "/management/workflow-definitions/:definitionId", params: { definitionId: path("definitionId") }, summary: "Read one immutable registered workflow definition." },
+    { name: "getWorkflow", access: "session:read", method: "GET", path: "/management/workflows/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get the workflow's current state, waiting reason, and terminal result when complete." },
+    { name: "listWorkflowExecutions", access: "session:read", method: "GET", path: "/management/workflows/:sessionId/executions", params: { sessionId: path("sessionId") }, summary: "Authoritative workflow state executions in admission order." },
+
     // ── Session sharing (security model) ────────────────────────────────
     { name: "getSessionAccess", access: "session:read", method: "GET", path: "/sessions/:sessionId/access", params: { sessionId: path("sessionId") }, summary: "The caller's effective access to this session's tree: { visibility, relation, canWrite, canManage, owner }." },
     { name: "setSessionVisibility", access: "session:share", method: "PUT", path: "/sessions/:sessionId/visibility", params: { sessionId: path("sessionId"), visibility: body() }, summary: "Set the tree's sharing level (private | shared_read | shared_write). Owner or admin." },

@@ -5,6 +5,8 @@ import type {
     SerializableSessionConfig,
     ChildSessionVerdict,
     SubAgentEntry,
+    SubWorkflowEntry,
+    WorkflowSessionResult,
 } from "../types.js";
 import {
     clearPendingChildDigest,
@@ -121,6 +123,43 @@ export function getStillRunningAgentIds(subAgents: SubAgentEntry[], agentIds: st
         const agent = findTrackedAgentByOrchId(subAgents, agentId);
         return agent && !isSubAgentTerminalStatus(agent.status);
     });
+}
+
+export function isWorkflowTerminalStatus(status: SubWorkflowEntry["status"]): boolean {
+    return status !== "running";
+}
+
+export function* readWorkflowResult(
+    runtime: DurableSessionRuntime,
+    workflow: SubWorkflowEntry,
+): Generator<any, WorkflowSessionResult | null, any> {
+    const raw: string = yield runtime.manager.getWorkflowResult(
+        runtime.input.sessionId,
+        workflow.sessionId,
+    );
+    const parsed = JSON.parse(raw);
+    if (!parsed?.result) {
+        workflow.status = "running";
+        return null;
+    }
+    workflow.status = parsed.result.outcome;
+    return parsed.result as WorkflowSessionResult;
+}
+
+export function workflowResultLines(results: WorkflowSessionResult[]): string[] {
+    return results.map(result =>
+        `  - Workflow ${result.sessionId}\n` +
+        `    Outcome: ${result.outcome}\n` +
+        `    Summary: ${result.summary}\n` +
+        `    Result: ${Object.prototype.hasOwnProperty.call(result, "result")
+            ? JSON.stringify(result.result).slice(0, 4000)
+            : "(no structured result)"}`,
+    );
+}
+
+export function workflowResultsFollowup(results: WorkflowSessionResult[]): string {
+    const lines = workflowResultLines(results);
+    return `[SYSTEM: Workflow results (${results.length}):\n${lines.join("\n")}]`;
 }
 
 export function buildWaitForAgentsFollowup(subAgents: SubAgentEntry[], targetIds: string[]): string {
@@ -648,6 +687,107 @@ export function* handleSubAgentAction(
 ): Generator<any, boolean, any> {
     const { ctx, state } = runtime;
     switch (result.type) {
+        case "spawn_workflow": {
+            const childSessionId: string = yield ctx.newGuid();
+            yield runtime.manager.spawnWorkflowSession(
+                runtime.input.sessionId,
+                result.definition,
+                result.inputs,
+                childSessionId,
+            );
+            state.subWorkflows.push({
+                sessionId: childSessionId,
+                status: "running",
+                resultDelivered: false,
+            });
+            ctx.traceInfo(`[orch] started workflow child session=${childSessionId}`);
+            queueFollowup(runtime,
+                `[SYSTEM: Workflow started.\nWorkflow session ID: ${childSessionId}\n` +
+                `Use check_workflows to inspect it or wait_for_workflows to wait for its terminal result.]`);
+            return true;
+        }
+
+        case "check_workflows": {
+            const targetIds = result.workflowIds?.length
+                ? result.workflowIds
+                : state.subWorkflows.map(workflow => workflow.sessionId);
+            if (targetIds.length === 0) {
+                queueFollowup(runtime, "[SYSTEM: No workflow children have been started.]");
+                return true;
+            }
+            const results: WorkflowSessionResult[] = [];
+            const lines: string[] = [];
+            for (const targetId of targetIds) {
+                const workflow = state.subWorkflows.find(entry => entry.sessionId === targetId);
+                if (!workflow) {
+                    lines.push(`  - Workflow ${targetId}: unknown to this conversation`);
+                    continue;
+                }
+                try {
+                    const terminal = yield* readWorkflowResult(runtime, workflow);
+                    if (terminal) {
+                        workflow.resultDelivered = true;
+                        results.push(terminal);
+                    } else {
+                        lines.push(`  - Workflow ${targetId}: running`);
+                    }
+                } catch (error: any) {
+                    lines.push(`  - Workflow ${targetId}: result read failed (${error?.message || String(error)})`);
+                }
+            }
+            if (results.length > 0) lines.push(...workflowResultLines(results));
+            queueFollowup(runtime, `[SYSTEM: Workflow status report:\n${lines.join("\n")}]`);
+            return true;
+        }
+
+        case "wait_for_workflows": {
+            const targetIds = result.workflowIds?.length
+                ? result.workflowIds
+                : state.subWorkflows
+                    .filter(workflow => !isWorkflowTerminalStatus(workflow.status))
+                    .map(workflow => workflow.sessionId);
+            if (targetIds.length === 0) {
+                queueFollowup(runtime, "[SYSTEM: No running workflow children to wait for.]");
+                return true;
+            }
+            const unknown = targetIds.filter((targetId: string) =>
+                !state.subWorkflows.some(workflow => workflow.sessionId === targetId));
+            if (unknown.length > 0) {
+                queueFollowup(runtime,
+                    `[SYSTEM: wait_for_workflows failed — unknown workflow session(s): ${unknown.join(", ")}.]`);
+                return true;
+            }
+
+            const completed: WorkflowSessionResult[] = [];
+            for (const targetId of targetIds) {
+                const workflow = state.subWorkflows.find(entry => entry.sessionId === targetId)!;
+                const terminal = yield* readWorkflowResult(runtime, workflow);
+                if (terminal) completed.push(terminal);
+            }
+            if (completed.length === targetIds.length) {
+                for (const workflow of state.subWorkflows) {
+                    if (targetIds.includes(workflow.sessionId)) workflow.resultDelivered = true;
+                }
+                queueFollowup(runtime, workflowResultsFollowup(completed));
+                return true;
+            }
+
+            const now: number = yield ctx.utcNow();
+            state.waitingForWorkflowIds = targetIds;
+            state.activeTimer = {
+                deadlineMs: now + 30_000,
+                originalDurationMs: 30_000,
+                reason: `waiting for ${targetIds.length} workflow(s)`,
+                type: "workflow-poll",
+                workflowIds: targetIds,
+            };
+            publishStatus(runtime, "waiting", {
+                waitReason: `waiting for ${targetIds.length} workflow(s)`,
+                waitStartedAt: now,
+            });
+            return true;
+        }
+
         case "spawn_agent": {
             const childNestingLevel = runtime.options.nestingLevel + 1;
             if (childNestingLevel > MAX_NESTING_LEVEL) {

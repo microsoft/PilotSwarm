@@ -584,6 +584,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ctx.traceInfo(`[drain] user prompt interrupted agent wait`);
                 state.waitingForAgentIds = null;
                 state.activeTimer = null;
+            } else if (state.activeTimer?.type === "workflow-poll") {
+                ctx.traceInfo(`[drain] user prompt interrupted workflow wait`);
+                state.waitingForWorkflowIds = null;
+                state.activeTimer = null;
             } else if (state.activeTimer?.type === "workspace_retry") {
                 // Session workspaces: the message's own turn is the next
                 // attempt. A gate wait is never re-armed (test F9); if the
@@ -1063,6 +1067,9 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
         state.activeTimer = null;
     } else if (state.activeTimer?.type === "agent-poll") {
         state.waitingForAgentIds = null;
+        state.activeTimer = null;
+    } else if (state.activeTimer?.type === "workflow-poll") {
+        state.waitingForWorkflowIds = null;
         state.activeTimer = null;
     }
 

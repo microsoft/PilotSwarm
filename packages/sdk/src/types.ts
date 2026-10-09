@@ -32,6 +32,9 @@ export type TurnAction =
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
     | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null }
+    | { type: "spawn_workflow"; definition: WorkflowDefinitionSource; inputs: Record<string, unknown>; events?: CapturedEvent[] }
+    | { type: "check_workflows"; workflowIds: string[]; events?: CapturedEvent[] }
+    | { type: "wait_for_workflows"; workflowIds: string[]; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
@@ -95,6 +98,9 @@ type TurnResultVariant =
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_workflow"; definition: WorkflowDefinitionSource; inputs: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "check_workflows"; workflowIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "wait_for_workflows"; workflowIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -531,6 +537,62 @@ export function systemSessionProtectedError(action: "delete" | "cancel" | "compl
 
 // ─── Session Config ──────────────────────────────────────────────
 
+/** Runtime implementation behind a session. Omitted persisted values mean "agent". */
+export type SessionKind = "agent" | "workflow";
+
+/**
+ * Immutable source supplied when a workflow session is created.
+ * Validation and compilation belong to the future workflow controller.
+ */
+export type WorkflowDefinitionSource =
+    | { kind: "package"; packageName: string; workflowName: string; version?: string }
+    | { kind: "inline"; yaml: string }
+    | { kind: "registered"; definitionId: string }
+    | { kind: "in-memory"; graphId: string };
+
+/** Additive creation contract for a controller-backed, non-conversational session. */
+export interface WorkflowSessionConfig {
+    definition: WorkflowDefinitionSource;
+    inputs?: Record<string, unknown>;
+    sessionId?: string;
+    parentSessionId?: string;
+    owner?: SessionOwnerInfo | null;
+    groupId?: string | null;
+    visibility?: "private" | "shared_read" | "shared_write" | null;
+}
+
+export interface WorkflowStartRequest {
+    definitionId: string;
+    inputs?: Record<string, unknown>;
+    idempotencyKey: string;
+    groupId?: string | null;
+    visibility?: "private" | "shared_read" | "shared_write" | null;
+    rerun?: {
+        reason: string;
+    };
+}
+
+export interface WorkflowStartResult {
+    sessionId: string;
+    definitionId: string;
+    attempt: number;
+    primaryKeyValues: readonly unknown[] | null;
+    created: boolean;
+    deduplicated: boolean;
+    rerun: boolean;
+}
+
+/** Terminal result returned by a child workflow session to its caller. */
+export interface WorkflowSessionResult<TResult = unknown> {
+    sessionId: string;
+    parentSessionId?: string;
+    outcome: "succeeded" | "blocked" | "failed" | "cancelled";
+    summary: string;
+    result?: TResult;
+    completedAt: string;
+    metadata?: Record<string, unknown>;
+}
+
 /** Serializable config — travels through duroxide (no functions). */
 export interface SerializableSessionConfig {
     model?: string;
@@ -660,6 +722,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      * not declared. Set by the runTurn activity. Runtime-only.
      */
     workspaceToolsBlocked?: boolean;
+    /** Runtime-only: the orchestration version cannot consume workflow tracking actions. */
+    workflowToolsBlocked?: boolean;
     /**
      * Session workspaces: the session had a workspace and it was cleared.
      * The CLI still gets an explicit working folder and no repo hooks: a
@@ -841,6 +905,8 @@ export interface ChildSessionResult {
 
 export interface PilotSwarmSessionInfo {
     sessionId: string;
+    /** Runtime implementation. Existing sessions default to "agent". */
+    sessionKind: SessionKind;
     status: PilotSwarmSessionStatus;
     /** LLM model used for this session. */
     model?: string;
@@ -1061,6 +1127,7 @@ export interface OrchestrationInput {
         // stays as it was because frozen handlers type-check against it.
         type: "wait" | "cron" | "idle" | "agent-poll" | "input-grace";
         originalDurationMs?: number;
+        workflowIds?: string[];
         shouldRehydrate?: boolean;
         /** 1.0.80: the gate behind a wait timer, carried so it survives continue-as-new. */
         gate?: "budget" | "workspace";
@@ -1145,6 +1212,10 @@ export interface OrchestrationInput {
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
     subAgents?: SubAgentEntry[];
+    /** Workflow invocations started by this conversation. Carried across continueAsNew. */
+    subWorkflows?: SubWorkflowEntry[];
+    /** Workflow children the parent is durably waiting to receive results from. */
+    waitingForWorkflowIds?: string[];
     /**
      * Child-side flag: this session has already delivered its first
      * completion report to its parent. The first final answer of a spawned
@@ -1197,6 +1268,16 @@ export interface SubAgentEntry {
     agentId?: string;
     /** Last known child contract for autonomous parent wake policy decisions. */
     contract?: Record<string, unknown>;
+}
+
+/** Workflow invocation state tracked by the parent conversation. */
+export interface SubWorkflowEntry {
+    /** Workflow child session ID and stable invocation correlation key. */
+    sessionId: string;
+    /** Last status observed by the parent orchestration. */
+    status: "running" | "succeeded" | "blocked" | "failed" | "cancelled";
+    /** Whether the terminal result has already been delivered to the conversation. */
+    resultDelivered: boolean;
 }
 
 // ─── Session Policy ──────────────────────────────────────────────

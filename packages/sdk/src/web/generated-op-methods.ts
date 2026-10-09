@@ -74,6 +74,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getProviderUsageAgents",
     "getProviderUsageGrid",
     "getProviderUsageSummary",
+    "getRegisteredWorkflowDefinition",
     "getSession",
     "getSessionAccess",
     "getSessionCreationPolicy",
@@ -101,6 +102,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getUserStats",
     "getWorkerCount",
     "getWorkerTimeline",
+    "getWorkflow",
     "getWorkflowDefinition",
     "getWorkflowGenerator",
     "getWorkflowRun",
@@ -130,6 +132,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionWorkspaceFolders",
     "listWorkers",
     "listWorkflowDefinitions",
+    "listWorkflowExecutions",
     "listWorkflowGeneratorCycles",
     "listWorkflowGeneratorRuns",
     "listWorkflowGenerators",
@@ -148,6 +151,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readCanvasKv",
     "readFacts",
     "regenerateSession",
+    "registerWorkflowDefinition",
     "removeCanvasShareLink",
     "removeProviderLimit",
     "renameSession",
@@ -191,6 +195,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setWorkflowRunWaitConditionOverride",
     "similarFacts",
     "startFactsEmbedder",
+    "startWorkflow",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
@@ -818,6 +823,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read one immutable registered workflow definition.
+     * @remarks `GET /management/workflow-definitions/:definitionId` — access: `fleet:admin`
+     */
+    getRegisteredWorkflowDefinition(params: {
+        definitionId: string;
+    }): Promise<any>;
+
+    /**
      * Get one Session view; scope=fleet returns administrative metadata without summaries, results, pending prompts, context, or routing configuration.
      * @remarks `GET /sessions/:sessionId` — access: `session:read`
      */
@@ -1045,6 +1058,14 @@ export interface ManagementOps {
         workerNodeId: string;
         since?: string;
         limit?: number;
+    }): Promise<any>;
+
+    /**
+     * Get the workflow's current state, waiting reason, and terminal result when complete.
+     * @remarks `GET /management/workflows/:sessionId` — access: `session:read`
+     */
+    getWorkflow(params: {
+        sessionId: string;
     }): Promise<any>;
 
     /**
@@ -1285,6 +1306,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Authoritative workflow state executions in admission order.
+     * @remarks `GET /management/workflows/:sessionId/executions` — access: `session:read`
+     */
+    listWorkflowExecutions(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * List recent materialization cycles for a WorkflowGenerator.
      * @remarks `GET /workflow-generators/:workflowGeneratorId/cycles` — access: `workflow-generator:read`
      */
@@ -1475,6 +1504,14 @@ export interface ManagementOps {
     regenerateSession(params: {
         sessionId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Resolve a Git-backed workflow package, pin its artifact, compile it, and persist an immutable definition.
+     * @remarks `POST /management/workflow-definitions` — access: `fleet:admin`
+     */
+    registerWorkflowDefinition(params?: {
+        source?: any;
     }): Promise<any>;
 
     /**
@@ -1903,6 +1940,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Validate, atomically admit, and start one registered workflow execution. Definition-declared primary keys deduplicate logical entities.
+     * @remarks `POST /workflows` — access: `session:create`
+     */
+    startWorkflow(params?: {
+        definitionId?: any;
+        inputs?: any;
+        idempotencyKey?: any;
+        groupId?: any;
+        visibility?: any;
+        rerun?: any;
+    }): Promise<any>;
+
+    /**
      * Stop the durable embedder loop. [enhanced, admin]
      * @remarks `POST /facts/embedder/stop` — access: `fleet:admin` (admin)
      */
@@ -2117,6 +2167,7 @@ export function createManagementOps(
         getProviderUsageAgents: (params: Record<string, unknown> = {}) => callOp("getProviderUsageAgents", params),
         getProviderUsageGrid: (params: Record<string, unknown> = {}) => callOp("getProviderUsageGrid", params),
         getProviderUsageSummary: (params: Record<string, unknown> = {}) => callOp("getProviderUsageSummary", params),
+        getRegisteredWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getRegisteredWorkflowDefinition", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),
         getSessionAccess: (params: Record<string, unknown> = {}) => callOp("getSessionAccess", params),
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
@@ -2144,6 +2195,7 @@ export function createManagementOps(
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         getWorkerTimeline: (params: Record<string, unknown> = {}) => callOp("getWorkerTimeline", params),
+        getWorkflow: (params: Record<string, unknown> = {}) => callOp("getWorkflow", params),
         getWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getWorkflowDefinition", params),
         getWorkflowGenerator: (params: Record<string, unknown> = {}) => callOp("getWorkflowGenerator", params),
         getWorkflowRun: (params: Record<string, unknown> = {}) => callOp("getWorkflowRun", params),
@@ -2173,6 +2225,7 @@ export function createManagementOps(
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
         listWorkflowDefinitions: (params: Record<string, unknown> = {}) => callOp("listWorkflowDefinitions", params),
+        listWorkflowExecutions: (params: Record<string, unknown> = {}) => callOp("listWorkflowExecutions", params),
         listWorkflowGeneratorCycles: (params: Record<string, unknown> = {}) => callOp("listWorkflowGeneratorCycles", params),
         listWorkflowGeneratorRuns: (params: Record<string, unknown> = {}) => callOp("listWorkflowGeneratorRuns", params),
         listWorkflowGenerators: (params: Record<string, unknown> = {}) => callOp("listWorkflowGenerators", params),
@@ -2191,6 +2244,7 @@ export function createManagementOps(
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
+        registerWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("registerWorkflowDefinition", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
@@ -2234,6 +2288,7 @@ export function createManagementOps(
         setWorkflowRunWaitConditionOverride: (params: Record<string, unknown> = {}) => callOp("setWorkflowRunWaitConditionOverride", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        startWorkflow: (params: Record<string, unknown> = {}) => callOp("startWorkflow", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),

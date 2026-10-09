@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 const read = (rel) => readFileSync(join(SRC, rel), "utf8");
 
-test("the latest version is 1.0.80", () => {
+test("the latest version is 1.0.81", () => {
     assert.match(
         read("orchestration-version.ts"),
         /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.81";/,
