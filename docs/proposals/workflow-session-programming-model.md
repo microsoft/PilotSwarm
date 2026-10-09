@@ -344,7 +344,7 @@ const registered = await management.registerWorkflowDefinition({
         kind: "git",
         repositoryUrl: "https://github.com/example/workflows",
         gitRef: "refs/heads/main",
-        workflowPath: "change-delivery/workflow.yaml",
+        workflowPath: "approval/workflow.yaml",
     },
 });
 ```

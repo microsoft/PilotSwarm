@@ -418,7 +418,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         states: {
             inspect: {
                 type: "agent",
-                agent: "change-delivery-intake",
+                agent: "request-reviewer",
                 prompt: ({ workflowInputs, executionSequence }) =>
                     `Inspect pull request ${workflowInputs.pullRequestId}; execution ${executionSequence}.`,
                 allowedOutcomes: ["succeeded", "blocked"],
