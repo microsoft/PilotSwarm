@@ -111,7 +111,7 @@ for (const mode of ["create", "hydrate"]) {
     });
 }
 
-test("deployment and repository MCP maps preserve distinct servers with identical tool surfaces", async t => {
+test("legacy per-session MCP overrides cannot extend the deployment catalog", async t => {
     const h = fixture(t);
     Object.assign(h.defaults.baseMcpServers, {
         bluebird: {
@@ -150,14 +150,12 @@ test("deployment and repository MCP maps preserve distinct servers with identica
     const servers = h.calls.at(-1).config.mcpServers;
     assert.deepEqual(
         Object.keys(servers).sort(),
-        ["base", "bluebird", "bluebird_DsMainDev", "bluebird_SqlTelemetry"],
+        ["base", "bluebird"],
     );
     assert.equal(servers.bluebird.headers["x-repository"], "SQLTelemetry");
-    assert.equal(servers.bluebird_SqlTelemetry.headers["x-branch"], "R2D2");
-    assert.equal(servers.bluebird_DsMainDev.headers["x-branch"], "master");
     assert.deepEqual(servers.bluebird.tools, ["code_search"]);
-    assert.deepEqual(servers.bluebird_SqlTelemetry.tools, ["code_search"]);
-    assert.deepEqual(servers.bluebird_DsMainDev.tools, ["code_search"]);
+    assert.equal(servers.bluebird_SqlTelemetry, undefined);
+    assert.equal(servers.bluebird_DsMainDev, undefined);
 });
 
 test("private binding rechecks ownership on a different worker; never falls back to the shared copy", async t => {

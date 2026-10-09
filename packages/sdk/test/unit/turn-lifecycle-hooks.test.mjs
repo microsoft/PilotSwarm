@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     runWithTurnLifecycleHooks,
-    validateSessionConfigurationOverrides,
 } from "../../dist/index.js";
 
 const context = {
@@ -125,35 +124,5 @@ test("concurrent turn and after-hook failures preserve both in precedence order"
             assert.deepEqual(error.errors, [turnError, afterError]);
             return true;
         },
-    );
-});
-
-test("validates constrained session configuration overrides", () => {
-    const mcpServers = {
-        curated: {
-            type: "http",
-            url: "https://example.test/mcp",
-            tools: ["*"],
-        },
-    };
-    assert.deepEqual(
-        validateSessionConfigurationOverrides({
-            enableConfigDiscovery: false,
-            mcpServers,
-        }),
-        {
-            enableConfigDiscovery: false,
-            mcpServers,
-        },
-    );
-    assert.throws(
-        () => validateSessionConfigurationOverrides({ workingDirectory: "x" }),
-        /unsupported field "workingDirectory"/,
-    );
-    assert.throws(
-        () => validateSessionConfigurationOverrides({
-            enableConfigDiscovery: "false",
-        }),
-        /must be a boolean/,
     );
 });

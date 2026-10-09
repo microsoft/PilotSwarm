@@ -35,15 +35,12 @@ export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export {
     runWithTurnLifecycleHooks,
-    validateSessionConfigurationOverrides,
 } from "./turn-lifecycle-hooks.js";
 export type {
     AfterTurnContext,
     AfterTurnHook,
     BeforeTurnHook,
-    ConfigureSessionHook,
     RunWithTurnLifecycleHooksOptions,
-    SessionConfigurationOverrides,
     TurnLifecycleContext,
     TurnLifecycleHooks,
     TurnLifecycleStatus,
@@ -55,16 +52,6 @@ export {
 export type {
     LoadTurnLifecycleHookModuleOptions,
 } from "./turn-lifecycle-hook-module.js";
-export {
-    loadWorkerStartupModuleFromEnv,
-    WORKER_STARTUP_MODULE_ENV,
-} from "./worker-startup-module.js";
-export type {
-    LoadWorkerStartupModuleOptions,
-    WorkerStartupContext,
-    WorkerStartupResult,
-} from "./worker-startup-module.js";
-export { resolveDeploymentMcpWorkerOptions } from "./deployment-mcp.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -169,15 +156,6 @@ export type {
     AzureDevOpsCredentialSource,
     ResolveAzureDevOpsCredentialOptions,
 } from "./azure-devops-auth.js";
-export {
-    createMcpWorkloadIdentityHeadersProvider,
-    parseMcpWorkloadIdentityScopes,
-} from "./mcp-workload-identity.js";
-export type {
-    McpServerHeadersProvider,
-    McpWorkloadIdentityScopeBinding,
-    McpWorkloadIdentityServerConfig,
-} from "./mcp-workload-identity.js";
 export { renderNuGetConfig } from "./nuget-auth.js";
 // Git-workspace dehydrate/hydrate protocol (§8.5) — the worker's
 // beforeRunTurn/afterRunTurn hooks call these to make a session's uncommitted
@@ -393,8 +371,8 @@ export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContex
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
-export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames, isRepoMcpEnabled, loadRepoMcpConfig, loadDefaultMcpConfig } from "./mcp-loader.js";
-export type { MCPServerConfig, LoadRepoMcpOptions, LoadDefaultMcpOptions } from "./mcp-loader.js";
+export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames } from "./mcp-loader.js";
+export type { MCPServerConfig } from "./mcp-loader.js";
 export {
     readCanvasKv, writeCanvasKv, validateCanvasKvKey, canvasKvGlobMatches, resolveCanvasKvViewer, decideCanvasKvWrite,
     CanvasKvError, CANVAS_KV_KEY_MAX, CANVAS_KV_VALUE_MAX_BYTES, CANVAS_KV_MAX_KEYS, CANVAS_KV_MAX_BYTES, CANVAS_KV_LIST_PAGE,
@@ -407,30 +385,14 @@ export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NA
 export type { CanvasAppInterface } from "./canvas-app-manifest.js";
 export type { McpAllowlistAgent } from "./mcp-loader.js";
 export {
-    resolveMcpServerAuth,
-    discoverServerAudience,
-    parseWwwAuthenticate,
-    buildWwwAuthenticate,
     appIdUriFromScope,
-    normalizeAudience,
-    decodeJwtAudiences,
-    audienceMatches,
-    defaultHttpDeps,
     multiTokenProvider,
-    McpAuthFastFailError,
-} from "./mcp-auth-discovery.js";
+    normalizeAudience,
+} from "./caller-token-provider.js";
 export type {
-    WwwAuthenticate,
-    BearerChallenge,
-    ProtectedResourceMetadata,
-    DiscoveredAudience,
-    HttpDeps,
-    ProbeResult,
-    ResolveMcpAuthOptions,
-    ResolveMcpAuthResult,
     CallerTokenProvider,
     RequiredAudience,
-} from "./mcp-auth-discovery.js";
+} from "./caller-token-provider.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
 export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";

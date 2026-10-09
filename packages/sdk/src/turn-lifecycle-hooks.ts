@@ -14,18 +14,6 @@ export interface AfterTurnContext<Config = unknown, Result = unknown>
     error?: unknown;
 }
 
-export interface SessionConfigurationOverrides {
-    enableConfigDiscovery?: boolean;
-    mcpServers?: Record<string, unknown>;
-}
-
-export type ConfigureSessionHook<Config = unknown> = (
-    context: TurnLifecycleContext<Config>,
-) =>
-    | SessionConfigurationOverrides
-    | undefined
-    | Promise<SessionConfigurationOverrides | undefined>;
-
 export type BeforeTurnHook<Config = unknown> = (
     context: TurnLifecycleContext<Config>,
 ) => void | Promise<void>;
@@ -37,55 +25,6 @@ export type AfterTurnHook<Config = unknown, Result = unknown> = (
 export interface TurnLifecycleHooks<Config = unknown, Result = unknown> {
     beforeTurn?: BeforeTurnHook<Config>;
     afterTurn?: AfterTurnHook<Config, Result>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return Boolean(value)
-        && typeof value === "object"
-        && !Array.isArray(value);
-}
-
-export function validateSessionConfigurationOverrides(
-    value: unknown,
-): SessionConfigurationOverrides {
-    if (value === undefined) return {};
-    if (!isRecord(value)) {
-        throw new TypeError(
-            "configureSession must return an object or undefined.",
-        );
-    }
-    const supportedKeys = new Set([
-        "enableConfigDiscovery",
-        "mcpServers",
-    ]);
-    for (const key of Object.keys(value)) {
-        if (!supportedKeys.has(key)) {
-            throw new TypeError(
-                `configureSession returned unsupported field ${JSON.stringify(key)}.`,
-            );
-        }
-    }
-    if (
-        value.enableConfigDiscovery !== undefined
-        && typeof value.enableConfigDiscovery !== "boolean"
-    ) {
-        throw new TypeError(
-            "configureSession.enableConfigDiscovery must be a boolean.",
-        );
-    }
-    if (value.mcpServers !== undefined && !isRecord(value.mcpServers)) {
-        throw new TypeError(
-            "configureSession.mcpServers must be an object.",
-        );
-    }
-    return {
-        ...(value.enableConfigDiscovery === undefined
-            ? {}
-            : { enableConfigDiscovery: value.enableConfigDiscovery }),
-        ...(value.mcpServers === undefined
-            ? {}
-            : { mcpServers: value.mcpServers }),
-    };
 }
 
 export interface RunWithTurnLifecycleHooksOptions<Config, Result>

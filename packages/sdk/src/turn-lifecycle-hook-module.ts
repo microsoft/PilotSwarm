@@ -10,7 +10,6 @@ import type {
 import type {
     AfterTurnHook,
     BeforeTurnHook,
-    ConfigureSessionHook,
     TurnLifecycleHooks,
 } from "./turn-lifecycle-hooks.js";
 
@@ -21,7 +20,6 @@ type WorkerTurnLifecycleHooks = TurnLifecycleHooks<
     SerializableSessionConfig,
     TurnResult
 > & {
-    configureSession?: ConfigureSessionHook<SerializableSessionConfig>;
     beforeRunTurn?: BeforeRunTurnHook;
     afterRunTurn?: AfterRunTurnHook;
 };
@@ -29,7 +27,6 @@ type WorkerTurnLifecycleHooks = TurnLifecycleHooks<
 interface HookModuleExports {
     beforeTurn?: unknown;
     afterTurn?: unknown;
-    configureSession?: unknown;
     beforeRunTurn?: unknown;
     afterRunTurn?: unknown;
 }
@@ -65,8 +62,8 @@ function optionalHook<T>(
 /**
  * Load process-local turn hooks for the standard worker entrypoint.
  *
- * The module may export process-local `beforeTurn` / `afterTurn` hooks,
- * provider-neutral `configureSession`, and/or specialized preparation hooks.
+ * The module may export process-local `beforeTurn` / `afterTurn` hooks and/or
+ * specialized preparation hooks.
  * Relative file paths resolve from the worker process cwd; absolute paths,
  * file URLs, and package specifiers are also supported.
  */
@@ -100,9 +97,6 @@ export async function loadTurnLifecycleHooksFromEnv(
     const afterTurn = optionalHook<
         AfterTurnHook<SerializableSessionConfig, TurnResult>
     >(moduleName, "afterTurn", loaded.afterTurn);
-    const configureSession = optionalHook<
-        ConfigureSessionHook<SerializableSessionConfig>
-    >(moduleName, "configureSession", loaded.configureSession);
     const beforeRunTurn = optionalHook<BeforeRunTurnHook>(
         moduleName,
         "beforeRunTurn",
@@ -116,20 +110,17 @@ export async function loadTurnLifecycleHooksFromEnv(
     if (
         !beforeTurn
         && !afterTurn
-        && !configureSession
         && !beforeRunTurn
         && !afterRunTurn
     ) {
         throw new TypeError(
             `Turn lifecycle hook module ${JSON.stringify(moduleName)} must `
-            + "export beforeTurn, afterTurn, configureSession, beforeRunTurn, "
-            + "or afterRunTurn.",
+            + "export beforeTurn, afterTurn, beforeRunTurn, or afterRunTurn.",
         );
     }
     return {
         beforeTurn,
         afterTurn,
-        configureSession,
         beforeRunTurn,
         afterRunTurn,
     };

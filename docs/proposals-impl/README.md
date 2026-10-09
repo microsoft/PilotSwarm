@@ -12,3 +12,4 @@ Current implemented proposals:
 - [Prompt Layering and Framework Precedence](./prompt-layering-and-precedence.md)
 - [Preserve Worker Affinity For Durable Waits](./wait-preserve-worker-affinity.md)
 - [Stop Button / Turn Abort](./stop-button-turn-abort-plan.md)
+- [Repository MCP Policy](./repository-mcp-policy.md)

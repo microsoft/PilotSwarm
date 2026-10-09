@@ -34,7 +34,7 @@ import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
-import { appIdUriFromScope, resolveMcpServerAuth, type CallerTokenProvider } from "./mcp-auth-discovery.js";
+import { appIdUriFromScope, type CallerTokenProvider } from "./caller-token-provider.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
@@ -99,17 +99,6 @@ export class SessionLockAcquireTimeoutError extends Error {
 
 export function isSessionLockAcquireTimeoutError(error: unknown): error is SessionLockAcquireTimeoutError {
     return Boolean(error && typeof error === "object" && (error as any).code === SESSION_LOCK_ACQUIRE_TIMEOUT_CODE);
-}
-
-function normalizedMcpServerUrl(value: unknown): string | null {
-    if (typeof value !== "string" || !value.trim()) return null;
-    try {
-        const url = new URL(value);
-        url.hash = "";
-        return url.href;
-    } catch {
-        return null;
-    }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -418,13 +407,6 @@ export interface WorkerDefaults {
      * opt-ins plus direct worker-config servers (legacy semantics).
      */
     baseMcpServers?: Record<string, any>;
-    /** Fresh worker-owned HTTP headers bound to server name and deployment URL. */
-    mcpServerHeadersProvider?: () => Promise<
-        Record<string, {
-            expectedUrl: string;
-            headers: Record<string, string>;
-        }>
-    >;
     /**
      * Whether caller-owned repository workspaces may contribute MCP servers.
      * Defaults to true. When false, native configuration discovery is disabled
@@ -2228,7 +2210,7 @@ export class SessionManager {
     async getOrCreate(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; sessionConfiguration?: import("./turn-lifecycle-hooks.js").SessionConfigurationOverrides },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
     ): Promise<ManagedSession> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
@@ -2244,7 +2226,7 @@ export class SessionManager {
     private async _getOrCreateUnlocked(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; sessionConfiguration?: import("./turn-lifecycle-hooks.js").SessionConfigurationOverrides },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
         const turnIndex = options?.turnIndex;
@@ -2346,11 +2328,8 @@ export class SessionManager {
             : boundAgentCopy.packageId
                 ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
                 : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
-        // `let`: delegated repo-defined MCP servers (git-hydration) are merged
-        // into this map further down, so it must stay reassignable.
         let effectiveMcpServers: Record<string, any> = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
-            ...(options?.sessionConfiguration?.mcpServers ?? {}),
         };
         const agentMcpOverrides = boundAgentMcpServers ?? {};
         for (const agentServerName of Object.keys(agentMcpOverrides)) {
@@ -2686,8 +2665,7 @@ export class SessionManager {
             ?.resolve(sessionId, config.workingDirectory);
         const platformOwnedWorkspace = sessionWorkspace?.ownership === "platform";
         const repositoryMcpEnabled =
-            options?.sessionConfiguration?.enableConfigDiscovery
-            ?? this.workerDefaults.repositoryMcpEnabled !== false;
+            this.workerDefaults.repositoryMcpEnabled !== false;
         const repositoryWorkspace = !platformOwnedWorkspace;
         const effectiveWorkingDirectory =
             sessionWorkspace?.path ?? config.workingDirectory ?? process.cwd();
@@ -3159,91 +3137,6 @@ export class SessionManager {
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
 
-        // Devbox-local delegated MCP access resolves upstream auth for each remote
-        // server by DISCOVERING its required audience at runtime (RFC 6750
-        // challenge -> RFC 9728 protected-resource-metadata), then asking the local
-        // token provider for that audience. The delegated path never presents the
-        // worker managed identity.
-        // Deployment-owned worker headers may already be attached below by
-        // mcpServerHeadersProvider. A server whose audience the local user cannot
-        // satisfy FAST-FAILS the session (see mcp-auth-discovery.ts, and its phase-2
-        // skip TODO). Credentials are resolved fresh here and never carried in the
-        // durable payload. Traces go to stdout and the session trace sink.
-        //
-        // TODO(perf): this runs PER TURN, before the warm-session reuse check
-        // below (~"const existing = this.sessions.get(sessionId)"). On a warm
-        // reuse turn the probed servers are even discarded (updateConfig carries
-        // no mcpServers), so every turn pays a 401/PRM discovery round-trip per
-        // remote server for nothing, and a transient PRM blip fast-fails an
-        // otherwise-healthy warm turn. The audience a server requires is stable
-        // for a session's lifetime, so memoize the resolved { server -> audience }
-        // once per session tree; only re-resolve on cold create/resume or when the
-        // effective server set changes.
-        const hasRemoteMcp = Object.values(effectiveMcpServers).some(
-            (c: any) => c && (c.type === "http" || c.type === "sse" || (c.url && !c.command)),
-        );
-        if (hasRemoteMcp && this.workerDefaults.mcpServerHeadersProvider) {
-            const runtimeHeaderBindings =
-                await this.workerDefaults.mcpServerHeadersProvider();
-            const injectedServers: string[] = [];
-            const withheldServers: string[] = [];
-            for (const [serverName, binding] of Object.entries(runtimeHeaderBindings)) {
-                const cfg = effectiveMcpServers[serverName] as any;
-                const isRemote = cfg
-                    && (cfg.type === "http" || cfg.type === "sse" || (cfg.url && !cfg.command));
-                if (!isRemote || !binding?.headers
-                    || Object.keys(binding.headers).length === 0) continue;
-                const effectiveUrl = normalizedMcpServerUrl(cfg.url);
-                const expectedUrl = normalizedMcpServerUrl(binding.expectedUrl);
-                if (!effectiveUrl || !expectedUrl || effectiveUrl !== expectedUrl) {
-                    withheldServers.push(serverName);
-                    continue;
-                }
-                effectiveMcpServers[serverName] = {
-                    ...cfg,
-                    headers: {
-                        ...(cfg.headers ?? {}),
-                        ...binding.headers,
-                    },
-                };
-                injectedServers.push(serverName);
-            }
-            if (injectedServers.length > 0) {
-                emitSessionManagerTrace(
-                    sessionId,
-                    `[mcp-headers] injected worker-owned runtime headers (servers=[${injectedServers.join(",")}])`,
-                    { trace },
-                );
-            }
-            if (withheldServers.length > 0) {
-                emitSessionManagerTrace(
-                    sessionId,
-                    `[mcp-headers] withheld worker-owned runtime headers because the effective server URL did not match its deployment binding (servers=[${withheldServers.join(",")}])`,
-                    { trace },
-                );
-            }
-        }
-        if (hasRemoteMcp) {
-            let getCallerToken =
-                await this.configuredCallerTokenProvider(callerAuthIsDevbox);
-            if (getCallerToken) {
-                const dualTrace = (m: string) => {
-                    console.log(m);
-                    emitSessionManagerTrace(sessionId, m, { trace });
-                };
-                // Discover each server's audience and acquire the matching token
-                // from the devbox-local provider. There is no server-to-audience
-                // table or OBO exchange, and worker identity is never presented
-                // through this delegated path.
-                const result = await resolveMcpServerAuth({
-                    servers: effectiveMcpServers,
-                    getCallerToken,
-                    trace: dualTrace,
-                });
-                effectiveMcpServers = result.servers;
-            }
-        }
-
         // ── Per-session delegated-token injection for STDIO MCP servers ──────
         // Caller-delegated tokens (resolved above into callerAuthEnvVars, keyed by
         // env-var NAME) must reach each stdio MCP server as an ENVIRONMENT VARIABLE
@@ -3259,8 +3152,8 @@ export class SessionManager {
         // We DEEP-CLONE each server's env before writing: effectiveMcpServers entries
         // are references into the shared workerDefaults template, and mutating them in
         // place would re-leak one session's token into the next. Only stdio/command
-        // servers get env; http/sse servers carry caller auth via the Authorization
-        // header (resolveMcpServerAuth) above. Tokens are never logged.
+        // servers get env; remote-server authentication is supplied independently
+        // by the deployment-owned header provider. Tokens are never logged.
         if (Object.keys(callerAuthEnvVars).length > 0) {
             const injectedServers: string[] = [];
             for (const [serverName, serverCfg] of Object.entries(effectiveMcpServers)) {

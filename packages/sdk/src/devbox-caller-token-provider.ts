@@ -9,7 +9,7 @@ import {
 import type {
     CallerTokenProvider,
     RequiredAudience,
-} from "./mcp-auth-discovery.js";
+} from "./caller-token-provider.js";
 import {
     CallerAuthConfigurationError,
     CallerReauthRequiredError,
