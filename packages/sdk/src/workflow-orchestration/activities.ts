@@ -84,10 +84,10 @@ export interface WorkflowActivityHandlers {
     executeTransition(
         input: ExecuteWorkflowTransitionInput,
     ): ReturnType<WorkflowDefinitionProvider["executeTransition"]>;
-    executeAction(input: WorkflowActionRequest): ReturnType<WorkflowStateProviderRegistry["executeAction"]>;
+    executeAction(input: WorkflowActionRequest): Promise<WorkflowStateExecutionResult>;
     observeCondition(
         input: WorkflowObservedConditionRequest,
-    ): ReturnType<WorkflowStateProviderRegistry["observeCondition"]>;
+    ): Promise<import("./state-providers.js").WorkflowObservationResult>;
     recordStateExecution(input: RecordWorkflowStateExecutionActivityInput): Promise<void>;
     executeState(input: ExecuteWorkflowStateActivityInput): Promise<WorkflowStateExecutionResult>;
     acceptStateResult(input: AcceptWorkflowStateResultActivityInput): Promise<WorkflowStateExecutionResult>;
@@ -248,7 +248,7 @@ export function registerWorkflowActivities(
         SessionCatalog,
         | "acceptWorkflowExecution"
         | "completeWorkflowProjection"
-        | "getWorkflowDefinition"
+        | "getRegisteredWorkflowDefinition"
         | "recordWorkflowExecution"
     > | null,
     artifactStore: ArtifactStore | null = null,

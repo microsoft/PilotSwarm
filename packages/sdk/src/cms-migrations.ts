@@ -549,7 +549,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         },
         {
             version: "0106",
-            name: "workflow_definitions",
+            name: "registered_workflow_definitions",
             sql: workflowDefinitionsMigration(schema),
         },
         {

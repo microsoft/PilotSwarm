@@ -182,8 +182,19 @@ test("path, query, and body params are collected with declared types", async () 
 
         await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1`);
         await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/executions`);
+        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/questions/3/answer`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ outcome: "publish", output: { approved: true } }),
+        });
         assert.deepEqual(calls.find((call) => call.name === "getWorkflow")?.params, { sessionId: "workflow-1" });
         assert.deepEqual(calls.find((call) => call.name === "listWorkflowExecutions")?.params, { sessionId: "workflow-1" });
+        assert.deepEqual(calls.find((call) => call.name === "answerWorkflowQuestion")?.params, {
+            sessionId: "workflow-1",
+            executionSequence: "3",
+            outcome: "publish",
+            output: { approved: true },
+        });
 
         await fetch(`${baseUrl}/api/v1/workflows`, {
             method: "POST",
@@ -218,7 +229,7 @@ test("path, query, and body params are collected with declared types", async () 
         });
         await fetch(`${baseUrl}/api/v1/management/workflow-definitions/definition-1`);
         assert.deepEqual(calls.find((call) => call.name === "registerWorkflowDefinition")?.params, { source });
-        assert.deepEqual(calls.find((call) => call.name === "getWorkflowDefinition")?.params, {
+        assert.deepEqual(calls.find((call) => call.name === "getRegisteredWorkflowDefinition")?.params, {
             definitionId: "definition-1",
         });
     } finally {

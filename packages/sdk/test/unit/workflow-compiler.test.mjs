@@ -205,6 +205,7 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
     assert.deepEqual(compiled.inputSchema, {
         changeId: { type: "string", required: true },
     });
+
     assert.deepEqual(compiled.configuration, { policy: { retries: 2 } });
     assert.deepEqual(compiled.manifest, {
         compilerVersion: "v1alpha1-4",
@@ -310,6 +311,153 @@ test("compiles the v1alpha1 agent and terminal subset into an in-memory graph", 
         },
         executionHistory: [],
     }), { pullRequest: 17 });
+});
+
+test("compiles durable question, action, and observed-condition states", () => {
+    const registry = new WorkflowTransitionRegistry()
+        .register({ module: "./control.mjs", export: "question" }, {
+            allowedTargets: ["publish"],
+            handler: () => ({ kind: "advance", target: "publish" }),
+        })
+        .register({ module: "./control.mjs", export: "publish" }, {
+            allowedTargets: ["observe"],
+            handler: () => ({ kind: "advance", target: "observe" }),
+        })
+        .register({ module: "./control.mjs", export: "observe" }, {
+            allowedTargets: ["done"],
+            handler: () => ({ kind: "advance", target: "done" }),
+        });
+    const compiled = compileWorkflowYaml(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: control-states
+  version: 0.1.0
+inputs:
+  changeId:
+    type: string
+    required: true
+initial: approve
+states:
+  approve:
+    type: question
+    prompt: Publish the change?
+    context:
+      changeId: \${inputs.changeId}
+    authorization:
+      mode: session-write
+    completion:
+      outcomes: [publish, hold]
+    transition:
+      handler:
+        module: ./control.mjs
+        export: question
+  publish:
+    type: action
+    provider: ado
+    operation: publish
+    input:
+      changeId: \${inputs.changeId}
+    completion:
+      outcomes: [succeeded, failed]
+    transition:
+      handler:
+        module: ./control.mjs
+        export: publish
+  observe:
+    type: observed-condition
+    provider: ado
+    operation:
+      changeId: \${inputs.changeId}
+    conditions:
+      state: completed
+    pollIntervalMs: 250
+    completion:
+      outcomes: [satisfied, failed]
+    transition:
+      handler:
+        module: ./control.mjs
+        export: observe
+  done:
+    type: terminal
+    outcome: succeeded
+`, { transitions: registry });
+
+    assert.deepEqual(
+        compiled.manifest.states.map(state => state.type),
+        ["question", "action", "observed-condition", "terminal"],
+    );
+    assert.deepEqual(compiled.manifest.states[0], {
+        id: "approve",
+        type: "question",
+        prompt: "Publish the change?",
+        context: { changeId: "${inputs.changeId}" },
+        authorization: { mode: "session-write" },
+        completion: { outcomes: ["publish", "hold"] },
+        transition: {
+            handler: { module: "./control.mjs", export: "question" },
+            allowedTargets: ["publish"],
+        },
+    });
+    assert.equal(compiled.manifest.states[2].pollIntervalMs, 250);
+});
+
+test("validates durable workflow state configuration", () => {
+    const base = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: validation
+  version: 0.1.0
+initial: check
+states:
+  check:
+    type: observed-condition
+    provider: test
+    operation: {}
+    conditions: {}
+    pollIntervalMs: 250
+    completion:
+      outcomes: [satisfied]
+    transition:
+      handler:
+        module: ./control.mjs
+        export: check
+  done:
+    type: terminal
+    outcome: succeeded
+`;
+    const registry = new WorkflowTransitionRegistry()
+        .register({ module: "./control.mjs", export: "check" }, {
+            allowedTargets: ["done"],
+            handler: () => ({ kind: "advance", target: "done" }),
+        });
+
+    assert.throws(
+        () => compileWorkflowYaml(
+            base.replace("provider: test", "provider: \"\""),
+            { transitions: registry },
+        ),
+        error => error?.code === "WORKFLOW_COMPILER_INVALID",
+    );
+    assert.throws(
+        () => compileWorkflowYaml(
+            base.replace("pollIntervalMs: 250", "pollIntervalMs: 99"),
+            { transitions: registry },
+        ),
+        error => error?.code === "WORKFLOW_COMPILER_INVALID",
+    );
+
+    const question = base
+        .replace("type: observed-condition", "type: question")
+        .replace(
+            "    provider: test\n    operation: {}\n    conditions: {}\n    pollIntervalMs: 250",
+            "    prompt: Continue?\n    authorization:\n      mode: custom-permission",
+        );
+    assert.throws(
+        () => compileWorkflowYaml(question, { transitions: registry }),
+        error => error?.code === "WORKFLOW_COMPILER_INVALID",
+    );
 });
 
 test("requires workflow primary keys to reference required scalar inputs", () => {
@@ -429,9 +577,9 @@ test("rejects inline transition syntax instead of maintaining two programming mo
 });
 
 test("rejects unsupported state and completion types with specific errors", () => {
-    const actionYaml = VALID_WORKFLOW.replace("type: agent", "type: parallel");
+    const parallelYaml = VALID_WORKFLOW.replace("type: agent", "type: parallel");
     assert.throws(
-        () => compileWorkflowYaml(actionYaml, { transitions: createRegistry() }),
+        () => compileWorkflowYaml(parallelYaml, { transitions: createRegistry() }),
         error => error?.code === "WORKFLOW_STATE_TYPE_UNSUPPORTED",
     );
 

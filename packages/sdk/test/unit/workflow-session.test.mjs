@@ -129,7 +129,7 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
         startOrchestrationVersioned: async (...args) => started.push(args),
     };
     client._catalog = {
-        getWorkflowDefinition: async definitionId => registeredDefinition(
+        getRegisteredWorkflowDefinition: async definitionId => registeredDefinition(
             definitionId,
             {
                 repository: { type: "string", required: true },
@@ -221,7 +221,7 @@ test("startWorkflow returns an already-started logical duplicate without restart
         },
     };
     client._catalog = {
-        getWorkflowDefinition: async definitionId => registeredDefinition(
+        getRegisteredWorkflowDefinition: async definitionId => registeredDefinition(
             definitionId,
             {
                 entityId: { type: "string", required: true },
@@ -266,7 +266,7 @@ test("startWorkflow rejects reruns for definitions without a primary key", async
         startOrchestrationVersioned: async () => {},
     };
     client._catalog = {
-        getWorkflowDefinition: async definitionId => registeredDefinition(
+        getRegisteredWorkflowDefinition: async definitionId => registeredDefinition(
             definitionId,
             {
                 target: { type: "string", required: true },
@@ -295,7 +295,7 @@ test("startWorkflow passes an explicit keyed rerun to atomic admission", async (
         startOrchestrationVersioned: async () => {},
     };
     client._catalog = {
-        getWorkflowDefinition: async definitionId => registeredDefinition(
+        getRegisteredWorkflowDefinition: async definitionId => registeredDefinition(
             definitionId,
             {
                 entityId: { type: "string", required: true },
@@ -354,7 +354,7 @@ test("startWorkflow rejects a tampered persisted definition before admission", a
         startOrchestrationVersioned: async () => {},
     };
     client._catalog = {
-        getWorkflowDefinition: async definitionId => ({
+        getRegisteredWorkflowDefinition: async definitionId => ({
             ...registeredDefinition(
                 definitionId,
                 {

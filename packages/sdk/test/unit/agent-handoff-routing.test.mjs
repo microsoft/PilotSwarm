@@ -282,8 +282,7 @@ const upstreamTimestampFreezeHashes = {
 };
 for (const [name, hash] of Object.entries(upstreamTimestampFreezeHashes)) {
     test(`frozen 1.0.79 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_79/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+        assert.equal(sourceHash(new URL(`../../src/orchestration_1_0_79/${name}`, import.meta.url)), hash);
     });
 }
 

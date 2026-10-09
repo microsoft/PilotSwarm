@@ -172,12 +172,13 @@ test("management clients expose workflow projection and execution reads", async 
     ]);
 });
 
-test("answers only the currently pending workflow question", async () => {
+test("management clients answer only the currently pending workflow question", async () => {
     const events = [];
     const direct = Object.create(PilotSwarmManagementClient.prototype);
     direct._started = true;
     direct._catalog = {
         getWorkflowProjection: async () => ({
+            workflowSessionId: "workflow-1",
             status: "running",
             currentExecutionSequence: 3,
             waitingOn: "question",
@@ -192,21 +193,39 @@ test("answers only the currently pending workflow question", async () => {
     await direct.answerWorkflowQuestion(
         "workflow-1",
         3,
-        "publish",
-        { approved: true },
+        " publish ",
+        { approvedBy: "reviewer-1" },
     );
     assert.deepEqual(events, [{
         instanceId: "session-workflow-1",
         queueName: "workflow-question-3",
         payload: JSON.stringify({
             outcome: "publish",
-            output: { approved: true },
+            output: { approvedBy: "reviewer-1" },
         }),
     }]);
     await assert.rejects(
         () => direct.answerWorkflowQuestion("workflow-1", 2, "publish", null),
         error => error?.code === "WORKFLOW_QUESTION_NOT_PENDING",
     );
+
+    const calls = [];
+    const web = Object.create(WebPilotSwarmManagementClient.prototype);
+    web._api = {
+        call: async (name, params) => {
+            calls.push({ name, params });
+        },
+    };
+    await web.answerWorkflowQuestion("workflow-1", 3, "publish", { approved: true });
+    assert.deepEqual(calls, [{
+        name: "answerWorkflowQuestion",
+        params: {
+            sessionId: "workflow-1",
+            executionSequence: 3,
+            outcome: "publish",
+            output: { approved: true },
+        },
+    }]);
 });
 
 test("web management registers Git workflow definitions and reads them by id", async () => {
@@ -228,7 +247,7 @@ test("web management registers Git workflow definitions and reads them by id", a
     };
 
     await web.registerWorkflowDefinition(request);
-    await web.getWorkflowDefinition("definition-1");
+    await web.getRegisteredWorkflowDefinition("definition-1");
     await assert.rejects(
         () => web.registerWorkflowDefinition("apiVersion: pilotswarm.dev/v1alpha1", {
             packageRoot: "C:\\workflow",
@@ -238,7 +257,7 @@ test("web management registers Git workflow definitions and reads them by id", a
 
     assert.deepEqual(calls, [
         { name: "registerWorkflowDefinition", params: { source: request.source } },
-        { name: "getWorkflowDefinition", params: { definitionId: "definition-1" } },
+        { name: "getRegisteredWorkflowDefinition", params: { definitionId: "definition-1" } },
     ]);
 });
 

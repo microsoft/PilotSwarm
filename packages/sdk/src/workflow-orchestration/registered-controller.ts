@@ -1,5 +1,5 @@
 import type {
-    CompiledWorkflowTransitionState,
+    CompiledWorkflowExecutableStateManifest,
     CompiledWorkflowStateManifest,
     WorkflowAdvanceDirective,
 } from "./compiler.js";
@@ -37,7 +37,9 @@ import {
     RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
     workflowQuestionQueueName,
 } from "./registered-contracts.js";
-import type { WorkflowObservationResult } from "./state-providers.js";
+import type {
+    WorkflowObservationResult,
+} from "./state-providers.js";
 
 function workflowControllerError(message: string, code: string): Error {
     return Object.assign(new Error(message), { code });
@@ -76,7 +78,7 @@ function requireExecutionResult(
 }
 
 function requireDeclaredOutcome(
-    state: CompiledWorkflowTransitionState,
+    state: CompiledWorkflowExecutableStateManifest,
     result: WorkflowStateExecutionResult,
 ): WorkflowStateExecutionResult {
     if (!state.completion.outcomes.includes(result.outcome)) {
@@ -105,6 +107,7 @@ function requireState(
 export function* durableRegisteredWorkflowSessionOrchestration(
     ctx: {
         scheduleActivity(name: string, input: unknown): unknown;
+        scheduleTimer(delayMs: number): unknown;
         dequeueEvent(name: string): unknown;
         scheduleTimer(delayMs: number): unknown;
         newGuid(): unknown;
@@ -191,6 +194,8 @@ export function* durableRegisteredWorkflowSessionOrchestration(
         executionSequence += 1;
         let childSessionId: string | undefined;
         let submittedOutput: WorkflowStateExecutionResult;
+        let waitingOn: RecordWorkflowStateExecutionActivityInput["waitingOn"];
+
         if (state.type === "agent") {
             childSessionId = String(yield ctx.newGuid());
             const dispatch = createCompiledAgentStateDispatchPlan({
@@ -205,14 +210,17 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 executionHistory,
                 state,
             });
-            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, {
+            waitingOn = "agent-result";
+            const admission: RecordWorkflowStateExecutionActivityInput = {
                 workflowSessionId: input.sessionId,
                 executionSequence,
                 graphId: manifest.graphId,
                 stateId: currentStateId,
                 childSessionId,
-                waitingOn: "agent-result",
-            } satisfies RecordWorkflowStateExecutionActivityInput);
+                waitingOn,
+                waitingDetails: { agent: state.agent },
+            };
+            yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, admission);
             yield routeAgentStateDispatch(
                 ctx.scheduleActivity(dispatch.activityName, dispatch.activityInput),
                 dispatch.activityTag,
@@ -242,6 +250,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 }),
             );
         } else if (state.type === "question") {
+            waitingOn = "question";
             const questionContext = resolveWorkflowTemplate(
                 state.context,
                 `states.${state.id}.context`,
@@ -256,7 +265,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 executionSequence,
                 graphId: manifest.graphId,
                 stateId: currentStateId,
-                waitingOn: "question",
+                waitingOn,
                 waitingDetails: {
                     prompt: state.prompt,
                     context: questionContext,
@@ -267,16 +276,15 @@ export function* durableRegisteredWorkflowSessionOrchestration(
             const rawAnswer = yield ctx.dequeueEvent(
                 workflowQuestionQueueName(executionSequence),
             );
+            const answer = typeof rawAnswer === "string"
+                ? JSON.parse(rawAnswer)
+                : rawAnswer;
             submittedOutput = requireDeclaredOutcome(
                 state,
-                requireExecutionResult(
-                    currentStateId,
-                    typeof rawAnswer === "string"
-                        ? JSON.parse(rawAnswer)
-                        : rawAnswer,
-                ),
+                requireExecutionResult(currentStateId, answer),
             );
         } else if (state.type === "action") {
+            waitingOn = "activity";
             const actionInput = resolveWorkflowTemplate(
                 state.input,
                 `states.${state.id}.input`,
@@ -291,7 +299,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 executionSequence,
                 graphId: manifest.graphId,
                 stateId: currentStateId,
-                waitingOn: "activity",
+                waitingOn,
                 waitingDetails: {
                     provider: state.provider,
                     operation: state.operation,
@@ -315,6 +323,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 ),
             );
         } else {
+            waitingOn = "observed-condition";
             const operation = resolveWorkflowTemplate(
                 state.operation,
                 `states.${state.id}.operation`,
@@ -338,7 +347,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 executionSequence,
                 graphId: manifest.graphId,
                 stateId: currentStateId,
-                waitingOn: "observed-condition",
+                waitingOn,
                 waitingDetails: {
                     provider: state.provider,
                     operation,

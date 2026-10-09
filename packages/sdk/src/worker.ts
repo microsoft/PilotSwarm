@@ -1173,7 +1173,7 @@ export class PilotSwarmWorker {
             this.runtime,
             this._catalog,
             this.artifactStore,
-            this.config.workflowStateProviders,
+            this.config.workflowStateProviders ?? null,
         );
         if (this._catalog) {
             this.registerTools([createSubmitWorkflowResultTool({

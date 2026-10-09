@@ -73,7 +73,7 @@ async function providerHarness({ artifactBody, transformRecord } = {}) {
     const downloads = [];
     const provider = new CmsWorkflowDefinitionProvider(
         {
-            async getWorkflowDefinition(requestedId) {
+            async getRegisteredWorkflowDefinition(requestedId) {
                 return requestedId === definitionId
                     ? transformRecord?.(record) ?? record
                     : null;

@@ -7132,7 +7132,7 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async getRegisteredWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
         const definitionResult = await this.pool.query(
-            `SELECT * FROM "${this.sql.schema}".workflow_definitions WHERE definition_id = $1`,
+            `SELECT * FROM "${this.sql.schema}".registered_workflow_definitions WHERE definition_id = $1`,
             [definitionId],
         );
         if (definitionResult.rows.length === 0) return null;

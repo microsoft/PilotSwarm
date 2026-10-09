@@ -151,9 +151,7 @@ import {
     workflowPackageArtifactFilename,
     workflowPackagesArtifactSessionId,
 } from "./workflow-orchestration/package-artifact.js";
-import {
-    workflowQuestionQueueName,
-} from "./workflow-orchestration/registered-contracts.js";
+import { workflowQuestionQueueName } from "./workflow-orchestration/registered-contracts.js";
 import {
     loadImportPolicy,
     type ImportPolicy,
@@ -1938,9 +1936,9 @@ export class PilotSwarmManagementClient {
     }
 
     /** Read one immutable registered definition and its compiled state rows. */
-    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+    async getRegisteredWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
         this._ensureStarted();
-        return this._catalog!.getWorkflowDefinition(definitionId);
+        return this._catalog!.getRegisteredWorkflowDefinition(definitionId);
     }
 
     /** Get the workflow's current externally visible state. */

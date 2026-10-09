@@ -9,7 +9,7 @@
 export function workflowDefinitionsMigration(schema: string): string {
     const s = `"${schema}"`;
     return `
-CREATE TABLE IF NOT EXISTS ${s}.workflow_definitions (
+CREATE TABLE IF NOT EXISTS ${s}.registered_workflow_definitions (
     definition_id       TEXT PRIMARY KEY,
     graph_id             TEXT NOT NULL UNIQUE,
     name                 TEXT NOT NULL,
@@ -48,7 +48,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_register_workflow_definition(
     p_compiled_manifest_json JSONB
 ) RETURNS TEXT AS $$
 DECLARE
-    v_existing ${s}.workflow_definitions%ROWTYPE;
+    v_existing ${s}.registered_workflow_definitions%ROWTYPE;
 BEGIN
     IF jsonb_typeof(p_compiled_manifest_json) IS DISTINCT FROM 'object'
         OR jsonb_typeof(p_compiled_manifest_json->'states') IS DISTINCT FROM 'array'
@@ -106,7 +106,7 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(p_graph_id, 0));
 
     SELECT * INTO v_existing
-      FROM ${s}.workflow_definitions
+      FROM ${s}.registered_workflow_definitions
      WHERE graph_id = p_graph_id
      FOR UPDATE;
 
@@ -124,7 +124,7 @@ BEGIN
         RETURN v_existing.definition_id;
     END IF;
 
-    INSERT INTO ${s}.workflow_definitions (
+    INSERT INTO ${s}.registered_workflow_definitions (
         definition_id, graph_id, name, version, api_version, compiler_version,
         source_yaml, source_sha256, package_sha256, package_artifact_filename,
         package_source_json, compiled_sha256, initial_state_id,

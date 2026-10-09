@@ -218,7 +218,7 @@ export class PilotSwarmClient {
             );
         }
         const definition = requireCompatibleWorkflowDefinition(
-            await this._catalog.getWorkflowDefinition(definitionId),
+            await this._catalog.getRegisteredWorkflowDefinition(definitionId),
             definitionId,
         );
         const inputs = request.inputs ?? {};

@@ -10,7 +10,7 @@ export function workflowAdmissionsMigration(schema: string): string {
     return `
 CREATE TABLE IF NOT EXISTS ${s}.workflow_admissions (
     session_id          TEXT PRIMARY KEY,
-    definition_id       TEXT NOT NULL REFERENCES ${s}.workflow_definitions(definition_id),
+    definition_id       TEXT NOT NULL REFERENCES ${s}.registered_workflow_definitions(definition_id),
     primary_key_json    JSONB,
     primary_key_sha256  TEXT,
     attempt             INTEGER NOT NULL CHECK (attempt > 0),
@@ -107,8 +107,8 @@ BEGIN
         RAISE EXCEPTION 'WORKFLOW_ADMISSION_INVALID: session, definition, owner, inputs, idempotency key, and request identity are required';
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM ${s}.workflow_definitions
-         WHERE workflow_definitions.definition_id = p_definition_id
+        SELECT 1 FROM ${s}.registered_workflow_definitions
+         WHERE registered_workflow_definitions.definition_id = p_definition_id
     ) THEN
         RAISE EXCEPTION 'WORKFLOW_DEFINITION_NOT_FOUND: registered workflow definition is unavailable';
     END IF;

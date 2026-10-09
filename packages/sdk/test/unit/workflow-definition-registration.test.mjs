@@ -127,7 +127,7 @@ function createCatalogHarness() {
                     }],
                 };
             }
-            if (sql.includes("workflow_definitions WHERE")) {
+            if (sql.includes("registered_workflow_definitions WHERE")) {
                 return { rows: [definitionRow()] };
             }
             return { rows: [] };

@@ -92,6 +92,7 @@ function requireDeclaredOutcome(
 export function* durableWorkflowSessionOrchestration_1_0_0(
     ctx: {
         scheduleActivity(name: string, input: unknown): unknown;
+        scheduleTimer(delayMs: number): unknown;
         dequeueEvent(name: string): unknown;
         scheduleTimer(delayMs: number): unknown;
         newGuid(): unknown;

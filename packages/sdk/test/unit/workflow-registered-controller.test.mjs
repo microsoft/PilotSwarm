@@ -274,6 +274,136 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
     );
 });
 
+test("executes question, action, and observed-condition states durably", () => {
+    const extendedManifest = {
+        ...manifest,
+        graphId: "control-states@0.1.0",
+        metadata: { name: "control-states", version: "0.1.0" },
+        initialState: "approve",
+        states: [{
+            id: "approve",
+            type: "question",
+            prompt: "Publish the change?",
+            context: { changeId: "${inputs.changeId}" },
+            authorization: { mode: "session-write" },
+            completion: { outcomes: ["publish", "hold"] },
+            transition: {
+                handler: { module: "./transitions.mjs", export: "approve" },
+                allowedTargets: ["publish", "blocked"],
+            },
+        }, {
+            id: "publish",
+            type: "action",
+            provider: "test",
+            operation: "publish",
+            input: { changeId: "${inputs.changeId}" },
+            completion: { outcomes: ["succeeded", "failed"] },
+            transition: {
+                handler: { module: "./transitions.mjs", export: "publish" },
+                allowedTargets: ["observe", "blocked"],
+            },
+        }, {
+            id: "observe",
+            type: "observed-condition",
+            provider: "test",
+            operation: { changeId: "${inputs.changeId}" },
+            conditions: { state: "complete" },
+            pollIntervalMs: 250,
+            completion: { outcomes: ["satisfied", "failed"] },
+            transition: {
+                handler: { module: "./transitions.mjs", export: "observe" },
+                allowedTargets: ["done", "blocked"],
+            },
+        }, {
+            id: "done",
+            type: "terminal",
+            outcome: "succeeded",
+            summary: "Done.",
+            hasOutput: true,
+            output: "${states.observe.result}",
+        }, {
+            id: "blocked",
+            type: "terminal",
+            outcome: "blocked",
+            summary: "Blocked.",
+            hasOutput: false,
+        }],
+    };
+    const execution = durableWorkflowSessionOrchestration_1_0_0(createContext(), {
+        sessionId: "workflow-control",
+        definition: { kind: "registered", definitionId: "definition-control" },
+        inputs: { changeId: "change-9" },
+    });
+    const operations = [];
+    const targets = ["publish", "observe", "done"];
+    let observationCount = 0;
+    let step = execution.next();
+    while (!step.done) {
+        const operation = step.value;
+        operations.push(operation);
+        if (operation.name === RESOLVE_WORKFLOW_DEFINITION_ACTIVITY) {
+            step = execution.next({
+                definitionId: "definition-control",
+                manifest: extendedManifest,
+            });
+        } else if (operation.name === RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY) {
+            step = execution.next(undefined);
+        } else if (
+            operation.kind === "dequeue"
+            && operation.name === workflowQuestionQueueName(1)
+        ) {
+            step = execution.next(JSON.stringify({
+                outcome: "publish",
+                output: { decisionId: "decision-1" },
+            }));
+        } else if (operation.name === EXECUTE_WORKFLOW_ACTION_ACTIVITY) {
+            step = execution.next({
+                outcome: "succeeded",
+                output: { publicationId: "publication-1" },
+            });
+        } else if (operation.name === OBSERVE_WORKFLOW_CONDITION_ACTIVITY) {
+            observationCount += 1;
+            step = execution.next(observationCount === 1
+                ? { status: "pending" }
+                : {
+                    status: "completed",
+                    outcome: "satisfied",
+                    output: { observed: true },
+                });
+        } else if (operation.kind === "timer") {
+            step = execution.next(undefined);
+        } else if (operation.name === ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY) {
+            step = execution.next({
+                outcome: operation.input.outcome,
+                output: operation.input.output,
+            });
+        } else if (operation.name === EXECUTE_WORKFLOW_TRANSITION_ACTIVITY) {
+            step = execution.next({ kind: "advance", target: targets.shift() });
+        } else if (operation.kind === "utcNow") {
+            step = execution.next("2026-10-07T00:00:00.000Z");
+        } else if (operation.name === COMPLETE_WORKFLOW_ACTIVITY) {
+            step = execution.next(operation.input.result);
+        } else {
+            throw new Error(`Unexpected operation: ${JSON.stringify(operation)}`);
+        }
+    }
+
+    assert.equal(step.value.outcome, "succeeded");
+    assert.deepEqual(step.value.result, { observed: true });
+    assert.equal(observationCount, 2);
+    assert.equal(
+        operations.find(operation =>
+            operation.name === RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY
+            && operation.input.stateId === "approve"
+        ).input.waitingOn,
+        "question",
+    );
+    assert.deepEqual(
+        operations.find(operation => operation.kind === "timer"),
+        { kind: "timer", delayMs: 250 },
+    );
+});
+
 test("preserves the in-memory graph path in orchestration 1.0.0", () => {
     const definition = registerInMemoryWorkflowGraph({
         id: "in-memory-compatibility",

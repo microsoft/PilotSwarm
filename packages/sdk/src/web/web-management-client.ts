@@ -287,8 +287,8 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("registerWorkflowDefinition", { source: requestOrYaml.source });
     }
 
-    async getWorkflowDefinition(definitionId: string): Promise<any> {
-        return this._api.call("getWorkflowDefinition", { definitionId });
+    async getRegisteredWorkflowDefinition(definitionId: string): Promise<any> {
+        return this._api.call("getRegisteredWorkflowDefinition", { definitionId });
     }
 
     async getWorkflow(sessionId: string): Promise<any> {

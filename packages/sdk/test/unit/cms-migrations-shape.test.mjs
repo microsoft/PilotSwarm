@@ -143,8 +143,8 @@ test("0105: workflow facts are authoritative and lifecycle events are transactio
 test("0106: workflow definitions retain source and normalized compiled manifests", () => {
     const migration = migrations.find((m) => m.version === "0106");
     assert.ok(migration, "migration 0106 must be registered");
-    assert.equal(migration.name, "workflow_definitions");
-    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_definitions/);
+    assert.equal(migration.name, "registered_workflow_definitions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.registered_workflow_definitions/);
     assert.match(migration.sql, /package_artifact_filename TEXT NOT NULL/);
     assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_register_workflow_definition/);
 });

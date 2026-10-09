@@ -59,15 +59,6 @@ export {
 export {
     WorkflowStateProviderRegistry,
 } from "./workflow-orchestration/state-providers.js";
-export type {
-    WorkflowActionHandler,
-    WorkflowActionRequest,
-    WorkflowObservationResult,
-    WorkflowObservedConditionHandler,
-    WorkflowObservedConditionRequest,
-    WorkflowProviderExecutionContext,
-    WorkflowProviderResult,
-} from "./workflow-orchestration/state-providers.js";
 export {
     resolveWorkflowGitPackage,
 } from "./workflow-orchestration/git-source.js";
@@ -90,6 +81,7 @@ export type {
 export type {
     CompiledWorkflowAgentStateManifest,
     CompiledWorkflowActionStateManifest,
+    CompiledWorkflowExecutableStateManifest,
     CompiledWorkflowIdentityManifest,
     CompiledWorkflowManifest,
     CompiledWorkflowObservedConditionStateManifest,
@@ -108,6 +100,15 @@ export type {
     WorkflowTransitionReference,
     WorkflowTransitionRegistration,
 } from "./workflow-orchestration/compiler.js";
+export type {
+    WorkflowActionHandler,
+    WorkflowActionRequest,
+    WorkflowObservationResult,
+    WorkflowObservedConditionHandler,
+    WorkflowObservedConditionRequest,
+    WorkflowProviderExecutionContext,
+    WorkflowProviderResult,
+} from "./workflow-orchestration/state-providers.js";
 export type {
     WorkflowPackageMaterialization,
     WorkflowPackageSnapshot,
