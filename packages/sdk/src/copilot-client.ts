@@ -4,7 +4,7 @@ import { createParser } from "eventsource-parser";
 
 type JsonObject = Record<string, any>;
 type ToolGroup = { body: JsonObject; name: string; toolNames: Set<string> };
-const MAX_COMPLETIONS_TOOLS = 128;
+const MODEL_ROUTER_MAX_TOOLS = 128;
 const SCHEMA_DOCUMENT_KEYS = new Set(["$ref", "$id", "$schema", "$anchor", "$dynamicRef", "$dynamicAnchor", "$recursiveRef", "$recursiveAnchor"]);
 
 function isObject(value: unknown): value is JsonObject {
@@ -18,7 +18,7 @@ function hasSchemaDocumentScope(value: unknown): boolean {
 }
 
 function groupOverflowTools(body: JsonObject): ToolGroup | undefined {
-    if (!Array.isArray(body.tools) || body.tools.length <= MAX_COMPLETIONS_TOOLS) return;
+    if (body.model !== "model-router" || !Array.isArray(body.tools) || body.tools.length <= MODEL_ROUTER_MAX_TOOLS) return;
     const choice = body.tool_choice;
     const forcedName = isObject(choice) && choice.type === "function" && isObject(choice.function)
         && typeof choice.function.name === "string" && Object.keys(choice.function).length === 1
@@ -34,7 +34,7 @@ function groupOverflowTools(body: JsonObject): ToolGroup | undefined {
         && !hasSchemaDocumentScope(tool.function.parameters)
         && Object.keys(tool).every(key => key === "type" || key === "function")
         && Object.keys(tool.function).every(key => ["name", "description", "parameters", "strict"].includes(key)));
-    const required = body.tools.length - MAX_COMPLETIONS_TOOLS + 1;
+    const required = body.tools.length - MODEL_ROUTER_MAX_TOOLS + 1;
     if (candidates.length < required) {
         throw new Error("The 128-tool limit cannot be met without changing strict or unsupported tool schemas. Select a compatible model or reduce the configured tool catalog.");
     }
@@ -187,8 +187,9 @@ export function needsByokRequestCompatibility(provider: unknown): boolean {
  * all model traffic through Node, including WebSockets. Never attach it to a
  * GitHub Copilot client (native transport/auth and CAPI parameters must remain
  * intact), or an Anthropic/WIF client. Remove once the provider compatibility
- * tests pass without it. Oversized catalogs retain every tool through a typed
- * dispatch function; restore calls before the runtime's permission/tool hooks.
+ * tests pass without it. Only requests for the exact model-router deployment
+ * group oversized catalogs through a typed dispatch function; restore calls
+ * before the runtime's permission/tool hooks. Other models keep their catalogs.
  */
 export class ByokRequestCompatibility extends CopilotRequestHandler {
     protected override async sendRequest(

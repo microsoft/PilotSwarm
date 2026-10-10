@@ -47,13 +47,16 @@ capabilities, load only the guidance they need, and attach selected permitted
 tools or MCP servers at the next turn boundary. Existing sessions retain the V1
 framework unless the feature is enabled, and Base V2 requires native tasks.
 
-OpenAI-compatible Chat Completions limits a request to 128 tool declarations.
-For larger catalogs, PilotSwarm keeps 127 declarations direct and groups the
-overflow functions into one typed dispatch schema. Every grouped function keeps
-its description and argument schema; returned calls are restored to their
-original names, arguments and IDs before runtime permission hooks and handlers.
-This is a wire-format adaptation, not tool removal or another agent/model turn.
-It also applies when an existing session resumes or switches providers.
+The `model-router` deployment rejects Chat Completions requests containing more
+than 128 tool declarations. Only when the outgoing request's `model` is exactly
+`model-router`, PilotSwarm keeps 127 declarations direct and groups the overflow
+functions into one typed dispatch schema. Other model or deployment names keep
+their original catalogs, even above 128 tools; aliases do not opt in implicitly.
+Every grouped function keeps its description and argument schema; returned calls
+are restored to their original names, arguments and IDs before runtime permission
+hooks and handlers. This is a wire-format adaptation, not tool removal or another
+agent/model turn. The check runs per request, including after a session resumes
+or switches models. The existing BYOK `snippy` cleanup is unchanged.
 
 Forced tool choices, strict functions, document-relative schema references and
 unrecognized tool options stay direct. Restricted or unsupported tool-choice
