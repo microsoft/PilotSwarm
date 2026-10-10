@@ -190,8 +190,22 @@ function providerNames(raw) {
 }
 
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
-        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
+    constructor({
+        store,
+        mode,
+        useManagedIdentity,
+        cmsFactsDatabaseUrl,
+        aadDbUser,
+        workflowPackageResolver,
+    } = {}) {
+        this.transport = new NodeSdkTransport({
+            store,
+            mode,
+            useManagedIdentity,
+            cmsFactsDatabaseUrl,
+            aadDbUser,
+            workflowPackageResolver,
+        });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;

@@ -314,3 +314,57 @@ test("management registration persists package and module transition identities"
     assert.match(handler.moduleSha256, /^[0-9a-f]{64}$/);
     assert.equal(handler.packageSha256, persisted.manifest.packageSha256);
 });
+
+test("management registration uses a deployment workflow package resolver", async () => {
+    const source = {
+        kind: "git",
+        repositoryUrl: "https://example.test/private/repository",
+        gitRef: "refs/heads/main",
+        workflowPath: "workflow.yaml",
+    };
+    let resolvedSource;
+    let cleaned = false;
+    let persisted;
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client.config = {
+        workflowPackageResolver: {
+            async resolve(input) {
+                resolvedSource = input;
+                return {
+                    checkoutRoot: PACKAGE_ROOT,
+                    packageRoot: PACKAGE_ROOT,
+                    workflowYaml: TERMINAL_WORKFLOW,
+                    source: {
+                        ...input,
+                        commitSha: "a".repeat(40),
+                    },
+                    async cleanup() {
+                        cleaned = true;
+                    },
+                };
+            },
+        },
+    };
+    client._artifactStore = {
+        async uploadArtifact(_sessionId, filename) {
+            return { filename };
+        },
+    };
+    client._catalog = {
+        async registerWorkflowDefinition(input) {
+            persisted = input;
+            return {
+                definitionId: input.definitionId,
+                graphId: input.manifest.graphId,
+            };
+        },
+    };
+
+    const result = await client.registerWorkflowDefinition({ source });
+
+    assert.deepEqual(resolvedSource, source);
+    assert.equal(result.graphId, "registered-example@0.1.0");
+    assert.equal(persisted.packageSource.commitSha, "a".repeat(40));
+    assert.equal(cleaned, true);
+});

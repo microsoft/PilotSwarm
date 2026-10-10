@@ -69,8 +69,12 @@ export type {
     WorkflowProviderResult,
 } from "./workflow-orchestration/state-providers.js";
 export {
+    createWorkflowGitPackageResolver,
     resolveWorkflowGitPackage,
 } from "./workflow-orchestration/git-source.js";
+export {
+    loadImportPolicy,
+} from "./agent-package-import-policy.js";
 export {
     workflowPackageArtifactFilename,
     workflowPackagesArtifactSessionId,
@@ -121,6 +125,7 @@ export type {
     ResolvedWorkflowGitPackage,
     ResolvedWorkflowGitSource,
     WorkflowGitSource,
+    WorkflowPackageResolver,
 } from "./workflow-orchestration/git-source.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";

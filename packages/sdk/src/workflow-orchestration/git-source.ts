@@ -31,6 +31,24 @@ export interface ResolvedWorkflowGitPackage {
     cleanup(): Promise<void>;
 }
 
+export interface WorkflowPackageResolver {
+    resolve(source: WorkflowGitSource): Promise<ResolvedWorkflowGitPackage>;
+}
+
+export function createWorkflowGitPackageResolver(
+    policy: ImportPolicy,
+    options: {
+        runGit?: WorkflowGitRunner;
+        resolveHost?: (hostname: string) => Promise<unknown>;
+    } = {},
+): WorkflowPackageResolver {
+    return {
+        resolve(source) {
+            return resolveWorkflowGitPackage(source, policy, options);
+        },
+    };
+}
+
 function gitSourceError(message: string, code: string, cause?: unknown): Error {
     return Object.assign(new Error(message), {
         code,

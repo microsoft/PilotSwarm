@@ -129,7 +129,8 @@ import {
     workflowCompiledManifestSha256,
 } from "./workflow-orchestration/compiler.js";
 import {
-    resolveWorkflowGitPackage,
+    createWorkflowGitPackageResolver,
+    type WorkflowPackageResolver,
     type WorkflowGitSource,
 } from "./workflow-orchestration/git-source.js";
 import {
@@ -762,6 +763,8 @@ export interface PilotSwarmManagementClientOptions {
     artifactStore?: ArtifactStore | null;
     /** Allowlist policy for server-side Git-backed workflow registration. */
     workflowGitImportPolicy?: ImportPolicy;
+    /** Deployment-owned resolver for workflow package sources. */
+    workflowPackageResolver?: WorkflowPackageResolver;
 }
 
 export interface WorkflowDefinitionRegistrationRequest {
@@ -1419,8 +1422,11 @@ export class PilotSwarmManagementClient {
                 { kind: "local-package" },
             );
         }
-        const policy = this.config.workflowGitImportPolicy ?? loadImportPolicy();
-        const resolved = await resolveWorkflowGitPackage(requestOrYaml.source, policy);
+        const resolver = this.config.workflowPackageResolver
+            ?? createWorkflowGitPackageResolver(
+                this.config.workflowGitImportPolicy ?? loadImportPolicy(),
+            );
+        const resolved = await resolver.resolve(requestOrYaml.source);
         try {
             return await this._registerResolvedWorkflowPackage(
                 resolved.workflowYaml,
