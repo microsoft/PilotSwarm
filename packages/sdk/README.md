@@ -47,6 +47,23 @@ capabilities, load only the guidance they need, and attach selected permitted
 tools or MCP servers at the next turn boundary. Existing sessions retain the V1
 framework unless the feature is enabled, and Base V2 requires native tasks.
 
+OpenAI-compatible Chat Completions limits a request to 128 tool declarations.
+For larger catalogs, PilotSwarm keeps 127 declarations direct and groups the
+overflow functions into one typed dispatch schema. Every grouped function keeps
+its description and argument schema; returned calls are restored to their
+original names, arguments and IDs before runtime permission hooks and handlers.
+This is a wire-format adaptation, not tool removal or another agent/model turn.
+It also applies when an existing session resumes or switches providers.
+
+Forced tool choices, strict functions, document-relative schema references and
+unrecognized tool options stay direct. Restricted or unsupported tool-choice
+lists are not rewritten. If the limit cannot be met without changing those
+contracts, the request fails before transport rather than weakening schemas.
+Catalogs at or below the limit,
+GitHub Copilot, Anthropic and Responses transports are unchanged. Tool-call
+fragments are buffered until complete, while ordinary response text still streams.
+Grouping does not reduce the catalog's token footprint or enlarge model context.
+
 Artifact note:
 
 - `write_artifact` remains the standard way for agents to create downloadable files.

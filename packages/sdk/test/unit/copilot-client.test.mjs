@@ -85,3 +85,257 @@ test("cancellation propagates instead of resending the model request", async t =
     await assert.rejects(new ByokRequestCompatibility().sendRequest(request, { signal: controller.signal }), /test cancellation/);
     assert.equal(fetch.mock.callCount(), 1);
 });
+
+function catalogTools(count) {
+    return Array.from({ length: count }, (_, index) => ({
+        type: "function",
+        function: {
+            name: `catalog_tool_${index}`,
+            description: `Read-only tool ${index}`,
+            parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+        },
+    }));
+}
+
+function catalogRequest(body) {
+    return new Request("https://example.invalid/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json", "x-test": "keep" }, body: JSON.stringify(body),
+    });
+}
+
+function jsonResponse(body) {
+    return new Response(JSON.stringify(body), { headers: { "content-type": "application/json", "x-request-id": "request-42" } });
+}
+
+for (const count of [0, 127, 128]) {
+    test(`a ${count}-tool catalog remains byte-identical without a dispatcher`, async context => {
+        const request = catalogRequest({ model: "model-router", tools: catalogTools(count) });
+        const response = jsonResponse({ choices: [] });
+        context.mock.method(globalThis, "fetch", async forwarded => {
+            assert.equal(forwarded, request);
+            return response;
+        });
+        assert.equal(await new ByokRequestCompatibility().sendRequest(request, {}), response);
+    });
+}
+
+for (const count of [129, 139, 200]) {
+    test(`${count} tools retain every schema and restore every overflow call`, async context => {
+        const tools = catalogTools(count);
+        const body = { model: "model-router", tools, messages: [{ role: "user", content: "Preserve this prompt" }], future_field: { keep: true } };
+        const request = catalogRequest(body);
+        let expected;
+        context.mock.method(globalThis, "fetch", async forwarded => {
+            const wire = await forwarded.json();
+            assert.equal(wire.tools.length, 128);
+            assert.deepEqual(wire.messages, body.messages);
+            assert.deepEqual(wire.future_field, body.future_field);
+            assert.equal(forwarded.headers.get("x-test"), "keep");
+            const dispatcher = wire.tools.at(-1).function;
+            const alternatives = dispatcher.parameters.anyOf;
+            const retained = wire.tools.slice(0, -1);
+            for (const alternative of alternatives) {
+                const original = tools.find(tool => tool.function.name === alternative.properties.tool_name.enum[0]);
+                assert.deepEqual(alternative.properties.arguments, original.function.parameters);
+                assert.equal(alternative.description, original.function.description);
+                retained.push(original);
+            }
+            assert.deepEqual(retained, tools);
+            expected = alternatives.map((alternative, index) => ({
+                id: `call-${index}`, type: "function",
+                function: { name: alternative.properties.tool_name.enum[0], arguments: JSON.stringify({ value: `value-${index}` }) },
+            }));
+            return jsonResponse({
+                id: "response-42", model: "model-router", usage: { prompt_tokens: 100, completion_tokens: 10 },
+                choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: expected.map(call => ({
+                    ...call, function: { name: dispatcher.name, arguments: JSON.stringify({ tool_name: call.function.name, arguments: JSON.parse(call.function.arguments) }) },
+                })) } }],
+            });
+        });
+        const response = await new ByokRequestCompatibility().sendRequest(request, {});
+        const result = await response.json();
+        assert.deepEqual(result.choices[0].message.tool_calls, expected);
+        assert.deepEqual(result.usage, { prompt_tokens: 100, completion_tokens: 10 });
+        assert.equal(response.headers.get("x-request-id"), "request-42");
+        assert.deepEqual(await request.json(), body);
+    });
+}
+
+test("forced and strict tools stay direct, names cannot collide, and history keeps call IDs", async context => {
+    const tools = catalogTools(139);
+    tools[0].function.name = "pilotswarm_tool_dispatch";
+    tools[1].function.strict = true;
+    const forced = tools.at(-1).function.name;
+    const historic = tools.at(-2).function.name;
+    const body = {
+        tools, tool_choice: { type: "function", function: { name: forced } },
+        messages: [
+            { role: "assistant", tool_calls: [{ id: "history-id", type: "function", function: { name: historic, arguments: '{"value":"historic"}' } }] },
+            { role: "tool", tool_call_id: "history-id", content: "original result" },
+            { role: "assistant", tool_calls: [{ id: "failed-id", type: "function", function: { name: historic, arguments: "incomplete{" } }] },
+        ],
+    };
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        assert.deepEqual(wire.tool_choice, body.tool_choice);
+        assert.ok(wire.tools.some(tool => tool.function.name === forced));
+        assert.deepEqual(wire.tools.find(tool => tool.function.strict), tools[1]);
+        const dispatcher = wire.tools.at(-1).function;
+        assert.equal(dispatcher.name, "pilotswarm_tool_dispatch_1");
+        assert.equal(wire.messages[0].tool_calls[0].id, "history-id");
+        assert.equal(wire.messages[0].tool_calls[0].function.name, dispatcher.name);
+        assert.deepEqual(JSON.parse(wire.messages[0].tool_calls[0].function.arguments), { tool_name: historic, arguments: { value: "historic" } });
+        assert.deepEqual(wire.messages[1], body.messages[1]);
+        assert.deepEqual(wire.messages[2], body.messages[2]);
+        return jsonResponse({ choices: [] });
+    });
+    await new ByokRequestCompatibility().sendRequest(catalogRequest(body), {});
+});
+
+test("an oversized all-strict catalog is rejected before transport rather than weakened or truncated", async context => {
+    const tools = catalogTools(139).map(tool => ({ ...tool, function: { ...tool.function, strict: true } }));
+    const fetch = context.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected transport"); });
+    await assert.rejects(new ByokRequestCompatibility().sendRequest(catalogRequest({ tools }), {}), /strict or unsupported/);
+    assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("unrecognized tool options remain intact outside the dispatch schema", async context => {
+    const tools = catalogTools(139);
+    tools.at(-1).function.future_option = { keep: true };
+    tools.at(-2).future_option = { keep: true };
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        assert.equal(wire.tools.length, 128);
+        for (const original of tools.slice(-2)) {
+            assert.deepEqual(wire.tools.find(tool => tool.function.name === original.function.name), original);
+        }
+        return jsonResponse({ choices: [] });
+    });
+    await new ByokRequestCompatibility().sendRequest(catalogRequest({ tools }), {});
+});
+
+test("schemas with document-relative references remain direct instead of changing resolution", async context => {
+    const tools = catalogTools(139);
+    tools.at(-1).function.parameters = {
+        type: "object",
+        properties: { value: { $ref: "#/$defs/value" } },
+        $defs: { value: { type: "string" } },
+        required: ["value"],
+    };
+    tools.at(-2).function.parameters.properties.value = { $dynamicRef: "#value" };
+    tools.at(-3).function.parameters.$id = "https://example.invalid/tool-schema";
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        assert.equal(wire.tools.length, 128);
+        for (const original of tools.slice(-3)) {
+            assert.deepEqual(wire.tools.find(tool => tool.function.name === original.function.name), original);
+        }
+        return jsonResponse({ choices: [] });
+    });
+    await new ByokRequestCompatibility().sendRequest(catalogRequest({ tools }), {});
+});
+
+test("restricted tool-choice lists fail closed instead of being broadened by grouping", async context => {
+    const fetch = context.mock.method(globalThis, "fetch", async () => jsonResponse({ choices: [] }));
+    await assert.rejects(new ByokRequestCompatibility().sendRequest(catalogRequest({
+        tools: catalogTools(139),
+        tool_choice: { type: "allowed_tools", allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "catalog_tool_138" } }] } },
+    }), {}), /restricted or unsupported tool choice/);
+    assert.equal(fetch.mock.callCount(), 0);
+});
+
+for (const args of ["{", '{"tool_name":"not_in_catalog","arguments":{}}', '{"tool_name":"catalog_tool_138","arguments":[]}', '{"tool_name":"catalog_tool_138","arguments":{},"extra":true}']) {
+    test(`malformed or out-of-catalog dispatch arguments are rejected: ${args}`, async context => {
+        context.mock.method(globalThis, "fetch", async request => {
+            const wire = await request.json();
+            return jsonResponse({ choices: [{ message: { tool_calls: [{ id: "invalid-call", type: "function", function: { name: wire.tools.at(-1).function.name, arguments: args } }] } }] });
+        });
+        await assert.rejects(new ByokRequestCompatibility().sendRequest(catalogRequest({ tools: catalogTools(139) }), {}), /Tool dispatcher returned/);
+    });
+}
+
+test("streamed text stays live while fragmented parallel calls restore names, arguments, IDs and usage", async context => {
+    let finish;
+    const tools = catalogTools(139);
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        const name = wire.tools.at(-1).function.name;
+        const args = JSON.stringify({ tool_name: tools.at(-1).function.name, arguments: { value: "quoted \"text\" and \u2603" } });
+        const frame = (delta, finishReason = null, usage) => `data: ${JSON.stringify({
+            id: "stream-42", model: "model-router", choices: [{ index: 0, delta, finish_reason: finishReason }], ...(usage ? { usage } : {}),
+        })}\r\n\r\n`;
+        const source = new ReadableStream({ start(controller) {
+            controller.enqueue(new TextEncoder().encode(frame({ role: "assistant", content: "live text" })));
+            finish = () => {
+                const tail = [
+                    frame({ tool_calls: [
+                        { index: 0, id: "grouped-id", type: "function", function: { name: name.slice(0, 8), arguments: args.slice(0, 9) } },
+                        { index: 1, id: "direct-id", type: "function", function: { name: tools[0].function.name, arguments: '{"value":' } },
+                    ] }),
+                    frame({ tool_calls: [
+                        { index: 0, function: { name: name.slice(8), arguments: args.slice(9) } },
+                        { index: 1, function: { arguments: '"direct"}' } },
+                    ] }),
+                    frame({}, "tool_calls", { prompt_tokens: 17, completion_tokens: 23 }),
+                    "data: [DONE]\r\n\r\n",
+                ].join("");
+                const bytes = new TextEncoder().encode(tail);
+                for (let offset = 0; offset < bytes.length; offset++) controller.enqueue(bytes.subarray(offset, offset + 1));
+                controller.close();
+            };
+        } });
+        return new Response(source, { headers: { "content-type": "text/event-stream", "x-request-id": "stream-request" } });
+    });
+    const response = await new ByokRequestCompatibility().sendRequest(catalogRequest({ tools, stream: true }), {});
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    let text = new TextDecoder().decode(first.value);
+    assert.match(text, /live text/);
+    finish();
+    for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        text += new TextDecoder().decode(next.value);
+    }
+    const chunks = text.split("\n\n").filter(part => part.startsWith("data: {")).map(part => JSON.parse(part.slice(6)));
+    const calls = chunks.flatMap(chunk => chunk.choices.flatMap(choice => choice.delta.tool_calls ?? []));
+    assert.deepEqual(calls, [
+        { index: 0, id: "grouped-id", type: "function", function: { name: tools.at(-1).function.name, arguments: JSON.stringify({ value: "quoted \"text\" and \u2603" }) } },
+        { index: 1, id: "direct-id", type: "function", function: { name: tools[0].function.name, arguments: '{"value":"direct"}' } },
+    ]);
+    assert.deepEqual(chunks.at(-1).usage, { prompt_tokens: 17, completion_tokens: 23 });
+    assert.equal(response.headers.get("x-request-id"), "stream-request");
+    assert.match(text, /\[DONE\]/);
+});
+
+test("an unfinished dispatcher stream fails without emitting an executable tool call", async context => {
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{
+            index: 0, id: "unfinished", type: "function", function: { name: wire.tools.at(-1).function.name, arguments: "{" },
+        }] }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    });
+    const response = await new ByokRequestCompatibility().sendRequest(catalogRequest({ tools: catalogTools(139), stream: true }), {});
+    await assert.rejects(response.text(), /before completing its tool calls/);
+});
+
+test("a null terminal delta still flushes the completed dispatch call", async context => {
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        const chunks = [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "null-delta", type: "function", function: {
+                name: wire.tools.at(-1).function.name,
+                arguments: JSON.stringify({ tool_name: "catalog_tool_138", arguments: { value: "retained" } }),
+            } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: null, finish_reason: "tool_calls" }] },
+        ];
+        return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    });
+    const response = await new ByokRequestCompatibility().sendRequest(catalogRequest({ tools: catalogTools(139), stream: true }), {});
+    const chunks = (await response.text()).split("\n\n").filter(chunk => chunk.startsWith("data: {")).map(chunk => JSON.parse(chunk.slice(6)));
+    const calls = chunks.flatMap(chunk => chunk.choices.flatMap(choice => choice.delta?.tool_calls ?? []));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].id, "null-delta");
+    assert.equal(calls[0].function.name, "catalog_tool_138");
+    assert.deepEqual(JSON.parse(calls[0].function.arguments), { value: "retained" });
+});
