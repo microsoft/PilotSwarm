@@ -99,13 +99,44 @@ function catalogTools(count) {
 
 function catalogRequest(body) {
     return new Request("https://example.invalid/chat/completions", {
-        method: "POST", headers: { "content-type": "application/json", "x-test": "keep" }, body: JSON.stringify(body),
+        method: "POST", headers: { "content-type": "application/json", "x-test": "keep" }, body: JSON.stringify({ model: "model-router", ...body }),
     });
 }
 
 function jsonResponse(body) {
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json", "x-request-id": "request-42" } });
 }
+
+for (const model of ["gpt-5.6-terra", "gpt-4o", "model-router-preview", "custom-model-router", "MODEL-ROUTER", undefined, null]) {
+    test(`other models keep oversized catalogs and responses unchanged: ${model}`, async context => {
+        const request = catalogRequest({ model, tools: catalogTools(139) });
+        const original = await request.clone().text();
+        const response = jsonResponse({ choices: [] });
+        context.mock.method(globalThis, "fetch", async forwarded => {
+            assert.equal(forwarded, request);
+            assert.equal(await forwarded.text(), original);
+            return response;
+        });
+        assert.equal(await new ByokRequestCompatibility().sendRequest(request, {}), response);
+    });
+}
+
+test("other models retain only the existing snippy cleanup, even with oversized strict catalogs", async context => {
+    const body = {
+        model: "gpt-5.6-terra",
+        snippy: { enabled: false },
+        tools: catalogTools(139).map(tool => ({ ...tool, function: { ...tool.function, strict: true } })),
+        tool_choice: { type: "allowed_tools", allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "catalog_tool_138" } }] } },
+    };
+    const expected = { ...body };
+    delete expected.snippy;
+    const response = jsonResponse({ choices: [] });
+    context.mock.method(globalThis, "fetch", async forwarded => {
+        assert.deepEqual(await forwarded.json(), expected);
+        return response;
+    });
+    assert.equal(await new ByokRequestCompatibility().sendRequest(catalogRequest(body), {}), response);
+});
 
 for (const count of [0, 127, 128]) {
     test(`a ${count}-tool catalog remains byte-identical without a dispatcher`, async context => {

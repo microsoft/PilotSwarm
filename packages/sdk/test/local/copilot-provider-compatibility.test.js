@@ -49,6 +49,46 @@ async function harness(run, serverOptions) {
 }
 
 describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, synthetic HTTP)", () => {
+    it("a shared BYOK client groups only model-router across model switches", { timeout: 60_000 }, async () => {
+        await harness(async ({ server, clients, options }) => {
+            const provider = { type: "openai", wireApi: "completions", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key" };
+            const client = createCopilotClient(options, provider);
+            clients.push(client);
+            const calls = [];
+            const tools = largeCatalogTools(async args => { calls.push(args); return args.value; });
+            const config = { provider, tools, streaming: true, onPermissionRequest: () => ({ kind: "approved" }) };
+            let session;
+            for (const model of [MODEL, "model-router", MODEL]) {
+                if (session) {
+                    const id = session.sessionId;
+                    await session.disconnect();
+                    session = await client.resumeSession(id, { ...config, model });
+                } else {
+                    session = await client.createSession({ ...config, model });
+                }
+                const requestStart = server.requests.length;
+                expect((await session.sendAndWait({ prompt: "call compat_echo with value violet-739" }, 20_000)).data.content).toContain("violet-739");
+                const requests = server.requests.slice(requestStart);
+                expect(requests.length).toBeGreaterThan(0);
+                for (const request of requests) {
+                    expect(request.body.model).toBe(model);
+                    expect(request.path).toMatch(/\/chat\/completions(?:\?|$)/);
+                    const names = request.body.tools.map(tool => tool.function?.name ?? tool.custom?.name ?? tool.name);
+                    if (model === "model-router") {
+                        expect(names.length).toBe(128);
+                        expect(names).toContain("pilotswarm_tool_dispatch");
+                    } else {
+                        expect(names.length).toBeGreaterThan(128);
+                        expect(names).toEqual(expect.arrayContaining(tools.map(tool => tool.name)));
+                        expect(names).not.toContain("pilotswarm_tool_dispatch");
+                    }
+                }
+            }
+            expect(calls).toEqual([{ value: "violet-739" }, { value: "violet-739" }, { value: "violet-739" }]);
+            await session.disconnect();
+        });
+    });
+
     it.each([false, true])("model-router keeps every overflow tool callable, streaming=%s, warm and cold", { timeout: 60_000 }, async streaming => {
         await harness(async ({ server, clients, options }) => {
             const provider = { type: "openai", wireApi: "completions", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key" };
