@@ -1,147 +1,155 @@
 # Workflow Sessions (Experimental)
 
-Workflow sessions are durable child sessions controlled by a workflow state
-machine rather than an LLM conversation. A conversational parent can start a
-workflow, continue doing other work, and later check or wait for its durable
-result.
+Workflow sessions are durable, non-conversational sessions controlled by a
+versioned state machine. They can be started directly through the SDK or API,
+or as children of conversational sessions through `spawn_workflow`.
 
-The design motivation and intended execution model are tracked in
+The design originates in
 [PilotSwarm issue #28](https://github.com/microsoft/PilotSwarm/issues/28).
-Concrete root, conversational-parent, and mixed-nesting examples are developed
-in the [workflow session composition scenarios proposal](../../proposals/workflow-session-scenarios.md).
 
-The caller-side protocol is implemented, but the workflow controller is still a
-scaffold. Starting a workflow currently creates the real durable child session
-and then fails its orchestration with
-`WORKFLOW_CONTROLLER_NOT_IMPLEMENTED`.
+## Design Decisions
 
-## Invoke a Workflow from an Agent
+These boundaries are intentionally difficult to change after definitions and
+executions exist in production.
 
-Conversational sessions on orchestration version `1.0.81` or later expose these
-tools:
+### Duroxide history controls execution
 
-- `spawn_workflow` creates a workflow child and returns its session ID.
-- `check_workflows` reads any controller-written terminal results without
-  waiting.
-- `wait_for_workflows` durably waits until all selected workflows have written
-  terminal results.
+The workflow controller derives its cursor, execution sequence, durable waits,
+timers, and transitions from Duroxide orchestration history. It never reads the
+CMS projection to decide what executes next.
 
-An agent package can instruct a markdown agent to use the tools:
+CMS stores authoritative admitted executions, accepted results, terminal
+completion, and a rebuildable projection for APIs and UI. Rebuilding or losing
+the projection must not change control flow.
 
-```markdown
----
-name: workflow-runner
-description: Starts an inline workflow.
----
+### Definitions are immutable packages
 
-# Workflow Runner
+Registration compiles authored YAML and snapshots the complete package into a
+content-addressed artifact. The persisted definition pins:
 
-When asked to run a workflow:
+- source and compiled-manifest hashes
+- package artifact hash
+- transition module and package hashes
+- immutable source provenance, including a Git commit when applicable
 
-1. Call `spawn_workflow` exactly once using the supplied definition and inputs.
-2. Report the returned workflow session ID.
-3. Call `wait_for_workflows` if the caller wants the final result.
+Workers verify those identities before execution. Persisted definitions contain
+data, not JavaScript functions or machine-local paths.
+
+The default Git resolver accepts only allowlisted public repositories. A
+deployment may inject a `WorkflowPackageResolver` for private source systems,
+but PilotSwarm still owns compilation, package verification, persistence, and
+cleanup.
+
+### Transition code is explicit and replay-safe
+
+Every executable state references a synchronous, package-relative transition
+export with declared target states. Inline transition syntax and asynchronous
+transition handlers are rejected.
+
+Transition functions receive immutable workflow inputs, the accepted state
+result, prior state outputs, and execution history. They return only an
+`advance` directive. This keeps orchestration decisions deterministic and makes
+transition code independently identifiable.
+
+### Domain behavior belongs behind providers
+
+PilotSwarm defines generic `action` and `observed-condition` states. Deployments
+register concrete providers on workers; workflow packages reference providers
+by name.
+
+Every provider request includes the stable tuple:
+
+```text
+workflowSessionId / stateId / executionSequence
 ```
 
-The model calls `spawn_workflow` with this shape:
+Action providers must use that identity as their idempotency key. An activity
+may be re-dispatched after a worker dies after applying its side effect but
+before returning its result.
 
-```json
-{
-  "definition": {
-    "kind": "inline",
-    "yaml": "name: example\nversion: 1\nsteps: []\n"
-  },
-  "inputs": {
-    "request": "example"
-  }
-}
+Observed conditions return either `pending` with an optional retry delay or a
+declared completed outcome. Polling uses durable timers, so replacing a worker
+does not restart the accepted action or lose the wait.
+
+### Execution facts precede transitions
+
+For every non-terminal state, the controller:
+
+1. records the execution and external wait details
+2. obtains an agent result, question answer, action result, or observation
+3. validates and durably accepts the declared outcome
+4. executes the pinned transition
+
+Transitions consume the accepted result, not an uncommitted provider response.
+Question queues are execution-specific, so duplicate answers cannot be consumed
+by a later question.
+
+### Logical identity is separate from request idempotency
+
+Definitions may declare a primary key from required scalar inputs. Workflow
+start admission enforces two independent identities:
+
+- caller-scoped `idempotencyKey` for request retries
+- `(definitionId, primaryKeyHash)` for logical duplicate detection
+
+Explicit reruns create a new attempt while preserving the logical workflow
+identity and owner.
+
+### Orchestration versions preserve compatibility
+
+Registered definitions execute through `workflow-session-v1@1.0.0`. The
+pre-existing in-memory graph path remains available in that version so durable
+history created before registered definitions continues to replay.
+
+## Supported State Types
+
+| Type | Durable behavior |
+|---|---|
+| `agent` | Starts a replay-stable child session and waits for a bound structured result. |
+| `question` | Persists prompt, context, authorization, and outcomes before waiting for an execution-specific answer. |
+| `action` | Invokes a registered provider with a stable execution identity. |
+| `observed-condition` | Polls a registered provider through durable timers. |
+| `terminal` | Persists the final outcome and optional projected result. |
+
+The controller rejects undeclared outcomes and targets and stops graphs that
+exceed 100 transitions.
+
+## Registration and Execution
+
+Administrators register Git-backed definitions through:
+
+```text
+POST /api/v1/management/workflow-definitions
 ```
 
-Package-backed definitions use:
+Callers start a registered definition through:
 
-```json
-{
-  "definition": {
-    "kind": "package",
-    "package_name": "example-package",
-    "workflow_name": "example-workflow",
-    "version": "1.0.0"
-  },
-  "inputs": {}
-}
+```text
+POST /api/v1/workflows
 ```
 
-The tool ends the current model turn and emits a durable orchestration action.
-The parent orchestration assigns a replay-stable workflow session ID, creates
-the child through a durable activity, and supplies the ID to the agent in its
-next follow-up context.
+Question answers and read models are exposed under:
 
-The CMS `parentSessionId` is the authoritative relationship. The parent
-orchestration separately tracks workflow execution state in `subWorkflows`.
-
-## Force the Tool in an SDK Scenario
-
-Tests and applications can require the model to call `spawn_workflow` during a
-turn:
-
-```js
-const parent = await client.createSession({
-  agentId: "workflow-runner",
-});
-
-const response = await parent.sendAndWait(
-  "Start the supplied inline workflow.",
-  180_000,
-  undefined,
-  { requiredTool: "spawn_workflow" },
-);
+```text
+POST /api/v1/management/workflows/:sessionId/questions/:executionSequence/answer
+GET  /api/v1/management/workflows/:sessionId
+GET  /api/v1/management/workflows/:sessionId/executions
 ```
 
-`requiredTool` guarantees that the turn invokes the tool; the agent instructions
-and user prompt still provide the workflow definition and inputs.
+Conversational parents can use `spawn_workflow`, `check_workflows`, and
+`wait_for_workflows`. The CMS `parentSessionId` remains the authoritative
+relationship between the conversational parent and workflow child.
 
-## Run the End-to-End Boundary Test
+## Validation Strategy
 
-The synthetic integration scenario is:
+Domain-neutral local tests register and execute a real package against
+PostgreSQL without an LLM. Separate campaign files cover:
 
-- test: `packages/sdk/test/local/workflow-session-e2e.test.js`
-- plugin: `packages/sdk/test/fixtures/workflow-session-e2e-plugin/`
-- agent:
-  `packages/sdk/test/fixtures/workflow-session-e2e-plugin/agents/workflow-runner.agent.md`
+- question, action, observation, terminal, and cancellation paths
+- equivalent concurrent question answers
+- worker replacement while waiting on a question
+- worker replacement during observation polling
+- hard process death after an action side effect and idempotent re-dispatch
 
-Start local PostgreSQL:
-
-```bash
-docker run --rm --name pilotswarm-pg \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=pilotswarm \
-  -p 5432:5432 \
-  postgres:17 -c max_connections=500
-```
-
-Set the test connection and model credential:
-
-```powershell
-$env:PS_TEST_DATABASE_URL = "******localhost:5432/pilotswarm"
-$env:GITHUB_TOKEN = "<token>"
-```
-
-From the repository root, run:
-
-```powershell
-npm --workspace packages/sdk run build
-node --env-file=.env node_modules/vitest/vitest.mjs run packages/sdk/test/local/workflow-session-e2e.test.js
-```
-
-The test demonstrates the current complete boundary:
-
-1. A real markdown agent calls the production `spawn_workflow` tool.
-2. The parent creates a durable workflow child with the correct lineage.
-3. The workflow definition and inputs are persisted in its creation config.
-4. The worker starts the real `workflow-session-v1` orchestration.
-5. The scaffold controller fails explicitly with
-   `WORKFLOW_CONTROLLER_NOT_IMPLEMENTED`.
-
-Once the controller exists, the final assertion should be replaced with a
-controller-written durable outcome and verification that the parent consumes
-that result through `wait_for_workflows`.
+The files live under `packages/sdk/test/local`, use isolated schemas, and are
+independently tracked and retried by the resumable validation campaign.

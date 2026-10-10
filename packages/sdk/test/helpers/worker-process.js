@@ -6,11 +6,88 @@
  * and stays alive until told to stop.
  */
 
-import { PilotSwarmWorker, FilesystemSessionStore } from "../../dist/index.js";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import {
+    PilotSwarmWorker,
+    FilesystemSessionStore,
+    WorkflowStateProviderRegistry,
+} from "../../dist/index.js";
+
+function workflowEffectFilename(marker) {
+    return `${String(marker).replace(/[^a-zA-Z0-9._-]+/g, "_")}.json`;
+}
+
+function createWorkflowTestProviders(config) {
+    if (!config) return undefined;
+    mkdirSync(config.effectDir, { recursive: true });
+    const attemptsPath = path.join(config.effectDir, "attempts.jsonl");
+    return new WorkflowStateProviderRegistry()
+        .registerAction("test-memory", request => {
+            const marker = request.input?.marker;
+            const effectPath = path.join(
+                config.effectDir,
+                workflowEffectFilename(marker),
+            );
+            let applied = false;
+            try {
+                writeFileSync(
+                    effectPath,
+                    JSON.stringify({
+                        marker,
+                        workflowSessionId: request.workflowSessionId,
+                        stateId: request.stateId,
+                        executionSequence: request.executionSequence,
+                    }),
+                    { flag: "wx" },
+                );
+                applied = true;
+            } catch (error) {
+                if (error?.code !== "EEXIST") throw error;
+            }
+            appendFileSync(attemptsPath, `${JSON.stringify({
+                marker,
+                workflowSessionId: request.workflowSessionId,
+                stateId: request.stateId,
+                executionSequence: request.executionSequence,
+                applied,
+            })}\n`);
+            if (config.exitAfterActionEffect) {
+                console.error(
+                    `[workflow-test-provider] exiting after action effect marker=${marker}`,
+                );
+                process.exit(137);
+            }
+            return {
+                outcome: "succeeded",
+                output: { marker, applied },
+            };
+        })
+        .registerObservedCondition("test-memory", request => {
+            const marker = request.operation?.marker;
+            const effectPath = path.join(
+                config.effectDir,
+                workflowEffectFilename(marker),
+            );
+            return {
+                status: "completed",
+                outcome: "satisfied",
+                output: {
+                    marker,
+                    observed: existsSync(effectPath),
+                    effectPath,
+                    observationAttempt: request.observationAttempt,
+                },
+            };
+        });
+}
 
 process.on("message", async (msg) => {
     if (msg.type === "start") {
         try {
+            const workflowStateProviders = createWorkflowTestProviders(
+                msg.workflowTestProvider,
+            );
             const worker = new PilotSwarmWorker({
                 store: msg.store,
                 githubToken: msg.githubToken,
@@ -28,6 +105,7 @@ process.on("message", async (msg) => {
                 ...(msg.sessionStoreDir
                     ? { sessionStore: new FilesystemSessionStore(msg.sessionStoreDir, msg.sessionStateDir) }
                     : {}),
+                ...(workflowStateProviders ? { workflowStateProviders } : {}),
             });
             await worker.start();
 

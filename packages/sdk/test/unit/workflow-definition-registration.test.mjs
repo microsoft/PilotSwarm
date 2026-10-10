@@ -368,3 +368,51 @@ test("management registration uses a deployment workflow package resolver", asyn
     assert.equal(persisted.packageSource.commitSha, "a".repeat(40));
     assert.equal(cleaned, true);
 });
+
+test("management registration cleans up a resolved package after registration fails", async () => {
+    const source = {
+        kind: "git",
+        repositoryUrl: "https://example.test/private/repository",
+        gitRef: "refs/heads/main",
+        workflowPath: "workflow.yaml",
+    };
+    let cleaned = false;
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client.config = {
+        workflowPackageResolver: {
+            async resolve(input) {
+                return {
+                    checkoutRoot: PACKAGE_ROOT,
+                    packageRoot: PACKAGE_ROOT,
+                    workflowYaml: TERMINAL_WORKFLOW,
+                    source: {
+                        ...input,
+                        commitSha: "a".repeat(40),
+                    },
+                    async cleanup() {
+                        cleaned = true;
+                    },
+                };
+            },
+        },
+    };
+    client._artifactStore = {
+        async uploadArtifact() {
+            throw Object.assign(new Error("upload failed"), {
+                code: "TEST_UPLOAD_FAILED",
+            });
+        },
+    };
+    client._catalog = {
+        async registerWorkflowDefinition() {
+            assert.fail("registration should not follow a failed upload");
+        },
+    };
+
+    await assert.rejects(
+        () => client.registerWorkflowDefinition({ source }),
+        error => error?.code === "TEST_UPLOAD_FAILED",
+    );
+    assert.equal(cleaned, true);
+});

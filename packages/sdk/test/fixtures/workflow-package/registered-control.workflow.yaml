@@ -1,0 +1,60 @@
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: registered-control-e2e
+  version: 0.1.0
+inputs:
+  marker:
+    type: string
+    required: true
+identity:
+  primaryKey:
+    - inputs.marker
+initial: approve
+states:
+  approve:
+    type: question
+    prompt: Write the marker?
+    context:
+      marker: ${inputs.marker}
+    authorization:
+      mode: session-write
+    completion:
+      outcomes: [continue, stop]
+    transition:
+      handler:
+        module: ./control-transitions.mjs
+        export: approve
+  write:
+    type: action
+    provider: test-memory
+    operation: write-marker
+    input:
+      marker: ${inputs.marker}
+    completion:
+      outcomes: [succeeded]
+    transition:
+      handler:
+        module: ./control-transitions.mjs
+        export: write
+  observe:
+    type: observed-condition
+    provider: test-memory
+    operation:
+      marker: ${inputs.marker}
+    conditions:
+      status: written
+    pollIntervalMs: 100
+    completion:
+      outcomes: [satisfied]
+    transition:
+      handler:
+        module: ./control-transitions.mjs
+        export: observe
+  done:
+    type: terminal
+    outcome: succeeded
+    output: ${states.observe.result}
+  stopped:
+    type: terminal
+    outcome: cancelled

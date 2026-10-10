@@ -50,6 +50,33 @@ states:
       handler:
         module: ./transitions.mjs
         export: inspect
+  act:
+    type: action
+    provider: sample
+    operation: publish
+    input: {}
+    completion:
+      outcomes:
+        - succeeded
+        - blocked
+    transition:
+      handler:
+        module: ./transitions.mjs
+        export: inspect
+  observe:
+    type: observed-condition
+    provider: sample
+    operation: {}
+    conditions: {}
+    pollIntervalMs: 250
+    completion:
+      outcomes:
+        - succeeded
+        - blocked
+    transition:
+      handler:
+        module: ./transitions.mjs
+        export: inspect
   publish:
     type: terminal
     outcome: succeeded
@@ -105,7 +132,7 @@ async function providerHarness({ artifactBody, transformRecord } = {}) {
     return { provider, compiled, definitionId, downloads };
 }
 
-test("loads a persisted compiled plan and executes its pinned transition", async () => {
+test("loads a persisted compiled plan and executes pinned transitions for every executable state", async () => {
     const { provider, compiled, definitionId, downloads } = await providerHarness();
     const resolved = await provider.resolve({ kind: "registered", definitionId });
 
@@ -113,49 +140,41 @@ test("loads a persisted compiled plan and executes its pinned transition", async
     assert.deepEqual(resolved.manifest, compiled.manifest);
     assert.equal(downloads.length, 1);
 
-    const directive = await provider.executeTransition({
-        definitionId,
-        stateId: "inspect",
-        context: {
-            workflowInputs: {},
-            currentStateId: "inspect",
-            stateOutcome: "succeeded",
-            stateOutput: { approved: true },
-            latestStateOutputs: {
-                inspect: { outcome: "succeeded", output: { approved: true } },
+    for (const [executionSequence, stateId] of [
+        "inspect",
+        "approve",
+        "act",
+        "observe",
+    ].entries()) {
+        const directive = await provider.executeTransition({
+            definitionId,
+            stateId,
+            context: {
+                workflowInputs: {},
+                currentStateId: stateId,
+                stateOutcome: "succeeded",
+                stateOutput: { approved: true },
+                latestStateOutputs: {
+                    [stateId]: {
+                        outcome: "succeeded",
+                        output: { approved: true },
+                    },
+                },
+                executionHistory: [{
+                    stateId,
+                    executionSequence: executionSequence + 1,
+                    outcome: "succeeded",
+                    output: { approved: true },
+                }],
             },
-            executionHistory: [{
-                stateId: "inspect",
-                executionSequence: 1,
-                outcome: "succeeded",
-                output: { approved: true },
-            }],
-        },
-    });
+        });
 
-    assert.deepEqual(directive, { kind: "advance", target: "publish" });
-
-    const questionDirective = await provider.executeTransition({
-        definitionId,
-        stateId: "approve",
-        context: {
-            workflowInputs: {},
-            currentStateId: "approve",
-            stateOutcome: "succeeded",
-            stateOutput: { approved: true },
-            latestStateOutputs: {
-                approve: { outcome: "succeeded", output: { approved: true } },
-            },
-            executionHistory: [{
-                stateId: "approve",
-                executionSequence: 2,
-                outcome: "succeeded",
-                output: { approved: true },
-            }],
-        },
-    });
-
-    assert.deepEqual(questionDirective, { kind: "advance", target: "publish" });
+        assert.deepEqual(
+            directive,
+            { kind: "advance", target: "publish" },
+            `expected the ${stateId} transition to execute`,
+        );
+    }
     assert.equal(downloads.length, 1, "the verified package snapshot is cached by hash");
 });
 
