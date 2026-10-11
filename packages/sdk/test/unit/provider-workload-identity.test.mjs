@@ -92,7 +92,7 @@ const FOUNDRY_CONFIG = {
         {
             id: "foundry",
             type: "foundry-wif",
-            baseUrl: "https://acct.cognitiveservices.azure.com/openai/v1",
+            baseUrl: "https://example-foundry.cognitiveservices.azure.com/openai/v1",
             models: [{ name: "gpt-5.6-sol" }],
         },
     ],
@@ -118,7 +118,7 @@ test("resolve() yields a keyless workload-identity Foundry provider", () => {
     assert.equal(resolved.type, "foundry-wif");
     assert.equal(resolved.usesWorkloadIdentity, true);
     assert.equal(resolved.sdkProvider.type, "openai");
-    assert.equal(resolved.sdkProvider.baseUrl, "https://acct.cognitiveservices.azure.com/openai/v1");
+    assert.equal(resolved.sdkProvider.baseUrl, "https://example-foundry.cognitiveservices.azure.com/openai/v1");
     assert.ok(!("apiKey" in resolved.sdkProvider));
 });
 

@@ -692,7 +692,7 @@ the account's `/openai/v1` data-plane URL:
 {
   "id": "azure-foundry-wif",
   "type": "foundry-wif",
-  "baseUrl": "https://my-account.cognitiveservices.azure.com/openai/v1",
+  "baseUrl": "https://example-foundry.cognitiveservices.azure.com/openai/v1",
   "models": [
     { "name": "gpt-5.6", "wireApi": "responses" },
     { "name": "gpt-5.4" }
