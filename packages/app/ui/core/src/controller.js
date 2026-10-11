@@ -9265,6 +9265,13 @@ export class PilotSwarmUiController {
             sessionId = created.sessionId;
             activeSession = this.getState().sessions.byId[sessionId] || null;
         }
+        if (activeSession?.sessionKind === "workflow") {
+            this.dispatch({
+                type: "ui/status",
+                text: "Workflow sessions are controller-backed and do not accept chat messages.",
+            });
+            return;
+        }
 
         // Empty Enter on a session with pending outbox items forces an immediate
         // dispatch of any pending merge group; this is the "send batch" affordance.

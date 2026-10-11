@@ -12,6 +12,9 @@ import type { MigrationEntry } from "./pg-migrator.js";
 import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
+import { workflowExecutionsMigration } from "./migrations/workflow-executions-0083.js";
+import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0084.js";
+import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0085.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -404,7 +407,34 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
+        { version: "0082", name: "workflow_session_kind", sql: migration_0082_workflow_session_kind(schema) },
+        { version: "0083", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
+        { version: "0084", name: "workflow_definitions", sql: workflowDefinitionsMigration(schema) },
+        { version: "0085", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
     ];
+}
+
+/** Additive discriminator; every pre-existing and omitted value remains an agent session. */
+function migration_0082_workflow_session_kind(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'sessions_session_kind_check'
+           AND conrelid = '${schema}.sessions'::regclass
+    ) THEN
+        ALTER TABLE ${s}.sessions
+            ADD CONSTRAINT sessions_session_kind_check
+            CHECK (session_kind IN ('agent', 'workflow'));
+    END IF;
+END $$;
+`;
 }
 
 /** Additive page filter used by the portal's independent system-session load. */

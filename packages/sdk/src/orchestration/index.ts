@@ -23,7 +23,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_80(
+export function* durableSessionOrchestration_1_0_81(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

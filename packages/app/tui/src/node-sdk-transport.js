@@ -517,7 +517,15 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+    constructor({
+        store,
+        mode,
+        currentUser,
+        useManagedIdentity,
+        cmsFactsDatabaseUrl,
+        aadDbUser,
+        workflowPackageResolver,
+    } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
@@ -548,6 +556,7 @@ export class NodeSdkTransport {
             pluginDirs: this.pluginDirs,
             blobEnabled: Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING),
             artifactStore: this.artifactStore,
+            ...(workflowPackageResolver ? { workflowPackageResolver } : {}),
             // The Workspace pane: this process's own mount of the workspace
             // roots (PORTAL_WORKSPACE_ROOTS), and the file size limit.
             workspaceFiles: workspaceFilesConfigFromEnv(),
@@ -1388,6 +1397,13 @@ export class NodeSdkTransport {
             reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
             contextTier: created?.contextTier || contextTier || undefined,
         };
+    }
+
+    async startWorkflow(request, { owner, isAdmin } = {}) {
+        return this.client._startWorkflow(request, {
+            owner: owner ?? null,
+            isAdmin: isAdmin === true,
+        });
     }
 
     async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {

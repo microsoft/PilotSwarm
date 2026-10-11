@@ -548,6 +548,81 @@ Hardening ideas:
 - add partial-spawn diagnostics so failures identify which child agent is missing and what pilotswarm last emitted
 - add deterministic-id restart assertions to prove system children are reused rather than recreated incorrectly
 
+### `workflow-session-e2e.test.js`
+
+Purpose:
+
+- exercise the real conversational-parent to workflow-child boundary through a
+  synthetic markdown agent
+
+Tests:
+
+- `a markdown agent starts a durable workflow child that reaches the explicit scaffold failure`
+  - forces the real `spawn_workflow` tool during an agent turn
+  - verifies the CMS workflow child, parent lineage, orchestration ID, durable
+    definition, and inputs
+  - verifies the current scaffold fails with
+    `WORKFLOW_CONTROLLER_NOT_IMPLEMENTED`
+
+Future assertion:
+
+- replace the expected scaffold failure with a controller-written durable
+  outcome and verify that `wait_for_workflows` feeds it into the parent turn
+
+### `workflow-registered-e2e.test.js`
+
+Purpose:
+
+- exercise registered workflow execution without an LLM dependency
+- provide a provider-independent file that the resumable validation campaign
+  can run against each configured storage profile
+
+Tests:
+
+- `registers and executes question, action, observation, and terminal states`
+  - registers an immutable package through the direct management client
+  - starts a real durable workflow against PostgreSQL
+  - submits concurrent equivalent answers to the same durable question
+  - verifies exactly one accepted question execution
+  - verifies action and observed-condition provider execution and terminal
+    persistence
+  - verifies the negative question branch reaches a cancelled terminal without
+    invoking either provider
+
+### `workflow-reliability-*.test.js`
+
+Purpose:
+
+- exercise workflow-specific recovery with real workers and durable state
+- keep each recovery scenario in its own file so the resumable validation
+  campaign can retry it independently
+
+Tests:
+
+- `workflow-reliability-question.test.js`
+  - `resumes a durable question after the worker is replaced`
+  - replaces the worker while the workflow is waiting for a question
+  - answers through the original management client and verifies completion
+- `workflow-reliability-observation.test.js`
+  - `resumes observation polling after the worker is replaced`
+  - replaces the worker after the first pending observation
+  - verifies the durable timer resumes without repeating the accepted action
+- `workflow-reliability-action.test.js`
+  - `keeps action side effects idempotent when a failed activity is retried`
+  - kills a real child worker after applying the action effect but before
+    returning the activity result
+  - starts a replacement worker and verifies the same execution key is retried
+  - verifies the provider observes the existing effect instead of applying it
+    twice
+
+Campaign classification:
+
+- all four files use native Vitest discovery under `test/local`
+- none of the files belongs in `baselineOnly`; the provider campaign should exercise
+  their CMS and worker recovery behavior on every configured storage profile
+- the focused `test:local:workflow` script remains a convenience selector, not
+  a second source of test inventory
+
 ## Sub-Agent Focused Files
 
 The sub-agent suite is split into dedicated files under `packages/sdk/test/local/sub-agents/`.

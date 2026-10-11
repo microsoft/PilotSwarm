@@ -2144,7 +2144,10 @@ export class SessionManager {
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
+        const subAgentTools = ManagedSession.subAgentToolDefs({
+            ...(workspaceTools ? { workspaceTools: true } : {}),
+            workflowTools: !config.workflowToolsBlocked,
+        })
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = createFactTools({
             factStore: this.factStore,
@@ -2953,7 +2956,12 @@ export class SessionManager {
                             const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await this._resumeCopilotSession(client, sessionId, {
-                                tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
+                                tools: [
+                                    ...ManagedSession.systemToolDefs(),
+                                    ...ManagedSession.subAgentToolDefs({
+                                        workflowTools: !config.workflowToolsBlocked,
+                                    }),
+                                ],
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);

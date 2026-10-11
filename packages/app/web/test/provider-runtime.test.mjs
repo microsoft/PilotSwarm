@@ -46,3 +46,65 @@ test("portal runtime routes personal provider credential updates with the authen
     // Kept as a cheap tripwire on the STUB's own shape only.
     assert.equal(JSON.stringify(result).includes("replacement-token"), false);
 });
+
+test("portal workflow starts place the session for the caller outside admission", async () => {
+    const starts = [];
+    const placements = [];
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.transport = {
+        async startWorkflow(request, context) {
+            starts.push({ request, context });
+            return {
+                sessionId: "workflow-1",
+                definitionId: "definition-1",
+                attempt: 1,
+                primaryKeyValues: ["entity-1"],
+                created: true,
+                deduplicated: false,
+                rerun: false,
+            };
+        },
+        mgmt: {
+            async listSessionGroups() {
+                return [{ groupId: "group-1" }];
+            },
+            async placeSessionsInGroup(viewer, sessionIds, groupId) {
+                placements.push({ viewer, sessionIds, groupId });
+            },
+        },
+    };
+
+    const authContext = {
+        principal: { provider: "entra", subject: "user-1" },
+        authorization: { role: "user" },
+    };
+    const result = await runtime.call("startWorkflow", {
+        definitionId: "definition-1",
+        inputs: { entityId: "entity-1" },
+        idempotencyKey: "request-1",
+        groupId: "group-1",
+        visibility: "private",
+    }, authContext);
+
+    assert.equal(starts[0].request.groupId, undefined);
+    assert.deepEqual(starts[0].context, {
+        owner: {
+            provider: "entra",
+            subject: "user-1",
+            email: null,
+            displayName: null,
+        },
+        isAdmin: false,
+    });
+    assert.deepEqual(placements, [{
+        viewer: {
+            provider: "entra",
+            subject: "user-1",
+            isAdmin: true,
+        },
+        sessionIds: ["workflow-1"],
+        groupId: "group-1",
+    }]);
+    assert.equal(result.sessionId, "workflow-1");
+});

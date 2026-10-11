@@ -168,6 +168,19 @@ const PROVIDER_ERROR_STATUS = {
     // routing first" — a refusal whose message is the whole value. Without
     // a status it falls to the 500 branch, which scrubs the message.
     PROVIDER_IN_USE: 409,
+    WORKFLOW_DEFINITION_NOT_FOUND: 404,
+    WORKFLOW_DEFINITION_SOURCE_INVALID: 400,
+    WORKFLOW_INPUT_INVALID: 400,
+    WORKFLOW_INPUT_REQUIRED: 400,
+    WORKFLOW_INPUT_SCHEMA_INVALID: 400,
+    WORKFLOW_PRIMARY_KEY_INVALID: 400,
+    WORKFLOW_IDEMPOTENCY_KEY_INVALID: 400,
+    WORKFLOW_ADMISSION_INVALID: 400,
+    WORKFLOW_RERUN_REASON_REQUIRED: 400,
+    WORKFLOW_RERUN_REQUIRED: 409,
+    WORKFLOW_IDEMPOTENCY_CONFLICT: 409,
+    WORKFLOW_DUPLICATE_CONFLICT: 409,
+    WORKFLOW_RERUN_FORBIDDEN: 403,
 };
 
 /** `?names=a,b` off the wire, or an array from the legacy /api/rpc caller. */
@@ -177,8 +190,22 @@ function providerNames(raw) {
 }
 
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
-        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
+    constructor({
+        store,
+        mode,
+        useManagedIdentity,
+        cmsFactsDatabaseUrl,
+        aadDbUser,
+        workflowPackageResolver,
+    } = {}) {
+        this.transport = new NodeSdkTransport({
+            store,
+            mode,
+            useManagedIdentity,
+            cmsFactsDatabaseUrl,
+            aadDbUser,
+            workflowPackageResolver,
+        });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
@@ -712,6 +739,46 @@ export class PortalRuntime {
                 });
             case "getSession":
                 return this.transport.mgmt.getSession(safeParams.sessionId, placementPrincipal(authContext));
+            case "startWorkflow": {
+                await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const started = await this.transport.startWorkflow({
+                    definitionId: safeParams.definitionId,
+                    inputs: safeParams.inputs,
+                    idempotencyKey: safeParams.idempotencyKey,
+                    visibility: normalizeVisibility(
+                        safeParams.visibility,
+                        this.authz.defaultVisibility,
+                    ),
+                    ...(safeParams.rerun ? { rerun: safeParams.rerun } : {}),
+                }, {
+                    owner,
+                    isAdmin: resourceAdmin,
+                });
+                await this._ensureCreatedPlacement(
+                    started,
+                    safeParams.groupId,
+                    authContext,
+                    isAdmin,
+                );
+                return started;
+            }
+            case "registerWorkflowDefinition":
+                return this.transport.mgmt.registerWorkflowDefinition({
+                    source: safeParams.source,
+                });
+            case "getWorkflowDefinition":
+                return this.transport.mgmt.getWorkflowDefinition(safeParams.definitionId);
+            case "getWorkflow":
+                return this.transport.mgmt.getWorkflow(safeParams.sessionId);
+            case "listWorkflowExecutions":
+                return this.transport.mgmt.listWorkflowExecutions(safeParams.sessionId);
+            case "answerWorkflowQuestion":
+                return this.transport.mgmt.answerWorkflowQuestion(
+                    safeParams.sessionId,
+                    Number(safeParams.executionSequence),
+                    safeParams.outcome,
+                    safeParams.output,
+                );
             case "getOrchestrationStats":
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":

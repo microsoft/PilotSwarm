@@ -112,12 +112,38 @@ import type {
     PlacementViewer,
     SessionPlacementResult,
     ChildOutcomeRow,
+    WorkflowDefinitionRecord,
+    WorkflowExecutionRow,
+    WorkflowProjectionRow,
     SessionVisibility,
     SessionShareInfo,
     SessionAccessSnapshot,
     AuthzAuditEntry,
     KnownUserInfo,
 } from "./cms.js";
+import {
+    compileWorkflowPackageSnapshotYaml,
+    materializeWorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+import {
+    workflowCompiledManifestSha256,
+} from "./workflow-orchestration/compiler.js";
+import {
+    createWorkflowGitPackageResolver,
+    type WorkflowPackageResolver,
+    type WorkflowGitSource,
+} from "./workflow-orchestration/git-source.js";
+import {
+    workflowPackageArtifactFilename,
+    workflowPackagesArtifactSessionId,
+} from "./workflow-orchestration/package-artifact.js";
+import {
+    workflowQuestionQueueName,
+} from "./workflow-orchestration/registered-contracts.js";
+import {
+    loadImportPolicy,
+    type ImportPolicy,
+} from "./agent-package-import-policy.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
     StoredFactResult, ReadFactsQuery, DeleteFactInput, DeletedFactResult, DeletedFactsResult,
@@ -159,6 +185,7 @@ import {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -356,6 +383,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
     const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
     return {
         sessionId: row.sessionId,
+        sessionKind: row.sessionKind ?? "agent",
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
@@ -391,6 +419,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
 /** Merged view of a session for management UIs. */
 export interface PilotSwarmSessionView {
     sessionId: string;
+    sessionKind: import("./types.js").SessionKind;
     title?: string;
     agentId?: string;
     splash?: string;
@@ -732,6 +761,14 @@ export interface PilotSwarmManagementClientOptions {
     aadDbUser?: string;
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
+    /** Allowlist policy for server-side Git-backed workflow registration. */
+    workflowGitImportPolicy?: ImportPolicy;
+    /** Deployment-owned resolver for workflow package sources. */
+    workflowPackageResolver?: WorkflowPackageResolver;
+}
+
+export interface WorkflowDefinitionRegistrationRequest {
+    source: WorkflowGitSource;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1314,6 +1351,7 @@ export class PilotSwarmManagementClient {
 
         return {
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
@@ -1355,6 +1393,138 @@ export class PilotSwarmManagementClient {
             contextUsage: normalizedContextUsage,
             statusVersion,
         };
+    }
+
+    // ─── Workflow Read Model ────────────────────────────────
+
+    /**
+     * Compile and durably register one immutable workflow definition.
+     *
+     * Transition functions remain trusted package code. Registration snapshots
+     * the package, resolves its declared module exports, and persists only the
+     * resulting data-oriented identities and manifest.
+     */
+    async registerWorkflowDefinition(
+        requestOrYaml: WorkflowDefinitionRegistrationRequest | string,
+        options?: { packageRoot: string },
+    ): Promise<WorkflowDefinitionRecord> {
+        this._ensureStarted();
+        if (typeof requestOrYaml === "string") {
+            if (!options?.packageRoot) {
+                throw Object.assign(
+                    new Error("Local workflow registration requires packageRoot."),
+                    { code: "WORKFLOW_PACKAGE_ROOT_REQUIRED" },
+                );
+            }
+            return this._registerResolvedWorkflowPackage(
+                requestOrYaml,
+                options.packageRoot,
+                { kind: "local-package" },
+            );
+        }
+        const resolver = this.config.workflowPackageResolver
+            ?? createWorkflowGitPackageResolver(
+                this.config.workflowGitImportPolicy ?? loadImportPolicy(),
+            );
+        const resolved = await resolver.resolve(requestOrYaml.source);
+        try {
+            return await this._registerResolvedWorkflowPackage(
+                resolved.workflowYaml,
+                resolved.packageRoot,
+                { ...resolved.source },
+            );
+        } finally {
+            await resolved.cleanup();
+        }
+    }
+
+    private async _registerResolvedWorkflowPackage(
+        yaml: string,
+        packageRoot: string,
+        packageSource: Record<string, unknown>,
+    ): Promise<WorkflowDefinitionRecord> {
+        const snapshot = await materializeWorkflowPackageSnapshot(packageRoot);
+        const compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        const packageSha256 = compiled.manifest.packageSha256;
+        if (!packageSha256) {
+            throw Object.assign(
+                new Error("Workflow package compilation did not produce a package identity."),
+                { code: "WORKFLOW_PACKAGE_IDENTITY_MISSING" },
+            );
+        }
+        const packageArtifactFilename = workflowPackageArtifactFilename(packageSha256);
+        await this._requireWorkflowPackageArtifacts().uploadArtifact(
+            workflowPackagesArtifactSessionId(),
+            packageArtifactFilename,
+            snapshot.artifactTarGz,
+            "application/gzip",
+            { pinned: true },
+        );
+        const sourceSha256 = createHash("sha256").update(yaml, "utf8").digest("hex");
+        const compiledSha256 = workflowCompiledManifestSha256(compiled.manifest);
+        return this._catalog!.registerWorkflowDefinition({
+            definitionId: randomUUID(),
+            sourceYaml: yaml,
+            sourceSha256,
+            packageSha256,
+            packageArtifactFilename,
+            packageSource,
+            compiledSha256,
+            manifest: compiled.manifest,
+        });
+    }
+
+    /** Read one immutable registered definition and its compiled state rows. */
+    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowDefinition(definitionId);
+    }
+
+    /** Get the workflow's current externally visible state. */
+    async getWorkflow(sessionId: string): Promise<WorkflowProjectionRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowProjection(sessionId);
+    }
+
+    /** Read authoritative workflow state executions in admission order. */
+    async listWorkflowExecutions(sessionId: string): Promise<WorkflowExecutionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowExecutions(sessionId);
+    }
+
+    /** Answer the workflow's currently pending durable question. */
+    async answerWorkflowQuestion(
+        sessionId: string,
+        executionSequence: number,
+        outcome: string,
+        output: unknown,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!Number.isInteger(executionSequence) || executionSequence < 1) {
+            throw new Error("executionSequence must be a positive integer.");
+        }
+        if (typeof outcome !== "string" || !outcome.trim()) {
+            throw new Error("outcome is required.");
+        }
+        const projection = await this._catalog!.getWorkflowProjection(sessionId);
+        if (
+            !projection
+            || projection.status !== "running"
+            || projection.waitingOn !== "question"
+            || projection.currentExecutionSequence !== executionSequence
+        ) {
+            throw Object.assign(
+                new Error(
+                    `Workflow '${sessionId}' is not waiting on question execution ${executionSequence}.`,
+                ),
+                { code: "WORKFLOW_QUESTION_NOT_PENDING" },
+            );
+        }
+        await this._duroxideClient.enqueueEvent(
+            `session-${sessionId}`,
+            workflowQuestionQueueName(executionSequence),
+            JSON.stringify({ outcome: outcome.trim(), output }),
+        );
     }
 
     // ─── Child Contracts / Outcomes ────────────────────────
@@ -2383,6 +2553,12 @@ export class PilotSwarmManagementClient {
         if ((session as any).serviceKind) {
             throw Object.assign(
                 new Error("Service sessions are runtime machinery and are excluded from regeneration"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions are controller-backed and cannot be regenerated as conversations"),
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
@@ -3817,6 +3993,12 @@ export class PilotSwarmManagementClient {
                 `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is a workflow session and does not accept chat messages.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -3907,6 +4089,13 @@ export class PilotSwarmManagementClient {
      */
     async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
+        const session = await this.getSession(sessionId);
+        if (session?.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; controller questions require a workflow decision API.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" },
+            );
+        }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined
@@ -4879,6 +5068,16 @@ export class PilotSwarmManagementClient {
     private _requireAgentPackageArtifacts(): ArtifactStore {
         if (!this._artifactStore) {
             throw new Error("agent-package artifact operations require an artifact store in direct mode");
+        }
+        return this._artifactStore;
+    }
+
+    private _requireWorkflowPackageArtifacts(): ArtifactStore {
+        if (!this._artifactStore) {
+            throw Object.assign(
+                new Error("workflow definition registration requires an artifact store"),
+                { code: "WORKFLOW_PACKAGE_ARTIFACT_STORE_REQUIRED" },
+            );
         }
         return this._artifactStore;
     }

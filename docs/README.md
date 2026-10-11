@@ -43,6 +43,7 @@ Building **on** PilotSwarm, deploying it, and contributing **to** it.
 
 **Building apps**
 - [SDK apps](./developer/building/sdk-apps.md) (+ [agents](./developer/building/sdk-agents.md), [facts & graph](./developer/building/facts-and-graph.md))
+- [Workflow sessions](./developer/building/workflow-sessions.md) — experimental durable workflow children
 - [CLI/TUI apps](./developer/building/cli-apps.md) (+ [agents](./developer/building/cli-agents.md))
 - [Plugin architecture & layering](./developer/building/plugins.md) · [Builder agent templates](./developer/building/builder-agents.md)
 - [Examples](./developer/building/examples.md) — runnable samples incl. the DevOps Command Center

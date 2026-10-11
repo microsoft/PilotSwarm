@@ -47,6 +47,7 @@ function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, voi
         ...(t.choices ? { choices: t.choices } : {}),
         ...(t.allowFreeform !== undefined ? { allowFreeform: t.allowFreeform } : {}),
         ...(t.agentIds ? { agentIds: t.agentIds } : {}),
+        ...(t.workflowIds ? { workflowIds: t.workflowIds } : {}),
         // 1.0.80: a gate wait keeps its gate across continue-as-new.
         ...(t.gate === "workspace" ? { gate: "workspace" as const } : {}),
         ...(t.gate === "budget" ? { gate: "budget" as const, budget: true } : {}),

@@ -2051,6 +2051,20 @@ export function selectActiveChat(state) {
             createdAt: session.updatedAt || Date.now(),
         }];
     }
+    if (session?.sessionKind === "workflow") {
+        return [{
+            id: `workflow-session:${sessionId}`,
+            role: "system",
+            noChrome: true,
+            text: [
+                `# ${session.title || "Workflow session"}`,
+                "",
+                "This session is driven by a workflow controller, not an LLM conversation.",
+                "Workflow graph and controller controls are not implemented yet.",
+            ].join("\n"),
+            createdAt: session.updatedAt || session.createdAt || Date.now(),
+        }];
+    }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
     if (!chat.length && history?.loadState === "loading") {

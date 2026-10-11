@@ -63,7 +63,7 @@ test("every operation in the table is routable and dispatches by name", async ()
 });
 
 test("path, query, and body params are collected with declared types", async () => {
-    const { baseUrl, calls, close } = await createHarness();
+    const { baseUrl, calls, close } = await createHarness({ role: "admin" });
     try {
         const cursor = { updatedAt: 123, sessionId: "abc" };
         await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&systemFilter=exclude&viewerOnly=true&cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
@@ -87,6 +87,48 @@ test("path, query, and body params are collected with declared types", async () 
         await fetch(`${baseUrl}/api/v1/management/sessions/s2/events?afterSeq=5`);
         const after = calls.find((call) => call.name === "getSessionEvents");
         assert.deepEqual(after.params, { sessionId: "s2", afterSeq: 5 }, "omitted eventTypes stays absent");
+
+        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1`);
+        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/executions`);
+        assert.deepEqual(calls.find((call) => call.name === "getWorkflow")?.params, { sessionId: "workflow-1" });
+        assert.deepEqual(calls.find((call) => call.name === "listWorkflowExecutions")?.params, { sessionId: "workflow-1" });
+
+        await fetch(`${baseUrl}/api/v1/workflows`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                definitionId: "definition-1",
+                inputs: { entityId: "entity-1" },
+                idempotencyKey: "request-1",
+                groupId: "group-1",
+                visibility: "private",
+                ignored: "x",
+            }),
+        });
+        assert.deepEqual(calls.find((call) => call.name === "startWorkflow")?.params, {
+            definitionId: "definition-1",
+            inputs: { entityId: "entity-1" },
+            idempotencyKey: "request-1",
+            groupId: "group-1",
+            visibility: "private",
+        });
+
+        const source = {
+            kind: "git",
+            repositoryUrl: "https://github.com/microsoft/PilotSwarm",
+            gitRef: "refs/heads/main",
+            workflowPath: "workflows/example.yaml",
+        };
+        await fetch(`${baseUrl}/api/v1/management/workflow-definitions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ source, ignored: "x" }),
+        });
+        await fetch(`${baseUrl}/api/v1/management/workflow-definitions/definition-1`);
+        assert.deepEqual(calls.find((call) => call.name === "registerWorkflowDefinition")?.params, { source });
+        assert.deepEqual(calls.find((call) => call.name === "getWorkflowDefinition")?.params, {
+            definitionId: "definition-1",
+        });
     } finally {
         await close();
     }
@@ -108,6 +150,39 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
                 if (params?.model === "missing") {
                     throw Object.assign(new Error('No usable provider serves model "missing".'), {
                         code: "MODEL_UNRESOLVED",
+                    });
+
+                    test("workflow Git registration errors preserve safe client status codes", async () => {
+                        const { baseUrl, close } = await createHarness({
+                            role: "admin",
+                            callImpl: (name) => {
+                                if (name === "registerWorkflowDefinition") {
+                                    throw Object.assign(new Error("Workflow Git repository is not allowed."), {
+                                        code: "WORKFLOW_GIT_REPOSITORY_REFUSED",
+                                    });
+                                }
+                                return null;
+                            },
+                        });
+                        try {
+                            const response = await fetch(`${baseUrl}/api/v1/management/workflow-definitions`, {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({
+                                    source: {
+                                        kind: "git",
+                                        repositoryUrl: "https://example.test/repository",
+                                        gitRef: "main",
+                                        workflowPath: "workflow.yaml",
+                                    },
+                                }),
+                            });
+                            assert.equal(response.status, 403);
+                            const payload = await response.json();
+                            assert.equal(payload.error.code, "WORKFLOW_GIT_REPOSITORY_REFUSED");
+                        } finally {
+                            await close();
+                        }
                     });
                 }
                 throw Object.assign(new Error(

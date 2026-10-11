@@ -8,6 +8,7 @@ import type {
     SerializableSessionConfig,
     SessionContextUsage,
     SubAgentEntry,
+    SubWorkflowEntry,
     TurnAction,
 } from "../types.js";
 import { cloneContextUsage } from "./utils.js";
@@ -16,7 +17,7 @@ export interface ActiveTimer {
     deadlineMs: number;
     originalDurationMs: number;
     reason: string;
-    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "input-grace" | "workspace_retry";
+    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "workflow-poll" | "input-grace" | "workspace_retry";
     shouldRehydrate?: boolean;
     waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     content?: string;
@@ -24,6 +25,7 @@ export interface ActiveTimer {
     choices?: string[];
     allowFreeform?: boolean;
     agentIds?: string[];
+    workflowIds?: string[];
     /** Set by the provider-budget gate. See TurnResult's wait variant. */
     budget?: boolean;
     /** 1.0.80: the gate that created this wait. Read with timerGate(), which falls back to `budget`. */
@@ -108,6 +110,7 @@ export interface DurableSessionState {
 
     pendingToolActions: TurnAction[];
     subAgents: SubAgentEntry[];
+    subWorkflows: SubWorkflowEntry[];
     /** Child-side: first completion report already sent to the parent. */
     reportedFirstCompletionToParent: boolean;
 
@@ -121,6 +124,7 @@ export interface DurableSessionState {
     activeTimer: ActiveTimer | null;
     pendingInputQuestion: PendingInputQuestion | null;
     waitingForAgentIds: string[] | null;
+    waitingForWorkflowIds: string[] | null;
     interruptedWaitTimer: InterruptedWaitTimer | null;
     /**
      * Prompts the budget gate refused before their turn could run.
@@ -457,6 +461,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         pendingToolActions: input.pendingToolActions ? [...input.pendingToolActions] : [],
         subAgents: input.subAgents ? [...input.subAgents] : [],
+        subWorkflows: input.subWorkflows ? [...input.subWorkflows] : [],
         reportedFirstCompletionToParent: Boolean(input.reportedFirstCompletionToParent),
 
         taskContext: input.taskContext,
@@ -469,6 +474,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         activeTimer: null,
         pendingInputQuestion: input.pendingInputQuestion ?? null,
         waitingForAgentIds: input.waitingForAgentIds ?? null,
+        waitingForWorkflowIds: input.waitingForWorkflowIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,
         interruptedCronTimer: input.interruptedCronTimer ?? null,

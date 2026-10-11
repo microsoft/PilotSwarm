@@ -31,6 +31,102 @@
  */
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
+export { WorkflowSession } from "./workflow-session.js";
+export type { WorkflowResultWaitOptions } from "./workflow-session.js";
+export { registerInMemoryWorkflowGraph } from "./workflow-orchestration/graph.js";
+export {
+    WORKFLOW_COMPILER_VERSION,
+    WorkflowTransitionRegistry,
+    compileAndRegisterWorkflowYaml,
+    compileWorkflowYaml,
+    executeWorkflowTransitionRegistration,
+    resolveWorkflowTemplate,
+    workflowCompiledManifestSha256,
+} from "./workflow-orchestration/compiler.js";
+export {
+    compileAndRegisterWorkflowPackageYaml,
+    compileWorkflowPackageSnapshotYaml,
+    compileWorkflowPackageYaml,
+    loadWorkflowTransitionRegistry,
+    loadWorkflowTransitionRegistryFromSnapshot,
+    loadWorkflowTransitionRegistrationFromSnapshot,
+    materializeWorkflowPackageArtifactSnapshot,
+    materializeWorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+export {
+    CmsWorkflowDefinitionProvider,
+} from "./workflow-orchestration/definition-provider.js";
+export {
+    WorkflowStateProviderRegistry,
+} from "./workflow-orchestration/state-providers.js";
+export type {
+    WorkflowActionHandler,
+    WorkflowActionRequest,
+    WorkflowObservationResult,
+    WorkflowObservedConditionHandler,
+    WorkflowObservedConditionRequest,
+    WorkflowProviderExecutionContext,
+    WorkflowProviderResult,
+} from "./workflow-orchestration/state-providers.js";
+export {
+    createWorkflowGitPackageResolver,
+    resolveWorkflowGitPackage,
+} from "./workflow-orchestration/git-source.js";
+export {
+    loadImportPolicy,
+} from "./agent-package-import-policy.js";
+export {
+    workflowPackageArtifactFilename,
+    workflowPackagesArtifactSessionId,
+} from "./workflow-orchestration/package-artifact.js";
+export type {
+    InMemoryWorkflowAgentState,
+    InMemoryWorkflowExecutableState,
+    InMemoryWorkflowGraph,
+    InMemoryWorkflowState,
+    InMemoryWorkflowTerminalState,
+    WorkflowExecutionRecord,
+    WorkflowStateExecutionContext,
+    WorkflowStateExecutionResult,
+    WorkflowTerminalContext,
+    WorkflowTransitionContext,
+} from "./workflow-orchestration/graph.js";
+export type {
+    CompiledWorkflowAgentStateManifest,
+    CompiledWorkflowActionStateManifest,
+    CompiledWorkflowIdentityManifest,
+    CompiledWorkflowManifest,
+    CompiledWorkflowObservedConditionStateManifest,
+    CompiledWorkflowQuestionStateManifest,
+    CompiledWorkflowStateManifest,
+    CompiledWorkflowTerminalStateManifest,
+    CompiledWorkflowTransitionHandlerManifest,
+    CompiledWorkflowYaml,
+    WorkflowAdvanceDirective,
+    WorkflowPackageMetadata,
+    WorkflowResumeProducerDirective,
+    WorkflowTransitionDirective,
+    WorkflowTransitionHandler,
+    WorkflowTransitionHandlerContext,
+    WorkflowTransitionModuleIdentity,
+    WorkflowTransitionReference,
+    WorkflowTransitionRegistration,
+} from "./workflow-orchestration/compiler.js";
+export type {
+    WorkflowPackageMaterialization,
+    WorkflowPackageSnapshot,
+} from "./workflow-orchestration/package-loader.js";
+export type {
+    ExecuteWorkflowTransitionInput,
+    ResolvedWorkflowExecutionPlan,
+    WorkflowDefinitionProvider,
+} from "./workflow-orchestration/definition-provider.js";
+export type {
+    ResolvedWorkflowGitPackage,
+    ResolvedWorkflowGitSource,
+    WorkflowGitSource,
+    WorkflowPackageResolver,
+} from "./workflow-orchestration/git-source.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
@@ -40,6 +136,7 @@ export { FeatureStore } from "./feature-store.js";
 export { FEATURE_OPERATION_SPECS, featureToolParameters } from "./feature-tools.js";
 export type { FeatureViewer, FeatureView, FeatureMutation, FeatureMutationResult } from "./feature-store.js";
 export { PilotSwarmManagementClient, createManagementClient } from "./management-client.js";
+export type { WorkflowDefinitionRegistrationRequest } from "./management-client.js";
 export type { PilotSwarmWebOptions } from "./web/api-connection.js";
 export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
 export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
@@ -83,7 +180,7 @@ export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
-export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkflowDefinitionRecord, WorkflowDefinitionRow, WorkflowExecutionRow, WorkflowProjectionRow } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
@@ -148,7 +245,13 @@ export type {
     PilotSwarmWorkerOptions,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
+    SessionKind,
     PilotSwarmSessionInfo,
+    WorkflowDefinitionSource,
+    WorkflowSessionConfig,
+    WorkflowSessionResult,
+    WorkflowStartRequest,
+    WorkflowStartResult,
     SessionOwnerInfo,
     SessionContextUsage,
     SessionCompactionSnapshot,
@@ -162,6 +265,7 @@ export type {
     CommandResponse,
     OrchestrationInput,
     SubAgentEntry,
+    SubWorkflowEntry,
     SessionPolicy,
     SendAttachmentInput,
     PromptAttachmentRef,

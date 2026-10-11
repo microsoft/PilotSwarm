@@ -15,7 +15,9 @@ import {
     handleSubAgentAction,
     isSubAgentTerminalStatus,
     maybeResolveAgentWaitCompletion,
+    readWorkflowResult,
     refreshTrackedSubAgents,
+    workflowResultsFollowup,
 } from "./agents.js";
 import {
     applyAgentWorkspaceExtrasChange,
@@ -28,6 +30,7 @@ import {
     flushPendingChildDigestIntoPrompt,
     maybeSummarize,
     publishStatus,
+    queueFollowup,
     releaseAffinity,
     versionedContinueAsNew,
     wrapWithResumeContext,
@@ -1604,6 +1607,9 @@ export function* handleTurnResult(
             yield* applyAgentWorkspaceExtrasChange(runtime, result as Extract<TurnResult, { type: "set_workspace_extra" }>);
             return;
 
+        case "spawn_workflow":
+        case "check_workflows":
+        case "wait_for_workflows":
         case "spawn_agent":
         case "message_agent":
         case "check_agents":
@@ -1808,6 +1814,42 @@ export function* processTimer(
             // clock reclaims.
             ctx.traceInfo("[session] hold window expired, releasing worker affinity");
             yield* releaseAffinity(runtime, "idle");
+            return;
+        }
+        case "workflow-poll": {
+            const targetIds = state.waitingForWorkflowIds ?? [];
+            const completed = [];
+            for (const targetId of targetIds) {
+                const workflow = state.subWorkflows.find(entry => entry.sessionId === targetId);
+                if (!workflow) continue;
+                try {
+                    const terminal = yield* readWorkflowResult(runtime, workflow);
+                    if (terminal) completed.push(terminal);
+                } catch (error: any) {
+                    ctx.traceInfo(`[orch] workflow result poll failed child=${targetId}: ${error?.message || String(error)}`);
+                }
+            }
+            if (targetIds.length > 0 && completed.length === targetIds.length) {
+                for (const workflow of state.subWorkflows) {
+                    if (targetIds.includes(workflow.sessionId)) workflow.resultDelivered = true;
+                }
+                state.waitingForWorkflowIds = null;
+                state.activeTimer = null;
+                queueFollowup(runtime, workflowResultsFollowup(completed));
+                return;
+            }
+            const now: number = yield ctx.utcNow();
+            state.activeTimer = {
+                deadlineMs: now + 30_000,
+                originalDurationMs: 30_000,
+                reason: `waiting for ${targetIds.length} workflow(s)`,
+                type: "workflow-poll",
+                workflowIds: targetIds,
+            };
+            publishStatus(runtime, "waiting", {
+                waitReason: `waiting for ${targetIds.length} workflow(s)`,
+                waitStartedAt: now,
+            });
             return;
         }
         case "agent-poll": {
