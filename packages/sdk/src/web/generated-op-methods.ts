@@ -98,6 +98,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getWorkerCount",
     "getWorkflow",
     "getWorkflowDefinition",
+    "getWorkflowOverview",
     "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
@@ -991,6 +992,14 @@ export interface ManagementOps {
      */
     getWorkflowDefinition(params: {
         definitionId: string;
+    }): Promise<any>;
+
+    /**
+     * Sanitized workflow topology and execution status for an authorized session reader.
+     * @remarks `GET /management/workflows/:sessionId/overview` — access: `session:read`
+     */
+    getWorkflowOverview(params: {
+        sessionId: string;
     }): Promise<any>;
 
     /**
@@ -1942,6 +1951,7 @@ export function createManagementOps(
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         getWorkflow: (params: Record<string, unknown> = {}) => callOp("getWorkflow", params),
         getWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getWorkflowDefinition", params),
+        getWorkflowOverview: (params: Record<string, unknown> = {}) => callOp("getWorkflowOverview", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),

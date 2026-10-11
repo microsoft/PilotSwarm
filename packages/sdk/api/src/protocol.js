@@ -78,6 +78,7 @@ export const OPERATIONS = [
     { name: "getWorkflowDefinition", access: "fleet:admin", method: "GET", path: "/management/workflow-definitions/:definitionId", params: { definitionId: path("definitionId") }, summary: "Read one immutable registered workflow definition." },
     { name: "getWorkflow", access: "session:read", method: "GET", path: "/management/workflows/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get the workflow's current state, waiting reason, and terminal result when complete." },
     { name: "listWorkflowExecutions", access: "session:read", method: "GET", path: "/management/workflows/:sessionId/executions", params: { sessionId: path("sessionId") }, summary: "Authoritative workflow state executions in admission order." },
+    { name: "getWorkflowOverview", access: "session:read", method: "GET", path: "/management/workflows/:sessionId/overview", params: { sessionId: path("sessionId") }, summary: "Sanitized workflow topology and execution status for an authorized session reader." },
     { name: "answerWorkflowQuestion", access: "session:write", method: "POST", path: "/management/workflows/:sessionId/questions/:executionSequence/answer", params: { sessionId: path("sessionId"), executionSequence: path("executionSequence"), outcome: body(), output: body() }, summary: "Answer the workflow's currently pending durable question." },
 
     // ── Session sharing (security model) ────────────────────────────────

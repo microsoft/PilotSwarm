@@ -2052,16 +2052,101 @@ export function selectActiveChat(state) {
         }];
     }
     if (session?.sessionKind === "workflow") {
+        const overviewState = state.workflowOverview?.bySessionId?.[sessionId] || null;
+        const overview = overviewState?.data || null;
+        const cell = (value) => String(value ?? "")
+            .replace(/\|/g, "\\|")
+            .replace(/[\r\n]+/g, " ")
+            .trim() || "—";
+        const lines = [
+            `# ${session.title || "Workflow session"}`,
+            "",
+            "This session is driven by a workflow controller, not an LLM conversation.",
+        ];
+        if (overviewState?.loadState === "failed") {
+            lines.push("", "Workflow topology is unavailable.");
+        } else if (overviewState?.loadState === "loaded" && !overview) {
+            lines.push("", "Workflow topology was not found.");
+        } else if (!overview) {
+            lines.push("", "Loading workflow topology…");
+        } else {
+            const graph = overview.graph || {};
+            const projection = overview.projection || null;
+            const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+            const edges = Array.isArray(graph.edges) ? graph.edges : [];
+            const executions = Array.isArray(overview.executions) ? overview.executions : [];
+            const targetsByState = new Map(nodes.map(node => [node.id, []]));
+            for (const edge of edges) {
+                if (!targetsByState.has(edge?.from) || typeof edge?.to !== "string") continue;
+                targetsByState.get(edge.from).push(edge.to);
+            }
+            const latestByState = new Map();
+            for (const execution of executions) latestByState.set(execution.stateId, execution);
+            const mermaidNodeIds = new Map(nodes.map((node, index) => [node.id, `n${index}`]));
+            const mermaidLabel = (value) => String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/[\r\n]+/g, " ");
+            const diagram = [
+                "```mermaid",
+                "flowchart TD",
+                ...nodes.map((node) => {
+                    const markers = [
+                        node.id === graph.initialStateId ? "initial" : "",
+                        node.id === projection?.currentStateId ? "current" : "",
+                    ].filter(Boolean);
+                    const suffix = markers.length > 0 ? ` (${markers.join(", ")})` : "";
+                    return `  ${mermaidNodeIds.get(node.id)}["${mermaidLabel(`${node.id} · ${node.type}${suffix}`)}"]`;
+                }),
+                ...edges
+                    .filter(edge => mermaidNodeIds.has(edge?.from) && mermaidNodeIds.has(edge?.to))
+                    .map(edge => `  ${mermaidNodeIds.get(edge.from)} --> ${mermaidNodeIds.get(edge.to)}`),
+                "```",
+            ];
+            lines.push(
+                "",
+                `**Graph:** ${cell(graph.graphId)}`,
+                `**Status:** ${cell(projection?.status || "pending")}`,
+                `**Current state:** ${cell(projection?.currentStateId)}`,
+                "",
+                ...diagram,
+                "",
+                "## Topology",
+                "",
+                "| State | Type | Allowed targets | Activity |",
+                "|---|---|---|---|",
+            );
+            for (const node of nodes) {
+                const execution = latestByState.get(node.id);
+                const activity = projection?.currentStateId === node.id
+                    ? `current${projection.waitingOn ? ` (${projection.waitingOn})` : ""}`
+                    : execution?.status || "";
+                lines.push(
+                    `| ${cell(node.id)}${node.id === graph.initialStateId ? " (initial)" : ""} | `
+                    + `${cell(node.type)} | ${cell(targetsByState.get(node.id)?.join(", "))} | ${cell(activity)} |`,
+                );
+            }
+            if (executions.length > 0) {
+                lines.push(
+                    "",
+                    "## Execution history",
+                    "",
+                    "| Sequence | State | Status | Waiting on |",
+                    "|---:|---|---|---|",
+                    ...executions.map(execution => (
+                        `| ${cell(execution.executionSequence)} | ${cell(execution.stateId)} | `
+                        + `${cell(execution.status)} | ${cell(execution.waitingOn)} |`
+                    )),
+                );
+            }
+        }
         return [{
             id: `workflow-session:${sessionId}`,
             role: "system",
             noChrome: true,
-            text: [
-                `# ${session.title || "Workflow session"}`,
-                "",
-                "This session is driven by a workflow controller, not an LLM conversation.",
-                "Workflow graph and controller controls are not implemented yet.",
-            ].join("\n"),
+            text: lines.join("\n"),
             createdAt: session.updatedAt || session.createdAt || Date.now(),
         }];
     }

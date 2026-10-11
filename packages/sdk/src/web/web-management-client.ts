@@ -113,6 +113,10 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("listWorkflowExecutions", { sessionId });
     }
 
+    async getWorkflowOverview(sessionId: string): Promise<any> {
+        return this._api.call("getWorkflowOverview", { sessionId });
+    }
+
     async answerWorkflowQuestion(
         sessionId: string,
         executionSequence: number,

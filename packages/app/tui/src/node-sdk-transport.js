@@ -1113,6 +1113,10 @@ export class NodeSdkTransport {
         return this.mgmt.getOrchestrationStats(sessionId);
     }
 
+    async getWorkflowOverview(sessionId) {
+        return this.mgmt.getWorkflowOverview(sessionId);
+    }
+
     async getSessionMetricSummary(sessionId) {
         return this.mgmt.getSessionMetricSummary(sessionId);
     }

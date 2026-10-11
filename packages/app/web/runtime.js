@@ -772,6 +772,8 @@ export class PortalRuntime {
                 return this.transport.mgmt.getWorkflow(safeParams.sessionId);
             case "listWorkflowExecutions":
                 return this.transport.mgmt.listWorkflowExecutions(safeParams.sessionId);
+            case "getWorkflowOverview":
+                return this.transport.mgmt.getWorkflowOverview(safeParams.sessionId);
             case "answerWorkflowQuestion":
                 return this.transport.mgmt.answerWorkflowQuestion(
                     safeParams.sessionId,

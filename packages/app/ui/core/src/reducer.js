@@ -1613,7 +1613,7 @@ function baseReducer(state, action) {
             const hadRow = Boolean(state.sessions.byId[goneId]);
             const wasActive = state.sessions.activeSessionId === goneId;
             const hadContent = state.history.bySessionId.has(goneId)
-                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.sessionStats]
+                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.workflowOverview, state.outbox, state.sessionStats]
                     .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
             if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
@@ -1640,6 +1640,7 @@ function baseReducer(state, action) {
                 files: discard(state.files),
                 orchestration: discard(state.orchestration),
                 executionHistory: discard(state.executionHistory),
+                workflowOverview: discard(state.workflowOverview),
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
                 sessionStats: discard(state.sessionStats),
@@ -2205,6 +2206,43 @@ function baseReducer(state, action) {
                     selectMode: false,
                 },
             };
+        }
+
+        case "workflowOverview/loading": {
+            const bySessionId = {
+                ...(state.workflowOverview?.bySessionId || {}),
+                [action.sessionId]: {
+                    ...(state.workflowOverview?.bySessionId?.[action.sessionId] || {}),
+                    loadState: "loading",
+                    error: null,
+                },
+            };
+            return { ...state, workflowOverview: { ...state.workflowOverview, bySessionId } };
+        }
+
+        case "workflowOverview/loaded": {
+            const bySessionId = {
+                ...(state.workflowOverview?.bySessionId || {}),
+                [action.sessionId]: {
+                    loadState: "loaded",
+                    data: action.overview || null,
+                    error: null,
+                    loadedAt: action.loadedAt || Date.now(),
+                },
+            };
+            return { ...state, workflowOverview: { ...state.workflowOverview, bySessionId } };
+        }
+
+        case "workflowOverview/failed": {
+            const bySessionId = {
+                ...(state.workflowOverview?.bySessionId || {}),
+                [action.sessionId]: {
+                    ...(state.workflowOverview?.bySessionId?.[action.sessionId] || {}),
+                    loadState: "failed",
+                    error: action.error || "Workflow overview unavailable.",
+                },
+            };
+            return { ...state, workflowOverview: { ...state.workflowOverview, bySessionId } };
         }
 
         case "history/loadState": {

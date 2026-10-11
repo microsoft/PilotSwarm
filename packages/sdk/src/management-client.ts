@@ -114,6 +114,7 @@ import type {
     ChildOutcomeRow,
     WorkflowDefinitionRecord,
     WorkflowExecutionRow,
+    WorkflowOverviewRow,
     WorkflowProjectionRow,
     SessionVisibility,
     SessionShareInfo,
@@ -1490,6 +1491,12 @@ export class PilotSwarmManagementClient {
     async listWorkflowExecutions(sessionId: string): Promise<WorkflowExecutionRow[]> {
         this._ensureStarted();
         return this._catalog!.listWorkflowExecutions(sessionId);
+    }
+
+    /** Read topology and execution status without exposing the authored definition payload. */
+    async getWorkflowOverview(sessionId: string): Promise<WorkflowOverviewRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getWorkflowOverview(sessionId);
     }
 
     /** Answer the workflow's currently pending durable question. */

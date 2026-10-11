@@ -1674,6 +1674,7 @@ export class PilotSwarmUiController {
         this.sessionHistoryLoads = new Map();
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
+        this.workflowOverviewLoads = new Map();
         this.outboxFlushPromises = new Map();
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
@@ -2589,6 +2590,7 @@ export class PilotSwarmUiController {
         this.sessionRefreshTimer = null;
         this.sessionHistoryExpansionLoads.clear();
         this.sessionOrchestrationStatsLoads.clear();
+        this.workflowOverviewLoads.clear();
         this.detachActiveSession();
         this.detachLogStream();
         await this.transport.stop();
@@ -5832,6 +5834,14 @@ export class PilotSwarmUiController {
             this.ensureSessionHistory(sessionId, { force: true }),
             this.syncSessionDetail(sessionId).catch(() => {}),
         ]);
+        if (this.getState().sessions.byId[sessionId]?.sessionKind === "workflow") {
+            await this.ensureWorkflowOverview(sessionId, { force: true }).catch((error) => {
+                this.dispatch({
+                    type: "ui/status",
+                    text: `Could not load workflow overview: ${error?.message || error}`,
+                });
+            });
+        }
         if (this.navigationGeneration !== navigationGeneration
             || this.getState().sessions.activeSessionId !== sessionId) return;
         this.attachActiveSession(sessionId);
@@ -5843,6 +5853,42 @@ export class PilotSwarmUiController {
         // one indexed limit-1 row is noise against the burst above.
         this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
         this.ensureCanvasSnapshot(sessionId).catch(() => {});
+    }
+
+    async ensureWorkflowOverview(sessionId, { force = false } = {}) {
+        if (!sessionId || typeof this.transport.getWorkflowOverview !== "function") return null;
+        if (this.workflowOverviewLoads.has(sessionId)) return this.workflowOverviewLoads.get(sessionId);
+        const existing = this.getState().workflowOverview?.bySessionId?.[sessionId];
+        if (!force && existing?.loadState === "loaded") return existing.data ?? null;
+
+        this.dispatch({ type: "workflowOverview/loading", sessionId });
+        const pending = this.transport.getWorkflowOverview(sessionId);
+        this.workflowOverviewLoads.set(sessionId, pending);
+        try {
+            const overview = await pending;
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowOverview/loaded",
+                    sessionId,
+                    overview,
+                    loadedAt: Date.now(),
+                });
+            }
+            return overview;
+        } catch (error) {
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowOverview/failed",
+                    sessionId,
+                    error: error?.message || String(error),
+                });
+            }
+            throw error;
+        } finally {
+            if (this.workflowOverviewLoads.get(sessionId) === pending) {
+                this.workflowOverviewLoads.delete(sessionId);
+            }
+        }
     }
 
     /**
@@ -6446,6 +6492,13 @@ export class PilotSwarmUiController {
         const patch = buildSessionMergePatch(previousSession, session);
         if (patch || previousSession?.rowVisualStatusCandidate) {
             this.dispatch({ type: "sessions/merged", session: patch || { sessionId } });
+        }
+        const currentSession = this.getState().sessions.byId[sessionId] || session;
+        if (
+            currentSession?.sessionKind === "workflow"
+            && this.getState().sessions.activeSessionId === sessionId
+        ) {
+            this.ensureWorkflowOverview(sessionId, { force: true }).catch(() => {});
         }
         this.maybeFlushQueuedOutbox(sessionId, session);
     }

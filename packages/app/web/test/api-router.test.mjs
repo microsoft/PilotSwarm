@@ -90,8 +90,10 @@ test("path, query, and body params are collected with declared types", async () 
 
         await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1`);
         await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/executions`);
+        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/overview`);
         assert.deepEqual(calls.find((call) => call.name === "getWorkflow")?.params, { sessionId: "workflow-1" });
         assert.deepEqual(calls.find((call) => call.name === "listWorkflowExecutions")?.params, { sessionId: "workflow-1" });
+        assert.deepEqual(calls.find((call) => call.name === "getWorkflowOverview")?.params, { sessionId: "workflow-1" });
 
         await fetch(`${baseUrl}/api/v1/workflows`, {
             method: "POST",
@@ -423,6 +425,12 @@ test("every protocol operation declares a known access class", () => {
 
     const unknown = OPERATIONS.filter((op) => !VALID_ACCESS_CLASSES.has(op.access));
     assert.deepEqual(unknown.map((op) => `${op.name}:${op.access}`), [], "access classes must be from the known set");
+});
+
+test("workflow overview is session-readable rather than fleet-admin", () => {
+    const operation = OPERATIONS.find((candidate) => candidate.name === "getWorkflowOverview");
+    assert.equal(operation?.access, "session:read");
+    assert.equal(operation?.params?.sessionId?.in, "path");
 });
 
 test("every fleet:admin op is also admin-gated at the router", async () => {

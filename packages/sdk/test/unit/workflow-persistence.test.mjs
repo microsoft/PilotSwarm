@@ -10,7 +10,32 @@ function createCatalogHarness() {
     const pool = {
         async query(sql, params) {
             calls.push({ sql, params });
-            if (sql.includes("workflow_projections WHERE")) {
+            if (sql.includes("workflow_admissions a")) {
+                return {
+                    rows: [{
+                        graph_id: "graph-1",
+                        initial_state_id: "inspect",
+                        graph_states: [
+                            {
+                                id: "inspect",
+                                type: "agent",
+                                allowedTargets: ["approve"],
+                            },
+                            {
+                                id: "approve",
+                                type: "question",
+                                allowedTargets: ["done"],
+                            },
+                            {
+                                id: "done",
+                                type: "terminal",
+                                allowedTargets: [],
+                            },
+                        ],
+                    }],
+                };
+            }
+            if (sql.includes("workflow_projections")) {
                 return {
                     rows: [{
                         workflow_session_id: "workflow-1",
@@ -135,9 +160,49 @@ test("catalog maps workflow projections and executions for API consumers", async
     }]);
 });
 
-test("management clients expose workflow projection and execution reads", async () => {
+test("catalog exposes a sanitized workflow overview without authored payloads", async () => {
+    const { catalog, calls } = createCatalogHarness();
+
+    const overview = await catalog.getWorkflowOverview("workflow-1");
+
+    assert.deepEqual(overview, {
+        workflowSessionId: "workflow-1",
+        graph: {
+            graphId: "graph-1",
+            initialStateId: "inspect",
+            nodes: [
+                { id: "inspect", type: "agent" },
+                { id: "approve", type: "question" },
+                { id: "done", type: "terminal" },
+            ],
+            edges: [
+                { from: "inspect", to: "approve" },
+                { from: "approve", to: "done" },
+            ],
+        },
+        projection: {
+            status: "running",
+            currentStateId: "inspect",
+            currentExecutionSequence: 3,
+            waitingOn: "agent-result",
+        },
+        executions: [{
+            executionSequence: 3,
+            stateId: "inspect",
+            status: "accepted",
+            waitingOn: "agent-result",
+        }],
+    });
+    assert.doesNotMatch(JSON.stringify(overview), /privateSetting|privatePrompt|privateQuestion|privateResult|child-1|abc123|succeeded/);
+    const overviewQueries = calls.slice(-3).map(call => call.sql).join("\n");
+    assert.doesNotMatch(overviewQueries, /source_yaml|configuration_json|input_schema_json|output_json|result_json|waiting_details_json|terminal_outcome/);
+    assert.match(overviewQueries, /LIMIT 100/);
+});
+
+test("management clients expose workflow projection, execution, and sanitized overview reads", async () => {
     const projection = { workflowSessionId: "workflow-1", status: "running" };
     const executions = [{ workflowSessionId: "workflow-1", executionSequence: 1 }];
+    const overview = { workflowSessionId: "workflow-1", graph: { nodes: [], edges: [] } };
 
     const direct = Object.create(PilotSwarmManagementClient.prototype);
     direct._started = true;
@@ -150,25 +215,34 @@ test("management clients expose workflow projection and execution reads", async 
             assert.equal(sessionId, "workflow-1");
             return executions;
         },
+        getWorkflowOverview: async (sessionId) => {
+            assert.equal(sessionId, "workflow-1");
+            return overview;
+        },
     };
 
     assert.equal(await direct.getWorkflow("workflow-1"), projection);
     assert.equal(await direct.listWorkflowExecutions("workflow-1"), executions);
+    assert.equal(await direct.getWorkflowOverview("workflow-1"), overview);
 
     const calls = [];
     const web = Object.create(WebPilotSwarmManagementClient.prototype);
     web._api = {
         call: async (name, params) => {
             calls.push({ name, params });
-            return name === "getWorkflow" ? projection : executions;
+            if (name === "getWorkflow") return projection;
+            if (name === "listWorkflowExecutions") return executions;
+            return overview;
         },
     };
 
     assert.equal(await web.getWorkflow("workflow-1"), projection);
     assert.equal(await web.listWorkflowExecutions("workflow-1"), executions);
+    assert.equal(await web.getWorkflowOverview("workflow-1"), overview);
     assert.deepEqual(calls, [
         { name: "getWorkflow", params: { sessionId: "workflow-1" } },
         { name: "listWorkflowExecutions", params: { sessionId: "workflow-1" } },
+        { name: "getWorkflowOverview", params: { sessionId: "workflow-1" } },
     ]);
 });
 

@@ -332,6 +332,34 @@ export interface WorkflowProjectionRow {
     updatedAt: Date;
 }
 
+export interface WorkflowOverviewRow {
+    workflowSessionId: string;
+    graph: {
+        graphId: string;
+        initialStateId: string;
+        nodes: Array<{
+            id: string;
+            type: string;
+        }>;
+        edges: Array<{
+            from: string;
+            to: string;
+        }>;
+    };
+    projection: {
+        status: string;
+        currentStateId: string | null;
+        currentExecutionSequence: number | null;
+        waitingOn: WorkflowProjectionRow["waitingOn"];
+    } | null;
+    executions: Array<{
+        executionSequence: number;
+        stateId: string;
+        status: WorkflowExecutionRow["status"];
+        waitingOn: WorkflowExecutionRow["waitingOn"];
+    }>;
+}
+
 export interface WorkflowDefinitionRow {
     definitionId: string;
     graphId: string;
@@ -1398,6 +1426,9 @@ export interface SessionCatalog {
 
     /** Read authoritative workflow executions in admission order. */
     listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]>;
+
+    /** Read the sanitized topology and execution status visible to a session reader. */
+    getWorkflowOverview(workflowSessionId: string): Promise<WorkflowOverviewRow | null>;
 
     /** Persist one immutable authored definition and its normalized compiled states. */
     registerWorkflowDefinition(input: {
@@ -2539,6 +2570,113 @@ export class PgSessionCatalog implements SessionCatalog {
             [workflowSessionId],
         );
         return rows.map(rowToWorkflowExecutionRow);
+    }
+
+    async getWorkflowOverview(workflowSessionId: string): Promise<WorkflowOverviewRow | null> {
+        const [definitionResult, projectionResult, executionResult] = await Promise.all([
+            this.pool.query(
+                `SELECT d.graph_id,
+                        d.initial_state_id,
+                        COALESCE((
+                            SELECT jsonb_agg(
+                                jsonb_build_object(
+                                    'id', state_entry.state->>'id',
+                                    'type', state_entry.state->>'type',
+                                    'allowedTargets', COALESCE(
+                                        state_entry.state#>'{transition,allowedTargets}',
+                                        '[]'::jsonb
+                                    )
+                                )
+                                ORDER BY state_entry.ordinality
+                            )
+                              FROM jsonb_array_elements(d.compiled_manifest_json->'states')
+                                   WITH ORDINALITY AS state_entry(state, ordinality)
+                        ), '[]'::jsonb) AS graph_states
+                   FROM "${this.sql.schema}".workflow_admissions a
+                   JOIN "${this.sql.schema}".workflow_definitions d
+                     ON d.definition_id = a.definition_id
+                  WHERE a.session_id = $1`,
+                [workflowSessionId],
+            ),
+            this.pool.query(
+                `SELECT status, current_state_id, current_execution_sequence,
+                        waiting_on
+                   FROM "${this.sql.schema}".workflow_projections
+                  WHERE workflow_session_id = $1`,
+                [workflowSessionId],
+            ),
+            this.pool.query(
+                `SELECT execution_sequence, state_id, status, waiting_on
+                   FROM "${this.sql.schema}".workflow_state_executions
+                  WHERE workflow_session_id = $1
+                  ORDER BY execution_sequence DESC
+                  LIMIT 100`,
+                [workflowSessionId],
+            ),
+        ]);
+        if (definitionResult.rows.length === 0) return null;
+
+        const row = definitionResult.rows[0];
+        const rawStates: unknown[] = Array.isArray(row.graph_states)
+            ? row.graph_states
+            : [];
+        const nodes = rawStates
+            .filter((state: unknown): state is Record<string, unknown> => Boolean(state && typeof state === "object"))
+            .map(state => ({
+                id: typeof state.id === "string" ? state.id : "",
+                type: typeof state.type === "string" ? state.type : "unknown",
+            }))
+            .filter(state => state.id.length > 0);
+        const nodeIds = new Set(nodes.map(node => node.id));
+        const seenEdges = new Set<string>();
+        const edges: WorkflowOverviewRow["graph"]["edges"] = [];
+        for (const state of rawStates) {
+            if (!state || typeof state !== "object") continue;
+            const stateRecord = state as Record<string, unknown>;
+            if (typeof stateRecord.id !== "string") continue;
+            const allowedTargets = stateRecord.allowedTargets;
+            const targets = Array.isArray(allowedTargets) ? allowedTargets : [];
+            for (const target of targets) {
+                if (typeof target !== "string" || !nodeIds.has(target)) continue;
+                const key = `${stateRecord.id}\0${target}`;
+                if (seenEdges.has(key)) continue;
+                seenEdges.add(key);
+                edges.push({ from: stateRecord.id, to: target });
+            }
+        }
+
+        return {
+            workflowSessionId,
+            graph: {
+                graphId: String(row.graph_id),
+                initialStateId: String(row.initial_state_id),
+                nodes,
+                edges,
+            },
+            projection: projectionResult.rows.length > 0
+                ? {
+                    status: String(projectionResult.rows[0].status),
+                    currentStateId: projectionResult.rows[0].current_state_id ?? null,
+                    currentExecutionSequence: projectionResult.rows[0].current_execution_sequence == null
+                        ? null
+                        : Number(projectionResult.rows[0].current_execution_sequence),
+                    waitingOn: projectionResult.rows[0].waiting_on ?? null,
+                }
+                : null,
+            executions: executionResult.rows
+                .map((execution: {
+                    execution_sequence: string | number;
+                    state_id: string;
+                    status: WorkflowExecutionRow["status"];
+                    waiting_on: WorkflowExecutionRow["waitingOn"];
+                }) => ({
+                    executionSequence: Number(execution.execution_sequence),
+                    stateId: String(execution.state_id),
+                    status: execution.status as WorkflowExecutionRow["status"],
+                    waitingOn: execution.waiting_on as WorkflowExecutionRow["waitingOn"],
+                }))
+                .reverse(),
+        };
     }
 
     async registerWorkflowDefinition(input: {

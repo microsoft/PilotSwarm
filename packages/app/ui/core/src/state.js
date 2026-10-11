@@ -511,6 +511,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         history: {
             bySessionId: new Map(),
         },
+        workflowOverview: {
+            bySessionId: {},
+        },
         outbox: {
             bySessionId: {},
         },
