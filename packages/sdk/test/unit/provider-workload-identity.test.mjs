@@ -93,7 +93,7 @@ const FOUNDRY_CONFIG = {
             id: "foundry",
             type: "foundry-wif",
             baseUrl: "https://example-foundry.cognitiveservices.azure.com/openai/v1",
-            models: [{ name: "gpt-5.6-sol" }],
+            models: [{ name: "test-model" }],
         },
     ],
 };
@@ -114,7 +114,7 @@ test("the registry keeps a keyless foundry-wif provider", () => {
 });
 
 test("resolve() yields a keyless workload-identity Foundry provider", () => {
-    const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:gpt-5.6-sol");
+    const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:test-model");
     assert.equal(resolved.type, "foundry-wif");
     assert.equal(resolved.usesWorkloadIdentity, true);
     assert.equal(resolved.sdkProvider.type, "openai");
@@ -125,7 +125,7 @@ test("resolve() yields a keyless workload-identity Foundry provider", () => {
 test("foundry-wif receives an AAD bearer callback", async () => {
     _setFoundryAadCredentialForTests(stubAadCredential("aad-live"));
     try {
-        const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:gpt-5.6-sol");
+        const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:test-model");
         const provider = attachWorkloadIdentity(resolved);
         assert.equal(provider.type, "openai");
         assert.equal(typeof provider.bearerTokenProvider, "function");
