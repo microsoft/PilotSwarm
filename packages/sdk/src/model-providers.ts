@@ -66,9 +66,10 @@ export interface ModelEntry {
      * Request format for this model only. It wins over the provider's
      * `wireApi`. Leave it out to use the provider's value.
      *
-     * Allowed only on `openai`, `openai-proxy` and `azure` providers. Azure
-     * GPT-5.6 needs "responses" when it gets tools and reasoning together,
-     * while GPT-5.4 models under the same provider stay on "completions".
+     * Allowed only on `openai`, `openai-proxy`, `azure`, and `foundry-wif`
+     * providers. Azure GPT-5.6 needs "responses" when it gets tools and
+     * reasoning together, while GPT-5.4 models under the same provider stay
+     * on "completions".
      */
     wireApi?: "completions" | "responses";
 }
@@ -107,7 +108,7 @@ export interface ModelVisionCapability {
  * A stripper that anchors its match to the front of the path handles only the
  * first. Match the segment wherever it appears.
  *
- * `github`, `openai`, `azure`, `anthropic` and `anthropic-wif` behave exactly
+ * `github`, `openai`, `azure`, `anthropic`, and `anthropic-wif` behave exactly
  * as they always have. Nothing is encoded for them.
  *
  * `anthropic-wif` is Anthropic reached with Workload Identity Federation
@@ -116,8 +117,11 @@ export interface ModelVisionCapability {
  * one difference is where the credential comes from — there is none to store,
  * and the worker mints a short-lived token per request from the identity its
  * own platform issues it. See `wif-credentials.ts`.
+ *
+ * `foundry-wif` reaches Azure AI Foundry's OpenAI-shaped data plane using an
+ * Entra token minted from the worker's workload identity.
  */
-export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif";
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "foundry-wif";
 
 /**
  * Types that authenticate as the worker itself, with nothing stored.
@@ -128,7 +132,7 @@ export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "ant
  * token minted at the moment of use.
  */
 export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | undefined | null): boolean {
-    return type === "anthropic-wif";
+    return type === "anthropic-wif" || type === "foundry-wif";
 }
 
 /**
@@ -139,6 +143,7 @@ export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | u
 export function toSdkProviderType(type: ProviderType): "openai" | "azure" | "anthropic" {
     if (type === "openai-proxy") return "openai";
     if (type === "anthropic-wif") return "anthropic";
+    if (type === "foundry-wif") return "openai";
     return type as "openai" | "azure" | "anthropic";
 }
 
@@ -277,7 +282,7 @@ function validateModelWireApi(provider: ModelProviderConfig, qualified: string, 
     if (sdkType !== "openai" && sdkType !== "azure") {
         throw new Error(
             `Invalid wireApi on model ${qualified}: provider type "${provider.type}" does not support it. ` +
-            `Only openai, openai-proxy and azure providers do.`,
+            `Only openai, openai-proxy, azure and foundry-wif providers do.`,
         );
     }
 }
