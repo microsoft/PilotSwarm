@@ -626,7 +626,7 @@ provider create or credential-update request.
 `wireApi` picks the request format for an OpenAI-shaped endpoint:
 `"completions"` (Chat Completions) or `"responses"` (the Responses API). Set
 it on a provider entry, on a model entry, or both. Only `openai`,
-`openai-proxy` and `azure` types accept it.
+`openai-proxy`, `azure`, and `foundry-wif` types accept it.
 
 Which value a model gets:
 
@@ -679,13 +679,36 @@ capability record and an actual inference confirmed support. No additional
 Astra variant was advertised. Availability announcement:
 [GitHub Copilot changelog](https://github.blog/changelog/2026-09-04-gpt-6-astra-is-generally-available-in-github-copilot/).
 
-### Providers With No Key: Workload Identity Federation
+### Providers With No Key: Workload Identity
 
-A provider type declared `anthropic-wif` stores no credential. The worker
-authenticates as itself using Workload Identity Federation, exchanging an
-identity token its own platform issues for a short-lived Anthropic access
-token. Nothing is stored in the database, so there is no key to rotate and
-none to leak.
+Provider types declared `anthropic-wif` or `foundry-wif` store no credential.
+The worker authenticates as itself using workload identity. Nothing is stored
+in the database, so there is no key to rotate and none to leak.
+
+For Azure AI Foundry's OpenAI-compatible endpoint, declare `foundry-wif` with
+the account's `/openai/v1` data-plane URL:
+
+```json
+{
+  "id": "azure-foundry-wif",
+  "type": "foundry-wif",
+  "baseUrl": "https://my-account.cognitiveservices.azure.com/openai/v1",
+  "models": [
+    { "name": "gpt-5.6", "wireApi": "responses" },
+    { "name": "gpt-5.4" }
+  ]
+}
+```
+
+The worker obtains an Entra token for
+`https://cognitiveservices.azure.com/.default` through
+`DefaultAzureCredential`. Grant its managed identity the **Cognitive Services
+OpenAI User** role on the Foundry account. In AKS workload-identity
+deployments, add the normal Azure workload-identity pod label and service
+account annotation, and configure the managed identity's federated credential.
+
+For Anthropic, the worker exchanges an identity token its platform issues for
+a short-lived Anthropic access token:
 
 Declare the type in the model catalog with no `apiKey`:
 

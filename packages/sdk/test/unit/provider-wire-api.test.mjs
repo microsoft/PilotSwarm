@@ -115,9 +115,10 @@ for (const keepUncredentialed of [false, true]) {
                 new RegExp(`Invalid wireApi on model p-${type}:m: provider type "${type}"`),
             );
         }
-        for (const type of ["openai", "openai-proxy", "azure"]) {
+        for (const type of ["openai", "openai-proxy", "azure", "foundry-wif"]) {
             const registry = build({
-                id: `p-${type}`, type, baseUrl: "https://example.invalid", apiKey: "k",
+                id: `p-${type}`, type, baseUrl: "https://example.invalid",
+                ...(type === "foundry-wif" ? {} : { apiKey: "k" }),
                 models: [{ name: "m", wireApi: "responses" }],
             });
             assert.equal(registry.getDescriptor(`p-${type}:m`).wireApi, "responses");
