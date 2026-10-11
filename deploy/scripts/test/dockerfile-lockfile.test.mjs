@@ -47,6 +47,29 @@ test("AKS images bake the checked-in deploy catalog, never the private local cat
   }
 });
 
+test("AKS application images build generated artifacts inside Docker", () => {
+  const portal = readDockerfile("Dockerfile.portal");
+  const worker = readDockerfile("Dockerfile.worker");
+
+  for (const [name, source] of [["portal", portal], ["worker", worker]]) {
+    assert.match(source, /FROM node:24-trixie-slim AS build/);
+    assert.match(source, /rm -rf[\s\S]*packages\/sdk\/dist[\s\S]*packages\/horizon-store\/dist/);
+    assert.match(source, /npm run build --workspace=packages\/sdk/);
+    assert.match(source, /--workspace=pilotswarm-horizon-store/);
+    assert.doesNotMatch(source, /^COPY packages\/sdk\/dist\//m, `${name} must not require host SDK output`);
+    assert.doesNotMatch(source, /^COPY packages\/horizon-store\/dist\//m, `${name} must not require host Horizon Store output`);
+    assert.match(source, /COPY --from=build \/app\/packages\/sdk\/dist\//);
+    assert.match(source, /COPY --from=build \/app\/packages\/horizon-store\/dist\//);
+  }
+
+  assert.match(portal, /--workspace=pilotswarm(?:\s|\\)/);
+  assert.match(portal, /rm -rf[\s\S]*packages\/app\/web\/dist[\s\S]*packages\/app\/mcp\/dist/);
+  assert.doesNotMatch(portal, /^COPY packages\/app\/mcp\/dist\//m);
+  assert.doesNotMatch(portal, /^COPY packages\/app\/web\/dist\//m);
+  assert.match(portal, /COPY --from=build \/app\/packages\/app\/mcp\/dist\//);
+  assert.match(portal, /COPY --from=build \/app\/packages\/app\/web\/dist\//);
+});
+
 test("starter image stages every workspace manifest before npm ci", () => {
   const source = readDockerfile("Dockerfile.starter");
   assert.match(source, /COPY packages\/sdk\/package\.json \.\/packages\/sdk\//);
@@ -69,10 +92,10 @@ test("images carry what the session-workspaces manifests name", () => {
   assert.match(portal, /COPY packages\/sdk\/examples\/repo-workspaces\/plugin\/ \.\/packages\/sdk\/examples\/repo-workspaces\/plugin\//);
   // The portal component sets PORTAL_CANVAS_COMMANDS_RUNNER=local; without
   // git in the image every canvas command fails with "git is not installed".
-  assert.match(portal, /apt-get install(?:[^\n]*\\\n)*[^\n]*\bgit\b/, "git for canvas commands");
+  assert.match(portal, /apt-get install(?:[^\r\n]*\\\r?\n)*[^\r\n]*\bgit\b/, "git for canvas commands");
 
   const repoCache = stripComments(readDockerfile("Dockerfile.repo-cache"));
   assert.match(repoCache, /apt-get install[^\n]*\bgit\b[^\n]*\bnfs-kernel-server\b/);
-  assert.match(repoCache, /WORKDIR \/app\/packages\/sdk\/examples\/repo-workspaces\n/);
+  assert.match(repoCache, /WORKDIR \/app\/packages\/sdk\/examples\/repo-workspaces\r?\n/);
   assert.match(repoCache, /COPY packages\/sdk\/examples\/repo-workspaces\/ \.\//);
 });
