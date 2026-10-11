@@ -5,10 +5,10 @@
 
 # trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
-FROM node:24-trixie-slim
+FROM node:24-trixie-slim AS build
 
-# git: canvas apps run the git commands their manifest declares through the
-# portal when PORTAL_CANVAS_COMMANDS_RUNNER=local (packages/sdk/src/canvas-workspace.ts).
+# Build native dependencies and the TypeScript/browser workspaces in a clean
+# container context so ACR builds do not depend on host-generated dist trees.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 make g++ git \
     && rm -rf /var/lib/apt/lists/*
@@ -41,8 +41,37 @@ ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV npm_config_registry=${NPM_REGISTRY}
 RUN npm ci --force
 
+COPY packages/sdk/ ./packages/sdk/
+COPY packages/horizon-store/ ./packages/horizon-store/
+COPY packages/app/ ./packages/app/
+
+RUN rm -rf \
+        packages/sdk/dist \
+        packages/horizon-store/dist \
+        packages/app/web/dist \
+        packages/app/mcp/dist \
+    && npm run build --workspace=packages/sdk \
+    && npm run build --workspace=pilotswarm-horizon-store \
+    && npm run build --workspace=pilotswarm
+
+FROM node:24-trixie-slim
+
+# git: canvas apps run the git commands their manifest declares through the
+# portal when PORTAL_CANVAS_COMMANDS_RUNNER=local (packages/sdk/src/canvas-workspace.ts).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates python3 make g++ git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/app/package.json ./packages/app/
+COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY --from=build /app/node_modules/ ./node_modules/
+
 # Copy built SDK dist + plugins
-COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY --from=build /app/packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 # The session-workspaces sample agent (repo-coder). The portal lists and starts
@@ -52,7 +81,7 @@ COPY packages/sdk/examples/repo-workspaces/plugin/ ./packages/sdk/examples/repo-
 
 # horizon-store built output + runtime-read migrations (sibling layout: the
 # migrator resolves ../../migrations from dist/src/).
-COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY --from=build /app/packages/horizon-store/dist/ ./packages/horizon-store/dist/
 COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 
 # Copy CLI (plain JS)
@@ -76,13 +105,11 @@ COPY packages/app/web/auth/ ./packages/app/web/auth/
 COPY packages/app/web/api/ ./packages/app/web/api/
 COPY packages/app/web/src/ ./packages/app/web/src/
 COPY packages/app/web/vite.config.ts packages/app/web/tsconfig.json ./packages/app/web/
+COPY --from=build /app/packages/app/web/dist/ ./packages/app/web/dist/
 
 # MCP server (prebuilt dist — same layout the npm package ships). Runs from
 # this image with a command override; see deploy/k8s/mcp-deployment.yaml.
-COPY packages/app/mcp/dist/ ./packages/app/mcp/dist/
-
-# Build the browser app
-RUN npm run build:web --workspace=packages/app
+COPY --from=build /app/packages/app/mcp/dist/ ./packages/app/mcp/dist/
 
 # AKS legacy-bootstrap catalog. Never copy the private gitignored local catalog
 # into a released/deployed image; runtime provider state lives in CMS after the
