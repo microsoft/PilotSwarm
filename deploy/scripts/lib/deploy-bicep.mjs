@@ -110,6 +110,10 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   if (!existsSync(bicepAbs)) throw new Error(`Bicep main missing: ${bicepAbs}`);
 
   if (moduleName === "horizondb") prepareHorizonDbEnvForRender(env);
+  if (moduleName === "base-infra") {
+    env.FOUNDRY_LOCATION ??= "";
+    env.FOUNDRY_AUTH_MODE ??= "entra";
+  }
 
   // 1) Render params.
   log("info", `[${moduleName}] render params (${paramsRel})`);
@@ -218,10 +222,11 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         );
       }
       if (Array.isArray(parsedDeployments) && parsedDeployments.length > 0) {
-        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${env.LOCATION}`);
+        const foundryRegion = env.FOUNDRY_LOCATION || env.LOCATION;
+        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${foundryRegion}`);
         assertFoundryDeploymentsValid({
           deployments: parsedDeployments,
-          region: env.LOCATION,
+          region: foundryRegion,
           subscriptionId: env.SUBSCRIPTION_ID,
         });
       }

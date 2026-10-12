@@ -123,3 +123,144 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+function workerBaseEnv(overrides = {}) {
+  return {
+    KV_NAME: "kvtest",
+    WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+    AZURE_TENANT_ID: "tenanttest",
+    DATABASE_URL: "postgres://test",
+    AZURE_STORAGE_ACCOUNT_URL: "https://example.blob.core.windows.net",
+    AZURE_STORAGE_CONTAINER: "copilot-sessions",
+    DEPLOYMENT_STORAGE_ACCOUNT_NAME: "satest",
+    DEPLOYMENT_STORAGE_CONTAINER_NAME: "worker-manifests",
+    ACR_LOGIN_SERVER: "acrtest.azurecr.io",
+    NAMESPACE: "pilotswarm",
+    RESOURCE_PREFIX: "pstest",
+    AKS_CLUSTER_NAME: "pstest-aks",
+    WORKER_IMAGE_TAG: "test",
+    IMAGE: "acrtest.azurecr.io/pilotswarm-worker:test",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+    PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+    PILOTSWARM_LIVE_TURN: "0",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgres://test/cms",
+    PILOTSWARM_DB_AAD_USER: "uami",
+    LOCATION: "westus2",
+    FOUNDRY_ENDPOINT: "https://example-foundry.cognitiveservices.azure.com/",
+    ...overrides,
+  };
+}
+
+function stagedFoundryProviders(env) {
+  const tmp = mkdtempSync(join(tmpdir(), "ps-foundry-auth-"));
+  try {
+    const stagedRoot = stageManifests({
+      service: "worker",
+      envName: "test",
+      env,
+      stagingDir: tmp,
+    });
+    const catalog = JSON.parse(
+      readFileSync(join(stagedRoot, "base", "model_providers.json"), "utf8"),
+    );
+    const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+    return providers.filter((provider) =>
+      provider.baseUrl?.includes("example-foundry.cognitiveservices.azure.com/openai/v1") ||
+      provider.apiKey === "env:AZURE_OAI_KEY"
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test("FOUNDRY_AUTH_MODE=entra rewrites Foundry providers to foundry-wif", () => {
+  const providers = stagedFoundryProviders(
+    workerBaseEnv({ FOUNDRY_ENABLED: "true", FOUNDRY_AUTH_MODE: "entra" }),
+  );
+  assert.ok(providers.length > 0);
+  for (const provider of providers) {
+    assert.equal(provider.type, "foundry-wif");
+    assert.ok(!("apiKey" in provider));
+  }
+});
+
+test("Foundry auth defaults to Entra when FOUNDRY_AUTH_MODE is unset", () => {
+  const providers = stagedFoundryProviders(
+    workerBaseEnv({ FOUNDRY_ENABLED: "true" }),
+  );
+  assert.ok(providers.length > 0);
+  for (const provider of providers) {
+    assert.equal(provider.type, "foundry-wif");
+    assert.ok(!("apiKey" in provider));
+  }
+});
+
+test("FOUNDRY_AUTH_MODE=key preserves the legacy key-auth catalog", () => {
+  const providers = stagedFoundryProviders(
+    workerBaseEnv({ FOUNDRY_ENABLED: "true", FOUNDRY_AUTH_MODE: "key" }),
+  );
+  assert.ok(providers.length > 0);
+  for (const provider of providers) {
+    assert.equal(provider.type, "openai");
+    assert.equal(provider.apiKey, "env:AZURE_OAI_KEY");
+  }
+});
+
+test("Foundry-disabled stamps preserve the key-auth catalog shape", () => {
+  const providers = stagedFoundryProviders(
+    workerBaseEnv({ FOUNDRY_ENDPOINT: "" }),
+  );
+  assert.ok(providers.length > 0);
+  for (const provider of providers) {
+    assert.equal(provider.type, "openai");
+    assert.equal(provider.apiKey, "env:AZURE_OAI_KEY");
+  }
+});
+
+test("Foundry-enabled staging fails when the Bicep endpoint is unavailable", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ps-foundry-endpoint-"));
+  try {
+    assert.throws(
+      () => stageManifests({
+        service: "worker",
+        envName: "test",
+        env: workerBaseEnv({ FOUNDRY_ENABLED: "true", FOUNDRY_ENDPOINT: "" }),
+        stagingDir: tmp,
+      }),
+      /requires: FOUNDRY_ENDPOINT/,
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Foundry deployment wiring keeps region and auth mode aligned", () => {
+  const bicepRoot = join(
+    REPO_ROOT,
+    "deploy",
+    "providers",
+    "azure",
+    "services",
+    "base-infra",
+    "bicep",
+  );
+  const foundry = readFileSync(join(bicepRoot, "foundry.bicep"), "utf8");
+  const main = readFileSync(join(bicepRoot, "main.bicep"), "utf8");
+  const params = readFileSync(join(bicepRoot, "base-infra.params.template.json"), "utf8");
+  const deploy = readFileSync(
+    join(REPO_ROOT, "deploy", "scripts", "lib", "deploy-bicep.mjs"),
+    "utf8",
+  );
+
+  assert.match(foundry, /disableLocalAuth:\s*authMode == 'entra'/);
+  assert.match(foundry, /Cognitive Services OpenAI User/);
+  assert.match(foundry, /workloadIdentityPrincipalId/);
+  assert.match(foundry, /authMode == 'entra' \? keyVaultUnsetSentinel : account\.listKeys\(\)\.key1/);
+  assert.match(main, /param foundryLocation string = ''/);
+  assert.match(main, /empty\(foundryLocation\) \? location : toLower\(foundryLocation\)/);
+  assert.match(main, /authMode: foundryAuthMode/);
+  assert.match(main, /workloadIdentityPrincipalId: Uami\.outputs\.csiIdentityPrincipalId/);
+  assert.match(params, /"foundryLocation"[\s\S]*"\$\{FOUNDRY_LOCATION\}"/);
+  assert.match(params, /"foundryAuthMode"[\s\S]*"\$\{FOUNDRY_AUTH_MODE\}"/);
+  assert.match(deploy, /env\.FOUNDRY_LOCATION \|\| env\.LOCATION/);
+});
