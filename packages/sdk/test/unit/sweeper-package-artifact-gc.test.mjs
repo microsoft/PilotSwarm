@@ -28,6 +28,7 @@ function fixture({
     deleteFailure,
 } = {}) {
     const deleted = [];
+    const locked = [];
     const byNamespace = new Map([
         [workflowPackagesArtifactSessionId(), workflowArtifacts],
         [agentPackagesArtifactSessionId(), agentArtifacts],
@@ -41,6 +42,10 @@ function fixture({
             workflowCounts[filename] ?? (workflowReferences.includes(filename) ? 1 : 0),
         countAgentPackageArtifactRefs: async filename =>
             agentCounts[filename] ?? (agentReferences.includes(filename) ? 1 : 0),
+    };
+    catalog.withPackageArtifactLocks = async (targets, fn) => {
+        locked.push(structuredClone(targets));
+        return fn(catalog);
     };
     const artifactStore = {
         listArtifacts: async sessionId => structuredClone(byNamespace.get(sessionId) ?? []),
@@ -63,6 +68,7 @@ function fixture({
     });
     return {
         deleted,
+        locked,
         sweep: tools.find(tool => tool.name === "sweep_package_artifacts"),
     };
 }
@@ -70,7 +76,7 @@ function fixture({
 test("package artifact sweep deletes only old unreferenced artifacts", async () => {
     const old = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
     const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { deleted, sweep } = fixture({
+    const { deleted, locked, sweep } = fixture({
         workflowArtifacts: [
             metadata("workflow-referenced.tar.gz", old, true),
             metadata("workflow-orphan.tar.gz", old, true),
@@ -96,6 +102,10 @@ test("package artifact sweep deletes only old unreferenced artifacts", async () 
     assert.equal(result.deleted, 2);
     assert.deepEqual(
         deleted.map(entry => entry.filename).sort(),
+        ["agent-orphan.tar.gz", "workflow-orphan.tar.gz"],
+    );
+    assert.deepEqual(
+        locked.flat().map(entry => entry.filename).sort(),
         ["agent-orphan.tar.gz", "workflow-orphan.tar.gz"],
     );
 });

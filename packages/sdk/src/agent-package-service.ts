@@ -302,51 +302,61 @@ export async function publishPackedAgentPackage(
     );
     try {
         fs.writeFileSync(tmpPath, targz);
-        await ctx.artifactStore.uploadArtifactFromFile(
-            artifactSessionId, artifactFilename, tmpPath, "application/gzip",
+        return await ctx.catalog.withPackageArtifactLocks(
+            [{ sessionId: artifactSessionId, filename: artifactFilename }],
+            async lockedCatalog => {
+                await ctx.artifactStore.uploadArtifactFromFile(
+                    artifactSessionId, artifactFilename, tmpPath, "application/gzip",
+                );
+
+                try {
+                    const result = await lockedCatalog.publishAgentPackage({
+                        name,
+                        scope: opts.scope,
+                        owner: opts.owner,
+                        sourceId: opts.sourceId,
+                        semver,
+                        sha256,
+                        sizeBytes: targz.length,
+                        artifactFilename,
+                        commitSha: opts.commitSha,
+                        manifest: manifest as unknown as Record<string, unknown>,
+                        createdBy: opts.createdBy,
+                        isAdmin: opts.isAdmin,
+                    });
+                    return {
+                        ...result,
+                        name, semver, sha256,
+                        sizeBytes: targz.length,
+                        artifactFilename,
+                        manifest,
+                        warnings,
+                    };
+                } catch (error) {
+                    // Clean up OUR just-uploaded blob (the registry rejected
+                    // the row) only when no committed version references it.
+                    // The shared artifact lock prevents a concurrent publisher
+                    // or collector from changing that answer before deletion.
+                    try {
+                        const refs = await lockedCatalog.countAgentPackageArtifactRefs(
+                            artifactFilename,
+                        );
+                        if (refs === 0) {
+                            await ctx.artifactStore.deleteArtifact(
+                                artifactSessionId,
+                                artifactFilename,
+                            );
+                        }
+                    } catch {
+                        // Best-effort cleanup: a leaked blob is harmless, while
+                        // deleting a shared referenced blob is not.
+                    }
+                    throw error;
+                }
+            },
         );
     } finally {
         fs.rmSync(path.dirname(tmpPath), { recursive: true, force: true });
-    }
-
-    try {
-        const result = await ctx.catalog.publishAgentPackage({
-            name,
-            scope: opts.scope,
-            owner: opts.owner,
-            sourceId: opts.sourceId,
-            semver,
-            sha256,
-            sizeBytes: targz.length,
-            artifactFilename,
-            commitSha: opts.commitSha,
-            manifest: manifest as unknown as Record<string, unknown>,
-            createdBy: opts.createdBy,
-            isAdmin: opts.isAdmin,
-        });
-        return {
-            ...result,
-            name, semver, sha256,
-            sizeBytes: targz.length,
-            artifactFilename,
-            manifest,
-            warnings,
-        };
-    } catch (error) {
-        // Clean up OUR just-uploaded blob (the registry rejected the row) — but
-        // only if no published version references it. Blob files are
-        // content-addressed (name@semver.sha), so this exact file may already
-        // back a same-bytes copy in the other scope (a republish, or another
-        // user's identical publish). Deleting a still-referenced blob would
-        // strand that copy fleet-wide. The failed publish rolled back, so any
-        // reference the registry reports now belongs to a DIFFERENT package.
-        try {
-            const refs = await ctx.catalog.countAgentPackageArtifactRefs(artifactFilename);
-            if (refs === 0) {
-                await ctx.artifactStore.deleteArtifact(artifactSessionId, artifactFilename);
-            }
-        } catch { /* best-effort cleanup; a leaked blob is harmless, a deleted shared one is not */ }
-        throw error;
     }
 }
 

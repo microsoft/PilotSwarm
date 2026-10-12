@@ -1471,37 +1471,40 @@ export class PilotSwarmManagementClient {
             );
         }
         const packageArtifactFilename = workflowPackageArtifactFilename(packageSha256);
-        await this._requireWorkflowPackageArtifacts().uploadArtifact(
-            workflowPackagesArtifactSessionId(),
-            packageArtifactFilename,
-            snapshot.artifactTarGz,
-            "application/gzip",
-            { pinned: true },
-        );
+        const workflowArtifacts = this._requireWorkflowPackageArtifacts();
+        const workflowArtifactSessionId = workflowPackagesArtifactSessionId();
         const sourceSha256 = createHash("sha256").update(yaml, "utf8").digest("hex");
         if (!preparedAgentPackage) {
             const compiledSha256 = workflowCompiledManifestSha256(compiled.manifest);
-            return this._catalog!.registerWorkflowDefinition({
-                definitionId: randomUUID(),
-                sourceYaml: yaml,
-                sourceSha256,
-                packageSha256,
-                packageArtifactFilename,
-                packageSource,
-                compiledSha256,
-                manifest: compiled.manifest,
-            });
+            return this._catalog!.withPackageArtifactLocks(
+                [{
+                    sessionId: workflowArtifactSessionId,
+                    filename: packageArtifactFilename,
+                }],
+                async lockedCatalog => {
+                    await workflowArtifacts.uploadArtifact(
+                        workflowArtifactSessionId,
+                        packageArtifactFilename,
+                        snapshot.artifactTarGz,
+                        "application/gzip",
+                        { pinned: true },
+                    );
+                    return lockedCatalog.registerWorkflowDefinition({
+                        definitionId: randomUUID(),
+                        sourceYaml: yaml,
+                        sourceSha256,
+                        packageSha256,
+                        packageArtifactFilename,
+                        packageSource,
+                        compiledSha256,
+                        manifest: compiled.manifest,
+                    });
+                },
+            );
         }
 
         const agentArtifacts = this._requireAgentPackageArtifacts();
-        // Metadata may roll back after upload. Keep content-addressed bytes:
-        // compensating deletion can race another publisher of the same blob.
-        await agentArtifacts.uploadArtifact(
-            agentPackagesArtifactSessionId(),
-            preparedAgentPackage.artifactFilename,
-            preparedAgentPackage.targz,
-            "application/gzip",
-        );
+        const agentArtifactSessionId = agentPackagesArtifactSessionId();
 
         for (let attempt = 0; attempt < 3; attempt++) {
             const existing = await this._catalog!.getAgentPackage(
@@ -1538,27 +1541,54 @@ export class PilotSwarmManagementClient {
             };
 
             try {
-                return await this._catalog!.registerWorkflowDefinitionWithAgentPackage({
-                    packageId,
-                    versionId,
-                    package: {
-                        name: preparedAgentPackage.manifest.name,
-                        scope: "shared",
-                        owner: null,
-                        sourceId: null,
-                        semver: preparedAgentPackage.manifest.version,
-                        sha256: preparedAgentPackage.sha256,
-                        sizeBytes: preparedAgentPackage.sizeBytes,
-                        artifactFilename: preparedAgentPackage.artifactFilename,
-                        commitSha: typeof packageSource.commitSha === "string"
-                            ? packageSource.commitSha
-                            : null,
-                        manifest: preparedAgentPackage.manifest as unknown as Record<string, unknown>,
-                        createdBy: "workflow-definition-registration",
-                        isAdmin: true,
+                return await this._catalog!.withPackageArtifactLocks(
+                    [
+                        {
+                            sessionId: workflowArtifactSessionId,
+                            filename: packageArtifactFilename,
+                        },
+                        {
+                            sessionId: agentArtifactSessionId,
+                            filename: preparedAgentPackage.artifactFilename,
+                        },
+                    ],
+                    async lockedCatalog => {
+                        await workflowArtifacts.uploadArtifact(
+                            workflowArtifactSessionId,
+                            packageArtifactFilename,
+                            snapshot.artifactTarGz,
+                            "application/gzip",
+                            { pinned: true },
+                        );
+                        await agentArtifacts.uploadArtifact(
+                            agentArtifactSessionId,
+                            preparedAgentPackage.artifactFilename,
+                            preparedAgentPackage.targz,
+                            "application/gzip",
+                        );
+                        return lockedCatalog.registerWorkflowDefinitionWithAgentPackage({
+                            packageId,
+                            versionId,
+                            package: {
+                                name: preparedAgentPackage.manifest.name,
+                                scope: "shared",
+                                owner: null,
+                                sourceId: null,
+                                semver: preparedAgentPackage.manifest.version,
+                                sha256: preparedAgentPackage.sha256,
+                                sizeBytes: preparedAgentPackage.sizeBytes,
+                                artifactFilename: preparedAgentPackage.artifactFilename,
+                                commitSha: typeof packageSource.commitSha === "string"
+                                    ? packageSource.commitSha
+                                    : null,
+                                manifest: preparedAgentPackage.manifest as unknown as Record<string, unknown>,
+                                createdBy: "workflow-definition-registration",
+                                isAdmin: true,
+                            },
+                            definition,
+                        });
                     },
-                    definition,
-                });
+                );
             } catch (error) {
                 const retry = error instanceof Error
                     && error.message.includes("WORKFLOW_AGENT_PACKAGE_RETRY");

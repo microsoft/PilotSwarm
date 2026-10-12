@@ -290,6 +290,45 @@ describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
         ).toBe(0);
     });
 
+    it("serializes package artifact publication and collection", async () => {
+        const contender = await PgSessionCatalog.create(DATABASE_URL, SCHEMA);
+        await contender.initialize();
+        const target = {
+            sessionId: "00000000-0000-0000-0000-000000000001",
+            filename: "shared-content-addressed-package.tar.gz",
+        };
+        let releaseFirst;
+        const firstRelease = new Promise(resolve => {
+            releaseFirst = resolve;
+        });
+        let signalFirstEntered;
+        const firstEntered = new Promise(resolve => {
+            signalFirstEntered = resolve;
+        });
+
+        try {
+            const first = catalog.withPackageArtifactLocks([target], async () => {
+                signalFirstEntered();
+                await firstRelease;
+            });
+            await firstEntered;
+
+            let secondEntered = false;
+            const second = contender.withPackageArtifactLocks([target], async () => {
+                secondEntered = true;
+            });
+            await new Promise(resolve => setTimeout(resolve, 100));
+            expect(secondEntered).toBe(false);
+
+            releaseFirst();
+            await Promise.all([first, second]);
+            expect(secondEntered).toBe(true);
+        } finally {
+            releaseFirst?.();
+            await contender.close();
+        }
+    });
+
     it("rolls back package activation and registry epoch when atomic definition registration conflicts", async () => {
         const packageName = "atomic-conflict-package";
         const packageId = "atomic-package-1";

@@ -1075,6 +1075,28 @@ export interface FleetDirectiveRow {
     updatedBy: string | null;
 }
 
+export interface PackageArtifactLockTarget {
+    sessionId: string;
+    filename: string;
+}
+
+/**
+ * Catalog operations that must run on the PostgreSQL session holding package
+ * artifact advisory locks. Keeping these operations lock-bound avoids needing
+ * a second pool connection while a lock is held.
+ */
+export interface PackageArtifactLockScope {
+    publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+    registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+    countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number>;
+    countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
+}
+
 export interface SessionCatalog {
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
@@ -1203,6 +1225,15 @@ export interface SessionCatalog {
 
     /** Atomic publish — see cms_publish_agent_package. Throws AGENT_PACKAGE_* errors. */
     publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    /**
+     * Serialize publication and collection for the same content-addressed
+     * package artifacts. Callers perform artifact-store operations inside the
+     * callback and catalog operations through the supplied lock-bound scope.
+     */
+    withPackageArtifactLocks<T>(
+        targets: PackageArtifactLockTarget[],
+        fn: (scope: PackageArtifactLockScope) => Promise<T>,
+    ): Promise<T>;
     listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]>;
     /**
      * One package. `selector` picks WHICH copy of the name (own / shared /
@@ -2704,10 +2735,11 @@ export class PgSessionCatalog implements SessionCatalog {
         };
     }
 
-    async registerWorkflowDefinition(
+    private async _registerWorkflowDefinition(
         input: WorkflowDefinitionRegistrationInput,
+        db: any,
     ): Promise<WorkflowDefinitionRecord> {
-        const { rows } = await this.pool.query(
+        const { rows } = await db.query(
             `SELECT ${this.sql.fn.registerWorkflowDefinition}(
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
             ) AS definition_id`,
@@ -2732,7 +2764,7 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         const persistedDefinitionId = rows[0]?.definition_id;
         const registered = typeof persistedDefinitionId === "string"
-            ? await this.getWorkflowDefinition(persistedDefinitionId)
+            ? await this._getWorkflowDefinition(persistedDefinitionId, db)
             : null;
         if (!registered) {
             throw Object.assign(
@@ -2743,10 +2775,17 @@ export class PgSessionCatalog implements SessionCatalog {
         return registered;
     }
 
-    async registerWorkflowDefinitionWithAgentPackage(
-        input: WorkflowAgentPackageRegistrationInput,
+    async registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
     ): Promise<WorkflowDefinitionRecord> {
-        const { rows } = await this.pool.query(
+        return this._registerWorkflowDefinition(input, this.pool);
+    }
+
+    private async _registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await db.query(
             `SELECT * FROM ${this.sql.fn.registerWorkflowDefinitionWithAgentPackage}($1, $2, $3, $4)`,
             [
                 input.packageId,
@@ -2757,7 +2796,7 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         const persistedDefinitionId = rows[0]?.definition_id;
         const registered = typeof persistedDefinitionId === "string"
-            ? await this.getWorkflowDefinition(persistedDefinitionId)
+            ? await this._getWorkflowDefinition(persistedDefinitionId, db)
             : null;
         if (!registered) {
             throw Object.assign(
@@ -2768,13 +2807,26 @@ export class PgSessionCatalog implements SessionCatalog {
         return registered;
     }
 
-    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
-        const definitionResult = await this.pool.query(
+    async registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
+        return this._registerWorkflowDefinitionWithAgentPackage(input, this.pool);
+    }
+
+    private async _getWorkflowDefinition(
+        definitionId: string,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord | null> {
+        const definitionResult = await db.query(
             `SELECT * FROM "${this.sql.schema}".workflow_definitions WHERE definition_id = $1`,
             [definitionId],
         );
         if (definitionResult.rows.length === 0) return null;
         return rowToWorkflowDefinitionRow(definitionResult.rows[0]);
+    }
+
+    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        return this._getWorkflowDefinition(definitionId, this.pool);
     }
 
     async admitWorkflow(input: {
@@ -4158,10 +4210,13 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+    private async _publishAgentPackage(
+        input: PublishAgentPackageInput,
+        db: any,
+    ): Promise<PublishAgentPackageResult> {
         const packageId = randomUUID();
         const versionId = randomUUID();
-        const { rows } = await this.pool.query(
+        const { rows } = await db.query(
             `SELECT * FROM ${this.sql.fn.publishAgentPackage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [
                 packageId, versionId, input.name, input.scope,
@@ -4177,6 +4232,51 @@ export class PgSessionCatalog implements SessionCatalog {
             packageId: String(row.package_id ?? packageId),
             versionId: String(row.version_id ?? versionId),
         };
+    }
+
+    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+        return this._publishAgentPackage(input, this.pool);
+    }
+
+    async withPackageArtifactLocks<T>(
+        targets: PackageArtifactLockTarget[],
+        fn: (scope: PackageArtifactLockScope) => Promise<T>,
+    ): Promise<T> {
+        const identities = [...new Set(
+            targets.map(target => `${target.sessionId}\n${target.filename}`),
+        )].sort();
+        const client = await this.pool.connect();
+        const acquired: string[] = [];
+        try {
+            for (const identity of identities) {
+                await client.query(
+                    "SELECT pg_advisory_lock(hashtextextended('package-artifact:' || $1, 0))",
+                    [identity],
+                );
+                acquired.push(identity);
+            }
+            const scope: PackageArtifactLockScope = {
+                publishAgentPackage: input =>
+                    this._publishAgentPackage(input, client),
+                registerWorkflowDefinition: input =>
+                    this._registerWorkflowDefinition(input, client),
+                registerWorkflowDefinitionWithAgentPackage: input =>
+                    this._registerWorkflowDefinitionWithAgentPackage(input, client),
+                countWorkflowPackageArtifactRefs: artifactFilename =>
+                    this._countWorkflowPackageArtifactRefs(artifactFilename, client),
+                countAgentPackageArtifactRefs: artifactFilename =>
+                    this._countAgentPackageArtifactRefs(artifactFilename, client),
+            };
+            return await fn(scope);
+        } finally {
+            for (const identity of acquired.reverse()) {
+                await client.query(
+                    "SELECT pg_advisory_unlock(hashtextextended('package-artifact:' || $1, 0))",
+                    [identity],
+                ).catch(() => {});
+            }
+            client.release();
+        }
     }
 
     async listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
@@ -4349,12 +4449,19 @@ export class PgSessionCatalog implements SessionCatalog {
         };
     }
 
-    async countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number> {
-        const { rows } = await this.pool.query(
+    private async _countWorkflowPackageArtifactRefs(
+        artifactFilename: string,
+        db: any,
+    ): Promise<number> {
+        const { rows } = await db.query(
             `SELECT count(*)::int AS n FROM "${this.sql.schema}".workflow_definitions WHERE package_artifact_filename = $1`,
             [artifactFilename],
         );
         return Number(rows?.[0]?.n ?? 0);
+    }
+
+    async countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        return this._countWorkflowPackageArtifactRefs(artifactFilename, this.pool);
     }
 
     /**
@@ -4363,12 +4470,19 @@ export class PgSessionCatalog implements SessionCatalog {
      * published under the same name+semver in two scopes share ONE file. A
      * cleanup path must never delete a blob this reports > 0 for.
      */
-    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
-        const { rows } = await this.pool.query(
+    private async _countAgentPackageArtifactRefs(
+        artifactFilename: string,
+        db: any,
+    ): Promise<number> {
+        const { rows } = await db.query(
             `SELECT count(*)::int AS n FROM "${this.sql.schema}".agent_package_versions WHERE artifact_filename = $1`,
             [artifactFilename],
         );
         return Number(rows?.[0]?.n ?? 0);
+    }
+
+    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        return this._countAgentPackageArtifactRefs(artifactFilename, this.pool);
     }
 
     async upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void> {

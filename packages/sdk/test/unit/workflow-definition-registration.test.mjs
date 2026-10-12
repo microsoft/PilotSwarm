@@ -55,6 +55,11 @@ states:
     outcome: blocked
 `;
 
+function enableArtifactLocks(catalog) {
+    catalog.withPackageArtifactLocks = async (_targets, fn) => fn(catalog);
+    return catalog;
+}
+
 function definitionRow() {
     return {
         definition_id: "definition-1",
@@ -261,6 +266,7 @@ test("management registration invokes the compiler before persistence", async ()
             };
         },
     };
+    enableArtifactLocks(client._catalog);
 
     const result = await client.registerWorkflowDefinition(
         TERMINAL_WORKFLOW,
@@ -284,11 +290,13 @@ test("management registration invokes the compiler before persistence", async ()
 test("management registration persists package and module transition identities", async () => {
     let persisted;
     let atomicRegistration;
+    let lockHeld = false;
     const uploadedArtifacts = [];
     const client = Object.create(PilotSwarmManagementClient.prototype);
     client._started = true;
     client._artifactStore = {
         async uploadArtifact(sessionId, filename) {
+            assert.equal(lockHeld, true);
             uploadedArtifacts.push({ sessionId, filename });
             return { filename };
         },
@@ -298,6 +306,7 @@ test("management registration persists package and module transition identities"
             return null;
         },
         async registerWorkflowDefinitionWithAgentPackage(input) {
+            assert.equal(lockHeld, true);
             atomicRegistration = input;
             persisted = input.definition;
             return {
@@ -305,6 +314,15 @@ test("management registration persists package and module transition identities"
                 graphId: input.definition.manifest.graphId,
             };
         },
+    };
+    client._catalog.withPackageArtifactLocks = async (targets, fn) => {
+        assert.equal(targets.length, 2);
+        lockHeld = true;
+        try {
+            return await fn(client._catalog);
+        } finally {
+            lockHeld = false;
+        }
     };
 
     await client.registerWorkflowDefinition(
@@ -371,6 +389,7 @@ test("management registration retries a concurrent logical-package creation with
             };
         },
     };
+    enableArtifactLocks(client._catalog);
 
     const result = await client.registerWorkflowDefinition(
         PACKAGE_WORKFLOW,
@@ -408,6 +427,7 @@ test("management registration leaves only content-addressed bytes after atomic m
             publishedSeparately = true;
         },
     };
+    enableArtifactLocks(client._catalog);
 
     await assert.rejects(
         () => client.registerWorkflowDefinition(
@@ -486,6 +506,7 @@ test("management registration uses a deployment workflow package resolver", asyn
             };
         },
     };
+    enableArtifactLocks(client._catalog);
 
     const result = await client.registerWorkflowDefinition({ source });
 
@@ -535,6 +556,7 @@ test("management registration cleans up a resolved package after registration fa
             assert.fail("registration should not follow a failed upload");
         },
     };
+    enableArtifactLocks(client._catalog);
 
     await assert.rejects(
         () => client.registerWorkflowDefinition({ source }),

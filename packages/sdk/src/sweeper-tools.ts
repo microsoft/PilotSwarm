@@ -354,14 +354,10 @@ export function createSweeperTools(opts: {
                 {
                     kind: "workflow" as const,
                     sessionId: workflowPackagesArtifactSessionId(),
-                    countReferences: (filename: string) =>
-                        catalog.countWorkflowPackageArtifactRefs(filename),
                 },
                 {
                     kind: "agent" as const,
                     sessionId: agentPackagesArtifactSessionId(),
-                    countReferences: (filename: string) =>
-                        catalog.countAgentPackageArtifactRefs(filename),
                 },
             ];
 
@@ -419,45 +415,58 @@ export function createSweeperTools(opts: {
                         }
 
                         try {
-                            // Recheck both catalog references and blob age immediately
-                            // before deletion. A concurrent publisher refreshes uploadedAt.
-                            if (await namespace.countReferences(artifact.filename) > 0) {
-                                result.referenced++;
-                                result.eligible--;
-                                continue;
-                            }
-                            const current = await artifactStore.statArtifact(
-                                namespace.sessionId,
-                                artifact.filename,
-                            );
-                            if (!current) {
-                                result.disappeared++;
-                                continue;
-                            }
-                            const currentUploadedAtMs = Date.parse(current.uploadedAt);
-                            if (
-                                !Number.isFinite(currentUploadedAtMs)
-                                || currentUploadedAtMs >= cutoffMs
-                            ) {
-                                result.recent++;
-                                result.eligible--;
-                                continue;
-                            }
-                            const deleted = await artifactStore.deleteArtifact(
-                                namespace.sessionId,
-                                artifact.filename,
-                            );
-                            if (deleted) {
-                                result.deleted++;
-                                result.artifacts.push({
-                                    kind: namespace.kind,
+                            await catalog.withPackageArtifactLocks(
+                                [{
+                                    sessionId: namespace.sessionId,
                                     filename: artifact.filename,
-                                    uploadedAt: current.uploadedAt,
-                                    action: "deleted",
-                                });
-                            } else {
-                                result.disappeared++;
-                            }
+                                }],
+                                async lockedCatalog => {
+                                    const references = namespace.kind === "workflow"
+                                        ? await lockedCatalog.countWorkflowPackageArtifactRefs(
+                                            artifact.filename,
+                                        )
+                                        : await lockedCatalog.countAgentPackageArtifactRefs(
+                                            artifact.filename,
+                                        );
+                                    if (references > 0) {
+                                        result.referenced++;
+                                        result.eligible--;
+                                        return;
+                                    }
+                                    const current = await artifactStore.statArtifact(
+                                        namespace.sessionId,
+                                        artifact.filename,
+                                    );
+                                    if (!current) {
+                                        result.disappeared++;
+                                        return;
+                                    }
+                                    const currentUploadedAtMs = Date.parse(current.uploadedAt);
+                                    if (
+                                        !Number.isFinite(currentUploadedAtMs)
+                                        || currentUploadedAtMs >= cutoffMs
+                                    ) {
+                                        result.recent++;
+                                        result.eligible--;
+                                        return;
+                                    }
+                                    const deleted = await artifactStore.deleteArtifact(
+                                        namespace.sessionId,
+                                        artifact.filename,
+                                    );
+                                    if (deleted) {
+                                        result.deleted++;
+                                        result.artifacts.push({
+                                            kind: namespace.kind,
+                                            filename: artifact.filename,
+                                            uploadedAt: current.uploadedAt,
+                                            action: "deleted",
+                                        });
+                                    } else {
+                                        result.disappeared++;
+                                    }
+                                },
+                            );
                         } catch (error: any) {
                             result.failures.push({
                                 kind: namespace.kind,

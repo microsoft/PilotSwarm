@@ -63,8 +63,9 @@ behavior for an admitted run:
   state; registration does not delete those bytes because another concurrent
   publisher may be using the same content; the Sweeper Agent removes
   unreferenced workflow and agent package artifacts after a 24-hour grace
-  period, rechecking catalog references and upload age immediately before
-  deletion
+  period; publication and collection acquire the same artifact-scoped
+  PostgreSQL advisory lock, and the Sweeper rechecks catalog references and
+  upload age while holding that lock before deletion
 - starting a workflow resolves each bound package's current active version
 - the resolved package version is persisted in the run's durable plan and in
   each child session
