@@ -220,7 +220,17 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 waitingOn: "agent-result",
             } satisfies RecordWorkflowStateExecutionActivityInput);
             yield routeAgentStateDispatch(
-                ctx.scheduleActivity(dispatch.activityName, dispatch.activityInput),
+                ctx.scheduleActivity(
+                    dispatch.ensureChild.activityName,
+                    dispatch.ensureChild.activityInput,
+                ),
+                dispatch.activityTag,
+            );
+            yield routeAgentStateDispatch(
+                ctx.scheduleActivity(
+                    dispatch.enqueueBootstrap.activityName,
+                    dispatch.enqueueBootstrap.activityInput,
+                ),
                 dispatch.activityTag,
             );
             const rawEvent = yield ctx.dequeueEvent(dispatch.resultQueueName);
