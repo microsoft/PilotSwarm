@@ -315,7 +315,7 @@ pilotswarm workflows show <definition-id> --json
 The equivalent API request is:
 
 ```http
-POST /api/v1/management/workflow-definitions
+POST /api/v1/workflow-definitions
 Authorization: Bearer YOUR_TOKEN
 Content-Type: application/json
 
@@ -467,10 +467,10 @@ Use the workflow session ID returned by a standalone start or child invocation.
 
 | Purpose | API |
 |---|---|
-| Current state, wait reason, and terminal result | `GET /api/v1/management/workflows/:sessionId` |
-| Sanitized topology and per-state status | `GET /api/v1/management/workflows/:sessionId/overview` |
-| Authoritative state executions in order | `GET /api/v1/management/workflows/:sessionId/executions` |
-| Answer the currently pending question | `POST /api/v1/management/workflows/:sessionId/questions/:executionSequence/answer` |
+| Current state, wait reason, and terminal result | `GET /api/v1/workflows/:sessionId` |
+| Sanitized topology and per-state status | `GET /api/v1/workflows/:sessionId/overview` |
+| Authoritative state executions in order | `GET /api/v1/workflows/:sessionId/executions` |
+| Answer the currently pending question | `POST /api/v1/workflows/:sessionId/questions/:executionSequence/answer` |
 
 The SDK management client exposes the corresponding methods:
 

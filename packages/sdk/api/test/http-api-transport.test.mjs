@@ -82,7 +82,7 @@ test("move/assign alias wrappers return the per-root result array", async () => 
     assert.deepEqual(await transport.assignSessionsToGroup("g1", ["a"]), results);
 });
 
-test("workflow detail methods use the authorized management routes", async () => {
+test("workflow detail methods use the authorized resource routes", async () => {
     const overview = { graph: { graphId: "arithmetic" }, projection: { status: "running" } };
     const executions = [{ executionSequence: 1, stateId: "A" }];
     const { transport, calls } = createTransport({
@@ -96,10 +96,10 @@ test("workflow detail methods use the authorized management routes", async () =>
     assert.deepEqual(await transport.listWorkflowExecutions("workflow-1"), executions);
     assert.equal(
         calls[0].url,
-        `https://portal.example.com${API_PREFIX}/management/workflows/workflow-1/overview`,
+        `https://portal.example.com${API_PREFIX}/workflows/workflow-1/overview`,
     );
     assert.equal(
         calls[1].url,
-        `https://portal.example.com${API_PREFIX}/management/workflows/workflow-1/executions`,
+        `https://portal.example.com${API_PREFIX}/workflows/workflow-1/executions`,
     );
 });

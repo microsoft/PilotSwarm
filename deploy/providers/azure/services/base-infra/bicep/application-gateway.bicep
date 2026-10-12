@@ -139,7 +139,101 @@ var autoSeedRules = vpnGatewayEnabled ? [
     ]
   }
 ] : []
-var mergedCustomRules = concat(autoSeedRules, appgwWafCustomRules)
+
+// Authenticated API write paths carry freeform prompts, repository URLs, and
+// query text that reliably trigger OWASP false positives. Both WAF layers must
+// allow the same paths or the block only moves to the other edge.
+var platformSeedRules = [
+  {
+    name: 'AllowMcpMessagesPath'
+    priority: 95
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    state: 'Enabled'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestUri'
+          }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        matchValues: [
+          '/messages'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  {
+    name: 'AllowSessionSubmitPath'
+    priority: 96
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    state: 'Enabled'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestUri'
+          }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        matchValues: [
+          '/api/v1/sessions'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  {
+    name: 'AllowWorkflowDefinitionPath'
+    priority: 97
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    state: 'Enabled'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestUri'
+          }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        matchValues: [
+          '/api/v1/workflow-definitions'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  {
+    name: 'AllowWorkflowGeneratorPath'
+    priority: 98
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    state: 'Enabled'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestUri'
+          }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        matchValues: [
+          '/api/v1/workflow-generators'
+        ]
+        transforms: []
+      }
+    ]
+  }
+]
+var mergedCustomRules = concat(platformSeedRules, autoSeedRules, appgwWafCustomRules)
 
 // ---------------------------------------------------------------------------
 // WAF policy

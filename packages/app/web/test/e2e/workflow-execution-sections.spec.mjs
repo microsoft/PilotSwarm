@@ -115,7 +115,7 @@ test("workflow execution renders grouped timing and nested action accordions", a
             const session = sessions.find(item => item.sessionId === sessionMatch[1]) ?? sessions[0];
             return answer({ ...session, messages: [], events: [], pendingMessages: [] });
         }
-        if (path.endsWith(`/management/workflows/${workflowId}/overview`)) {
+        if (path.endsWith(`/workflows/${workflowId}/overview`)) {
             return answer({
                 workflowSessionId: workflowId,
                 graph: {
@@ -147,7 +147,7 @@ test("workflow execution renders grouped timing and nested action accordions", a
                 })),
             });
         }
-        if (path.endsWith(`/management/workflows/${workflowId}/executions`)) {
+        if (path.endsWith(`/workflows/${workflowId}/executions`)) {
             return answer(executions);
         }
         const executionHistoryMatch = /\/management\/sessions\/([^/]+)\/execution-history$/.exec(path);

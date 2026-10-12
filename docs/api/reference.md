@@ -150,8 +150,8 @@ These read-only endpoints expose the workflow query model. They do not drive wor
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| getWorkflow | `GET /api/v1/management/workflows/:sessionId` | sessionId (path) | Current workflow state, execution sequence, waiting reason, and terminal result when complete. |
-| listWorkflowExecutions | `GET /api/v1/management/workflows/:sessionId/executions` | sessionId (path) | Authoritative workflow state executions in admission order. |
+| getWorkflow | `GET /api/v1/workflows/:sessionId` | sessionId (path) | Current workflow state, execution sequence, waiting reason, and terminal result when complete. |
+| listWorkflowExecutions | `GET /api/v1/workflows/:sessionId/executions` | sessionId (path) | Authoritative workflow state executions in admission order. |
 
 ### Management: sessions
 

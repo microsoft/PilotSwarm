@@ -193,6 +193,94 @@ param managedRuleSets array = [
   }
 ]
 
+// Authenticated API write paths carry freeform prompts, repository URLs, and
+// query text that reliably trigger DRS false positives. Keep these rules in
+// lockstep with the Application Gateway policy. Stamp-specific network blocks
+// must use a lower priority so these allows cannot bypass ingress restrictions.
+var platformCustomRules = [
+  {
+    name: 'AllowMcpMessagesPath'
+    priority: 95
+    enabledState: 'Enabled'
+    ruleType: 'MatchRule'
+    rateLimitDurationInMinutes: 0
+    rateLimitThreshold: 0
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariable: 'RequestUri'
+        operator: 'Contains'
+        negateCondition: false
+        matchValue: [
+          '/messages'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  {
+    name: 'AllowSessionSubmitPath'
+    priority: 96
+    enabledState: 'Enabled'
+    ruleType: 'MatchRule'
+    rateLimitDurationInMinutes: 0
+    rateLimitThreshold: 0
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariable: 'RequestUri'
+        operator: 'Contains'
+        negateCondition: false
+        matchValue: [
+          '/api/v1/sessions'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  {
+    name: 'AllowWorkflowDefinitionPath'
+    priority: 97
+    enabledState: 'Enabled'
+    ruleType: 'MatchRule'
+    rateLimitDurationInMinutes: 0
+    rateLimitThreshold: 0
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariable: 'RequestUri'
+        operator: 'Contains'
+        negateCondition: false
+        matchValue: [
+          '/api/v1/workflow-definitions'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  {
+    name: 'AllowWorkflowGeneratorPath'
+    priority: 98
+    enabledState: 'Enabled'
+    ruleType: 'MatchRule'
+    rateLimitDurationInMinutes: 0
+    rateLimitThreshold: 0
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariable: 'RequestUri'
+        operator: 'Contains'
+        negateCondition: false
+        matchValue: [
+          '/api/v1/workflow-generators'
+        ]
+        transforms: []
+      }
+    ]
+  }
+]
+var mergedCustomRules = concat(platformCustomRules, customRules)
+
 // ==============================================================================
 // WAF Policy
 // ==============================================================================
@@ -213,7 +301,7 @@ resource wafPolicy 'Microsoft.Network/FrontDoorWebApplicationFirewallPolicies@20
       managedRuleSets: managedRuleSets
     }
     customRules: {
-      rules: customRules
+      rules: mergedCustomRules
     }
   }
   tags: {}

@@ -88,9 +88,9 @@ test("path, query, and body params are collected with declared types", async () 
         const after = calls.find((call) => call.name === "getSessionEvents");
         assert.deepEqual(after.params, { sessionId: "s2", afterSeq: 5 }, "omitted eventTypes stays absent");
 
-        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1`);
-        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/executions`);
-        await fetch(`${baseUrl}/api/v1/management/workflows/workflow-1/overview`);
+        await fetch(`${baseUrl}/api/v1/workflows/workflow-1`);
+        await fetch(`${baseUrl}/api/v1/workflows/workflow-1/executions`);
+        await fetch(`${baseUrl}/api/v1/workflows/workflow-1/overview`);
         assert.deepEqual(calls.find((call) => call.name === "getWorkflow")?.params, { sessionId: "workflow-1" });
         assert.deepEqual(calls.find((call) => call.name === "listWorkflowExecutions")?.params, { sessionId: "workflow-1" });
         assert.deepEqual(calls.find((call) => call.name === "getWorkflowOverview")?.params, { sessionId: "workflow-1" });
@@ -121,12 +121,12 @@ test("path, query, and body params are collected with declared types", async () 
             gitRef: "refs/heads/main",
             workflowPath: "workflows/example.yaml",
         };
-        await fetch(`${baseUrl}/api/v1/management/workflow-definitions`, {
+        await fetch(`${baseUrl}/api/v1/workflow-definitions`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ source, ignored: "x" }),
         });
-        await fetch(`${baseUrl}/api/v1/management/workflow-definitions/definition-1`);
+        await fetch(`${baseUrl}/api/v1/workflow-definitions/definition-1`);
         assert.deepEqual(calls.find((call) => call.name === "registerWorkflowDefinition")?.params, { source });
         assert.deepEqual(calls.find((call) => call.name === "getWorkflowDefinition")?.params, {
             definitionId: "definition-1",
@@ -167,7 +167,7 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
                             },
                         });
                         try {
-                            const response = await fetch(`${baseUrl}/api/v1/management/workflow-definitions`, {
+                            const response = await fetch(`${baseUrl}/api/v1/workflow-definitions`, {
                                 method: "POST",
                                 headers: { "content-type": "application/json" },
                                 body: JSON.stringify({
@@ -457,7 +457,7 @@ test("workflow ownership conflicts surface as forbidden API responses", async ()
     });
     try {
         const response = await fetch(
-            `${baseUrl}/api/v1/management/workflow-definitions`,
+            `${baseUrl}/api/v1/workflow-definitions`,
             {
                 method: "POST",
                 headers: { "content-type": "application/json" },

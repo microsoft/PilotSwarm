@@ -214,7 +214,7 @@ export interface ManagementOps {
 
     /**
      * Answer the workflow's currently pending durable question.
-     * @remarks `POST /management/workflows/:sessionId/questions/:executionSequence/answer` — access: `session:write`
+     * @remarks `POST /workflows/:sessionId/questions/:executionSequence/answer` — access: `session:write`
      */
     answerWorkflowQuestion(params: {
         sessionId: string;
@@ -981,7 +981,7 @@ export interface ManagementOps {
 
     /**
      * Get the workflow's current state, waiting reason, and terminal result when complete.
-     * @remarks `GET /management/workflows/:sessionId` — access: `session:read`
+     * @remarks `GET /workflows/:sessionId` — access: `session:read`
      */
     getWorkflow(params: {
         sessionId: string;
@@ -989,7 +989,7 @@ export interface ManagementOps {
 
     /**
      * Read one shared or caller-owned immutable workflow definition.
-     * @remarks `GET /management/workflow-definitions/:definitionId` — access: `authed`
+     * @remarks `GET /workflow-definitions/:definitionId` — access: `authed`
      */
     getWorkflowDefinition(params: {
         definitionId: string;
@@ -997,7 +997,7 @@ export interface ManagementOps {
 
     /**
      * Sanitized workflow topology and execution status for an authorized session reader.
-     * @remarks `GET /management/workflows/:sessionId/overview` — access: `session:read`
+     * @remarks `GET /workflows/:sessionId/overview` — access: `session:read`
      */
     getWorkflowOverview(params: {
         sessionId: string;
@@ -1197,13 +1197,13 @@ export interface ManagementOps {
 
     /**
      * List shared workflow definitions plus definitions owned by the caller.
-     * @remarks `GET /management/workflow-definitions` — access: `authed`
+     * @remarks `GET /workflow-definitions` — access: `authed`
      */
     listWorkflowDefinitions(params?: Record<string, never>): Promise<any>;
 
     /**
      * Authoritative workflow state executions in admission order.
-     * @remarks `GET /management/workflows/:sessionId/executions` — access: `session:read`
+     * @remarks `GET /workflows/:sessionId/executions` — access: `session:read`
      */
     listWorkflowExecutions(params: {
         sessionId: string;
@@ -1295,7 +1295,7 @@ export interface ManagementOps {
 
     /**
      * Resolve a Git-backed workflow package and register an owned user or shared immutable definition.
-     * @remarks `POST /management/workflow-definitions` — access: `authed`
+     * @remarks `POST /workflow-definitions` — access: `authed`
      */
     registerWorkflowDefinition(params: {
         source?: any;

@@ -187,7 +187,7 @@ layout, YAML, transitions, and agent bindings, see
 Authenticated users register Git-backed definitions through:
 
 ```text
-POST /api/v1/management/workflow-definitions
+POST /api/v1/workflow-definitions
 ```
 
 Callers start a registered definition through:
@@ -199,9 +199,9 @@ POST /api/v1/workflows
 Question answers and read models are exposed under:
 
 ```text
-POST /api/v1/management/workflows/:sessionId/questions/:executionSequence/answer
-GET  /api/v1/management/workflows/:sessionId
-GET  /api/v1/management/workflows/:sessionId/executions
+POST /api/v1/workflows/:sessionId/questions/:executionSequence/answer
+GET  /api/v1/workflows/:sessionId
+GET  /api/v1/workflows/:sessionId/executions
 ```
 
 Conversational parents can use `spawn_workflow`, `check_workflows`, and
