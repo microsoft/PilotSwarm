@@ -252,6 +252,44 @@ describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
         })).rejects.toThrow(/WORKFLOW_DEFINITION_CONFLICT/);
     });
 
+    it("reports committed workflow and agent package artifact references", async () => {
+        const registration = atomicWorkflowRegistration({
+            packageName: "artifact-reference-package",
+            packageId: "artifact-reference-package-id",
+            versionId: "artifact-reference-version-id",
+            semver: "1.0.0",
+            packageSha: "9".repeat(64),
+            definitionId: "artifact-reference-definition",
+            graphName: "artifact-reference-workflow",
+            sourceSha: "9".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(registration);
+
+        const references = await catalog.listPackageArtifactReferences();
+        expect(references.workflowArtifactFilenames).toContain(
+            registration.definition.packageArtifactFilename,
+        );
+        expect(references.agentArtifactFilenames).toContain(
+            registration.package.artifactFilename,
+        );
+        expect(
+            await catalog.countWorkflowPackageArtifactRefs(
+                registration.definition.packageArtifactFilename,
+            ),
+        ).toBeGreaterThan(0);
+        expect(
+            await catalog.countAgentPackageArtifactRefs(
+                registration.package.artifactFilename,
+            ),
+        ).toBe(1);
+        expect(
+            await catalog.countWorkflowPackageArtifactRefs("missing-workflow-artifact"),
+        ).toBe(0);
+        expect(
+            await catalog.countAgentPackageArtifactRefs("missing-agent-artifact"),
+        ).toBe(0);
+    });
+
     it("rolls back package activation and registry epoch when atomic definition registration conflicts", async () => {
         const packageName = "atomic-conflict-package";
         const packageId = "atomic-package-1";

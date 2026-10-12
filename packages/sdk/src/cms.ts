@@ -1239,6 +1239,13 @@ export interface SessionCatalog {
     revokeAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
     /** Editors of the shared copy of `name`. Visible to anyone who can see the package. */
     listAgentPackageEditors(name: string): Promise<AgentPackageEditorInfo[]>;
+    /** Every content-addressed package artifact currently referenced by committed catalog metadata. */
+    listPackageArtifactReferences(): Promise<{
+        workflowArtifactFilenames: string[];
+        agentArtifactFilenames: string[];
+    }>;
+    /** How many workflow definitions reference this content-addressed snapshot (>0 ⇒ never delete it). */
+    countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number>;
     /** How many published versions reference this content-addressed blob (>0 ⇒ never delete it). */
     countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 
@@ -4316,6 +4323,38 @@ export class PgSessionCatalog implements SessionCatalog {
             [name],
         );
         return rows.map(rowToAgentPackageEditor);
+    }
+
+    async listPackageArtifactReferences(): Promise<{
+        workflowArtifactFilenames: string[];
+        agentArtifactFilenames: string[];
+    }> {
+        const [workflow, agent] = await Promise.all([
+            this.pool.query(
+                `SELECT DISTINCT package_artifact_filename AS filename
+                   FROM "${this.sql.schema}".workflow_definitions`,
+            ),
+            this.pool.query(
+                `SELECT DISTINCT artifact_filename AS filename
+                   FROM "${this.sql.schema}".agent_package_versions`,
+            ),
+        ]);
+        return {
+            workflowArtifactFilenames: workflow.rows.map(
+                (row: { filename: unknown }) => String(row.filename),
+            ),
+            agentArtifactFilenames: agent.rows.map(
+                (row: { filename: unknown }) => String(row.filename),
+            ),
+        };
+    }
+
+    async countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT count(*)::int AS n FROM "${this.sql.schema}".workflow_definitions WHERE package_artifact_filename = $1`,
+            [artifactFilename],
+        );
+        return Number(rows?.[0]?.n ?? 0);
     }
 
     /**

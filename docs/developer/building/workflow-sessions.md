@@ -61,7 +61,10 @@ behavior for an admitted run:
 - content-addressed artifact bytes upload before that transaction, so a failed
   registration can leave unreferenced bytes but cannot expose partial catalog
   state; registration does not delete those bytes because another concurrent
-  publisher may be using the same content
+  publisher may be using the same content; the Sweeper Agent removes
+  unreferenced workflow and agent package artifacts after a 24-hour grace
+  period, rechecking catalog references and upload age immediately before
+  deletion
 - starting a workflow resolves each bound package's current active version
 - the resolved package version is persisted in the run's durable plan and in
   each child session

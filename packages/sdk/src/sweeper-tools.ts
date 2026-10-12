@@ -16,6 +16,11 @@ import { defineTool } from "@github/copilot-sdk";
 import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
+import type { ArtifactStore } from "./session-store.js";
+import { agentPackagesArtifactSessionId } from "./agent-package-format.js";
+import {
+    workflowPackagesArtifactSessionId,
+} from "./workflow-orchestration/package-artifact.js";
 
 /**
  * Create sweeper tools bound to the given CMS catalog and duroxide client.
@@ -27,10 +32,11 @@ export function createSweeperTools(opts: {
     catalog: SessionCatalog;
     duroxideClient: any;
     factStore?: FactStore | null;
+    artifactStore?: ArtifactStore | null;
     duroxideSchema?: string;
     storeUrl?: string;
 }): Tool<any>[] {
-    const { catalog, duroxideClient, factStore } = opts;
+    const { catalog, duroxideClient, factStore, artifactStore } = opts;
 
     const TERMINAL_ORCH = new Set(["Completed", "Failed", "Terminated", "NotFound"]);
 
@@ -306,6 +312,171 @@ export function createSweeperTools(opts: {
         },
     });
 
+    // ── sweep_package_artifacts ──────────────────────────────
+
+    const packageArtifactSweepTool = defineTool("sweep_package_artifacts", {
+        description:
+            "Delete old workflow- and agent-package artifacts that have no committed catalog reference. " +
+            "Uses a grace period to avoid touching uploads from registrations that may still be in flight. " +
+            "Referenced or recently uploaded artifacts are never deleted.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                graceHours: {
+                    type: "number",
+                    description:
+                        "Only consider unreferenced artifacts older than this many hours. Default: 24",
+                },
+                dryRun: {
+                    type: "boolean",
+                    description:
+                        "Report eligible artifacts without deleting them. Default: false",
+                },
+            },
+        },
+        handler: async (args: { graceHours?: number; dryRun?: boolean }) => {
+            if (!artifactStore) {
+                return {
+                    ok: false,
+                    error: "Package artifact cleanup requires an artifact store.",
+                };
+            }
+            const graceHours = args.graceHours ?? 24;
+            if (!Number.isFinite(graceHours) || graceHours < 0) {
+                return {
+                    ok: false,
+                    error: "graceHours must be a non-negative finite number.",
+                };
+            }
+            const dryRun = args.dryRun === true;
+            const cutoffMs = Date.now() - graceHours * 60 * 60 * 1000;
+            const namespaces = [
+                {
+                    kind: "workflow" as const,
+                    sessionId: workflowPackagesArtifactSessionId(),
+                    countReferences: (filename: string) =>
+                        catalog.countWorkflowPackageArtifactRefs(filename),
+                },
+                {
+                    kind: "agent" as const,
+                    sessionId: agentPackagesArtifactSessionId(),
+                    countReferences: (filename: string) =>
+                        catalog.countAgentPackageArtifactRefs(filename),
+                },
+            ];
+
+            try {
+                const references = await catalog.listPackageArtifactReferences();
+                const referenced = {
+                    workflow: new Set(references.workflowArtifactFilenames),
+                    agent: new Set(references.agentArtifactFilenames),
+                };
+                const result = {
+                    ok: true,
+                    dryRun,
+                    graceHours,
+                    scanned: 0,
+                    referenced: 0,
+                    recent: 0,
+                    eligible: 0,
+                    deleted: 0,
+                    disappeared: 0,
+                    failures: [] as Array<{
+                        kind: "workflow" | "agent";
+                        filename: string;
+                        error: string;
+                    }>,
+                    artifacts: [] as Array<{
+                        kind: "workflow" | "agent";
+                        filename: string;
+                        uploadedAt: string;
+                        action: "would-delete" | "deleted";
+                    }>,
+                };
+
+                for (const namespace of namespaces) {
+                    const artifacts = await artifactStore.listArtifacts(namespace.sessionId);
+                    for (const artifact of artifacts) {
+                        result.scanned++;
+                        if (referenced[namespace.kind].has(artifact.filename)) {
+                            result.referenced++;
+                            continue;
+                        }
+                        const uploadedAtMs = Date.parse(artifact.uploadedAt);
+                        if (!Number.isFinite(uploadedAtMs) || uploadedAtMs >= cutoffMs) {
+                            result.recent++;
+                            continue;
+                        }
+                        result.eligible++;
+                        if (dryRun) {
+                            result.artifacts.push({
+                                kind: namespace.kind,
+                                filename: artifact.filename,
+                                uploadedAt: artifact.uploadedAt,
+                                action: "would-delete",
+                            });
+                            continue;
+                        }
+
+                        try {
+                            // Recheck both catalog references and blob age immediately
+                            // before deletion. A concurrent publisher refreshes uploadedAt.
+                            if (await namespace.countReferences(artifact.filename) > 0) {
+                                result.referenced++;
+                                result.eligible--;
+                                continue;
+                            }
+                            const current = await artifactStore.statArtifact(
+                                namespace.sessionId,
+                                artifact.filename,
+                            );
+                            if (!current) {
+                                result.disappeared++;
+                                continue;
+                            }
+                            const currentUploadedAtMs = Date.parse(current.uploadedAt);
+                            if (
+                                !Number.isFinite(currentUploadedAtMs)
+                                || currentUploadedAtMs >= cutoffMs
+                            ) {
+                                result.recent++;
+                                result.eligible--;
+                                continue;
+                            }
+                            const deleted = await artifactStore.deleteArtifact(
+                                namespace.sessionId,
+                                artifact.filename,
+                            );
+                            if (deleted) {
+                                result.deleted++;
+                                result.artifacts.push({
+                                    kind: namespace.kind,
+                                    filename: artifact.filename,
+                                    uploadedAt: current.uploadedAt,
+                                    action: "deleted",
+                                });
+                            } else {
+                                result.disappeared++;
+                            }
+                        } catch (error: any) {
+                            result.failures.push({
+                                kind: namespace.kind,
+                                filename: artifact.filename,
+                                error: String(error?.message ?? error),
+                            });
+                        }
+                    }
+                }
+                return result;
+            } catch (error: any) {
+                return {
+                    ok: false,
+                    error: String(error?.message ?? error),
+                };
+            }
+        },
+    });
+
     // ── prune_orchestrations ─────────────────────────────────
     // Uses duroxide's bulk APIs for efficient cleanup at the orchestration level.
     // Modeled after toygres's system-pruner pattern.
@@ -455,5 +626,5 @@ export function createSweeperTools(opts: {
         },
     });
 
-    return [scanTool, cleanupTool, pruneTool, statsTool];
+    return [scanTool, cleanupTool, packageArtifactSweepTool, pruneTool, statsTool];
 }

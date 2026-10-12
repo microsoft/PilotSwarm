@@ -992,6 +992,7 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: sweeperClient,
                 factStore: this.factStore,
+                artifactStore: this.artifactStore,
                 duroxideSchema: storage.duroxide.schema,
                 storeUrl: storage.duroxide.url,
             });
