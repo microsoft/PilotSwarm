@@ -7,9 +7,9 @@ import { createSessionManagerProxy, createSessionProxy, registerActivities } fro
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 import {
-    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
-    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
-} from "../../dist/workflow-orchestration_1_0_0/contracts.js";
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+} from "../../dist/agent-child-bootstrap.js";
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
 const context = () => new OrchestrationContext({ instanceId: "parent", executionId: "1", orchestrationName: "test", orchestrationVersion: "1.0.74" });
 const wire = (value) => JSON.parse(JSON.stringify(value));
@@ -202,8 +202,8 @@ test("workers register legacy and routed workflow child activities", () => {
     );
     assert.equal(typeof handlers.get("spawnWorkflowSession"), "function");
     assert.equal(typeof handlers.get("spawnWorkflowSessionV1"), "function");
-    assert.equal(typeof handlers.get(ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY), "function");
-    assert.equal(typeof handlers.get(ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY), "function");
+    assert.equal(typeof handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY), "function");
+    assert.equal(typeof handlers.get(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY), "function");
 });
 
 test("routing fails closed if the SDK cannot express capability tags", () => {

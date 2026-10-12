@@ -4,18 +4,18 @@ import type {
     WorkflowStateExecutionResult,
 } from "../workflow-orchestration/graph.js";
 import {
-    AGENT_HANDOFF_CAPABILITY,
-    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
-    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
     SUBMIT_WORKFLOW_RESULT_TOOL,
     workflowResultQueueName,
     type WorkflowExecutionBinding,
 } from "./contracts.js";
 
 export interface AgentStateDispatchPlan {
-    activityTag: typeof AGENT_HANDOFF_CAPABILITY;
+    activityTag: typeof AGENT_CHILD_BOOTSTRAP_CAPABILITY;
     ensureChild: {
-        activityName: typeof ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY;
+        activityName: typeof ENSURE_AGENT_CHILD_SESSION_ACTIVITY;
         activityInput: {
             parentSessionId: string;
             config: {
@@ -33,7 +33,7 @@ export interface AgentStateDispatchPlan {
         };
     };
     enqueueBootstrap: {
-        activityName: typeof ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY;
+        activityName: typeof ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY;
         activityInput: {
             parentSessionId: string;
             childSessionId: string;
@@ -100,9 +100,9 @@ export function createAgentStateDispatchPlan(input: {
     };
 
     return {
-        activityTag: AGENT_HANDOFF_CAPABILITY,
+        activityTag: AGENT_CHILD_BOOTSTRAP_CAPABILITY,
         ensureChild: {
-            activityName: ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
+            activityName: ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
             activityInput: {
                 parentSessionId: input.workflowSessionId,
                 config: {
@@ -120,13 +120,13 @@ export function createAgentStateDispatchPlan(input: {
             },
         },
         enqueueBootstrap: {
-            activityName: ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+            activityName: ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
             activityInput: {
                 parentSessionId: input.workflowSessionId,
                 childSessionId: input.childSessionId,
                 task,
                 requiredTool: SUBMIT_WORKFLOW_RESULT_TOOL,
-                clientMessageId: `workflow-bootstrap:${input.childSessionId}`,
+                clientMessageId: `agent-bootstrap:${input.childSessionId}`,
             },
         },
         resultQueueName: workflowResultQueueName(input.executionSequence),

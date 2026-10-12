@@ -1,3 +1,9 @@
+import {
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+} from "../agent-child-bootstrap.js";
+
 export const WORKFLOW_ORCHESTRATION_VERSION = "1.0.0";
 
 export const EXECUTE_WORKFLOW_STATE_ACTIVITY = "executeWorkflowStateV1";
@@ -5,9 +11,11 @@ export const RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY = "recordWorkflowStateExec
 export const ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY = "acceptWorkflowStateResultV1";
 export const COMPLETE_WORKFLOW_ACTIVITY = "completeWorkflowSessionV1";
 
-export const ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY = "ensureWorkflowAgentChildV1";
-export const ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY = "enqueueWorkflowAgentBootstrapV1";
-export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
+export {
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+};
 
 export const SUBMIT_WORKFLOW_RESULT_TOOL = "submit_workflow_result";
 export const WORKFLOW_RESULT_QUEUE_PREFIX = "workflow-result-";

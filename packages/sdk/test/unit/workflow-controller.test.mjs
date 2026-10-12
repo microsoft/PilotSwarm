@@ -19,8 +19,9 @@ import {
     durableWorkflowSessionOrchestration_1_0_0,
 } from "../../dist/workflow-orchestration/index.js";
 import {
-    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
-    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
     SUBMIT_WORKFLOW_RESULT_TOOL,
     workflowResultQueueName,
 } from "../../dist/workflow-orchestration_1_0_0/contracts.js";
@@ -99,12 +100,12 @@ async function runController(input, catalog = undefined, options = {}) {
             step = execution.next("2026-10-07T18:00:00.000Z");
             continue;
         }
-        if (operation.name === ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY) {
+        if (operation.name === ENSURE_AGENT_CHILD_SESSION_ACTIVITY) {
             spawnedChild = operation;
             step = execution.next(operation.input.childSessionId);
             continue;
         }
-        if (operation.name === ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY) {
+        if (operation.name === ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY) {
             step = execution.next(undefined);
             continue;
         }
@@ -332,10 +333,10 @@ states:
         sourceCommit: "abc",
     });
     const ensure = operations.find(
-        operation => operation.name === ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
+        operation => operation.name === ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
     );
     const bootstrap = operations.find(
-        operation => operation.name === ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+        operation => operation.name === ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
     );
     assert.match(bootstrap.input.task, /"pullRequestId": 116/);
     assert.equal(ensure.input.config.boundAgentName, "sample-inspector");
@@ -469,8 +470,8 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         [
             "newGuid",
             RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
-            ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
-            ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+            ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+            ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
             workflowResultQueueName(1),
             ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
             "utcNow",
@@ -487,6 +488,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         waitingOn: "agent-result",
     });
     const ensure = run.operations[2];
+    assert.equal(ensure.tag, AGENT_CHILD_BOOTSTRAP_CAPABILITY);
     assert.equal(ensure.input.childSessionId, "child-1");
     assert.equal(ensure.input.parentSessionId, "workflow-agent-1");
     assert.deepEqual(ensure.input.config.toolNames, [SUBMIT_WORKFLOW_RESULT_TOOL]);
@@ -499,11 +501,12 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         allowedOutcomes: ["succeeded", "blocked"],
     });
     const bootstrap = run.operations[3];
+    assert.equal(bootstrap.tag, AGENT_CHILD_BOOTSTRAP_CAPABILITY);
     assert.equal(bootstrap.input.childSessionId, "child-1");
     assert.equal(bootstrap.input.parentSessionId, "workflow-agent-1");
     assert.equal(bootstrap.input.task, "Inspect pull request 42; execution 1.");
     assert.equal(bootstrap.input.requiredTool, SUBMIT_WORKFLOW_RESULT_TOOL);
-    assert.equal(bootstrap.input.clientMessageId, "workflow-bootstrap:child-1");
+    assert.equal(bootstrap.input.clientMessageId, "agent-bootstrap:child-1");
     assert.equal(run.operations[4].name, workflowResultQueueName(1));
     assert.deepEqual(run.operations[5].input, {
         workflowSessionId: "workflow-agent-1",

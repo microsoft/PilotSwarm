@@ -40,9 +40,9 @@ import { mergePromptSections } from "./prompt-layering.js";
 import { orchestrationSupportsWorkflowTools } from "./workflow-tools.js";
 import { toWorkflowResult } from "./workflow-session.js";
 import {
-    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
-    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
-} from "./workflow-orchestration_1_0_0/contracts.js";
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+} from "./agent-child-bootstrap.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
@@ -5309,13 +5309,32 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // System child agents with a stable agentId use a deterministic UUID.
     // Other child sessions use a random UUID.
     // Goes through the full SDK path: CMS registration + orchestration startup.
-    const spawnChildSessionHandler = async (
+    type EnsureAgentChildSessionInput = {
+        parentSessionId: string;
+        config: SerializableSessionConfig;
+        nestingLevel?: number;
+        isSystem?: boolean;
+        title?: string;
+        agentId?: string;
+        splash?: string;
+        titleIsExplicit?: boolean;
+        workspaceChosen?: boolean;
+        childSessionId?: string;
+    };
+    type AgentChildBootstrap = {
+        task: string;
+        requiredTool?: string;
+    };
+    type SpawnChildSessionInput = EnsureAgentChildSessionInput & AgentChildBootstrap;
+
+    const ensureAgentChildSession = async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; childSessionId?: string; deferBootstrap?: boolean },
+        input: EnsureAgentChildSessionInput,
+        bootstrap?: AgentChildBootstrap,
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
-            activityCtx.traceInfo(`[spawnChildSession] +${Date.now() - startedAt}ms ${message}`);
+            activityCtx.traceInfo(`[ensureAgentChildSession] +${Date.now() - startedAt}ms ${message}`);
         };
         const isDeterministicSystemChild = Boolean(input.isSystem && input.agentId);
         const childSessionId = input.childSessionId ?? (isDeterministicSystemChild
@@ -5380,7 +5399,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 );
                 trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
                 if (existing && input.childSessionId) {
-                    if (input.deferBootstrap) {
+                    if (!bootstrap) {
                         await updateChildMetadata();
                     }
                     trace(`reusing existing replay-stable child: ${childSessionId} (${existing.state})`);
@@ -5476,13 +5495,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // newly-spawned child. Idempotent — set-style update.
             await updateChildMetadata();
 
-            if (!input.deferBootstrap) {
+            if (bootstrap) {
                 // Fire the initial task prompt (non-blocking: just enqueues).
                 // This prompt is orchestration-generated bootstrap state for the child
                 // session, not an actual user-authored message inside that child chat.
                 const sendAt = Date.now();
-                await session.send(input.task, {
-                    ...bootstrapTurnOptions(input.requiredTool),
+                await session.send(bootstrap.task, {
+                    ...bootstrapTurnOptions(bootstrap.requiredTool),
                     // The comment above says it: this is orchestration-generated
                     // bootstrap state, not a user-authored message. Say so in the
                     // record, or the child's transcript opens under "You:".
@@ -5491,9 +5510,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 trace(`session.send bootstrap done (${Date.now() - sendAt}ms)`);
             }
 
-            trace(input.deferBootstrap
-                ? `session created without bootstrap: ${childSessionId}`
-                : `session created and task sent: ${childSessionId}`);
+            trace(bootstrap
+                ? `session created and task sent: ${childSessionId}`
+                : `session ensured without bootstrap: ${childSessionId}`);
             return childSessionId;
         } finally {
             const clientStopAt = Date.now();
@@ -5501,27 +5520,25 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             trace(`sdkClient.stop done (${Date.now() - clientStopAt}ms total=${Date.now() - startedAt}ms)`);
         }
     };
+    const spawnChildSessionHandler = (
+        activityCtx: any,
+        input: SpawnChildSessionInput,
+    ): Promise<string> => {
+        const { task, requiredTool, ...ensureInput } = input;
+        return ensureAgentChildSession(
+            activityCtx,
+            ensureInput,
+            { task, requiredTool },
+        );
+    };
     registerHandoffActivity(runtime, "spawnChildSession", spawnChildSessionHandler);
 
-    runtime.registerActivity(ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY, async (
+    runtime.registerActivity(ENSURE_AGENT_CHILD_SESSION_ACTIVITY, async (
         activityCtx: any,
-        input: {
-            parentSessionId: string;
-            config: SerializableSessionConfig;
-            nestingLevel: 1;
-            isSystem: false;
-            title: string;
-            agentId: string;
-            titleIsExplicit: false;
-            childSessionId: string;
-        },
-    ): Promise<string> => spawnChildSessionHandler(activityCtx, {
-        ...input,
-        task: "",
-        deferBootstrap: true,
-    }));
+        input: EnsureAgentChildSessionInput,
+    ): Promise<string> => ensureAgentChildSession(activityCtx, input));
 
-    runtime.registerActivity(ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY, async (
+    runtime.registerActivity(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY, async (
         activityCtx: any,
         input: {
             parentSessionId: string;
@@ -5532,9 +5549,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         },
     ): Promise<void> => {
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
-        if (!catalog) throw new Error("No session catalog — cannot bootstrap workflow child");
+        if (!catalog) throw new Error("No session catalog — cannot bootstrap agent child");
         const child = await cmsRetryCritical(
-            `enqueueWorkflowAgentBootstrap.getSession child=${input.childSessionId}`,
+            `enqueueAgentChildBootstrap.getSession child=${input.childSessionId}`,
             () => catalog.getSession(input.childSessionId),
             (message) => activityCtx.traceInfo(message),
         );
@@ -5544,7 +5561,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             || child.sessionKind === "workflow"
         ) {
             throw new Error(
-                `Workflow agent child ${input.childSessionId} is not a conversational child of ${input.parentSessionId}`,
+                `Agent child ${input.childSessionId} is not a conversational child of ${input.parentSessionId}`,
             );
         }
         let beforeSeq = Number.MAX_SAFE_INTEGER;
@@ -5561,7 +5578,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 return Array.isArray(ids) && ids.includes(input.clientMessageId);
             })) {
                 activityCtx.traceInfo(
-                    `[enqueueWorkflowAgentBootstrap] delivery already recorded for ${input.clientMessageId}`,
+                    `[enqueueAgentChildBootstrap] delivery already recorded for ${input.clientMessageId}`,
                 );
                 return;
             }
@@ -5572,7 +5589,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const sdkClient = new PilotSwarmClient({
             ...internalClientConfig(),
             traceWriter: (message: string) => activityCtx.traceInfo(
-                `[enqueueWorkflowAgentBootstrap] ${message}`,
+                `[enqueueAgentChildBootstrap] ${message}`,
             ),
         });
         try {

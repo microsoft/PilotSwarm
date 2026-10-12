@@ -54,9 +54,9 @@ vi.mock("../../src/client.js", () => ({
 
 import { registerActivities } from "../../src/session-proxy.ts";
 import {
-    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
-    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
-} from "../../src/workflow-orchestration_1_0_0/contracts.ts";
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+} from "../../src/agent-child-bootstrap.ts";
 
 describe("workflow child bootstrap replay", () => {
     it("reuses the child and retries bootstrap with one stable delivery identity", async () => {
@@ -124,13 +124,13 @@ describe("workflow child bootstrap replay", () => {
         };
 
         await expect(
-            handlers.get(ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY)(
+            handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY)(
                 activityContext,
                 ensureInput,
             ),
         ).rejects.toThrow("simulated metadata failure after create");
         await expect(
-            handlers.get(ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY)(
+            handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY)(
                 activityContext,
                 ensureInput,
             ),
@@ -143,16 +143,16 @@ describe("workflow child bootstrap replay", () => {
             childSessionId,
             task: "Inspect the change.",
             requiredTool: "submit_workflow_result",
-            clientMessageId: `workflow-bootstrap:${childSessionId}`,
+            clientMessageId: `agent-bootstrap:${childSessionId}`,
         };
         await expect(
-            handlers.get(ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY)(
+            handlers.get(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY)(
                 activityContext,
                 bootstrapInput,
             ),
         ).rejects.toThrow("simulated activity result loss after enqueue");
         await expect(
-            handlers.get(ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY)(
+            handlers.get(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY)(
                 activityContext,
                 bootstrapInput,
             ),
@@ -160,7 +160,7 @@ describe("workflow child bootstrap replay", () => {
 
         expect(transport.sendCalls).toHaveLength(1);
         expect(transport.sendCalls[0].options.clientMessageIds).toEqual([
-            `workflow-bootstrap:${childSessionId}`,
+            `agent-bootstrap:${childSessionId}`,
         ]);
     });
 });
