@@ -305,7 +305,7 @@ nodes leave the buffer at once, with the buffer controller topping up the rest.
 | 3 | **Job Queue + Repo-Affinity Lease** | Durable session/job queue (existing CMS / duroxide) extended with `repo`/`ref` tags and affinity routing to a warmed pod. |
 | 4 | **Workspace Materializer** | Pod-side logic: at **standby** → clone + checkout base; at **claim** → `fetch` + `checkout <ref>`. (The `prepareWorkspace` activity.) |
 | 5 | **Readiness signal** | A pod advertises READY only after its repo is materialized, so the lease never routes a job to a not-yet-warm pod. |
-| 6 | **Credential provider** | Shared fleet mirrors and deployment-owned PluginSpec clones use the pod UAMI to mint short-lived Azure DevOps bearer tokens. PAT fallback is an explicit break-glass option and is absent from normal fleet manifests. |
+| 6 | **Credential provider** | Shared fleet mirrors use the pod UAMI to mint short-lived Azure DevOps bearer tokens. PAT fallback is an explicit break-glass option and is absent from normal fleet manifests. |
 | 7 | **Session Runtime** | Existing PilotSwarm worker running the session, `workingDirectory` = the pre-materialized checkout. |
 
 > **1:1 exclusive-node realization:** the Standby Pool Controller (2) and
@@ -557,8 +557,8 @@ SubmitRequest(git_ref=…)                       # Python SDK
 Managed fleets use the pod's user-assigned managed identity for private Azure
 DevOps Git access:
 
-- The Git-cache daemon and deployment-owned PluginSpec clones request an
-  Azure DevOps-scoped Entra token through AKS workload identity.
+- The Git-cache daemon requests an Azure DevOps-scoped Entra token through AKS
+  workload identity.
 - Git receives credentials through environment-only `http.extraheader`
   configuration, so tokens never land on disk or in argv/log output.
 - The mirror reacquires a token for each network operation.

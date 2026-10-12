@@ -590,46 +590,6 @@ export type {
     AgentPackageInstallResult,
     InstalledAgentPackage,
 } from "./agent-package-installer.js";
-// ─── PluginSpec (deployment-configured external plugin sources) ──
-export {
-    parsePluginSpec,
-    installPluginSpecs,
-    fetchKeyVaultSecret,
-    getKeyVaultSecretOptional,
-    putKeyVaultSecret,
-    adoCloneUrl,
-    PLUGIN_SPEC_SCHEMES,
-} from "./plugin-spec.js";
-export type {
-    PluginSpecEntry,
-    PluginSpecScheme,
-    PluginSpecInstallResult,
-    InstallPluginSpecsResult,
-} from "./plugin-spec.js";
-export {
-    parsePluginSpecs,
-    PluginSpecError,
-} from "./plugin-source-spec.js";
-export type {
-    GitPluginSpec,
-    LocalPluginSpec,
-    PluginSpec,
-} from "./plugin-source-spec.js";
-export {
-    installPluginSpecs as installValidatedPluginSpecs,
-    PluginInstallError,
-} from "./plugin-installer.js";
-export type {
-    InstalledPluginSpec,
-    InstallPluginSpecsOptions,
-    PluginFileSystem,
-} from "./plugin-installer.js";
-export { createGitPluginSourceResolver } from "./git-plugin-source.js";
-export type {
-    GitPluginSourceResolver,
-    PluginProcessOptions,
-    PluginProcessRunner,
-} from "./git-plugin-source.js";
 export type {
     WorkerRow,
     WorkerPhase,
