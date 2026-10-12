@@ -170,6 +170,14 @@ const PROVIDER_ERROR_STATUS = {
     PROVIDER_IN_USE: 409,
     WORKFLOW_DEFINITION_NOT_FOUND: 404,
     WORKFLOW_DEFINITION_SOURCE_INVALID: 400,
+    WORKFLOW_DEFINITION_BAD_SCOPE: 400,
+    WORKFLOW_DEFINITION_INVALID: 400,
+    WORKFLOW_DEFINITION_FORBIDDEN: 403,
+    WORKFLOW_DEFINITION_CONFLICT: 409,
+    WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID: 400,
+    WORKFLOW_AGENT_PACKAGE_UNRESOLVED: 400,
+    WORKFLOW_AGENT_NOT_DECLARED: 400,
+    WORKFLOW_AGENT_PACKAGE_UNAVAILABLE: 409,
     WORKFLOW_INPUT_INVALID: 400,
     WORKFLOW_INPUT_REQUIRED: 400,
     WORKFLOW_INPUT_SCHEMA_INVALID: 400,
@@ -762,12 +770,34 @@ export class PortalRuntime {
                 );
                 return started;
             }
-            case "registerWorkflowDefinition":
+            case "registerWorkflowDefinition": {
+                const scope = safeParams.scope == null || safeParams.scope === ""
+                    ? "user"
+                    : safeParams.scope;
+                if (scope !== "user" && scope !== "shared") {
+                    throw Object.assign(
+                        new Error("Workflow definition scope must be user or shared."),
+                        { code: "WORKFLOW_DEFINITION_BAD_SCOPE" },
+                    );
+                }
                 return this.transport.mgmt.registerWorkflowDefinition({
                     source: safeParams.source,
+                    scope,
+                }, {
+                    scope,
+                    owner,
+                    isAdmin: resourceAdmin,
+                    createdBy: owner?.email || owner?.displayName || null,
                 });
+            }
+            case "listWorkflowDefinitions":
+                return this.transport.mgmt.listWorkflowDefinitions(owner, resourceAdmin);
             case "getWorkflowDefinition":
-                return this.transport.mgmt.getWorkflowDefinition(safeParams.definitionId);
+                return this.transport.mgmt.getWorkflowDefinition(
+                    safeParams.definitionId,
+                    owner,
+                    resourceAdmin,
+                );
             case "getWorkflow":
                 return this.transport.mgmt.getWorkflow(safeParams.sessionId);
             case "listWorkflowExecutions":

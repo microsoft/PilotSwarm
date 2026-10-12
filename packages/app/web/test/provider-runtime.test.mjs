@@ -97,6 +97,7 @@ test("portal workflow starts place the session for the caller outside admission"
         },
         isAdmin: false,
     });
+
     assert.deepEqual(placements, [{
         viewer: {
             provider: "entra",
@@ -107,4 +108,50 @@ test("portal workflow starts place the session for the caller outside admission"
         groupId: "group-1",
     }]);
     assert.equal(result.sessionId, "workflow-1");
+});
+
+test("portal workflow registration defaults only an omitted scope", async () => {
+    const calls = [];
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.transport = {
+        mgmt: {
+            async registerWorkflowDefinition(request, options) {
+                calls.push({ request, options });
+                return {
+                    definitionId: "definition-1",
+                    graphId: "example@1.0.0",
+                    scope: options.scope,
+                };
+            },
+        },
+    };
+    const authContext = {
+        principal: {
+            provider: "entra",
+            subject: "user-1",
+            email: "user@example.test",
+        },
+        authorization: { role: "user" },
+    };
+    const source = {
+        kind: "git",
+        repositoryUrl: "https://git.example.test/workflows.git",
+        gitRef: "refs/heads/main",
+        workflowPath: "workflow.yaml",
+    };
+
+    await runtime.call("registerWorkflowDefinition", { source }, authContext);
+    assert.equal(calls[0].request.scope, "user");
+    assert.equal(calls[0].options.scope, "user");
+
+    await assert.rejects(
+        () => runtime.call(
+            "registerWorkflowDefinition",
+            { source, scope: "shraed" },
+            authContext,
+        ),
+        error => error?.code === "WORKFLOW_DEFINITION_BAD_SCOPE",
+    );
+    assert.equal(calls.length, 1);
 });

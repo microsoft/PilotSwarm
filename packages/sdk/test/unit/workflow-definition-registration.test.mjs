@@ -55,6 +55,39 @@ states:
     outcome: blocked
 `;
 
+const EXTERNAL_PACKAGE_WORKFLOW = PACKAGE_WORKFLOW.replace(
+    "    agent: package-inspector\n",
+    `    agent: external-inspector
+    agentPackage:
+      name: external-tools
+      scope: shared
+`,
+);
+
+const MIXED_PACKAGE_WORKFLOW = PACKAGE_WORKFLOW.replace(
+    "  publish:\n",
+    `  external:
+    type: agent
+    agent: external-inspector
+    agentPackage:
+      name: external-tools
+      scope: shared
+    input: {}
+    result:
+      schema: package/inspection/v1
+    completion:
+      mode: one-shot
+      outcomes:
+        - succeeded
+        - blocked
+    transition:
+      handler:
+        module: ./transitions.mjs
+        export: inspect
+  publish:
+`,
+);
+
 function enableArtifactLocks(catalog) {
     catalog.withPackageArtifactLocks = async (_targets, fn) => fn(catalog);
     return catalog;
@@ -461,6 +494,145 @@ test("management registration rejects workflow agents absent from the package", 
     );
 });
 
+test("management registration binds an independently registered package", async () => {
+    let persisted;
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact(_sessionId, filename) {
+            assert.match(filename, /^workflow-package\.[a-f0-9]{64}\.tar\.gz$/);
+            return { filename };
+        },
+    };
+    client._catalog = {
+        async getAgentPackage(name, viewer, isAdmin, selector) {
+            assert.equal(name, "external-tools");
+            assert.deepEqual(viewer, { provider: "entra", subject: "user-1" });
+            assert.equal(isAdmin, false);
+            assert.deepEqual(selector, { scope: "shared" });
+            return {
+                packageId: "external-package-id",
+                enabled: true,
+                activeVersionId: "external-version-id",
+                versions: [{
+                    versionId: "external-version-id",
+                    manifest: {
+                        agents: [{ name: "external-inspector" }],
+                    },
+                }],
+            };
+        },
+        async registerWorkflowDefinition(input) {
+            persisted = input;
+            return {
+                definitionId: input.definitionId,
+                graphId: input.manifest.graphId,
+            };
+        },
+    };
+    enableArtifactLocks(client._catalog);
+
+    await client.registerWorkflowDefinition(
+        EXTERNAL_PACKAGE_WORKFLOW,
+        {
+            packageRoot: PACKAGE_ROOT,
+            scope: "user",
+            owner: { provider: "entra", subject: "user-1" },
+            isAdmin: false,
+            createdBy: "user@example.test",
+        },
+    );
+
+    assert.equal(persisted.scope, "user");
+    assert.deepEqual(persisted.owner, { provider: "entra", subject: "user-1" });
+    assert.equal(persisted.createdBy, "user@example.test");
+    assert.equal(
+        persisted.manifest.states.find(state => state.id === "inspect").agentPackageId,
+        "external-package-id",
+    );
+});
+
+test("management registration supports mixed bundled and external agent packages", async () => {
+    let atomicRegistration;
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact(_sessionId, filename) {
+            return { filename };
+        },
+    };
+    client._catalog = {
+        async getAgentPackage(name) {
+            if (name === "external-tools") {
+                return {
+                    packageId: "external-package-id",
+                    enabled: true,
+                    activeVersionId: "external-version-id",
+                    versions: [{
+                        versionId: "external-version-id",
+                        manifest: {
+                            agents: [{ name: "external-inspector" }],
+                        },
+                    }],
+                };
+            }
+            return null;
+        },
+        async registerWorkflowDefinitionWithAgentPackage(input) {
+            atomicRegistration = input;
+            return {
+                definitionId: input.definition.definitionId,
+                graphId: input.definition.manifest.graphId,
+            };
+        },
+    };
+    enableArtifactLocks(client._catalog);
+
+    await client.registerWorkflowDefinition(
+        MIXED_PACKAGE_WORKFLOW,
+        { packageRoot: PACKAGE_ROOT },
+    );
+
+    const states = atomicRegistration.definition.manifest.states;
+    assert.equal(
+        states.find(state => state.id === "external").agentPackageId,
+        "external-package-id",
+    );
+    assert.equal(
+        states.find(state => state.id === "inspect").agentPackageId,
+        atomicRegistration.packageId,
+    );
+    assert.notEqual(atomicRegistration.packageId, "external-package-id");
+});
+
+test("shared workflows cannot reference user-scoped packages", async () => {
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact() {
+            assert.fail("scope validation should precede upload");
+        },
+    };
+    client._catalog = {
+        async getAgentPackage() {
+            assert.fail("scope validation should precede package lookup");
+        },
+    };
+
+    await assert.rejects(
+        () => client.registerWorkflowDefinition(
+            EXTERNAL_PACKAGE_WORKFLOW.replace("scope: shared", "scope: user"),
+            {
+                packageRoot: PACKAGE_ROOT,
+                scope: "shared",
+                owner: { provider: "entra", subject: "user-1" },
+                isAdmin: false,
+            },
+        ),
+        error => error?.code === "WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID",
+    );
+});
+
 test("management registration uses a deployment workflow package resolver", async () => {
     const source = {
         kind: "git",
@@ -563,4 +735,40 @@ test("management registration cleans up a resolved package after registration fa
         error => error?.code === "TEST_UPLOAD_FAILED",
     );
     assert.equal(cleaned, true);
+});
+
+test("management registration exposes workflow catalog error codes", async () => {
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact(_sessionId, filename) {
+            return { filename };
+        },
+    };
+    client._catalog = {
+        async registerWorkflowDefinition() {
+            throw Object.assign(
+                new Error(
+                    "WORKFLOW_DEFINITION_FORBIDDEN: only the workflow creator or an admin may publish",
+                ),
+                { code: "P0001" },
+            );
+        },
+    };
+    enableArtifactLocks(client._catalog);
+
+    await assert.rejects(
+        () => client.registerWorkflowDefinition(
+            TERMINAL_WORKFLOW,
+            {
+                packageRoot: PACKAGE_ROOT,
+                scope: "shared",
+                owner: { provider: "entra", subject: "user-2" },
+                isAdmin: false,
+            },
+        ),
+        error =>
+            error?.code === "WORKFLOW_DEFINITION_FORBIDDEN"
+            && /only the workflow creator/.test(error.message),
+    );
 });

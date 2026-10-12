@@ -433,6 +433,53 @@ test("workflow overview is session-readable rather than fleet-admin", () => {
     assert.equal(operation?.params?.sessionId?.in, "path");
 });
 
+test("workflow definition registration and reads require authentication, not fleet admin", () => {
+    for (const name of [
+        "registerWorkflowDefinition",
+        "listWorkflowDefinitions",
+        "getWorkflowDefinition",
+    ]) {
+        assert.equal(OPERATIONS.find(operation => operation.name === name)?.access, "authed");
+    }
+});
+
+test("workflow ownership conflicts surface as forbidden API responses", async () => {
+    const { baseUrl, close } = await createHarness({
+        callImpl: (name) => {
+            if (name === "registerWorkflowDefinition") {
+                throw Object.assign(
+                    new Error("Only the workflow creator may replace this definition."),
+                    { code: "WORKFLOW_DEFINITION_FORBIDDEN" },
+                );
+            }
+            return null;
+        },
+    });
+    try {
+        const response = await fetch(
+            `${baseUrl}/api/v1/management/workflow-definitions`,
+            {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    scope: "shared",
+                    source: {
+                        kind: "git",
+                        repositoryUrl: "https://git.example.test/workflows.git",
+                        gitRef: "refs/heads/main",
+                        workflowPath: "workflow.yaml",
+                    },
+                }),
+            },
+        );
+        assert.equal(response.status, 403);
+        const payload = await response.json();
+        assert.equal(payload.error.code, "WORKFLOW_DEFINITION_FORBIDDEN");
+    } finally {
+        await close();
+    }
+});
+
 test("every fleet:admin op is also admin-gated at the router", async () => {
     // The router hard-gates op.admin || op.access==='fleet:admin'. Verify each
     // fleet:admin op 403s for a non-admin regardless of the ownership flag.

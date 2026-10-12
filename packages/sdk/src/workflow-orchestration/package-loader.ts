@@ -16,6 +16,9 @@ import {
     extractAgentPackageTarGz,
     packAgentPackage,
 } from "../agent-package-format.js";
+import type {
+    WorkflowAgentStatePackageBinding,
+} from "./compiler.js";
 import {
     WorkflowTransitionRegistry,
     compileAndRegisterWorkflowYaml,
@@ -313,6 +316,8 @@ export async function compileWorkflowPackageSnapshotYaml(
             packageId: string;
             agentNames: readonly string[];
         };
+        agentBindings?: Readonly<Record<string, WorkflowAgentStatePackageBinding>>;
+        requireAgentBindings?: boolean;
     } = {},
 ): Promise<CompiledWorkflowYaml> {
     const transitions = await loadWorkflowTransitionRegistryFromSnapshot(yaml, snapshot);
@@ -320,6 +325,8 @@ export async function compileWorkflowPackageSnapshotYaml(
         transitions,
         packageSha256: snapshot.packageSha256,
         ...(options.agentPackage ? { agentPackage: options.agentPackage } : {}),
+        ...(options.agentBindings ? { agentBindings: options.agentBindings } : {}),
+        ...(options.requireAgentBindings ? { requireAgentBindings: true } : {}),
     });
 }
 
@@ -331,11 +338,15 @@ export async function compileWorkflowPackageYaml(
             packageId: string;
             agentNames: readonly string[];
         };
+        agentBindings?: Readonly<Record<string, WorkflowAgentStatePackageBinding>>;
+        requireAgentBindings?: boolean;
     },
 ): Promise<CompiledWorkflowYaml> {
     const snapshot = await materializeWorkflowPackageSnapshot(options.packageRoot);
     return compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
         ...(options.agentPackage ? { agentPackage: options.agentPackage } : {}),
+        ...(options.agentBindings ? { agentBindings: options.agentBindings } : {}),
+        ...(options.requireAgentBindings ? { requireAgentBindings: true } : {}),
     });
 }
 

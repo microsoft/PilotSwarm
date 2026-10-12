@@ -101,6 +101,16 @@ export interface CompiledWorkflowAgentStateManifest
     };
 }
 
+export interface WorkflowAgentPackageSelector {
+    name: string;
+    scope: "shared" | "user";
+}
+
+export interface WorkflowAgentStatePackageBinding {
+    packageId: string;
+    agentNames?: readonly string[];
+}
+
 export interface CompiledWorkflowQuestionStateManifest
     extends CompiledWorkflowTransitionState {
     type: "question";
@@ -553,6 +563,8 @@ export function compileWorkflowYaml(
             packageId: string;
             agentNames: readonly string[];
         };
+        agentBindings?: Readonly<Record<string, WorkflowAgentStatePackageBinding>>;
+        requireAgentBindings?: boolean;
     },
 ): CompiledWorkflowYaml {
     if (typeof yaml !== "string" || yaml.trim().length === 0) {
@@ -783,12 +795,42 @@ export function compileWorkflowYaml(
             );
         }
         const agent = requireString(state.agent, `${path}.agent`);
+        const authoredPackage = state.agentPackage == null
+            ? null
+            : requireObject(state.agentPackage, `${path}.agentPackage`);
+        if (authoredPackage) {
+            requireString(authoredPackage.name, `${path}.agentPackage.name`);
+            const scope = requireString(
+                authoredPackage.scope,
+                `${path}.agentPackage.scope`,
+            );
+            if (scope !== "shared" && scope !== "user") {
+                throw compilerError(
+                    `${path}.agentPackage.scope must be 'shared' or 'user'.`,
+                    "WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID",
+                );
+            }
+        }
+        const agentBinding = options.agentBindings?.[stateId]
+            ?? options.agentPackage;
+        if (authoredPackage && !agentBinding) {
+            throw compilerError(
+                `${path}.agentPackage was not resolved during registration.`,
+                "WORKFLOW_AGENT_PACKAGE_UNRESOLVED",
+            );
+        }
+        if (options.requireAgentBindings && !agentBinding) {
+            throw compilerError(
+                `${path}.agent has no registered package binding.`,
+                "WORKFLOW_AGENT_PACKAGE_UNRESOLVED",
+            );
+        }
         if (
-            options.agentPackage
-            && !options.agentPackage.agentNames.includes(agent)
+            agentBinding?.agentNames
+            && !agentBinding.agentNames.includes(agent)
         ) {
             throw compilerError(
-                `${path}.agent '${agent}' is not declared by the workflow package.`,
+                `${path}.agent '${agent}' is not declared by its selected package.`,
                 "WORKFLOW_AGENT_NOT_DECLARED",
             );
         }
@@ -856,8 +898,8 @@ export function compileWorkflowYaml(
             id: stateId,
             type: "agent",
             agent,
-            ...(options.agentPackage
-                ? { agentPackageId: options.agentPackage.packageId }
+            ...(agentBinding
+                ? { agentPackageId: agentBinding.packageId }
                 : {}),
             input: inputTemplate,
             resultSchema,
@@ -910,6 +952,8 @@ export function compileAndRegisterWorkflowYaml(
             packageId: string;
             agentNames: readonly string[];
         };
+        agentBindings?: Readonly<Record<string, WorkflowAgentStatePackageBinding>>;
+        requireAgentBindings?: boolean;
     },
 ): {
     compiled: CompiledWorkflowYaml;
@@ -920,4 +964,50 @@ export function compileAndRegisterWorkflowYaml(
         compiled,
         definition: registerInMemoryWorkflowGraph(compiled.graph),
     };
+}
+
+export function workflowAgentPackageSelectors(
+    yaml: string,
+): Readonly<Record<string, WorkflowAgentPackageSelector>> {
+    const document = parseDocument(yaml, {
+        prettyErrors: false,
+        strict: true,
+        uniqueKeys: true,
+    });
+    if (document.errors.length > 0) {
+        throw compilerError(
+            `Workflow YAML could not be parsed: ${document.errors.map(error => error.message).join("; ")}`,
+            "WORKFLOW_YAML_INVALID",
+        );
+    }
+    const root = requireObject(
+        document.toJS({ maxAliasCount: 50 }),
+        "Workflow document",
+    );
+    const states = requireObject(root.states, "states");
+    const selectors: Record<string, WorkflowAgentPackageSelector> = {};
+    for (const [stateId, stateValue] of Object.entries(states)) {
+        const state = requireObject(stateValue, `states.${stateId}`);
+        if (state.type !== "agent" || state.agentPackage == null) continue;
+        const selector = requireObject(
+            state.agentPackage,
+            `states.${stateId}.agentPackage`,
+        );
+        const name = requireString(
+            selector.name,
+            `states.${stateId}.agentPackage.name`,
+        );
+        const scope = requireString(
+            selector.scope,
+            `states.${stateId}.agentPackage.scope`,
+        );
+        if (scope !== "shared" && scope !== "user") {
+            throw compilerError(
+                `states.${stateId}.agentPackage.scope must be 'shared' or 'user'.`,
+                "WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID",
+            );
+        }
+        selectors[stateId] = { name, scope };
+    }
+    return deepFreeze(selectors);
 }

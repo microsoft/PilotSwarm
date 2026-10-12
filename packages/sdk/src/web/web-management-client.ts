@@ -98,11 +98,18 @@ export class WebPilotSwarmManagementClient {
                 { code: "WEB_MODE_UNSUPPORTED" },
             );
         }
-        return this._api.call("registerWorkflowDefinition", { source: requestOrYaml.source });
+        return this._api.call("registerWorkflowDefinition", {
+            source: requestOrYaml.source,
+            scope: requestOrYaml.scope ?? "user",
+        });
     }
 
     async getWorkflowDefinition(definitionId: string): Promise<any> {
         return this._api.call("getWorkflowDefinition", { definitionId });
+    }
+
+    async listWorkflowDefinitions(): Promise<any[]> {
+        return this._api.call("listWorkflowDefinitions", {});
     }
 
     async getWorkflow(sessionId: string): Promise<any> {

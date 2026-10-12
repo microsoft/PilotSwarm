@@ -31,8 +31,8 @@ The workflow author owns both:
 - the transition function that maps a recorded, schema-valid output to the next
   directive.
 
-The author publishes those contracts as one immutable package containing the
-workflow definition and its referenced artifacts:
+The author publishes those contracts as one immutable workflow package
+containing the definition and its workflow-owned artifacts:
 
 ```text
 workflow.yaml
@@ -189,10 +189,7 @@ The agent-state example remains intentionally small:
 states:
   state-a:
     type: agent
-    agent:
-      path: ./agents/example-agent.agent.md
-    prompt:
-      path: ./prompts/state-a.md
+    agent: example-agent
     input:
       value: ${inputs.value}
     result:
@@ -208,8 +205,26 @@ states:
         export: afterStateA
 ```
 
-The agent definition describes instructions and capabilities, while the prompt
-describes the state-specific task.
+The selected agent definition describes instructions and capabilities, while
+the state input describes the workflow-specific task.
+
+An agent state may instead select an independently registered agent package:
+
+```yaml
+states:
+  state-a:
+    type: agent
+    agent: example-agent
+    agentPackage:
+      name: shared-example-agents
+      scope: shared
+```
+
+Registration resolves the selector to a logical package ID and stores that ID
+on the compiled state. Admission later pins the package's active immutable
+version, so an admitted execution does not move when a package is upgraded.
+States without `agentPackage` use the agent package bundled with the workflow.
+A workflow may mix bundled and independently registered packages across states.
 
 ## Transition callback declaration
 
@@ -340,23 +355,48 @@ operation for Git-backed packages:
 
 ```typescript
 const registered = await management.registerWorkflowDefinition({
+    scope: "user",
     source: {
         kind: "git",
-        repositoryUrl: "https://github.com/example/workflows",
+        repositoryUrl: "https://git.example.test/workflows.git",
         gitRef: "refs/heads/main",
         workflowPath: "approval/workflow.yaml",
     },
 });
 ```
 
-PilotSwarm checks the repository against the configured import allowlist,
-resolves the requested ref to an immutable commit, checks out that commit
-without submodules or Git LFS smudging, and treats the workflow file's directory
-as the package root. Git credentials come from the server environment; the
-request cannot carry credentials, query parameters, or fragments. Registration
-is currently a `fleet:admin` operation.
+The default resolver checks the repository against the configured import
+allowlist, resolves the requested ref to an immutable commit, checks out that
+commit without submodules or Git LFS smudging, and treats the workflow file's
+directory as the package root. Deployments may supply another
+`WorkflowPackageResolver` for authenticated source systems. Credentials remain
+inside that deployment-owned resolver; the request cannot carry credentials.
 
-CMS migration `0084` retains the authored YAML, source hash, requested Git ref,
+Every authenticated user may register definitions. User-scoped definitions are
+visible only to their owner and administrators. Shared definitions are visible
+to every authenticated user but remain creator-owned for replacement. Bundled
+agent packages inherit the workflow's scope and owner. User workflows may
+select the owner's user packages or shared packages; shared workflows may
+select only shared packages.
+The CMS acquires the same package-scoped advisory locks used by admission and
+deletion while registering a definition, then validates package availability
+and ownership inside that transaction. Registration therefore cannot commit a
+dangling or cross-owner package reference if deletion races with publication.
+
+The CLI exposes the same Git-backed surface:
+
+```text
+pilotswarm workflows register \
+  --repo https://git.example.test/workflows.git \
+  --ref refs/heads/main \
+  --path approval/workflow.yaml \
+  --user
+pilotswarm workflows list
+pilotswarm workflows show <definition-id>
+```
+
+CMS migrations `0084` and `0089` retain the authored YAML, ownership, source
+hash, requested Git ref,
 resolved commit, and package artifact identity for audit and recompilation. It
 stores the package hash as a first-class definition invariant and stores the
 normalized data-only manifest as JSONB with the compiler version, graph
@@ -445,9 +485,9 @@ package artifact. Duroxide records both activity results, so replay does not
 depend on process-local graph registration. Registered definitions start
 through the SDK or `POST /api/v1/workflows`; admission is persisted before the
 idempotent Duroxide start so a retry can repair a crash between those steps.
-In this initial runtime slice, agent names resolve through the worker's installed agent catalog;
-loading agent definitions, skills, and MCP configuration from the workflow
-package is a later portability extension.
+Agent states carry logical package IDs in the compiled definition. Admission
+resolves each logical package to an exact version, persists those pins, and
+child startup restores that immutable package version on any worker.
 
 Each nonterminal state admission receives a workflow-scoped,
 monotonically-increasing `executionSequence`. For an agent state, the durable

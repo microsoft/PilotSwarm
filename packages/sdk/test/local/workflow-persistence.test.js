@@ -252,6 +252,294 @@ describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
         })).rejects.toThrow(/WORKFLOW_DEFINITION_CONFLICT/);
     });
 
+    it("isolates user definitions and preserves creator ownership for shared definitions", async () => {
+        const ownerA = { provider: "entra", subject: "owner-a" };
+        const ownerB = { provider: "entra", subject: "owner-b" };
+        const makeRegistration = ({
+            definitionId,
+            graphId,
+            scope,
+            owner,
+            createdBy,
+        }) => {
+            const [name, version] = graphId.split("@");
+            const packageSha256 = "b".repeat(64);
+            return {
+                definitionId,
+                scope,
+                owner,
+                createdBy,
+                isAdmin: false,
+                sourceYaml: `workflow-${graphId}`,
+                sourceSha256: `source-${graphId}`,
+                packageSha256,
+                packageArtifactFilename: `workflow-package.${packageSha256}.tar.gz`,
+                packageSource: { kind: "local-package" },
+                compiledSha256: `compiled-${graphId}`,
+                manifest: {
+                    compilerVersion: "v1alpha1-4",
+                    apiVersion: "pilotswarm.dev/v1alpha1",
+                    kind: "Workflow",
+                    graphId,
+                    packageSha256,
+                    metadata: { name, version },
+                    inputSchema: {},
+                    configuration: {},
+                    initialState: "done",
+                    states: [{
+                        id: "done",
+                        type: "terminal",
+                        outcome: "succeeded",
+                        summary: "Done.",
+                        hasOutput: false,
+                    }],
+                },
+            };
+        };
+
+        const userA = await catalog.registerWorkflowDefinition(makeRegistration({
+            definitionId: "owned-user-a",
+            graphId: "owned-workflow@1.0.0",
+            scope: "user",
+            owner: ownerA,
+            createdBy: "owner-a@example.test",
+        }));
+        const userB = await catalog.registerWorkflowDefinition(makeRegistration({
+            definitionId: "owned-user-b",
+            graphId: "owned-workflow@1.0.0",
+            scope: "user",
+            owner: ownerB,
+            createdBy: "owner-b@example.test",
+        }));
+        const shared = await catalog.registerWorkflowDefinition(makeRegistration({
+            definitionId: "owned-shared",
+            graphId: "shared-workflow@1.0.0",
+            scope: "shared",
+            owner: ownerA,
+            createdBy: "owner-a@example.test",
+        }));
+
+        expect(userA).toMatchObject({
+            scope: "user",
+            owner: ownerA,
+            createdBy: "owner-a@example.test",
+        });
+        expect(userB).toMatchObject({ scope: "user", owner: ownerB });
+        expect(shared).toMatchObject({ scope: "shared", owner: ownerA });
+
+        expect(
+            await catalog.getWorkflowDefinitionForViewer(userA.definitionId, ownerA, false),
+        ).not.toBeNull();
+        expect(
+            await catalog.getWorkflowDefinitionForViewer(userB.definitionId, ownerA, false),
+        ).toBeNull();
+        expect(
+            await catalog.getWorkflowDefinitionForViewer(shared.definitionId, ownerB, false),
+        ).not.toBeNull();
+
+        const visibleToA = await catalog.listWorkflowDefinitions(ownerA, false);
+        expect(visibleToA.map(definition => definition.definitionId)).toContain(userA.definitionId);
+        expect(visibleToA.map(definition => definition.definitionId)).not.toContain(userB.definitionId);
+        expect(visibleToA.map(definition => definition.definitionId)).toContain(shared.definitionId);
+
+        await expect(catalog.registerWorkflowDefinition(makeRegistration({
+            definitionId: "shared-owner-conflict",
+            graphId: "shared-workflow@1.0.0",
+            scope: "shared",
+            owner: ownerB,
+            createdBy: "owner-b@example.test",
+        }))).rejects.toThrow(/WORKFLOW_DEFINITION_FORBIDDEN/);
+
+        const adminRetry = await catalog.registerWorkflowDefinition({
+            ...makeRegistration({
+                definitionId: "shared-admin-retry",
+                graphId: "shared-workflow@1.0.0",
+                scope: "shared",
+                owner: ownerB,
+                createdBy: "admin@example.test",
+            }),
+            isAdmin: true,
+        });
+        expect(adminRetry.definitionId).toBe(shared.definitionId);
+    });
+
+    it("enforces workflow package ownership in the catalog transaction", async () => {
+        const ownerA = { provider: "entra", subject: "package-owner-a" };
+        const ownerB = { provider: "entra", subject: "package-owner-b" };
+        const publish = (name, scope, owner, sha) =>
+            catalog.publishAgentPackage({
+                name,
+                scope,
+                owner,
+                sourceId: null,
+                semver: "1.0.0",
+                sha256: sha,
+                sizeBytes: 100,
+                artifactFilename: `${name}.1.0.0.${sha}.tar.gz`,
+                commitSha: null,
+                manifest: {
+                    name,
+                    version: "1.0.0",
+                    agents: [{ name: "atomic-agent" }],
+                },
+                createdBy: "workflow-package-test",
+                isAdmin: false,
+            });
+        const sharedPackage = await publish(
+            "workflow-shared-reference",
+            "shared",
+            ownerA,
+            "1".repeat(64),
+        );
+        const userPackage = await publish(
+            "workflow-user-reference",
+            "user",
+            ownerA,
+            "2".repeat(64),
+        );
+        const definition = ({
+            definitionId,
+            graphName,
+            packageId,
+            scope,
+            owner,
+            sourceSha,
+        }) => ({
+            ...atomicWorkflowRegistration({
+                packageName: "unused",
+                packageId,
+                versionId: "unused",
+                semver: "1.0.0",
+                packageSha: "3".repeat(64),
+                definitionId,
+                graphName,
+                sourceSha,
+            }).definition,
+            scope,
+            owner,
+            createdBy: `${owner.subject}@example.test`,
+            isAdmin: false,
+        });
+
+        await expect(catalog.registerWorkflowDefinition(definition({
+            definitionId: "shared-uses-user-package",
+            graphName: "shared-uses-user-package",
+            packageId: userPackage.packageId,
+            scope: "shared",
+            owner: ownerA,
+            sourceSha: "4".repeat(64),
+        }))).rejects.toThrow(/WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID/);
+
+        await expect(catalog.registerWorkflowDefinition(definition({
+            definitionId: "other-user-package",
+            graphName: "other-user-package",
+            packageId: userPackage.packageId,
+            scope: "user",
+            owner: ownerB,
+            sourceSha: "5".repeat(64),
+        }))).rejects.toThrow(/WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID/);
+
+        await expect(catalog.registerWorkflowDefinition(definition({
+            definitionId: "owner-user-package",
+            graphName: "owner-user-package",
+            packageId: userPackage.packageId,
+            scope: "user",
+            owner: ownerA,
+            sourceSha: "6".repeat(64),
+        }))).resolves.toMatchObject({
+            definitionId: "owner-user-package",
+            scope: "user",
+            owner: ownerA,
+        });
+
+        await expect(catalog.registerWorkflowDefinition(definition({
+            definitionId: "user-shared-package",
+            graphName: "user-shared-package",
+            packageId: sharedPackage.packageId,
+            scope: "user",
+            owner: ownerB,
+            sourceSha: "7".repeat(64),
+        }))).resolves.toMatchObject({
+            definitionId: "user-shared-package",
+            scope: "user",
+            owner: ownerB,
+        });
+    });
+
+    it("cannot commit an external package reference after concurrent deletion", async () => {
+        const owner = { provider: "entra", subject: "package-race-owner" };
+        const published = await catalog.publishAgentPackage({
+            name: "workflow-registration-race",
+            scope: "shared",
+            owner,
+            sourceId: null,
+            semver: "1.0.0",
+            sha256: "8".repeat(64),
+            sizeBytes: 100,
+            artifactFilename: `workflow-registration-race.1.0.0.${"8".repeat(64)}.tar.gz`,
+            commitSha: null,
+            manifest: {
+                name: "workflow-registration-race",
+                version: "1.0.0",
+                agents: [{ name: "atomic-agent" }],
+            },
+            createdBy: "workflow-package-test",
+            isAdmin: false,
+        });
+        const registration = {
+            ...atomicWorkflowRegistration({
+                packageName: "unused",
+                packageId: published.packageId,
+                versionId: "unused",
+                semver: "1.0.0",
+                packageSha: "9".repeat(64),
+                definitionId: "workflow-registration-race-definition",
+                graphName: "workflow-registration-race",
+                sourceSha: "9".repeat(64),
+            }).definition,
+            scope: "shared",
+            owner,
+            createdBy: "package-race-owner@example.test",
+            isAdmin: false,
+        };
+
+        const pool = new pg.Pool({ connectionString: DATABASE_URL, max: 1 });
+        const client = await pool.connect();
+        let transactionOpen = false;
+        try {
+            await client.query("BEGIN");
+            transactionOpen = true;
+            await client.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended('workflow-agent-package:' || $1, 0))",
+                [published.packageId],
+            );
+            let settled = false;
+            const registering = catalog.registerWorkflowDefinition(registration)
+                .finally(() => {
+                    settled = true;
+                });
+            await new Promise(resolve => setTimeout(resolve, 50));
+            expect(settled).toBe(false);
+
+            await client.query(
+                `DELETE FROM "${SCHEMA}".agent_packages WHERE package_id = $1`,
+                [published.packageId],
+            );
+            await client.query("COMMIT");
+            transactionOpen = false;
+
+            await expect(registering).rejects.toThrow(
+                /WORKFLOW_AGENT_PACKAGE_UNAVAILABLE/,
+            );
+        } finally {
+            if (transactionOpen) {
+                await client.query("ROLLBACK").catch(() => {});
+            }
+            client.release();
+            await pool.end();
+        }
+    });
+
     it("reports committed workflow and agent package artifact references", async () => {
         const registration = atomicWorkflowRegistration({
             packageName: "artifact-reference-package",
