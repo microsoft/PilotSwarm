@@ -970,6 +970,9 @@ export interface AgentPackageInstallEntry {
      * would fight over the same directory.
      */
     packageId: string;
+    versionId: string;
+    /** True when this is the package's currently active version. */
+    isActive: boolean;
     name: string;
     scope: AgentPackageScope;
     owner: AgentPrincipal | null;
@@ -1006,6 +1009,24 @@ export interface PublishAgentPackageResult {
     status: "published" | "noop";
     packageId: string;
     versionId: string;
+}
+
+export interface WorkflowDefinitionRegistrationInput {
+    definitionId: string;
+    sourceYaml: string;
+    sourceSha256: string;
+    packageSha256: string;
+    packageArtifactFilename: string;
+    packageSource: Record<string, unknown>;
+    compiledSha256: string;
+    manifest: CompiledWorkflowManifest;
+}
+
+export interface WorkflowAgentPackageRegistrationInput {
+    packageId: string;
+    versionId: string;
+    package: PublishAgentPackageInput;
+    definition: WorkflowDefinitionRegistrationInput;
 }
 
 // ─── Worker registry (migration 0040) ────────────────────────────
@@ -1052,6 +1073,28 @@ export interface FleetDirectiveRow {
     desired: Record<string, unknown>;
     updatedAt: Date;
     updatedBy: string | null;
+}
+
+export interface PackageArtifactLockTarget {
+    sessionId: string;
+    filename: string;
+}
+
+/**
+ * Catalog operations that must run on the PostgreSQL session holding package
+ * artifact advisory locks. Keeping these operations lock-bound avoids needing
+ * a second pool connection while a lock is held.
+ */
+export interface PackageArtifactLockScope {
+    publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+    registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+    countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number>;
+    countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 }
 
 export interface SessionCatalog {
@@ -1182,6 +1225,15 @@ export interface SessionCatalog {
 
     /** Atomic publish — see cms_publish_agent_package. Throws AGENT_PACKAGE_* errors. */
     publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    /**
+     * Serialize publication and collection for the same content-addressed
+     * package artifacts. Callers perform artifact-store operations inside the
+     * callback and catalog operations through the supplied lock-bound scope.
+     */
+    withPackageArtifactLocks<T>(
+        targets: PackageArtifactLockTarget[],
+        fn: (scope: PackageArtifactLockScope) => Promise<T>,
+    ): Promise<T>;
     listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]>;
     /**
      * One package. `selector` picks WHICH copy of the name (own / shared /
@@ -1218,6 +1270,13 @@ export interface SessionCatalog {
     revokeAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
     /** Editors of the shared copy of `name`. Visible to anyone who can see the package. */
     listAgentPackageEditors(name: string): Promise<AgentPackageEditorInfo[]>;
+    /** Every content-addressed package artifact currently referenced by committed catalog metadata. */
+    listPackageArtifactReferences(): Promise<{
+        workflowArtifactFilenames: string[];
+        agentArtifactFilenames: string[];
+    }>;
+    /** How many workflow definitions reference this content-addressed snapshot (>0 ⇒ never delete it). */
+    countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number>;
     /** How many published versions reference this content-addressed blob (>0 ⇒ never delete it). */
     countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 
@@ -1431,16 +1490,12 @@ export interface SessionCatalog {
     getWorkflowOverview(workflowSessionId: string): Promise<WorkflowOverviewRow | null>;
 
     /** Persist one immutable authored definition and its normalized compiled states. */
-    registerWorkflowDefinition(input: {
-        definitionId: string;
-        sourceYaml: string;
-        sourceSha256: string;
-        packageSha256: string;
-        packageArtifactFilename: string;
-        packageSource: Record<string, unknown>;
-        compiledSha256: string;
-        manifest: CompiledWorkflowManifest;
-    }): Promise<WorkflowDefinitionRecord>;
+    registerWorkflowDefinition(input: WorkflowDefinitionRegistrationInput): Promise<WorkflowDefinitionRecord>;
+
+    /** Atomically publish agent-package metadata and persist its workflow definition. */
+    registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
 
     /** Read one immutable workflow definition and its ordered compiled states. */
     getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
@@ -1677,6 +1732,7 @@ function sqlForSchema(schema: string) {
             completeWorkflowProjection: `${s}.cms_complete_workflow`,
             rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
             registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
+            registerWorkflowDefinitionWithAgentPackage: `${s}.cms_register_workflow_definition_with_agent_package`,
             admitWorkflow:               `${s}.cms_admit_workflow`,
             markWorkflowAdmissionStarted: `${s}.cms_mark_workflow_admission_started`,
             recordEvents:               `${s}.cms_record_events`,
@@ -2679,17 +2735,11 @@ export class PgSessionCatalog implements SessionCatalog {
         };
     }
 
-    async registerWorkflowDefinition(input: {
-        definitionId: string;
-        sourceYaml: string;
-        sourceSha256: string;
-        packageSha256: string;
-        packageArtifactFilename: string;
-        packageSource: Record<string, unknown>;
-        compiledSha256: string;
-        manifest: CompiledWorkflowManifest;
-    }): Promise<WorkflowDefinitionRecord> {
-        const { rows } = await this.pool.query(
+    private async _registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await db.query(
             `SELECT ${this.sql.fn.registerWorkflowDefinition}(
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
             ) AS definition_id`,
@@ -2714,7 +2764,7 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         const persistedDefinitionId = rows[0]?.definition_id;
         const registered = typeof persistedDefinitionId === "string"
-            ? await this.getWorkflowDefinition(persistedDefinitionId)
+            ? await this._getWorkflowDefinition(persistedDefinitionId, db)
             : null;
         if (!registered) {
             throw Object.assign(
@@ -2725,13 +2775,58 @@ export class PgSessionCatalog implements SessionCatalog {
         return registered;
     }
 
-    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
-        const definitionResult = await this.pool.query(
+    async registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
+        return this._registerWorkflowDefinition(input, this.pool);
+    }
+
+    private async _registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await db.query(
+            `SELECT * FROM ${this.sql.fn.registerWorkflowDefinitionWithAgentPackage}($1, $2, $3, $4)`,
+            [
+                input.packageId,
+                input.versionId,
+                JSON.stringify(input.package),
+                JSON.stringify(input.definition),
+            ],
+        );
+        const persistedDefinitionId = rows[0]?.definition_id;
+        const registered = typeof persistedDefinitionId === "string"
+            ? await this._getWorkflowDefinition(persistedDefinitionId, db)
+            : null;
+        if (!registered) {
+            throw Object.assign(
+                new Error(`Workflow definition '${input.definition.manifest.graphId}' was not persisted.`),
+                { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
+            );
+        }
+        return registered;
+    }
+
+    async registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
+        return this._registerWorkflowDefinitionWithAgentPackage(input, this.pool);
+    }
+
+    private async _getWorkflowDefinition(
+        definitionId: string,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord | null> {
+        const definitionResult = await db.query(
             `SELECT * FROM "${this.sql.schema}".workflow_definitions WHERE definition_id = $1`,
             [definitionId],
         );
         if (definitionResult.rows.length === 0) return null;
         return rowToWorkflowDefinitionRow(definitionResult.rows[0]);
+    }
+
+    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        return this._getWorkflowDefinition(definitionId, this.pool);
     }
 
     async admitWorkflow(input: {
@@ -4115,10 +4210,13 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+    private async _publishAgentPackage(
+        input: PublishAgentPackageInput,
+        db: any,
+    ): Promise<PublishAgentPackageResult> {
         const packageId = randomUUID();
         const versionId = randomUUID();
-        const { rows } = await this.pool.query(
+        const { rows } = await db.query(
             `SELECT * FROM ${this.sql.fn.publishAgentPackage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [
                 packageId, versionId, input.name, input.scope,
@@ -4134,6 +4232,51 @@ export class PgSessionCatalog implements SessionCatalog {
             packageId: String(row.package_id ?? packageId),
             versionId: String(row.version_id ?? versionId),
         };
+    }
+
+    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+        return this._publishAgentPackage(input, this.pool);
+    }
+
+    async withPackageArtifactLocks<T>(
+        targets: PackageArtifactLockTarget[],
+        fn: (scope: PackageArtifactLockScope) => Promise<T>,
+    ): Promise<T> {
+        const identities = [...new Set(
+            targets.map(target => `${target.sessionId}\n${target.filename}`),
+        )].sort();
+        const client = await this.pool.connect();
+        const acquired: string[] = [];
+        try {
+            for (const identity of identities) {
+                await client.query(
+                    "SELECT pg_advisory_lock(hashtextextended('package-artifact:' || $1, 0))",
+                    [identity],
+                );
+                acquired.push(identity);
+            }
+            const scope: PackageArtifactLockScope = {
+                publishAgentPackage: input =>
+                    this._publishAgentPackage(input, client),
+                registerWorkflowDefinition: input =>
+                    this._registerWorkflowDefinition(input, client),
+                registerWorkflowDefinitionWithAgentPackage: input =>
+                    this._registerWorkflowDefinitionWithAgentPackage(input, client),
+                countWorkflowPackageArtifactRefs: artifactFilename =>
+                    this._countWorkflowPackageArtifactRefs(artifactFilename, client),
+                countAgentPackageArtifactRefs: artifactFilename =>
+                    this._countAgentPackageArtifactRefs(artifactFilename, client),
+            };
+            return await fn(scope);
+        } finally {
+            for (const identity of acquired.reverse()) {
+                await client.query(
+                    "SELECT pg_advisory_unlock(hashtextextended('package-artifact:' || $1, 0))",
+                    [identity],
+                ).catch(() => {});
+            }
+            client.release();
+        }
     }
 
     async listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
@@ -4209,6 +4352,8 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         return rows.map((row: any) => ({
             packageId: row.package_id,
+            versionId: row.version_id,
+            isActive: row.is_active !== false,
             name: row.name,
             scope: row.scope === "user" ? "user" as const : "shared" as const,
             owner: rowToAgentPrincipal(row),
@@ -4280,18 +4425,64 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToAgentPackageEditor);
     }
 
+    async listPackageArtifactReferences(): Promise<{
+        workflowArtifactFilenames: string[];
+        agentArtifactFilenames: string[];
+    }> {
+        const [workflow, agent] = await Promise.all([
+            this.pool.query(
+                `SELECT DISTINCT package_artifact_filename AS filename
+                   FROM "${this.sql.schema}".workflow_definitions`,
+            ),
+            this.pool.query(
+                `SELECT DISTINCT artifact_filename AS filename
+                   FROM "${this.sql.schema}".agent_package_versions`,
+            ),
+        ]);
+        return {
+            workflowArtifactFilenames: workflow.rows.map(
+                (row: { filename: unknown }) => String(row.filename),
+            ),
+            agentArtifactFilenames: agent.rows.map(
+                (row: { filename: unknown }) => String(row.filename),
+            ),
+        };
+    }
+
+    private async _countWorkflowPackageArtifactRefs(
+        artifactFilename: string,
+        db: any,
+    ): Promise<number> {
+        const { rows } = await db.query(
+            `SELECT count(*)::int AS n FROM "${this.sql.schema}".workflow_definitions WHERE package_artifact_filename = $1`,
+            [artifactFilename],
+        );
+        return Number(rows?.[0]?.n ?? 0);
+    }
+
+    async countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        return this._countWorkflowPackageArtifactRefs(artifactFilename, this.pool);
+    }
+
     /**
      * How many published version rows reference this artifact blob filename.
      * Blob files are content-addressed (name@semver.sha), so identical bytes
      * published under the same name+semver in two scopes share ONE file. A
      * cleanup path must never delete a blob this reports > 0 for.
      */
-    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
-        const { rows } = await this.pool.query(
+    private async _countAgentPackageArtifactRefs(
+        artifactFilename: string,
+        db: any,
+    ): Promise<number> {
+        const { rows } = await db.query(
             `SELECT count(*)::int AS n FROM "${this.sql.schema}".agent_package_versions WHERE artifact_filename = $1`,
             [artifactFilename],
         );
         return Number(rows?.[0]?.n ?? 0);
+    }
+
+    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        return this._countAgentPackageArtifactRefs(artifactFilename, this.pool);
     }
 
     async upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void> {

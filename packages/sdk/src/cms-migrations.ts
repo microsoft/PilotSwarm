@@ -15,6 +15,8 @@ import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging
 import { workflowExecutionsMigration } from "./migrations/workflow-executions-0083.js";
 import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0084.js";
 import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0085.js";
+import { workflowAgentPackageRegistrationMigration } from "./migrations/workflow-agent-package-registration-0087.js";
+import { workflowAgentPackageDeletionGuardMigration } from "./migrations/workflow-agent-package-deletion-0088.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -411,7 +413,55 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0083", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
         { version: "0084", name: "workflow_definitions", sql: workflowDefinitionsMigration(schema) },
         { version: "0085", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
+        { version: "0086", name: "workflow_agent_package_version_pins", sql: migration_0086_workflow_agent_package_version_pins(schema) },
+        { version: "0087", name: "workflow_agent_package_registration", sql: workflowAgentPackageRegistrationMigration(schema) },
+        { version: "0088", name: "workflow_agent_package_deletion_guard", sql: workflowAgentPackageDeletionGuardMigration(schema) },
     ];
+}
+
+function migration_0086_workflow_agent_package_version_pins(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+DROP FUNCTION IF EXISTS ${s}.cms_get_agent_packages_install_manifest();
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_packages_install_manifest()
+RETURNS TABLE(
+    package_id TEXT, version_id TEXT, is_active BOOLEAN, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, manifest JSONB
+) AS $$
+    WITH requested AS (
+        SELECT p.package_id, v.version_id, TRUE AS is_active, p.name, p.scope,
+               p.owner_provider, p.owner_subject, v.semver, v.sha256,
+               v.size_bytes, v.artifact_filename, v.manifest
+          FROM ${s}.agent_packages p
+          JOIN ${s}.agent_package_versions v
+            ON v.version_id = p.active_version_id
+         WHERE p.enabled
+
+        UNION ALL
+
+        SELECT p.package_id, v.version_id, FALSE AS is_active, p.name, p.scope,
+               p.owner_provider, p.owner_subject, v.semver, v.sha256,
+               v.size_bytes, v.artifact_filename, v.manifest
+          FROM ${s}.sessions sess
+          JOIN ${s}.agent_package_versions v
+            ON v.version_id = sess.creation_config->>'boundAgentPackageVersionId'
+          JOIN ${s}.agent_packages p
+            ON p.package_id = v.package_id
+         WHERE sess.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+           AND sess.creation_config->>'boundAgentPackageId' = p.package_id
+    )
+    SELECT package_id, version_id, BOOL_OR(is_active), name, scope,
+           owner_provider, owner_subject, semver, sha256,
+           size_bytes, artifact_filename, manifest
+      FROM requested
+     GROUP BY package_id, version_id, name, scope, owner_provider,
+              owner_subject, semver, sha256, size_bytes, artifact_filename,
+              manifest
+     ORDER BY name, scope, owner_provider, owner_subject, package_id, version_id;
+$$ LANGUAGE sql;
+`;
 }
 
 /** Additive discriminator; every pre-existing and omitted value remains an agent session. */

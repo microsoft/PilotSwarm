@@ -96,6 +96,7 @@ export interface ResolvedAgentDefinition {
     creatable?: boolean;
     /** Present when the definition came from an agent package. */
     packageId?: string;
+    packageVersionId?: string;
     packageScope?: "shared" | "user";
 }
 
@@ -133,11 +134,13 @@ export async function resolveAgentDefinitionForCaller(opts: {
     userAgents?: any[];
     systemAgents?: any[];
     getCallerOwnerKey: () => Promise<string | null>;
+    includeInactivePackageVersions?: boolean;
 }): Promise<ResolvedAgentDefinition | null> {
     const agents: Array<any> = [
         ...(opts.userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
         ...(opts.systemAgents ?? []).map(a => ({ ...a, creatable: false })),
-    ];
+    ].filter(agent =>
+        opts.includeInactivePackageVersions || agent.packageActive !== false);
     const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 
     // Parse the reference. `a:b` has meant `namespace:agent` since long
@@ -248,6 +251,7 @@ export async function resolveAgentDefinitionForCaller(opts: {
         promptLayerKind: agent.promptLayerKind ?? undefined,
         creatable: agent.creatable ?? !agent.system,
         packageId: agent.packageId ?? undefined,
+        packageVersionId: agent.packageVersionId ?? undefined,
         packageScope: agent.packageScope ?? undefined,
     };
 }
@@ -1045,7 +1049,7 @@ export function createSessionManagerProxy(
      * the orchestration generator keeps the yield sequence byte-identical, so
      * this is not an orchestration version change.
      */
-    resolveAgentConfig(agentName: string, callerSessionId?: string, binding?: { packageId?: string; source?: "deployment" }) {
+    resolveAgentConfig(agentName: string, callerSessionId?: string, binding?: { packageId?: string; packageVersionId?: string; source?: "deployment" }) {
         return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("resolveAgentConfig", routingContract), {
             agentName,
             callerSessionId: callerSessionId ?? ctx.instanceId,
@@ -1214,6 +1218,8 @@ export function registerActivities(
     workerNodeId?: string,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /** Force package convergence after a workflow child pins a historical version. */
+    refreshAgentPackages?: () => Promise<void>,
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -2856,6 +2862,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const {
                         boundAgentName: _parentBoundAgentName,
                         boundAgentPackageId: _parentBoundAgentPackageId,
+                        boundAgentPackageVersionId: _parentBoundAgentPackageVersionId,
                         boundAgentSource: _parentBoundAgentSource,
                         namedAgentToolAdditions: _parentNamedAgentToolAdditions,
                         childContract: _parentChildContract,
@@ -2931,6 +2938,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
+                        boundAgentPackageVersionId: childConfig.boundAgentPackageVersionId,
                         boundAgentSource: childConfig.boundAgentSource,
                         detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
@@ -5260,18 +5268,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // about which agent a name means.
     registerHandoffActivity(runtime, "resolveAgentConfig", async (
         _activityCtx: any,
-        input: { agentName: string; callerSessionId?: string; binding?: { packageId?: string; source?: "deployment" } },
+        input: { agentName: string; callerSessionId?: string; binding?: { packageId?: string; packageVersionId?: string; source?: "deployment" } },
     ): Promise<ResolvedAgentDefinition | null> => {
         // Top-level verification sessions already selected a package/deployment
         // copy at creation. Keep that selection through the startup resolver.
         // An unavailable pin yields no definition; it never falls back by name.
         const pinnedCandidates = (agents?: any[]) => agents?.filter(agent =>
             (!input.binding?.packageId || agent.packageId === input.binding.packageId)
+            && (!input.binding?.packageVersionId || agent.packageVersionId === input.binding.packageVersionId)
             && (input.binding?.source !== "deployment" || (!agent.packageId && agent.packageScope == null)));
         return resolveAgentDefinitionForCaller({
             agentName: input.agentName,
             userAgents: pinnedCandidates(userAgents),
             systemAgents: pinnedCandidates(systemAgents),
+            includeInactivePackageVersions:
+                Boolean(input.binding?.packageVersionId),
             // PACKAGE PRIVACY, enforced at RESOLUTION rather than at creation.
             //
             // Workers install every enabled package, including other users'
@@ -5364,8 +5375,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (input.splash) meta.splash = input.splash;
                 if (input.agentId) {
                     const packageId = input.config.boundAgentPackageId;
+                    const packageVersionId = input.config.boundAgentPackageVersionId;
                     const fromBoundCopy = (agents?: any[]) => packageId
-                        ? agents?.filter(a => a.packageId === packageId)
+                        ? agents?.filter(a =>
+                            a.packageId === packageId
+                            && (!packageVersionId || a.packageVersionId === packageVersionId))
                         : input.config.boundAgentSource === "deployment"
                             ? agents?.filter(a => !a.packageId && a.packageScope == null)
                             : agents;
@@ -5388,6 +5402,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
             };
 
+            const ensureBoundAgentPackageAvailable = async (): Promise<void> => {
+                if (!input.config.boundAgentPackageVersionId) return;
+                if (!refreshAgentPackages) {
+                    throw new Error(
+                        "Workflow agent package version binding requires package refresh support.",
+                    );
+                }
+                await refreshAgentPackages();
+            };
+
             if ((isDeterministicSystemChild || input.childSessionId) && catalog) {
                 const existingCheckAt = Date.now();
                 // Critical: missing this read causes a duplicate child spawn for
@@ -5399,6 +5423,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 );
                 trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
                 if (existing && input.childSessionId) {
+                    await ensureBoundAgentPackageAvailable();
                     if (!bootstrap) {
                         await updateChildMetadata();
                     }
@@ -5406,6 +5431,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return childSessionId;
                 }
                 if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
+                    await ensureBoundAgentPackageAvailable();
                     trace(`reusing existing live system child: ${childSessionId}`);
                     return childSessionId;
                 }
@@ -5481,6 +5507,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,
+                boundAgentPackageVersionId: input.config.boundAgentPackageVersionId,
                 boundAgentSource: input.config.boundAgentSource,
                 detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
@@ -5490,6 +5517,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 ...(inheritedOwner ? { owner: inheritedOwner } : {}),
             });
             trace(`sdkClient.createSession done (${Date.now() - createSessionAt}ms)`);
+            await ensureBoundAgentPackageAvailable();
 
             // Critical: title/agentId/splash drive UI rendering of the
             // newly-spawned child. Idempotent — set-style update.

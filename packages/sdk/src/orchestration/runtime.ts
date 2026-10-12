@@ -102,6 +102,9 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
     const binding = state.config.boundAgentPackageId || state.config.boundAgentSource
         ? {
             ...(state.config.boundAgentPackageId ? { packageId: state.config.boundAgentPackageId } : {}),
+            ...(state.config.boundAgentPackageVersionId
+                ? { packageVersionId: state.config.boundAgentPackageVersionId }
+                : {}),
             ...(state.config.boundAgentSource ? { source: state.config.boundAgentSource } : {}),
         }
         : undefined;

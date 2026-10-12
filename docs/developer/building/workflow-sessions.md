@@ -40,6 +40,61 @@ deployment may inject a `WorkflowPackageResolver` for private source systems,
 but PilotSwarm still owns compilation, package verification, persistence, and
 cleanup.
 
+### Workflow agents are registered once and pinned per run
+
+A workflow package can declare its agents, skills, tools, and MCP configuration
+in `plugin.json`. Registering a workflow definition publishes that agent package
+through PilotSwarm's normal package registry and binds each compiled agent state
+to the resulting package identity. Deployments do not need to copy workflow
+agents into portal or worker images, and callers do not make a second agent
+registration request.
+
+The binding deliberately combines live updates for future runs with stable
+behavior for an admitted run:
+
+- registration publishes the package contents and rejects workflow agent names
+  that the package does not declare
+- package/version metadata, active-version selection, registry epoch, and the
+  immutable workflow definition commit in one database transaction; a
+  definition conflict or concurrent-package retry leaves none of those
+  metadata changes visible
+- content-addressed artifact bytes upload before that transaction, so a failed
+  registration can leave unreferenced bytes but cannot expose partial catalog
+  state; registration does not delete those bytes because another concurrent
+  publisher may be using the same content; the Sweeper Agent removes
+  unreferenced workflow and agent package artifacts after a 24-hour grace
+  period; publication and collection acquire the same artifact-scoped
+  PostgreSQL advisory lock, and the Sweeper rechecks catalog references and
+  upload age while holding that lock before deletion
+- starting a workflow resolves each bound package's current active version
+- the resolved package version is persisted in the run's durable plan and in
+  each child session
+- repository E2E coverage activates a new package version between workflow
+  states, replaces the worker with an empty package cache, and verifies that
+  the admitted run remains on its original version while a new run selects the
+  newly active version
+- retries, worker replacement, and later states in that run continue using the
+  same version, even if a newer package version becomes active
+- a package may be disabled to prevent new workflow admissions, but hard
+  deletion is rejected while any admitted workflow that references it remains
+  nonterminal
+- a later workflow run may resolve the newer active version
+
+This differs from a normal conversational session, whose later turns resolve
+against the live active package version. Workflow execution needs a stronger
+replay boundary because changing an agent, ambient skill catalog, tool, or MCP
+configuration mid-run can change state outcomes and therefore control flow.
+The complete declared package remains the versioned capability boundary;
+explicit `skills:` entries are not treated as a complete dependency closure.
+An agent's declared skills are composed from the same pinned package version,
+and `load_skill` for a pinned workflow child resolves against that version's
+package skill catalog rather than the worker's live package catalog.
+
+The durable binding records package and version identities, not deployment
+credentials or source-system URLs. Workers obtain the exact artifact from
+PilotSwarm storage, so execution remains independent of GitHub, Azure DevOps,
+or any deployment-provided source resolver.
+
 ### Transition code is explicit and replay-safe
 
 Every executable state references a synchronous, package-relative transition

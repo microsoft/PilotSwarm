@@ -21,10 +21,13 @@ import {
 import {
     workflowPackagesArtifactSessionId,
 } from "./package-artifact.js";
-
 export interface ResolvedWorkflowExecutionPlan {
     definitionId: string;
     manifest: CompiledWorkflowManifest;
+    agentPackageBindings: Readonly<Record<string, {
+        packageId: string;
+        versionId: string;
+    }>>;
 }
 
 export interface ExecuteWorkflowTransitionInput {
@@ -119,7 +122,10 @@ export class CmsWorkflowDefinitionProvider implements WorkflowDefinitionProvider
     private readonly records = new Map<string, Promise<WorkflowDefinitionRecord>>();
 
     constructor(
-        private readonly catalog: Pick<SessionCatalog, "getWorkflowDefinition">,
+        private readonly catalog: Pick<
+            SessionCatalog,
+            "getAgentPackagesInstallManifest" | "getWorkflowDefinition"
+        >,
         private readonly artifactStore: ArtifactStore,
     ) {}
 
@@ -127,9 +133,31 @@ export class CmsWorkflowDefinitionProvider implements WorkflowDefinitionProvider
         const registered = requireRegisteredSource(source);
         const record = await this.getDefinition(registered.definitionId);
         await this.getSnapshot(record);
+        const installManifest = await this.catalog.getAgentPackagesInstallManifest();
+        const agentPackageBindings: Record<string, {
+            packageId: string;
+            versionId: string;
+        }> = {};
+        for (const state of record.compiledManifest.states) {
+            if (state.type !== "agent" || !state.agentPackageId) continue;
+            const active = installManifest.find(
+                entry => entry.packageId === state.agentPackageId && entry.isActive,
+            );
+            if (!active?.versionId) {
+                throw providerError(
+                    `Workflow state '${state.id}' agent package '${state.agentPackageId}' is not enabled.`,
+                    "WORKFLOW_AGENT_PACKAGE_UNAVAILABLE",
+                );
+            }
+            agentPackageBindings[state.id] = {
+                packageId: active.packageId,
+                versionId: active.versionId,
+            };
+        }
         return {
             definitionId: record.definitionId,
             manifest: record.compiledManifest,
+            agentPackageBindings,
         };
     }
 

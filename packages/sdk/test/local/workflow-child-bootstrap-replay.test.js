@@ -74,6 +74,8 @@ describe("workflow child bootstrap replay", () => {
             owner: { provider: "test", subject: "owner" },
         });
 
+        let failPackageRefreshOnce = true;
+        let packageRefreshCalls = 0;
         let failMetadataOnce = true;
         const catalog = {
             getSession: async sessionId => transport.rows.get(sessionId) ?? null,
@@ -98,6 +100,22 @@ describe("workflow child bootstrap replay", () => {
             catalog,
             undefined,
             "in-memory://workflow-bootstrap",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            async () => {
+                packageRefreshCalls += 1;
+                if (failPackageRefreshOnce) {
+                    failPackageRefreshOnce = false;
+                    throw new Error("simulated package refresh failure after create");
+                }
+            },
         );
         const activityContext = { traceInfo() {} };
         const ensureInput = {
@@ -105,6 +123,8 @@ describe("workflow child bootstrap replay", () => {
             childSessionId,
             config: {
                 boundAgentName: "reviewer",
+                boundAgentPackageId: "review-package",
+                boundAgentPackageVersionId: "review-package-v1",
                 detachedPackageToolPolicy: "reject",
                 toolNames: ["submit_workflow_result"],
                 childContract: {
@@ -128,6 +148,12 @@ describe("workflow child bootstrap replay", () => {
                 activityContext,
                 ensureInput,
             ),
+        ).rejects.toThrow("simulated package refresh failure after create");
+        await expect(
+            handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY)(
+                activityContext,
+                ensureInput,
+            ),
         ).rejects.toThrow("simulated metadata failure after create");
         await expect(
             handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY)(
@@ -136,6 +162,7 @@ describe("workflow child bootstrap replay", () => {
             ),
         ).resolves.toBe(childSessionId);
         expect(transport.createCalls).toHaveLength(1);
+        expect(packageRefreshCalls).toBe(3);
         expect(transport.sendCalls).toHaveLength(0);
 
         const bootstrapInput = {

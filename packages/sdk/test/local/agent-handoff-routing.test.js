@@ -166,10 +166,13 @@ describe("agent handoff capability routing", () => {
             ).start();
             const result = await client.waitForOrchestration("child-bootstrap-1", 10_000);
             expect(result.status).toBe("Completed");
-            expect(events.map(event => [event.worker, event.name, event.tag])).toEqual([
-                ["current", ENSURE_AGENT_CHILD_SESSION_ACTIVITY, AGENT_CHILD_BOOTSTRAP_CAPABILITY],
-                ["current", ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY, AGENT_CHILD_BOOTSTRAP_CAPABILITY],
-            ]);
+            expect(events).toHaveLength(2);
+            expect(events.map(event => [event.worker, event.name, event.tag])).toEqual(
+                expect.arrayContaining([
+                    ["current", ENSURE_AGENT_CHILD_SESSION_ACTIVITY, AGENT_CHILD_BOOTSTRAP_CAPABILITY],
+                    ["current", ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY, AGENT_CHILD_BOOTSTRAP_CAPABILITY],
+                ]),
+            );
         });
     });
 

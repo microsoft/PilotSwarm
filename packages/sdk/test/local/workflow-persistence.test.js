@@ -6,6 +6,75 @@ import { PgSessionCatalog } from "../../dist/cms.js";
 const DATABASE_URL = process.env.DATABASE_URL;
 const SCHEMA = `ps_test_workflow_${randomUUID().replaceAll("-", "")}`;
 
+function atomicWorkflowRegistration({
+    packageName = "atomic-workflow-package",
+    packageId,
+    versionId,
+    semver,
+    packageSha,
+    definitionId,
+    graphName,
+    sourceSha,
+}) {
+    const workflowPackageSha = "f".repeat(64);
+    const manifest = {
+        compilerVersion: "v1alpha1-4",
+        apiVersion: "pilotswarm.dev/v1alpha1",
+        kind: "Workflow",
+        graphId: `${graphName}@0.1.0`,
+        packageSha256: workflowPackageSha,
+        metadata: { name: graphName, version: "0.1.0" },
+        inputSchema: {},
+        configuration: {},
+        initialState: "agent",
+        states: [{
+            id: "agent",
+            type: "agent",
+            agent: "atomic-agent",
+            agentPackageId: packageId,
+            input: {},
+            result: { schema: "atomic/result/v1" },
+            completion: { mode: "one-shot", outcomes: ["succeeded"] },
+            transition: {
+                handler: {
+                    module: "./transition.mjs",
+                    export: "advance",
+                    moduleSha256: "e".repeat(64),
+                    packageSha256: workflowPackageSha,
+                },
+            },
+        }],
+    };
+    return {
+        packageId,
+        versionId,
+        package: {
+            name: packageName,
+            scope: "shared",
+            owner: null,
+            sourceId: null,
+            semver,
+            sha256: packageSha,
+            sizeBytes: 100,
+            artifactFilename: `${packageName}.${semver}.${packageSha}.tar.gz`,
+            commitSha: null,
+            manifest: { name: packageName, version: semver },
+            createdBy: "workflow-definition-registration",
+            isAdmin: true,
+        },
+        definition: {
+            definitionId,
+            sourceYaml: `workflow-${sourceSha}`,
+            sourceSha256: sourceSha,
+            packageSha256: workflowPackageSha,
+            packageArtifactFilename: `workflow-package.${workflowPackageSha}.tar.gz`,
+            packageSource: { kind: "local-package" },
+            compiledSha256: `${sourceSha}-compiled`,
+            manifest,
+        },
+    };
+}
+
 describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
     let catalog;
 
@@ -181,6 +250,350 @@ describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
             definitionId: "definition-conflict",
             sourceSha256: "different-source",
         })).rejects.toThrow(/WORKFLOW_DEFINITION_CONFLICT/);
+    });
+
+    it("reports committed workflow and agent package artifact references", async () => {
+        const registration = atomicWorkflowRegistration({
+            packageName: "artifact-reference-package",
+            packageId: "artifact-reference-package-id",
+            versionId: "artifact-reference-version-id",
+            semver: "1.0.0",
+            packageSha: "9".repeat(64),
+            definitionId: "artifact-reference-definition",
+            graphName: "artifact-reference-workflow",
+            sourceSha: "9".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(registration);
+
+        const references = await catalog.listPackageArtifactReferences();
+        expect(references.workflowArtifactFilenames).toContain(
+            registration.definition.packageArtifactFilename,
+        );
+        expect(references.agentArtifactFilenames).toContain(
+            registration.package.artifactFilename,
+        );
+        expect(
+            await catalog.countWorkflowPackageArtifactRefs(
+                registration.definition.packageArtifactFilename,
+            ),
+        ).toBeGreaterThan(0);
+        expect(
+            await catalog.countAgentPackageArtifactRefs(
+                registration.package.artifactFilename,
+            ),
+        ).toBe(1);
+        expect(
+            await catalog.countWorkflowPackageArtifactRefs("missing-workflow-artifact"),
+        ).toBe(0);
+        expect(
+            await catalog.countAgentPackageArtifactRefs("missing-agent-artifact"),
+        ).toBe(0);
+    });
+
+    it("serializes package artifact publication and collection", async () => {
+        const contender = await PgSessionCatalog.create(DATABASE_URL, SCHEMA);
+        await contender.initialize();
+        const target = {
+            sessionId: "00000000-0000-0000-0000-000000000001",
+            filename: "shared-content-addressed-package.tar.gz",
+        };
+        let releaseFirst;
+        const firstRelease = new Promise(resolve => {
+            releaseFirst = resolve;
+        });
+        let signalFirstEntered;
+        const firstEntered = new Promise(resolve => {
+            signalFirstEntered = resolve;
+        });
+
+        try {
+            const first = catalog.withPackageArtifactLocks([target], async () => {
+                signalFirstEntered();
+                await firstRelease;
+            });
+            await firstEntered;
+
+            let secondEntered = false;
+            const second = contender.withPackageArtifactLocks([target], async () => {
+                secondEntered = true;
+            });
+            await new Promise(resolve => setTimeout(resolve, 100));
+            expect(secondEntered).toBe(false);
+
+            releaseFirst();
+            await Promise.all([first, second]);
+            expect(secondEntered).toBe(true);
+        } finally {
+            releaseFirst?.();
+            await contender.close();
+        }
+    });
+
+    it("rolls back package activation and registry epoch when atomic definition registration conflicts", async () => {
+        const packageName = "atomic-conflict-package";
+        const packageId = "atomic-package-1";
+        const first = atomicWorkflowRegistration({
+            packageName,
+            packageId,
+            versionId: "atomic-version-1",
+            semver: "1.0.0",
+            packageSha: "1".repeat(64),
+            definitionId: "atomic-definition-1",
+            graphName: "atomic-registration",
+            sourceSha: "a".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(first);
+
+        const epochAfterFirst = await catalog.agentRegistryEpoch();
+        const packageAfterFirst = await catalog.getAgentPackage(
+            packageName,
+            null,
+            true,
+            { scope: "shared" },
+        );
+        expect(packageAfterFirst.activeVersionId).toBe("atomic-version-1");
+        expect(packageAfterFirst.versions.map(version => version.semver)).toEqual(["1.0.0"]);
+
+        const conflicting = atomicWorkflowRegistration({
+            packageName,
+            packageId,
+            versionId: "atomic-version-2",
+            semver: "2.0.0",
+            packageSha: "2".repeat(64),
+            definitionId: "atomic-definition-conflict",
+            graphName: "atomic-registration",
+            sourceSha: "b".repeat(64),
+        });
+        await expect(
+            catalog.registerWorkflowDefinitionWithAgentPackage(conflicting),
+        ).rejects.toThrow(/WORKFLOW_DEFINITION_CONFLICT/);
+
+        const packageAfterConflict = await catalog.getAgentPackage(
+            packageName,
+            null,
+            true,
+            { scope: "shared" },
+        );
+        expect(await catalog.agentRegistryEpoch()).toBe(epochAfterFirst);
+        expect(packageAfterConflict.activeVersionId).toBe("atomic-version-1");
+        expect(packageAfterConflict.versions.map(version => version.semver)).toEqual(["1.0.0"]);
+    });
+
+    it("rolls back a concurrent logical-package identity mismatch for safe retry", async () => {
+        const packageName = "atomic-retry-package";
+        await catalog.registerWorkflowDefinitionWithAgentPackage(
+            atomicWorkflowRegistration({
+                packageName,
+                packageId: "atomic-retry-winner",
+                versionId: "atomic-retry-version-1",
+                semver: "1.0.0",
+                packageSha: "4".repeat(64),
+                definitionId: "atomic-retry-definition-1",
+                graphName: "atomic-retry-initial",
+                sourceSha: "d".repeat(64),
+            }),
+        );
+        const existing = await catalog.getAgentPackage(
+            packageName,
+            null,
+            true,
+            { scope: "shared" },
+        );
+        const mismatched = atomicWorkflowRegistration({
+            packageName,
+            packageId: "stale-package-candidate",
+            versionId: "atomic-version-retry",
+            semver: "1.1.0",
+            packageSha: "3".repeat(64),
+            definitionId: "atomic-definition-retry",
+            graphName: "atomic-registration-retry",
+            sourceSha: "c".repeat(64),
+        });
+
+        await expect(
+            catalog.registerWorkflowDefinitionWithAgentPackage(mismatched),
+        ).rejects.toThrow(/WORKFLOW_AGENT_PACKAGE_RETRY/);
+
+        const afterRetry = await catalog.getAgentPackage(
+            packageName,
+            null,
+            true,
+            { scope: "shared" },
+        );
+        expect(afterRetry.packageId).toBe(existing.packageId);
+        expect(afterRetry.versions.map(version => version.semver)).not.toContain("1.1.0");
+    });
+
+    it("converges concurrent first registrations on one logical package and one epoch bump", async () => {
+        const packageName = "atomic-concurrent-package";
+        const beforeEpoch = await catalog.agentRegistryEpoch();
+        const registrations = [
+            atomicWorkflowRegistration({
+                packageName,
+                packageId: "atomic-concurrent-package-a",
+                versionId: "atomic-concurrent-version-a",
+                semver: "1.0.0",
+                packageSha: "5".repeat(64),
+                definitionId: "atomic-concurrent-definition-a",
+                graphName: "atomic-concurrent-a",
+                sourceSha: "5".repeat(64),
+            }),
+            atomicWorkflowRegistration({
+                packageName,
+                packageId: "atomic-concurrent-package-b",
+                versionId: "atomic-concurrent-version-b",
+                semver: "1.0.0",
+                packageSha: "5".repeat(64),
+                definitionId: "atomic-concurrent-definition-b",
+                graphName: "atomic-concurrent-b",
+                sourceSha: "6".repeat(64),
+            }),
+        ];
+
+        const results = await Promise.allSettled(
+            registrations.map(input =>
+                catalog.registerWorkflowDefinitionWithAgentPackage(input)
+            ),
+        );
+        const winnerIndex = results.findIndex(result => result.status === "fulfilled");
+        const loserIndex = results.findIndex(result => result.status === "rejected");
+        expect(winnerIndex).toBeGreaterThanOrEqual(0);
+        expect(loserIndex).toBeGreaterThanOrEqual(0);
+        expect(results[loserIndex].reason.message).toMatch(/WORKFLOW_AGENT_PACKAGE_RETRY/);
+
+        const published = await catalog.getAgentPackage(
+            packageName,
+            null,
+            true,
+            { scope: "shared" },
+        );
+        expect(published.versions).toHaveLength(1);
+        expect(await catalog.agentRegistryEpoch()).toBe(beforeEpoch + 1);
+
+        const retry = structuredClone(registrations[loserIndex]);
+        retry.packageId = published.packageId;
+        retry.definition.manifest.states[0].agentPackageId = published.packageId;
+        await catalog.registerWorkflowDefinitionWithAgentPackage(retry);
+
+        expect(await catalog.agentRegistryEpoch()).toBe(beforeEpoch + 1);
+        expect(
+            await catalog.getWorkflowDefinition(retry.definition.definitionId),
+        ).toMatchObject({
+            graphId: retry.definition.manifest.graphId,
+        });
+    });
+
+    it("blocks package deletion until every admitted workflow is terminal", async () => {
+        const packageName = "active-workflow-package";
+        const registration = atomicWorkflowRegistration({
+            packageName,
+            packageId: "active-workflow-package-id",
+            versionId: "active-workflow-version-id",
+            semver: "1.0.0",
+            packageSha: "7".repeat(64),
+            definitionId: "active-workflow-definition",
+            graphName: "active-workflow-deletion",
+            sourceSha: "7".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(registration);
+
+        const sessionId = "active-workflow-session";
+        await catalog.admitWorkflow({
+            sessionId,
+            definitionId: registration.definition.definitionId,
+            inputs: {},
+            primaryKeyValues: null,
+            primaryKeySha256: null,
+            owner: {
+                provider: "test",
+                subject: "active-workflow-owner",
+            },
+            idempotencyKey: "active-workflow-request",
+            requestSha256: "8".repeat(64),
+            forceRerun: false,
+            isAdmin: false,
+        });
+
+        await expect(
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).rejects.toThrow(/AGENT_PACKAGE_WORKFLOW_IN_USE/);
+
+        await catalog.createSession(sessionId, { sessionKind: "workflow" });
+        await expect(
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).rejects.toThrow(/AGENT_PACKAGE_WORKFLOW_IN_USE/);
+
+        await catalog.updateSession(sessionId, { state: "completed" });
+        await expect(
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).resolves.toEqual([registration.package.artifactFilename]);
+        await expect(
+            catalog.getAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).resolves.toBeNull();
+    });
+
+    it("serializes first admission against package deletion", async () => {
+        const packageName = "concurrent-deletion-package";
+        const registration = atomicWorkflowRegistration({
+            packageName,
+            packageId: "concurrent-deletion-package-id",
+            versionId: "concurrent-deletion-version-id",
+            semver: "1.0.0",
+            packageSha: "9".repeat(64),
+            definitionId: "concurrent-deletion-definition",
+            graphName: "concurrent-deletion",
+            sourceSha: "9".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(registration);
+
+        const results = await Promise.allSettled([
+            catalog.admitWorkflow({
+                sessionId: "concurrent-deletion-session",
+                definitionId: registration.definition.definitionId,
+                inputs: {},
+                primaryKeyValues: null,
+                primaryKeySha256: null,
+                owner: {
+                    provider: "test",
+                    subject: "concurrent-deletion-owner",
+                },
+                idempotencyKey: "concurrent-deletion-request",
+                requestSha256: "a".repeat(64),
+                forceRerun: false,
+                isAdmin: false,
+            }),
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ]);
+
+        expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+        expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+        expect(results.find(result => result.status === "rejected").reason.message)
+            .toMatch(/AGENT_PACKAGE_WORKFLOW_IN_USE|WORKFLOW_AGENT_PACKAGE_UNAVAILABLE/);
     });
 
     it("atomically deduplicates keyed starts and admits authorized reruns", async () => {

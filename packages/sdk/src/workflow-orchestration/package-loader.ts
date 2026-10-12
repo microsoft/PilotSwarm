@@ -308,20 +308,35 @@ export async function loadWorkflowTransitionRegistryFromSnapshot(
 export async function compileWorkflowPackageSnapshotYaml(
     yaml: string,
     snapshot: WorkflowPackageSnapshot,
+    options: {
+        agentPackage?: {
+            packageId: string;
+            agentNames: readonly string[];
+        };
+    } = {},
 ): Promise<CompiledWorkflowYaml> {
     const transitions = await loadWorkflowTransitionRegistryFromSnapshot(yaml, snapshot);
     return compileWorkflowYaml(yaml, {
         transitions,
         packageSha256: snapshot.packageSha256,
+        ...(options.agentPackage ? { agentPackage: options.agentPackage } : {}),
     });
 }
 
 export async function compileWorkflowPackageYaml(
     yaml: string,
-    options: { packageRoot: string },
+    options: {
+        packageRoot: string;
+        agentPackage?: {
+            packageId: string;
+            agentNames: readonly string[];
+        };
+    },
 ): Promise<CompiledWorkflowYaml> {
     const snapshot = await materializeWorkflowPackageSnapshot(options.packageRoot);
-    return compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+    return compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
+        ...(options.agentPackage ? { agentPackage: options.agentPackage } : {}),
+    });
 }
 
 export async function compileAndRegisterWorkflowPackageYaml(

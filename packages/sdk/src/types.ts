@@ -618,6 +618,8 @@ export interface SerializableSessionConfig {
     boundAgentName?: string;
     /** Internal: exact resolved package copy; prevents shared/private rebinding on another worker. */
     boundAgentPackageId?: string;
+    /** Internal: immutable package version pin. Absent means resolve the package's active version. */
+    boundAgentPackageVersionId?: string;
     /** Explicitly selected deployment definition; absent retains legacy owner-shadowing behavior. */
     boundAgentSource?: "deployment";
     /** Internal: explicit root-session tool additions; package-owned capabilities still follow the current definition. */
