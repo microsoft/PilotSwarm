@@ -1,0 +1,15 @@
+{
+  "name": "workflow-package-fixture",
+  "version": "0.1.0",
+  "description": "Workflow package registration fixture.",
+  "agents": [
+    "agents/package-inspector.agent.md"
+  ],
+  "include": [
+    "control-transitions.mjs",
+    "invalid-transitions.mjs",
+    "registered-control.workflow.yaml",
+    "transition-helper.mjs",
+    "transitions.mjs"
+  ]
+}

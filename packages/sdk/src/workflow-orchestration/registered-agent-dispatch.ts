@@ -22,6 +22,10 @@ export function createCompiledAgentStateDispatchPlan(input: {
     latestStateOutputs: Record<string, WorkflowStateExecutionResult>;
     executionHistory: WorkflowExecutionRecord[];
     state: CompiledWorkflowAgentStateManifest;
+    agentPackageBinding?: {
+        packageId: string;
+        versionId: string;
+    };
 }): AgentStateDispatchPlan {
     const resolvedInput = resolveWorkflowTemplate(
         input.state.input,
@@ -56,5 +60,8 @@ export function createCompiledAgentStateDispatchPlan(input: {
             prompt: task,
             allowedOutcomes: input.state.completion.outcomes,
         },
+        ...(input.agentPackageBinding
+            ? { agentPackageBinding: input.agentPackageBinding }
+            : {}),
     });
 }

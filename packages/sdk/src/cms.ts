@@ -970,6 +970,9 @@ export interface AgentPackageInstallEntry {
      * would fight over the same directory.
      */
     packageId: string;
+    versionId: string;
+    /** True when this is the package's currently active version. */
+    isActive: boolean;
     name: string;
     scope: AgentPackageScope;
     owner: AgentPrincipal | null;
@@ -4209,6 +4212,8 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         return rows.map((row: any) => ({
             packageId: row.package_id,
+            versionId: row.version_id,
+            isActive: row.is_active !== false,
             name: row.name,
             scope: row.scope === "user" ? "user" as const : "shared" as const,
             owner: rowToAgentPrincipal(row),

@@ -26,7 +26,7 @@ initial: inspect
 states:
   inspect:
     type: agent
-    agent: sample-inspector
+    agent: package-inspector
     input: {}
     result:
       schema: sample/inspection/v1
@@ -87,7 +87,16 @@ states:
 
 async function providerHarness({ artifactBody, transformRecord } = {}) {
     const snapshot = await materializeWorkflowPackageSnapshot(PACKAGE_ROOT);
-    const compiled = await compileWorkflowPackageSnapshotYaml(WORKFLOW_YAML, snapshot);
+    const compiled = await compileWorkflowPackageSnapshotYaml(
+        WORKFLOW_YAML,
+        snapshot,
+        {
+            agentPackage: {
+                packageId: "package-provider",
+                agentNames: ["package-inspector"],
+            },
+        },
+    );
     const definitionId = "definition-provider";
     const record = {
         definitionId,
@@ -111,6 +120,21 @@ async function providerHarness({ artifactBody, transformRecord } = {}) {
     const downloads = [];
     const provider = new CmsWorkflowDefinitionProvider(
         {
+            async getAgentPackagesInstallManifest() {
+                return [{
+                    packageId: "package-provider",
+                    versionId: "version-provider",
+                    isActive: true,
+                    name: "workflow-package-fixture",
+                    scope: "shared",
+                    owner: null,
+                    semver: "0.1.0",
+                    sha256: snapshot.packageSha256,
+                    sizeBytes: snapshot.artifactTarGz.length,
+                    artifactFilename: "agent-package.tar.gz",
+                    manifest: {},
+                }];
+            },
             async getWorkflowDefinition(requestedId) {
                 return requestedId === definitionId
                     ? transformRecord?.(record) ?? record
@@ -138,6 +162,12 @@ test("loads a persisted compiled plan and executes pinned transitions for every 
 
     assert.equal(resolved.definitionId, definitionId);
     assert.deepEqual(resolved.manifest, compiled.manifest);
+    assert.deepEqual(resolved.agentPackageBindings, {
+        inspect: {
+            packageId: "package-provider",
+            versionId: "version-provider",
+        },
+    });
     assert.equal(downloads.length, 1);
 
     for (const [executionSequence, stateId] of [

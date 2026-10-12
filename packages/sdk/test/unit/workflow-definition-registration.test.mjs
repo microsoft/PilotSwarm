@@ -283,6 +283,7 @@ test("management registration invokes the compiler before persistence", async ()
 
 test("management registration persists package and module transition identities", async () => {
     let persisted;
+    let publishedPackageRoot;
     const client = Object.create(PilotSwarmManagementClient.prototype);
     client._started = true;
     client._artifactStore = {
@@ -299,6 +300,18 @@ test("management registration persists package and module transition identities"
             };
         },
     };
+    client.publishAgentPackageDirectory = async (packageRoot, scope, owner, isAdmin) => {
+        publishedPackageRoot = packageRoot;
+        assert.equal(scope, "shared");
+        assert.equal(owner, null);
+        assert.equal(isAdmin, true);
+        return {
+            packageId: "package-fixture-1",
+            manifest: {
+                agents: [{ name: "package-inspector" }],
+            },
+        };
+    };
 
     await client.registerWorkflowDefinition(
         PACKAGE_WORKFLOW,
@@ -306,6 +319,11 @@ test("management registration persists package and module transition identities"
     );
 
     const handler = persisted.manifest.states[0].transition.handler;
+    assert.equal(publishedPackageRoot, PACKAGE_ROOT);
+    assert.equal(
+        persisted.manifest.states[0].agentPackageId,
+        "package-fixture-1",
+    );
     assert.match(persisted.manifest.packageSha256, /^[0-9a-f]{64}$/);
     assert.deepEqual(
         { module: handler.module, export: handler.export },
@@ -313,6 +331,28 @@ test("management registration persists package and module transition identities"
     );
     assert.match(handler.moduleSha256, /^[0-9a-f]{64}$/);
     assert.equal(handler.packageSha256, persisted.manifest.packageSha256);
+});
+
+test("management registration rejects workflow agents absent from the package", async () => {
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact() {
+            assert.fail("registration should fail before workflow artifact upload");
+        },
+    };
+    client._catalog = {};
+    client.publishAgentPackageDirectory = async () => {
+        assert.fail("registration should fail before agent package publication");
+    };
+
+    await assert.rejects(
+        () => client.registerWorkflowDefinition(
+            PACKAGE_WORKFLOW.replace("package-inspector", "missing-agent"),
+            { packageRoot: PACKAGE_ROOT },
+        ),
+        error => error?.code === "WORKFLOW_AGENT_NOT_DECLARED",
+    );
 });
 
 test("management registration uses a deployment workflow package resolver", async () => {

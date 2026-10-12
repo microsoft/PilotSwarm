@@ -63,6 +63,7 @@ const manifest = {
         id: "inspect",
         type: "agent",
         agent: "sample-inspector",
+        agentPackageId: "package-1",
         input: {
             changeId: "${inputs.changeId}",
             retries: "${configuration.retryCount}",
@@ -289,7 +290,16 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
         const operation = step.value;
         operations.push(operation);
         if (operation.name === RESOLVE_WORKFLOW_DEFINITION_ACTIVITY) {
-            step = execution.next({ definitionId: "definition-1", manifest });
+            step = execution.next({
+                definitionId: "definition-1",
+                manifest,
+                agentPackageBindings: {
+                    inspect: {
+                        packageId: "package-1",
+                        versionId: "version-1",
+                    },
+                },
+            });
         } else if (operation.kind === "newGuid") {
             step = execution.next("child-1");
         } else if (operation.name === RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY) {
@@ -329,6 +339,14 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
     assert.equal(step.value.metadata.definitionId, "definition-1");
     assert.match(dispatch.input.task, /"changeId": "change-42"/);
     assert.match(dispatch.input.task, /"retries": 2/);
+    assert.equal(
+        dispatch.input.config.boundAgentPackageId,
+        "package-1",
+    );
+    assert.equal(
+        dispatch.input.config.boundAgentPackageVersionId,
+        "version-1",
+    );
     assert.deepEqual(
         operations
             .filter(operation => operation.kind === "activity")

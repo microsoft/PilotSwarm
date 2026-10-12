@@ -248,6 +248,7 @@ export function registerWorkflowActivities(
         SessionCatalog,
         | "acceptWorkflowExecution"
         | "completeWorkflowProjection"
+        | "getAgentPackagesInstallManifest"
         | "getWorkflowDefinition"
         | "recordWorkflowExecution"
     > | null,

@@ -204,6 +204,12 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 latestStateOutputs,
                 executionHistory,
                 state,
+                ...(resolved.agentPackageBindings?.[currentStateId]
+                    ? {
+                        agentPackageBinding:
+                            resolved.agentPackageBindings[currentStateId],
+                    }
+                    : {}),
             });
             yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, {
                 workflowSessionId: input.sessionId,

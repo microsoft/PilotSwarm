@@ -13,6 +13,7 @@ export interface CapabilityArtifact {
 export interface CapabilitySource {
     id: string; name: string; source: "static" | "published"; revision: string;
     scope: "shared" | "user"; owner?: FeatureOwner | null; packageId?: string;
+    packageVersionId?: string;
     artifacts: CapabilityArtifact[]; tools: Map<string, Tool<any>>;
     mcpServers: Record<string, any>;
 }

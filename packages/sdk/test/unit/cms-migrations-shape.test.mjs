@@ -156,3 +156,24 @@ test("0085: workflow admission atomically enforces logical and request idempoten
         /CREATE OR REPLACE FUNCTION "shape_check"\.cms_mark_workflow_admission_started/,
     );
 });
+
+test("0086: active workflow children retain their exact agent package version", () => {
+    const migration = migrations.find((m) => m.version === "0086");
+    assert.ok(migration, "migration 0086 must be registered");
+    assert.equal(migration.name, "workflow_agent_package_version_pins");
+    assert.match(
+        migration.sql,
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_get_agent_packages_install_manifest/,
+    );
+    assert.match(migration.sql, /version_id TEXT/);
+    assert.match(migration.sql, /is_active BOOLEAN/);
+    assert.match(migration.sql, /creation_config->>'boundAgentPackageId'/);
+    assert.match(
+        migration.sql,
+        /creation_config->>'boundAgentPackageVersionId'/,
+    );
+    assert.match(
+        migration.sql,
+        /state NOT IN \('completed', 'failed', 'error', 'cancelled'\)/,
+    );
+});

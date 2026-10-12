@@ -183,6 +183,7 @@ import {
     readAgentPackageVersionEntries,
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
+import { validateAgentPackageDir } from "./agent-package-format.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1445,7 +1446,33 @@ export class PilotSwarmManagementClient {
         packageSource: Record<string, unknown>,
     ): Promise<WorkflowDefinitionRecord> {
         const snapshot = await materializeWorkflowPackageSnapshot(packageRoot);
-        const compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        let compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        if (compiled.manifest.states.some(state => state.type === "agent")) {
+            const validation = await validateAgentPackageDir(packageRoot);
+            if (!validation.ok || !validation.manifest) {
+                throw new AgentPackageValidationError(validation);
+            }
+            const agentNames = validation.manifest.agents.map(agent => agent.name);
+            await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
+                agentPackage: {
+                    packageId: "workflow-registration-preflight",
+                    agentNames,
+                },
+            });
+            const published = await this.publishAgentPackageDirectory(
+                packageRoot,
+                "shared",
+                null,
+                true,
+                { createdBy: "workflow-definition-registration" },
+            );
+            compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
+                agentPackage: {
+                    packageId: published.packageId,
+                    agentNames,
+                },
+            });
+        }
         const packageSha256 = compiled.manifest.packageSha256;
         if (!packageSha256) {
             throw Object.assign(

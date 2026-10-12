@@ -122,6 +122,7 @@ export function projectSerializableSessionConfig(
         waitThreshold: fullConfig?.waitThreshold ?? fallbackWaitThreshold,
         boundAgentName: fullConfig?.boundAgentName,
         boundAgentPackageId: fullConfig?.boundAgentPackageId,
+        boundAgentPackageVersionId: fullConfig?.boundAgentPackageVersionId,
         boundAgentSource: fullConfig?.boundAgentSource,
         ...(fullConfig?.namedAgentToolAdditions !== undefined
             ? { namedAgentToolAdditions: fullConfig.namedAgentToolAdditions } : {}),
@@ -416,6 +417,7 @@ export class PilotSwarmClient {
                 systemMessage: resolvedConfig.systemMessage,
                 boundAgentName: resolvedConfig.boundAgentName,
                 boundAgentPackageId: resolvedConfig.boundAgentPackageId,
+                boundAgentPackageVersionId: resolvedConfig.boundAgentPackageVersionId,
                 boundAgentSource: resolvedConfig.boundAgentSource,
                 ...(!isSubAgent && (resolvedConfig.boundAgentName || agentId) ? {
                     namedAgentToolAdditions: resolvedConfig.namedAgentToolAdditions

@@ -92,6 +92,7 @@ export interface CompiledWorkflowAgentStateManifest
     extends CompiledWorkflowTransitionState {
     type: "agent";
     agent: string;
+    agentPackageId?: string;
     input: unknown;
     resultSchema: string;
     completion: {
@@ -548,6 +549,10 @@ export function compileWorkflowYaml(
     options: {
         transitions: WorkflowTransitionRegistry;
         packageSha256?: string;
+        agentPackage?: {
+            packageId: string;
+            agentNames: readonly string[];
+        };
     },
 ): CompiledWorkflowYaml {
     if (typeof yaml !== "string" || yaml.trim().length === 0) {
@@ -778,6 +783,15 @@ export function compileWorkflowYaml(
             );
         }
         const agent = requireString(state.agent, `${path}.agent`);
+        if (
+            options.agentPackage
+            && !options.agentPackage.agentNames.includes(agent)
+        ) {
+            throw compilerError(
+                `${path}.agent '${agent}' is not declared by the workflow package.`,
+                "WORKFLOW_AGENT_NOT_DECLARED",
+            );
+        }
         const inputTemplate = state.input ?? {};
         validateTemplate(inputTemplate, `${path}.input`, stateIds);
         const result = requireObject(state.result, `${path}.result`);
@@ -842,6 +856,9 @@ export function compileWorkflowYaml(
             id: stateId,
             type: "agent",
             agent,
+            ...(options.agentPackage
+                ? { agentPackageId: options.agentPackage.packageId }
+                : {}),
             input: inputTemplate,
             resultSchema,
             completion: {
@@ -889,6 +906,10 @@ export function compileAndRegisterWorkflowYaml(
     options: {
         transitions: WorkflowTransitionRegistry;
         packageSha256?: string;
+        agentPackage?: {
+            packageId: string;
+            agentNames: readonly string[];
+        };
     },
 ): {
     compiled: CompiledWorkflowYaml;

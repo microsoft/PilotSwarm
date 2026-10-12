@@ -18,6 +18,7 @@ export interface AgentStateDispatchPlan {
         parentSessionId: string;
         config: {
             boundAgentName: string;
+            boundAgentPackageId?: string;
             detachedPackageToolPolicy: "reject";
             toolNames: string[];
             childContract: WorkflowExecutionBinding;
@@ -60,6 +61,10 @@ export function createAgentStateDispatchPlan(input: {
         InMemoryWorkflowAgentState,
         "agent" | "allowedOutcomes" | "prompt"
     >;
+    agentPackageBinding?: {
+        packageId: string;
+        versionId: string;
+    };
 }): AgentStateDispatchPlan {
     const promptContext = deepFreeze({
         sessionId: input.workflowSessionId,
@@ -95,6 +100,12 @@ export function createAgentStateDispatchPlan(input: {
             parentSessionId: input.workflowSessionId,
             config: {
                 boundAgentName: input.state.agent,
+                ...(input.agentPackageBinding
+                    ? {
+                        boundAgentPackageId: input.agentPackageBinding.packageId,
+                        boundAgentPackageVersionId: input.agentPackageBinding.versionId,
+                    }
+                    : {}),
                 detachedPackageToolPolicy: "reject",
                 toolNames: [SUBMIT_WORKFLOW_RESULT_TOOL],
                 childContract: binding,

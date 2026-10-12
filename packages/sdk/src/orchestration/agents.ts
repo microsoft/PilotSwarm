@@ -908,6 +908,7 @@ export function* handleSubAgentAction(
             const {
                 boundAgentName: _parentBoundAgentName,
                 boundAgentPackageId: _parentBoundAgentPackageId,
+                boundAgentPackageVersionId: _parentBoundAgentPackageVersionId,
                 boundAgentSource: _parentBoundAgentSource,
                 namedAgentToolAdditions: _parentNamedAgentToolAdditions,
                 childContract: _parentChildContract,
