@@ -107,7 +107,7 @@ function jsonResponse(body) {
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json", "x-request-id": "request-42" } });
 }
 
-for (const model of ["gpt-5.6-terra", "gpt-4o", "model-router-preview", "custom-model-router", "MODEL-ROUTER", undefined, null]) {
+for (const model of ["gpt-5.6-terra", "gpt-4o", "model-router-preview", "model-router-128k-claude", "model-router-128-openai", "custom-model-router", "MODEL-ROUTER", undefined, null]) {
     test(`other models keep oversized catalogs and responses unchanged: ${model}`, async context => {
         const request = catalogRequest({ model, tools: catalogTools(139) });
         const original = await request.clone().text();
@@ -118,6 +118,20 @@ for (const model of ["gpt-5.6-terra", "gpt-4o", "model-router-preview", "custom-
             return response;
         });
         assert.equal(await new ByokRequestCompatibility().sendRequest(request, {}), response);
+    });
+}
+
+for (const model of ["model-router", "model-router-128k-openai", "model-router-272k-openai", "model-router-922k-openai"]) {
+    test(`${model} groups an oversized catalog`, async context => {
+        const request = catalogRequest({ model, tools: catalogTools(129) });
+        context.mock.method(globalThis, "fetch", async forwarded => {
+            const wire = await forwarded.json();
+            assert.equal(wire.model, model);
+            assert.equal(wire.tools.length, 128);
+            assert.equal(wire.tools.at(-1).function.name, "pilotswarm_tool_dispatch");
+            return jsonResponse({ choices: [] });
+        });
+        await new ByokRequestCompatibility().sendRequest(request, {});
     });
 }
 
