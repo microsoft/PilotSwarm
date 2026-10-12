@@ -1985,7 +1985,7 @@ export class PilotSwarmWorker {
                 const packageSkills = this._packageSkillsByPackage.get(key) ?? [];
                 packageSkills.push(skill);
                 this._packageSkillsByPackage.set(key, packageSkills);
-                if (!prov.active) continue;
+                if (prov.active === false) continue;
             }
             if (prov && prov.scope === "user") {
                 // Private to its owner: never in the fleet-wide catalog, but
@@ -2039,7 +2039,7 @@ export class PilotSwarmWorker {
                 const skillDir = skill.dir ? path.resolve(skill.dir) : null;
                 const isOwn = Boolean(ownDir && skillDir && skillDir.startsWith(ownDir + path.sep));
                 if (isOwn) { ownSkills.push(skill); continue; }
-                if (prov && !prov.active) continue;
+                if (prov?.active === false) continue;
                 if (!prov || prov.scope !== "user") { pool.push(skill); continue; }
                 // Foreign user-scope skill: include only if same owner (another
                 // copy the same person owns); otherwise exclude.
@@ -2355,7 +2355,7 @@ export class PilotSwarmWorker {
         }
 
         if (!source.revision) source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
-        if (!provenance || provenance.active) {
+        if (provenance?.active !== false) {
             this._capabilitySources.push(source);
         }
 
