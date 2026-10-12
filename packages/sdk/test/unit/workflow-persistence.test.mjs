@@ -315,7 +315,7 @@ test("management workflow reads reconcile failed Duroxide status into the projec
 
     assert.equal(failures.length, 1);
     assert.equal(failures[0].workflowSessionId, "workflow-1");
-    assert.equal(failures[0].errorMessage, "configuration failure");
+    assert.equal(failures[0].errorMessage, "Workflow orchestration failed.");
     assert.ok(failures[0].failedAt instanceof Date);
     assert.equal(result.status, "failed");
     assert.equal(result.terminalOutcome, "failed");

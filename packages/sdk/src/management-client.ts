@@ -801,6 +801,8 @@ function normalizeShareSlot(slot: unknown): number {
     return n;
 }
 
+const WORKFLOW_ORCHESTRATION_FAILED_MESSAGE = "Workflow orchestration failed.";
+
 export class PilotSwarmManagementClient {
     private config!: PilotSwarmManagementClientOptions;
     private _catalog: SessionCatalog | null = null;
@@ -1783,13 +1785,9 @@ export class PilotSwarmManagementClient {
         );
         if (orchestrationStatus?.status !== "Failed") return projection;
 
-        const errorMessage =
-            typeof orchestrationStatus.error === "string" && orchestrationStatus.error.trim()
-                ? orchestrationStatus.error.trim()
-                : null;
         await this._catalog!.failWorkflowProjection({
             workflowSessionId: projection.workflowSessionId,
-            errorMessage,
+            errorMessage: WORKFLOW_ORCHESTRATION_FAILED_MESSAGE,
             failedAt: new Date(),
         });
         return this._catalog!.getWorkflowProjection(projection.workflowSessionId);
