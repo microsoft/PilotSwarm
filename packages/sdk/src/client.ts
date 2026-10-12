@@ -212,8 +212,18 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_IDEMPOTENCY_KEY_INVALID" },
             );
         }
+        const definitionViewer = context.owner?.provider && context.owner?.subject
+            ? context.owner
+            : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+        const visibleDefinition = this._catalog.getWorkflowDefinitionForViewer
+            ? await this._catalog.getWorkflowDefinitionForViewer(
+                definitionId,
+                definitionViewer,
+                context.isAdmin === true,
+            )
+            : await this._catalog.getWorkflowDefinition(definitionId);
         const definition = requireCompatibleWorkflowDefinition(
-            await this._catalog.getWorkflowDefinition(definitionId),
+            visibleDefinition,
             definitionId,
         );
         const inputs = request.inputs ?? {};

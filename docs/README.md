@@ -42,6 +42,7 @@ The Web API — the one integration surface — and every client over it.
 Building **on** PilotSwarm, deploying it, and contributing **to** it.
 
 **Building apps**
+- [Building workflows](./building-workflows.md) — learn workflow fundamentals and author workflow packages, transitions, and agent bindings
 - [SDK apps](./developer/building/sdk-apps.md) (+ [agents](./developer/building/sdk-agents.md), [facts & graph](./developer/building/facts-and-graph.md))
 - [Workflow sessions](./developer/building/workflow-sessions.md) — experimental durable workflow children
 - [CLI/TUI apps](./developer/building/cli-apps.md) (+ [agents](./developer/building/cli-agents.md))

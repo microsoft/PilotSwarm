@@ -128,6 +128,8 @@ import {
 } from "./workflow-orchestration/package-loader.js";
 import {
     workflowCompiledManifestSha256,
+    workflowAgentPackageSelectors,
+    type WorkflowAgentStatePackageBinding,
 } from "./workflow-orchestration/compiler.js";
 import {
     createWorkflowGitPackageResolver,
@@ -272,6 +274,19 @@ function createAbortError(message: string, reason?: unknown): Error {
     const error = new Error(typeof reason === "string" && reason ? reason : message);
     error.name = "AbortError";
     return error;
+}
+
+function normalizeWorkflowRegistrationError(error: unknown): unknown {
+    if (!(error instanceof Error)) return error;
+    const existingCode = "code" in error && typeof error.code === "string"
+        ? error.code
+        : null;
+    if (existingCode && existingCode !== "P0001") return error;
+    const match = /^([A-Z][A-Z0-9_]+):/.exec(error.message);
+    if (!match) return error;
+    return Object.assign(new Error(error.message, { cause: error }), {
+        code: match[1],
+    });
 }
 
 function normalizeSessionTitleInput(title: string, maxLength = MAX_SESSION_TITLE_LENGTH): string {
@@ -775,6 +790,7 @@ export interface PilotSwarmManagementClientOptions {
 
 export interface WorkflowDefinitionRegistrationRequest {
     source: WorkflowGitSource;
+    scope?: AgentPackageScope;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1412,9 +1428,29 @@ export class PilotSwarmManagementClient {
      */
     async registerWorkflowDefinition(
         requestOrYaml: WorkflowDefinitionRegistrationRequest | string,
-        options?: { packageRoot: string },
+        options?: {
+            packageRoot?: string;
+            scope?: AgentPackageScope;
+            owner?: AgentPrincipal | null;
+            isAdmin?: boolean;
+            createdBy?: string | null;
+        },
     ): Promise<WorkflowDefinitionRecord> {
         this._ensureStarted();
+        const owner = options?.owner?.provider && options.owner.subject
+            ? options.owner
+            : null;
+        const isAdmin = options?.isAdmin ?? owner == null;
+        const scope = options?.scope
+            ?? (typeof requestOrYaml === "string"
+                ? "shared"
+                : requestOrYaml.scope ?? (owner ? "user" : "shared"));
+        const registration = {
+            scope,
+            owner,
+            isAdmin,
+            createdBy: options?.createdBy ?? null,
+        };
         if (typeof requestOrYaml === "string") {
             if (!options?.packageRoot) {
                 throw Object.assign(
@@ -1422,25 +1458,35 @@ export class PilotSwarmManagementClient {
                     { code: "WORKFLOW_PACKAGE_ROOT_REQUIRED" },
                 );
             }
-            return this._registerResolvedWorkflowPackage(
-                requestOrYaml,
-                options.packageRoot,
-                { kind: "local-package" },
-            );
+            try {
+                return await this._registerResolvedWorkflowPackage(
+                    requestOrYaml,
+                    options.packageRoot,
+                    { kind: "local-package" },
+                    registration,
+                );
+            } catch (error) {
+                throw normalizeWorkflowRegistrationError(error);
+            }
         }
-        const resolver = this.config.workflowPackageResolver
-            ?? createWorkflowGitPackageResolver(
-                this.config.workflowGitImportPolicy ?? loadImportPolicy(),
-            );
-        const resolved = await resolver.resolve(requestOrYaml.source);
         try {
-            return await this._registerResolvedWorkflowPackage(
-                resolved.workflowYaml,
-                resolved.packageRoot,
-                { ...resolved.source },
-            );
-        } finally {
-            await resolved.cleanup();
+            const resolver = this.config.workflowPackageResolver
+                ?? createWorkflowGitPackageResolver(
+                    this.config.workflowGitImportPolicy ?? loadImportPolicy(),
+                );
+            const resolved = await resolver.resolve(requestOrYaml.source);
+            try {
+                return await this._registerResolvedWorkflowPackage(
+                    resolved.workflowYaml,
+                    resolved.packageRoot,
+                    { ...resolved.source },
+                    registration,
+                );
+            } finally {
+                await resolved.cleanup();
+            }
+        } catch (error) {
+            throw normalizeWorkflowRegistrationError(error);
         }
     }
 
@@ -1448,21 +1494,115 @@ export class PilotSwarmManagementClient {
         yaml: string,
         packageRoot: string,
         packageSource: Record<string, unknown>,
+        registration: {
+            scope: AgentPackageScope;
+            owner: AgentPrincipal | null;
+            isAdmin: boolean;
+            createdBy: string | null;
+        },
     ): Promise<WorkflowDefinitionRecord> {
         const snapshot = await materializeWorkflowPackageSnapshot(packageRoot);
-        let compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        const selectors = workflowAgentPackageSelectors(yaml);
+        const selectorPlaceholders = Object.fromEntries(
+            Object.keys(selectors).map(stateId => [
+                stateId,
+                { packageId: `workflow-external-preflight:${stateId}` },
+            ]),
+        );
+        let compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
+            agentBindings: selectorPlaceholders,
+        });
+        const agentStates = compiled.manifest.states.filter(
+            (state): state is Extract<typeof state, { type: "agent" }> =>
+                state.type === "agent",
+        );
+        const externalBindings: Record<string, WorkflowAgentStatePackageBinding> = {};
+        for (const state of agentStates) {
+            const selector = selectors[state.id];
+            if (!selector) continue;
+            if (registration.scope === "shared" && selector.scope === "user") {
+                throw Object.assign(
+                    new Error(
+                        `Shared workflow state '${state.id}' cannot reference user-scoped package '${selector.name}'.`,
+                    ),
+                    { code: "WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID" },
+                );
+            }
+            const selected = await this._catalog!.getAgentPackage(
+                selector.name,
+                registration.owner,
+                registration.isAdmin,
+                {
+                    scope: selector.scope,
+                    ...(selector.scope === "user" && registration.owner
+                        ? { owner: registration.owner }
+                        : {}),
+                },
+            );
+            if (!selected || !selected.enabled || !selected.activeVersionId) {
+                throw Object.assign(
+                    new Error(
+                        `Workflow state '${state.id}' references unavailable package '${selector.name}' (${selector.scope}).`,
+                    ),
+                    { code: "WORKFLOW_AGENT_PACKAGE_UNAVAILABLE" },
+                );
+            }
+            const active = selected.versions.find(
+                version => version.versionId === selected.activeVersionId,
+            );
+            const declaredAgents = Array.isArray(active?.manifest?.agents)
+                ? active.manifest.agents
+                    .map(agent => {
+                        if (typeof agent === "string") return agent;
+                        if (
+                            agent
+                            && typeof agent === "object"
+                            && "name" in agent
+                            && typeof agent.name === "string"
+                        ) {
+                            return agent.name;
+                        }
+                        return null;
+                    })
+                    .filter((name: unknown): name is string =>
+                        typeof name === "string" && name.length > 0
+                    )
+                : [];
+            externalBindings[state.id] = {
+                packageId: selected.packageId,
+                agentNames: declaredAgents,
+            };
+        }
+
+        const bundledStates = agentStates.filter(state => !selectors[state.id]);
         let preparedAgentPackage: Awaited<ReturnType<typeof prepareAgentPackageDir>> | null = null;
         let agentNames: string[] = [];
-        if (compiled.manifest.states.some(state => state.type === "agent")) {
+        if (bundledStates.length > 0) {
             preparedAgentPackage = await prepareAgentPackageDir(packageRoot);
             agentNames = preparedAgentPackage.manifest.agents.map(agent => agent.name);
-            await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
-                agentPackage: {
-                    packageId: "workflow-registration-preflight",
-                    agentNames,
-                },
-            });
         }
+        const bindingsFor = (bundledPackageId?: string) => {
+            const bindings: Record<string, WorkflowAgentStatePackageBinding> = {
+                ...externalBindings,
+            };
+            if (bundledPackageId) {
+                for (const state of bundledStates) {
+                    bindings[state.id] = {
+                        packageId: bundledPackageId,
+                        agentNames,
+                    };
+                }
+            }
+            return bindings;
+        };
+        compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
+            agentBindings: bindingsFor(
+                preparedAgentPackage
+                    ? "workflow-registration-preflight"
+                    : undefined,
+            ),
+            requireAgentBindings: agentStates.length > 0,
+        });
         const packageSha256 = compiled.manifest.packageSha256;
         if (!packageSha256) {
             throw Object.assign(
@@ -1491,6 +1631,7 @@ export class PilotSwarmManagementClient {
                     );
                     return lockedCatalog.registerWorkflowDefinition({
                         definitionId: randomUUID(),
+                        ...registration,
                         sourceYaml: yaml,
                         sourceSha256,
                         packageSha256,
@@ -1509,9 +1650,14 @@ export class PilotSwarmManagementClient {
         for (let attempt = 0; attempt < 3; attempt++) {
             const existing = await this._catalog!.getAgentPackage(
                 preparedAgentPackage.manifest.name,
-                null,
-                true,
-                { scope: "shared" },
+                registration.owner,
+                registration.isAdmin,
+                {
+                    scope: registration.scope,
+                    ...(registration.scope === "user" && registration.owner
+                        ? { owner: registration.owner }
+                        : {}),
+                },
             );
             const existingVersion = existing?.versions.find(
                 version => version.semver === preparedAgentPackage!.manifest.version,
@@ -1527,7 +1673,8 @@ export class PilotSwarmManagementClient {
             const packageId = existing?.packageId ?? randomUUID();
             const versionId = existingVersion?.versionId ?? randomUUID();
             compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
-                agentPackage: { packageId, agentNames },
+                agentBindings: bindingsFor(packageId),
+                requireAgentBindings: true,
             });
             const definition = {
                 definitionId: randomUUID(),
@@ -1571,8 +1718,8 @@ export class PilotSwarmManagementClient {
                             versionId,
                             package: {
                                 name: preparedAgentPackage.manifest.name,
-                                scope: "shared",
-                                owner: null,
+                                scope: registration.scope,
+                                owner: registration.owner,
                                 sourceId: null,
                                 semver: preparedAgentPackage.manifest.version,
                                 sha256: preparedAgentPackage.sha256,
@@ -1582,10 +1729,14 @@ export class PilotSwarmManagementClient {
                                     ? packageSource.commitSha
                                     : null,
                                 manifest: preparedAgentPackage.manifest as unknown as Record<string, unknown>,
-                                createdBy: "workflow-definition-registration",
-                                isAdmin: true,
+                                createdBy: registration.createdBy
+                                    ?? "workflow-definition-registration",
+                                isAdmin: registration.isAdmin,
                             },
-                            definition,
+                            definition: {
+                                ...definition,
+                                ...registration,
+                            },
                         });
                     },
                 );
@@ -1599,9 +1750,27 @@ export class PilotSwarmManagementClient {
     }
 
     /** Read one immutable registered definition and its compiled state rows. */
-    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+    async getWorkflowDefinition(
+        definitionId: string,
+        viewer: AgentPrincipal | null = null,
+        isAdmin = true,
+    ): Promise<WorkflowDefinitionRecord | null> {
         this._ensureStarted();
-        return this._catalog!.getWorkflowDefinition(definitionId);
+        return this._catalog!.getWorkflowDefinitionForViewer
+            ? this._catalog!.getWorkflowDefinitionForViewer(
+                definitionId,
+                viewer,
+                isAdmin,
+            )
+            : this._catalog!.getWorkflowDefinition(definitionId);
+    }
+
+    async listWorkflowDefinitions(
+        viewer: AgentPrincipal | null = null,
+        isAdmin = true,
+    ): Promise<WorkflowDefinitionRecord[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkflowDefinitions(viewer, isAdmin);
     }
 
     /** Get the workflow's current externally visible state. */

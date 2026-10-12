@@ -17,6 +17,12 @@ if (argv[0] === "auth") {
         console.error(`[pilotswarm] ${error?.message || error}`);
         return 1;
     });
+} else if (argv[0] === "workflows") {
+    const { runWorkflowsCommand } = await import("../src/workflows-cli.js");
+    process.exitCode = await runWorkflowsCommand(argv.slice(1)).catch((error) => {
+        console.error(`[pilotswarm] ${error?.message || error}`);
+        return 1;
+    });
 } else {
     const { parseCliIntoEnv } = await import("../src/bootstrap-env.js");
     const config = parseCliIntoEnv(argv);

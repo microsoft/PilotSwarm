@@ -124,6 +124,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionsPage",
     "listSessionWorkspaceFolders",
     "listWorkers",
+    "listWorkflowDefinitions",
     "listWorkflowExecutions",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
@@ -987,8 +988,8 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Read one immutable registered workflow definition.
-     * @remarks `GET /management/workflow-definitions/:definitionId` — access: `fleet:admin`
+     * Read one shared or caller-owned immutable workflow definition.
+     * @remarks `GET /management/workflow-definitions/:definitionId` — access: `authed`
      */
     getWorkflowDefinition(params: {
         definitionId: string;
@@ -1195,6 +1196,12 @@ export interface ManagementOps {
     listWorkers(params?: Record<string, never>): Promise<any>;
 
     /**
+     * List shared workflow definitions plus definitions owned by the caller.
+     * @remarks `GET /management/workflow-definitions` — access: `authed`
+     */
+    listWorkflowDefinitions(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Authoritative workflow state executions in admission order.
      * @remarks `GET /management/workflows/:sessionId/executions` — access: `session:read`
      */
@@ -1287,11 +1294,12 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Resolve a Git-backed workflow package, pin its artifact, compile it, and persist an immutable definition.
-     * @remarks `POST /management/workflow-definitions` — access: `fleet:admin`
+     * Resolve a Git-backed workflow package and register an owned user or shared immutable definition.
+     * @remarks `POST /management/workflow-definitions` — access: `authed`
      */
     registerWorkflowDefinition(params: {
         source?: any;
+        scope?: any;
     }): Promise<any>;
 
     /**
@@ -1977,6 +1985,7 @@ export function createManagementOps(
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
+        listWorkflowDefinitions: (params: Record<string, unknown> = {}) => callOp("listWorkflowDefinitions", params),
         listWorkflowExecutions: (params: Record<string, unknown> = {}) => callOp("listWorkflowExecutions", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),

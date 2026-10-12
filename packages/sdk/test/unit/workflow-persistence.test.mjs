@@ -311,7 +311,10 @@ test("web management registers Git workflow definitions and reads them by id", a
     );
 
     assert.deepEqual(calls, [
-        { name: "registerWorkflowDefinition", params: { source: request.source } },
+        {
+            name: "registerWorkflowDefinition",
+            params: { source: request.source, scope: "user" },
+        },
         { name: "getWorkflowDefinition", params: { definitionId: "definition-1" } },
     ]);
 });

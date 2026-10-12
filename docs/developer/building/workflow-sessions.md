@@ -177,7 +177,11 @@ message is already recorded, the retry completes without sending it again.
 
 ## Registration and Execution
 
-Administrators register Git-backed definitions through:
+For an introduction to workflows and the authoring model, including package
+layout, YAML, transitions, and agent bindings, see
+[Building Workflows](../../building-workflows.md).
+
+Authenticated users register Git-backed definitions through:
 
 ```text
 POST /api/v1/management/workflow-definitions

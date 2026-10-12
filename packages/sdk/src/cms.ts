@@ -365,6 +365,9 @@ export interface WorkflowDefinitionRow {
     graphId: string;
     name: string;
     version: string;
+    scope: AgentPackageScope;
+    owner: AgentPrincipal | null;
+    createdBy: string | null;
     apiVersion: string;
     compilerVersion: string;
     sourceYaml: string;
@@ -1013,6 +1016,10 @@ export interface PublishAgentPackageResult {
 
 export interface WorkflowDefinitionRegistrationInput {
     definitionId: string;
+    scope?: AgentPackageScope;
+    owner?: AgentPrincipal | null;
+    createdBy?: string | null;
+    isAdmin?: boolean;
     sourceYaml: string;
     sourceSha256: string;
     packageSha256: string;
@@ -1499,6 +1506,17 @@ export interface SessionCatalog {
 
     /** Read one immutable workflow definition and its ordered compiled states. */
     getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
+    /** Viewer-filtered definition read for API and workflow admission. */
+    getWorkflowDefinitionForViewer?(
+        definitionId: string,
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord | null>;
+    /** Definitions visible to this viewer, newest first. */
+    listWorkflowDefinitions(
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord[]>;
 
     /** Atomically reserve or deduplicate one registered workflow execution. */
     admitWorkflow(input: {
@@ -2739,9 +2757,12 @@ export class PgSessionCatalog implements SessionCatalog {
         input: WorkflowDefinitionRegistrationInput,
         db: any,
     ): Promise<WorkflowDefinitionRecord> {
+        const scope = input.scope ?? "shared";
+        const owner = input.owner ?? null;
         const { rows } = await db.query(
             `SELECT ${this.sql.fn.registerWorkflowDefinition}(
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                $17, $18, $19, $20, $21
             ) AS definition_id`,
             [
                 input.definitionId,
@@ -2760,6 +2781,11 @@ export class PgSessionCatalog implements SessionCatalog {
                 JSON.stringify(input.manifest.inputSchema),
                 JSON.stringify(input.manifest.configuration),
                 JSON.stringify(input.manifest),
+                scope,
+                owner?.provider ?? null,
+                owner?.subject ?? null,
+                input.createdBy ?? null,
+                input.isAdmin ?? true,
             ],
         );
         const persistedDefinitionId = rows[0]?.definition_id;
@@ -2827,6 +2853,56 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
         return this._getWorkflowDefinition(definitionId, this.pool);
+    }
+
+    async getWorkflowDefinitionForViewer(
+        definitionId: string,
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord | null> {
+        const { rows } = await this.pool.query(
+            `SELECT *
+               FROM "${this.sql.schema}".workflow_definitions
+              WHERE definition_id = $1
+                AND (
+                    scope = 'shared'
+                    OR $4
+                    OR (
+                        owner_provider = $2
+                        AND owner_subject = $3
+                    )
+                )`,
+            [
+                definitionId,
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                isAdmin,
+            ],
+        );
+        return rows.length > 0 ? rowToWorkflowDefinitionRow(rows[0]) : null;
+    }
+
+    async listWorkflowDefinitions(
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord[]> {
+        const { rows } = await this.pool.query(
+            `SELECT *
+               FROM "${this.sql.schema}".workflow_definitions
+              WHERE scope = 'shared'
+                 OR $3
+                 OR (
+                    owner_provider = $1
+                    AND owner_subject = $2
+                 )
+              ORDER BY created_at DESC, graph_id`,
+            [
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                isAdmin,
+            ],
+        );
+        return rows.map(rowToWorkflowDefinitionRow);
     }
 
     async admitWorkflow(input: {
@@ -4648,6 +4724,14 @@ function rowToWorkflowDefinitionRow(row: any): WorkflowDefinitionRow {
         graphId: row.graph_id,
         name: row.name,
         version: row.version,
+        scope: row.scope === "user" ? "user" : "shared",
+        owner: row.owner_provider && row.owner_subject
+            ? {
+                provider: String(row.owner_provider),
+                subject: String(row.owner_subject),
+            }
+            : null,
+        createdBy: row.created_by ?? null,
         apiVersion: row.api_version,
         compilerVersion: row.compiler_version,
         sourceYaml: row.source_yaml,
