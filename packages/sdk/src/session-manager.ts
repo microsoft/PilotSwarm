@@ -281,8 +281,8 @@ export interface WorkerDefaults {
      */
     baseMcpServers?: Record<string, any>;
     /**
-     * Whether native Copilot configuration discovery may load repository MCP
-     * configuration. Defaults to true.
+     * Whether the underlying runtime's native configuration discovery may
+     * load repository MCP configuration. Defaults to true.
      */
     repositoryMcpEnabled?: boolean;
     /**

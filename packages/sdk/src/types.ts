@@ -1519,9 +1519,14 @@ export interface PilotSwarmWorkerOptions {
 
     /**
      * Whether repository content may contribute MCP configuration through
-     * native Copilot configuration discovery. Defaults to true for
-     * compatibility. Set false when sessions operate in caller-controlled
-     * repositories; deployment and agent-package MCP grants remain available.
+     * the underlying runtime's native configuration discovery. Defaults to
+     * true for compatibility.
+     *
+     * Host applications should set this to false when repository contents and
+     * executable MCP configuration cross different trust boundaries, such as
+     * sessions that attach caller-selected repositories while MCP endpoints,
+     * credentials, and grants remain application-governed. Deployment and
+     * agent-package MCP grants remain available.
      */
     repositoryMcpEnabled?: boolean;
 
