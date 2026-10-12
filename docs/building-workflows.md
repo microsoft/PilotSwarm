@@ -1,6 +1,8 @@
 # Building Workflows
 
-This guide explains what a PilotSwarm workflow is and how to author one.
+This guide explains when to use a PilotSwarm workflow and how to author,
+register, test, run, and debug one. It is written for workflow users and
+authors; it does not require knowledge of PilotSwarm's orchestration internals.
 
 ## What is a workflow?
 
@@ -20,6 +22,33 @@ Authoring a workflow means creating its YAML, deterministic transition modules,
 and any agents bundled with it. Environment-specific operations and credentials
 belong behind deployment-registered providers rather than in the workflow
 package.
+
+### When is a workflow the right fit?
+
+Use a workflow when the work has an explicit process that should:
+
+- survive worker or process replacement;
+- move through named, inspectable states;
+- wait durably for a person or external condition;
+- apply external actions with stable idempotency;
+- follow deterministic, reviewable transition rules; or
+- deduplicate repeated requests for the same logical entity.
+
+Use a normal agent session instead when the task is exploratory, conversational,
+or does not benefit from a predefined state machine. A workflow may still use
+agents for individual states; the workflow owns control flow while each agent
+owns the judgment required by its state.
+
+### End-to-end lifecycle
+
+1. Author the workflow package in source control.
+2. Register a repository URL, Git ref, and workflow YAML path.
+3. PilotSwarm resolves the ref to an immutable commit and returns a
+   `definitionId`.
+4. Start that definition directly, or give its ID to an agent that can call
+   `spawn_workflow`.
+5. Inspect the workflow projection, topology, and state executions while it
+   runs.
 
 ## 1. Choose a package layout
 
@@ -239,5 +268,254 @@ identifiers. Workflow packages do not contain provider credentials. See
 [Workflow Sessions](./developer/building/workflow-sessions.md) for the provider
 contracts and execution model.
 
-For runtime invariants, provider contracts, registration, and execution
-internals, read [Workflow Sessions](./developer/building/workflow-sessions.md).
+## 6. Store the workflow in source control
+
+Commit the workflow YAML, transition modules, and bundled package files
+together. Registration identifies the package with:
+
+- a repository URL;
+- a branch, tag, or commit in `gitRef`; and
+- the path to the workflow YAML within the repository.
+
+The workflow YAML's directory becomes the package root. PilotSwarm resolves the
+requested ref to an immutable commit and snapshots the complete package.
+Executions never fetch files from a moving branch.
+
+Do not place credentials in the repository URL or registration request.
+Deployments provide repository authentication through their configured source
+resolver.
+
+## 7. Register the workflow
+
+Authenticate to the deployment and register the source-controlled package:
+
+```text
+pilotswarm workflows register \
+  --api-url https://pilotswarm.example.test \
+  --repo https://git.example.test/workflows.git \
+  --ref refs/heads/main \
+  --path approval-workflow/workflow.yaml \
+  --user
+```
+
+Use `--shared` instead of `--user` to make the definition visible to every
+authenticated user. User definitions are visible only to their owner and
+administrators. Registration defaults to user scope.
+
+The command returns an immutable `definitionId`. Save that ID in the
+configuration or agent instructions that will invoke the workflow.
+
+List and inspect definitions visible to you:
+
+```text
+pilotswarm workflows list
+pilotswarm workflows show <definition-id> --json
+```
+
+The equivalent API request is:
+
+```http
+POST /api/v1/management/workflow-definitions
+Authorization: Bearer YOUR_TOKEN
+Content-Type: application/json
+
+{
+  "scope": "user",
+  "source": {
+    "kind": "git",
+    "repositoryUrl": "https://git.example.test/workflows.git",
+    "gitRef": "refs/heads/main",
+    "workflowPath": "approval-workflow/workflow.yaml"
+  }
+}
+```
+
+Registration compiles and validates the package. Registering identical content
+again is idempotent. A changed definition must use a new `metadata.version`;
+PilotSwarm does not replace different content under the same scoped
+`name@version`.
+
+## 8. Test a workflow
+
+### Test transitions as ordinary code
+
+Transition handlers are synchronous functions. Unit-test them directly with
+representative accepted outcomes and outputs:
+
+```javascript
+import assert from "node:assert/strict";
+import { afterReview } from "./transitions.mjs";
+
+assert.deepEqual(afterReview.handler({
+  stateOutcome: "approved"
+}), {
+  kind: "advance",
+  target: "approved"
+});
+```
+
+Cover every declared outcome and verify that the handler selects only one of
+its `allowedTargets`. Keep transitions free of network calls, clocks,
+randomness, filesystem access, and mutable global state.
+
+### Test the compiled package privately
+
+Register a development branch with `--user`, then use
+`pilotswarm workflows show <definition-id> --json` to verify:
+
+- the resolved commit is the commit you intended to test;
+- every state and transition appears in the compiled manifest;
+- each agent state is bound to the expected logical package; and
+- the workflow scope is `user`.
+
+Start the definition with test inputs and a unique idempotency key. Inspect its
+state executions as described below. Publish a shared definition only after the
+user-scoped definition behaves as expected.
+
+Registration is also the authoritative package-validation boundary. Invalid
+YAML, missing transition exports, undeclared agents, invalid package ownership,
+and unsupported state declarations fail before a definition can be started.
+
+## 9. Start a standalone workflow
+
+Use the `definitionId` returned by registration:
+
+```http
+POST /api/v1/workflows
+Authorization: Bearer YOUR_TOKEN
+Content-Type: application/json
+
+{
+  "definitionId": "<definition-id>",
+  "inputs": {
+    "changeId": "change-42"
+  },
+  "idempotencyKey": "approval-change-42"
+}
+```
+
+The SDK exposes the same operation:
+
+```javascript
+const started = await client.startWorkflow({
+  definitionId,
+  inputs: { changeId: "change-42" },
+  idempotencyKey: "approval-change-42",
+  visibility: "private"
+});
+
+console.log(started.sessionId);
+```
+
+An idempotency key identifies a retry of the same start request. Reusing it for
+different inputs is rejected. If the workflow declares `identity.primaryKey`,
+PilotSwarm also deduplicates starts for the same logical entity independently
+from request idempotency.
+
+To intentionally rerun a workflow with a primary key, include a reason:
+
+```json
+{
+  "rerun": {
+    "reason": "Retry after repairing the external dependency."
+  }
+}
+```
+
+## 10. Start a workflow from an agent
+
+Agents may start only previously registered workflow definitions. They cannot
+submit inline workflow YAML or bypass registration.
+
+The `spawn_workflow` tool accepts:
+
+```json
+{
+  "definition": {
+    "kind": "registered",
+    "definition_id": "<definition-id>"
+  },
+  "inputs": {
+    "changeId": "change-42"
+  }
+}
+```
+
+Put the stable definition ID and invocation guidance in the calling agent's
+instructions. For example:
+
+```markdown
+When a change requires the approval process, call `spawn_workflow` with
+registered definition `<definition-id>` and pass the change ID as
+`inputs.changeId`.
+
+Use `check_workflows` when you can continue other work while it runs. Use
+`wait_for_workflows` when you cannot proceed until the workflow completes.
+```
+
+`spawn_workflow` creates a child workflow session and returns its session ID in
+the agent's follow-up context. `check_workflows` reports current statuses and
+available terminal results. `wait_for_workflows` durably suspends the parent
+conversation until the selected workflow children complete.
+
+The calling user must be able to see the registered definition. A private user
+definition cannot be invoked by another user merely because its ID is known.
+
+## 11. Inspect and debug executions
+
+Use the workflow session ID returned by a standalone start or child invocation.
+
+| Purpose | API |
+|---|---|
+| Current state, wait reason, and terminal result | `GET /api/v1/management/workflows/:sessionId` |
+| Sanitized topology and per-state status | `GET /api/v1/management/workflows/:sessionId/overview` |
+| Authoritative state executions in order | `GET /api/v1/management/workflows/:sessionId/executions` |
+| Answer the currently pending question | `POST /api/v1/management/workflows/:sessionId/questions/:executionSequence/answer` |
+
+The SDK management client exposes the corresponding methods:
+
+```javascript
+const current = await management.getWorkflow(sessionId);
+const overview = await management.getWorkflowOverview(sessionId);
+const executions = await management.listWorkflowExecutions(sessionId);
+```
+
+Start with the current projection:
+
+- `currentStateId` identifies the active or last state;
+- `currentExecutionSequence` identifies the current attempt;
+- `waitingOn` explains whether the workflow is waiting on an agent, question,
+  action, observation, or timer;
+- `status` reports running or terminal state; and
+- `terminalOutcome` and `result` are populated when complete.
+
+Then inspect ordered executions to find the accepted outcome and output for
+each state. Because transitions consume accepted state results, the execution
+immediately before an unexpected transition is the primary debugging record.
+
+For a pending question, answer the exact current execution sequence:
+
+```javascript
+await management.answerWorkflowQuestion(
+  sessionId,
+  current.currentExecutionSequence,
+  "approved",
+  { approvedBy: "operator" }
+);
+```
+
+Common registration failures:
+
+| Error | Meaning |
+|---|---|
+| `WORKFLOW_YAML_INVALID` | The workflow YAML could not be parsed. |
+| `WORKFLOW_STATE_TYPE_UNSUPPORTED` | The compiler does not support a declared state type. |
+| `WORKFLOW_TRANSITION_*` | A transition module, export, target, or result is invalid. |
+| `WORKFLOW_AGENT_NOT_DECLARED` | The selected package does not declare the state's agent. |
+| `WORKFLOW_AGENT_PACKAGE_UNAVAILABLE` | A selected package is missing, disabled, or has no active version. |
+| `WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID` | Workflow and agent-package ownership are incompatible. |
+| `WORKFLOW_DEFINITION_CONFLICT` | Different content already uses the same scoped `name@version`. |
+| `WORKFLOW_GIT_REPOSITORY_REFUSED` | The deployment does not allow the requested repository. |
+
+For platform architecture, provider implementation contracts, and durability
+invariants, read [Workflow Sessions](./developer/building/workflow-sessions.md).

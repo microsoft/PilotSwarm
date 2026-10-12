@@ -1,9 +1,8 @@
 /**
  * Real parent-agent to workflow-child integration boundary.
  *
- * The synthetic markdown agent invokes the production spawn_workflow tool.
- * Until the YAML compiler is implemented, the child orchestration is expected
- * to fail explicitly at the definition boundary after creation succeeds.
+ * The synthetic markdown agent invokes the production spawn_workflow tool with
+ * an immutable registered definition and the child runs to completion.
  *
  * Run: npx vitest run test/local/workflow-session-e2e.test.js
  */
@@ -14,6 +13,11 @@ import { fileURLToPath } from "node:url";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import {
+    createWorkflowManagementClient,
+    waitForWorkflow,
+    WORKFLOW_PACKAGE_ROOT,
+} from "../helpers/workflow-test-harness.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -32,41 +36,44 @@ async function waitForWorkflowChild(catalog, parentSessionId, timeoutMs = 30_000
     throw new Error(`No workflow child appeared for parent ${parentSessionId}`);
 }
 
-async function waitForFailedOrchestration(client, sessionId, timeoutMs = 30_000) {
-    const deadline = Date.now() + timeoutMs;
-    let lastStatus;
-    while (Date.now() < deadline) {
-        lastStatus = await client._getDuroxideClient().getStatus(`session-${sessionId}`);
-        if (lastStatus.status === "Failed") return lastStatus;
-        await new Promise(resolve => setTimeout(resolve, 250));
-    }
-    throw new Error(
-        `Workflow orchestration session-${sessionId} did not fail within ${timeoutMs}ms; ` +
-        `last status was ${lastStatus?.status ?? "unknown"}`,
-    );
-}
-
 describe("Workflow Session: Agent E2E", () => {
     beforeAll(async () => { await preflightChecks(); }, TIMEOUT);
 
-    it("a markdown agent starts a durable workflow child that reaches the explicit scaffold failure", {
+    it("a markdown agent starts a registered durable workflow child", {
         timeout: TIMEOUT * 2,
     }, async () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
+        const management = createWorkflowManagementClient(env);
 
         try {
+            await management.start();
+            const definition = await management.registerWorkflowDefinition(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: agent-spawn-e2e
+  version: 1.0.0
+inputs:
+  request:
+    type: string
+    required: true
+initial: done
+states:
+  done:
+    type: terminal
+    outcome: succeeded
+    output: \${inputs.request}
+`, { packageRoot: WORKFLOW_PACKAGE_ROOT });
+
             await withClient(env, {
                 worker: { pluginDirs: [PLUGIN_DIR] },
             }, async client => {
                 const parent = await client.createSession({ agentId: "workflow-runner" });
                 const response = await parent.sendAndWait(
                     "Exercise workflow sessions now. Call spawn_workflow with this exact definition:\n" +
-                    "kind: inline\n" +
-                    "yaml: |\n" +
-                    "  name: synthetic-e2e\n" +
-                    "  version: 1\n" +
-                    "  steps: []\n" +
+                    "kind: registered\n" +
+                    `definition_id: ${definition.definitionId}\n` +
                     "and these exact inputs: {\"request\":\"integration-test\"}.",
                     TIMEOUT,
                     undefined,
@@ -86,19 +93,28 @@ describe("Workflow Session: Agent E2E", () => {
                 expect(creationConfig).toEqual({
                     workflow: {
                         definition: {
-                            kind: "inline",
-                            yaml: "name: synthetic-e2e\nversion: 1\nsteps: []\n",
+                            kind: "registered",
+                            definitionId: definition.definitionId,
                         },
                         inputs: { request: "integration-test" },
                     },
                 });
 
-                const failed = await waitForFailedOrchestration(client, child.sessionId);
-                expect(String(failed.error ?? failed.output ?? "")).toMatch(
-                    /WORKFLOW_DEFINITION_COMPILER_REQUIRED|requires the workflow compiler/i,
-                );
+                expect(await waitForWorkflow(
+                    management,
+                    child.sessionId,
+                    projection => projection.status === "succeeded",
+                )).toMatchObject({
+                    workflowSessionId: child.sessionId,
+                    status: "succeeded",
+                    result: {
+                        outcome: "succeeded",
+                        result: "integration-test",
+                    },
+                });
             });
         } finally {
+            await management.stop();
             await catalog.close();
         }
     });

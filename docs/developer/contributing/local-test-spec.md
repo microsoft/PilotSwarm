@@ -557,17 +557,12 @@ Purpose:
 
 Tests:
 
-- `a markdown agent starts a durable workflow child that reaches the explicit scaffold failure`
+- `a markdown agent starts a registered durable workflow child`
   - forces the real `spawn_workflow` tool during an agent turn
   - verifies the CMS workflow child, parent lineage, orchestration ID, durable
     definition, and inputs
-  - verifies the current scaffold fails with
-    `WORKFLOW_CONTROLLER_NOT_IMPLEMENTED`
-
-Future assertion:
-
-- replace the expected scaffold failure with a controller-written durable
-  outcome and verify that `wait_for_workflows` feeds it into the parent turn
+  - verifies the registered workflow reaches its controller-written terminal
+    outcome
 
 ### `workflow-registered-e2e.test.js`
 

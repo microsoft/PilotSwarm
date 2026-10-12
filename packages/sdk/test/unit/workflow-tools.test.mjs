@@ -8,7 +8,8 @@ test("spawn_workflow is declared for ordinary agent sessions", () => {
     const tool = definitions.find(candidate => candidate.name === "spawn_workflow");
     assert.ok(tool);
     assert.deepEqual(tool.parameters.required, ["definition"]);
-    assert.deepEqual(tool.parameters.properties.definition.properties.kind.enum, ["package", "inline"]);
+    assert.deepEqual(tool.parameters.properties.definition.properties.kind.enum, ["registered"]);
+    assert.deepEqual(tool.parameters.properties.definition.required, ["kind", "definition_id"]);
     assert.ok(definitions.some(candidate => candidate.name === "check_workflows"));
     assert.ok(definitions.some(candidate => candidate.name === "wait_for_workflows"));
 });
@@ -19,41 +20,29 @@ test("spawn_workflow can be withheld from older orchestration versions", () => {
     assert.equal(names.includes("spawn_agent"), true);
 });
 
-test("spawn_workflow normalizes package definitions and inputs", () => {
+test("spawn_workflow normalizes registered definitions and inputs", () => {
     assert.deepEqual(parseSpawnWorkflowToolArgs({
         definition: {
-            kind: "package",
-            package_name: " ops ",
-            workflow_name: " deploy ",
-            version: " 1.0.0 ",
+            kind: "registered",
+            definition_id: " definition-1 ",
         },
         inputs: { target: "staging" },
     }), {
         ok: true,
         definition: {
-            kind: "package",
-            packageName: "ops",
-            workflowName: "deploy",
-            version: "1.0.0",
+            kind: "registered",
+            definitionId: "definition-1",
         },
         inputs: { target: "staging" },
     });
 });
 
-test("spawn_workflow validates inline definitions", () => {
+test("spawn_workflow requires a registered definition ID", () => {
     assert.deepEqual(parseSpawnWorkflowToolArgs({
-        definition: { kind: "inline", yaml: " kind: workflow\nversion: 1 " },
-    }), {
-        ok: true,
-        definition: { kind: "inline", yaml: "kind: workflow\nversion: 1" },
-        inputs: {},
-    });
-
-    assert.deepEqual(parseSpawnWorkflowToolArgs({
-        definition: { kind: "inline", yaml: " " },
+        definition: { kind: "registered", definition_id: " " },
     }), {
         ok: false,
-        error: "yaml is required when definition.kind is inline.",
+        error: "definition_id is required when definition.kind is registered.",
     });
 });
 

@@ -1,8 +1,11 @@
-# Workflow Sessions (Experimental)
+# Workflow Session Internals (Experimental)
 
 Workflow sessions are durable, non-conversational sessions controlled by a
 versioned state machine. They can be started directly through the SDK or API,
 or as children of conversational sessions through `spawn_workflow`.
+
+This document describes platform architecture and durability invariants. For
+the end-user lifecycle, see [Building Workflows](../../building-workflows.md).
 
 The design originates in
 [PilotSwarm issue #28](https://github.com/microsoft/PilotSwarm/issues/28).

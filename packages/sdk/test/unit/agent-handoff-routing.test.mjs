@@ -99,12 +99,12 @@ test("legacy proxy descriptors retain their serialized names, inputs and affinit
     });
     assert.deepEqual(wire(manager.spawnWorkflowSession(
         "parent",
-        { kind: "package", packageName: "ops", workflowName: "deploy", version: "1.0.0" },
+        { kind: "registered", definitionId: "definition-1" },
         { target: "staging" },
     )), {
         type: "activity",
         name: "spawnWorkflowSession",
-        input: '{"parentSessionId":"parent","definition":{"kind":"package","packageName":"ops","workflowName":"deploy","version":"1.0.0"},"inputs":{"target":"staging"}}',
+        input: '{"parentSessionId":"parent","definition":{"kind":"registered","definitionId":"definition-1"},"inputs":{"target":"staging"}}',
     });
     for (const historical of [manager, createSessionManagerProxy(ctx, "agent-handoff-v2")]) {
         assert.deepEqual(wire(historical.getSessionStatus("child")), {
@@ -171,14 +171,14 @@ test("workflow child creation uses its dedicated routed activity contract", () =
     const manager = createSessionManagerProxy(context(), "agent-handoff-v2");
     const task = wire(manager.spawnWorkflowSession(
         "parent",
-        { kind: "inline", yaml: "kind: workflow\nversion: 1\n" },
+        { kind: "registered", definitionId: "definition-1" },
         {},
         "workflow-1",
     ));
     assert.deepEqual(task, {
         type: "activity",
         name: "spawnWorkflowSessionV1",
-        input: '{"parentSessionId":"parent","definition":{"kind":"inline","yaml":"kind: workflow\\nversion: 1\\n"},"inputs":{},"childSessionId":"workflow-1"}',
+        input: '{"parentSessionId":"parent","definition":{"kind":"registered","definitionId":"definition-1"},"inputs":{},"childSessionId":"workflow-1"}',
         tag: AGENT_HANDOFF_CAPABILITY,
     });
     assert.deepEqual(wire(manager.getWorkflowResult("parent", "workflow-1")), {

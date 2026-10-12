@@ -106,13 +106,6 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
         });
     }
 
-    if (input.definition.kind !== "in-memory") {
-        throw workflowControllerError(
-            `Workflow definition kind '${input.definition.kind}' requires the workflow compiler.`,
-            "WORKFLOW_DEFINITION_COMPILER_REQUIRED",
-        );
-    }
-
     const graph = resolveInMemoryWorkflowGraph(input.definition.graphId);
     const latestStateOutputs: Record<string, WorkflowStateExecutionResult> = {};
     const executionHistory: WorkflowExecutionRecord[] = [];

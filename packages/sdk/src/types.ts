@@ -539,8 +539,6 @@ export type SessionKind = "agent" | "workflow";
  * Validation and compilation belong to the future workflow controller.
  */
 export type WorkflowDefinitionSource =
-    | { kind: "package"; packageName: string; workflowName: string; version?: string }
-    | { kind: "inline"; yaml: string }
     | { kind: "registered"; definitionId: string }
     | { kind: "in-memory"; graphId: string };
 

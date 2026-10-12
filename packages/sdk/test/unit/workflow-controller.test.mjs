@@ -624,16 +624,3 @@ test("rejects transition targets outside the declared graph edge", async () => {
         error => error?.code === "WORKFLOW_TRANSITION_TARGET_INVALID",
     );
 });
-
-test("keeps YAML definitions behind the deferred compiler boundary", () => {
-    const execution = durableWorkflowSessionOrchestration_1_0_0(createContext(), {
-        sessionId: "workflow-4",
-        definition: { kind: "inline", yaml: "name: deferred\n" },
-        inputs: {},
-    });
-
-    assert.throws(
-        () => execution.next(),
-        error => error?.code === "WORKFLOW_DEFINITION_COMPILER_REQUIRED",
-    );
-});

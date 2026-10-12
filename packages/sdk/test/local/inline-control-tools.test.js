@@ -208,8 +208,8 @@ describe("inline control tool execution", () => {
             name: "spawn_workflow",
             args: {
                 definition: {
-                    kind: "inline",
-                    yaml: "name: durable-start\nversion: 1\nsteps: []",
+                    kind: "registered",
+                    definition_id: "definition-1",
                 },
                 inputs: { target: "staging" },
             },
@@ -220,7 +220,7 @@ describe("inline control tool execution", () => {
         const result = await managed.runTurn("start the workflow", {
             controlToolBridge: {
                 startWorkflow: vi.fn(() => {
-                    throw new Error("spawn_workflow must not execute inline");
+                    throw new Error("spawn_workflow must remain a durable turn action");
                 }),
             },
         });
@@ -228,8 +228,8 @@ describe("inline control tool execution", () => {
         expect(result).toMatchObject({
             type: "spawn_workflow",
             definition: {
-                kind: "inline",
-                yaml: "name: durable-start\nversion: 1\nsteps: []",
+                kind: "registered",
+                definitionId: "definition-1",
             },
             inputs: { target: "staging" },
         });

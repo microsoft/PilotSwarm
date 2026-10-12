@@ -23,14 +23,14 @@ test("spawn_workflow durably creates and tracks the workflow child", () => {
     };
     const generator = handleSubAgentAction(runtime, {
         type: "spawn_workflow",
-        definition: { kind: "inline", yaml: "name: test" },
+        definition: { kind: "registered", definitionId: "definition-1" },
         inputs: { target: "staging" },
     });
     assert.deepEqual(generator.next().value, { kind: "new-guid" });
     assert.deepEqual(generator.next("workflow-1").value, {
         parentSessionId: "parent-1",
         childSessionId: "workflow-1",
-        definition: { kind: "inline", yaml: "name: test" },
+        definition: { kind: "registered", definitionId: "definition-1" },
         inputs: { target: "staging" },
     });
     assert.deepEqual(generator.next("workflow-1"), { done: true, value: true });

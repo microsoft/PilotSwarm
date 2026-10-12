@@ -4,9 +4,8 @@ export const WORKFLOW_TOOLS_MIN_ORCHESTRATION_VERSION = "1.0.81";
 
 export const SPAWN_WORKFLOW_TOOL_SPEC = {
     description:
-        "Start a controller-backed workflow as a child of this session. " +
-        "The workflow starts asynchronously at the durable turn boundary, and its workflow_session_id is returned in the follow-up context. " +
-        "Use a package reference for a published workflow or inline YAML while developing a workflow.",
+        "Start a registered workflow as a child of this session. " +
+        "The workflow starts asynchronously at the durable turn boundary, and its workflow_session_id is returned in the follow-up context.",
     parameters: {
         type: "object",
         properties: {
@@ -16,15 +15,15 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
                 properties: {
                     kind: {
                         type: "string",
-                        enum: ["package", "inline"],
-                        description: "Use package for a published workflow or inline for YAML supplied in this call.",
+                        enum: ["registered"],
+                        description: "Registered workflows are immutable definitions previously published from source control.",
                     },
-                    package_name: { type: "string", description: "Package containing the workflow. Required when kind is package." },
-                    workflow_name: { type: "string", description: "Workflow name within the package. Required when kind is package." },
-                    version: { type: "string", description: "Optional package workflow version." },
-                    yaml: { type: "string", description: "Inline workflow YAML. Required when kind is inline." },
+                    definition_id: {
+                        type: "string",
+                        description: "Immutable registered workflow definition ID.",
+                    },
                 },
-                required: ["kind"],
+                required: ["kind", "definition_id"],
             },
             inputs: {
                 type: "object",
@@ -70,10 +69,7 @@ export const WAIT_FOR_WORKFLOWS_TOOL_SPEC = {
 export type SpawnWorkflowToolArgs = {
     definition?: {
         kind?: unknown;
-        package_name?: unknown;
-        workflow_name?: unknown;
-        version?: unknown;
-        yaml?: unknown;
+        definition_id?: unknown;
     };
     inputs?: unknown;
 };
@@ -85,36 +81,23 @@ export function parseSpawnWorkflowToolArgs(args: SpawnWorkflowToolArgs):
     if (!raw || typeof raw !== "object") {
         return { ok: false, error: "definition is required." };
     }
-    if (raw.kind === "package") {
-        const packageName = typeof raw.package_name === "string" ? raw.package_name.trim() : "";
-        const workflowName = typeof raw.workflow_name === "string" ? raw.workflow_name.trim() : "";
-        if (!packageName || !workflowName) {
-            return { ok: false, error: "package_name and workflow_name are required when definition.kind is package." };
-        }
-        const version = typeof raw.version === "string" ? raw.version.trim() : "";
-        return {
-            ok: true,
-            definition: {
-                kind: "package",
-                packageName,
-                workflowName,
-                ...(version ? { version } : {}),
-            },
-            inputs: isRecord(args.inputs) ? args.inputs : {},
-        };
-    }
-    if (raw.kind === "inline") {
-        const yaml = typeof raw.yaml === "string" ? raw.yaml.trim() : "";
-        if (!yaml) {
-            return { ok: false, error: "yaml is required when definition.kind is inline." };
+    if (raw.kind === "registered") {
+        const definitionId = typeof raw.definition_id === "string"
+            ? raw.definition_id.trim()
+            : "";
+        if (!definitionId) {
+            return {
+                ok: false,
+                error: "definition_id is required when definition.kind is registered.",
+            };
         }
         return {
             ok: true,
-            definition: { kind: "inline", yaml },
+            definition: { kind: "registered", definitionId },
             inputs: isRecord(args.inputs) ? args.inputs : {},
         };
     }
-    return { ok: false, error: "definition.kind must be package or inline." };
+    return { ok: false, error: "definition.kind must be registered." };
 }
 
 export function orchestrationSupportsWorkflowTools(version: unknown): boolean {

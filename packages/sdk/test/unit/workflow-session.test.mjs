@@ -393,7 +393,7 @@ test("root workflow sessions do not pretend to return a child result", async () 
     };
     const workflow = await client.createWorkflowSession({
         sessionId: "workflow-root",
-        definition: { kind: "package", packageName: "ops", workflowName: "report", version: "1.0.0" },
+        definition: { kind: "registered", definitionId: "definition-1" },
     });
 
     await assert.rejects(
