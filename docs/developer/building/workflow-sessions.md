@@ -68,6 +68,10 @@ behavior for an admitted run:
 - starting a workflow resolves each bound package's current active version
 - the resolved package version is persisted in the run's durable plan and in
   each child session
+- repository E2E coverage activates a new package version between workflow
+  states, replaces the worker with an empty package cache, and verifies that
+  the admitted run remains on its original version while a new run selects the
+  newly active version
 - retries, worker replacement, and later states in that run continue using the
   same version, even if a newer package version becomes active
 - a package may be disabled to prevent new workflow admissions, but hard
