@@ -5,31 +5,42 @@ import type {
 } from "../workflow-orchestration/graph.js";
 import {
     AGENT_HANDOFF_CAPABILITY,
-    SPAWN_AGENT_CHILD_ACTIVITY,
+    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
     SUBMIT_WORKFLOW_RESULT_TOOL,
     workflowResultQueueName,
     type WorkflowExecutionBinding,
 } from "./contracts.js";
 
 export interface AgentStateDispatchPlan {
-    activityName: typeof SPAWN_AGENT_CHILD_ACTIVITY;
     activityTag: typeof AGENT_HANDOFF_CAPABILITY;
-    activityInput: {
-        parentSessionId: string;
-        config: {
-            boundAgentName: string;
-            detachedPackageToolPolicy: "reject";
-            toolNames: string[];
-            childContract: WorkflowExecutionBinding;
+    ensureChild: {
+        activityName: typeof ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY;
+        activityInput: {
+            parentSessionId: string;
+            config: {
+                boundAgentName: string;
+                detachedPackageToolPolicy: "reject";
+                toolNames: string[];
+                childContract: WorkflowExecutionBinding;
+            };
+            nestingLevel: 1;
+            isSystem: false;
+            title: string;
+            agentId: string;
+            titleIsExplicit: false;
+            childSessionId: string;
         };
-        task: string;
-        nestingLevel: 1;
-        isSystem: false;
-        title: string;
-        agentId: string;
-        titleIsExplicit: false;
-        requiredTool: typeof SUBMIT_WORKFLOW_RESULT_TOOL;
-        childSessionId: string;
+    };
+    enqueueBootstrap: {
+        activityName: typeof ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY;
+        activityInput: {
+            parentSessionId: string;
+            childSessionId: string;
+            task: string;
+            requiredTool: typeof SUBMIT_WORKFLOW_RESULT_TOOL;
+            clientMessageId: string;
+        };
     };
     resultQueueName: string;
 }
@@ -89,24 +100,34 @@ export function createAgentStateDispatchPlan(input: {
     };
 
     return {
-        activityName: SPAWN_AGENT_CHILD_ACTIVITY,
         activityTag: AGENT_HANDOFF_CAPABILITY,
-        activityInput: {
-            parentSessionId: input.workflowSessionId,
-            config: {
-                boundAgentName: input.state.agent,
-                detachedPackageToolPolicy: "reject",
-                toolNames: [SUBMIT_WORKFLOW_RESULT_TOOL],
-                childContract: binding,
+        ensureChild: {
+            activityName: ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
+            activityInput: {
+                parentSessionId: input.workflowSessionId,
+                config: {
+                    boundAgentName: input.state.agent,
+                    detachedPackageToolPolicy: "reject",
+                    toolNames: [SUBMIT_WORKFLOW_RESULT_TOOL],
+                    childContract: binding,
+                },
+                nestingLevel: 1,
+                isSystem: false,
+                title: input.state.agent,
+                agentId: input.state.agent,
+                titleIsExplicit: false,
+                childSessionId: input.childSessionId,
             },
-            task,
-            nestingLevel: 1,
-            isSystem: false,
-            title: input.state.agent,
-            agentId: input.state.agent,
-            titleIsExplicit: false,
-            requiredTool: SUBMIT_WORKFLOW_RESULT_TOOL,
-            childSessionId: input.childSessionId,
+        },
+        enqueueBootstrap: {
+            activityName: ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+            activityInput: {
+                parentSessionId: input.workflowSessionId,
+                childSessionId: input.childSessionId,
+                task,
+                requiredTool: SUBMIT_WORKFLOW_RESULT_TOOL,
+                clientMessageId: `workflow-bootstrap:${input.childSessionId}`,
+            },
         },
         resultQueueName: workflowResultQueueName(input.executionSequence),
     };

@@ -5,7 +5,8 @@ export const RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY = "recordWorkflowStateExec
 export const ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY = "acceptWorkflowStateResultV1";
 export const COMPLETE_WORKFLOW_ACTIVITY = "completeWorkflowSessionV1";
 
-export const SPAWN_AGENT_CHILD_ACTIVITY = "spawnChildSessionV2";
+export const ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY = "ensureWorkflowAgentChildV1";
+export const ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY = "enqueueWorkflowAgentBootstrapV1";
 export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
 
 export const SUBMIT_WORKFLOW_RESULT_TOOL = "submit_workflow_result";

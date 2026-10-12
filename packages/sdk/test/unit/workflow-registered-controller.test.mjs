@@ -10,6 +10,8 @@ import {
 import {
     ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
     COMPLETE_WORKFLOW_ACTIVITY,
+    ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+    ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
     RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
 } from "../../dist/workflow-orchestration_1_0_0/contracts.js";
 import {
@@ -294,9 +296,11 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
             step = execution.next("child-1");
         } else if (operation.name === RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY) {
             step = execution.next(undefined);
-        } else if (operation.name === "spawnChildSessionV2") {
+        } else if (operation.name === ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY) {
             dispatch = operation;
             step = execution.next("child-1");
+        } else if (operation.name === ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY) {
+            step = execution.next(undefined);
         } else if (operation.kind === "dequeue") {
             const binding = dispatch.input.config.childContract;
             step = execution.next(JSON.stringify({
@@ -327,8 +331,11 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
     assert.equal(step.value.outcome, "succeeded");
     assert.deepEqual(step.value.result, { approved: true });
     assert.equal(step.value.metadata.definitionId, "definition-1");
-    assert.match(dispatch.input.task, /"changeId": "change-42"/);
-    assert.match(dispatch.input.task, /"retries": 2/);
+    const bootstrap = operations.find(
+        operation => operation.name === ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
+    );
+    assert.match(bootstrap.input.task, /"changeId": "change-42"/);
+    assert.match(bootstrap.input.task, /"retries": 2/);
     assert.deepEqual(
         operations
             .filter(operation => operation.kind === "activity")
@@ -336,12 +343,15 @@ test("hydrates a registered plan and executes it without an in-memory graph", ()
         [
             RESOLVE_WORKFLOW_DEFINITION_ACTIVITY,
             RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY,
-            "spawnChildSessionV2",
+            ENSURE_WORKFLOW_AGENT_CHILD_ACTIVITY,
+            ENQUEUE_WORKFLOW_AGENT_BOOTSTRAP_ACTIVITY,
             ACCEPT_WORKFLOW_STATE_RESULT_ACTIVITY,
             EXECUTE_WORKFLOW_TRANSITION_ACTIVITY,
             COMPLETE_WORKFLOW_ACTIVITY,
         ],
     );
+    assert.equal(bootstrap.input.childSessionId, "child-1");
+    assert.equal(bootstrap.input.clientMessageId, "workflow-bootstrap:child-1");
 });
 
 test("rejects invalid observed-condition responses and retry delays", () => {
