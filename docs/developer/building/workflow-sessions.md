@@ -95,11 +95,12 @@ start admission enforces two independent identities:
 Explicit reruns create a new attempt while preserving the logical workflow
 identity and owner.
 
-### Orchestration versions preserve compatibility
+### Orchestration versions define the durable schedule
 
 Registered definitions execute through `workflow-session-v1@1.0.0`. The
-pre-existing in-memory graph path remains available in that version so durable
-history created before registered definitions continues to replay.
+pre-existing in-memory graph path remains available in that version, but the
+workflow-session feature is still in preview: schedule changes within `1.0.0`
+can require old test executions to be discarded rather than replayed.
 
 ## Supported State Types
 
@@ -113,6 +114,11 @@ history created before registered definitions continues to replay.
 
 The controller rejects undeclared outcomes and targets and stops graphs that
 exceed 100 transitions.
+
+Agent dispatch uses separate durable activities to ensure the deterministic
+child session and enqueue its bootstrap task. The bootstrap carries a stable
+client-message ID, so an activity retry can re-enqueue safely; if that exact
+message is already recorded, the retry completes without sending it again.
 
 ## Registration and Execution
 

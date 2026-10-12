@@ -186,7 +186,17 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
             };
             yield ctx.scheduleActivity(RECORD_WORKFLOW_STATE_EXECUTION_ACTIVITY, admission);
             yield routeAgentStateDispatch(
-                ctx.scheduleActivity(dispatch.activityName, dispatch.activityInput),
+                ctx.scheduleActivity(
+                    dispatch.ensureChild.activityName,
+                    dispatch.ensureChild.activityInput,
+                ),
+                dispatch.activityTag,
+            );
+            yield routeAgentStateDispatch(
+                ctx.scheduleActivity(
+                    dispatch.enqueueBootstrap.activityName,
+                    dispatch.enqueueBootstrap.activityInput,
+                ),
                 dispatch.activityTag,
             );
             const rawEvent = yield ctx.dequeueEvent(dispatch.resultQueueName);

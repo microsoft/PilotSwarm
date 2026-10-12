@@ -3,7 +3,16 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { createTestEnv } from "../helpers/local-env.js";
 import { createSessionManagerProxy, createSessionProxy } from "../../src/session-proxy.ts";
-import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, WORKSPACE_CAPABILITY } from "../../src/activity-routing.ts";
+import {
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+    AGENT_HANDOFF_CAPABILITY,
+    HANDOFF_ACTIVITY_NAMES,
+    WORKSPACE_CAPABILITY,
+} from "../../src/activity-routing.ts";
+import {
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+} from "../../src/agent-child-bootstrap.ts";
 import { handleSubAgentAction as frozenSpawn } from "../../src/orchestration_1_0_74/agents.ts";
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -60,7 +69,15 @@ async function withStore(body) {
         runtime.registerOrchestration(orchestrationName, generator);
         // Deliberately give the old worker every activity name as a trap. A
         // name is NOT a routing guard; only the provider's tag filter is.
-        for (const name of new Set([...Object.keys(HANDOFF_ACTIVITY_NAMES), ...Object.values(HANDOFF_ACTIVITY_NAMES), "legacyProbe", "checkWorkspace", "releaseWorkspace"])) {
+        for (const name of new Set([
+            ...Object.keys(HANDOFF_ACTIVITY_NAMES),
+            ...Object.values(HANDOFF_ACTIVITY_NAMES),
+            ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+            ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+            "legacyProbe",
+            "checkWorkspace",
+            "releaseWorkspace",
+        ])) {
             if (customActivities.includes(name)) continue;
             runtime.registerActivity(name, async (ctx, input) => {
                 events.push({ worker: id, name, tag: ctx.tag(), sessionId: ctx.sessionId, input });
@@ -110,6 +127,52 @@ function* routedHandoff(ctx) {
 // These exercise production proxy descriptors through the native SDK and
 // PostgreSQL's dequeue filters, not a simulated scheduler.
 describe("agent handoff capability routing", () => {
+    it("keeps split child bootstrap work off workers from the previous contract", async () => {
+        await withStore(async ({ client, worker, events }) => {
+            function* bootstrapWork(ctx) {
+                const ensure = ctx
+                    .scheduleActivity(ENSURE_AGENT_CHILD_SESSION_ACTIVITY, {})
+                    .withTag(AGENT_CHILD_BOOTSTRAP_CAPABILITY);
+                const enqueue = ctx
+                    .scheduleActivity(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY, {})
+                    .withTag(AGENT_CHILD_BOOTSTRAP_CAPABILITY);
+                return yield ctx.all([ensure, enqueue]);
+            }
+
+            await worker(
+                "previous",
+                true,
+                "child-bootstrap",
+                bootstrapWork,
+                [],
+                [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY],
+            ).start();
+            await client.startOrchestration("child-bootstrap-1", "child-bootstrap", {});
+            await waitForStatus(client, "child-bootstrap-1", "Running", 15_000);
+            await sleep(400);
+            expect(events).toEqual([]);
+
+            await worker(
+                "current",
+                true,
+                "child-bootstrap",
+                bootstrapWork,
+                [],
+                [
+                    AGENT_HANDOFF_CAPABILITY,
+                    WORKSPACE_CAPABILITY,
+                    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+                ],
+            ).start();
+            const result = await client.waitForOrchestration("child-bootstrap-1", 10_000);
+            expect(result.status).toBe("Completed");
+            expect(events.map(event => [event.worker, event.name, event.tag])).toEqual([
+                ["current", ENSURE_AGENT_CHILD_SESSION_ACTIVITY, AGENT_CHILD_BOOTSTRAP_CAPABILITY],
+                ["current", ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY, AGENT_CHILD_BOOTSTRAP_CAPABILITY],
+            ]);
+        });
+    });
+
     it("keeps a workspace session's work off workers that do not know workspaces (rolling deploy)", async () => {
         await withStore(async ({ client, worker, events }) => {
             const workspace = { schema: 1, root: "a", folder: "repo" };
