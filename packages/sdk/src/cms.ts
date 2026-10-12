@@ -1484,6 +1484,13 @@ export interface SessionCatalog {
         completedAt: Date;
     }): Promise<void>;
 
+    /** Atomically record an orchestration failure and advance a running projection. */
+    failWorkflowProjection(input: {
+        workflowSessionId: string;
+        errorMessage?: string | null;
+        failedAt: Date;
+    }): Promise<boolean>;
+
     /** Read the current rebuildable workflow projection. */
     getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null>;
 
@@ -1748,6 +1755,7 @@ function sqlForSchema(schema: string) {
             recordWorkflowExecution:    `${s}.cms_record_workflow_execution`,
             acceptWorkflowExecution:    `${s}.cms_accept_workflow_execution`,
             completeWorkflowProjection: `${s}.cms_complete_workflow`,
+            failWorkflowProjection:     `${s}.cms_fail_workflow`,
             rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
             registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
             registerWorkflowDefinitionWithAgentPackage: `${s}.cms_register_workflow_definition_with_agent_package`,
@@ -2619,6 +2627,22 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.completedAt,
             ],
         );
+    }
+
+    async failWorkflowProjection(input: {
+        workflowSessionId: string;
+        errorMessage?: string | null;
+        failedAt: Date;
+    }): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.failWorkflowProjection}($1, $2, $3) AS changed`,
+            [
+                input.workflowSessionId,
+                input.errorMessage ?? null,
+                input.failedAt,
+            ],
+        );
+        return rows[0]?.changed === true;
     }
 
     async getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null> {

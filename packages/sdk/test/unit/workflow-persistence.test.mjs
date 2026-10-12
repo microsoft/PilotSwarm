@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 import { PgSessionCatalog } from "../../dist/cms.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { WebPilotSwarmManagementClient } from "../../dist/web/web-management-client.js";
@@ -110,6 +111,11 @@ test("catalog writes authoritative workflow facts through migration procedures",
         result: { outcome: "succeeded" },
         completedAt: new Date("2026-10-07T20:01:00.000Z"),
     });
+    await catalog.failWorkflowProjection({
+        workflowSessionId: "workflow-1",
+        errorMessage: "runtime failure",
+        failedAt: new Date("2026-10-07T20:02:00.000Z"),
+    });
     await catalog.rebuildWorkflowProjection("workflow-1");
 
     assert.match(calls[0].sql, /cms_record_workflow_execution/);
@@ -121,7 +127,21 @@ test("catalog writes authoritative workflow facts through migration procedures",
     assert.equal(calls[1].params[6], JSON.stringify({ commit: "abc123" }));
     assert.match(calls[2].sql, /cms_complete_workflow/);
     assert.equal(calls[2].params[6], JSON.stringify({ outcome: "succeeded" }));
-    assert.match(calls[3].sql, /cms_rebuild_workflow_projection/);
+    assert.match(calls[3].sql, /cms_fail_workflow/);
+    assert.deepEqual(calls[3].params, [
+        "workflow-1",
+        "runtime failure",
+        new Date("2026-10-07T20:02:00.000Z"),
+    ]);
+    assert.match(calls[4].sql, /cms_rebuild_workflow_projection/);
+});
+
+test("workflow failure migration preserves terminal failures during projection rebuild", () => {
+    const migration = CMS_MIGRATIONS("workflow_test").find(entry => entry.version === "0090");
+    assert.ok(migration);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "workflow_test"\.workflow_failures/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "workflow_test"\.cms_fail_workflow/);
+    assert.match(migration.sql, /FROM "workflow_test"\.workflow_failures f/);
 });
 
 test("catalog maps workflow projections and executions for API consumers", async () => {
@@ -220,6 +240,9 @@ test("management clients expose workflow projection, execution, and sanitized ov
             return overview;
         },
     };
+    direct._duroxideClient = {
+        getStatus: async () => ({ status: "Running" }),
+    };
 
     assert.equal(await direct.getWorkflow("workflow-1"), projection);
     assert.equal(await direct.listWorkflowExecutions("workflow-1"), executions);
@@ -246,18 +269,72 @@ test("management clients expose workflow projection, execution, and sanitized ov
     ]);
 });
 
+test("management workflow reads reconcile failed Duroxide status into the projection", async () => {
+    let projection = {
+        workflowSessionId: "workflow-1",
+        graphId: "graph-1",
+        status: "running",
+        currentStateId: "inspect",
+        currentExecutionSequence: 3,
+        waitingOn: "agent-result",
+        waitingDetails: null,
+        terminalOutcome: null,
+        result: null,
+        completedAt: null,
+        updatedAt: new Date("2026-10-07T20:00:00.000Z"),
+    };
+    const failures = [];
+    const direct = Object.create(PilotSwarmManagementClient.prototype);
+    direct._started = true;
+    direct._catalog = {
+        getWorkflowProjection: async () => projection,
+        failWorkflowProjection: async input => {
+            failures.push(input);
+            projection = {
+                ...projection,
+                status: "failed",
+                waitingOn: null,
+                terminalOutcome: "failed",
+                result: {
+                    orchestrationStatus: "Failed",
+                    error: input.errorMessage,
+                },
+                completedAt: input.failedAt,
+            };
+            return true;
+        },
+    };
+    direct._duroxideClient = {
+        getStatus: async (instanceId) => {
+            assert.equal(instanceId, "session-workflow-1");
+            return { status: "Failed", error: "configuration failure" };
+        },
+    };
+
+    const result = await direct.getWorkflow("workflow-1");
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].workflowSessionId, "workflow-1");
+    assert.equal(failures[0].errorMessage, "Workflow orchestration failed.");
+    assert.ok(failures[0].failedAt instanceof Date);
+    assert.equal(result.status, "failed");
+    assert.equal(result.terminalOutcome, "failed");
+});
+
 test("answers only the currently pending workflow question", async () => {
     const events = [];
     const direct = Object.create(PilotSwarmManagementClient.prototype);
     direct._started = true;
     direct._catalog = {
         getWorkflowProjection: async () => ({
+            workflowSessionId: "workflow-1",
             status: "running",
             currentExecutionSequence: 3,
             waitingOn: "question",
         }),
     };
     direct._duroxideClient = {
+        getStatus: async () => ({ status: "Running" }),
         enqueueEvent: async (instanceId, queueName, payload) => {
             events.push({ instanceId, queueName, payload });
         },
