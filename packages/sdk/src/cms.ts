@@ -1011,6 +1011,24 @@ export interface PublishAgentPackageResult {
     versionId: string;
 }
 
+export interface WorkflowDefinitionRegistrationInput {
+    definitionId: string;
+    sourceYaml: string;
+    sourceSha256: string;
+    packageSha256: string;
+    packageArtifactFilename: string;
+    packageSource: Record<string, unknown>;
+    compiledSha256: string;
+    manifest: CompiledWorkflowManifest;
+}
+
+export interface WorkflowAgentPackageRegistrationInput {
+    packageId: string;
+    versionId: string;
+    package: PublishAgentPackageInput;
+    definition: WorkflowDefinitionRegistrationInput;
+}
+
 // ─── Worker registry (migration 0040) ────────────────────────────
 
 export type WorkerPhase = "starting" | "ready" | "draining";
@@ -1434,16 +1452,12 @@ export interface SessionCatalog {
     getWorkflowOverview(workflowSessionId: string): Promise<WorkflowOverviewRow | null>;
 
     /** Persist one immutable authored definition and its normalized compiled states. */
-    registerWorkflowDefinition(input: {
-        definitionId: string;
-        sourceYaml: string;
-        sourceSha256: string;
-        packageSha256: string;
-        packageArtifactFilename: string;
-        packageSource: Record<string, unknown>;
-        compiledSha256: string;
-        manifest: CompiledWorkflowManifest;
-    }): Promise<WorkflowDefinitionRecord>;
+    registerWorkflowDefinition(input: WorkflowDefinitionRegistrationInput): Promise<WorkflowDefinitionRecord>;
+
+    /** Atomically publish agent-package metadata and persist its workflow definition. */
+    registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
 
     /** Read one immutable workflow definition and its ordered compiled states. */
     getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
@@ -1680,6 +1694,7 @@ function sqlForSchema(schema: string) {
             completeWorkflowProjection: `${s}.cms_complete_workflow`,
             rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
             registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
+            registerWorkflowDefinitionWithAgentPackage: `${s}.cms_register_workflow_definition_with_agent_package`,
             admitWorkflow:               `${s}.cms_admit_workflow`,
             markWorkflowAdmissionStarted: `${s}.cms_mark_workflow_admission_started`,
             recordEvents:               `${s}.cms_record_events`,
@@ -2682,16 +2697,9 @@ export class PgSessionCatalog implements SessionCatalog {
         };
     }
 
-    async registerWorkflowDefinition(input: {
-        definitionId: string;
-        sourceYaml: string;
-        sourceSha256: string;
-        packageSha256: string;
-        packageArtifactFilename: string;
-        packageSource: Record<string, unknown>;
-        compiledSha256: string;
-        manifest: CompiledWorkflowManifest;
-    }): Promise<WorkflowDefinitionRecord> {
+    async registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
         const { rows } = await this.pool.query(
             `SELECT ${this.sql.fn.registerWorkflowDefinition}(
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
@@ -2722,6 +2730,31 @@ export class PgSessionCatalog implements SessionCatalog {
         if (!registered) {
             throw Object.assign(
                 new Error(`Workflow definition '${input.manifest.graphId}' was not persisted.`),
+                { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
+            );
+        }
+        return registered;
+    }
+
+    async registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.registerWorkflowDefinitionWithAgentPackage}($1, $2, $3, $4)`,
+            [
+                input.packageId,
+                input.versionId,
+                JSON.stringify(input.package),
+                JSON.stringify(input.definition),
+            ],
+        );
+        const persistedDefinitionId = rows[0]?.definition_id;
+        const registered = typeof persistedDefinitionId === "string"
+            ? await this.getWorkflowDefinition(persistedDefinitionId)
+            : null;
+        if (!registered) {
+            throw Object.assign(
+                new Error(`Workflow definition '${input.definition.manifest.graphId}' was not persisted.`),
                 { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
             );
         }

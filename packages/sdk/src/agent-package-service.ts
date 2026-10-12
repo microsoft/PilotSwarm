@@ -72,6 +72,15 @@ export interface PublishOutcome extends PublishAgentPackageResult {
     warnings: AgentPackageValidation["warnings"];
 }
 
+export interface PreparedAgentPackage {
+    manifest: AgentPackageManifest;
+    warnings: AgentPackageValidation["warnings"];
+    targz: Buffer;
+    sha256: string;
+    sizeBytes: number;
+    artifactFilename: string;
+}
+
 const packageEntryCache = new Map<string, ReturnType<typeof readAgentPackageTarGz>>();
 let packageEntryCacheBytes = 0;
 const PACKAGE_ENTRY_CACHE_MAX_BYTES = 64 * 1024 * 1024;
@@ -82,29 +91,12 @@ export async function publishAgentPackageDir(
     ctx: AgentPackagePublishContext,
     opts: PublishAgentPackageDirOptions,
 ): Promise<PublishOutcome> {
-    // Stage once: a manifest-declared layout is validated AND packed from
-    // the same canonical staging tree, so the published bytes are exactly
-    // the validated bytes. Convention-mode dirs pass through untouched.
-    const staged = stageAgentPackageDir(opts.dir);
-    if (!staged.staged && staged.issues.length > 0) {
-        throw new AgentPackageValidationError({ ok: false, errors: staged.issues, warnings: [] });
-    }
-    let validation: AgentPackageValidation;
-    let packed: PackedAgentPackage;
-    try {
-        validation = await validateAgentPackageDir(staged.dir, { ...(opts.validate ?? {}), preStaged: staged.staged });
-        if (!validation.ok || !validation.manifest) {
-            throw new AgentPackageValidationError(validation);
-        }
-        packed = packAgentPackage(staged.dir);
-    } finally {
-        staged.cleanup();
-    }
+    const prepared = await prepareAgentPackageDir(opts.dir, opts.validate);
     return await publishPackedAgentPackage(ctx, {
-        manifest: validation.manifest,
-        warnings: validation.warnings,
-        targz: packed.targz,
-        sha256: packed.sha256,
+        manifest: prepared.manifest,
+        warnings: prepared.warnings,
+        targz: prepared.targz,
+        sha256: prepared.sha256,
         scope: opts.scope,
         owner: opts.owner,
         createdBy: opts.createdBy ?? null,
@@ -112,6 +104,50 @@ export async function publishAgentPackageDir(
         sourceId: opts.sourceId ?? null,
         commitSha: opts.commitSha ?? null,
     });
+}
+
+/** Validate and canonically pack a package without publishing registry metadata. */
+export async function prepareAgentPackageDir(
+    dir: string,
+    validate?: ValidateAgentPackageOptions,
+): Promise<PreparedAgentPackage> {
+    // Stage once: a manifest-declared layout is validated AND packed from
+    // the same canonical staging tree, so the published bytes are exactly
+    // the validated bytes. Convention-mode dirs pass through untouched.
+    const staged = stageAgentPackageDir(dir);
+    if (!staged.staged && staged.issues.length > 0) {
+        throw new AgentPackageValidationError({ ok: false, errors: staged.issues, warnings: [] });
+    }
+    let validation: AgentPackageValidation;
+    let packed: PackedAgentPackage;
+    try {
+        validation = await validateAgentPackageDir(staged.dir, { ...(validate ?? {}), preStaged: staged.staged });
+        if (!validation.ok || !validation.manifest) {
+            throw new AgentPackageValidationError(validation);
+        }
+        packed = packAgentPackage(staged.dir);
+    } finally {
+        staged.cleanup();
+    }
+    const name = validation.manifest.name;
+    const semver = validation.manifest.version;
+    if (RESERVED_PACKAGE_NAMES.has(name)) {
+        throw new Error(`AGENT_PACKAGE_BAD_NAME: "${name}" is a reserved name — pick another package name`);
+    }
+    if (packed.targz.length > AGENT_PACKAGE_MAX_COMPRESSED_BYTES) {
+        throw Object.assign(
+            new Error(`package exceeds compressed size limit: ${packed.targz.length} bytes`),
+            { code: "PAYLOAD_TOO_LARGE" },
+        );
+    }
+    return {
+        manifest: validation.manifest,
+        warnings: validation.warnings,
+        targz: packed.targz,
+        sha256: packed.sha256,
+        sizeBytes: packed.targz.length,
+        artifactFilename: agentPackageArtifactFilename(name, semver, packed.sha256),
+    };
 }
 
 export interface PublishPackedOptions {

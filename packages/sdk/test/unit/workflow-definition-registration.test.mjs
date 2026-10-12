@@ -283,34 +283,28 @@ test("management registration invokes the compiler before persistence", async ()
 
 test("management registration persists package and module transition identities", async () => {
     let persisted;
-    let publishedPackageRoot;
+    let atomicRegistration;
+    const uploadedArtifacts = [];
     const client = Object.create(PilotSwarmManagementClient.prototype);
     client._started = true;
     client._artifactStore = {
-        async uploadArtifact(_sessionId, filename) {
+        async uploadArtifact(sessionId, filename) {
+            uploadedArtifacts.push({ sessionId, filename });
             return { filename };
         },
     };
     client._catalog = {
-        async registerWorkflowDefinition(input) {
-            persisted = input;
+        async getAgentPackage() {
+            return null;
+        },
+        async registerWorkflowDefinitionWithAgentPackage(input) {
+            atomicRegistration = input;
+            persisted = input.definition;
             return {
-                definitionId: input.definitionId,
-                graphId: input.manifest.graphId,
+                definitionId: input.definition.definitionId,
+                graphId: input.definition.manifest.graphId,
             };
         },
-    };
-    client.publishAgentPackageDirectory = async (packageRoot, scope, owner, isAdmin) => {
-        publishedPackageRoot = packageRoot;
-        assert.equal(scope, "shared");
-        assert.equal(owner, null);
-        assert.equal(isAdmin, true);
-        return {
-            packageId: "package-fixture-1",
-            manifest: {
-                agents: [{ name: "package-inspector" }],
-            },
-        };
     };
 
     await client.registerWorkflowDefinition(
@@ -319,11 +313,17 @@ test("management registration persists package and module transition identities"
     );
 
     const handler = persisted.manifest.states[0].transition.handler;
-    assert.equal(publishedPackageRoot, PACKAGE_ROOT);
+    assert.equal(atomicRegistration.package.scope, "shared");
+    assert.equal(atomicRegistration.package.owner, null);
+    assert.equal(atomicRegistration.package.createdBy, "workflow-definition-registration");
+    assert.equal(atomicRegistration.packageId, persisted.manifest.states[0].agentPackageId);
     assert.equal(
         persisted.manifest.states[0].agentPackageId,
-        "package-fixture-1",
+        atomicRegistration.packageId,
     );
+    assert.equal(uploadedArtifacts.length, 2);
+    assert.ok(uploadedArtifacts.some(({ filename }) => filename.startsWith("workflow-package.")));
+    assert.ok(uploadedArtifacts.some(({ filename }) => filename.includes("workflow-package-fixture")));
     assert.match(persisted.manifest.packageSha256, /^[0-9a-f]{64}$/);
     assert.deepEqual(
         { module: handler.module, export: handler.export },
@@ -331,6 +331,92 @@ test("management registration persists package and module transition identities"
     );
     assert.match(handler.moduleSha256, /^[0-9a-f]{64}$/);
     assert.equal(handler.packageSha256, persisted.manifest.packageSha256);
+});
+
+test("management registration retries a concurrent logical-package creation without partial publication", async () => {
+    const packageIds = [];
+    let lookup = 0;
+    let atomicCalls = 0;
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact(_sessionId, filename) {
+            return { filename };
+        },
+        async deleteArtifact() {
+            assert.fail("a converged retry must retain the uploaded artifact");
+        },
+    };
+    client._catalog = {
+        async getAgentPackage() {
+            lookup++;
+            return lookup === 1
+                ? null
+                : {
+                    packageId: "package-winner",
+                    versions: [],
+                };
+        },
+        async registerWorkflowDefinitionWithAgentPackage(input) {
+            atomicCalls++;
+            packageIds.push(input.definition.manifest.states[0].agentPackageId);
+            if (atomicCalls === 1) {
+                throw new Error(
+                    "WORKFLOW_AGENT_PACKAGE_RETRY: package was concurrently created",
+                );
+            }
+            return {
+                definitionId: input.definition.definitionId,
+                graphId: input.definition.manifest.graphId,
+            };
+        },
+    };
+
+    const result = await client.registerWorkflowDefinition(
+        PACKAGE_WORKFLOW,
+        { packageRoot: PACKAGE_ROOT },
+    );
+
+    assert.equal(result.graphId, "registered-package@0.1.0");
+    assert.equal(atomicCalls, 2);
+    assert.notEqual(packageIds[0], "package-winner");
+    assert.equal(packageIds[1], "package-winner");
+});
+
+test("management registration leaves only content-addressed bytes after atomic metadata failure", async () => {
+    let publishedSeparately = false;
+    const client = Object.create(PilotSwarmManagementClient.prototype);
+    client._started = true;
+    client._artifactStore = {
+        async uploadArtifact(_sessionId, filename) {
+            return { filename };
+        },
+        async deleteArtifact() {
+            assert.fail("rollback must not race another publisher with compensating blob deletion");
+        },
+    };
+    client._catalog = {
+        async getAgentPackage() {
+            return null;
+        },
+        async registerWorkflowDefinitionWithAgentPackage() {
+            throw new Error(
+                "WORKFLOW_DEFINITION_CONFLICT: graph is already registered with different content",
+            );
+        },
+        async publishAgentPackage() {
+            publishedSeparately = true;
+        },
+    };
+
+    await assert.rejects(
+        () => client.registerWorkflowDefinition(
+            PACKAGE_WORKFLOW,
+            { packageRoot: PACKAGE_ROOT },
+        ),
+        /WORKFLOW_DEFINITION_CONFLICT/,
+    );
+    assert.equal(publishedSeparately, false);
 });
 
 test("management registration rejects workflow agents absent from the package", async () => {

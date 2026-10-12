@@ -177,3 +177,18 @@ test("0086: active workflow children retain their exact agent package version", 
         /state NOT IN \('completed', 'failed', 'error', 'cancelled'\)/,
     );
 });
+
+test("0087: workflow definition and agent package metadata commit atomically", () => {
+    const migration = migrations.find((m) => m.version === "0087");
+    assert.ok(migration, "migration 0087 must be registered");
+    assert.equal(migration.name, "workflow_agent_package_registration");
+    assert.match(
+        migration.sql,
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_register_workflow_definition_with_agent_package/,
+    );
+    assert.match(migration.sql, /cms_publish_agent_package\(/);
+    assert.match(migration.sql, /cms_register_workflow_definition\(/);
+    assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_RETRY/);
+    assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_MISMATCH/);
+    assert.match(migration.sql, /agentPackageId/);
+});

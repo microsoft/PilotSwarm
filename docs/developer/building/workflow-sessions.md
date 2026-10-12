@@ -54,6 +54,14 @@ behavior for an admitted run:
 
 - registration publishes the package contents and rejects workflow agent names
   that the package does not declare
+- package/version metadata, active-version selection, registry epoch, and the
+  immutable workflow definition commit in one database transaction; a
+  definition conflict or concurrent-package retry leaves none of those
+  metadata changes visible
+- content-addressed artifact bytes upload before that transaction, so a failed
+  registration can leave unreferenced bytes but cannot expose partial catalog
+  state; registration does not delete those bytes because another concurrent
+  publisher may be using the same content
 - starting a workflow resolves each bound package's current active version
 - the resolved package version is persisted in the run's durable plan and in
   each child session

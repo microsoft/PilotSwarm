@@ -178,12 +178,16 @@ import {
     AgentPackageValidationError,
     deleteAgentPackageEverywhere,
     fetchAgentPackageTarGz,
+    prepareAgentPackageDir,
     publishAgentPackageDir,
     publishPackedAgentPackage,
     readAgentPackageVersionEntries,
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
-import { validateAgentPackageDir } from "./agent-package-format.js";
+import {
+    agentPackagesArtifactSessionId,
+    validateAgentPackageDir,
+} from "./agent-package-format.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1447,28 +1451,14 @@ export class PilotSwarmManagementClient {
     ): Promise<WorkflowDefinitionRecord> {
         const snapshot = await materializeWorkflowPackageSnapshot(packageRoot);
         let compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot);
+        let preparedAgentPackage: Awaited<ReturnType<typeof prepareAgentPackageDir>> | null = null;
+        let agentNames: string[] = [];
         if (compiled.manifest.states.some(state => state.type === "agent")) {
-            const validation = await validateAgentPackageDir(packageRoot);
-            if (!validation.ok || !validation.manifest) {
-                throw new AgentPackageValidationError(validation);
-            }
-            const agentNames = validation.manifest.agents.map(agent => agent.name);
+            preparedAgentPackage = await prepareAgentPackageDir(packageRoot);
+            agentNames = preparedAgentPackage.manifest.agents.map(agent => agent.name);
             await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
                 agentPackage: {
                     packageId: "workflow-registration-preflight",
-                    agentNames,
-                },
-            });
-            const published = await this.publishAgentPackageDirectory(
-                packageRoot,
-                "shared",
-                null,
-                true,
-                { createdBy: "workflow-definition-registration" },
-            );
-            compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
-                agentPackage: {
-                    packageId: published.packageId,
                     agentNames,
                 },
             });
@@ -1489,17 +1479,93 @@ export class PilotSwarmManagementClient {
             { pinned: true },
         );
         const sourceSha256 = createHash("sha256").update(yaml, "utf8").digest("hex");
-        const compiledSha256 = workflowCompiledManifestSha256(compiled.manifest);
-        return this._catalog!.registerWorkflowDefinition({
-            definitionId: randomUUID(),
-            sourceYaml: yaml,
-            sourceSha256,
-            packageSha256,
-            packageArtifactFilename,
-            packageSource,
-            compiledSha256,
-            manifest: compiled.manifest,
-        });
+        if (!preparedAgentPackage) {
+            const compiledSha256 = workflowCompiledManifestSha256(compiled.manifest);
+            return this._catalog!.registerWorkflowDefinition({
+                definitionId: randomUUID(),
+                sourceYaml: yaml,
+                sourceSha256,
+                packageSha256,
+                packageArtifactFilename,
+                packageSource,
+                compiledSha256,
+                manifest: compiled.manifest,
+            });
+        }
+
+        const agentArtifacts = this._requireAgentPackageArtifacts();
+        // Metadata may roll back after upload. Keep content-addressed bytes:
+        // compensating deletion can race another publisher of the same blob.
+        await agentArtifacts.uploadArtifact(
+            agentPackagesArtifactSessionId(),
+            preparedAgentPackage.artifactFilename,
+            preparedAgentPackage.targz,
+            "application/gzip",
+        );
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const existing = await this._catalog!.getAgentPackage(
+                preparedAgentPackage.manifest.name,
+                null,
+                true,
+                { scope: "shared" },
+            );
+            const existingVersion = existing?.versions.find(
+                version => version.semver === preparedAgentPackage!.manifest.version,
+            );
+            if (existingVersion && existingVersion.sha256 !== preparedAgentPackage.sha256) {
+                throw new Error(
+                    `AGENT_PACKAGE_SEMVER_CONFLICT: ${preparedAgentPackage.manifest.name}`
+                    + `@${preparedAgentPackage.manifest.version} is already published with different content`
+                    + " — published versions are immutable, bump the version",
+                );
+            }
+
+            const packageId = existing?.packageId ?? randomUUID();
+            const versionId = existingVersion?.versionId ?? randomUUID();
+            compiled = await compileWorkflowPackageSnapshotYaml(yaml, snapshot, {
+                agentPackage: { packageId, agentNames },
+            });
+            const definition = {
+                definitionId: randomUUID(),
+                sourceYaml: yaml,
+                sourceSha256,
+                packageSha256,
+                packageArtifactFilename,
+                packageSource,
+                compiledSha256: workflowCompiledManifestSha256(compiled.manifest),
+                manifest: compiled.manifest,
+            };
+
+            try {
+                return await this._catalog!.registerWorkflowDefinitionWithAgentPackage({
+                    packageId,
+                    versionId,
+                    package: {
+                        name: preparedAgentPackage.manifest.name,
+                        scope: "shared",
+                        owner: null,
+                        sourceId: null,
+                        semver: preparedAgentPackage.manifest.version,
+                        sha256: preparedAgentPackage.sha256,
+                        sizeBytes: preparedAgentPackage.sizeBytes,
+                        artifactFilename: preparedAgentPackage.artifactFilename,
+                        commitSha: typeof packageSource.commitSha === "string"
+                            ? packageSource.commitSha
+                            : null,
+                        manifest: preparedAgentPackage.manifest as unknown as Record<string, unknown>,
+                        createdBy: "workflow-definition-registration",
+                        isAdmin: true,
+                    },
+                    definition,
+                });
+            } catch (error) {
+                const retry = error instanceof Error
+                    && error.message.includes("WORKFLOW_AGENT_PACKAGE_RETRY");
+                if (!retry || attempt === 2) throw error;
+            }
+        }
+        throw new Error("WORKFLOW_AGENT_PACKAGE_RETRY: registration did not converge");
     }
 
     /** Read one immutable registered definition and its compiled state rows. */
