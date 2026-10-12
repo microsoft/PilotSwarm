@@ -16,6 +16,7 @@ import { workflowExecutionsMigration } from "./migrations/workflow-executions-00
 import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0084.js";
 import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0085.js";
 import { workflowAgentPackageRegistrationMigration } from "./migrations/workflow-agent-package-registration-0087.js";
+import { workflowAgentPackageDeletionGuardMigration } from "./migrations/workflow-agent-package-deletion-0088.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -414,6 +415,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0085", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
         { version: "0086", name: "workflow_agent_package_version_pins", sql: migration_0086_workflow_agent_package_version_pins(schema) },
         { version: "0087", name: "workflow_agent_package_registration", sql: workflowAgentPackageRegistrationMigration(schema) },
+        { version: "0088", name: "workflow_agent_package_deletion_guard", sql: workflowAgentPackageDeletionGuardMigration(schema) },
     ];
 }
 

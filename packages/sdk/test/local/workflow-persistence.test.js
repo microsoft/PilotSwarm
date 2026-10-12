@@ -406,6 +406,119 @@ describe.skipIf(!DATABASE_URL)("workflow execution persistence", () => {
         });
     });
 
+    it("blocks package deletion until every admitted workflow is terminal", async () => {
+        const packageName = "active-workflow-package";
+        const registration = atomicWorkflowRegistration({
+            packageName,
+            packageId: "active-workflow-package-id",
+            versionId: "active-workflow-version-id",
+            semver: "1.0.0",
+            packageSha: "7".repeat(64),
+            definitionId: "active-workflow-definition",
+            graphName: "active-workflow-deletion",
+            sourceSha: "7".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(registration);
+
+        const sessionId = "active-workflow-session";
+        await catalog.admitWorkflow({
+            sessionId,
+            definitionId: registration.definition.definitionId,
+            inputs: {},
+            primaryKeyValues: null,
+            primaryKeySha256: null,
+            owner: {
+                provider: "test",
+                subject: "active-workflow-owner",
+            },
+            idempotencyKey: "active-workflow-request",
+            requestSha256: "8".repeat(64),
+            forceRerun: false,
+            isAdmin: false,
+        });
+
+        await expect(
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).rejects.toThrow(/AGENT_PACKAGE_WORKFLOW_IN_USE/);
+
+        await catalog.createSession(sessionId, { sessionKind: "workflow" });
+        await expect(
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).rejects.toThrow(/AGENT_PACKAGE_WORKFLOW_IN_USE/);
+
+        await catalog.updateSession(sessionId, { state: "completed" });
+        await expect(
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).resolves.toEqual([registration.package.artifactFilename]);
+        await expect(
+            catalog.getAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ).resolves.toBeNull();
+    });
+
+    it("serializes first admission against package deletion", async () => {
+        const packageName = "concurrent-deletion-package";
+        const registration = atomicWorkflowRegistration({
+            packageName,
+            packageId: "concurrent-deletion-package-id",
+            versionId: "concurrent-deletion-version-id",
+            semver: "1.0.0",
+            packageSha: "9".repeat(64),
+            definitionId: "concurrent-deletion-definition",
+            graphName: "concurrent-deletion",
+            sourceSha: "9".repeat(64),
+        });
+        await catalog.registerWorkflowDefinitionWithAgentPackage(registration);
+
+        const results = await Promise.allSettled([
+            catalog.admitWorkflow({
+                sessionId: "concurrent-deletion-session",
+                definitionId: registration.definition.definitionId,
+                inputs: {},
+                primaryKeyValues: null,
+                primaryKeySha256: null,
+                owner: {
+                    provider: "test",
+                    subject: "concurrent-deletion-owner",
+                },
+                idempotencyKey: "concurrent-deletion-request",
+                requestSha256: "a".repeat(64),
+                forceRerun: false,
+                isAdmin: false,
+            }),
+            catalog.deleteAgentPackage(
+                packageName,
+                null,
+                true,
+                { scope: "shared" },
+            ),
+        ]);
+
+        expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+        expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+        expect(results.find(result => result.status === "rejected").reason.message)
+            .toMatch(/AGENT_PACKAGE_WORKFLOW_IN_USE|WORKFLOW_AGENT_PACKAGE_UNAVAILABLE/);
+    });
+
     it("atomically deduplicates keyed starts and admits authorized reruns", async () => {
         const manifest = {
             compilerVersion: "v1alpha1-3",

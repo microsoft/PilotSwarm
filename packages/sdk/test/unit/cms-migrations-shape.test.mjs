@@ -192,3 +192,28 @@ test("0087: workflow definition and agent package metadata commit atomically", (
     assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_MISMATCH/);
     assert.match(migration.sql, /agentPackageId/);
 });
+
+test("0088: active workflows prevent agent package deletion", () => {
+    const migration = migrations.find((m) => m.version === "0088");
+    assert.ok(migration, "migration 0088 must be registered");
+    assert.equal(migration.name, "workflow_agent_package_deletion_guard");
+    assert.match(
+        migration.sql,
+        /CREATE TRIGGER workflow_admission_agent_package_guard/,
+    );
+    assert.match(
+        migration.sql,
+        /hashtextextended\('workflow-agent-package:' \|\| v_package_id, 0\)/,
+    );
+    assert.match(
+        migration.sql,
+        /hashtextextended\('workflow-agent-package:' \|\| v_pkg\.package_id, 0\)/,
+    );
+    assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_UNAVAILABLE/);
+    assert.match(migration.sql, /AGENT_PACKAGE_WORKFLOW_IN_USE/);
+    assert.match(migration.sql, /compiled_manifest_json->'states'/);
+    assert.match(
+        migration.sql,
+        /session\.state NOT IN \('completed', 'failed', 'error', 'cancelled'\)/,
+    );
+});

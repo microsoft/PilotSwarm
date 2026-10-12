@@ -67,6 +67,9 @@ behavior for an admitted run:
   each child session
 - retries, worker replacement, and later states in that run continue using the
   same version, even if a newer package version becomes active
+- a package may be disabled to prevent new workflow admissions, but hard
+  deletion is rejected while any admitted workflow that references it remains
+  nonterminal
 - a later workflow run may resolve the newer active version
 
 This differs from a normal conversational session, whose later turns resolve
