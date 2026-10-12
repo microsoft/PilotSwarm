@@ -1117,6 +1117,10 @@ export class NodeSdkTransport {
         return this.mgmt.getWorkflowOverview(sessionId);
     }
 
+    async listWorkflowExecutions(sessionId) {
+        return this.mgmt.listWorkflowExecutions(sessionId);
+    }
+
     async getSessionMetricSummary(sessionId) {
         return this.mgmt.getSessionMetricSummary(sessionId);
     }

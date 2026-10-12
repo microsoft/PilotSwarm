@@ -73,6 +73,34 @@ function cloneSelectedIds(selectedIds) {
     return Array.isArray(selectedIds) ? [...selectedIds] : [];
 }
 
+function retainWorkflowTransitionEvents(events, limit) {
+    if (events.length <= limit) return events;
+    const transitionScheduleIds = new Set();
+    for (const event of events) {
+        if (event?.kind !== "ActivityScheduled") continue;
+        let data = event.data;
+        if (typeof data === "string") {
+            try {
+                data = JSON.parse(data);
+            } catch {
+                continue;
+            }
+        }
+        if (data?.name === "executeWorkflowTransitionV2") {
+            transitionScheduleIds.add(Number(event.eventId));
+        }
+    }
+    const recentStart = events.length - limit;
+    return events.filter((event, index) => (
+        index >= recentStart
+        || transitionScheduleIds.has(Number(event?.eventId))
+        || (
+            event?.kind === "ActivityCompleted"
+            && transitionScheduleIds.has(Number(event.sourceEventId))
+        )
+    ));
+}
+
 const ROW_VISUAL_STATUS_HOLD_MS = 5000;
 
 function pruneIdList(ids, byId) {
@@ -1613,7 +1641,7 @@ function baseReducer(state, action) {
             const hadRow = Boolean(state.sessions.byId[goneId]);
             const wasActive = state.sessions.activeSessionId === goneId;
             const hadContent = state.history.bySessionId.has(goneId)
-                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.workflowOverview, state.outbox, state.sessionStats]
+                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.workflowOverview, state.workflowExecutions, state.outbox, state.sessionStats]
                     .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
             if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
@@ -1641,6 +1669,7 @@ function baseReducer(state, action) {
                 orchestration: discard(state.orchestration),
                 executionHistory: discard(state.executionHistory),
                 workflowOverview: discard(state.workflowOverview),
+                workflowExecutions: discard(state.workflowExecutions),
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
                 sessionStats: discard(state.sessionStats),
@@ -2209,11 +2238,15 @@ function baseReducer(state, action) {
         }
 
         case "workflowOverview/loading": {
+            const previous = state.workflowOverview?.bySessionId?.[action.sessionId] || {};
             const bySessionId = {
                 ...(state.workflowOverview?.bySessionId || {}),
                 [action.sessionId]: {
-                    ...(state.workflowOverview?.bySessionId?.[action.sessionId] || {}),
-                    loadState: "loading",
+                    ...previous,
+                    loadState: action.preserveData && previous.loadState === "loaded"
+                        ? "loaded"
+                        : "loading",
+                    refreshing: action.preserveData === true,
                     error: null,
                 },
             };
@@ -2234,15 +2267,60 @@ function baseReducer(state, action) {
         }
 
         case "workflowOverview/failed": {
+            const previous = state.workflowOverview?.bySessionId?.[action.sessionId] || {};
             const bySessionId = {
                 ...(state.workflowOverview?.bySessionId || {}),
                 [action.sessionId]: {
-                    ...(state.workflowOverview?.bySessionId?.[action.sessionId] || {}),
-                    loadState: "failed",
+                    ...previous,
+                    loadState: previous.data !== undefined ? "loaded" : "failed",
+                    refreshing: false,
                     error: action.error || "Workflow overview unavailable.",
                 },
             };
             return { ...state, workflowOverview: { ...state.workflowOverview, bySessionId } };
+        }
+
+        case "workflowExecutions/loading": {
+            const previous = state.workflowExecutions?.bySessionId?.[action.sessionId] || {};
+            const bySessionId = {
+                ...(state.workflowExecutions?.bySessionId || {}),
+                [action.sessionId]: {
+                    ...previous,
+                    loadState: action.preserveData && previous.loadState === "loaded"
+                        ? "loaded"
+                        : "loading",
+                    refreshing: action.preserveData === true,
+                    error: null,
+                },
+            };
+            return { ...state, workflowExecutions: { ...state.workflowExecutions, bySessionId } };
+        }
+
+        case "workflowExecutions/loaded": {
+            const bySessionId = {
+                ...(state.workflowExecutions?.bySessionId || {}),
+                [action.sessionId]: {
+                    loadState: "loaded",
+                    data: Array.isArray(action.executions) ? action.executions : [],
+                    error: null,
+                    loadedAt: action.loadedAt || Date.now(),
+                },
+            };
+            return { ...state, workflowExecutions: { ...state.workflowExecutions, bySessionId } };
+        }
+
+        case "workflowExecutions/failed": {
+            const previous = state.workflowExecutions?.bySessionId?.[action.sessionId] || {};
+            const bySessionId = {
+                ...(state.workflowExecutions?.bySessionId || {}),
+                [action.sessionId]: {
+                    ...previous,
+                    loadState: previous.data !== undefined ? "loaded" : "failed",
+                    refreshing: false,
+                    error: action.error || "Workflow execution details unavailable.",
+                },
+            };
+            return { ...state, workflowExecutions: { ...state.workflowExecutions, bySessionId } };
         }
 
         case "history/loadState": {
@@ -2426,9 +2504,10 @@ function baseReducer(state, action) {
             const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
             const rawEvents = action.events || [];
             const MAX_EXECUTION_HISTORY_EVENTS = 1000;
-            const clampedEvents = rawEvents.length > MAX_EXECUTION_HISTORY_EVENTS
-                ? rawEvents.slice(-MAX_EXECUTION_HISTORY_EVENTS)
-                : rawEvents;
+            const clampedEvents = retainWorkflowTransitionEvents(
+                rawEvents,
+                MAX_EXECUTION_HISTORY_EVENTS,
+            );
             bySessionId[action.sessionId] = {
                 loading: false,
                 error: null,
