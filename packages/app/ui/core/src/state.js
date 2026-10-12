@@ -514,6 +514,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         workflowOverview: {
             bySessionId: {},
         },
+        workflowExecutions: {
+            bySessionId: {},
+        },
         outbox: {
             bySessionId: {},
         },

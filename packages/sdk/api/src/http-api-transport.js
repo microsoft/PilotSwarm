@@ -525,6 +525,16 @@ export class HttpApiTransport {
     }
     listPausedSessions() { return this.api.call("listPausedSessions"); }
 
+    // ── Workflows ───────────────────────────────────────────────────────
+
+    async getWorkflowOverview(sessionId) {
+        return this.api.call("getWorkflowOverview", { sessionId });
+    }
+
+    async listWorkflowExecutions(sessionId) {
+        return this.api.call("listWorkflowExecutions", { sessionId });
+    }
+
     // ── Events / history ────────────────────────────────────────────────
 
     async getSessionEvents(sessionId, afterSeq, limit, eventTypes) {

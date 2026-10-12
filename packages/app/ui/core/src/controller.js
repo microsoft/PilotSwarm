@@ -1675,6 +1675,7 @@ export class PilotSwarmUiController {
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
         this.workflowOverviewLoads = new Map();
+        this.workflowExecutionLoads = new Map();
         this.outboxFlushPromises = new Map();
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
@@ -2591,6 +2592,7 @@ export class PilotSwarmUiController {
         this.sessionHistoryExpansionLoads.clear();
         this.sessionOrchestrationStatsLoads.clear();
         this.workflowOverviewLoads.clear();
+        this.workflowExecutionLoads.clear();
         this.detachActiveSession();
         this.detachLogStream();
         await this.transport.stop();
@@ -5834,11 +5836,18 @@ export class PilotSwarmUiController {
             this.ensureSessionHistory(sessionId, { force: true }),
             this.syncSessionDetail(sessionId).catch(() => {}),
         ]);
-        if (this.getState().sessions.byId[sessionId]?.sessionKind === "workflow") {
-            await this.ensureWorkflowOverview(sessionId, { force: true }).catch((error) => {
+        const selectedSession = this.getState().sessions.byId[sessionId] || null;
+        const workflowSessionId = selectedSession?.sessionKind === "workflow"
+            ? sessionId
+            : selectedSession?.parentSessionId
+                && this.getState().sessions.byId[selectedSession.parentSessionId]?.sessionKind === "workflow"
+                ? selectedSession.parentSessionId
+                : null;
+        if (workflowSessionId) {
+            await this.ensureWorkflowContextForSession(sessionId, { force: true }).catch((error) => {
                 this.dispatch({
                     type: "ui/status",
-                    text: `Could not load workflow overview: ${error?.message || error}`,
+                    text: `Could not load workflow details: ${error?.message || error}`,
                 });
             });
         }
@@ -5855,13 +5864,44 @@ export class PilotSwarmUiController {
         this.ensureCanvasSnapshot(sessionId).catch(() => {});
     }
 
+    async ensureWorkflowContextForSession(sessionId, { force = false } = {}) {
+        const state = this.getState();
+        const session = state.sessions.byId[sessionId] || null;
+        const workflowSessionId = session?.sessionKind === "workflow"
+            ? sessionId
+            : session?.parentSessionId
+                && state.sessions.byId[session.parentSessionId]?.sessionKind === "workflow"
+                ? session.parentSessionId
+                : null;
+        if (!workflowSessionId) return null;
+        const [overview, executions, executionHistory] = await Promise.all([
+            this.ensureWorkflowOverview(workflowSessionId, { force }),
+            this.ensureWorkflowExecutions(workflowSessionId, { force }),
+            this.ensureExecutionHistory(workflowSessionId, { force }),
+            workflowSessionId !== sessionId
+                ? this.ensureExecutionHistory(sessionId, { force })
+                : null,
+        ]);
+        if (workflowSessionId === sessionId) {
+            // Child transcripts are supplementary detail. Load them in the
+            // background so large or long-running workflows do not block the
+            // parent session from becoming interactive.
+            this.ensureWorkflowChildHistories(workflowSessionId).catch(() => {});
+        }
+        return { workflowSessionId, overview, executions, executionHistory };
+    }
+
     async ensureWorkflowOverview(sessionId, { force = false } = {}) {
         if (!sessionId || typeof this.transport.getWorkflowOverview !== "function") return null;
         if (this.workflowOverviewLoads.has(sessionId)) return this.workflowOverviewLoads.get(sessionId);
         const existing = this.getState().workflowOverview?.bySessionId?.[sessionId];
         if (!force && existing?.loadState === "loaded") return existing.data ?? null;
 
-        this.dispatch({ type: "workflowOverview/loading", sessionId });
+        this.dispatch({
+            type: "workflowOverview/loading",
+            sessionId,
+            preserveData: existing?.loadState === "loaded",
+        });
         const pending = this.transport.getWorkflowOverview(sessionId);
         this.workflowOverviewLoads.set(sessionId, pending);
         try {
@@ -5889,6 +5929,70 @@ export class PilotSwarmUiController {
                 this.workflowOverviewLoads.delete(sessionId);
             }
         }
+    }
+
+    async ensureWorkflowExecutions(sessionId, { force = false } = {}) {
+        if (!sessionId || typeof this.transport.listWorkflowExecutions !== "function") return [];
+        if (this.workflowExecutionLoads.has(sessionId)) return this.workflowExecutionLoads.get(sessionId);
+        const existing = this.getState().workflowExecutions?.bySessionId?.[sessionId];
+        if (!force && existing?.loadState === "loaded") return existing.data ?? [];
+
+        this.dispatch({
+            type: "workflowExecutions/loading",
+            sessionId,
+            preserveData: existing?.loadState === "loaded",
+        });
+        const pending = this.transport.listWorkflowExecutions(sessionId);
+        this.workflowExecutionLoads.set(sessionId, pending);
+        try {
+            const executions = await pending;
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowExecutions/loaded",
+                    sessionId,
+                    executions,
+                    loadedAt: Date.now(),
+                });
+            }
+            return executions;
+        } catch (error) {
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowExecutions/failed",
+                    sessionId,
+                    error: error?.message || String(error),
+                });
+            }
+            throw error;
+        } finally {
+            if (this.workflowExecutionLoads.get(sessionId) === pending) {
+                this.workflowExecutionLoads.delete(sessionId);
+            }
+        }
+    }
+
+    async ensureWorkflowChildHistories(sessionId, { force = false } = {}) {
+        const state = this.getState();
+        const executions = state.workflowExecutions?.bySessionId?.[sessionId]?.data;
+        if (!Array.isArray(executions) || executions.length === 0) return [];
+        const childSessionIds = [...new Set(executions
+            .map(execution => execution?.childSessionId)
+            .filter(childSessionId => childSessionId && state.sessions.byId[childSessionId]))];
+        const histories = new Array(childSessionIds.length);
+        let nextIndex = 0;
+        const workerCount = Math.min(6, childSessionIds.length);
+        await Promise.all(Array.from({ length: workerCount }, async () => {
+            while (nextIndex < childSessionIds.length) {
+                const index = nextIndex++;
+                const childSessionId = childSessionIds[index];
+                const [history] = await Promise.all([
+                    this.ensureSessionHistory(childSessionId, { force }),
+                    this.ensureExecutionHistory(childSessionId, { force }),
+                ]);
+                histories[index] = history;
+            }
+        }));
+        return histories;
     }
 
     /**
@@ -6494,11 +6598,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/merged", session: patch || { sessionId } });
         }
         const currentSession = this.getState().sessions.byId[sessionId] || session;
-        if (
-            currentSession?.sessionKind === "workflow"
-            && this.getState().sessions.activeSessionId === sessionId
-        ) {
-            this.ensureWorkflowOverview(sessionId, { force: true }).catch(() => {});
+        if (this.getState().sessions.activeSessionId === sessionId) {
+            this.ensureWorkflowContextForSession(sessionId, { force: true }).catch(() => {});
         }
         this.maybeFlushQueuedOutbox(sessionId, session);
     }
