@@ -5,6 +5,7 @@ import { createParser } from "eventsource-parser";
 type JsonObject = Record<string, any>;
 type ToolGroup = { body: JsonObject; name: string; toolNames: Set<string> };
 const MODEL_ROUTER_MAX_TOOLS = 128;
+const MODEL_ROUTER_DEPLOYMENT = /^model-router(?:-\d+k-openai)?$/;
 const SCHEMA_DOCUMENT_KEYS = new Set(["$ref", "$id", "$schema", "$anchor", "$dynamicRef", "$dynamicAnchor", "$recursiveRef", "$recursiveAnchor"]);
 
 function isObject(value: unknown): value is JsonObject {
@@ -18,7 +19,8 @@ function hasSchemaDocumentScope(value: unknown): boolean {
 }
 
 function groupOverflowTools(body: JsonObject): ToolGroup | undefined {
-    if (body.model !== "model-router" || !Array.isArray(body.tools) || body.tools.length <= MODEL_ROUTER_MAX_TOOLS) return;
+    if (typeof body.model !== "string" || !MODEL_ROUTER_DEPLOYMENT.test(body.model)
+        || !Array.isArray(body.tools) || body.tools.length <= MODEL_ROUTER_MAX_TOOLS) return;
     const choice = body.tool_choice;
     const forcedName = isObject(choice) && choice.type === "function" && isObject(choice.function)
         && typeof choice.function.name === "string" && Object.keys(choice.function).length === 1
@@ -187,9 +189,10 @@ export function needsByokRequestCompatibility(provider: unknown): boolean {
  * all model traffic through Node, including WebSockets. Never attach it to a
  * GitHub Copilot client (native transport/auth and CAPI parameters must remain
  * intact), or an Anthropic/WIF client. Remove once the provider compatibility
- * tests pass without it. Only requests for the exact model-router deployment
- * group oversized catalogs through a typed dispatch function; restore calls
- * before the runtime's permission/tool hooks. Other models keep their catalogs.
+ * tests pass without it. Only requests for the legacy model-router deployment
+ * or a context-sized OpenAI router (`model-router-<tokens>k-openai`) group
+ * oversized catalogs through a typed dispatch function; restore calls before
+ * the runtime's permission/tool hooks. Other models keep their catalogs.
  */
 export class ByokRequestCompatibility extends CopilotRequestHandler {
     protected override async sendRequest(
