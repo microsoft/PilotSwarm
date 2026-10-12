@@ -1092,13 +1092,13 @@ export class PilotSwarmWorker {
 
     /**
      * Graceful drain (lifecycle protocol §3.8):
-     *   1. Stop fetching — duroxide's shutdown flag makes dispatch slots
-     *      finish their in-flight item and claim nothing new.
+     *   1. Stop fetching — duroxide's shutdown cancels its pollers, so
+     *      dispatch slots finish their in-flight item and claim nothing new.
      *   2. Finish in-flight — running turns complete within the drain
      *      budget; their snapshot commits land inside the runTurn activity.
-     *      (duroxide sleeps the FULL budget before returning; turns longer
-     *      than the budget are aborted — crash semantics, lossless for
-     *      every committed turn.)
+     *      (duroxide returns as soon as in-flight work drains; turns still
+     *      running at the end of the budget are aborted — crash semantics,
+     *      lossless for every committed turn.)
      *   3. Evict all — purely local for sessions with a committed marker
      *      (the store already holds their state); legacy dehydrate for
      *      unmarked sessions whose local files may be the only copy.
