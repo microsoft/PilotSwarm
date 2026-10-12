@@ -1773,10 +1773,33 @@ export class PilotSwarmManagementClient {
         return this._catalog!.listWorkflowDefinitions(viewer, isAdmin);
     }
 
+    private async _reconcileWorkflowProjectionStatus(
+        projection: WorkflowProjectionRow | null,
+    ): Promise<WorkflowProjectionRow | null> {
+        if (!projection || projection.status !== "running") return projection;
+
+        const orchestrationStatus = await this._duroxideClient.getStatus(
+            `session-${projection.workflowSessionId}`,
+        );
+        if (orchestrationStatus?.status !== "Failed") return projection;
+
+        const errorMessage =
+            typeof orchestrationStatus.error === "string" && orchestrationStatus.error.trim()
+                ? orchestrationStatus.error.trim()
+                : null;
+        await this._catalog!.failWorkflowProjection({
+            workflowSessionId: projection.workflowSessionId,
+            errorMessage,
+            failedAt: new Date(),
+        });
+        return this._catalog!.getWorkflowProjection(projection.workflowSessionId);
+    }
+
     /** Get the workflow's current externally visible state. */
     async getWorkflow(sessionId: string): Promise<WorkflowProjectionRow | null> {
         this._ensureStarted();
-        return this._catalog!.getWorkflowProjection(sessionId);
+        const projection = await this._catalog!.getWorkflowProjection(sessionId);
+        return this._reconcileWorkflowProjectionStatus(projection);
     }
 
     /** Read authoritative workflow state executions in admission order. */
@@ -1788,6 +1811,7 @@ export class PilotSwarmManagementClient {
     /** Read topology and execution status without exposing the authored definition payload. */
     async getWorkflowOverview(sessionId: string): Promise<WorkflowOverviewRow | null> {
         this._ensureStarted();
+        await this.getWorkflow(sessionId);
         return this._catalog!.getWorkflowOverview(sessionId);
     }
 
@@ -1805,7 +1829,7 @@ export class PilotSwarmManagementClient {
         if (typeof outcome !== "string" || !outcome.trim()) {
             throw new Error("outcome is required.");
         }
-        const projection = await this._catalog!.getWorkflowProjection(sessionId);
+        const projection = await this.getWorkflow(sessionId);
         if (
             !projection
             || projection.status !== "running"
