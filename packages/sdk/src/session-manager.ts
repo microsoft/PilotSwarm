@@ -281,6 +281,11 @@ export interface WorkerDefaults {
      */
     baseMcpServers?: Record<string, any>;
     /**
+     * Whether native Copilot configuration discovery may load repository MCP
+     * configuration. Defaults to true.
+     */
+    repositoryMcpEnabled?: boolean;
+    /**
      * Catalog servers restricted with `allowedAgents` (server name → allowed
      * agent identities). Held BY REFERENCE from the worker, which clears and
      * refills it in place on every plugin reload.
@@ -2586,6 +2591,9 @@ export class SessionManager {
             // created in (review R1).
             workingDirectory: workspaceAttach?.path ?? config.workingDirectory
                 ?? (config.workspaceCleared ? process.cwd() : undefined),
+            ...(this.workerDefaults.repositoryMcpEnabled === false
+                ? { enableConfigDiscovery: false }
+                : {}),
             // Session workspaces (section 4.10): the extra folders attached
             // for this turn. The CLI lists them to the model and keeps them
             // only until a cold resume, so they are passed every time. Not in

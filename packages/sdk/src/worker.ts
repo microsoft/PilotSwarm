@@ -426,6 +426,7 @@ export class PilotSwarmWorker {
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
+                repositoryMcpEnabled: options.repositoryMcpEnabled,
                 mcpAllowedAgents: this._mcpAllowedAgents,
                 deploymentMcpNames: this._deploymentMcpNames,
                 provider: options.provider,
