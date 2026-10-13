@@ -147,7 +147,12 @@ transcript selectors under `.ps-scroll-panel[data-session-id]`.
 
 Pending on other workstreams: the real-PostgreSQL block of
 `turn-control-management.test.js` (A2) and the `stop-turn-live.test.js` update
-plus the local-instance walk with two dev personas (A4 and B2).
+(A4 and B2).
+
+The C3 manual check "walk Stop and Steer in `scripts/local-pilotswarm.sh` with
+two dev personas (one read-only share)" is deferred to the parent's I1/U1b on
+the integrated candidate: it needs workstreams A and B merged, and the dev pod
+has no Docker for the local instance. Deferred, not skipped.
 
 Proposed `scripts/provider-test-coverage.json` entries (the parent applies
 them): `packages/sdk/test/local/turn-control-management.test.js` (HorizonDB
@@ -159,6 +164,12 @@ no database).
 TUI and portal share the controller, history and labels. Divergences, by host
 capability: the portal shows notices inline with Retry/Dismiss buttons and a
 `data-testid` contract; the TUI reports the same answers in the status line,
-and retries by pressing the same key. The portal keeps the read-only
+retries by pressing the same key, and gives a request up with `Alt+T`
+(`Option+T`), the equivalent of the portal's per-notice Dismiss (the portal
+dismisses one kind at a time; Alt+T gives up both kinds at once, since the
+TUI has no notice row to target). `Alt+T` collides with no TUI binding: the
+other Alt/Option bindings are Enter, ←/→ (b/f), Backspace/Delete, and `T`
+(themes) requires no modifier. The TUI has no startup keybinding hint; the
+status hints and `?` help are its keybinding surfaces. The portal keeps the read-only
 collaborator out of the composer (no Steer); the TUI has no per-session access
 model in direct mode.
