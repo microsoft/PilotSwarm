@@ -18,6 +18,7 @@ function deferred() {
 }
 
 /** Let pending promise continuations run (event-loop turns, not a timed wait). */
+const waitForActive = async (managed) => { for (let i = 0; i < 50 && !managed.getActiveTurn(); i++) await new Promise((r) => setImmediate(r)); };
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 
 function createFakeCopilotSession({ abortFiresIdle = true, sendImpl } = {}) {
@@ -254,6 +255,81 @@ describe("turn control: ManagedSession send gate", () => {
             expect(steersSent(fake)).toEqual([]);
         });
     }
+
+    // CLI 1.0.83: an abort while the turn waits on a backgrounded shell sends
+    // assistant.idle { aborted: true } and no session.idle.
+    const abortWithoutSessionIdle = (fake) => {
+        fake.abort = () => {
+            fake.abortCalls++;
+            queueMicrotask(() => fake._emit("assistant.idle", { aborted: true }));
+        };
+        return fake;
+    };
+
+    it("a Stop of a turn-control run settles on assistant.idle { aborted } when the CLI sends no session.idle", async () => {
+        const fake = abortWithoutSessionIdle(createFakeCopilotSession({ abortFiresIdle: false }));
+        const { managed, live, binding, opened } = setup({ fake });
+        const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding });
+        await opened;
+        await live.enqueue([control(9, "stop")]);
+        const result = await turn;
+        expect(result.type).toBe("stopped");
+        expect(fake.abortCalls).toBe(1);
+    });
+
+    it("a late session.idle of the early-settled run does not settle the next run", async () => {
+        const fake = abortWithoutSessionIdle(createFakeCopilotSession({ abortFiresIdle: false }));
+        const first = setup({ fake });
+        const managed = first.managed;
+        const turn1 = managed.runTurn("work", { turnIndex: 4, turnControl: first.binding });
+        await first.opened;
+        await first.live.enqueue([control(9, "stop")]);
+        expect((await turn1).type).toBe("stopped");
+
+        const live2 = new LiveTurnControl({ sessionId: "turn-control-live", turn: 5, start: 0, abort: async () => {} });
+        const opened2 = deferred();
+        const binding2 = {
+            attach: (port) => live2.attach(port),
+            heldStop: () => live2.heldStop(),
+            gateOpened: () => { live2.gateOpened(); opened2.resolve(); },
+            detach: () => live2.detach(),
+        };
+        const turn2 = managed.runTurn("next", { turnIndex: 5, turnControl: binding2 });
+        await opened2.promise;
+        fake._emit("session.idle");                       // the first run's late idle
+        await flush();
+        expect(managed.getActiveTurn()?.turnIndex).toBe(5);
+        expect(managed.steerGateState()).toBe("open");     // the stale idle did not close the new run's gate
+        fake._emit("user.message", { messageId: "msg-next" });
+        fake._emit("assistant.message", { content: "next answer" });
+        fake._emit("session.idle");
+        expect((await turn2).type).toBe("completed");
+    });
+
+    it("assistant.idle { aborted } without a Stop does not settle: the turn still waits for session.idle", async () => {
+        const fake = createFakeCopilotSession();
+        const { managed, binding, opened } = setup({ fake });
+        const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding });
+        await opened;
+        fake._emit("assistant.idle", { aborted: true });
+        await flush();
+        expect(managed.getActiveTurn()).not.toBeNull();
+        fake._emit("session.idle");
+        expect((await turn).type).toBe("completed");
+    });
+
+    it("a run without turn control (legacy Stop) keeps settling only on session.idle", async () => {
+        const fake = abortWithoutSessionIdle(createFakeCopilotSession({ abortFiresIdle: false }));
+        const managed = new ManagedSession("turn-control-live", fake, { waitThreshold: 30 });
+        const turn = managed.runTurn("work", { turnIndex: 4 });
+        await waitForActive(managed);
+        managed.requestStop("Stopped by user");
+        managed.abort();
+        await flush();
+        expect(managed.getActiveTurn()).not.toBeNull();
+        managed.forceSettleTurn("test cleanup");
+        expect((await turn).type).toBe("stopped");
+    });
 
     it("a steer whose send throws ends the turn as an error", async () => {
         const fake = createFakeCopilotSession({

@@ -237,6 +237,99 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         expect(manager.invalidateWarmSessionCalls).toContain(managed.sessionId);
     });
 
+    // Session turn control (V4 Stop): the turn's background tasks are
+    // cancelled right after the abort, before the unwind wait.
+    function withTaskList(copilot, tasks, { endTurnOnCancel = null } = {}) {
+        const cancelled = [];
+        copilot.rpc = {
+            tasks: {
+                list: async () => ({ tasks: tasks.filter((t) => !cancelled.includes(t.id)) }),
+                cancel: async ({ id }) => {
+                    cancelled.push(id);
+                    // The backgrounded shell ending lets the CLI fire session.idle.
+                    if (id === endTurnOnCancel) queueMicrotask(() => copilot._emit("session.idle"));
+                    return { cancelled: true };
+                },
+            },
+        };
+        return cancelled;
+    }
+
+    it("V4 Stop (cancelTurnTasks): cancels the tasks this turn started before the wait; keeps earlier-turn tasks and tasks without startedAt", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 3 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const turnStart = managed.getActiveTurn().startedAt;
+        const cancelled = withTaskList(copilot, [
+            { id: "earlier-server", type: "shell", status: "running", startedAt: new Date(turnStart - 60_000).toISOString() },
+            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart + 5).toISOString() },
+            { id: "no-start", type: "agent", status: "running" },
+        ], { endTurnOnCancel: "this-turn-shell" });
+
+        const t0 = Date.now();
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user",
+            expectedTurnIndex: 3,
+            unwindGraceMs: 5_000,
+            cancelTurnTasks: true,
+        });
+        const ms = Date.now() - t0;
+        expect(result.outcome).toBe("stopped");
+        expect(cancelled).toEqual(["this-turn-shell"]);
+        expect(copilot.abortCalls).toBe(1);
+        expect(ms).toBeLessThan(2_000); // the 5 s unwind wait was not needed
+        expect((await turnPromise).type).toBe("stopped");
+    });
+
+    it("the legacy Stop (no cancelTurnTasks) cancels no background task", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 4 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const turnStart = managed.getActiveTurn().startedAt;
+        const cancelled = withTaskList(copilot, [
+            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart + 5).toISOString() },
+        ]);
+
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user",
+            expectedTurnIndex: 4,
+            unwindGraceMs: 100,
+        });
+        expect(result.outcome).toBe("stop_forced");
+        expect(cancelled).toEqual([]);
+        expect((await turnPromise).type).toBe("stopped");
+    });
+
+    it("a task cancel that hangs is bounded: the Stop still unwinds through the grace backstop", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 5 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        copilot.rpc = { tasks: { list: () => new Promise(() => {}), cancel: async () => ({ cancelled: true }) } };
+
+        const t0 = Date.now();
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user",
+            expectedTurnIndex: 5,
+            unwindGraceMs: 100,
+            cancelTurnTasks: true,
+        });
+        expect(result.outcome).toBe("stop_forced");
+        expect(Date.now() - t0).toBeLessThan(5_000);
+        expect((await turnPromise).type).toBe("stopped");
+    });
+
     it("never takes the per-session lock (lock-bypass contract)", () => {
         // runTurn holds withRunTurnLock for the entire turn; a lock-taking
         // stop would serialize behind the turn and defeat mid-flight stop.

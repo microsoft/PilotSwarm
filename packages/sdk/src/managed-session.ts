@@ -909,6 +909,13 @@ export class ManagedSession {
     private settleTurnRejecter: ((err: unknown) => void) | null = null;
     /** Session turn control: the running turn's send gate and steers (null without turn control). */
     private steer: SteerTurnState | null = null;
+    /**
+     * Turn control: the previous run was settled early by assistant.idle
+     * { aborted } after a Stop, so its session.idle may still arrive. The
+     * next run ignores a session.idle that comes before its own user.message
+     * or assistant.turn_start.
+     */
+    private staleIdlePending = false;
 
     constructor(
         sessionId: string,
@@ -3384,6 +3391,18 @@ export class ManagedSession {
         // A live turn emits a steady event stream (streaming deltas, tool
         // executions, usage updates); a dead subprocess emits nothing.
         let lastEventAt = Date.now();
+        // Turn control: ignore a stale session.idle of an early-settled
+        // previous run until this run's own work is seen.
+        let swallowStaleIdle = this.staleIdlePending;
+        this.staleIdlePending = false;
+        const isStaleIdle = (eventType: string, event: any): boolean => {
+            if (!swallowStaleIdle || isNativeChildEvent(event)) return false;
+            if (eventType === "user.message" || eventType === "assistant.turn_start") {
+                swallowStaleIdle = false;
+                return false;
+            }
+            return eventType === "session.idle";
+        };
 
         const turnComplete = new Promise<void>((resolve, reject) => {
             // Hang-escalation hook: forceSettleTurn() resolves this promise when
@@ -3395,6 +3414,7 @@ export class ManagedSession {
                 this.copilotSession.on((event: any) => {
                     lastEventAt = Date.now();
                     const eventType = event.type ?? event.eventType ?? "unknown";
+                    if (isStaleIdle(eventType, event)) return;
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;
                     // Session turn control: a top-level idle closes the send gate
@@ -3643,10 +3663,31 @@ export class ManagedSession {
                 );
             }
 
+            // Turn control (V4 Stop): after an abort, CLI 1.0.83 sends no
+            // session.idle while the turn waits on a shell it moved to the
+            // background (a steer did that); it sends assistant.idle
+            // { aborted: true }. After our own Stop that ends the run.
+            // Ordinary turns, steers and timeouts still settle on session.idle.
+            unsubscribers.push(
+                this.copilotSession.on("assistant.idle", (event: any) => {
+                    if (isNativeChildEvent(event)) return;
+                    const steer = this.steer;
+                    if (!steer || !this.stopRequest || event.data?.aborted !== true) return;
+                    steer.gate = "closed";
+                    flushStreamingProgress(true);
+                    publishReasoningSnapshot("session.idle", true);
+                    liveTurn?.finishTurn();
+                    steer.onIdle();
+                    this.staleIdlePending = true;
+                    resolve();
+                }),
+            );
+
             // session.idle = turn finished (normal completion or post-abort)
             unsubscribers.push(
                 this.copilotSession.on("session.idle", (event: any) => {
                     if (isNativeChildEvent(event)) return;
+                    if (swallowStaleIdle) return;
                     const steer = this.steer;
                     if (steer) steer.gate = "closed";
                     flushStreamingProgress(true);
@@ -4143,9 +4184,20 @@ export class ManagedSession {
      * rpc.tasks.cancel stops them (docs/proposals/session-workspaces.md 4.5).
      * Returns how many cancels were sent. Throws if tasks remain after the
      * last round.
+     *
+     * `startedSince` (ms since the epoch) limits the cancel to tasks the CLI
+     * reports as started at or after that time, for example the tasks of one
+     * stopped turn. A task without a readable `startedAt` is kept: nothing is
+     * killed on missing data.
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200 }: { rounds?: number; pauseMs?: number } = {}): Promise<number> {
-        const active = backgroundTaskRuns;
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedSince }: { rounds?: number; pauseMs?: number; startedSince?: number } = {}): Promise<number> {
+        const startedInScope = (task: { startedAt?: unknown }) => {
+            if (startedSince === undefined) return true;
+            const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
+                : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
+            return Number.isFinite(at) && at >= startedSince;
+        };
+        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);

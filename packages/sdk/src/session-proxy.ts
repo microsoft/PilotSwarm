@@ -4192,6 +4192,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     abort: (reason) => sessionManager.abortWarmSessionTurn(input.sessionId, {
                         reason,
                         ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
+                        // A Stop also ends the commands this turn started.
+                        cancelTurnTasks: true,
                     }),
                     record: async (eventType, data) => {
                         await catalog!.recordEvents(input.sessionId, [{ eventType, data }], workerNodeId);
