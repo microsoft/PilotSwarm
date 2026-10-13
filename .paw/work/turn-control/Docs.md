@@ -277,15 +277,19 @@ database, 200 looks per count, one open steer per 5 turns:
 
 | Live turns | Round trip mean | Round trip p95 | Server mean | Server p95 | DB CPU per look |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 0.58 ms | 0.76 ms | 0.31 ms | 0.35 ms | 0.36 ms |
-| 10 | 0.81 ms | 1.01 ms | 0.64 ms | 0.78 ms | 0.73 ms |
-| 50 | 2.28 ms | 2.97 ms | 1.78 ms | 1.86 ms | 1.96 ms |
+| 1 | 0.53 ms | 0.73 ms | 0.30 ms | 0.36 ms | 0.40 ms |
+| 10 | 0.91 ms | 1.23 ms | 0.59 ms | 0.62 ms | 0.69 ms |
+| 50 | 2.25 ms | 2.60 ms | 1.86 ms | 2.65 ms | 1.95 ms |
 
 Server time is `EXPLAIN ANALYZE` execution time of the same look. DB CPU is
 the CPU time of one dedicated database backend running the same look, read
-from `/proc/<pid>/schedstat` (the database runs on the same host in the dev
-pod). At the 5 s look interval, one worker with 50 live turns uses about
-1.96 ms of database CPU every 5 s, about 0.04% of one core.
+from `/proc/<pid>/schedstat`. The script reads it only when the database
+runs on the same host and the PID is provably that connection's backend:
+its process title must name the user, database and client port that
+`pg_stat_activity` reports for `pg_backend_pid()`. Otherwise it names the
+reason and prints no number. At the 5 s look interval, one worker with 50
+live turns uses about 1.95 ms of database CPU every 5 s, about 0.04% of one
+core.
 `pg_stat_statements` was not installed. One LISTEN connection per worker
 while the hub runs, none after stop.
 

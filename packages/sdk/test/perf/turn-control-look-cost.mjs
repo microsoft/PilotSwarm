@@ -15,6 +15,8 @@
  *   PERF_ITERATIONS            looks per count, default 200
  *   PERF_STEER_EVERY           one open steer per this many turns, default 5 (0: none)
  *   PERF_PORTAL_CONNECTIONS    connections the portal holds, default CMS + facts pool max
+ *   PERF_CPU_PID               check this PID instead of the connection's backend (negative
+ *                              control for the identity check: it must not report a number)
  *
  * It measures, for each live-turn count:
  *   - the look as the hub makes it: one batched turnLook round trip;
@@ -57,21 +59,55 @@ await admin.connect();
 const catalog = await PgSessionCatalogProvider.create(url, schema);
 await catalog.initialize();
 
-/** CPU time of a local PostgreSQL backend in ms, or null when it is not on this host. */
-function backendCpuMs(pid) {
+/**
+ * Where the database CPU comes from. CPU is read from /proc only when the
+ * sampled PID is provably the backend of this connection: its command line
+ * (the PostgreSQL process title) names the same user, database and client
+ * port that pg_stat_activity reports for pg_backend_pid(). Every other case
+ * is reported by name, never as a number.
+ */
+function backendCpuSource(pid, identity) {
+    if (!identity) return { status: "unknown: pg_stat_activity row not readable" };
+    if (!existsSync(`/proc/${pid}`)) return { status: "not on this host" };
+    let cmdline;
     try {
-        if (existsSync(`/proc/${pid}/schedstat`)) {
-            return Number(readFileSync(`/proc/${pid}/schedstat`, "utf8").split(" ")[0]) / 1e6;
-        }
-        const fields = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ");
-        return (Number(fields[11]) + Number(fields[12])) * 10;      // utime + stime, 100 ticks/s
-    } catch {
-        return null;
+        cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim();
+    } catch (err) {
+        return { status: `unknown: procfs not readable (${err?.code ?? err?.message ?? err})` };
     }
+    if (!cmdline.startsWith("postgres:")) return { status: "not the selected server (local PID is not a postgres backend)" };
+    const title = `postgres: ${identity.user} ${identity.database} `;
+    const port = `(${identity.port})`;
+    if (identity.port == null) return { status: "unknown: no client port (unix socket); cannot verify the backend" };
+    if (!cmdline.startsWith(title) || !cmdline.includes(port)) {
+        return { status: `not the selected server (local PID ${pid} is "${cmdline.slice(0, 80)}")` };
+    }
+    const schedstat = existsSync(`/proc/${pid}/schedstat`);
+    const read = () => {
+        if (schedstat) {
+            const ns = Number(readFileSync(`/proc/${pid}/schedstat`, "utf8").split(" ")[0]);
+            if (!Number.isFinite(ns)) throw new Error("malformed /proc/<pid>/schedstat");
+            return ns / 1e6;
+        }
+        const fields = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.split(" ") ?? [];
+        const ticks = Number(fields[11]) + Number(fields[12]);              // utime + stime
+        if (!Number.isFinite(ticks)) throw new Error("malformed /proc/<pid>/stat");
+        return ticks * 10;                                                    // 100 ticks per second
+    };
+    try {
+        read();
+    } catch (err) {
+        return { status: `unknown: ${err?.code ?? err?.message ?? err}` };
+    }
+    return { status: "ok", source: schedstat ? "/proc/<pid>/schedstat" : "/proc/<pid>/stat", read };
 }
 const cpuClient = new pg.Client({ connectionString: url });
 await cpuClient.connect();
 const cpuPid = (await cpuClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+const identity = await cpuClient.query(
+    "SELECT usename AS user, datname AS database, client_port AS port FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+).then((r) => r.rows[0] ?? null).catch(() => null);
+const cpu = backendCpuSource(process.env.PERF_CPU_PID ? Number(process.env.PERF_CPU_PID) : cpuPid, identity);
 
 const hasStatements = (await admin.query("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'")).rowCount > 0;
 const rows = [];
@@ -109,10 +145,9 @@ try {
         // Database CPU: the same look on one known backend.
         const lookSql = `SELECT * FROM ${schema}.cms_turn_look($1::jsonb)`;
         for (let i = 0; i < 10; i++) await cpuClient.query(lookSql, [lookArg]);
-        const cpuBefore = backendCpuMs(cpuPid);
+        const cpuBefore = cpu.status === "ok" ? cpu.read() : null;
         for (let i = 0; i < iterations; i++) await cpuClient.query(lookSql, [lookArg]);
-        const cpuAfter = backendCpuMs(cpuPid);
-        const cpuPerLook = cpuBefore === null || cpuAfter === null ? null : (cpuAfter - cpuBefore) / iterations;
+        const cpuPerLook = cpuBefore === null ? null : (cpu.read() - cpuBefore) / iterations;
         rows.push({ n, roundTrip: stats(roundTrip), server: stats(server), cpuPerLook });
     }
 
@@ -156,11 +191,13 @@ try {
     console.log("| Live turns | Round trip mean | p50 | p95 | max | Server mean | Server p95 | DB CPU per look |");
     console.log("|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (const r of rows) {
-        const cpu = r.cpuPerLook === null ? "not on this host" : `${ms(r.cpuPerLook)} ms`;
-        console.log(`| ${r.n} | ${ms(r.roundTrip.mean)} ms | ${ms(r.roundTrip.p50)} ms | ${ms(r.roundTrip.p95)} ms | ${ms(r.roundTrip.max)} ms | ${ms(r.server.mean)} ms | ${ms(r.server.p95)} ms | ${cpu} |`);
+        const cpuCell = r.cpuPerLook === null ? "n/a" : `${ms(r.cpuPerLook)} ms`;
+        console.log(`| ${r.n} | ${ms(r.roundTrip.mean)} ms | ${ms(r.roundTrip.p50)} ms | ${ms(r.roundTrip.p95)} ms | ${ms(r.roundTrip.max)} ms | ${ms(r.server.mean)} ms | ${ms(r.server.p95)} ms | ${cpuCell} |`);
     }
     console.log("");
-    console.log(`DB CPU: backend pid ${cpuPid}, ${iterations} looks per count, source ${existsSync(`/proc/${cpuPid}/schedstat`) ? "/proc/<pid>/schedstat" : "/proc/<pid>/stat"}. At the 5 s look interval one worker's looks cost (CPU per look / 5,000 ms) of one core.`);
+    console.log(cpu.status === "ok"
+        ? `DB CPU: backend pid ${cpuPid} (verified: its process title names ${identity.user}, ${identity.database} and client port ${identity.port}), ${iterations} looks per count, source ${cpu.source}. At the 5 s look interval one worker's looks cost (CPU per look / 5,000 ms) of one core.`
+        : `DB CPU: not measured, ${cpu.status} (backend pid ${cpuPid}).`);
     console.log("");
     console.log(statementsLine);
     console.log(`LISTEN connections: ${listenWhileRunning} while one hub runs, ${listenAfterStop} after stop.`);
