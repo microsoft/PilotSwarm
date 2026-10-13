@@ -1,5 +1,6 @@
 import type { MessageSender } from "../message-sender.js";
 import { PROVIDER_BUDGET_WAKE_PROMPT } from "../provider-budgets.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "../prompt-system-context.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
@@ -341,6 +342,7 @@ export function* processPrompt(
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
     requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
+    const carriedOnlyTurn = promptText.startsWith(CARRIED_STEERS_WAKE_PROMPT);
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
@@ -358,18 +360,21 @@ export function* processPrompt(
 
     let turnSystemPrompt = state.pendingSystemPrompt;
     state.pendingSystemPrompt = undefined;
-    const extractedPrompt = extractPromptSystemContext(prompt);
+    const extractedPrompt = extractPromptSystemContext(carriedOnlyTurn
+        ? prompt.slice(CARRIED_STEERS_WAKE_PROMPT.length)
+        : prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
     if (prompt && state.runtimeModelNotice) {
         turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
         state.runtimeModelNotice = undefined;
     }
-    const systemOnlyTurn = !prompt && !!turnSystemPrompt;
+    const systemOnlyTurn = !carriedOnlyTurn && !prompt && !!turnSystemPrompt;
     if (systemOnlyTurn) {
         prompt = INTERNAL_SYSTEM_TURN_PROMPT;
         promptIsBootstrap = true;
     }
+    if (carriedOnlyTurn) prompt = CARRIED_STEERS_WAKE_PROMPT;
     // 1.0.71: the note is delivered INSIDE the user turn, not the system
     // message. `turnSystemPrompt` is still set — session-proxy records it as
     // the `system.message` event, exactly as before — but the flag tells
