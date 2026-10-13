@@ -787,6 +787,8 @@ export class SessionManager {
     }
     private sessions = new Map<string, ManagedSession>();
     private featureFlags: FeatureFlagCache | null = null;
+    /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
+    private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1177,6 +1179,15 @@ export class SessionManager {
 
     getWorkspaceProvider(): WorkspaceProvider | null {
         return this.workspaceProvider;
+    }
+
+    /** Session turn control: set by the worker after it starts the hub. */
+    setTurnControlHub(hub: import("./turn-control.js").TurnControlHub | null): void {
+        this.turnControlHub = hub;
+    }
+
+    getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
+        return this.turnControlHub;
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {

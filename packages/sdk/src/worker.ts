@@ -14,6 +14,8 @@ import {
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
+import { TurnControlHub, pgListenClientFactory, type TurnControlListenClient } from "./turn-control.js";
+import { buildSessionCatalogPgClientConfig } from "./pg-pool-factory.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
@@ -215,6 +217,8 @@ export class PilotSwarmWorker {
     private _evictionTimer: ReturnType<typeof setInterval> | null = null;
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
+    /** Session turn control: the worker's LISTEN hub (design 4.4). */
+    private _turnControlHub: TurnControlHub | null = null;
     private _started = false;
     private _runtimeStartup: Promise<void> | null = null;
     private _stopRequested = false;
@@ -719,6 +723,25 @@ export class PilotSwarmWorker {
             }
         }
 
+        // Session turn control: one LISTEN connection per worker (design 4.4).
+        // Without a PostgreSQL client config the hub still runs on its 5 s look.
+        if (this._catalog) {
+            let createClient: (() => Promise<TurnControlListenClient>) | null = null;
+            try {
+                createClient = pgListenClientFactory(buildSessionCatalogPgClientConfig(this.config, process.env));
+            } catch (err) {
+                console.warn(`[PilotSwarmWorker] turn-control notifications unavailable: ${String((err as Error)?.message ?? err).slice(0, 200)}`);
+            }
+            this._turnControlHub = new TurnControlHub({
+                catalog: this._catalog,
+                schema: storage.runtime.cmsSchema,
+                createClient,
+                log: (message) => console.warn(message),
+            });
+            await this._turnControlHub.start();
+            this.sessionManager.setTurnControlHub(this._turnControlHub);
+        }
+
         if (this._catalog?.features) {
             this._featureFlags = new FeatureFlagCache(this._catalog.features);
             this.sessionManager.setFeatureFlagCache(this._featureFlags);
@@ -1068,6 +1091,13 @@ export class PilotSwarmWorker {
         // while the catalog/provider it uses are still open.
         await this._providerReconciliation;
         await this.sessionManager.shutdown();
+        // After the runtime drained its activities, so a Stop that arrives
+        // during a graceful drain still reaches running turns.
+        if (this._turnControlHub) {
+            this.sessionManager.setTurnControlHub(null);
+            await this._turnControlHub.stop();
+            this._turnControlHub = null;
+        }
         if (this._catalog) {
             try { await this._catalog.close(); } catch {}
             this._catalog = null;
