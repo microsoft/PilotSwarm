@@ -230,11 +230,23 @@ These execute on the specific worker holding the session's in-memory state.
 |----------|-------|--------|--------------|
 | `runTurn` | sessionId, prompt, config, turn meta | TurnResult | Execute one LLM turn via ManagedSession |
 | `abortTurn` | sessionId | void | Abort the in-flight turn (stop-turn race) |
+| `runTurnV4` / `runTurnEpochV4` | as `runTurn`, plus carried steers | TurnResult | Orchestration 1.0.81 and later: `runTurn` with turn control (turn start, live Stop/Steer, turn end); routed only to workers with the `pilotswarm.turn-control.v1` tag |
 | `hydrateSession` | sessionId | void | Download + extract tar from blob |
 | `needsHydrationSession` | sessionId | boolean | Is the session absent from memory (needs hydrate)? |
 | `dehydrateSession` | sessionId, reason | void | Tar + upload to blob, destroy in-memory |
 | `destroySession` | sessionId | void | Free in-memory CopilotSession |
 | `checkpointSession` | sessionId | void | Upload to blob without destroying |
+
+**Turn control.** Next to the lock-bypassing abort primitive, each worker
+runs a `TurnControlHub`: one `LISTEN pilotswarm_turn_control` connection
+(supplied by the session catalog) and a registry of running V4 turns. A
+notification, or a batched look every 5 s while a turn runs, hands new Stop
+and Steer controls from the CMS to the turn's `LiveTurnControl`. A steer is
+sent into the running model call with `mode: "immediate"` and counts as
+delivered when the CLI confirms it; a Stop closes the send gate and then uses
+the same abort. The hub stops after the runtime has drained its activities.
+See [CMS schema](./internals/cms-schema.md#turn-control-migration-0082) and
+the [design](../proposals/session-turn-control.md).
 
 ### Manager-Scoped (Global Dispatch)
 

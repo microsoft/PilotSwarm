@@ -169,7 +169,7 @@ Workstream A (this branch):
 - [x] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
 - [x] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
 - [ ] **Phase A5: End-to-end, crash and multi-worker verification** - Real-CLI integration, fault-point crash matrix, stale worker, measurements.
-- [ ] **Phase A6: Documentation (A)** - Docs.md for workstream A, CMS schema and system reference docs.
+- [x] **Phase A6: Documentation (A)** - Docs.md for workstream A, CMS schema and system reference docs.
 
 Workstream B:
 - [ ] **Phase B1: Freeze 1.0.80** - Frozen copy registered, version 1.0.81 opened, no behaviour change.
