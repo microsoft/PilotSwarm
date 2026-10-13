@@ -71,16 +71,16 @@ function createThrowingHarness({ turnResults = null } = {}) {
                 if (queue.length === 0) throw new Error("dequeue underflow");
                 return queue.shift();
             }
-            case "race": {
-                if (effect.left?.effect === "runTurn") {
-                    // Scripted results are RETURNED (the activity caught the
-                    // failure itself); without a script the turn THROWS.
-                    if (script) {
-                        if (script.length === 0) throw new Error("runTurn past the script");
-                        return { index: 0, value: script.shift() };
-                    }
-                    return { throwError: new Error("LLM endpoint exploded") };
+            case "runTurn":
+                // 1.0.81 yields the turn directly; it no longer races a Stop
+                // queue. Scripted results are RETURNED (the activity caught
+                // the failure itself); without a script the turn THROWS.
+                if (script) {
+                    if (script.length === 0) throw new Error("runTurn past the script");
+                    return script.shift();
                 }
+                return { throwError: new Error("LLM endpoint exploded") };
+            case "race": {
                 const sides = [effect.left, effect.right];
                 const dequeueIx = sides.findIndex((s) => s?.effect === "dequeueEvent");
                 if (dequeueIx >= 0 && queue.length > 0) {

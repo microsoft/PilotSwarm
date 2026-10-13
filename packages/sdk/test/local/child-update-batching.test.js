@@ -295,7 +295,7 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
                 state.continueAsNew = null;
                 const resolved = resolve(next.value);
                 if (resolved === STOP) {
-                    input = { index: 0, value: turnResult };
+                    input = turnResult;
                     continue;
                 }
                 input = resolved;
@@ -359,7 +359,7 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
                 if (resolved === STOP) {
                     runTurnCount += 1;
                     if (runTurnCount === 1) {
-                        input = { index: 0, value: firstTurnResult };
+                        input = firstTurnResult;
                         continue;
                     }
                     return {
