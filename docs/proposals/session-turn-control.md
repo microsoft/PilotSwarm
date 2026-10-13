@@ -38,9 +38,9 @@ and the specification (`.paw/work/turn-control/Spec.md`, "Design deltas")
 approved every change below on 2026-10-13. Where the code and the plan differ,
 this document follows the code, and the table says so.
 
-Items marked "(lands with A5)" are decided, but their code is not on
-`waldemort/turn-control` at revision 6. They arrive with phase A5 (end-to-end,
-crash and multi-worker verification).
+Revision 6 is checked against `waldemort/turn-control` after phases A5
+(end-to-end, crash and multi-worker verification) and A6 (documentation)
+merged. Workstream A's notes are in `.paw/work/turn-control/Docs.md`.
 
 | Change | Why | Section |
 |---|---|---|
@@ -56,11 +56,12 @@ crash and multi-worker verification).
 | **P15.** The end-of-turn write answers `true`, `false`, or nothing (the best-effort write failed). Only `false` skips turn end. | A failed write must not hide open controls. | 4.7 |
 | Steering flag default: off, and no user override unless the operator allows it. | Otherwise any user could turn Steer on without the operator. | 4.11 |
 | `cms_turn_open_controls` also returns `created_at`. | Latency evidence (P13, R1, R2). | 4.2 |
-| The Steer flag decision moves into `cms_turn_control_add` (parameter `p_steering_allowed`). Under the row lock it first returns any earlier answer for the same request id, then refuses a new Steer with `steering_disabled`. Stop ignores the flag. (lands with A5) | Request-id dedup and the flag check share one row lock and one lifetime rule. | 4.2, 4.3, 4.11 |
-| Duplicate prompt after worker loss: the V4 path skips recording the prompt and the turn's system message when `turnHigh >= turnIndex` before turn start. (lands with A5) | A duplicate that already exists on `main`. | 4.7, 5.1 |
-| Stale worker: the cancellation arrives through duroxide lock renewal. With P15 a stale worker skips turn end when no controls are open. The turn-end fence comes from per-turn scoping and idempotency, not from an explicit `turn_high` check. | Revision 5 did not say how the cancellation arrives or what fences turn end. | 3.9, 5.3 |
+| The Steer flag decision moves into `cms_turn_control_add` (parameter `p_steering_allowed`). Under the row lock it first returns any earlier answer for the same request id, then refuses a new Steer with `steering_disabled`. Stop ignores the flag. | Request-id dedup and the flag check share one row lock and one lifetime rule. | 4.2, 4.3, 4.11 |
+| Duplicate prompt after worker loss: the V4 path skips recording the prompt and the turn's system message when `turnHigh >= turnIndex` before turn start. No CMS call is added. | A duplicate that already exists on `main`. | 4.7, 5.1 |
+| Stale worker: the cancellation arrives through duroxide lock renewal, about 7 s after the worker resumes with the default 10 s lock timeout. With P15 a stale worker skips turn end when no controls are open. The turn-end fence comes from per-turn scoping and idempotency, not from an explicit `turn_high` check. | Revision 5 did not say how the cancellation arrives or what fences turn end. | 3.9, 5.3 |
+| A steer that arrives after the end-of-turn write (T6) is refused `no_turn` and falls back to an ordinary message (FR-004). Only a steer accepted before T6 that the saved conversation does not hold becomes `carried`; in practice one accepted after the send gate closed. | T6 clears `active_turn_index` under the row lock (workstream A's final review). | 3.4, 3.7, 5.2, 5.3 |
 | Every V4 result sets `workspaceAttached` when the workspace was attached, including a Stop at turn start. Turn control does not change workspace attach or release. | The orchestration clears delivered workspace notes from that flag. | 4.7 |
-| Measured cost: one look takes 0.36, 0.73 and 1.96 ms of database time at 1, 10 and 50 live turns. One extra connection per worker. | Requirement R7. | 7.8 |
+| Measured cost: one look takes 0.38, 0.73 and 1.98 ms of database CPU at 1, 10 and 50 live turns, on the backend process of the measuring connection (run 2026-10-13T07:07:55Z). One extra connection per worker. | Requirement R7. | 7.8 |
 | **Code differs from plan P5.** `cms_get_session` is unchanged. `PgSessionCatalog.getSession` reads `turn_high` through its existing join on the `sessions` row. | Avoids a shape change of a shared read procedure. | 4.1 |
 | **Code differs from plan P19.** The system-session archive sets `turn_base_seq = 0`, not the highest event seq. | The archive deletes the session's events, so no older event remains. | 4.2 |
 | **Code detail.** Steers that are open at turn start are folded after the prompt. Carried steers go before it, or replace the carried wake prompt. | Revision 5 left the order open. | 4.7 |
@@ -315,8 +316,21 @@ sequenceDiagram
 
 ### 3.4 A control arrives as the turn ends
 
-Turn end and control add both lock the session row, so one of them always
-happens first.
+The end-of-turn write (T6) and control add both lock the session row, so one
+of them always happens first. T6 clears `active_turn_index` under that lock.
+The rule:
+
+- A steer accepted after the send gate closed and before T6 is open at turn
+  end. It is never sent, so its outcome is `carried`, and it runs with the
+  next turn. (A steer the live loop had not yet taken when the gate closed
+  ends the same way; see 5.2.)
+- A steer that arrives after T6 is refused `no_turn`. Nothing is recorded.
+  The client sends the text as an ordinary message with a new client message
+  id (FR-004).
+
+Only the first case produces `carried`. Source: workstream A's notes,
+`.paw/work/turn-control/Docs.md` ("A steer after the end-of-turn write"); the
+real-CLI window cases test both orders.
 
 ```mermaid
 sequenceDiagram
@@ -326,11 +340,12 @@ sequenceDiagram
     participant C as Copilot CLI
     participant S as Session store
     participant O as Orchestration
-    alt control lands before the end-of-turn write
+    alt steer lands after the gate closed, before T6
+        C-->>W: session.idle
+        Note over W: send gate closed
         U->>DB: Steer 33
         Note over DB: turn 5 still running, accepted
-        C-->>W: session.idle
-        Note over W: send gate closed, 33 is never sent
+        Note over W: 33 is never sent
         W->>DB: T6 end-of-turn write
         DB-->>W: open controls: yes
         W->>S: T7 save, cursor 31
@@ -341,10 +356,11 @@ sequenceDiagram
         O->>W: turn 6, steer 33 folded in, not recorded again
         W->>DB: T8 turn end(6, carried [33])
         Note over DB: closing record for 33: ran
-    else control lands after the end-of-turn write
+    else steer lands after T6
+        W->>DB: T6 end-of-turn write, running mark cleared
         U->>DB: Steer 33
-        DB-->>U: refused: no turn running
-        U->>O: the composer sends it as a normal message
+        DB-->>U: refused: no_turn, nothing recorded
+        U->>O: the client sends it as an ordinary message (FR-004)
     end
 ```
 
@@ -386,8 +402,7 @@ sequenceDiagram
 
 Worker B does not record the prompt and the turn's system message a second
 time, because the session row already shows `turnHigh >= 5` before its turn
-start (lands with A5). Today, and on this branch until A5, B records them
-again.
+start. No CMS call is added for this check.
 
 ### 3.6 Crash after the end-of-turn write, before the save
 
@@ -427,9 +442,9 @@ sequenceDiagram
     participant X as duroxide
     participant B as Worker B
     participant S as Session store
-    A->>DB: T6 end-of-turn write
+    Note over A: send gate closed. Steer 41 accepted now, never sent
+    A->>DB: T6 end-of-turn write, steer 41 still open
     A->>S: T7 save with cursor (5, 40)
-    Note over DB: steer 41 open: accepted after A stopped sending
     Note over A: crash before T8
     X->>B: same runTurn(5) work item
     B->>S: T1 load
@@ -466,6 +481,13 @@ duroxide renews an activity's lock every `lock_timeout / 2`, at least every
 1 s. When a renewal fails, duroxide cancels the activity's token. PilotSwarm
 polls that token every 2 s during a turn and aborts the CLI. So a stale worker
 that comes back learns at its next renewal that it lost the work item.
+
+Timing: the default worker lock timeout is 10 s (`resolveDuroxideLockOptions`
+in `packages/sdk/src/worker.ts` uses 10,000 ms when no option or environment
+override is set), so renewal runs every 5 s. A resumed stale worker sees the
+cancellation within about `lock_timeout / 2` plus one 2 s poll: about 7 s.
+In test M1, with a 2 s lock, it took 2,003 ms. Until then, the turn-end fence
+below keeps the outcomes correct. Source: `.paw/work/turn-control/Docs.md`.
 
 ```mermaid
 sequenceDiagram
@@ -634,7 +656,7 @@ procedure below ignores events with `seq <= turn_base_seq`.
 |---|---|---|
 | `cms_turn_open_controls` | `(p_session TEXT, p_turn INT) RETURNS TABLE (seq BIGINT, kind TEXT, text TEXT, created_at TIMESTAMPTZ)` | Open controls of one turn, in position order. |
 | `cms_turn_open_controls_json` | `(p_session TEXT, p_turn INT, p_after BIGINT DEFAULT 0) RETURNS JSONB` | The same as `[{seq, kind, text, createdAt}]`, after a position. |
-| `cms_turn_control_add` | `(p_session TEXT, p_kind TEXT, p_text TEXT, p_request_id TEXT, p_actor JSONB) RETURNS JSONB` | Client: add a Steer or a Stop. |
+| `cms_turn_control_add` | `(p_session TEXT, p_kind TEXT, p_text TEXT, p_request_id TEXT, p_actor JSONB, p_steering_allowed BOOLEAN DEFAULT true) RETURNS JSONB` | Client: add a Steer or a Stop. |
 | `cms_turn_start` | `(p_session TEXT, p_turn INT) RETURNS JSONB` | Worker, T3. |
 | `cms_turn_look` | `(p_turns JSONB) RETURNS TABLE (session_id TEXT, turn INT, controls JSONB)` | Worker: one read for all live turns. Input `[{session, turn, after}]`. |
 | `cms_turn_end` | `(p_session TEXT, p_turn INT, p_cursor BIGINT, p_result TEXT, p_carried BIGINT[] DEFAULT NULL) RETURNS JSONB` | Worker, T8. `p_result` is `stopped`, `error` or `other`. Returns `{stopped, late}`. |
@@ -651,16 +673,18 @@ procedure below ignores events with `seq <= turn_base_seq`.
    `{seq, turn, repeat: true}`. A different kind or text under that id gets
    `request_id_reused`.
 3. A new Steer is refused with `steering_disabled` when the caller passes
-   `p_steering_allowed = false`. A Stop ignores the flag. (lands with A5: the
-   procedure gains the sixth parameter `p_steering_allowed BOOLEAN DEFAULT true`.
-   On this branch the management client checks the flag before the call,
-   section 4.3.)
+   `p_steering_allowed = false`. A Stop ignores the flag. The check comes
+   after the request-id lookup, so a lost-response retry still gets its first
+   answer after Steer was turned off.
 4. `no_turn` when no turn runs. `legacy_turn` when `turn_high` is not
    `active_turn_index`. `too_many` when the turn already has 20 open controls.
 5. Otherwise it inserts the event, notifies, and returns `{seq, turn}`.
 
 ```sql
 -- after the row lock and the request-id lookup
+IF p_kind = 'steer' AND NOT COALESCE(p_steering_allowed, true) THEN
+    RETURN '{"refused":"steering_disabled"}'::jsonb;
+END IF;
 IF v_active IS NULL THEN RETURN '{"refused":"no_turn"}'::jsonb; END IF;
 IF v_high IS DISTINCT FROM v_active THEN RETURN '{"refused":"legacy_turn"}'::jsonb; END IF;
 IF (SELECT count(*) FROM ${s}.cms_turn_open_controls(p_session, v_active)) >= 20 THEN
@@ -761,9 +785,9 @@ requires. Code: `packages/sdk/src/management-client.ts`.
 async steerSessionTurn(sessionId: string, opts: SteerTurnOptions): Promise<SteerTurnResult> {
     // text must not be empty; requestId is required
     // sessions.steering is resolved for opts.caller.viewer (cluster scope without one)
-    if (!steeringEnabled && !requestAlreadyRecorded) return { outcome: "steering_disabled" };
-    const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts.caller);
-    if ("refused" in added) return { outcome: added.refused };  // no_turn | legacy_turn | not_found | too_many | request_id_reused
+    const steeringAllowed = await this._steeringEnabled(opts.caller);
+    const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts.caller, steeringAllowed);
+    if ("refused" in added) return { outcome: added.refused };  // steering_disabled | no_turn | legacy_turn | not_found | too_many | request_id_reused
     return { outcome: "accepted", steerId: added.seq, turn: added.turn, ...(added.repeat ? { repeat: true } : {}) };
 }
 
@@ -780,14 +804,13 @@ async stopSessionTurn(sessionId: string, opts?: StopTurnOptions): Promise<StopTu
 
 Notes:
 
-- **Flag.** The flag gates new steers only. On this branch the client checks
-  the flag first. When it is off, the client looks for a `user.steer` with the
-  same request id, so a lost-response retry still gets its first answer. With
-  A5 the client passes the resolved flag to `turnControlAdd`, the procedure
-  decides under the row lock, and the client-side lookup goes away (lands with
-  A5).
+- **Flag.** The flag gates new steers only. The client resolves it and
+  passes it to `turnControlAdd`. The procedure decides under the row lock,
+  after its request-id lookup, so a retry of a recorded request id still gets
+  its first answer.
 - **Older catalogs.** A catalog without migration 0082 throws
-  `TurnControlUnavailableError`. The client treats it as `legacy_turn`.
+  `TurnControlUnavailableError`. The client treats it as `legacy_turn`, or as
+  `steering_disabled` for a Steer with the flag off.
 - **Stop wait.** The client polls `session.control_outcome` every 250 ms (P6).
   `timeoutMs` is 0 to 300,000 ms, default 30,000. A `timeout` result keeps
   `controlSeq`: the Stop was accepted, and a client shows it as pending. A
@@ -935,7 +958,8 @@ if (pre.kind === "already-committed") {                                  // an e
     return finishTurnControl(stored, savedControlCursor(pre.result, turn), { alwaysEnd: true });   // T8 only
 }
 // T2: existing budget and workspace gates. A refused turn returns here, before T3.
-// Existing: record the prompt as user.message (not for the carried wake prompt), state = running.
+// Existing: record the prompt as user.message, except for the carried wake prompt and when
+//   the session row loaded before T3 has turnHigh >= turn (an earlier attempt passed T3); state = running.
 const st = await cmsRetryCritical(() => catalog.turnStart(S, turn));     // T3, replaces setActiveTurnIndex; throws on failure
 if ("stale" in st) throw staleTurnError();
 let start = 0;
@@ -1009,7 +1033,7 @@ Notes:
   orchestration clears delivered workspace notes from it. Turn control does
   not change workspace attach (the runTurn gates) or release
   (`releaseAffinity`, worker eviction and shutdown).
-- **Duplicate prompt after worker loss** (lands with A5). A worker loss gives
+- **Duplicate prompt after worker loss.** A worker loss gives
   the same activity input to another worker. Before this change the next
   worker recorded the prompt and the turn's system message again; this
   duplicate already exists on `main` and on V3. On V4, when the session row
@@ -1162,9 +1186,9 @@ per-session access model.
   by default and allows no user override: the operator turns it on at cluster
   scope and may then allow user overrides (P7). Migration 0082 publishes the
   definition and the cluster setting. The management client resolves the
-  flag for the caller's viewer, or at cluster scope without a viewer. With A5
-  the resolved value goes to `cms_turn_control_add`, which decides under the
-  row lock (lands with A5).
+  flag for the caller's viewer, or at cluster scope without a viewer, and
+  passes the value to `cms_turn_control_add`, which decides under the row
+  lock.
 - **Stop is never gated.** Stop takes the new path whenever the running turn
   listens for controls, because version 1.0.81 no longer races the old Stop
   event.
@@ -1192,9 +1216,10 @@ per-session access model.
   outcomes, a "Stop and Steer" section), `docs/user-guide/portal.md`,
   `docs/user-guide/keybindings.md`, `docs/user-guide/tui.md`, the MCP docs,
   `docs/proposals/mcp-web-api-parity.md`, and `CHANGELOG.md`.
-- Architecture: `docs/architecture/orchestration/design.md` (1.0.81). The CMS
-  schema and system reference docs follow with workstream A's documentation
-  phase.
+- Architecture: `docs/architecture/orchestration/design.md` (1.0.81),
+  `docs/architecture/internals/cms-schema.md` (columns, events, procedures,
+  channel) and `docs/architecture/system-reference.md` (the V4 activities and
+  the hub).
 - `examples/devops-command-center/` and `templates/builder-agents/`: no change
   needed. Neither shows Stop or lists management operations that include it.
 - `scripts/local-pilotswarm.sh`: no new setting is needed; LISTEN works against
@@ -1211,8 +1236,8 @@ the activity lock expires.
 | Crash between | Left behind | Next attempt | Verdict |
 |---|---|---|---|
 | T1 and the prompt record | nothing new | runs normally | as today |
-| the prompt record and T3 | the prompt recorded, `turn_high` not yet moved | runs normally, and records the prompt again | as today; known limit of the duplicate-prompt guard (lands with A5) |
-| T3 and T6 | turn marked running, prompt recorded, controls open | starts from the previous saved turn. Turn start returns all open controls. A Stop ends the turn without a model run. Steers are folded in. The prompt is not recorded again (lands with A5). | correct (3.5) |
+| the prompt record and T3 | the prompt recorded, `turn_high` not yet moved | runs normally, and records the prompt again | as today; known limit of the duplicate-prompt guard |
+| T3 and T6 | turn marked running, prompt recorded, controls open | starts from the previous saved turn. Turn start returns all open controls. A Stop ends the turn without a model run. Steers are folded in. The prompt is not recorded again. | correct (3.5) |
 | T6 and T7 | running mark cleared, controls open, nothing saved | as above. Turn start marks the turn running again. | correct, one model re-run (3.6) |
 | T7 and T8 | turn saved with its cursor, controls open | existing "already saved" path, no model run, then turn end with the saved cursor and the carried seqs | correct (3.7) |
 | T8 and T9 | saved, outcomes and closing record written | "already saved". Turn end writes nothing and returns the same answer. | correct (3.8) |
@@ -1237,6 +1262,17 @@ save, then turn end.
 A turn the orchestration gives up on gets `not_delivered` for its open steers
 and `stopped` for its open Stops. So does any terminal state (P20).
 
+When a steer becomes `carried`: it was accepted before the end-of-turn write
+(T6), no Stop is open, and the saved conversation does not hold it. In
+practice that is a steer accepted after the send gate closed and before T6.
+Two edge cases give the same result: a steer the live loop had not yet taken
+when the gate closed (a late or lost notification), and a steer applied only
+to a conversation that was then lost. A steer that arrives after T6 gets no
+outcome at all: T6 cleared `active_turn_index` under the row lock,
+so the add is refused `no_turn`, nothing is recorded, and the client sends the
+text as an ordinary message (FR-004). Source:
+`.paw/work/turn-control/Docs.md`, "A steer after the end-of-turn write".
+
 A `carried` outcome never changes. What became of a carried steer is a
 separate closing record. Clients take the label of a carried steer only from
 that record:
@@ -1258,7 +1294,7 @@ turn index.
 
 | Race | Resolution |
 |---|---|
-| Control add and the end-of-turn write | Both lock the session row. Before: the control is open and turn end labels it. After: refused, "no turn running". |
+| Control add and the end-of-turn write (T6) | Both lock the session row, and T6 clears `active_turn_index` under that lock. Before T6 (after the send gate closed): the control is open and turn end labels it; a steer becomes `carried`. After T6: refused `no_turn`, nothing recorded; a Steer falls back to an ordinary message (FR-004) and a Stop answers "nothing to stop". |
 | Control add and turn end | Both lock the row. Turn end only closes controls it sees. A control added after turn end is refused, because the running mark is already cleared. |
 | Two clients steer at once | Serialized by the row lock. Positions follow the order. |
 | Steer and Stop together | Applied in position order. After a Stop, the gate is closed, so later steers are labelled by turn end. |
@@ -1279,8 +1315,8 @@ turn index.
 1. **Migration 0082.** Additive: two columns, new procedures, a new return
    value, closing rules in `cms_update_session`, a lifetime reset on archive
    and revive, and the flag row. Old workers keep working against it: they
-   ignore the end-of-turn write's value and never set `turn_high`. (lands with
-   A5) A5 adds `p_steering_allowed` to 0082 in place, before its release. A
+   ignore the end-of-turn write's value and never set `turn_high`. Phase A5
+   added `p_steering_allowed` to 0082 in place, before its release. A
    development database that applied the earlier 0082 keeps the old function
    until its schema is reset.
 2. **Workers and the portal/Web API together.** New workers register
@@ -1314,8 +1350,7 @@ duroxide-pg 0.1.36). See appendix 10.3.
 All suites run in parallel as today. Tests use the default model unless they
 are about models. New test files are added to `scripts/run-tests.sh` and the
 `test:local` script. Test files are in `packages/sdk/test/local/` unless the
-path says otherwise. Files marked "(lands with A5)" are not on
-`waldemort/turn-control` at revision 6.
+path says otherwise.
 
 ### 7.1 Stored procedures
 
@@ -1326,7 +1361,7 @@ path says otherwise. Files marked "(lands with A5)" are not on
 | add, accepted | event written with turn, text, request id, actor; a LISTEN client receives `{schema, sessionId}` |
 | add, refusals | `no_turn`, `legacy_turn`, `not_found`, `too_many` (21st open control), `request_id_reused` |
 | add, retry | same request id returns the first `seq` and `repeat: true` |
-| add, flag | a new Steer with `p_steering_allowed = false` is refused `steering_disabled`; a retried request id still gets its first answer; a Stop ignores the flag (lands with A5) |
+| add, flag | a new Steer with `p_steering_allowed = false` is refused `steering_disabled`; a retried request id still gets its first answer; a Stop ignores the flag |
 | turn start | sets `active_turn_index` and `turn_high`; returns open controls in order, with `created_at`; `stale` for an older turn; `stopped` after a stopped outcome |
 | look | returns only controls after `after`, per (session, turn) |
 | turn end | every cell of the outcome table in 5.2; idempotent: a second call writes nothing and returns the same `late` and `stopped` |
@@ -1335,7 +1370,7 @@ path says otherwise. Files marked "(lands with A5)" are not on
 | add and end-of-turn write race | two connections, both orders, with `pg_sleep` inside one transaction |
 | give-up and terminal close | `closeControls` labels open steers `not_delivered`, open stops `stopped`, and closes carried steers `gave_up`; `completed`, `failed` and `cancelled` close with `terminal` |
 | lifetime | archive and revive reset `turn_high` and `active_turn_index` and set `turn_base_seq`; after a soft delete and revive, an old `stopped` outcome, an old open control and an old `carried` steer at turn 0 are ignored by turn 0 of the new lifetime; the revive closes the old carried steers `terminal` |
-| stale turn end | a late turn end of an older turn changes nothing of a newer turn (lands with A5) |
+| stale turn end | a late turn end of an older turn changes nothing of a newer turn and writes nothing twice |
 | mixed versions | 0081-era catalog calls (the end-of-turn write ignoring the value, `updateSession` without `closeControls`) work against 0082 |
 | cost | a turn with no controls: the call count equals today's (T3 replaces one call, T8 is not called) |
 
@@ -1375,7 +1410,7 @@ runs turn end (P15); a failed turn start throws; T8 runs for a carried-only
 turn and passes the carried seqs; `workspaceAttached` is set on a Stop at
 start, a carried-only turn and a stopped result; storeless outcomes (D4).
 
-`turn-control.test.js`, real Copilot CLI, default model (lands with A5):
+`turn-control.test.js`, real Copilot CLI, default model:
 
 | Test | Requirement |
 |---|---|
@@ -1392,7 +1427,7 @@ start, a carried-only turn and a stopped result; storeless outcomes (D4).
 
 ### 7.4 Crash and recovery
 
-`turn-control-crash.test.js` (lands with A5) uses the fault points after T3,
+`turn-control-crash.test.js` uses the fault points after T3,
 T6, T7 and T8 (P10) on forked worker processes. Each case asserts the outcome
 table, the transcript, and that each steer reaches the surviving conversation
 once (read the restored conversation's events).
@@ -1415,7 +1450,7 @@ block, so these cases run concurrently with the rest of the file.
 
 ### 7.5 Multiple workers and orchestration versions
 
-- **Stale worker** (`turn-control-multi-worker.test.js`, lands with A5):
+- **Stale worker** (`turn-control-multi-worker.test.js`):
   - M1: a worker frozen during the model run past its lock timeout. After it
     resumes, the cancellation reaches the activity within the 2 s poll.
   - M2: a worker parked before the end-of-turn write. Its late attempt writes
@@ -1434,8 +1469,8 @@ block, so these cases run concurrently with the rest of the file.
   without `pilotswarm.turn-control.v1` never runs `runTurnV4`.
 - **Replay:** the existing replay and multi-worker suites pass with 1.0.80
   frozen and 1.0.81 current.
-- **Restart:** a system session that ran 1.0.81 turns restarts and runs turn 0
-  normally (P19) (lands with A5).
+- **Restart** (`turn-control-cms.test.js`): a system-session restart archive
+  resets the turn columns, and its revive starts at turn 0 (P19).
 
 ### 7.6 Browser and TUI
 
@@ -1471,18 +1506,28 @@ Copilot, and Anthropic. Record missing credentials explicitly.
 
 ### 7.8 Performance
 
-Measured with `packages/sdk/test/perf/turn-control-look-cost.mjs` (lands with
-A5) in the dev pod: PostgreSQL 16.15, local database, 200 looks per count, one
-open steer per 5 turns.
+Measured with `packages/sdk/test/perf/turn-control-look-cost.mjs` in the dev
+pod, run 2026-10-13T07:07:55Z (the script's own header). Parameters:
+PostgreSQL 16.15, local database, `PERF_TURNS=1,10,50`,
+`PERF_ITERATIONS=200`, `PERF_STEER_EVERY=5` (open steers at zero-based turn
+indices 0, 5, ...). Each count is warmed with 10 looks, then 200 round-trip
+and CPU samples and 100 server-side `EXPLAIN ANALYZE` samples are taken.
 
-| Live turns per worker | Database time per look |
-|---:|---:|
-| 1 | 0.36 ms |
-| 10 | 0.73 ms |
-| 50 | 1.96 ms |
+| Live turns per worker | Round trip mean | Round trip p95 | Server mean | Server p95 | Database CPU per look |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.53 ms | 0.71 ms | 0.32 ms | 0.41 ms | 0.38 ms |
+| 10 | 0.88 ms | 1.17 ms | 0.60 ms | 0.71 ms | 0.73 ms |
+| 50 | 2.16 ms | 2.25 ms | 1.79 ms | 1.91 ms | 1.98 ms |
 
-At the 5 s look interval, one worker with 50 live turns uses about 0.04% of
-one database core.
+Server time is the `EXPLAIN ANALYZE` execution time of the same look.
+Database CPU is the CPU time of the selected backend process: the one
+dedicated database backend that runs the look, read from
+`/proc/<pid>/schedstat`. The script reads it only when the database runs on
+the same host and the process title names the user, database and client port
+that `pg_stat_activity` reports for `pg_backend_pid()`; otherwise it prints no
+number. At the 5 s look interval, one worker with 50 live turns uses about
+1.98 ms of database CPU every 5 s, about 0.04% of one core.
+`pg_stat_statements` was not installed.
 
 Connections: one extra connection per worker while the hub runs, none after
 `stop()`. At the default pool sizes a worker holds 16 connections before
@@ -1492,7 +1537,7 @@ before and 93 with turn control.
 
 ### 7.9 Session workspaces
 
-`turn-control-workspaces.test.js` (lands with A5) runs on the reference
+`turn-control-workspaces.test.js` runs on the reference
 repo-workspaces harness: two workers, a real git clone and the repo service
 lease table. Turn control must not change the lease mechanism.
 
@@ -1525,7 +1570,7 @@ All decisions are decided by the owner.
 | Check | Result |
 |---|---|
 | C1. The CLI folds an "immediate" send into a running turn and confirms it with the same message id | Done on Copilot SDK 1.0.13 with CLI 1.0.83, the current pins, with an Azure AI Foundry OpenAI Responses model (appendix 10.1). The installed SDK types confirm it: `send` returns the message id and accepts `mode: "immediate"`. GitHub Copilot and Anthropic cells belong to the integration run (7.7). |
-| C2. `activityCtx.isCancelled()` turns true when the activity's lock renewal fails | Confirmed in source: duroxide renews every `lock_timeout / 2` (at least every 1 s) and cancels the activity's token when a renewal fails; duroxide-node 0.2.1 reads that token (appendix 10.3). Live tests M1 and M2 (7.5) cover it (lands with A5). |
+| C2. `activityCtx.isCancelled()` turns true when the activity's lock renewal fails | Confirmed in source: duroxide renews every `lock_timeout / 2` (at least every 1 s) and cancels the activity's token when a renewal fails; duroxide-node 0.2.1 reads that token (appendix 10.3). Live tests M1 and M2 (7.5) cover it: with a 2 s lock, the resumed worker saw the cancellation after 2,003 ms. With the default 10 s lock timeout, expect about 7 s (3.9). |
 | C3. A worker can hold a LISTEN connection | Stock PostgreSQL: yes, covered by `turn-control-hub.test.js`. Without LISTEN, the hub degrades to the 5 s look, retries the connection, and worker start does not fail. HorizonDB: not covered yet; the dev pod has no HorizonDB configuration. The integration run decides HorizonDB coverage per test file. |
 
 ## 9. Alternatives considered
