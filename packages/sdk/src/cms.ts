@@ -1902,6 +1902,7 @@ export class PgSessionCatalog implements SessionCatalog {
 
     // ── Session turn control (migration 0082) ───────────────────
 
+    /** Adds a control atomically, or returns its refusal or existing request-id receipt. */
     async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult> {
         const { rows } = await this.turnControlQuery(
             "turnControlAdd",
@@ -1913,6 +1914,7 @@ export class PgSessionCatalog implements SessionCatalog {
         return { seq: Number(r.seq), turn: Number(r.turn), ...(r.repeat ? { repeat: true as const } : {}) };
     }
 
+    /** Marks a turn active and returns its controls, stopped disposition, or stale-start refusal. */
     async turnStart(sessionId: string, turn: number): Promise<TurnStartResult> {
         const { rows } = await this.turnControlQuery(
             "turnStart",
@@ -1924,6 +1926,7 @@ export class PgSessionCatalog implements SessionCatalog {
         return { stopped: r.stopped === true, controls: toTurnControls(r.controls) };
     }
 
+    /** Reads open controls after each turn's cursor in one query; an empty batch performs no query. */
     async turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]> {
         if (turns.length === 0) return [];
         const { rows } = await this.turnControlQuery(
@@ -1934,6 +1937,7 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map((row: any) => ({ sessionId: row.session_id, turn: Number(row.turn), controls: toTurnControls(row.controls) }));
     }
 
+    /** Closes controls after the save and records carried-steer disposition idempotently. */
     async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult> {
         const { rows } = await this.turnControlQuery(
             "turnEnd",
@@ -2053,7 +2057,7 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
-        // Join the two regeneration columns from the raw sessions table in the
+        // Join later-added session columns from the raw sessions table in the
         // same round-trip rather than widening the shared cms_get_session
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
@@ -3887,7 +3891,6 @@ export class PgSessionCatalog implements SessionCatalog {
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-/** Map a PG row (snake_case) to SessionRow (camelCase). */
 /** Map the JSON controls of the turn-control procedures. */
 function toTurnControls(raw: unknown): TurnControl[] {
     if (!Array.isArray(raw)) return [];
@@ -3899,6 +3902,7 @@ function toTurnControls(raw: unknown): TurnControl[] {
     }));
 }
 
+/** Map a PG row (snake_case) to SessionRow (camelCase). */
 function rowToSessionRow(row: any): SessionRow {
     const owner = row.owner_provider && row.owner_subject
         ? {

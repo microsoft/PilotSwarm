@@ -286,20 +286,54 @@ describe("turn control procedures (migration 0082)", () => {
             adder.release();
         }
 
-        // Write first, inside a transaction that holds the row lock; the add waits, then is refused.
+        // Write first: the real end-of-turn write runs inside a transaction that
+        // holds the row lock; the add waits, then is refused and records nothing.
         const b = await newSession();
         await catalog.turnStart(b, 1);
         const writer = await pool.connect();
         try {
             await writer.query("BEGIN");
-            await writer.query(`UPDATE "${env.cmsSchema}".sessions SET active_turn_index = NULL WHERE session_id = $1`, [b]);
+            const w = writebackInput(b, 1);
+            const written = await writer.query(
+                `SELECT "${env.cmsSchema}".cms_complete_turn_writeback($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) AS has_controls`,
+                [w.sessionId, w.agentId, w.model, w.reasoningEffort, w.turnIndex, w.startedAt, w.endedAt, w.durationMs,
+                    w.tokensInput, w.tokensOutput, w.tokensCacheRead, w.tokensCacheWrite, w.toolCalls, w.toolErrors, w.toolNames,
+                    w.resultType, w.errorMessage, w.workerNodeId, w.state, w.lastActiveAt, w.lastError, w.waitReason, w.currentIteration],
+            );
+            expect(written.rows[0].has_controls).toBe(false);
             const add = steer(b, "too late");
             await writer.query("SELECT pg_sleep(0.3)");
             await writer.query("COMMIT");
             expect(await add).toEqual({ refused: "no_turn" });
+            expect(await events(b, ["user.steer", "user.stop"])).toEqual([]);
         } finally {
             writer.release();
         }
+    }, TIMEOUT);
+
+    it("a turn without controls makes today's catalog round trips: turn start in place of set-running-turn, and no turn end", async () => {
+        const count = async (fn) => {
+            const original = catalog.pool.query.bind(catalog.pool);
+            let n = 0;
+            catalog.pool.query = (...args) => { n += 1; return original(...args); };
+            try { await fn(); } finally { catalog.pool.query = original; }
+            return n;
+        };
+        const today = await newSession();
+        const todayCalls = await count(async () => {
+            await catalog.setActiveTurnIndex(today, 1);
+            await catalog.completeTurnWriteback(writebackInput(today, 1));
+        });
+        const turnControl = await newSession();
+        let hasControls;
+        const newCalls = await count(async () => {
+            await catalog.turnStart(turnControl, 1);
+            hasControls = await catalog.completeTurnWriteback(writebackInput(turnControl, 1));
+            // The worker skips turn end (T8) when the write reports no controls.
+        });
+        expect(hasControls).toBe(false);
+        expect(newCalls).toBe(todayCalls);
+        expect(await events(turnControl, ["session.control_outcome", "session.carried_steers_closed"])).toEqual([]);
     }, TIMEOUT);
 
     it("a give-up write closes open controls and unclosed carried steers as gave_up", async () => {

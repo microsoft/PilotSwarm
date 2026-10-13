@@ -27,7 +27,7 @@ ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS turn_base_seq BIGINT NOT NULL
 
 -- ── Helpers ──────────────────────────────────────────────────────
 
--- The first event position of the session's current orchestration lifetime.
+-- The last event position before the session's current orchestration lifetime.
 CREATE OR REPLACE FUNCTION ${s}.cms_turn_base_seq(p_session TEXT)
 RETURNS BIGINT LANGUAGE sql STABLE AS $$
     SELECT COALESCE((SELECT x.turn_base_seq FROM ${s}.sessions x WHERE x.session_id = p_session), 0);
