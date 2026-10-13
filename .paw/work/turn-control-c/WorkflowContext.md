@@ -28,7 +28,9 @@ Approved Departures: (1) execution checkout is a dedicated git worktree of the s
 
 ## Phase Status (workstream C)
 
-- [ ] Phase C1: Management client and Web API — implemented (efb9601e), review r1 BLOCKED, revision 0ee90a08 under review r2; real-PostgreSQL tests wait for A2; stop-turn-live waits for A4 and B2
-- [x] Phase C2: MCP — 269bf0e8, review r1 PASS at 4f310a15 (reviewer docs patch)
-- [ ] Phase C3: Portal and TUI — implemented (946e9e96), review r1 in progress
-- [ ] Phase C4: Documentation, templates and samples — implemented, review pending
+- [x] Phase C1: Management client and Web API — efb9601e; review r1 BLOCKED (gpt-6.1-sol), r2 PASS at 0ee90a08; real-PostgreSQL cases green at e1acf4c9 (after A2); `stop-turn-live.test.js` update waits for A4 and B2
+- [x] Phase C2: MCP — 269bf0e8; review r1 PASS at 4f310a15 (gpt-6.1-sol, reviewer docs patch)
+- [x] Phase C3: Portal and TUI — 946e9e96; review r1 BLOCKED (gpt-6.1-sol), r2 BLOCKED (gpt-6-luna), r3 PASS at 12b78220 (gpt-6-luna)
+- [x] Phase C4: Documentation, templates and samples — e944fe68, 2d240a48; review PASS at 12b78220 (gpt-6-luna, reviewer wording patch)
+
+Reviewer model: azure-openai:gpt-6.1-sol until C3 r1; azure-openai:gpt-6-luna from C3 r2 on (parent directive for capacity).
