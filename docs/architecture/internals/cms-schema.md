@@ -90,7 +90,7 @@ Stop and Steer of a running turn
 | `cms_turn_start(session, turn)` | Marks the turn running (`active_turn_index`, `turn_high`); returns its open controls and whether it is stopped, or `stale` for an older turn. |
 | `cms_turn_look(turns)` | One batched read of each running turn's controls after its cursor. |
 | `cms_turn_end(session, turn, cursor, result, carried)` | Gives every open control of the turn one outcome; closes the carried steers folded into the turn; idempotent. |
-| `cms_complete_turn_writeback(...)` | The existing end-of-turn write; now returns whether the turn has open controls. |
+| `cms_complete_turn_writeback(...)` | The existing end-of-turn write; now returns whether the turn has open controls, and updates the session state only when no newer turn has started (`turn_high <= p_turn_index`; metrics are always recorded). |
 
 `cms_update_session` closes open controls when the session gives up
 (`closeControls`) or reaches `completed`, `failed` or `cancelled`.

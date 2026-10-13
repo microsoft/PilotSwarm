@@ -1,11 +1,11 @@
 # Session turn control: Stop and Steer through the CMS
 
 **Status:** Approved; implemented on `waldemort/turn-control`.
-**Date:** 2026-10-13, revision 6.
+**Date:** 2026-10-13, revision 7.
 **Owner:** Affan Dar (@affandar).
 **Supersedes:** the steering-ledger design in draft PR 141 (spec) and PR 142
 (implementation), and the "async turns" exploration that followed them.
-**Source references:** References added in revision 6 point at the
+**Source references:** References added in revisions 6 and 7 point at the
 implementation by file path, without line numbers. Older references with line
 numbers stay pinned to `main` at `12dfd3ee`.
 
@@ -28,11 +28,11 @@ the turn's result.
 9. [Alternatives considered](#9-alternatives-considered)
 10. [Appendices](#10-appendices)
 
-What changed since revision 5: [Revision 6 changes](#revision-6-changes).
+What changed since revision 5: [Changes in revisions 6 and 7](#changes-in-revisions-6-and-7).
 
-## Revision 6 changes
+## Changes in revisions 6 and 7
 
-Revision 6 records the design as built. The plan
+Revisions 6 and 7 record the design as built. The plan
 (`.paw/work/turn-control/ImplementationPlan.md`, decisions P1 to P23 and D6)
 and the specification (`.paw/work/turn-control/Spec.md`, "Design deltas")
 approved every change below on 2026-10-13. Where the code and the plan differ,
@@ -40,7 +40,10 @@ this document follows the code, and the table says so.
 
 Revision 6 is checked against `waldemort/turn-control` after phases A5
 (end-to-end, crash and multi-worker verification) and A6 (documentation)
-merged. Workstream A's notes are in `.paw/work/turn-control/Docs.md`.
+merged. Revision 7 adds the fixes from the final review of the integrated
+feature and is checked against `waldemort/turn-control` at `e945c07f`. The
+rows after the turnKey row are revision 7. Workstream A's notes are in
+`.paw/work/turn-control/Docs.md`.
 
 | Change | Why | Section |
 |---|---|---|
@@ -68,6 +71,13 @@ merged. Workstream A's notes are in `.paw/work/turn-control/Docs.md`.
 | **Code detail.** A failed steer send ends the turn with an `error` result through the existing error path. It does not throw. | The same retry follows, and the steer stays open. | 4.6 |
 | **Code detail.** The session catalog creates the LISTEN connection (`createTurnControlListener`). If LISTEN fails, the hub keeps the 5 s look and retries. Worker start does not fail. | Provider boundary. HorizonDB LISTEN is not verified yet. | 4.4, 8.2 |
 | A retry of a thrown `runTurn` reuses the thrown attempt's turnKey (1.0.81, `thrownTurnKey`). | A throw after the save (turn end failing) otherwise ran the model again and saved the turn twice. Found by a fault-injection test under full-suite load. | 3.7, 5.1 |
+| The 20-open-control cap refuses only a new Steer (`too_many`). A Stop is never refused for the cap. | Stop is never gated. | 4.2, 5.3 |
+| The end-of-turn write (T6) updates the session state (`state`, `current_iteration`, `active_turn_index`, ...) only when `turn_high <= p_turn_index`. It still records the turn's metrics. Legacy turns (`turn_high` is -1) are unchanged. | A stale attempt of an older turn must not end a newer turn that has started. | 3.9, 4.2, 5.3 |
+| A Stop closes the gate, drops the queued steers and aborts without waiting for an earlier steer's send that is still open. At gate opening, a held Stop applies before held steers, which are not sent. | A slow send must not hold a Stop. A stopped turn labels those steers not delivered anyway. | 4.5, 5.3 |
+| Corrective model runs inside a turn (tool-call-as-text, required tool) take controls like the first run. The gate is held until the corrective prompt is sent, then steers and Stop apply live. One settle pointer serves the first run and each corrective run. No corrective prompt is sent after an applied or held Stop. Controls that arrive while the gate is closed are held, not dropped. | A Stop during a correction was otherwise lost and labelled too late, and a steer was not delivered. | 4.5, 4.6 |
+| An in-attempt recovery re-run (lost live session, corrupted transcript) of a turn-control turn starts from the folded turn prompt: the carried steers and the turn-start steers. Legacy re-runs are unchanged. Folded steers go before a trailing `<system_context>` block. | Turn end labels the folded steers from the conversation that ran. | 4.7, 4.8 |
+| A V4 Stop cancels the background tasks the stopped turn started (started between the turn's start and the Stop), and an aborted `assistant.idle` after the Stop settles the turn. | CLI 1.0.83 keeps a turn open while a shell that a steer moved to the background runs, and sends no `session.idle` after the abort. | 4.6 |
+| A Stop that times out without an outcome shows "Stop accepted; waiting for the turn to stop" (`stop_pending`). The notice clears when that Stop's `session.control_outcome` arrives. | The earlier text promised a retry that may not come. | 4.10 |
 
 ## 1. Problem statement
 
@@ -532,8 +542,10 @@ sequenceDiagram
 ```
 
 The turn-end fence comes from per-turn scoping and idempotency, not from an
-explicit `turn_high` check. A turn end closes only the open controls of its
-own turn. It clears `active_turn_index` only while it still names that turn.
+explicit `turn_high` check. The end-of-turn write (T6) is fenced by
+`turn_high`: a stale attempt does not end a newer started turn. A turn end
+closes only the open controls of its own turn. It clears `active_turn_index`
+only while it still names that turn.
 It skips carried steers that already have a closing record. So a late turn end
 of an older turn changes nothing of a newer turn. With P15 a stale worker
 skips turn end when no controls are open; the outcome is the same as when both
@@ -642,7 +654,7 @@ One migration, `0082_turn_control`
 | `session.steer_confirmed` event | `{ seq, turn, messageId }`. Best-effort. The worker writes it when the CLI confirms a steer (P13). Not a transcript item. |
 | `session.carried_steers_closed` event | `{ seqs, turnIndex, reason }`. `reason` is one of `ran`, `stopped`, `gave_up`, `terminal`. At most one record lists a given carried steer (P17). |
 | New procedures | `cms_turn_control_add`, `cms_turn_start`, `cms_turn_look`, `cms_turn_end`. Helpers: `cms_turn_base_seq`, `cms_turn_open_controls`, `cms_turn_open_controls_json`, `cms_turn_is_stopped`, `cms_turn_unclosed_carried`, `cms_turn_close_all`, `cms_turn_lifetime_reset`. |
-| Changed procedures | `cms_complete_turn_writeback` returns `BOOLEAN`. `cms_update_session` closes controls on `closeControls` and on terminal states. `cms_archive_system_session_for_restart` and the four revivable overloads of `cms_create_session` reset the lifetime. |
+| Changed procedures | `cms_complete_turn_writeback` returns `BOOLEAN` and does not end a newer started turn. `cms_update_session` closes controls on `closeControls` and on terminal states. `cms_archive_system_session_for_restart` and the four revivable overloads of `cms_create_session` reset the lifetime. |
 | Unchanged | `cms_get_session`. `PgSessionCatalog.getSession` reads `turn_high` through its existing join on the `sessions` row. The code differs from plan P5 here, which widened the procedure. |
 | Feature flag | Definition row `sessions.steering`: default off, no user override, no required capability. Cluster setting: off, no user override. |
 | Notification | Channel `pilotswarm_turn_control`, payload `{ schema, sessionId }`. Not stored. |
@@ -668,7 +680,7 @@ procedure below ignores events with `seq <= turn_base_seq`.
 | `cms_turn_start` | `(p_session TEXT, p_turn INT) RETURNS JSONB` | Worker, T3. |
 | `cms_turn_look` | `(p_turns JSONB) RETURNS TABLE (session_id TEXT, turn INT, controls JSONB)` | Worker: one read for all live turns. Input `[{session, turn, after}]`. |
 | `cms_turn_end` | `(p_session TEXT, p_turn INT, p_cursor BIGINT, p_result TEXT, p_carried BIGINT[] DEFAULT NULL) RETURNS JSONB` | Worker, T8. `p_result` is `stopped`, `error` or `other`. Returns `{stopped, late}`. |
-| `cms_complete_turn_writeback` | the same 23 parameters, now `RETURNS BOOLEAN` | Worker, T6. Dropped and created again, because PostgreSQL cannot change a return type in place. |
+| `cms_complete_turn_writeback` | the same 23 parameters, now `RETURNS BOOLEAN` | Worker, T6. Dropped and created again, because PostgreSQL cannot change a return type in place. Fenced against a newer started turn. |
 | `cms_update_session` | unchanged | Closes controls on `closeControls` and on terminal states. |
 | `cms_turn_close_all` | `(p_session TEXT, p_reason TEXT) RETURNS VOID` | Helper. The caller holds the row lock. |
 | `cms_turn_lifetime_reset` | `(p_session TEXT) RETURNS VOID` | Helper. Acts only on a soft-deleted row. |
@@ -685,7 +697,8 @@ procedure below ignores events with `seq <= turn_base_seq`.
    after the request-id lookup, so a lost-response retry still gets its first
    answer after Steer was turned off.
 4. `no_turn` when no turn runs. `legacy_turn` when `turn_high` is not
-   `active_turn_index`. `too_many` when the turn already has 20 open controls.
+   `active_turn_index`. `too_many` for a new Steer when the turn already has
+   20 open controls. A Stop is never refused for the cap.
 5. Otherwise it inserts the event, notifies, and returns `{seq, turn}`.
 
 ```sql
@@ -695,7 +708,7 @@ IF p_kind = 'steer' AND NOT COALESCE(p_steering_allowed, true) THEN
 END IF;
 IF v_active IS NULL THEN RETURN '{"refused":"no_turn"}'::jsonb; END IF;
 IF v_high IS DISTINCT FROM v_active THEN RETURN '{"refused":"legacy_turn"}'::jsonb; END IF;
-IF (SELECT count(*) FROM ${s}.cms_turn_open_controls(p_session, v_active)) >= 20 THEN
+IF p_kind = 'steer' AND (SELECT count(*) FROM ${s}.cms_turn_open_controls(p_session, v_active)) >= 20 THEN
     RETURN '{"refused":"too_many"}'::jsonb;
 END IF;
 INSERT INTO ${s}.session_events (session_id, event_type, data)
@@ -741,17 +754,26 @@ Then:
 Every value is computed again from the events, so a second call writes nothing
 and returns the same answer.
 
-**End-of-turn write.** `cms_complete_turn_writeback` keeps its body. After its
-existing `UPDATE`, which takes the row lock and clears `active_turn_index`, it
-returns:
+**End-of-turn write.** `cms_complete_turn_writeback` first takes the row
+lock. Its existing session-state `UPDATE` (state, iteration, last error,
+wait reason, and `active_turn_index = NULL`) runs only when no newer turn has
+started; the metrics insert is unchanged. Then it returns whether the turn has
+open controls:
 
 ```sql
+PERFORM 1 FROM ${s}.sessions x WHERE x.session_id = p_session_id FOR UPDATE;
+UPDATE ${s}.sessions SET ..., active_turn_index = NULL, updated_at = now()
+ WHERE session_id = p_session_id
+   AND (p_turn_index IS NULL OR turn_high <= p_turn_index);
+-- metrics insert unchanged
 RETURN EXISTS (SELECT 1 FROM ${s}.cms_turn_open_controls(p_session_id, COALESCE(p_turn_index, 0)));
 ```
 
-The check runs after the lock is taken, so a control added just before is
-seen, and none can be added after. Older workers call it with `SELECT` and
-ignore the value.
+The check runs under the lock, so a control added just before is seen, and
+none can be added after. A stale attempt of an older turn, after a newer turn
+started, leaves that turn running and open to controls. Legacy turns never
+start through turn control (`turn_high` is -1), so they write as before. Older
+workers call it with `SELECT` and ignore the value.
 
 **Session state write.** `cms_update_session` keeps its signature. After its
 existing updates:
@@ -891,11 +913,15 @@ CLI confirmed. Only `cursor` is saved.
 
 - Controls wait in one queue, in position order.
 - The queue drains only while the run's send gate is open. While the gate is
-  `pending` (before the initial prompt is sent), controls wait. When the gate
-  is `closed` (settling, stopping, ended), the rest are dropped, and turn end
-  labels them.
-- A Stop closes the gate, clears the queue, and then calls
-  `abortWarmSessionTurn`. Nothing is sent after an abort (spike cell C5b).
+  `pending` (before the prompt or a corrective prompt is sent) or `closed`
+  (settling, ended), controls wait. A corrective run (4.6) applies them; turn
+  end labels the rest.
+- A Stop does not wait in the queue. Once the gate is open, it closes the
+  gate, drops the queued steers and calls `abortWarmSessionTurn`, also while
+  an earlier steer's send has not returned. At gate opening a held Stop
+  applies before held steers, which are not sent: a stopped turn labels them
+  not delivered. Nothing is sent after an abort (spike cell C5b), and a late
+  send failure no longer fails the stopping turn.
 - A Steer goes to `ManagedSession` through a port bound to the current run. On
   confirmation the cursor moves, the trace line
   `[turn-control] steer-confirmed session=<id> turn=<n> seq=<seq> messageId=<id>`
@@ -927,7 +953,7 @@ three states.
 |---|---|---|
 | `pending` | From the start of the run until the initial prompt is sent | Controls wait in order (P21). |
 | `open` | After the initial send | Steers are sent with `mode: "immediate"`. |
-| `closed` | At `session.idle`, on a Stop, on the wall-clock timeout, on the inactivity watchdog, on any error unwind, and when the run ends | Nothing more is sent. |
+| `closed` | At `session.idle`, on a Stop, on the wall-clock timeout, on the inactivity watchdog, on any error unwind, and when the run ends | Nothing more is sent. Controls wait. |
 
 - **Initial send.** Before the initial send, the session asks the binding for
   a held Stop. If there is one, it does not send the prompt, and the turn ends
@@ -944,6 +970,23 @@ three states.
 - **Failed send.** A steer send that fails ends the turn with an `error`
   result through the existing error path. The retry starts from the saved
   conversation and folds the still-open steer into its prompt.
+- **Corrective runs.** The tool-call-as-text and required-tool guards can
+  send a corrective prompt inside the same turn (`runCorrection`). Such a run
+  works like the first run: the gate is `pending` until the corrective prompt
+  is sent, then `open`, so held controls apply in order and new steers and a
+  Stop apply live. One settle pointer is used by the `session.idle` handler,
+  the aborted `assistant.idle` handler, `forceSettleTurn` and a failed send,
+  so each settles the current run. No corrective prompt is sent after an
+  applied or held Stop.
+- **Stop with a backgrounded shell.** A steer during a foreground shell makes
+  CLI 1.0.83 move the shell to the background; the turn then stays open until
+  the shell ends. A V4 Stop therefore cancels the background tasks that the
+  stopped turn started (`startedWithin { turn start, time of the Stop }`; a
+  task without `startedAt` is kept), bounded at 1.5 s. After an abort in that
+  state the CLI sends `assistant.idle { aborted: true }` and no
+  `session.idle`, so after our own Stop that event settles the turn. A late
+  `session.idle` of that run is ignored by the next run until its own
+  `user.message` or `assistant.turn_start`. The legacy Stop is unchanged.
 
 Why: a send just before the run's final idle is answered in the same run, but a
 send after the idle starts a new CLI run (spike cells C4a to C4c). Closing the
@@ -1021,7 +1064,13 @@ Notes:
   reads no saved cursor (D4).
 - **Fold order.** Carried steers go in front of the prompt, or replace
   `CARRIED_STEERS_WAKE_PROMPT` when it is the prompt. Steers that are open at
-  turn start go after the prompt. Neither is recorded again.
+  turn start go after the prompt, before a trailing `<system_context>` block.
+  Neither is recorded again.
+- **Recovery re-run.** When the live conversation is lost during the run
+  (a lost Copilot session or a corrupted tool-call transcript), the same
+  attempt runs the turn again on a fresh conversation. For a V4 turn that
+  re-run starts from the folded turn prompt, so it holds the carried steers
+  and the turn-start steers again. The V3 re-run is unchanged.
 - **Stop at turn start.** The turn skips the model run, the end-of-turn write
   and the save. Turn end labels the controls and clears the running mark.
 - **When T8 runs.** T8 is skipped only when the end-of-turn write answered
@@ -1062,7 +1111,7 @@ Notes:
 | The conversation is... | Its cursor is... | So the next attempt... |
 |---|---|---|
 | live in a worker | in memory, in `LiveTurnControl` | continues from it |
-| lost during the run, and the turn runs again from its start prompt in the same attempt | back to the start cursor (`conversationLost`) | carries the steers that only the lost conversation held |
+| lost during the run, and the turn runs again from its folded start prompt in the same attempt | back to the start cursor (`conversationLost`) | carries the steers that only the lost conversation held |
 | saved | inside the saved turn: `controlCursor: { turn, cursor }`, only when not 0 | uses the saved result and cursor without running the model |
 | saved by another attempt first | the winner's | adopts the winner's result and cursor |
 | lost, stopped or superseded | 0 for this turn | folds every open steer into its prompt |
@@ -1141,7 +1190,9 @@ The TUI and the portal share the controller, the history and the labels
   turn end, Stop, wait and question events. The next detail read brings the
   authoritative value.
 - **Portal.** A Steer button (`↪`) between Stop and Send. A non-accepted
-  answer shows an inline notice with Retry and Dismiss.
+  answer shows an inline notice with Retry and Dismiss. A Stop that timed out
+  without an outcome shows "Stop accepted; waiting for the turn to stop"
+  (`stop_pending`) until that Stop's `session.control_outcome` arrives.
 - **TUI.** `Ctrl+T` in the prompt pane steers with the prompt text. `Ctrl+X`
   or `Ctrl+Esc` stops. Pressing the same key again resends an unconfirmed
   request with the same id. `Alt+T` (`Option+T`) gives up unresolved requests,
@@ -1306,7 +1357,7 @@ turn index.
 | Control add and the end-of-turn write (T6) | Both lock the session row, and T6 clears `active_turn_index` under that lock. Before T6 (after the send gate closed): the control is open and turn end labels it; a steer becomes `carried`. After T6: refused `no_turn`, nothing recorded; a Steer falls back to an ordinary message (FR-004) and a Stop answers "nothing to stop". |
 | Control add and turn end | Both lock the row. Turn end only closes controls it sees. A control added after turn end is refused, because the running mark is already cleared. |
 | Two clients steer at once | Serialized by the row lock. Positions follow the order. |
-| Steer and Stop together | Applied in position order. After a Stop, the gate is closed, so later steers are labelled by turn end. |
+| Steer and Stop together | A Stop applies at once when the gate is open, also while an earlier steer's send is open. Steers still queued are not sent, and steers after the Stop are labelled by turn end. |
 | Control after turn start, before the initial send | Held in order until the gate opens. A held Stop prevents the initial send, and the turn ends "stopped" without a model run (P21). |
 | Client retry with the same request id | Returns the first answer. A different kind or text under the same id is refused. |
 | Steer while the flag is off | Refused `steering_disabled`. A retry of a request id that is already recorded still gets its first answer. |
@@ -1316,6 +1367,8 @@ turn index.
 | Delayed, stale turn start | Refused when a newer turn already started (`turn_high`). The worker throws. |
 | Same-turn delivery started later than the current one | duroxide cancels the stale delivery at its next failed lock renewal, and refuses its result. Both deliveries read the same controls. Cost: at most one wasted model run (3.9). |
 | Late turn end of an older turn | It closes only that turn's open controls, clears `active_turn_index` only while it still names that turn, and skips carried steers that are already closed. A newer turn is not affected. |
+| Late end-of-turn write (T6) of an older turn | It records its metrics and leaves the session state alone when a newer turn has started (`turn_high`). The newer turn stays running and accepts controls. |
+| Many open steers, then a Stop | The cap (20 open controls) refuses only new Steers. The Stop is accepted. |
 | Restart or revive of a session id | The lifetime reset closes the old lifetime, resets `turn_high` and `active_turn_index`, and moves `turn_base_seq`. Turn 0 of the new lifetime ignores the old events (P19). |
 | Terminal state written outside the orchestration | The SQL closes open controls as on a give-up, with reason `terminal` (P20). |
 
@@ -1368,7 +1421,7 @@ path says otherwise.
 | Test | Checks |
 |---|---|
 | add, accepted | event written with turn, text, request id, actor; a LISTEN client receives `{schema, sessionId}` |
-| add, refusals | `no_turn`, `legacy_turn`, `not_found`, `too_many` (21st open control), `request_id_reused` |
+| add, refusals | `no_turn`, `legacy_turn`, `not_found`, `too_many` (a Steer as the 21st open control; a Stop is still accepted), `request_id_reused` |
 | add, retry | same request id returns the first `seq` and `repeat: true` |
 | add, flag | a new Steer with `p_steering_allowed = false` is refused `steering_disabled`; a retried request id still gets its first answer; a Stop ignores the flag |
 | turn start | sets `active_turn_index` and `turn_high`; returns open controls in order, with `created_at`; `stale` for an older turn; `stopped` after a stopped outcome |

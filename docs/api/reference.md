@@ -387,7 +387,7 @@ on the turn-control path; list rows do not carry these fields).
 - **Limits.** Steer `text` must be non-empty; the request body has the same
   2 MB JSON limit as an ordinary message (413 `PAYLOAD_TOO_LARGE`). Stop
   `timeoutMs` is 0 to 300,000 ms (default 30,000). Stop is never gated by a
-  feature flag. `sessions.steering` gates new steers only: a retry of an
+  feature flag or refused for the open-control cap. `sessions.steering` gates new steers only: a retry of an
   already recorded request id still returns its first answer after the flag
   is turned off.
 
