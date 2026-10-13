@@ -134,7 +134,7 @@ export function loadEnv(envName) {
   const merged = { DEPLOY_PROVIDER: "azure", ...DATABASE_ENV_DEFAULTS, ...WORKSPACES_ENV_DEFAULTS, ...AKS_ENV_DEFAULTS, ...WORKER_ENV_DEFAULTS, ...parseEnvFile(envFile) };
 
   // Resolve provisioning intent before allowing any ambient database URL.
-  for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {
+  for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS, "NPM_REGISTRY"])) {
     if (DATABASE_URL_KEYS.includes(k)) continue;
     if (process.env[k] !== undefined && process.env[k] !== "") {
       merged[k] = process.env[k];
