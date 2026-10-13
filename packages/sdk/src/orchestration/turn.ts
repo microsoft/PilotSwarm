@@ -342,7 +342,8 @@ export function* processPrompt(
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
     requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
-    const carriedOnlyTurn = promptText.startsWith(CARRIED_STEERS_WAKE_PROMPT);
+    const splitPrompt = splitSystemContextBlock(promptText);
+    const carriedOnlyTurn = splitPrompt.prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT);
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
@@ -361,10 +362,11 @@ export function* processPrompt(
     let turnSystemPrompt = state.pendingSystemPrompt;
     state.pendingSystemPrompt = undefined;
     const extractedPrompt = extractPromptSystemContext(carriedOnlyTurn
-        ? prompt.slice(CARRIED_STEERS_WAKE_PROMPT.length)
+        ? splitPrompt.prompt.slice(CARRIED_STEERS_WAKE_PROMPT.length)
         : prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
+    if (carriedOnlyTurn) turnSystemPrompt = mergePrompt(turnSystemPrompt, splitPrompt.note);
     if (prompt && state.runtimeModelNotice) {
         turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
         state.runtimeModelNotice = undefined;

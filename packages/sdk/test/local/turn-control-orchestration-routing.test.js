@@ -48,7 +48,7 @@ describe("turn-control capability routing", () => {
             await client.startOrchestration("protected-v4", "v4-routing", {});
             await client.startOrchestration("old-probe", "probe", {});
             expect((await client.waitForOrchestration("old-probe", 15_000)).status).toBe("Completed");
-            expect(executions).toEqual([{ worker: "old", name: "legacyProbe", tag: undefined }]);
+            expect(executions).toEqual([{ worker: "old", name: "legacyProbe", tag: null }]);
             await current.start();
             expect((await client.waitForOrchestration("protected-v4", 30_000)).status).toBe("Completed");
             expect(executions.filter(e => e.name !== "legacyProbe")).toEqual(expect.arrayContaining([

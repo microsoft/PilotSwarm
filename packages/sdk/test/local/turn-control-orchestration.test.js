@@ -4,6 +4,7 @@ import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
 import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
 import { processPrompt } from "../../src/orchestration/turn.ts";
+import { processPrompt as legacyProcessPrompt } from "../../src/orchestration_1_0_80/turn.ts";
 import { appendToFifo, decide, drain } from "../../src/orchestration/queue.ts";
 import { buildContinueInput } from "../../src/orchestration/lifecycle.ts";
 import { completeSession, cancelSession, failPendingShutdown } from "../../src/orchestration/agents.ts";
@@ -54,6 +55,9 @@ function harness(overrides = {}) {
                 if (!messages.length) throw new Error("unexpected blocking dequeue");
                 return JSON.stringify(messages.shift());
             case "race":
+                if (effect.left?.effect === "session.runTurn") {
+                    return { index: 0, value: resolve(effect.left) };
+                }
                 if (effect.left?.effect === "dequeue") {
                     if (messages.length) return { index: 0, value: JSON.stringify(messages.shift()) };
                     now += effect.right.ms;
@@ -134,6 +138,26 @@ describe("1.0.81 turn control orchestration", () => {
         h.drive(decide(h.runtime));
         expect(h.turns[1][0]).toBe("new user prompt");
         expect(h.turns[1][3].carriedSteers).toEqual([steer(12)]);
+    });
+
+    it("a carried-only wake keeps its marker in an attributed shared session", () => {
+        const h = harness({ multiWriter: true, sharedPreambleSent: true });
+        h.run({ type: "completed", content: "first", lateSteers: [steer(14)] });
+        h.drive(drain(h.runtime));
+        h.results.push({ type: "completed", content: "carried", carriedSteersConsumed: true });
+        h.drive(decide(h.runtime));
+        expect(h.turns[1][0]).toBe(CARRIED_STEERS_WAKE_PROMPT);
+        expect(h.turns[1][1]).toBe(true);
+    });
+
+    it("a carried-only retry preserves its system-context note exactly once", () => {
+        const h = harness({ carriedSteers: [steer(15)], systemPrompt: "original wake note" });
+        h.run({ type: "error", message: "transient", carriedSteersConsumed: true }, CARRIED_STEERS_WAKE_PROMPT);
+        const next = h.calls.find(c => c.effect === "can").input;
+        const retry = harness(next);
+        retry.run({ type: "completed", content: "retry", carriedSteersConsumed: true }, next.prompt);
+        expect(retry.turns[0][0]).toBe(h.turns[0][0]);
+        expect(retry.turns[0][0].match(/original wake note/g)).toHaveLength(1);
     });
 
     it("a question holds the carry until the user's answer", () => {
@@ -275,5 +299,15 @@ describe("1.0.81 turn control orchestration", () => {
             readFileSync(new URL(`../../src/orchestration/${file}.ts`, import.meta.url), "utf8")).join("\n");
         expect(source).not.toMatch(/Date\.now\(|Math\.random\(|crypto\.randomUUID\(|setTimeout\(|setInterval\(/);
         expect(source).not.toMatch(/stopTurnQueueName|abortTurn\(/);
+    });
+
+    it("an uncontrolled turn schedules the same activities as frozen 1.0.80 without its Stop race", () => {
+        const current = harness();
+        current.run({ type: "completed", content: "done" });
+        const legacy = harness();
+        legacy.results.push({ type: "completed", content: "done" });
+        legacy.drive(legacyProcessPrompt(legacy.runtime, "original prompt", false));
+        const scheduled = calls => calls.filter(c => c.effect !== "race").map(c => ({ effect: c.effect, args: c.args }));
+        expect(scheduled(current.calls)).toEqual(scheduled(legacy.calls));
     });
 });

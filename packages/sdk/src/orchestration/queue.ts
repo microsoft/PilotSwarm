@@ -299,7 +299,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
             );
             msg = raced.index === 1
-                ? { prompt: CARRIED_STEERS_WAKE_PROMPT }
+                ? { prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true }
                 : typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
 
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
@@ -556,6 +556,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 kind: "prompt",
                 prompt: userPrompt,
                 bootstrap: Boolean(msg.bootstrap),
+                ...(msg.carriedSteersWake === true ? { carriedSteersWake: true } : {}),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
@@ -768,7 +769,9 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 // once flipped, and keep a single turn-level sender only when
                 // every merged segment came from the same identity.
                 const firstSender = noteMessageSender(runtime, item.sender);
-                let mergedPrompt = applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
+                let mergedPrompt = item.carriedSteersWake === true
+                    ? String(item.prompt || "")
+                    : applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
                 let mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
