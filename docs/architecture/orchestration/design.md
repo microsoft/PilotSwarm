@@ -11,10 +11,15 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.56`. Frozen prior versions live as siblings
+The current latest version is `1.0.81`. Frozen prior versions live as siblings
 (single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_55/`) and run
+directories `orchestration_1_0_52/` … `orchestration_1_0_80/`) and run
 unchanged for any in-flight execution that started against them.
+
+In 1.0.81, Stop and Steer are handled inside the worker's turn activity through
+the session catalog. The orchestration yields that activity directly; it no
+longer races `runTurn` against `stopTurn.<n>`. Version 1.0.80 and older keep
+their original Stop path.
 
 ---
 
@@ -26,7 +31,7 @@ src/orchestration/
   runtime.ts     createRuntime, runLoop, startup gates, versioned tracing
   state.ts       DurableSessionState, DurableSessionRuntime, createInitialState, constants
   utils.ts       pure helpers — prompt parsing, context-usage reducer, error classifiers
-  lifecycle.ts   status, response/command writers, dehydrate, checkpoint, summarize,
+  lifecycle.ts   status, response/command writers, affinity release, summarize,
                  child digest, cron action, cancellation tombstones, continueAsNew, handleCommand
   queue.ts       KV FIFO primitives, drain, decide, processAnswer, processPendingChildDigest
   turn.ts        processPrompt, handleTurnResult, processTimer, retry / lossy-handoff
@@ -72,9 +77,10 @@ interface DurableSessionRuntime {
 — there is no closure of `let`s and there are no adapter shapes.
 
 `options` holds per-execution thresholds derived from input
-(`dehydrateThreshold`, `idleTimeout`, `inputGracePeriod`, `checkpointInterval`,
-`isSystem`, `parentSessionId`, `nestingLevel`, `baseSystemMessage`). These do
-not change inside an execution.
+(`idleTimeout`, `inputGracePeriod`, `isSystem`, `parentSessionId`,
+`nestingLevel`, `baseSystemMessage`). These do not change inside an execution.
+Legacy `dehydrateThreshold` and `checkpointInterval` inputs are accepted but
+ignored.
 
 ### Key state fields
 
@@ -83,10 +89,11 @@ not change inside an execution.
 | `iteration` | yes | LLM-turn counter |
 | `loopIteration` | no | resets each execution; bounded by `MAX_ITERATIONS_PER_EXECUTION` |
 | `config` | yes | session config; mutated by `set_model`, agent merge, task-context injection |
-| `affinityKey` | yes | rotates on dehydrate |
-| `needsHydration` / `preserveAffinityOnHydrate` | yes | hydration flags |
+| `affinityKey` | yes | rotates on affinity release or legacy hydration |
+| `needsHydration` / `preserveAffinityOnHydrate` | yes | legacy (≤1.0.56) hydration flags |
 | `pendingPrompt` / `pendingSystemPrompt` / `pendingRequiredTool` / `bootstrapPrompt` | yes | dispatch on next turn |
 | `pendingToolActions` | yes | replay queue for multi-action turns |
+| `carriedSteers` | yes, when non-empty | ordered `{ seq, text }` guidance accepted too late for an earlier turn; retained until consumed or closed on give-up/termination |
 | `subAgents` | yes | child tracking table |
 | `cronSchedule`, `taskContext`, `nextSummarizeAt` | yes | recurring task / summarization |
 | `contextUsage` | yes | last context-window snapshot |
@@ -107,7 +114,7 @@ The full type is in [state.ts](../../../packages/sdk/src/orchestration/state.ts)
 
 ```ts
 // index.ts
-function* durableSessionOrchestration_1_0_56(ctx, input) {
+function* durableSessionOrchestration_1_0_81(ctx, input) {
     const runtime = yield* createRuntime(ctx, input, {
         currentVersion: CURRENT_ORCHESTRATION_VERSION,
         latestVersion:  DURABLE_SESSION_LATEST_VERSION,
@@ -195,11 +202,12 @@ flowchart TD
 
 `drain` greedily moves durable queue events and fired timers into a KV-backed
 FIFO buffer. It loops up to `MAX_DRAIN_PER_TURN = 50` times. Each iteration
-picks one of four dequeue modes:
+picks one of the dequeue modes below:
 
 | Mode | When | Behavior |
 |---|---|---|
 | **legacy carry-forward** | `state.legacyPendingMessage !== undefined` | replay one already-dequeued message from a pre-v1.0.32 input |
+| **carried guidance** | carry exists and there is no unanswered question, pending shutdown, or gate wait | pending work takes priority; otherwise a non-blocking dequeue selects a queued message or an internal carried-only wake |
 | **active-timer race** | `activeTimer` set, OR pending child digest waiting to ripen | `race(dequeueEvent, scheduleTimer(remainingMs))`. Timer-side wins push a `{kind:"timer", timer, firedAtMs}` into the stash |
 | **blocking dequeue** | nothing else to do (no timer, no FIFO, no pending prompt/tool actions) | `dequeueEvent` blocks; only allowed on the first drain iteration |
 | **non-blocking dequeue** | otherwise | `race(dequeueEvent, scheduleTimer(NON_BLOCKING_TIMER_MS=10ms))`; timer-side breaks the loop |
@@ -293,8 +301,13 @@ When a `prompt` FIFO item with `clientMessageIds` is popped, decide first runs
 `sweepMessagesBeforePromptDispatch` (a 100ms tombstone sweep). If still alive,
 it greedily peeks subsequent FIFO items and merges any that are also `prompt`
 into one combined turn (joined with `\n\n`, ids concatenated, bootstrap
-OR-merged, requiredTool first-wins). Non-prompt items are pushed back. This
+kept equal on both sides, requiredTool first-wins). Bootstrap and ordinary
+prompts do not merge. Non-prompt items are pushed back. This
 collapses rapid-fire user messages into a single LLM turn.
+
+A carried-only wake is separate from ordinary and bootstrap prompts. It never
+merges with another FIFO prompt. Guidance still rides with an ordinary prompt
+that was already pending when the earlier turn ended.
 
 ### Pending child digest
 
@@ -320,20 +333,22 @@ sequenceDiagram
     participant Turn as turn.processPrompt
     participant Life as lifecycle
     participant Session as session-proxy
+    participant Manager as manager proxy
     participant Result as turn.handleTurnResult
 
     Decide->>Turn: prompt, bootstrap?, requiredTool?, clientMessageIds?
-    Turn->>Session: needsHydration?
-    Turn->>Life: wrapWithResumeContext if hydrating
-    Turn->>Turn: extractPromptSystemContext + mergePrompt
+    Turn->>Life: wrapWithResumeContext for legacy hydration input
+    Turn->>Turn: normalize prompt and trailing system context
     Turn->>Session: hydrate (with retry) if needed
     Turn->>Manager: loadKnowledgeIndex (best-effort)
     Turn->>Life: publishStatus("running")
-    Turn->>Session: runTurn(prompt, bootstrap, iteration, opts)
+    Turn->>Session: runTurnV4 / runTurnEpochV4(prompt, bootstrap, iteration, carriedSteers)
+    Note over Turn,Session: yield the turn directly; no Stop dequeue, race, or abortTurn
     alt throws
         Turn->>Turn: classify error → fatal / auth / connection / generic
-        Turn->>Life: dehydrate + scheduleTimer + versionedContinueAsNew
-    else success
+        Turn->>Life: release affinity + durable backoff + CAN if retryable
+    else result
+        Turn->>Turn: clear consumed carry unless error; append lateSteers
         Turn->>Turn: updateContextUsageFromEvents
         Turn->>Life: maybeSummarize, refreshTrackedSubAgents
         Turn->>Turn: drainLeadingQueuedScheduleActions, push queuedActions
@@ -346,11 +361,14 @@ sequenceDiagram
 | Error | Action |
 |---|---|
 | Contains `SESSION_STATE_MISSING_PREFIX` | publishStatus failed, updateCmsState failed, **throw** (fatal — duroxide will mark execution failed) |
-| `isAuthFailureError` | publishStatus error with `authFailure: true`, **return** (no retry; admin must update key) |
-| `isCopilotConnectionClosedError` and `retryCount ≤ COPILOT_CONNECTION_CLOSED_MAX_RETRIES (3)` | dehydrate, scheduleTimer 15s, CAN with `retryCount++` |
-| `isCopilotConnectionClosedError` and retries exhausted | record `session.lossy_handoff` event, dehydrate with handoff message, CAN with `rehydrationMessage` and `retryCount = 0` |
-| any other error and `retryCount < MAX_RETRIES (3)` | dehydrate, scheduleTimer `15 * 2^(retryCount-1)` seconds, CAN with `retryCount++` |
-| any other error and retries exhausted | persist the final CMS failure, publishStatus error with `retriesExhausted: true`, **return** (waits for next user input) |
+| `isAuthFailureError` | publishStatus error with `authFailure: true`; write CMS `error` with `closeControls: true`, clear carry, **return** without retry |
+| Returned error with `retryable: false` | write CMS `error` with `closeControls: true`, clear carry, **return** without retry |
+| `isCopilotConnectionClosedError` and `retryCount ≤ COPILOT_CONNECTION_CLOSED_MAX_RETRIES (3)` | release affinity when persistence is enabled, scheduleTimer 15s, CAN with incremented retry count and carry |
+| `isCopilotConnectionClosedError` and retries exhausted, persistence enabled | record `session.lossy_handoff`, release affinity, CAN with `rehydrationMessage`, retained carry and `retryCount = 0` |
+| Connection-loss retries exhausted without persistence | write CMS `error` with the existing give-up message and `closeControls: true`; clear carry and return |
+| Legacy hydration retries exhausted | write CMS `error` with the existing exhaustion message and `closeControls: true`; clear carry and return without running the turn |
+| Any other error and `retryCount < MAX_RETRIES (3)` | release affinity when persistence is enabled, scheduleTimer `15 * 2^(retryCount-1)` seconds, CAN with incremented retry count and carry |
+| Any other error and retries exhausted | persist CMS `error` with `closeControls: true`, clear carry, publishStatus error with `retriesExhausted: true`, **return** (waits for next user input) |
 
 The same classifier handles both `runTurn` throws and `TurnResult` of type
 `error` — phase tag distinguishes them in emitted events. Returned errors count
@@ -371,14 +389,61 @@ The big switch on `result.type`. Two pre-passes:
 | `result.type` | Behavior |
 |---|---|
 | `completed` | `writeLatestResponse`; if sub-agent, notify parent (system sub-agents return immediately); forgotten-timer safety check; auto-resume `interruptedWaitTimer` / `interruptedCronTimer`; else if `cronSchedule` set, arm cron timer; else if blob+idleTimeout enabled, arm idle timer; else fall through (loop will CAN) |
-| `wait` | clear `interruptedWaitTimer`; ensure `taskContext`; notify parent if sub-agent; `planWaitHandling` decides whether to dehydrate; `writeLatestResponse` if `content`; arm wait timer |
+| `wait` | a workspace refusal holds the prompt and arms a workspace retry; a budget refusal stashes the prompt, then follows the normal wait path; the normal path clears `interruptedWaitTimer`, ensures `taskContext`, applies the parent wake policy, lets `planHoldRelease` decide affinity release, writes a response if `content`, and arms the wait timer |
 | `cron` | `applyCronAction` — set or cancel `cronSchedule` in state |
 | `cron_at` | `applyCronAtAction` — set or cancel the wall-clock schedule (`cronAtSchedule`) in state |
-| `input_required` | `writeLatestResponse`; set `pendingInputQuestion`; arm `input-grace` timer if blob and `inputGracePeriod > 0`, else dehydrate (`= 0`) or fall through (`< 0`) |
+| `input_required` | write the question and set `pendingInputQuestion`; with persistence, arm input grace when positive or the idle hold directly when zero; no timer without persistence or with a negative grace; an answer within the hold lands warm |
 | `cancelled` | trace and return |
-| `stopped` | defensive: records `session.turn_stopped` and lands idle (normally `handleTurnStopped` already ran via the stop race) |
+| `stopped` | record `session.turn_stopped` with the turn index and client message ids, write idle, reset retry count, and resume timers/cron; no automatic turn retry and no legacy system Stop message |
 | `spawn_agent` / `message_agent` / `check_agents` / `list_sessions` / `wait_for_agents` / `complete_agent` / `cancel_agent` / `delete_agent` | `handleSubAgentAction(runtime, result)` |
 | `error` | retry classifier (above) |
+
+### Stop, Steer, and carried guidance (1.0.81)
+
+All rebuilt proxies use the `turn-control-v1` activity contract. Ordinary turns
+use `runTurnV4`; epoch-start turns use `runTurnEpochV4`. These tasks carry only
+`pilotswarm.turn-control.v1`, so workers without that capability cannot execute
+them, even if they register the activity names. Non-turn manager activities
+retain the handoff contract. Workspace checks and releases retain workspace
+routing.
+
+The worker records accepted controls and their outcomes. The orchestration
+receives `lateSteers` in the result and adds them to `state.carriedSteers` in
+order. Each later turn receives a copy in its metadata. A non-error result
+clears the old carry only when `carriedSteersConsumed === true`, before adding
+any new late guidance. This includes an authorized stopped consuming turn:
+the discarded guidance must not run again. A returned retryable error retains
+the carry even after the model ran, because the retry re-sends the original
+prompt and folds the same guidance again. Throws, provider-admission errors,
+budget/workspace waits, and stale starts do not establish consumption.
+
+An unanswered question holds guidance for the user's answer. Otherwise it runs
+with pending ordinary work, or starts an internal carried-only turn using
+`CARRIED_STEERS_WAKE_PROMPT`. The worker replaces that marker with guidance text;
+it must not reach the model or become a second user message. Each carried-only
+attempt is a bootstrap turn, including retries. Timer, hydration, and child
+digest notes remain trailing system context rather than changing the marker.
+
+The wake enters the same timer-interrupt path as a user message. It preserves
+the remaining wait or recurring schedule. If an agent wait holds a follow-up,
+the carry ends that wait and rides with the follow-up instead of spinning the
+run loop. A pending graceful shutdown holds guidance for terminal closure.
+
+There is no extra carried-steer closing activity. The worker's existing turn-end
+write records `ran` or `stopped` once. Give-up CMS `error` writes pass
+`closeControls: true` and close unresolved guidance as `gave_up`. Terminal writes
+close controls in SQL without that option. Orchestration state clears on the
+corresponding consuming, give-up, or terminal path. Control outcomes remain
+immutable; the separate closing record identifies what happened to carried
+guidance.
+
+### Rolling deployment and rollback
+
+The frozen 1.0.80 tree keeps its literal version and original Stop race. New
+sessions use 1.0.81; old sessions move to the latest version only through the
+existing continue-as-new mechanism. Disabling Steer is not an orchestration
+rollback. Retain V4-capable workers until 1.0.81 sessions drain, unless a
+separately authorized coordinated rollback restores both code and durable state.
 
 ### processTimer
 
@@ -390,9 +455,9 @@ dispatches by `timer.type`:
 | `wait` | record `session.wait_completed`; build resume system-prompt with original `waitReason` and `taskContext`; `processPrompt(systemPrompt + timerPrompt, bootstrap=false)` |
 | `cron` | record `session.cron_fired`; `processPrompt(cronPrompt, bootstrap=true)` (with resume context if `shouldRehydrate`) |
 | `cron_at` | record `session.cron_at_fired` for the scheduled occurrence; fire the wall-clock schedule and re-arm the next occurrence |
-| `idle` | `dehydrateForNextTurn("idle")` |
+| `idle` | release workspace and worker affinity; the activity's committed snapshot remains authoritative |
 | `agent-poll` | poll each non-terminal child via `getSessionStatus`; if all done, `maybeResolveAgentWaitCompletion`; else if shutting down past deadline, `failPendingShutdown`; else re-arm with shutdown-poll or 30s |
-| `input-grace` | `dehydrateForNextTurn("input_required")` |
+| `input-grace` | arm the input-required idle hold; its eventual expiry releases affinity |
 
 ---
 
@@ -479,10 +544,12 @@ self.
 `versionedContinueAsNew(runtime, canInput)`:
 
 1. Capture the active timer's remaining time into `canInput.activeTimerState`.
-2. If `!canInput.needsHydration`, run a best-effort warm checkpoint
-   (`session.checkpoint`) so the next worker can resume without rehydration.
-3. Stamp `canInput.sourceOrchestrationVersion = runtime.versions.currentVersion`.
-4. Yield `ctx.continueAsNewVersioned(canInput, latestVersion)`.
+2. Stamp `canInput.sourceOrchestrationVersion = runtime.versions.currentVersion`.
+3. Yield `ctx.continueAsNewVersioned(canInput, latestVersion)`.
+
+No warm checkpoint is required: each turn commits its snapshot inside the turn
+activity. The carry array is included when non-empty; old inputs default it to
+an empty array.
 
 `continueInput(runtime, overrides?)` builds the wire `OrchestrationInput`. It
 includes every field in [§2](#2-runtime-and-state) marked "carried across
@@ -506,60 +573,57 @@ backward-compatible by default (older inputs simply lack the new fields).
 
 ---
 
-## 10. Hydration / Dehydration
+## 10. Snapshot Recovery and Affinity
 
-A **warm** session has live in-memory `CopilotSession` state on a worker. A
-**dehydrated** session has its state archived to blob storage and the in-memory
-state torn down. Hydration is the inverse.
+A warm session has an in-memory `CopilotSession` on a worker. The turn activity
+commits its snapshot through the configured session store. The in-memory copy is
+a cache, not the durable truth. Normal turns restore from the store in the
+worker's preamble; they do not ask the orchestration for a hydration probe.
 
-```mermaid
-flowchart LR
-    Warm[warm session<br/>worker memory] -->|dehydrate| Cold[archived blob]
-    Cold -->|hydrate| Warm
-```
+### When to release affinity
 
-### When to dehydrate
-
-`dehydrateForNextTurn(runtime, reason, resetAffinity?, eventData?)`:
+`releaseAffinity(runtime, reason, eventData?)`:
 
 | Trigger | Reason tag |
 |---|---|
-| `wait`/`cron` timer arming and `planWaitHandling.shouldDehydrate` | `"timer"` / `"cron"` |
+| `wait`/`cron`/`cron_at` timer arming beyond the hold window | `"timer"` / `"cron"` / `"cron_at"` |
 | `idle` timer fires | `"idle"` |
-| `input_required` with `inputGracePeriod === 0` | `"input_required"` |
-| `input-grace` timer fires | `"input_required"` |
 | Connection-closed error during retry | `"error"` |
 | Connection-closed retries exhausted | `"lossy_handoff"` |
+| Two or more consecutive workspace failures on one worker | `"workspace_unavailable"` |
 
-Guarded against double-firing: if the session is already marked dehydrated, or
-the last live-session action was already a dehydrate, skip and just clear
-`activeTimer`.
+Before rotating the recorded affinity GUID, workspace sessions release their
+workspace through the worker activity, bounded by a durable cap. A cleared
+workspace can also owe one release. The next turn can restore on another worker.
+This protocol does not add a turn-control-specific workspace attach or release.
 
-### planWaitHandling
+### Hold window
 
-`packages/sdk/src/wait-affinity.ts` computes `{ shouldDehydrate, resetAffinityOnDehydrate, preserveAffinityOnHydrate }` from `(blobEnabled, seconds, dehydrateThreshold,
-preserveWorkerAffinity?)`. The orchestration just consults it.
+`packages/sdk/src/wait-affinity.ts` computes the hold/release decision from
+persistence availability, wait duration, and `idleTimeout`. Short waits keep the
+worker warm; longer waits release it. An input question enters the same hold
+window after any configured grace period.
 
 ### Lossy handoff
 
-`session.dehydrate` may return `{ lossyHandoff: { message } }` if the live
-session state was already gone. The orchestration logs it and continues —
-`needsHydration` stays false because there is nothing to rehydrate; the next
-runTurn will start a fresh CopilotSession.
+After connection-loss retry exhaustion, a persisted session records a lossy
+handoff, releases affinity, and retries the prompt with a recovery note. A
+storeless session cannot hand off: it writes the give-up error with
+`closeControls: true`, clears carried guidance, and waits for new input.
 
 ### Affinity rotation
 
-Dehydrate with `resetAffinity = true` rotates `state.affinityKey` to a fresh
-GUID and rebuilds `runtime.session`. Any subsequent hydrate gets a new worker
-unless `preserveAffinityOnHydrate` is set.
+The rotation uses `yield ctx.newGuid()` and rebuilds `runtime.session` with the
+turn-control routing contract. Workspace releases retain their capability tag.
 
 ### Hydrate retry
 
-`processPrompt` hydrate has its own retry: up to 3 attempts with exponential
-backoff (10 / 20 / 40 s). If the blob is missing entirely (404 /
+Legacy continue-as-new inputs can still request explicit hydration.
+`processPrompt` retries it up to three attempts, with 10 s and 20 s backoffs
+before the final attempt. If the snapshot is missing entirely (404 /
 `BlobNotFound` / `Session archive not found`), hydrate is skipped and the
-session starts fresh. If hydrate fails terminally, `processPrompt` returns
-without running the turn.
+session starts fresh. On exhaustion, 1.0.81 writes the existing error message
+with `closeControls: true`, clears carried guidance, and returns without a turn.
 
 ---
 
@@ -626,14 +690,16 @@ src/orchestration_1_0_51.ts   ┘
 src/orchestration_1_0_52/     ┐
 src/orchestration_1_0_53/     │ frozen — replay only (directory form)
 src/orchestration_1_0_54/     │
-src/orchestration_1_0_55/     ┘
-src/orchestration/            ← current latest (1.0.56)
+src/orchestration_1_0_55/     │
+...                          │
+src/orchestration_1_0_80/     ┘
+src/orchestration/            ← current latest (1.0.81)
 ```
 
 All registered versions are listed in
 [`orchestration-registry.ts`](../../../packages/sdk/src/orchestration-registry.ts).
 The registry retains versions down to the compatibility floor (`1.0.47`).
-Older versions are pruned from the repo.
+Older version files may remain for tests, but they are not registered.
 
 A frozen version is replay-only. New starts and every CAN target the current
 latest. The latest must accept `OrchestrationInput` produced by the oldest
@@ -671,7 +737,7 @@ replayed verbatim afterwards.
 - **decide** — the phase that pops one item from the FIFO (or pendingPrompt /
   pendingToolActions / pendingChildDigest) and dispatches it.
 - **affinity key** — a per-session GUID that pins the active session to a
-  specific worker via duroxide affinity. Rotated on dehydrate.
+  specific worker via duroxide affinity. Rotated on affinity release.
 - **tombstone** — a recorded cancellation for a client message id that
   suppresses any prompt that arrives with that id.
 - **digest** — a 30-second batched summary of child updates dispatched as a
