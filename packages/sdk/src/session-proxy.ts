@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -63,8 +63,11 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
-import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
+import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, type TurnLifecycleContext } from "./session-lifecycle.js";
+import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
+import { LiveTurnControl } from "./turn-control.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
+import { faultPointAsync } from "./fault-injection.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
@@ -1410,7 +1413,8 @@ export function registerActivities(
     };
 
     // ── runTurn ──────────────────────────────────────────────
-    const runTurnHandler = async (
+    const runTurnImpl = async (
+        turnControlPath: boolean,
         activityCtx: any,
         input: {
             sessionId: string;
@@ -1597,6 +1601,80 @@ export function registerActivities(
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
 
+        // ── Session turn control (runTurnV4, design 4.7) ───────────────
+        // Present only on the V4 names and with a catalog. T3 turn start
+        // replaces setActiveTurnIndex; the live loop applies controls during
+        // the model run; T7 saves the cursor; T8 turn end gives every open
+        // control one outcome and closes the carried steers folded in.
+        const tc = turnControlPath && catalog
+            ? {
+                turn: input.turnIndex ?? 0,
+                carried: (Array.isArray(input.carriedSteers) ? input.carriedSteers : [])
+                    .filter((c): c is LateSteer => !!c && Number.isFinite(Number(c.seq)) && typeof c.text === "string"),
+                live: null as LiveTurnControl | null,
+                /** T6 writeback answer: true/false, or undefined when the best-effort write failed (P15). */
+                hasControls: undefined as boolean | undefined,
+                /** The turn ended at T3 because a Stop was open or recorded: no model run. */
+                earlyStop: false,
+                /** Cursor known at T3 (saved cursor plus folded steers). */
+                startCursor: 0,
+                /** The carried steers were folded into a prompt that reached the model run, or a stopped turn took them (P12, D6). */
+                carriedTaken: false,
+                /** T3 ran in this attempt. */
+                started: false,
+            }
+            : null;
+        const sessionDirOf = () => path.join(sessionManager.getSessionStateDir(), input.sessionId);
+        // T8. Runs after the save; idempotent; retried in place, then fails
+        // the activity so the turn retries (design 4.7: not best-effort).
+        const turnEndWithRetry = async (kind: TurnEndKind, cursor: number, carried: number[]) => {
+            let lastErr: unknown;
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+                try {
+                    return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried);
+                } catch (err) {
+                    lastErr = err;
+                    activityCtx.traceInfo(`[turn-control] turnEnd attempt ${attempt} failed session=${input.sessionId}: ${String((err as Error)?.message ?? err)}`);
+                    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+                }
+            }
+            throw lastErr;
+        };
+        const finishTurnControl = async (result: TurnResult, cursor: number, opts: { alwaysEnd?: boolean } = {}): Promise<TurnResult> => {
+            if (!tc || result.type === "cancelled") return result;
+            // A turn that never reached T3 (an error before it) leaves the
+            // turn's controls alone, unless an earlier attempt saved it.
+            if (!tc.started && !opts.alwaysEnd) return result;
+            const carriedSeqs = tc.carriedTaken ? tc.carried.map((c) => Number(c.seq)) : [];
+            const shouldEnd = opts.alwaysEnd || tc.earlyStop || tc.hasControls !== false || carriedSeqs.length > 0;
+            let out: TurnResult = result;
+            if (shouldEnd) {
+                if (activityCtx.isCancelled?.()) throw new Error("runTurn cancelled before turn end");
+                const kind: TurnEndKind = result.type === "stopped" ? "stopped" : result.type === "error" ? "error" : "other";
+                let end = await turnEndWithRetry(kind, cursor, carriedSeqs);
+                await faultPointAsync("turn.control.after-end", { sessionId: input.sessionId });
+                if (end.stopped && kind !== "stopped" && carriedSeqs.length > 0) {
+                    // An error turned stopped by an open Stop consumed its carried steers (D6).
+                    end = await turnEndWithRetry("stopped", cursor, carriedSeqs);
+                }
+                if (end.stopped) {
+                    out = {
+                        type: "stopped",
+                        reason: (result.type === "stopped" ? (result as any).reason : undefined) ?? "Stopped by user",
+                        ...((result as any).events ? { events: (result as any).events } : {}),
+                        ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
+                        ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
+                    } as TurnResult;
+                } else if (end.late.length > 0) {
+                    out = { ...result, lateSteers: end.late } as TurnResult;
+                }
+            }
+            if (tc.carriedTaken && tc.carried.length > 0 && out.type !== "error") {
+                out = { ...out, carriedSteersConsumed: true } as TurnResult;
+            }
+            return out;
+        };
+
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
@@ -1657,11 +1735,18 @@ export function registerActivities(
                 await recordLifecycleHydration(pre.version);
                 // Session workspaces: a committed turn got past the
                 // workspace check (a refusal returns before the commit).
-                return {
+                const stored: TurnResult = {
                     ...(pre.result as TurnResult),
                     snapshotVersion: pre.version,
                     ...(runConfig.workspace ? { workspaceAttached: true } : {}),
                 };
+                if (tc) {
+                    // An earlier attempt with this same input saved the turn:
+                    // no model run, only T8 with the saved cursor.
+                    tc.carriedTaken = tc.carried.length > 0;
+                    return await finishTurnControl(stored, savedControlCursor(pre.result, tc.turn), { alwaysEnd: true });
+                }
+                return stored;
             }
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
@@ -3974,7 +4059,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     (msg) => activityCtx.traceInfo(msg),
                 ));
             }
-            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && promptForRecord) {
+            // 1.0.81: a turn that only runs carried steers records nothing new;
+            // the steers are already in the transcript.
+            const isCarriedWake = promptForRecord === CARRIED_STEERS_WAKE_PROMPT;
+            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && !isCarriedWake && promptForRecord) {
                 const promptEventType = isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message";
                 // v1.0.47: when the orchestration tagged the turn with one or
                 // more clientMessageIds (the UI-generated identities of the
@@ -4024,11 +4112,78 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
-                await cmsRetryBestEffort(
-                    `runTurn.preTurn setActiveTurnIndex session=${input.sessionId} turn=${input.turnIndex ?? 0}`,
-                    () => catalog!.setActiveTurnIndex(input.sessionId, input.turnIndex ?? 0),
+                if (!tc) {
+                    await cmsRetryBestEffort(
+                        `runTurn.preTurn setActiveTurnIndex session=${input.sessionId} turn=${input.turnIndex ?? 0}`,
+                        () => catalog!.setActiveTurnIndex(input.sessionId, input.turnIndex ?? 0),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+            }
+
+            // ── Turn control T3: turn start (replaces setActiveTurnIndex) ──
+            // Not best-effort: without it no control could reach this turn,
+            // so a failure throws and the turn retries (plan P21).
+            if (tc) {
+                const started = await cmsRetryCritical(
+                    `runTurn.preTurn turnStart session=${input.sessionId} turn=${tc.turn}`,
+                    () => catalog!.turnStart(input.sessionId, tc.turn),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+                tc.started = true;
+                await faultPointAsync("turn.control.after-start", { sessionId: input.sessionId });
+                if ("stale" in started) {
+                    throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
+                }
+                let start = 0;
+                if (lifecycle && (started.stopped || started.controls.length > 0)) {
+                    // The saved cursor is read only when needed. A session
+                    // without a store saves nothing (D4): cursor 0.
+                    start = savedControlCursor(readTurnCommitFile(sessionDirOf())?.result, tc.turn);
+                }
+                const open = started.controls.filter((c) => c.seq > start);
+                const openStop = open.find((c) => c.kind === "stop");
+                if (started.stopped || openStop) {
+                    // A Stop reached this turn before the model ran: end it
+                    // without a model run. Carried steers are taken by the
+                    // stopped turn (D6).
+                    tc.earlyStop = true;
+                    tc.startCursor = start;
+                    tc.carriedTaken = tc.carried.length > 0;
+                    await Promise.allSettled(pendingEventWrites.splice(0));
+                    activityCtx.traceInfo(`[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
+                    return { type: "stopped", reason: openStop?.text || "Stopped by user" } as TurnResult;
+                }
+                // Fold carried steers (before the prompt; they replace the
+                // carried-steers wake prompt) and steers accepted for this
+                // turn before it started (after the prompt). Never recorded again.
+                if (tc.carried.length > 0) {
+                    const carriedText = tc.carried.map((c) => c.text).join("\n\n");
+                    effectivePrompt = effectivePrompt.includes(CARRIED_STEERS_WAKE_PROMPT)
+                        ? effectivePrompt.replace(CARRIED_STEERS_WAKE_PROMPT, carriedText)
+                        : `${carriedText}\n\n${effectivePrompt}`;
+                    tc.carriedTaken = true;
+                }
+                const openSteers = open.filter((c) => c.kind === "steer");
+                if (openSteers.length > 0) {
+                    effectivePrompt = `${effectivePrompt}\n\n${openSteers.map((c) => c.text).join("\n\n")}`;
+                    start = Math.max(start, ...openSteers.map((c) => c.seq));
+                }
+                tc.startCursor = start;
+                tc.live = new LiveTurnControl({
+                    sessionId: input.sessionId,
+                    turn: tc.turn,
+                    start,
+                    abort: (reason) => sessionManager.abortWarmSessionTurn(input.sessionId, {
+                        reason,
+                        ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
+                    }),
+                    record: async (eventType, data) => {
+                        await catalog!.recordEvents(input.sessionId, [{ eventType, data }], workerNodeId);
+                    },
+                    trace: (message) => activityCtx.traceInfo(message),
+                });
+                void sessionManager.getTurnControlHub?.()?.register(tc.live);
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
@@ -4210,9 +4365,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     turnIndex: input.turnIndex,
                     controlToolBridge,
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
+                    ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
             };
 
+            if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
 
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
@@ -4258,6 +4415,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
 
                 const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, input.prompt]) || input.prompt;
+                // Turn control: the lost conversation took any steers applied
+                // to it; count from the start again so turn end carries them.
+                tc?.live?.conversationLost();
                 result = await runTurnWithPrompt(session, recoveredPrompt);
 
                 if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
@@ -4324,6 +4484,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
 
                 const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, input.prompt]) || input.prompt;
+                // Turn control: the lost conversation took any steers applied
+                // to it; count from the start again so turn end carries them.
+                tc?.live?.conversationLost();
                 result = await runTurnWithPrompt(session, recoveredPrompt);
             }
 
@@ -4379,7 +4542,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // long enough to deliver the final latest-value snapshot.
             }
 
+            if (tc?.live) {
+                tc.live.retire();
+                sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            }
             if (cancelled) return { type: "cancelled" };
+            if (tc) await faultPointAsync("turn.control.before-writeback", { sessionId: input.sessionId });
 
             // ── Activity-level writeback: sync turn result → CMS ──
             // This lets listSessions() read entirely from CMS without
@@ -4421,7 +4589,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     updates.lastError = null;
                 }
                 const turnEndedAt = new Date();
-                await cmsRetryBestEffort(
+                const writebackHasControls = await cmsRetryBestEffort(
                     `runTurn.postTurn completeTurnWriteback state=${updates.state} session=${input.sessionId}`,
                     () => catalog!.completeTurnWriteback({
                         sessionId: input.sessionId,
@@ -4459,6 +4627,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+                if (tc) {
+                    // P15: false skips T8; true or a failed write (undefined) runs it.
+                    tc.hasControls = writebackHasControls;
+                    await faultPointAsync("turn.control.after-writeback", { sessionId: input.sessionId });
+                }
 
                 // ── settle the provider budget ───────────────────────
                 //
@@ -4531,8 +4704,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const lifecycleSessionDir = lifecycle
             ? path.join(sessionManager.getSessionStateDir(), input.sessionId)
             : null;
+        // Turn control: the cursor the conversation provably holds.
+        const liveCursor = tc ? Math.max(tc.startCursor, tc.live?.cursor ?? 0) : 0;
         if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
-            const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, bodyResult);
+            // T7: the save carries the cursor only when it is not 0.
+            const toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
+                ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
+                : bodyResult;
+            const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
+            if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
                 // Store-wins: the snapshot was NOT advanced — a user stop, or a
                 // discarded/foreign turn superseded this one at the store. The
@@ -4584,15 +4764,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     `[runTurn] session=${input.sessionId} racing attempt committed v${committed.version} first; ` +
                     `adopting its stored result`,
                 );
-                return {
+                const adopted: TurnResult = {
                     ...keepOrchestrationTurnEvents(committed.storedResult as TurnResult),
                     snapshotVersion: committed.version,
                     ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
                 };
+                // The winner's result and cursor; T8 writes the same outcomes.
+                return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }
-            return { ...bodyResult, snapshotVersion: committed.version };
+            const saved: TurnResult = { ...toSave, snapshotVersion: committed.version } as TurnResult;
+            // Not published (stopped or superseded): nothing of this turn survives.
+            return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0) : saved;
         }
-        return bodyResult;
+        return tc ? await finishTurnControl(bodyResult, liveCursor) : bodyResult;
             }, { trace });
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
@@ -4635,6 +4819,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
         } finally {
+            if (tc?.live) {
+                tc.live.retire();
+                sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            }
             if (turnTelemetry.modelSummary) {
                 turnSpan.setAttribute("pilotswarm.model_summary", turnTelemetry.modelSummary);
             }
@@ -4664,15 +4852,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
+    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(false, activityCtx, input);
+    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(true, activityCtx, input);
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
     registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
-    // Session turn control (1.0.81): the V4 names. Until the turn-control
-    // path lands they run today's handler, so 1.0.81 can be exercised end to
-    // end on the integration branch. Never released in this state.
-    registerTurnControlActivity(runtime, "runTurn", runTurnHandler);
-    registerTurnControlActivity(runtime, "runTurn2", runTurnHandler);
+    // Session turn control (1.0.81): the V4 names run the turn-control path.
+    registerTurnControlActivity(runtime, "runTurn", runTurnV4Handler);
+    registerTurnControlActivity(runtime, "runTurn2", runTurnV4Handler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
