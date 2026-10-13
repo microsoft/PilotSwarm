@@ -21,10 +21,15 @@
  *   - the server-side execution time of the same look (EXPLAIN ANALYZE
  *     execution time, all rows, no network), and pg_stat_statements time
  *     when the extension is installed;
+ *   - database CPU per look: the same look on a dedicated connection, with
+ *     that backend's CPU time read from /proc/<pid>/schedstat (nanoseconds;
+ *     /proc/<pid>/stat ticks as a fallback). Only when the database runs on
+ *     this host; otherwise the column says so.
  * then one hub's connections (exactly one LISTEN connection), and the
  * connection budget per worker from the deployment defaults.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import pg from "pg";
 import { PgSessionCatalog, PgSessionCatalogProvider, PgFactStore } from "../../dist/index.js";
 import { TurnControlHub } from "../../dist/turn-control.js";
@@ -51,6 +56,22 @@ const admin = new pg.Client({ connectionString: url });
 await admin.connect();
 const catalog = await PgSessionCatalogProvider.create(url, schema);
 await catalog.initialize();
+
+/** CPU time of a local PostgreSQL backend in ms, or null when it is not on this host. */
+function backendCpuMs(pid) {
+    try {
+        if (existsSync(`/proc/${pid}/schedstat`)) {
+            return Number(readFileSync(`/proc/${pid}/schedstat`, "utf8").split(" ")[0]) / 1e6;
+        }
+        const fields = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ");
+        return (Number(fields[11]) + Number(fields[12])) * 10;      // utime + stime, 100 ticks/s
+    } catch {
+        return null;
+    }
+}
+const cpuClient = new pg.Client({ connectionString: url });
+await cpuClient.connect();
+const cpuPid = (await cpuClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
 
 const hasStatements = (await admin.query("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'")).rowCount > 0;
 const rows = [];
@@ -85,7 +106,14 @@ try {
             const plan = r[0]["QUERY PLAN"][0];
             server.push(Number(plan["Execution Time"]));
         }
-        rows.push({ n, roundTrip: stats(roundTrip), server: stats(server) });
+        // Database CPU: the same look on one known backend.
+        const lookSql = `SELECT * FROM ${schema}.cms_turn_look($1::jsonb)`;
+        for (let i = 0; i < 10; i++) await cpuClient.query(lookSql, [lookArg]);
+        const cpuBefore = backendCpuMs(cpuPid);
+        for (let i = 0; i < iterations; i++) await cpuClient.query(lookSql, [lookArg]);
+        const cpuAfter = backendCpuMs(cpuPid);
+        const cpuPerLook = cpuBefore === null || cpuAfter === null ? null : (cpuAfter - cpuBefore) / iterations;
+        rows.push({ n, roundTrip: stats(roundTrip), server: stats(server), cpuPerLook });
     }
 
     let statementsLine = "pg_stat_statements: not installed";
@@ -125,11 +153,14 @@ try {
     console.log(`# Turn control look cost (${new Date().toISOString()})`);
     console.log(`PostgreSQL ${version[0].server_version}; ${iterations} looks per count; one open steer per ${steerEvery || "no"} turns.`);
     console.log("");
-    console.log("| Live turns | Round trip mean | p50 | p95 | max | Server mean | Server p95 |");
-    console.log("|---:|---:|---:|---:|---:|---:|---:|");
+    console.log("| Live turns | Round trip mean | p50 | p95 | max | Server mean | Server p95 | DB CPU per look |");
+    console.log("|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (const r of rows) {
-        console.log(`| ${r.n} | ${ms(r.roundTrip.mean)} ms | ${ms(r.roundTrip.p50)} ms | ${ms(r.roundTrip.p95)} ms | ${ms(r.roundTrip.max)} ms | ${ms(r.server.mean)} ms | ${ms(r.server.p95)} ms |`);
+        const cpu = r.cpuPerLook === null ? "not on this host" : `${ms(r.cpuPerLook)} ms`;
+        console.log(`| ${r.n} | ${ms(r.roundTrip.mean)} ms | ${ms(r.roundTrip.p50)} ms | ${ms(r.roundTrip.p95)} ms | ${ms(r.roundTrip.max)} ms | ${ms(r.server.mean)} ms | ${ms(r.server.p95)} ms | ${cpu} |`);
     }
+    console.log("");
+    console.log(`DB CPU: backend pid ${cpuPid}, ${iterations} looks per count, source ${existsSync(`/proc/${cpuPid}/schedstat`) ? "/proc/<pid>/schedstat" : "/proc/<pid>/stat"}. At the 5 s look interval one worker's looks cost (CPU per look / 5,000 ms) of one core.`);
     console.log("");
     console.log(statementsLine);
     console.log(`LISTEN connections: ${listenWhileRunning} while one hub runs, ${listenAfterStop} after stop.`);
@@ -145,6 +176,7 @@ try {
     console.log(`| workers that fit with turn control | ${Math.floor(available / perWorker)} |`);
 } finally {
     await catalog.close?.();
+    await cpuClient.end().catch(() => {});
     await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => {});
     await admin.end();
 }

@@ -275,13 +275,17 @@ The test files are in `packages/sdk/test/local/`:
 `test/perf/turn-control-look-cost.mjs`, dev pod, PostgreSQL 16.15, local
 database, 200 looks per count, one open steer per 5 turns:
 
-| Live turns | Round trip mean | Round trip p95 | Server mean | Server p95 |
-|---:|---:|---:|---:|---:|
-| 1 | 0.58 ms | 0.75 ms | 0.29 ms | 0.35 ms |
-| 10 | 0.90 ms | 1.21 ms | 0.58 ms | 0.64 ms |
-| 50 | 2.22 ms | 2.54 ms | 1.82 ms | 2.33 ms |
+| Live turns | Round trip mean | Round trip p95 | Server mean | Server p95 | DB CPU per look |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.58 ms | 0.76 ms | 0.31 ms | 0.35 ms | 0.36 ms |
+| 10 | 0.81 ms | 1.01 ms | 0.64 ms | 0.78 ms | 0.73 ms |
+| 50 | 2.28 ms | 2.97 ms | 1.78 ms | 1.86 ms | 1.96 ms |
 
-Server time is `EXPLAIN ANALYZE` execution time of the same look.
+Server time is `EXPLAIN ANALYZE` execution time of the same look. DB CPU is
+the CPU time of one dedicated database backend running the same look, read
+from `/proc/<pid>/schedstat` (the database runs on the same host in the dev
+pod). At the 5 s look interval, one worker with 50 live turns uses about
+1.96 ms of database CPU every 5 s, about 0.04% of one core.
 `pg_stat_statements` was not installed. One LISTEN connection per worker
 while the hub runs, none after stop.
 

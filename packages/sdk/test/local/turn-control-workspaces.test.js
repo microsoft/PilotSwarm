@@ -118,6 +118,8 @@ describe("turn control: workspace leases across worker loss", () => {
         const prompts = await eventsWith(d.catalog, sessionId, "user.message", prompt);
         assertEqual(prompts.length, 1, `the prompt is in the transcript once: ${JSON.stringify(prompts.map((e) => ({ seq: e.seq, worker: e.workerNodeId, data: e.data })))}`);
         assertEqual((await eventsWith(d.catalog, sessionId, "assistant.message", `done:${clonePath}`)).length, 1, "the answer is in the transcript once");
+        const systemNotes = (await d.catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "system.message").map((e) => JSON.stringify(e.data));
+        assertEqual(new Set(systemNotes).size, systemNotes.length, `no system message is recorded twice: ${systemNotes.join(" | ")}`);
 
         // W6: the release worker 1 would send, arriving after the move.
         const late = await fetch(new URL("/v1/leases", d.url), {
