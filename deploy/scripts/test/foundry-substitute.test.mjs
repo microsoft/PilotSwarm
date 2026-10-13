@@ -123,3 +123,26 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("Foundry location can be overridden independently from the stamp region", () => {
+  const bicepRoot = join(
+    REPO_ROOT,
+    "deploy",
+    "providers",
+    "azure",
+    "services",
+    "base-infra",
+    "bicep",
+  );
+  const main = readFileSync(join(bicepRoot, "main.bicep"), "utf8");
+  const params = readFileSync(join(bicepRoot, "base-infra.params.template.json"), "utf8");
+  const deploy = readFileSync(
+    join(REPO_ROOT, "deploy", "scripts", "lib", "deploy-bicep.mjs"),
+    "utf8",
+  );
+
+  assert.match(main, /param foundryLocation string = ''/);
+  assert.match(main, /empty\(foundryLocation\) \? location : toLower\(foundryLocation\)/);
+  assert.match(params, /"foundryLocation"[\s\S]*"\$\{FOUNDRY_LOCATION\}"/);
+  assert.match(deploy, /env\.FOUNDRY_LOCATION \|\| env\.LOCATION/);
+});
