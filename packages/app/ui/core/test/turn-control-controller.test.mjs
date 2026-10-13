@@ -264,10 +264,10 @@ test("a refusal that arrives after a session switch keeps the text for that sess
     assert.equal(view().notice, null, "s2 has no notice");
     store.dispatch({ type: "sessions/selected", sessionId: SID });
     assert.equal(view().notice.reason, "too_many");
-    assert.equal(view().notice.text, "guidance for s1", "kept on the notice");
+    assert.deepEqual(view().kept.map((item) => item.text), ["guidance for s1"], "kept for that session");
     assert.equal(controller.restoreTurnControlText(SID), true);
     assert.equal(store.getState().ui.prompt, "guidance for s1");
-    assert.equal(view().notice, null);
+    assert.deepEqual(view().kept, []);
 });
 
 test("a refusal that arrives after a new draft keeps both; Restore appends after the draft", async () => {
@@ -279,7 +279,8 @@ test("a refusal that arrives after a new draft keeps both; Restore appends after
     answer.reject(httpError(403, "FORBIDDEN"));
     await pending;
     assert.equal(store.getState().ui.prompt, "a new draft");
-    assert.deepEqual([view().notice.reason, view().notice.text], ["forbidden", "first guidance"]);
+    assert.equal(view().notice.reason, "forbidden");
+    assert.deepEqual(view().kept.map((item) => item.text), ["first guidance"]);
     controller.restoreTurnControlText(SID);
     assert.equal(store.getState().ui.prompt, "a new draft\n\nfirst guidance");
 });
@@ -428,4 +429,98 @@ test("a lost Stop, then a lost Steer: both stay recoverable, also after idle and
     assert.equal(view().steerNotice, null);
     assert.equal(store.getState().ui.prompt, "newer draft\n\nlost guidance");
     assert.equal(controller.giveUpTurnControl(SID), false, "nothing left to give up");
+});
+
+test("kept steer text survives later controls and outcomes until Restore or Discard", async () => {
+    const first = deferred();
+    let n = 0;
+    const { controller, store, view } = harness({
+        steer: () => (++n === 1 ? first.promise : { outcome: "too_many" }),
+        stop: { outcome: "stopped", turnIndex: 2, controlSeq: 9 },
+    });
+    controller.setPrompt("first guidance");
+    const pending = controller.steerActiveSessionTurn();
+    controller.setPrompt("second guidance");
+    first.resolve({ outcome: "too_many" });
+    await pending;
+    assert.deepEqual(view().kept.map((item) => item.text), ["first guidance"]);
+    await controller.stopActiveSessionTurn();
+    assert.deepEqual(view().kept.map((item) => item.text), ["first guidance"], "a Stop keeps it");
+    await controller.steerActiveSessionTurn();
+    assert.equal(store.getState().ui.prompt, "second guidance", "the second refusal goes back into the empty composer");
+    assert.deepEqual(view().kept.map((item) => item.text), ["first guidance"], "another Steer and outcome keep it");
+    controller.setPrompt("");
+    assert.equal(controller.restoreTurnControlText(SID), true);
+    assert.equal(store.getState().ui.prompt, "first guidance");
+    controller.setPrompt("");
+    assert.equal(controller.discardTurnControlText(SID), false, "nothing left");
+});
+
+test("restore and an unconfirmed Dismiss never write into a selected outbox message", async () => {
+    const answer = deferred();
+    const { controller, store, view } = harness({ steer: () => answer.promise });
+    controller.setPrompt("kept words");
+    const pending = controller.steerActiveSessionTurn();
+    const item = controller.buildOutboxItem("queued words", "pending");
+    controller.setSessionOutboxItems(SID, [item]);
+    controller.enterPendingPromptEdit(SID, item.id);
+    answer.reject(networkError());
+    await pending;
+    assert.equal(view().steer.phase, "unconfirmed");
+    controller.dismissTurnControlNotice(SID);
+    assert.equal(store.getState().outbox.bySessionId[SID][0].text, "queued words");
+    assert.deepEqual(view().kept.map((entry) => entry.text), ["kept words"]);
+    assert.equal(controller.restoreTurnControlText(SID), false);
+    assert.equal(store.getState().outbox.bySessionId[SID][0].text, "queued words");
+    controller.exitPendingPromptEdit({ restoreDraft: true });
+    assert.equal(controller.restoreTurnControlText(SID), true);
+    assert.match(store.getState().ui.prompt, /kept words$/);
+});
+
+test("a fallback cancelled before it was sent is not reported as sent", async () => {
+    const first = deferred();
+    const { controller, calls, view } = harness({ steer: { outcome: "no_turn" }, send: (n) => (n === 1 ? first.promise : undefined) });
+    controller.setPrompt("an ordinary message");
+    const sending = controller.sendPrompt();
+    controller.setPrompt("fallback to cancel");
+    const steering = controller.steerActiveSessionTurn();
+    await new Promise((resolve) => setImmediate(resolve));
+    const fallback = controller.getSessionOutbox(SID).find((entry) => entry.text === "fallback to cancel");
+    assert.ok(fallback && fallback.phase === "pending");
+    controller.setSessionOutboxItems(SID, controller.getSessionOutbox(SID).filter((entry) => entry.id !== fallback.id));
+    first.resolve();
+    await sending;
+    await steering;
+    assert.equal(view().notice.reason, "fallback_failed");
+    assert.equal(calls.send.length, 1, "the cancelled fallback was never sent");
+});
+
+test("a fallback merged with another pending message is sent with it", async () => {
+    const first = deferred();
+    const { controller, calls, view } = harness({ steer: { outcome: "no_turn" }, send: (n) => (n === 1 ? first.promise : undefined) });
+    controller.setPrompt("in flight");
+    const sending = controller.sendPrompt();
+    controller.queuePromptInOutbox(SID, "waiting too");
+    controller.setPrompt("merged fallback");
+    const steering = controller.steerActiveSessionTurn();
+    await new Promise((resolve) => setImmediate(resolve));
+    first.resolve();
+    await sending;
+    await steering;
+    assert.equal(view().notice.reason, "fallback_sent");
+    assert.equal(calls.send.length, 2);
+    assert.ok(calls.send[1].clientMessageIds.includes(view().notice.clientMessageId), "sent inside the merged envelope");
+});
+
+test("a fallback behind an earlier attempted envelope that fails again is not sent", async () => {
+    const { controller, calls, view } = harness({ steer: { outcome: "legacy_turn" }, send: () => { throw httpError(503); } });
+    const earlier = controller.buildOutboxItem("earlier failed", "pending");
+    earlier.attempted = true;
+    controller.setSessionOutboxItems(SID, [earlier]);
+    controller.setPrompt("blocked fallback");
+    await controller.steerActiveSessionTurn();
+    assert.equal(view().notice.reason, "fallback_failed");
+    assert.deepEqual(calls.send.map((call) => call.prompt), ["earlier failed"], "the outbox sends the earlier envelope first");
+    // The outbox keeps retrying its pending envelopes; end that here.
+    controller.setSessionOutboxItems(SID, []);
 });

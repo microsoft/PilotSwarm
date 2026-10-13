@@ -9662,24 +9662,42 @@ function TurnControlNotice({ controller, notice, sessionId }) {
             onClick: () => { controller.retryTurnControl(notice.kind, sessionId).catch(() => {}); },
         }, "Retry")
         : null,
-    notice.text
-        ? React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
-            "data-testid": "control-restore-button",
-            title: "Put the steer text back into the composer",
-            onPointerDown: (event) => event.preventDefault(),
-            onClick: () => controller.restoreTurnControlText(sessionId),
-        }, "Restore text")
-        : null,
     React.createElement("button", {
         type: "button",
         className: "ps-mini-button ps-control-notice-dismiss",
         "aria-label": "Dismiss",
-        title: reason === "unconfirmed" || notice.text ? "Dismiss (its text returns to the composer)" : "Dismiss",
+        title: reason === "unconfirmed" ? "Dismiss (gives the request up; steer text is kept)" : "Dismiss",
         onPointerDown: (event) => event.preventDefault(),
         onClick: () => controller.dismissTurnControlNotice(sessionId, notice.kind === "stop" ? "stop" : "steer"),
     }, "✕"));
+}
+
+/**
+ * Steer text that was not delivered and could not go back into the composer
+ * (the composer had a new draft, another session was open, or an outbox
+ * message was selected). It stays until Restore or Discard.
+ */
+function KeptSteerText({ controller, kept, sessionId }) {
+    const latest = kept[kept.length - 1]?.text || "";
+    const preview = latest.length > 80 ? `${latest.slice(0, 79)}…` : latest;
+    return React.createElement("div", { className: "ps-control-notice is-kept", role: "status", "data-testid": "control-kept-text", "data-count": String(kept.length) },
+        React.createElement("span", { className: "ps-control-notice-text" },
+            `Steer text kept${kept.length > 1 ? ` (${kept.length})` : ""}: “${preview}”`),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            "data-testid": "control-restore-button",
+            title: "Put the kept steer text back into the composer, after your draft",
+            onPointerDown: (event) => event.preventDefault(),
+            onClick: () => controller.restoreTurnControlText(sessionId),
+        }, "Restore"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            title: "Discard the kept steer text",
+            onPointerDown: (event) => event.preventDefault(),
+            onClick: () => controller.discardTurnControlText(sessionId),
+        }, "Discard"));
 }
 
 function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
@@ -9705,6 +9723,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             stopPhase: turnControl.stop?.phase || null,
             steerNotice: turnControl.steerNotice,
             stopNotice: turnControl.stopNotice,
+            keptSteers: turnControl.kept,
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -9929,6 +9948,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             : null,
         promptState.steerNotice
             ? React.createElement(TurnControlNotice, { controller, notice: promptState.steerNotice, sessionId: promptState.sessionId })
+            : null,
+        promptState.keptSteers.length > 0
+            ? React.createElement(KeptSteerText, { controller, kept: promptState.keptSteers, sessionId: promptState.sessionId })
             : null,
         imageAttachments.length > 0
             ? React.createElement("div", { className: "ps-prompt-attachments" },

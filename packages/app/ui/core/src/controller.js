@@ -453,7 +453,7 @@ function shouldPreserveStaleCronVisual(previousSession, nextSession) {
 const STEERING_FEATURE_KEY = "sessions.steering";
 const STEERING_FEATURE_REFRESH_MS = 30_000;
 const TURN_CONTROL_NOTICE_MS = 8_000;
-const FALLBACK_DISPATCH_ATTEMPTS = 5;
+const FALLBACK_DISPATCH_PASS_LIMIT = 20;
 const noticeKey = (kind) => (kind === "stop" ? "stopNotice" : "steerNotice");
 // Events after which the running turn no longer accepts Stop/Steer controls.
 const TURN_CONTROL_ELIGIBILITY_END_EVENTS = new Set([
@@ -10779,16 +10779,17 @@ export class PilotSwarmUiController {
 
     /**
      * Notices are kept per kind (steerNotice, stopNotice), so a Stop never
-     * hides the Retry/Dismiss of an unconfirmed steer, or the reverse.
+     * hides the Retry/Dismiss of an unconfirmed steer, or the reverse. They
+     * never own steer text: text that could not go back into the composer
+     * lives in the session's `kept` list (see _keepSteerText).
      */
     _showTurnControlNotice(sessionId, notice) {
         const stamped = { ...notice, at: Date.now() };
         const key = noticeKey(notice.kind);
         this._setTurnControl(sessionId, { [key]: stamped });
         // Informational notices clear themselves; a notice that needs an
-        // action (Retry, a failed fallback, or refused text that could not go
-        // back into the composer) stays until it is handled.
-        if (!notice.text && !["unconfirmed", "fallback_failed", "stop_pending_retry"].includes(notice.reason)) {
+        // action (Retry, a failed fallback, a pending Stop) stays.
+        if (!["unconfirmed", "fallback_failed", "stop_pending_retry"].includes(notice.reason)) {
             const timer = setTimeout(() => {
                 if (this._turnControlEntry(sessionId)[key] === stamped) this._setTurnControl(sessionId, { [key]: null });
             }, TURN_CONTROL_NOTICE_MS);
@@ -10796,28 +10797,54 @@ export class PilotSwarmUiController {
         }
     }
 
-    /**
-     * Text of a steer that will not be delivered goes back into the
-     * composer when it is safe: the session is still the active one and the
-     * composer is empty. Otherwise it is returned, to be kept on the notice
-     * until the person restores it, so it is never lost.
-     */
-    _returnSteerText(sessionId, text) {
-        if (!text) return undefined;
-        if (this.getState().sessions.activeSessionId === sessionId && !String(this.getState().ui.prompt || "").trim()) {
-            this.setPrompt(text, String(text).length);
-            return undefined;
-        }
-        return text;
+    _composerFreeFor(sessionId) {
+        const state = this.getState();
+        return state.sessions.activeSessionId === sessionId && !this.getPromptEditSessionMatch(sessionId);
     }
 
-    /** Put the active session's kept steer text back into the composer (after any draft). */
+    /**
+     * Steer text that will not be delivered is never lost. It goes back into
+     * the composer when that is safe (the session is active, its composer is
+     * empty and no outbox message is selected); otherwise it joins the
+     * session's kept list, which only Restore or an explicit Discard empties.
+     * `append` (an explicit Dismiss) also accepts a non-empty composer.
+     */
+    _keepSteerText(sessionId, text, { append = false } = {}) {
+        if (!text) return;
+        if (this._composerFreeFor(sessionId)) {
+            const draft = String(this.getState().ui.prompt || "");
+            if (!draft.trim()) {
+                this.setPrompt(text, String(text).length);
+                return;
+            }
+            if (append) {
+                this._appendToComposer(text);
+                return;
+            }
+        }
+        const kept = [...(this._turnControlEntry(sessionId).kept || []),
+            { id: this._newTurnControlRequestId(), text, at: Date.now() }];
+        this._setTurnControl(sessionId, { kept });
+    }
+
+    /** Put the session's kept steer texts back into the composer, after any draft. */
     restoreTurnControlText(sessionId = this.getState().sessions.activeSessionId) {
-        if (!sessionId || this.getState().sessions.activeSessionId !== sessionId) return false;
-        const notice = this._turnControlEntry(sessionId).steerNotice;
-        if (!notice?.text) return false;
-        this._appendToComposer(notice.text);
-        this._setTurnControl(sessionId, { steerNotice: null });
+        if (!sessionId) return false;
+        const kept = this._turnControlEntry(sessionId).kept || [];
+        if (kept.length === 0) return false;
+        if (!this._composerFreeFor(sessionId)) {
+            this.dispatch({ type: "ui/status", text: "Leave the selected pending message first (Esc), then restore the steer text" });
+            return false;
+        }
+        for (const item of kept) this._appendToComposer(item.text);
+        this._setTurnControl(sessionId, { kept: null });
+        return true;
+    }
+
+    /** Discard the session's kept steer texts (a deliberate choice). */
+    discardTurnControlText(sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId || !(this._turnControlEntry(sessionId).kept || []).length) return false;
+        this._setTurnControl(sessionId, { kept: null });
         return true;
     }
 
@@ -10829,7 +10856,7 @@ export class PilotSwarmUiController {
 
     /**
      * Give up every unresolved Stop/Steer of the session (the TUI's Alt+T;
-     * the portal dismisses each notice). Steer text returns to the composer.
+     * the portal dismisses each notice). Steer text is kept, never dropped.
      */
     giveUpTurnControl(sessionId = this.getState().sessions.activeSessionId) {
         if (!sessionId) return false;
@@ -10845,23 +10872,15 @@ export class PilotSwarmUiController {
     dismissTurnControlNotice(sessionId = this.getState().sessions.activeSessionId, kind = "steer") {
         if (!sessionId) return;
         const entry = this._turnControlEntry(sessionId);
-        // Dismissing gives that kind's unconfirmed request up. Any steer text
-        // it held (or kept refused text) returns to the composer so nothing
-        // typed is lost: after the current draft when there is one.
+        // Dismissing gives that kind's unconfirmed request up. Its steer text
+        // returns to the composer (after the draft) or to the kept list.
         if (kind === "stop") {
             this._setTurnControl(sessionId, { stopNotice: null, ...(entry.stop?.phase === "unconfirmed" ? { stop: null } : {}) });
             return;
         }
-        const patch = { steerNotice: null };
-        let text = entry.steerNotice?.text;
-        if (entry.steer?.phase === "unconfirmed") {
-            patch.steer = null;
-            text = entry.steer.text;
-        }
-        // Only the session's own composer dismisses: the text needs a place.
-        if (text && this.getState().sessions.activeSessionId !== sessionId) return;
-        if (text) this._appendToComposer(text);
-        this._setTurnControl(sessionId, patch);
+        const given = entry.steer?.phase === "unconfirmed" ? entry.steer.text : null;
+        this._setTurnControl(sessionId, { steerNotice: null, ...(given !== null ? { steer: null } : {}) });
+        if (given) this._keepSteerText(sessionId, given, { append: true });
     }
 
     /** Read the viewer's sessions.steering decision (session load and feature refresh). */
@@ -10949,8 +10968,8 @@ export class PilotSwarmUiController {
                 return;
             }
             this._setTurnControl(sessionId, { steer: null });
-            const kept = this._returnSteerText(sessionId, request.text);
-            this._showTurnControlNotice(sessionId, { kind: "steer", reason, detail: error?.message || String(error), ...(kept ? { text: kept } : {}) });
+            this._keepSteerText(sessionId, request.text);
+            this._showTurnControlNotice(sessionId, { kind: "steer", reason, detail: error?.message || String(error) });
             this.dispatch({ type: "ui/status", text: `Steer refused: ${error?.message || error}` });
             return;
         }
@@ -10980,9 +10999,9 @@ export class PilotSwarmUiController {
             return;
         }
         if (outcome === "steering_disabled") this.dispatch({ type: "turnControl/steering", enabled: false });
-        const kept = this._returnSteerText(sessionId, request.text);
+        this._keepSteerText(sessionId, request.text);
         this._showTurnControlNotice(sessionId, {
-            kind: "steer", reason: TURN_CONTROL_NOTICE_REASONS.has(outcome) ? outcome : "error", ...(kept ? { text: kept } : {}),
+            kind: "steer", reason: TURN_CONTROL_NOTICE_REASONS.has(outcome) ? outcome : "error",
         });
         this.dispatch({ type: "ui/status", text: `Steer refused: ${TURN_CONTROL_REFUSAL_TEXT[outcome] || outcome}` });
     }
@@ -10998,8 +11017,11 @@ export class PilotSwarmUiController {
         const clientMessageId = item.id;
         const find = () => this.getSessionOutbox(sessionId)
             .find((entry) => entry.id === clientMessageId || entry.clientMessageIds?.includes(clientMessageId));
-        let lastError = null;
-        for (let attempt = 0; attempt < FALLBACK_DISPATCH_ATTEMPTS; attempt += 1) {
+        const acknowledged = () => (this.getState().history.bySessionId.get(sessionId)?.events || [])
+            .some((event) => event?.eventType === "user.message" && event.data?.clientMessageIds?.includes(clientMessageId));
+        // Each pass either awaits an envelope in flight or dispatches one;
+        // the bound only guards a pass that makes no progress at all.
+        for (let pass = 0; pass < FALLBACK_DISPATCH_PASS_LIMIT; pass += 1) {
             const inFlight = this.outboxFlushPromises.get(sessionId);
             if (inFlight) await inFlight.catch(() => {});
             let threw = null;
@@ -11007,16 +11029,19 @@ export class PilotSwarmUiController {
                 await this.dispatchPendingOutbox(sessionId);
             } catch (error) {
                 threw = error;
-                lastError = error;
             }
             const current = find();
-            if (!current || current.phase === "queued") return { ok: true, clientMessageId };
-            if (current.phase === "rejected" || current.phase === "cancelling") return { ok: false, clientMessageId, error: threw || lastError };
-            // Its own envelope was attempted and failed: report it; the outbox
-            // keeps the exact envelope for a later send.
-            if (threw && current.attempted) return { ok: false, clientMessageId, error: threw };
+            // Success needs positive evidence for this id: its envelope was
+            // enqueued, or the durable message carrying it arrived.
+            if (current?.phase === "queued" || acknowledged()) return { ok: true, clientMessageId };
+            // Gone without either: removed locally (cancelled) before a send.
+            if (!current) return { ok: false, clientMessageId, error: new Error("the message was cancelled before it was sent") };
+            if (current.phase === "rejected" || current.phase === "cancelling") return { ok: false, clientMessageId, error: threw };
+            // A failed send (its own, or an earlier envelope the outbox must
+            // send first) leaves this message unsent for now.
+            if (threw) return { ok: false, clientMessageId, error: threw };
         }
-        return { ok: false, clientMessageId, error: lastError || new Error("the message was not sent") };
+        return { ok: false, clientMessageId, error: new Error("the message was not sent") };
     }
 
     /** Resend an unconfirmed Stop or Steer with its original request id. */

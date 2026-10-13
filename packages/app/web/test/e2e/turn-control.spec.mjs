@@ -315,7 +315,7 @@ test("every Stop notice: no active turn, timeout, pending retry, unconfirmed wit
     expect(new Set(wire.state.stops.slice(0, 6).map((stop) => stop.requestId)).size).toBe(6);
 });
 
-test("a refusal after a new draft keeps the steer text on the notice until Restore", async ({ page }) => {
+test("a refusal after a new draft keeps the steer text until Restore, also across a Stop", async ({ page }) => {
     let release;
     const wire = await open(page, { handlers: { steer: async ({ answer }) => { await new Promise((resolve) => { release = resolve; }); return answer({ outcome: "too_many" }); } } });
     await wire.input.fill("guidance first");
@@ -325,9 +325,15 @@ test("a refusal after a new draft keeps the steer text on the notice until Resto
     release();
     await expect(wire.notice).toHaveAttribute("data-reason", "too_many");
     await expect(wire.input).toHaveValue("a new draft");
-    await wire.notice.getByTestId("control-restore-button").click();
+    const kept = wire.composer.getByTestId("control-kept-text");
+    await expect(kept).toContainText("guidance first");
+    // Another Stop does not take the kept text away.
+    await wire.stopButton.click();
+    await expect.poll(() => wire.state.stops.length).toBe(1);
+    await expect(kept).toContainText("guidance first");
+    await kept.getByTestId("control-restore-button").click();
     await expect(wire.input).toHaveValue("a new draft\n\nguidance first");
-    await expect(wire.notice).toHaveCount(0);
+    await expect(kept).toHaveCount(0);
 });
 
 test("an unconfirmed steer keeps its Retry after a Stop and after the turn ends", async ({ page }) => {

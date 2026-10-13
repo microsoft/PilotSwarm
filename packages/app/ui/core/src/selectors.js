@@ -3386,6 +3386,8 @@ function buildTurnControlLines(message, maxWidth, options = {}) {
     return [header, ...body];
 }
 
+const NO_KEPT_STEERS = Object.freeze([]);
+
 /** Stop and Steer state of one session, for the composer and the TUI status line. */
 export function selectTurnControlView(state, sessionId = state?.sessions?.activeSessionId) {
     const session = sessionId ? state?.sessions?.byId?.[sessionId] || null : null;
@@ -3407,6 +3409,8 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         stop: entry?.stop || null,
         steerNotice,
         stopNotice,
+        // Steer texts that could not return to the composer, oldest first.
+        kept: Array.isArray(entry?.kept) ? entry.kept : NO_KEPT_STEERS,
         // The most recent notice of either kind (status-line hints).
         notice: steerNotice && stopNotice ? (steerNotice.at >= stopNotice.at ? steerNotice : stopNotice) : steerNotice || stopNotice,
     };
@@ -6145,13 +6149,12 @@ export function selectStatusBar(state) {
     const turnControl = selectTurnControlView(state);
     if (turnControl.steer?.phase === "unconfirmed") {
         right = `ctrl-t retry steer · ${right}`;
-    } else if (turnControl.steerNotice?.text && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
+    } else if (turnControl.kept.length > 0 && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
         right = `ctrl-t restore steer text · ${right}`;
     } else if (turnControl.canSteer && focus === FOCUS_REGIONS.PROMPT) {
         right = `ctrl-t steer · ${right}`;
     }
-    if (focus === FOCUS_REGIONS.PROMPT && (turnControl.steer?.phase === "unconfirmed" || turnControl.stop?.phase === "unconfirmed"
-        || turnControl.steerNotice?.text)) {
+    if (focus === FOCUS_REGIONS.PROMPT && (turnControl.steer?.phase === "unconfirmed" || turnControl.stop?.phase === "unconfirmed")) {
         right = right.replace(/^((?:ctrl-t [a-z ]+ · )?)/, "$1alt-t give up · ");
     }
     if (turnControl.stop?.phase === "unconfirmed") {
