@@ -194,6 +194,7 @@ function* handleConnectionClosedRetry(
     });
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
     state.carriedSteers = [];
+    state.thrownTurnKey = null;
     state.retryCount = 0;
 }
 
@@ -221,6 +222,8 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
         ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
         retryCount: state.retryCount,
         needsHydration: state.needsHydration,
+        // 1.0.81: only the retry of a thrown turn carries its key.
+        ...(rc.phase === "runTurn.throw" && state.thrownTurnKey ? { thrownTurnKey: state.thrownTurnKey } : {}),
     };
 }
 
@@ -302,6 +305,7 @@ function* handleGenericRetry(
             { closeControls: true },
         );
         state.carriedSteers = [];
+        state.thrownTurnKey = null;
         state.retryCount = 0;
         return;
     }
@@ -467,6 +471,8 @@ export function* processPrompt(
 
     publishStatus(runtime, "running", { iteration: state.iteration + 1 });
     let turnResult: any;
+    // 1.0.81: the key this attempt sends, kept for a retry if it throws.
+    let attemptTurnKey = "";
     try {
         // V4 applies CMS controls inside the activity. Do not race away its
         // result: its saved conversation and control outcomes are authoritative.
@@ -474,7 +480,20 @@ export function* processPrompt(
         // rides in the activity input with the last committed version. The
         // worker self-validates against them (preamble) and commits the
         // post-turn snapshot inside the activity, returning the new version.
-        const snapshotTurnKey: string = state.blobEnabled ? yield ctx.newGuid() : "";
+        //
+        // 1.0.81: the retry of an attempt that THREW sends that attempt's key
+        // again. If the attempt had already committed (a throw after the
+        // commit, for example a failed turn end), the preamble finds the turn
+        // saved under this key and adopts it: no second model run and no
+        // second commit. Otherwise the retry runs the turn normally. The key
+        // came from the earlier ctx.newGuid(), so nothing new is generated.
+        const reusedTurnKey = state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey
+            ? state.thrownTurnKey
+            : null;
+        if (reusedTurnKey) ctx.traceInfo(`[orch] retrying a thrown turn with its earlier turnKey ${reusedTurnKey}`);
+        const snapshotTurnKey: string = reusedTurnKey ?? (state.blobEnabled ? yield ctx.newGuid() : "");
+        attemptTurnKey = snapshotTurnKey;
+        state.thrownTurnKey = null;
         const heldAttachments = sanitizePromptAttachmentRefs(
             (state.budgetStash ?? []).flatMap((entry) => entry.attachments ?? []));
         const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
@@ -563,6 +582,8 @@ export function* processPrompt(
         }
     } catch (err: any) {
         state.config.turnSystemPrompt = undefined;
+        // 1.0.81: keep this attempt's key for the retry of the same turn.
+        state.thrownTurnKey = attemptTurnKey || null;
         const errorMsg = err.message || String(err);
         const missingStateIndex = errorMsg.indexOf(SESSION_STATE_MISSING_PREFIX);
         if (missingStateIndex >= 0) {
@@ -570,11 +591,13 @@ export function* processPrompt(
             ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
             publishStatus(runtime, "failed", { error: fatalError, fatal: true });
             state.carriedSteers = [];
+            state.thrownTurnKey = null;
             yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", fatalError);
             throw new Error(fatalError);
         }
 
         if (isAuthFailureError(errorMsg)) {
+            state.thrownTurnKey = null;
             ctx.traceInfo(`[orch] runTurn FAILED with auth error; not retrying: ${errorMsg}`);
             yield* projectAuthFailure(runtime, errorMsg);
             return;

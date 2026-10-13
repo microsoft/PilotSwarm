@@ -145,6 +145,12 @@ export interface DurableSessionState {
      * that will be retried keeps them, so the retry folds them again.
      */
     carriedSteers: LateSteer[];
+    /**
+     * 1.0.81: the snapshot turnKey of a runTurn attempt that threw, kept for
+     * the retry of that same turn (see `OrchestrationInput.thrownTurnKey`).
+     * Cleared when any turn result arrives and on give-up paths.
+     */
+    thrownTurnKey: string | null;
     interruptedCronTimer: InterruptedCronTimer | null;
 
     // ── Session workspaces (1.0.80) ──────────────────────────────
@@ -484,6 +490,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,
         carriedSteers: input.carriedSteers ? [...input.carriedSteers] : [],
+        thrownTurnKey: typeof input.thrownTurnKey === "string" && input.thrownTurnKey ? input.thrownTurnKey : null,
         interruptedCronTimer: input.interruptedCronTimer ?? null,
 
         workspaceRevision: typeof input.workspaceRevision === "number" && input.workspaceRevision > 0 ? input.workspaceRevision : 0,

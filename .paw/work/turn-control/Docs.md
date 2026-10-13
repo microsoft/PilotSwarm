@@ -277,6 +277,22 @@ hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
 - **A stale worker skips T8 when no controls are open** (P15): its
   T6 writeback finds no open controls after the winner's T8. The outcome
   equals design 3.9, where both workers call T8.
+- **A throw after the commit (found by the integration run).** `runTurn`
+  has no activity retry policy, so a throw reaches the orchestration, which
+  retries the turn. Before the fix the retry drew a new snapshot `turnKey`;
+  the preamble recognises a saved turn only by its key, so the retry ran the
+  model again and committed the turn a second time. V4 added such a throw:
+  T8 turn end, which fails the activity after three tries (it runs even
+  without controls when the end-of-turn write's best-effort answer is lost,
+  P15). `fault-injection-live` F6 hit it once under full-suite load (store
+  at v3 instead of v2). Fix (1.0.81 only): the retry of a **thrown** runTurn
+  sends that attempt's `turnKey` again (`thrownTurnKey`, carried through the
+  retry's continue-as-new, cleared when any result arrives and on give-up).
+  When the attempt had committed, the preamble adopts the saved result and
+  only T8 runs; when it had not, the turn runs normally. A returned error
+  and a new prompt always draw a new key. Tests: `turn-control-crash.test.js`
+  (throw after T7: one commit, one model run, outcomes written) and
+  `turn-control-orchestration.test.js` (key reuse, clearing, give-up).
 - **A steer after the end-of-turn write.** T6 clears `active_turn_index`
   under the session row lock, so a steer that arrives after it is refused
   `no_turn` (nothing is recorded) and the client sends it as an ordinary
