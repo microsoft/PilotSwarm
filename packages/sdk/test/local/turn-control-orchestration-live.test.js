@@ -285,6 +285,57 @@ describe("B2 live orchestration turn controls after A4", () => {
                     ? { type: "error", message: "retry this turn" }
                     : { type: "completed", content: "used" },
             });
+
+            it("a carried-only returned-error retry keeps the wake marker out of every real CLI request", { timeout: TIMEOUT }, async () => {
+                const env = getEnv();
+                await withScriptedModel(env, {
+                    respond: () => ({ content: "done" }),
+                }, async ({ client, worker, model }) => {
+                    const catalog = await createCatalog(env);
+                    const sessionId = randomUUID();
+                    const capture = captureLateSteer(worker, sessionId, "B2 retry carried guidance");
+                    const manager = worker.sessionManager;
+                    const original = manager.getOrCreate;
+                    const wrapped = new Map();
+                    let failed = false;
+                    manager.getOrCreate = async function (id, ...args) {
+                        const session = await original.call(this, id, ...args);
+                        if (id === sessionId && !wrapped.has(session)) {
+                            const run = session.runTurn;
+                            wrapped.set(session, run);
+                            session.runTurn = async function (prompt, opts) {
+                                const result = await run.call(this, prompt, opts);
+                                if (!failed && prompt.includes("B2 retry carried guidance")) {
+                                    failed = true;
+                                    return { type: "error", message: "B2 injected returned error" };
+                                }
+                                return result;
+                            };
+                        }
+                        return session;
+                    };
+                    try {
+                        const session = await client.createSession({ sessionId });
+                        await session.send("B2 first before carried retry");
+                        await waitForEventCount(catalog, sessionId, "session.carried_steers_closed", 1, 90_000);
+                        expect(failed).toBe(true);
+                        expect(await closings(catalog, sessionId)).toEqual([
+                            expect.objectContaining({ seqs: [capture.seq], reason: "ran", turnIndex: 2 }),
+                        ]);
+                        const requests = model.sessionRequests("B2 first before carried retry");
+                        expect(requests.filter(r => r.position.lastUserText.includes("B2 retry carried guidance")).length).toBeGreaterThanOrEqual(2);
+                        expect(requests.some(r => JSON.stringify(r.body).includes(CARRIED_STEERS_WAKE_PROMPT))).toBe(false);
+                        const events = await catalog.getSessionEvents(sessionId);
+                        expect(events.filter(e => e.eventType === "user.steer")).toHaveLength(1);
+                        expect(events.filter(e => e.eventType === "user.message" && String(e.data.content).includes("B2 retry carried guidance"))).toEqual([]);
+                    } finally {
+                        for (const [session, run] of wrapped) session.runTurn = run;
+                        manager.getOrCreate = original;
+                        capture.restore();
+                        await catalog.close();
+                    }
+                });
+            });
             const first = await h.runTurn(sessionId, { turnIndex: 1, prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: carried }, "runTurnV4");
             expect(first.type).toBe("error");
             expect(first.carriedSteersConsumed).toBeUndefined();
