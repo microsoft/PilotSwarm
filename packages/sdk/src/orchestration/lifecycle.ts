@@ -204,7 +204,7 @@ export function* releaseAffinity(
         }
     }
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",
@@ -341,7 +341,7 @@ export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime,
     const revision = state.workspaceRevision + 1;
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     state.config.workspace = next;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     state.workspaceRevision = revision;
     const note = extraFoldersChangedNote(previous, next, extraPaths);
     if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
@@ -588,6 +588,7 @@ export function buildContinueInput(
         // A queued-while-blocked prompt must survive the epoch boundary too,
         // or continue-as-new becomes one more way to destroy it.
         ...(state.budgetStash && state.budgetStash.length > 0 ? { budgetStash: state.budgetStash } : {}),
+        ...(state.carriedSteers.length > 0 ? { carriedSteers: [...state.carriedSteers] } : {}),
         // Session workspaces (1.0.80): each field only when set, so a session
         // without a workspace continues-as-new with the same input as before.
         ...(state.workspaceRevision > 0 ? { workspaceRevision: state.workspaceRevision } : {}),
@@ -1033,7 +1034,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     else delete state.config.workspace;
     // The proxy carries the config into every turn; rebuild it from the
     // changed config rather than rely on sharing one object.
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
     // directory, so its note names the extra folders alone. A note not yet

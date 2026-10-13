@@ -1,6 +1,7 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
 import { sanitizePromptAttachmentRefs, ATTACHMENTS_MAX_COUNT } from "../types.js";
 import { messageSenderKey } from "../message-sender.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
     maybeResolveAgentWaitCompletion,
@@ -289,6 +290,27 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
+        } else if (state.carriedSteers.length > 0 && !state.pendingInputQuestion && !state.pendingShutdown && !timerGate(state.activeTimer)) {
+            // A follow-up held by an agent wait is pending work that decide
+            // will not dispatch. End the wait as a new message would, and let
+            // the follow-up carry the steers; breaking with it still held
+            // made the run loop spin without yielding.
+            if (state.pendingPrompt && state.waitingForAgentIds) {
+                ctx.traceInfo(`[drain] carried steers interrupted agent wait`);
+                state.waitingForAgentIds = null;
+                if (state.activeTimer?.type === "agent-poll") state.activeTimer = null;
+            }
+            // Give already-pending user work priority. Otherwise the carry
+            // enters the same timer-interrupt path as a newly arrived message.
+            if (stash.length > 0 || state.pendingPrompt || state.pendingToolActions.length > 0 || hasFifoItems(runtime)) break;
+            const raced: any = yield ctx.race(
+                ctx.dequeueEvent("messages"),
+                ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
+            );
+            msg = raced.index === 1
+                ? { prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true }
+                : typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
+
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
@@ -535,7 +557,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
 
             if (state.pendingChildDigest?.updates.length) {
-                userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                if (msg.carriedSteersWake === true) {
+                    // The wake marker is itself a [SYSTEM: ...] text; merging
+                    // the digest into it would dissolve the marker. Merge the
+                    // digest into the notes after it instead.
+                    const notes = flushPendingChildDigestIntoPrompt(
+                        runtime,
+                        userPrompt.slice(CARRIED_STEERS_WAKE_PROMPT.length).trim() || undefined,
+                    );
+                    userPrompt = notes ? `${CARRIED_STEERS_WAKE_PROMPT}\n\n${notes}` : CARRIED_STEERS_WAKE_PROMPT;
+                } else {
+                    userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                }
             }
 
             const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);
@@ -543,6 +576,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 kind: "prompt",
                 prompt: userPrompt,
                 bootstrap: Boolean(msg.bootstrap),
+                ...(msg.carriedSteersWake === true ? { carriedSteersWake: true } : {}),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
@@ -755,7 +789,9 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 // once flipped, and keep a single turn-level sender only when
                 // every merged segment came from the same identity.
                 const firstSender = noteMessageSender(runtime, item.sender);
-                let mergedPrompt = applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
+                let mergedPrompt = item.carriedSteersWake === true
+                    ? String(item.prompt || "")
+                    : applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
                 let mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
@@ -790,7 +826,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     // a fresh session — true, and beside the point: with
                     // [kickoff, B, C] queued, appending B left [C, B], and the
                     // person's own two messages ran in the wrong order.
-                    if (Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
+                    // A carried-steers wake is a turn of its own: its marker
+                    // must stay the whole prompt.
+                    if (item.carriedSteersWake === true || peek.carriedSteersWake === true
+                        || Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
                         prependToFifo(runtime, peek);
                         break;
                     }

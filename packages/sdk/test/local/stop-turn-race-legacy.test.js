@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeRacedTurnValue } from "../../src/orchestration/turn.js";
+import { normalizeRacedTurnValue } from "../../src/orchestration_1_0_80/turn.js";
 
 /**
  * normalizeRacedTurnValue (moved verbatim from stop-turn.test.js): the

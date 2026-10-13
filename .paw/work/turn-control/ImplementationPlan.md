@@ -108,7 +108,7 @@ Every file belongs to exactly one workstream. Another workstream that needs a ch
 | `packages/sdk/test/local/stop-turn.test.js` | A | after A1 keeps only ManagedSession and SessionManager abort tests |
 | `packages/sdk/test/local/stop-turn-race-legacy.test.js` (new in A1, moved from `stop-turn.test.js`) | B | the race-normalizer tests; B1 points its import at `orchestration_1_0_80/turn.js` |
 | `packages/sdk/test/local/stop-turn-management.test.js` (new in A1, moved from `stop-turn.test.js`) | C | the management `stopSessionTurn` tests; C1 updates its fake catalog |
-| `packages/sdk/test/local/snapshot-lineage-jump.test.js`, `orchestration-workspace-compat.test.js`, `workspace-turn.test.js` (their orchestration version pins); `orchestration-budget-resume.test.js`, `prefix-cache-system-context.test.js`, `orchestration-retry-exhaustion.test.js`, `race-failed-winner.test.js`, `bound-agent-backfill.test.js` | B | the first three pin the latest version as 1.0.80; B1 updates the pins. The other five drive the old Stop race or the old history names; B2 updates them. A4/A5 ask the parent first before any change to these eight files |
+| `packages/sdk/test/local/snapshot-lineage-jump.test.js`, `orchestration-workspace-compat.test.js`, `workspace-turn.test.js` (their orchestration version pins); `orchestration-budget-resume.test.js`, `prefix-cache-system-context.test.js`, `orchestration-retry-exhaustion.test.js`, `race-failed-winner.test.js`, `bound-agent-backfill.test.js`; `orchestration-warm-resume.test.js` | B | the first three pin the latest version as 1.0.80; B1 updates the pins. The next five drive the old Stop race or the old history names; B2 updates them. The last seeds `carriedSteers: []`. A4/A5 ask the parent first before any change to these nine files |
 | `packages/sdk/test/local/child-update-batching.test.js`, `child-wake-diet.test.js`, `model-selection.test.js` | B | they encode the Stop race in a fake `ctx`; B2 updates their drivers |
 | `packages/sdk/test/local/stop-turn-live.test.js` | C | C1 updates it to the new path (P22: assert the `user.stop` line and `stopped` outcome, not the system message) and keeps a legacy-version case |
 | `.paw/work/turn-control/**` | A | umbrella Spec, CodeResearch, this plan, reviews. B and C keep their own PAW work folders `.paw/work/turn-control-b/` and `.paw/work/turn-control-c/` |
@@ -166,7 +166,7 @@ Workstream A (this branch):
 - [x] **Phase A1: Contract** - Shared types, constants, routing names and tag, scheduling hooks, CMS method signatures and the `sessions.steering` definition; merged before B and C start.
 - [x] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
 - [x] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
-- [ ] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
+- [x] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
 - [ ] **Phase A5: End-to-end, crash and multi-worker verification** - Real-CLI integration, fault-point crash matrix, stale worker, measurements.
 - [ ] **Phase A6: Documentation (A)** - Docs.md for workstream A, CMS schema and system reference docs.
 
@@ -345,6 +345,13 @@ Consumes A1-A3. Design 4.7, 4.8, 5.1, 5.2; Spec FR-009 to FR-013, FR-021. Test p
 - [ ] The save happens before turn end on every path (design 5.1 reverse-order warning)
 
 ---
+
+### A4 implementation notes
+- The V3 and V4 names share one handler body (`runTurnImpl`); every turn-control step is guarded by the V4 flag and a catalog, so the V3 path is unchanged (pinned by a test).
+- T8 is skipped only when the end-of-turn write answered `false` and no carried steers were taken; a turn that never reached T3 in this attempt leaves the turn's controls alone, except on the already-saved path.
+- An error turned "stopped" by an open Stop calls turn end a second time with kind `stopped`, so carried steers taken by that turn close as `stopped` (D6).
+- When the live Copilot session is lost and the turn re-runs, the live cursor goes back to the start cursor: steers applied to the lost conversation are carried, not reported delivered.
+- A session without a store reads no saved cursor (D4).
 
 ## Phase A5: End-to-end, crash and multi-worker verification
 
