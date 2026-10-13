@@ -372,8 +372,9 @@ describe("turn control procedures (migration 0082)", () => {
         expect(await catalog.turnStart(s, 0)).toEqual({ stopped: false, controls: [] });
         await catalog.turnStart(s, 1);
         expect(await catalog.turnEnd(s, 1, 0, "other", [])).toEqual({ stopped: false, late: [] });
+        await catalog.turnStart(s, 2);
         const fresh = await steer(s, "new", rid());
-        expect(fresh.turn).toBe(1);
+        expect(fresh.turn).toBe(2);
     }, TIMEOUT);
 
     it("a system-session restart archive resets the turn columns, and its revive starts at turn 0", async () => {
