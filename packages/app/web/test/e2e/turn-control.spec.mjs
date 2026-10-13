@@ -2,11 +2,13 @@
 // (the parent's UX pass asserts and screenshots these selectors). A fake
 // transport answers every call: the hermetic stub server plus routed Web API
 // calls and a routed WebSocket for live session events. Every selector and
-// every attribute value of the contract table is reached here.
+// every attribute value of the contract table is reached here, in the single
+// session view, in the Master of Agents dashboard and in the phone focus views.
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
 const SID = "11111110-2222-3333-4444-555555555550";
+const SID2 = "11111111-2222-3333-4444-555555555551";
 const T0 = 1785000000000;
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1, transcriptTurns: 0 }); });
@@ -15,21 +17,35 @@ test.afterAll(async () => { await new Promise((resolve) => stub.server.close(res
 const ev = (seq, eventType, data) => ({ sessionId: SID, seq, eventType, createdAt: T0 + seq * 1000, data });
 
 /**
- * Open the session with a scripted fake transport. `handlers` answer the
- * Stop/Steer/send routes (a function gets the route and the request body).
+ * A scripted fake Web API and live channel for `sessions`
+ * (id -> { title, detail, events }), each with a running turn that accepts
+ * controls. Every Steer, Stop and send is recorded with the session id of its
+ * request path. `handlers` answer the Stop/Steer/send routes (a function gets
+ * the route and the request body). `profile` is the viewer's profile settings
+ * (a MoA layout); without it the stub server answers.
  */
-async function open(page, { steering = true, detail = {}, events = [], canWrite = true, handlers = {} } = {}) {
-    const state = {
-        detail: { sessionId: SID, title: "Turn control", status: "running", activeTurnIndex: 3, turnHigh: 3, acceptsTurnControl: true,
-            model: "github-copilot:claude-sonnet-5", createdAt: T0, updatedAt: T0, statusVersion: 1, ...detail },
-        events: [...events],
-        steers: [], stops: [], sends: [],
-    };
-    let socket;
-    let subscribed = false;
+async function fakePortal(page, { sessions, steering = true, canWrite = true, handlers = {}, profile = null }) {
+    const state = { sessions: {}, steers: [], stops: [], sends: [] };
+    for (const [id, session] of Object.entries(sessions)) {
+        state.sessions[id] = {
+            detail: { sessionId: id, title: session.title, status: "running", activeTurnIndex: 3, turnHigh: 3, acceptsTurnControl: true,
+                model: "github-copilot:claude-sonnet-5", createdAt: T0, updatedAt: T0, statusVersion: 1, ...session.detail },
+            events: [...(session.events || [])],
+        };
+    }
+    // socket -> the session ids it subscribed; session id -> live subscriptions.
+    const sockets = new Map();
+    const liveSubscriptions = new Map();
     await page.routeWebSocket("**/api/v1/ws", (ws) => {
-        socket = ws;
-        ws.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeLive") subscribed = true; });
+        const subscribed = new Set();
+        sockets.set(ws, subscribed);
+        ws.onClose(() => sockets.delete(ws));
+        ws.onMessage((raw) => {
+            const message = JSON.parse(raw);
+            if (message.type === "subscribeSession" || message.type === "subscribeLive") subscribed.add(message.sessionId);
+            if (message.type === "unsubscribeSession") subscribed.delete(message.sessionId);
+            if (message.type === "subscribeLive") liveSubscriptions.set(message.sessionId, (liveSubscriptions.get(message.sessionId) || 0) + 1);
+        });
     });
     await page.route("**/api/v1/**", async (route) => {
         const request = route.request();
@@ -40,59 +56,88 @@ async function open(page, { steering = true, detail = {}, events = [], canWrite 
         if (path.endsWith("/management/users/me/features")) {
             return answer({ userId: 1, flags: [{ featureKey: "sessions.steering", effective: steering, supported: true }] });
         }
-        if (path.endsWith("/management/sessions")) return answer({ sessions: [state.detail], hasMore: false });
-        if (path.endsWith(`/sessions/${SID}`)) return answer(state.detail);
-        if (path.endsWith(`/sessions/${SID}/access`)) {
+        if (profile && path.endsWith("/me/profile/settings")) {
+            profile = request.postDataJSON().settings;
+            return answer({ profileSettings: profile });
+        }
+        if (profile && path.endsWith("/me/profile")) return answer({ isAdmin: false, profileSettings: profile });
+        if (path.endsWith("/management/sessions")) return answer({ sessions: Object.values(state.sessions).map((session) => session.detail), hasMore: false });
+        const [, sessionId, action] = /\/sessions\/([^/]+)(\/.*)?$/.exec(path) || [];
+        const session = state.sessions[sessionId];
+        if (!session) return route.fallback();
+        if (!action) return answer(session.detail);
+        if (action === "/access") {
             return answer({ visibility: "private", relation: canWrite ? "owner" : "collaborator", canWrite, canManage: canWrite,
                 owner: { provider: "none", subject: "owner", displayName: "Owner" } });
         }
-        if (path.endsWith(`/management/sessions/${SID}/events`)) {
+        if (action === "/events" && path.includes("/management/sessions/")) {
             const after = Number(url.searchParams.get("afterSeq") || 0);
-            return answer(state.events.filter((event) => event.seq > after));
+            return answer(session.events.filter((event) => event.seq > after));
         }
-        if (path.endsWith("/steer")) {
+        if (action === "/steer") {
             const body = request.postDataJSON();
-            state.steers.push(body.options);
+            state.steers.push({ ...body.options, sessionId });
             return handlers.steer ? handlers.steer({ route, body: body.options, answer, fail, state }) : answer({ outcome: "accepted", steerId: 900 + state.steers.length, turn: 3 });
         }
-        if (path.endsWith("/stop-turn")) {
+        if (action === "/stop-turn") {
             const body = request.postDataJSON();
-            state.stops.push(body.options);
+            state.stops.push({ ...body.options, sessionId });
             return handlers.stop ? handlers.stop({ route, body: body.options, answer, fail, state }) : answer({ outcome: "stopped", turnIndex: 3, controlSeq: 950 });
         }
-        if (path.endsWith(`/sessions/${SID}/messages`)) {
+        if (action === "/messages") {
             const body = request.postDataJSON();
-            state.sends.push(body);
+            state.sends.push({ ...body, sessionId });
             return handlers.send ? handlers.send({ route, body, answer, fail, state }) : answer({ queued: true });
         }
         return route.fallback();
     });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-    await expect.poll(() => subscribed).toBe(true);
     let liveSeq = 1_000_000;
-    const composer = page.locator(`.ps-prompt-shell[data-session-id="${SID}"]`);
-    const transcript = page.locator(`.ps-scroll-panel[data-session-id="${SID}"]`);
-    const wire = {
-        state, composer, transcript,
-        input: composer.getByTestId("composer-input"),
-        steerButton: composer.getByTestId("turn-steer-button"),
-        stopButton: composer.getByTestId("turn-stop-button"),
-        turnState: composer.getByTestId("session-turn-state"),
-        notice: composer.getByTestId("control-notice"),
-        /** Push a durable session event over the live channel (seq above the REST window). */
-        event(eventType, data) {
-            const event = { sessionId: SID, seq: ++liveSeq, eventType, createdAt: Date.now(), data };
-            state.events.push(event);
-            socket.send(JSON.stringify({ type: "sessionEvent", sessionId: SID, event }));
+    const portal = {
+        state,
+        liveSubscriptions: (sessionId) => liveSubscriptions.get(sessionId) || 0,
+        /** Push a durable session event to every socket subscribed to the session (seq above the REST window). */
+        event(sessionId, eventType, data) {
+            const event = { sessionId, seq: ++liveSeq, eventType, createdAt: Date.now(), data };
+            state.sessions[sessionId].events.push(event);
+            for (const [socket, subscribed] of sockets) {
+                if (subscribed.has(sessionId)) socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event }));
+            }
             return event.seq;
         },
-        /** Change the detailed view; the event makes the portal re-read it. */
-        async setDetail(fields) {
-            Object.assign(state.detail, fields, { statusVersion: state.detail.statusVersion + 1 });
-            this.event("assistant.usage", {});
+        /**
+         * The turn-control selectors of one session. The composer is looked up
+         * inside `composerScope` and the transcript inside `transcriptScope`.
+         */
+        wire(sessionId, { composerScope = page, transcriptScope = page } = {}) {
+            const composer = composerScope.locator(`.ps-prompt-shell[data-session-id="${sessionId}"]`);
+            return {
+                state, composer,
+                transcript: transcriptScope.locator(`.ps-scroll-panel[data-session-id="${sessionId}"]`),
+                input: composer.getByTestId("composer-input"),
+                steerButton: composer.getByTestId("turn-steer-button"),
+                stopButton: composer.getByTestId("turn-stop-button"),
+                sendButton: composer.locator(".ps-send-button"),
+                turnState: composer.getByTestId("session-turn-state"),
+                notice: composer.getByTestId("control-notice"),
+                event: (eventType, data) => portal.event(sessionId, eventType, data),
+                /** Change the detailed view; the event makes the portal re-read it. */
+                async setDetail(fields) {
+                    const { detail } = state.sessions[sessionId];
+                    Object.assign(detail, fields, { statusVersion: detail.statusVersion + 1 });
+                    this.event("assistant.usage", {});
+                },
+            };
         },
     };
-    return wire;
+    return portal;
+}
+
+/** The single-session view of SID. */
+async function open(page, { detail = {}, events = [], ...options } = {}) {
+    const portal = await fakePortal(page, { ...options, sessions: { [SID]: { title: "Turn control", detail, events } } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+    await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
+    return portal.wire(SID);
 }
 
 test("Steer is hidden with the flag off; Stop is not gated", async ({ page }) => {
@@ -400,3 +445,161 @@ test("a lost Stop and a lost Steer each keep their own notice and Retry", async 
     await expect(wire.input).toHaveValue("both lost");
     await expect(stopNotice).toHaveAttribute("data-reason", "unconfirmed");
 });
+
+// Master of Agents and the phone focus views: the same composer, shared by
+// several sessions, must send each control to the session it shows.
+
+const TWO_SESSIONS = { [SID]: { title: "Agent A" }, [SID2]: { title: "Agent B" } };
+const moaProfile = () => ({ themeId: "terminal-green", moa: { version: 2, aspectRatio: 2, composerMode: "shared",
+    tree: { id: "split", type: "split", direction: "row", ratio: 50,
+        first: { id: "pa", type: "chat", sessionId: SID }, second: { id: "pb", type: "chat", sessionId: SID2 } } } });
+const moaPanel = (page, id) => page.locator(`[data-moa-panel="${id}"]`);
+const moaWire = (page, portal, sessionId, panelId) => portal.wire(sessionId, {
+    composerScope: page.locator(".ps-moa-composer-strip"), transcriptScope: moaPanel(page, panelId) });
+
+async function openMoa(page, portal) {
+    const before = portal.liveSubscriptions(SID);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+    await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
+    await expect(page.locator(".ps-moa-composer-strip")).toBeVisible();
+    await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(before);
+}
+
+/** Each control is inside the viewport, is the element hit at its centre, and no two overlap. */
+async function expectControlsFit(controls) {
+    const boxes = [];
+    for (const [name, locator] of Object.entries(controls)) {
+        await expect(locator, name).toBeVisible();
+        const box = await locator.evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: innerWidth, height: innerHeight,
+                hit: el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) };
+        });
+        expect(box.left, `${name} left edge`).toBeGreaterThanOrEqual(0);
+        expect(box.top, `${name} top edge`).toBeGreaterThanOrEqual(0);
+        expect(box.right, `${name} right edge`).toBeLessThanOrEqual(box.width);
+        expect(box.bottom, `${name} bottom edge`).toBeLessThanOrEqual(box.height);
+        expect(box.hit, `${name} is not covered`).toBe(true);
+        boxes.push([name, box]);
+    }
+    for (const [i, [a, ra]] of boxes.entries()) {
+        for (const [b, rb] of boxes.slice(i + 1)) {
+            const overlap = Math.max(0, Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left))
+                * Math.max(0, Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top));
+            expect(overlap, `${a} and ${b} do not overlap`).toBeLessThanOrEqual(1);
+        }
+    }
+}
+
+/** Steer and Stop from `wire`; both requests must name `sessionId`. */
+async function steerAndStop(wire, sessionId, text) {
+    const steers = wire.state.steers.length, stops = wire.state.stops.length;
+    await wire.input.fill(text);
+    await wire.steerButton.click();
+    await expect.poll(() => wire.state.steers.length).toBe(steers + 1);
+    expect(wire.state.steers.at(-1)).toMatchObject({ sessionId, text });
+    await expect(wire.input).toHaveValue("");
+    await wire.stopButton.click();
+    await expect.poll(() => wire.state.stops.length).toBe(stops + 1);
+    expect(wire.state.stops.at(-1).sessionId).toBe(sessionId);
+}
+
+test("MoA: the sole composer's Steer and Stop act on the focused panel's session only", async ({ page }) => {
+    const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile() });
+    await openMoa(page, portal);
+    const a = moaWire(page, portal, SID, "pa"), b = moaWire(page, portal, SID2, "pb");
+    await expect.poll(() => portal.liveSubscriptions(SID2)).toBeGreaterThan(0);
+    /** The session's recorded Steer and Stop come back as transcript events, each with its outcome. */
+    const echo = (wire, index, text) => {
+        const steer = wire.event("user.steer", { turn: 3, text, requestId: portal.state.steers[index].requestId, actor: null });
+        wire.event("session.control_outcome", { seq: steer, turn: 3, outcome: "delivered" });
+        const stop = wire.event("user.stop", { turn: 3, text: "Stopped by user", requestId: portal.state.stops[index].requestId, actor: null });
+        wire.event("session.control_outcome", { seq: stop, turn: 3, outcome: "stopped" });
+        return { steer, stop };
+    };
+    /** Exactly the session's own steer and stop item render in its panel, with their badges. */
+    const expectItems = async (panelId, seqs) => {
+        for (const [kind, outcome] of [["steer", "delivered"], ["stop", "stopped"]]) {
+            const items = moaPanel(page, panelId).getByTestId(`control-${kind}`);
+            await expect(items).toHaveCount(seqs ? 1 : 0);
+            if (seqs) {
+                await expect(items).toHaveAttribute("data-control-seq", String(seqs[kind]));
+                await expect(items.getByTestId("control-outcome-badge")).toHaveAttribute("data-outcome", outcome);
+            }
+        }
+    };
+
+    await moaPanel(page, "pa").locator("header").first().click();
+    await expect(a.turnState).toHaveAttribute("data-accepts-controls", "true");
+    await expect(b.composer).toHaveCount(0);
+    await steerAndStop(a, SID, "steer for agent A");
+    const seqsA = echo(a, 0, "steer for agent A");
+    await expectItems("pa", seqsA);
+    await expectItems("pb", null);
+    await a.input.fill("draft kept in A");
+
+    // Focus moves the composer, its Steer and its Stop to the other session.
+    await moaPanel(page, "pb").locator("header").first().click();
+    await expect(moaPanel(page, "pb")).toHaveClass(/is-focused/);
+    await expect(a.composer).toHaveCount(0);
+    await expect(b.input).toHaveValue("");
+    await steerAndStop(b, SID2, "steer for agent B");
+    const seqsB = echo(b, 1, "steer for agent B");
+    await expectItems("pb", seqsB);
+    await expectItems("pa", seqsA);
+    await page.screenshot({ path: test.info().outputPath("turn-control-moa.png") });
+
+    await moaPanel(page, "pa").locator("header").first().click();
+    await expect(a.input).toHaveValue("draft kept in A");
+    expect(portal.state.steers.map((steer) => steer.sessionId)).toEqual([SID, SID2]);
+    expect(portal.state.stops.map((stop) => stop.sessionId)).toEqual([SID, SID2]);
+    expect(portal.state.sends).toEqual([]);
+});
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
+    test(`phone MoA ${viewport.width}x${viewport.height}: the focused session's controls fit and follow the panel`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile() });
+        await openMoa(page, portal);
+        await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
+        const a = moaWire(page, portal, SID, "pa"), b = moaWire(page, portal, SID2, "pb");
+        await a.input.fill("x");
+        await expectControlsFit({ input: a.input, stop: a.stopButton, steer: a.steerButton, send: a.sendButton });
+        await steerAndStop(a, SID, "phone steer for A");
+
+        await page.getByRole("button", { name: "Open panel map", exact: true }).click();
+        await page.locator(".ps-moa-map-list button").nth(1).click();
+        await expect(moaPanel(page, "pb")).toHaveClass(/is-focused/);
+        await expect(a.composer).toHaveCount(0);
+        await b.input.fill("x");
+        await expectControlsFit({ input: b.input, stop: b.stopButton, steer: b.steerButton, send: b.sendButton });
+        await page.screenshot({ path: test.info().outputPath(`turn-control-phone-moa-${viewport.width}.png`) });
+        await steerAndStop(b, SID2, "phone steer for B");
+        expect(portal.state.steers.map((steer) => steer.sessionId)).toEqual([SID, SID2]);
+        expect(portal.state.stops.map((stop) => stop.sessionId)).toEqual([SID, SID2]);
+    });
+}
+
+for (const steering of [true, false]) {
+    test(`phone Zen, steering ${steering ? "on" : "off"}: Stop${steering ? " and Steer act" : " acts"} on the session shown`, async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, steering });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+        await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
+        const zen = portal.wire(SID, { composerScope: page.locator(".ps-mobile-zen-composer") });
+        await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
+        await zen.input.fill("x");
+        if (steering) {
+            await expectControlsFit({ input: zen.input, stop: zen.stopButton, steer: zen.steerButton, send: zen.sendButton });
+            await page.screenshot({ path: test.info().outputPath("turn-control-phone-zen.png") });
+            await steerAndStop(zen, SID, "zen steer");
+        } else {
+            await expect(zen.steerButton).toHaveCount(0);
+            await expectControlsFit({ input: zen.input, stop: zen.stopButton, send: zen.sendButton });
+            await zen.stopButton.click();
+            await expect.poll(() => portal.state.stops.length).toBe(1);
+            expect(portal.state.stops[0].sessionId).toBe(SID);
+        }
+        expect(portal.state.sends).toEqual([]);
+    });
+}
