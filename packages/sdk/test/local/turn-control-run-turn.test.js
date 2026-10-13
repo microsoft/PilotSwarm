@@ -269,6 +269,41 @@ describe("runTurnV4: carried steers (P12, P17, D6)", () => {
         expect(v4.calls.some((c) => c[0] === "turnEnd")).toBe(false);
     });
 
+    it("a budget wait keeps them: the gate returns before turn start", async () => {
+        const v4 = turnControlCatalog();
+        const checkTurn = vi.fn(async () => ({
+            verdict: "paused", providerName: "p", modelQualified: null, exempt: false,
+            pause: { kind: "limit", provider: "p" }, rules: [],
+        }));
+        const h = makeRunTurnHarness({ catalogExtras: { ...v4.extras, providers: { checkTurn } } });
+        const result = await h.runTurn("s", { turnIndex: 6, carriedSteers }, "runTurnV4");
+        expect(checkTurn).toHaveBeenCalled();
+        expect(result).toMatchObject({ type: "wait", budget: true });
+        expect(result.carriedSteersConsumed).toBeUndefined();
+        expect(v4.calls).toEqual([]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
+    });
+
+    it("a provider-admission error keeps them: the error returns before turn start", async () => {
+        const v4 = turnControlCatalog();
+        const checkTurn = vi.fn(async () => { throw new Error("connection reset"); });
+        const h = makeRunTurnHarness({ catalogExtras: { ...v4.extras, providers: { checkTurn } } });
+        const result = await h.runTurn("s", { turnIndex: 6, carriedSteers }, "runTurnV4");
+        expect(result).toMatchObject({ type: "error" });
+        expect(result.message).toMatch(/Provider admission could not verify this turn/);
+        expect(result.carriedSteersConsumed).toBeUndefined();
+        expect(v4.calls).toEqual([]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
+    });
+
+    it("a failed turn start keeps them: the activity throws, no model run, no turn end", async () => {
+        const v4 = turnControlCatalog({ start: () => { throw new Error("turn start failed"); } });
+        const h = makeRunTurnHarness({ catalogExtras: v4.extras });
+        await expect(h.runTurn("s", { turnIndex: 6, carriedSteers }, "runTurnV4")).rejects.toThrow(/turn start failed/);
+        expect(v4.calls.map((c) => c[0])).toEqual(["turnStart"]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
+    });
+
     it("a stale start keeps them", async () => {
         const v4 = turnControlCatalog({ start: { stale: true } });
         const h = makeRunTurnHarness({ catalogExtras: v4.extras });
@@ -349,6 +384,16 @@ describe("runTurnV4: workspace sessions report the attach on every result", () =
         const h = workspaceHarness(v4);
         const result = await h.runTurn("s", workspaceInput({ prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: [{ seq: 5, text: "carried" }] }), "runTurnV4");
         expect(result).toMatchObject({ type: "completed", workspaceAttached: true, carriedSteersConsumed: true });
+    });
+
+    it("a workspace wait keeps carried steers: no turn start, no consumption", async () => {
+        const v4 = turnControlCatalog();
+        const h = workspaceHarness(v4, undefined, { refuse: true });
+        const result = await h.runTurn("s", workspaceInput({ prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: [{ seq: 5, text: "carried" }] }), "runTurnV4");
+        expect(result).toMatchObject({ type: "wait", gate: "workspace" });
+        expect(result.carriedSteersConsumed).toBeUndefined();
+        expect(v4.calls).toEqual([]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
     });
 
     it("a turn the workspace gate refuses never starts: no turn start, no turn end", async () => {
