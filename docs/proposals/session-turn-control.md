@@ -67,6 +67,7 @@ merged. Workstream A's notes are in `.paw/work/turn-control/Docs.md`.
 | **Code detail.** Steers that are open at turn start are folded after the prompt. Carried steers go before it, or replace the carried wake prompt. | Revision 5 left the order open. | 4.7 |
 | **Code detail.** A failed steer send ends the turn with an `error` result through the existing error path. It does not throw. | The same retry follows, and the steer stays open. | 4.6 |
 | **Code detail.** The session catalog creates the LISTEN connection (`createTurnControlListener`). If LISTEN fails, the hub keeps the 5 s look and retries. Worker start does not fail. | Provider boundary. HorizonDB LISTEN is not verified yet. | 4.4, 8.2 |
+| A retry of a thrown `runTurn` reuses the thrown attempt's turnKey (1.0.81, `thrownTurnKey`). | A throw after the save (turn end failing) otherwise ran the model again and saved the turn twice. Found by a fault-injection test under full-suite load. | 3.7, 5.1 |
 
 ## 1. Problem statement
 
@@ -453,6 +454,13 @@ sequenceDiagram
     Note over DB: up to 40: delivered. 41: carried
     B-->>X: saved result + late steer 41
 ```
+
+The same path covers a throw after the save. If turn end fails after its
+in-place retries, the activity throws and the orchestration retries the turn.
+On 1.0.81 that retry sends the thrown attempt's turnKey again
+(`thrownTurnKey`, carried through continue-as-new and cleared by any result
+or give-up), so the next worker finds the turn already saved and runs only
+turn end. A new key would make the model run again and save the turn twice.
 
 ### 3.8 Crash after turn end, before duroxide records the result
 
@@ -1244,6 +1252,7 @@ the activity lock expires.
 | stopped turn, before T8 | Stop open, not saved | turn start sees the Stop, turn end (stopped) | correct |
 | stopped turn, after T8 | Stop outcome "stopped" | turn start returns stopped, turn end writes nothing new | correct |
 | thrown error | controls open, carried steers kept by the orchestration | the orchestration retries the same turn index. Turn start returns the controls; the carried steers ride in the input. | correct (3.12) |
+| T7 and a throw (for example turn end fails after its in-place retries) | turn saved under the attempt's turnKey, controls open | the retry of a thrown turn sends the same turnKey again (1.0.81), so it takes the "already saved" path: no model run, then turn end | correct; before this rule, a new key ran the model again and saved twice |
 | session without a store | no saved conversation | re-runs from nothing. A stopped turn's earlier delivered steer is labelled `not_delivered`, although the live conversation keeps it. | as today (D4) |
 
 The reverse order, turn end before the save, is wrong in every form: a crash
