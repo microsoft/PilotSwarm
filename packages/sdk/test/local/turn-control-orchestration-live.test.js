@@ -91,12 +91,17 @@ describe("B2 live orchestration turn controls after A4", () => {
                 const row = await waitForSessionState(catalog, sessionId, "idle");
                 expect(row.activeTurnIndex).toBeNull();
                 const events = await catalog.getSessionEvents(sessionId);
+                const stopped = events.filter(e => e.eventType === "session.turn_stopped");
+                expect(stopped).toHaveLength(1);
+                expect(stopped[0].data.turnIndex).toBe(stop.turn);
                 expect(events.filter(e => e.eventType === "user.stop")).toHaveLength(1);
                 expect(events.filter(e => e.eventType === "session.control_outcome" && e.data.seq === stop.seq))
                     .toEqual([expect.objectContaining({ data: expect.objectContaining({ outcome: "stopped" }) })]);
                 expect(events.filter(e => e.eventType === "system.message" && e.data.content === "Turn stopped by user.")).toEqual([]);
                 const info = await client._getDuroxideClient().getStatus(`session-${sessionId}`);
                 expect(JSON.stringify(info.customStatus)).toContain("keep this schedule");
+                const status = typeof info.customStatus === "string" ? JSON.parse(info.customStatus) : info.customStatus;
+                expect(status).toMatchObject({ cronActive: true, cronInterval: 3600, cronReason: "keep this schedule" });
             } finally {
                 block.released.resolve();
                 patch.restore();
@@ -180,8 +185,19 @@ describe("B2 live orchestration turn controls after A4", () => {
                     expect(requests.some(r => JSON.stringify(r.body).includes(CARRIED_STEERS_WAKE_PROMPT))).toBe(false);
                     const status = await client._getDuroxideClient().getInstanceInfo(`session-${sessionId}`);
                     const history = await client._getDuroxideClient().readExecutionHistory(`session-${sessionId}`, status.currentExecutionId);
-                    const ended = history.filter(e => e.kind === "ActivityCompleted" && String(e.data).includes("carriedSteersConsumed"));
-                    expect(ended.length).toBeGreaterThan(0);
+                    const field = (name, value) => new RegExp(`\\\\?"${name}\\\\?":\\\\?${value}`);
+                    const stoppedConsumed = history.filter(e => e.kind === "ActivityCompleted"
+                        && field("type", '"stopped').test(String(e.data))
+                        && field("carriedSteersConsumed", "true").test(String(e.data)));
+                    expect(stoppedConsumed).toHaveLength(1);
+                    // Deterministic no-rerun check (D6): the next ordinary turn
+                    // must carry nothing, so the guidance never reaches the
+                    // model again and no second closing record appears.
+                    block.released.resolve();
+                    expect(await session.sendAndWait("B2 ordinary turn after stop", TIMEOUT)).toBe("first complete");
+                    const after = model.sessionRequests("B2 first before stop");
+                    expect(after.filter(r => r.position.lastUserText.includes("B2 carried stop"))).toHaveLength(atStart ? 0 : 1);
+                    expect(await closings(catalog, sessionId)).toHaveLength(1);
                 } finally {
                     block.released.resolve();
                     worker._catalog.turnStart = start;
@@ -343,6 +359,7 @@ describe("B2 live orchestration turn controls after A4", () => {
                 const events = await catalog.getSessionEvents(sessionId);
                 expect(events.filter(e => e.eventType === "user.steer")).toHaveLength(1);
                 expect(events.filter(e => e.eventType === "user.message" && String(e.data.content).includes("B2 retry carried guidance"))).toEqual([]);
+                expect(events.filter(e => e.eventType === "user.message" && String(e.data.content).includes(CARRIED_STEERS_WAKE_PROMPT))).toEqual([]);
             } finally {
                 for (const [session, run] of wrapped) session.runTurn = run;
                 manager.getOrCreate = original;

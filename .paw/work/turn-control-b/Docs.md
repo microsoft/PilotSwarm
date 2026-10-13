@@ -81,9 +81,20 @@ dispositions, and the unchanged uncontrolled-turn activity sequence. Real
 PostgreSQL routing tests use two worker capability filters, including an old
 worker that registers V4 names as a trap.
 
-Live CMS Stop and carried-closing coverage requires workstream A4. The branch
-must not be released with the A1 placeholder V4 handler. This workstream does
-not change management, API, TUI, or portal surfaces.
+A4 was merged for live CMS Stop and carried-closing verification. Nine
+workstream B live and real-PostgreSQL scenarios pass at `e38a41b4`: Stop through
+the catalog on a real model keeps cron and returns idle without a duplicate
+system message; late guidance closes as ran; consuming Stops at start and
+mid-turn close as stopped; an unrelated later Stop adds no closing record;
+admission errors, a budget wait and a thrown attempt retain guidance until a
+later consuming index; returned errors fold guidance again; real-CLI retries
+never see the wake marker; give-up closes once in SQL; and frozen 1.0.80 still
+uses its event Stop path.
+
+The model-selection and bound-agent-backfill live cases cannot be verified here
+with a usable `gpt-5.4` provider. Their exact environment-only baseline failures
+are retained, not skipped or counted as passes. This workstream does not change
+management, API, TUI, or portal surfaces.
 
 ## Verification evidence
 
@@ -107,5 +118,5 @@ added. All seven changed fake-context model-switch cases passed.
 Canonical documentation is
 [`docs/architecture/orchestration/design.md`](../../../docs/architecture/orchestration/design.md).
 B3 updates only that design reference, this workstream document, and the
-workflow status. Full B2
-acceptance remains pending the A4 merge and live-control verification delta.
+workflow status. Full B2 passed the same Opus review at `e38a41b4` after the A4
+merge and live-control verification delta.

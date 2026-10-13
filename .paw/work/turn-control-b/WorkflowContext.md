@@ -31,5 +31,5 @@ Updated Phase Order: parent authorized B3 after scoped B2 review and umbrella me
 ## Phase Status
 
 - [x] B1: Freeze 1.0.80 (Opus PASS at 8cacf9d0)
-- [ ] B2: Orchestration 1.0.81 (scripted scope Opus PASS at ff2188b1; merged into umbrella at 16176529; live delta pending A4)
-- [ ] B3: Documentation
+- [x] B2: Orchestration 1.0.81 (scripted scope Opus PASS at ff2188b1; full Opus PASS at e38a41b4 after A4 live delta)
+- [x] B3: Documentation (Opus PASS at 61753c3d)
