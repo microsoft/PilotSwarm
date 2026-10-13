@@ -126,9 +126,13 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   steer when the turn accepts controls (`acceptsTurnControl` from the
   detailed session view) and the viewer's `sessions.steering` feature is on;
   otherwise the status line says why. The same key resends an unconfirmed
-  request with its original request id; the status hints show `ctrl-x stop`
-  / `ctrl-t steer` (or `retry`) only while they apply, and `?` help lists
-  both. Portal: a Steer button beside Stop, an inline notice for every
+  request with its original request id, and `Alt+T` gives unresolved
+  requests up (steer text returns to the prompt after the draft; the
+  portal's Dismiss). The status hints show `ctrl-x stop` / `ctrl-t steer`
+  (or `retry`, `restore steer text`, `alt-t give up`) only while they apply,
+  and `?` help lists all three. Steer is unavailable while a pending or
+  queued outbox message is selected. Stop and Steer notices are kept per
+  kind, so one never hides the other's Retry. Portal: a readable turn-status chip and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and
   transcript items: a steer reads as a user message with a `steer` badge and
   its outcome, a Stop as a short line with its outcome. Labels for carried

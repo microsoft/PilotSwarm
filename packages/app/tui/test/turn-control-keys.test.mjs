@@ -85,3 +85,16 @@ test("the help lists both keys", () => {
     assert.match(text, /steer the running turn/);
     assert.match(text, /ctrl-x/);
 });
+
+test("Alt+T gives up unconfirmed requests; the hint and help list it", async () => {
+    assert.match(APP, /key\.meta && !key\.ctrl && \(input === "t" \|\| key\.name === "t"\)\s*&& controller\.giveUpTurnControl\(\)/);
+    const lost = harness();
+    lost.controller.transport.steerSessionTurn = async () => { throw new TypeError("fetch failed"); };
+    lost.controller.setPrompt("lost words");
+    await lost.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.match(selectStatusBar(lost.store.getState()).right, /ctrl-t retry steer · alt-t give up · /);
+    assert.equal(lost.controller.giveUpTurnControl(), true);
+    assert.equal(lost.store.getState().ui.prompt, "lost words");
+    lost.store.dispatch({ type: "ui/modal", modal: { type: "help", selectedIndex: 0 } });
+    assert.match(JSON.stringify(selectHelpModal(lost.store.getState(), 120)), /alt-t/);
+});

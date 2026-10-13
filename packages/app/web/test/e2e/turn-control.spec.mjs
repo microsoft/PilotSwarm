@@ -123,9 +123,12 @@ test("a read-only collaborator gets no composer and no Steer", async ({ page }) 
 test("the turn state indicator passes every product status through", async ({ page }) => {
     const wire = await open(page);
     await expect(wire.turnState).toHaveAttribute("data-turn-state", "running");
+    await expect(wire.turnState).toBeVisible();
+    await expect(wire.turnState).toHaveText("running");
     for (const status of ["pending", "idle", "waiting", "input_required", "error", "failed", "completed", "cancelled", "running"]) {
         await wire.setDetail({ status, acceptsTurnControl: status === "running" });
         await expect(wire.turnState).toHaveAttribute("data-turn-state", status);
+        await expect(wire.turnState).toHaveText(status.replace(/_/g, " "));
         await expect(wire.turnState).toHaveAttribute("data-accepts-controls", status === "running" ? "true" : "false");
     }
 });
@@ -346,3 +349,48 @@ test("an unconfirmed steer keeps its Retry after a Stop and after the turn ends"
     expect(wire.state.steers[1].requestId).toBe(wire.state.steers[0].requestId);
 });
 
+
+test("a fallback behind an ordinary send in flight reports its own send", async ({ page }) => {
+    const held = [];
+    const wire = await open(page, { handlers: {
+        steer: ({ answer }) => answer({ outcome: "no_turn" }),
+        send: async ({ answer, fail }) => {
+            const gate = await new Promise((resolve) => { held.push(resolve); });
+            return gate === "fail" ? fail(403, "FORBIDDEN", "Forbidden") : answer({ queued: true });
+        },
+    } });
+    await wire.input.fill("an ordinary message");
+    await wire.composer.getByRole("button", { name: "Send prompt", exact: true }).click();
+    await expect.poll(() => held.length).toBe(1);
+    await wire.input.fill("steer that falls back");
+    await wire.steerButton.click();
+    await expect(wire.notice).toHaveAttribute("data-reason", "no_turn");
+    held[0]("ok");
+    await expect.poll(() => held.length).toBe(2);
+    expect(wire.state.sends[1].prompt).toBe("steer that falls back");
+    await expect(wire.notice).toHaveAttribute("data-reason", "no_turn");
+    held[1]("fail");
+    await expect(wire.notice).toHaveAttribute("data-reason", "fallback_failed");
+});
+
+test("a lost Stop and a lost Steer each keep their own notice and Retry", async ({ page }) => {
+    const wire = await open(page, { handlers: {
+        stop: ({ route }) => route.abort("connectionreset"),
+        steer: ({ route }) => route.abort("connectionreset"),
+    } });
+    await wire.stopButton.click();
+    await wire.input.fill("both lost");
+    await wire.steerButton.click();
+    const stopNotice = wire.composer.locator('[data-testid="control-notice"][data-kind="stop"]');
+    const steerNotice = wire.composer.locator('[data-testid="control-notice"][data-kind="steer"]');
+    await expect(stopNotice).toHaveAttribute("data-reason", "unconfirmed");
+    await expect(steerNotice).toHaveAttribute("data-reason", "unconfirmed");
+    await expect(stopNotice.getByTestId("control-retry-button")).toHaveAttribute("data-request-id", wire.state.stops[0].requestId);
+    await expect(steerNotice.getByTestId("control-retry-button")).toHaveAttribute("data-request-id", wire.state.steers[0].requestId);
+    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+    await expect(wire.steerButton).toHaveCount(0);
+    await steerNotice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(steerNotice).toHaveCount(0);
+    await expect(wire.input).toHaveValue("both lost");
+    await expect(stopNotice).toHaveAttribute("data-reason", "unconfirmed");
+});

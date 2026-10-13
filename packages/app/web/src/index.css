@@ -3637,16 +3637,27 @@ body.is-resizing-pane-y iframe {
 .ps-steer-button:disabled { cursor: default; opacity: 0.55; }
 .ps-steer-button.is-sending { animation: ps-stop-pulse 1s ease-in-out infinite; }
 
-/* The turn status for assistive technology and tests; the visible running
-   state is the live status strip. */
+/* The turn status beside Stop/Steer: short readable text with a dot. */
 .ps-turn-state {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   white-space: nowrap;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--ps-muted, #9aa4b2);
 }
+.ps-turn-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+.ps-turn-state.is-running { color: var(--ps-accent, #4ea1ff); }
+.ps-turn-state.is-running.accepts-controls .ps-turn-state-dot { opacity: 1; }
+.ps-turn-state:is(.is-error, .is-failed) { color: var(--ps-danger, #e5534b); }
+.ps-turn-state:is(.is-waiting, .is-input_required) { color: var(--ps-warning, #e5a50a); }
 
 .ps-control-notice {
   grid-column: 1 / -1;

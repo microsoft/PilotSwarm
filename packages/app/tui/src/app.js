@@ -286,6 +286,12 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.STEER_TURN).catch(() => {});
             return;
         }
+        // Give up an unconfirmed Stop/Steer (the portal's Dismiss): its steer
+        // text returns to the prompt. Only consumed when there is one.
+        if (focus === "prompt" && !modal && key.meta && !key.ctrl && (input === "t" || key.name === "t")
+            && controller.giveUpTurnControl()) {
+            return;
+        }
         if (focus !== "prompt" && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();

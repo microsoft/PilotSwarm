@@ -10827,6 +10827,21 @@ export class PilotSwarmUiController {
         this.setPrompt(next, next.length);
     }
 
+    /**
+     * Give up every unresolved Stop/Steer of the session (the TUI's Alt+T;
+     * the portal dismisses each notice). Steer text returns to the composer.
+     */
+    giveUpTurnControl(sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId) return false;
+        const entry = this._turnControlEntry(sessionId);
+        const had = Boolean(entry.steerNotice || entry.stopNotice || entry.steer?.phase === "unconfirmed" || entry.stop?.phase === "unconfirmed");
+        if (!had) return false;
+        this.dismissTurnControlNotice(sessionId, "stop");
+        this.dismissTurnControlNotice(sessionId, "steer");
+        this.dispatch({ type: "ui/status", text: "Stop/Steer notices cleared" });
+        return true;
+    }
+
     dismissTurnControlNotice(sessionId = this.getState().sessions.activeSessionId, kind = "steer") {
         if (!sessionId) return;
         const entry = this._turnControlEntry(sessionId);

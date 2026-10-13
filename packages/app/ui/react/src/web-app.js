@@ -9924,13 +9924,6 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
         } : {}),
     },
-        React.createElement("span", {
-            className: "ps-turn-state",
-            role: "status",
-            "data-testid": "session-turn-state",
-            "data-turn-state": promptState.turnState,
-            "data-accepts-controls": promptState.acceptsControls ? "true" : "false",
-        }, promptState.acceptsControls ? `Turn ${promptState.turnState}; accepts Stop and Steer` : `Turn ${promptState.turnState}`),
         promptState.stopNotice
             ? React.createElement(TurnControlNotice, { controller, notice: promptState.stopNotice, sessionId: promptState.sessionId })
             : null,
@@ -10033,6 +10026,20 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
         }),
         React.createElement("div", { className: "ps-prompt-actions" },
+            // The turn status beside the Stop/Steer controls it governs:
+            // readable text, and the stable selector the UX pass asserts.
+            React.createElement("span", {
+                className: `ps-turn-state is-${promptState.turnState}${promptState.acceptsControls ? " accepts-controls" : ""}`,
+                role: "status",
+                title: promptState.acceptsControls
+                    ? `Turn ${promptState.turnState.replace(/_/g, " ")}: accepts Stop and Steer`
+                    : `Turn ${promptState.turnState.replace(/_/g, " ")}`,
+                "data-testid": "session-turn-state",
+                "data-turn-state": promptState.turnState,
+                "data-accepts-controls": promptState.acceptsControls ? "true" : "false",
+            },
+            React.createElement("span", { className: "ps-turn-state-dot", "aria-hidden": true }),
+            promptState.turnState.replace(/_/g, " ")),
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.

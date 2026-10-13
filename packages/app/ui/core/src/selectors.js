@@ -6150,6 +6150,10 @@ export function selectStatusBar(state) {
     } else if (turnControl.canSteer && focus === FOCUS_REGIONS.PROMPT) {
         right = `ctrl-t steer · ${right}`;
     }
+    if (focus === FOCUS_REGIONS.PROMPT && (turnControl.steer?.phase === "unconfirmed" || turnControl.stop?.phase === "unconfirmed"
+        || turnControl.steerNotice?.text)) {
+        right = right.replace(/^((?:ctrl-t [a-z ]+ · )?)/, "$1alt-t give up · ");
+    }
     if (turnControl.stop?.phase === "unconfirmed") {
         right = `ctrl-x retry stop · ${right}`;
     } else if (canStopSessionTurn(selectActiveSession(state))) {
@@ -9482,6 +9486,7 @@ const KEYBINDING_HELP = [
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text (steering feature)", { dim: true }],
+        ["alt-t", "prompt: give up an unconfirmed Stop/Steer; steer text returns to the prompt", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
         ["q", "quit (double-tap)"],

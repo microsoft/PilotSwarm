@@ -86,9 +86,14 @@ Web API stamps the caller in Web mode).
 - Portal: Steer (`↪`) between Stop and Send; inline notice with Retry and
   Dismiss (dismissing an unconfirmed steer gives it up and returns its text);
   transcript items; the `data-testid` contract below.
-- TUI: `Ctrl+T` in the prompt pane steers; `Ctrl+X`/`Ctrl+Esc` stops. Status
-  hints show `ctrl-x stop` / `ctrl-t steer` (or `retry`) only while they
-  apply; `?` help lists both.
+- TUI: `Ctrl+T` in the prompt pane steers; `Ctrl+X`/`Ctrl+Esc` stops;
+  `Alt+T` gives unresolved requests up (the portal's Dismiss). Status hints
+  show `ctrl-x stop` / `ctrl-t steer` (or `retry`, `restore steer text`,
+  `alt-t give up`) only while they apply; `?` help lists them.
+- Notices are per kind (`steerNotice`, `stopNotice`): a Stop never hides an
+  unconfirmed steer's Retry/Dismiss, which stay usable after the turn ends.
+- Steer is unavailable while a pending or queued outbox message is selected
+  (its text belongs to that message).
 
 ### Portal `data-testid` contract
 
@@ -100,7 +105,7 @@ transcript selectors under `.ps-scroll-panel[data-session-id]`.
 | `composer-input` | |
 | `turn-stop-button` | `data-state` ready, stopping |
 | `turn-steer-button` | `data-state` ready, sending, disabled (empty composer); present only when `canSteer` (or while sending) |
-| `session-turn-state` | `data-turn-state` (product status, unnormalized), `data-accepts-controls` true, false; visually hidden status text |
+| `session-turn-state` | `data-turn-state` (product status, unnormalized), `data-accepts-controls` true, false; a readable status chip (dot + state text) beside Stop/Steer, `role=status` |
 | `control-steer`, `control-stop` | `data-control-seq`, `data-outcome` |
 | `control-outcome-badge` | `data-outcome` pending, delivered, carried, carried_ran, carried_then_stopped, carried_not_run, not_delivered, stopped, too_late |
 | `control-stop-legacy` | `data-outcome` stopped, stop_forced |

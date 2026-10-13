@@ -354,17 +354,21 @@ test("a fallback behind an outbox send in flight is sent once its own send succe
     assert.equal(view().notice.clientMessageId, calls.send[1].clientMessageIds[0]);
 });
 
-for (const phase of ["pending", "queued"]) {
+for (const phase of ["pending", "attempted-pending", "queued", "cancelling"]) {
     test(`Steer is unavailable while a ${phase} outbox message is selected and leaves it intact`, async () => {
         const { controller, store, calls, view } = harness({ steer: { outcome: "accepted", steerId: 1, turn: 0 } });
-        const item = controller.buildOutboxItem("queued words", phase);
+        controller.setPrompt("my normal draft");
+        const item = controller.buildOutboxItem("queued words", phase === "attempted-pending" ? "pending" : phase);
+        if (phase === "attempted-pending") item.attempted = true;
         controller.setSessionOutboxItems(SID, [item]);
         assert.equal(controller.enterPendingPromptEdit(SID, item.id), true);
         assert.equal(view().canSteer, false);
         await controller.steerActiveSessionTurn();
         assert.equal(calls.steer.length, 0);
         assert.equal(store.getState().ui.prompt, "queued words");
-        assert.equal(store.getState().outbox.bySessionId[SID][0].text, "queued words");
+        const [after] = store.getState().outbox.bySessionId[SID];
+        assert.deepEqual([after.text, after.id, after.clientMessageIds], ["queued words", item.id, item.clientMessageIds]);
+        assert.equal(store.getState().ui.promptEdit.draftPrompt, "my normal draft", "the saved normal draft is unchanged");
         assert.match(store.getState().ui.statusText, /pending message is selected/);
     });
 }
@@ -400,4 +404,28 @@ test("Stop and Steer notices are dismissed separately", async () => {
     controller.dismissTurnControlNotice(SID, "stop");
     assert.equal(view().stopNotice, null);
     assert.equal(view().steerNotice.reason, "too_many");
+});
+
+test("a lost Stop, then a lost Steer: both stay recoverable, also after idle and a session switch", async () => {
+    const { controller, store, calls, view } = harness({ steer: networkError(), stop: networkError() });
+    await controller.stopActiveSessionTurn();
+    controller.setPrompt("lost guidance");
+    await controller.steerActiveSessionTurn();
+    assert.deepEqual([view().stop.phase, view().steer.phase], ["unconfirmed", "unconfirmed"]);
+    assert.deepEqual([view().stopNotice.reason, view().steerNotice.reason], ["unconfirmed", "unconfirmed"]);
+    controller.mergeSessionEvent(SID, { sessionId: SID, seq: 7, eventType: "session.turn_completed", data: {}, createdAt: new Date() });
+    store.dispatch({ type: "sessions/merged", session: { sessionId: SID, status: "idle" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    store.dispatch({ type: "sessions/selected", sessionId: SID });
+    assert.deepEqual([view().stopNotice.requestId, view().steerNotice.requestId], [calls.stop[0].requestId, calls.steer[0].requestId]);
+    controller.transport.stopSessionTurn = async (sessionId, options) => { calls.stop.push(options); return { outcome: "no_active_turn", detail: "no turn is running" }; };
+    await controller.retryTurnControl("stop", SID);
+    assert.equal(calls.stop[1].requestId, calls.stop[0].requestId);
+    assert.equal(view().steerNotice.reason, "unconfirmed", "the steer's notice survives the Stop answer");
+    controller.setPrompt("newer draft");
+    assert.equal(controller.giveUpTurnControl(SID), true);
+    assert.equal(view().steer, null);
+    assert.equal(view().steerNotice, null);
+    assert.equal(store.getState().ui.prompt, "newer draft\n\nlost guidance");
+    assert.equal(controller.giveUpTurnControl(SID), false, "nothing left to give up");
 });
