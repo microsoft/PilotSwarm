@@ -96,7 +96,7 @@ describe("B2 live orchestration turn controls after A4", () => {
             const sessionId = randomUUID();
             const capture = captureLateSteer(worker, sessionId, "B2 carried ran");
             try {
-                const session = await client.createSession({ sessionId });
+                const session = await client.createSession({ sessionId, tools: [block.tool] });
                 await session.send("B2 first turn");
                 await waitForEventCount(catalog, sessionId, "session.carried_steers_closed", 1);
                 expect(await closings(catalog, sessionId)).toEqual([
@@ -142,7 +142,7 @@ describe("B2 live orchestration turn controls after A4", () => {
                     return opened;
                 };
                 try {
-                    const session = await client.createSession({ sessionId });
+                    const session = await client.createSession({ sessionId, tools: [block.tool] });
                     await session.send("B2 first before stop");
                     if (!atStart) {
                         await block.started.promise;
@@ -181,7 +181,7 @@ describe("B2 live orchestration turn controls after A4", () => {
             const sessionId = randomUUID();
             const pin = pinSessionStartVersion(client, "1.0.80", { sessionId });
             try {
-                const session = await client.createSession({ sessionId });
+                const session = await client.createSession({ sessionId, tools: [block.tool] });
                 await session.send("B2 legacy Stop", { requiredTool: "tc_b_block" });
                 await block.started.promise;
                 const row = await catalog.getSession(sessionId);
