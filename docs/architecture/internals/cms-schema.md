@@ -46,6 +46,8 @@ accumulated ALTERs:
 | `deleted_at` | TIMESTAMPTZ | soft delete (NULL = live) |
 | `current_iteration` | INTEGER | LLM-turn counter mirror |
 | `active_turn_index` | INTEGER | stop-turn targeting for the in-flight turn |
+| `turn_high` | INTEGER | migration 0082: highest turn index that started in this orchestration lifetime (`-1` = none); a turn whose `turn_high` equals `active_turn_index` accepts Stop and Steer |
+| `turn_base_seq` | BIGINT | migration 0082: the event seq where this orchestration lifetime starts; turn-control reads ignore older events (set on revive and on system-session restart) |
 | `last_error` | TEXT | |
 | `parent_session_id` | TEXT | sub-agent parent linkage |
 | `is_system` / `agent_id` / `splash` | BOOLEAN / TEXT / TEXT | system-agent metadata |
@@ -68,6 +70,33 @@ UI (`GET /api/v1/management/sessions/:id/events?afterSeq=…`):
 | `data` | JSONB | event payload |
 | `worker_node_id` | TEXT | emitting worker |
 | `created_at` | TIMESTAMPTZ | |
+
+## Turn control (migration 0082)
+
+Stop and Steer of a running turn
+([design](../../proposals/session-turn-control.md)) are stored as ordinary
+`session_events`; there is no extra table.
+
+| Event type | Data | Written by |
+|---|---|---|
+| `user.steer` / `user.stop` | `{ turn, text, requestId, actor }` (`text` is the Stop reason) | `cms_turn_control_add` |
+| `session.control_outcome` | `{ seq, turn, outcome }`: `delivered`, `carried`, `not_delivered`, `stopped`, `too_late` | `cms_turn_end`, `cms_update_session` |
+| `session.steer_confirmed` | `{ seq, turn, messageId }` (not a transcript item) | the worker, best effort |
+| `session.carried_steers_closed` | `{ seqs, turnIndex, reason }`: `ran`, `stopped`, `gave_up`, `terminal` | `cms_turn_end`, `cms_update_session`, revive |
+
+| Procedure | Role |
+|---|---|
+| `cms_turn_control_add(session, kind, text, request_id, actor, steering_allowed)` | Under the session row lock: returns the first answer for a retried request id in this lifetime, then refuses a new Steer when steering is not allowed, then refuses `no_turn`, `legacy_turn` or `too_many`; writes the event and notifies. |
+| `cms_turn_start(session, turn)` | Marks the turn running (`active_turn_index`, `turn_high`); returns its open controls and whether it is stopped, or `stale` for an older turn. |
+| `cms_turn_look(turns)` | One batched read of each running turn's controls after its cursor. |
+| `cms_turn_end(session, turn, cursor, result, carried)` | Gives every open control of the turn one outcome; closes the carried steers folded into the turn; idempotent. |
+| `cms_complete_turn_writeback(...)` | The existing end-of-turn write; now returns whether the turn has open controls. |
+
+`cms_update_session` closes open controls when the session gives up
+(`closeControls`) or reaches `completed`, `failed` or `cancelled`.
+`cms_turn_control_add` sends `pg_notify('pilotswarm_turn_control', {schema, sessionId})`
+in the same transaction; each worker listens on that channel with one
+connection and also looks every 5 s while a turn runs.
 
 ## Other tables
 
