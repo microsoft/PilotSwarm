@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -697,14 +697,18 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[] },
         ) {
+            const turnControl = routingContract === "turn-control-v1";
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
-                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
+                // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
+                turnControl
+                    ? TURN_CONTROL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
                 {
                     sessionId,
                     prompt,
@@ -749,9 +753,17 @@ export function createSessionProxy(
                         : {}),
                     ...(turnMeta?.workspaceRevision ? { workspaceRevision: turnMeta.workspaceRevision } : {}),
                     ...(turnMeta?.workspaceNotice ? { workspaceNotice: turnMeta.workspaceNotice } : {}),
+                    // 1.0.81: steers carried from an earlier turn, folded by the worker.
+                    ...(turnControl && turnMeta?.carriedSteers && turnMeta.carriedSteers.length > 0
+                        ? { carriedSteers: turnMeta.carriedSteers }
+                        : {}),
                 },
                 affinityKey,
             );
+            // Session turn control (1.0.81): every turn goes only to workers
+            // that listen for controls. Those workers also declare the
+            // handoff and workspace tags.
+            if (turnControl) return routeTurnControlActivity(task);
             // Session workspaces (1.0.80): the turn of a session that has, or
             // had, a workspace goes only to workers that know workspaces. An
             // older worker would run it in its own folder.
@@ -1082,13 +1094,17 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("deleteSession", { sessionId, reason });
         },
         /** Update a session's CMS state (e.g. "rejected" for policy violations). */
-        updateCmsState(sessionId: string, state: string, lastError?: string | null, waitReason?: string | null) {
-            const payload: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null } = {
+        updateCmsState(sessionId: string, state: string, lastError?: string | null, waitReason?: string | null, opts?: { closeControls?: boolean }) {
+            const payload: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null; closeControls?: true } = {
                 sessionId,
                 state,
             };
             if (lastError !== undefined) payload.lastError = lastError;
             if (waitReason !== undefined) payload.waitReason = waitReason;
+            // 1.0.81 give-up paths: close the session's open controls and
+            // unclosed carried steers. Absent otherwise, so older payloads
+            // replay unchanged.
+            if (opts?.closeControls === true) payload.closeControls = true;
             return ctx.scheduleActivity("updateCmsState", payload);
         },
         /** Persist this session's model metadata in CMS. */
@@ -1421,6 +1437,8 @@ export function registerActivities(
             workspaceNotice?: string;
             /** 1.0.80: image refs held with the stashed prompts; sent to the model, not re-recorded. */
             stashedAttachments?: PromptAttachmentRef[];
+            /** 1.0.81 (runTurnV4): steers carried from an earlier turn. Used from phase A4 on. */
+            carriedSteers?: import("./types.js").LateSteer[];
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -4650,6 +4668,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
     registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
+    // Session turn control (1.0.81): the V4 names. Until the turn-control
+    // path lands they run today's handler, so 1.0.81 can be exercised end to
+    // end on the integration branch. Never released in this state.
+    registerTurnControlActivity(runtime, "runTurn", runTurnHandler);
+    registerTurnControlActivity(runtime, "runTurn2", runTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -5722,12 +5745,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     if (catalog) {
         runtime.registerActivity("updateCmsState", async (
             activityCtx: any,
-            input: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null },
+            input: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null; closeControls?: boolean },
         ): Promise<void> => {
-            activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}`);
-            const updates: { state: string; lastError?: string | null; waitReason?: string | null } = {
+            activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}${input.closeControls ? " closeControls" : ""}`);
+            const updates: { state: string; lastError?: string | null; waitReason?: string | null; closeControls?: boolean } = {
                 state: input.state,
             };
+            if (input.closeControls === true) updates.closeControls = true;
             if (Object.prototype.hasOwnProperty.call(input, "lastError")) updates.lastError = input.lastError ?? null;
             if (Object.prototype.hasOwnProperty.call(input, "waitReason")) updates.waitReason = input.waitReason ?? null;
             await cmsRetryCritical(
