@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
     PilotSwarmUiController,
     UI_COMMANDS,
@@ -14,6 +16,8 @@ import {
     selectHelpModal,
     selectStatusBar,
 } from "pilotswarm/ui-core";
+import { StatusBar } from "../../ui/react/src/components.js";
+import { UiPlatformProvider } from "../../ui/react/src/platform.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = fs.readFileSync(path.join(here, "..", "src", "app.js"), "utf8");
@@ -75,6 +79,25 @@ test("status hints: ctrl-t steer in the prompt while it applies; retry keys for 
     lost.controller.setPrompt("x");
     await lost.controller.handleCommand(UI_COMMANDS.STEER_TURN);
     assert.match(selectStatusBar(lost.store.getState()).right, /ctrl-t retry steer/);
+    lost.controller.setFocus("chat");
+    assert.doesNotMatch(selectStatusBar(lost.store.getState()).right, /ctrl-t/);
+});
+
+test("the rendered TUI status line shows the turn-control hints", async () => {
+    const platform = { StatusLine: ({ right }) => React.createElement("span", null, right) };
+    const line = ({ controller }, width = 400) => renderToStaticMarkup(
+        React.createElement(UiPlatformProvider, { platform }, React.createElement(StatusBar, { controller, width })));
+    const steer = harness();
+    steer.controller.setPrompt("x");
+    assert.match(line(steer), /^<span>ctrl-x stop · ctrl-t steer · /);
+    // Fitted to the terminal width the layout passes in (it changes on resize).
+    assert.ok(line(steer, 100).length < line(steer, 200).length);
+    assert.match(line(steer, 100), /^<span>ctrl-x stop · ctrl-t steer · .*\.\.\.<\/span>$/);
+    const lost = harness();
+    lost.controller.transport.steerSessionTurn = async () => { throw new TypeError("fetch failed"); };
+    lost.controller.setPrompt("lost words");
+    await lost.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.match(line(lost), /ctrl-t retry steer · alt-t give up · /);
 });
 
 test("the help lists both keys", () => {

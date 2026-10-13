@@ -6146,8 +6146,9 @@ export function selectStatusBar(state) {
     // Surface the Stop/Steer hints at the front (so truncation never eats
     // them) exactly while they apply; they stay listed, grayed, in `?` help.
     // An unconfirmed request is retried by the same key, with its request id.
+    // Ctrl+T works only in the prompt; Ctrl+X works in every pane.
     const turnControl = selectTurnControlView(state);
-    if (turnControl.steer?.phase === "unconfirmed") {
+    if (turnControl.steer?.phase === "unconfirmed" && focus === FOCUS_REGIONS.PROMPT) {
         right = `ctrl-t retry steer · ${right}`;
     } else if (turnControl.kept.length > 0 && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
         right = `ctrl-t restore steer text · ${right}`;
