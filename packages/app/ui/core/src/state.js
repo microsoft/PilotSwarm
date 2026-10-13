@@ -514,6 +514,13 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         outbox: {
             bySessionId: {},
         },
+        // Session turn control: the viewer's sessions.steering decision and,
+        // per session, the in-flight or unconfirmed Stop/Steer request and
+        // the last notice. Request ids live here until a definite answer.
+        turnControl: {
+            steeringEnabled: false,
+            bySessionId: {},
+        },
         orchestration: {
             bySessionId: {},
         },

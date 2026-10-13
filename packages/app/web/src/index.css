@@ -3615,6 +3615,94 @@ body.is-resizing-pane-y iframe {
   50% { opacity: 0.35; }
 }
 
+/* Session turn control: Steer sits beside Stop and Send. */
+.ps-steer-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0;
+  font-size: 1.18rem;
+  line-height: 1;
+  border: 1px solid color-mix(in srgb, var(--ps-accent, #4ea1ff) 55%, var(--ps-modal-border));
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-accent, #4ea1ff) 16%, var(--ps-surface));
+  color: var(--ps-accent, #4ea1ff);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.ps-steer-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ps-accent, #4ea1ff) 30%, var(--ps-surface));
+}
+.ps-steer-button:disabled { cursor: default; opacity: 0.55; }
+.ps-steer-button.is-sending { animation: ps-stop-pulse 1s ease-in-out infinite; }
+
+/* The turn status beside Stop/Steer: short readable text with a dot. */
+.ps-turn-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--ps-muted, #9aa4b2);
+}
+.ps-turn-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+.ps-turn-state.is-running { color: var(--ps-accent, #4ea1ff); }
+.ps-turn-state.is-running.accepts-controls .ps-turn-state-dot { opacity: 1; }
+.ps-turn-state:is(.is-error, .is-failed) { color: var(--ps-danger, #e5534b); }
+.ps-turn-state:is(.is-waiting, .is-input_required) { color: var(--ps-warning, #e5a50a); }
+
+.ps-control-notice {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 70%, transparent);
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-surface) 92%, #e5a50a);
+  font-size: var(--ps-font-size-dense, 0.85rem);
+}
+.ps-control-notice.is-unconfirmed,
+.ps-control-notice.is-fallback_failed,
+.ps-control-notice.is-error,
+.ps-control-notice.is-forbidden { background: color-mix(in srgb, var(--ps-surface) 88%, #e5534b); }
+.ps-control-notice-text { flex: 1 1 auto; min-width: 0; }
+.ps-control-notice .ps-mini-button { min-height: 32px; }
+
+/* Stop and Steer transcript items. */
+.ps-control-item { margin: 4px 0; }
+.ps-control-item.is-stop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--ps-muted, #9aa4b2);
+}
+.ps-control-item.is-steer {
+  border-left: 3px solid color-mix(in srgb, var(--ps-accent, #4ea1ff) 70%, transparent);
+  padding: 2px 0 2px 10px;
+}
+.ps-control-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.ps-control-time { color: var(--ps-muted, #9aa4b2); font-size: 0.85em; }
+.ps-control-speaker { font-weight: 700; }
+.ps-control-kind {
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ps-accent, #4ea1ff) 60%, transparent);
+  font-size: 0.8em;
+}
+.ps-control-badge { font-size: 0.85em; font-weight: 600; }
+.ps-control-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.ps-control-note { color: var(--ps-muted, #9aa4b2); }
+
 .ps-send-button.is-inline {
   min-height: 40px;
   min-width: 40px;
@@ -9749,7 +9837,8 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
 .ps-prompt-shell.is-compact .ps-send-button,
-.ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
+.ps-prompt-shell.is-compact .ps-stop-button,
+.ps-prompt-shell.is-compact .ps-steer-button { flex: none; min-width: 44px; min-height: 44px; }
 
 /* Permanent desktop navigation geometry. Context controls may change, but
    neither a mode change nor a long canvas title can move Back / Forward. */

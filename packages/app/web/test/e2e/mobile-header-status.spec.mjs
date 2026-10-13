@@ -11,11 +11,13 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
         const errors = [];
         page.on('pageerror', error => errors.push(error.message));
         let snapshot = { status: 'idle', statusVersion: 6, updatedAt: T0 };
-        let reads = 0, sends = 0, releaseStop;
-        const stops = [];
+        let reads = 0, sends = 0, releaseStop, releaseSteer;
+        const stops = [], steers = [];
+        // acceptsTurnControl: the running turn listens for Stop/Steer; the
+        // composer offers Steer only while the session is also running.
         const row = () => ({ sessionId, title: themeId === 'ms-dos' ? '' : 'Footer regression', model: 'github-copilot:claude-sonnet-5',
             owner: { provider: 'none', subject: 'test', email: 'test@example.com', displayName: 'Test User' },
-            createdAt: T0, ...snapshot });
+            createdAt: T0, acceptsTurnControl: true, ...snapshot });
         try {
             await page.route('**/api/v1/**', async route => {
                 const request = route.request(), path = new URL(request.url()).pathname;
@@ -27,6 +29,12 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
                 }
                 if (path.endsWith(`/sessions/${sessionId}`)) return answer(row());
                 if (path.endsWith(`/sessions/${sessionId}/messages`)) { sends += 1; return answer({ queued: true }); }
+                if (path.endsWith('/management/users/me/features')) return answer({ userId: 1, flags: [{ featureKey: 'sessions.steering', effective: true }] });
+                if (path.endsWith('/steer')) {
+                    steers.push({ path, body: request.postDataJSON() });
+                    await new Promise(resolve => { releaseSteer = resolve; });
+                    return answer({ outcome: 'too_many' });
+                }
                 if (path.endsWith('/stop-turn')) {
                     stops.push({ path, body: request.postDataJSON() });
                     await new Promise(resolve => { releaseStop = resolve; });
@@ -119,6 +127,38 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(sendBox.x);
             expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(320);
             expect(stopBox.y + stopBox.height).toBeLessThanOrEqual(400);
+            // The turn status is readable and on screen beside the controls.
+            const turnState = surface.getByTestId('session-turn-state');
+            await expect(turnState).toBeVisible();
+            await expect(turnState).toHaveText('running');
+            const stateBox = await turnState.boundingBox();
+            expect(stateBox.x).toBeGreaterThanOrEqual(0);
+            expect(stateBox.x + stateBox.width).toBeLessThanOrEqual(stopBox.x);
+            expect(stateBox.y + stateBox.height).toBeLessThanOrEqual(400);
+            // Steer sits between Stop and Send with the same 44 x 44 target.
+            const steer = surface.getByTestId('turn-steer-button');
+            await expect(steer).toHaveAttribute('data-state', 'disabled');
+            await input.fill('Steer the focused session');
+            await expect(steer).toHaveAttribute('data-state', 'ready');
+            const steerBox = await steer.boundingBox();
+            expect(steerBox.width).toBeGreaterThanOrEqual(44);
+            expect(steerBox.height).toBeGreaterThanOrEqual(44);
+            expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(steerBox.x);
+            expect(steerBox.x + steerBox.width).toBeLessThanOrEqual((await surface.locator('.ps-send-button').boundingBox()).x);
+            expect(steerBox.y + steerBox.height).toBeLessThanOrEqual(400);
+            await steer.click();
+            await expect.poll(() => steers.length).toBe(1);
+            expect(steers[0].path).toBe(`/api/v1/management/sessions/${sessionId}/steer`);
+            expect(steers[0].body.options.text).toBe('Steer the focused session');
+            await expect(steer).toHaveAttribute('data-state', 'sending');
+            await expect(steer).toBeDisabled();
+            await expect(stop).toBeEnabled();
+            await expect(input).toBeFocused();
+            releaseSteer();
+            // A refused steer keeps the draft and the focus.
+            await expect(surface.getByTestId('control-notice')).toHaveAttribute('data-reason', 'too_many');
+            await expect(input).toHaveValue('Steer the focused session');
+            await expect(input).toBeFocused();
             await input.fill('Keep my draft while stopping');
             await stop.click();
             await expect.poll(() => stops.length).toBe(1);
@@ -132,3 +172,50 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
         } finally { await new Promise(resolve => stub.server.close(resolve)); }
     });
 }
+
+// Two MoA panels on two running sessions: Steer acts on the focused panel's
+// session only, and the other panel shows no control change.
+test('MoA: Steer routes to the focused panel only', async ({ page }) => {
+    const stub = await startStubServer(0, { sessionCount: 4 });
+    const sid = i => `1111111${i}-2222-3333-4444-55555555555${i}`;
+    const chat = i => ({ id: `panel-${i}`, type: 'chat', sessionId: sid(i) });
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const steers = [];
+    try {
+        await page.route('**/api/v1/**', async route => {
+            const request = route.request(), path = new URL(request.url()).pathname;
+            const answer = result => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, result }) });
+            if (path.endsWith('/me/profile')) return answer({ isAdmin: false, profileSettings: { themeId: 'terminal-green',
+                moa: { version: 2, composerMode: 'shared', tree: { id: 'split', type: 'split', direction: 'row', ratio: 50, first: chat(0), second: chat(2) } } } });
+            if (path.endsWith('/management/users/me/features')) return answer({ userId: 1, flags: [{ featureKey: 'sessions.steering', effective: true }] });
+            const detail = /\/sessions\/([^/]+)$/.exec(path);
+            if (detail && request.method() === 'GET') {
+                return answer({ sessionId: detail[1], title: `Session ${detail[1].at(-1)}`, status: 'running', acceptsTurnControl: true,
+                    activeTurnIndex: 2, turnHigh: 2, model: 'github-copilot:claude-sonnet-5', createdAt: T0, updatedAt: T0 });
+            }
+            const steer = /\/management\/sessions\/([^/]+)\/steer$/.exec(path);
+            if (steer) { steers.push({ sessionId: steer[1], body: request.postDataJSON() }); return answer({ outcome: 'too_many' }); }
+            return route.fallback();
+        });
+        await page.setViewportSize({ width: 1600, height: 1000 });
+        await page.goto(`http://127.0.0.1:${stub.port}/`);
+        await page.getByRole('button', { name: 'Master of Agents', exact: true }).click();
+        const a = page.locator('[data-moa-panel="panel-0"]'), b = page.locator('[data-moa-panel="panel-2"]');
+        await b.locator('header').first().click();
+        await expect(b).toHaveClass(/is-focused/);
+        const composerB = page.locator(`.ps-prompt-shell[data-session-id="${sid(2)}"]`);
+        await composerB.getByTestId('composer-input').fill('only for the second agent');
+        await composerB.getByTestId('turn-steer-button').click();
+        await expect(composerB.getByTestId('control-notice')).toHaveAttribute('data-reason', 'too_many');
+        expect(steers.map(entry => entry.sessionId)).toEqual([sid(2)]);
+        await expect(page.locator(`[data-session-id="${sid(0)}"] [data-testid^="control-"]`)).toHaveCount(0);
+        await a.locator('header').first().click();
+        await expect(a).toHaveClass(/is-focused/);
+        const composerA = page.locator(`.ps-prompt-shell[data-session-id="${sid(0)}"]`);
+        await expect(composerA.getByTestId('turn-steer-button')).toHaveAttribute('data-state', 'disabled');
+        await expect(composerA.getByTestId('control-notice')).toHaveCount(0);
+        expect(steers).toHaveLength(1);
+        expect(errors).toEqual([]);
+    } finally { await new Promise(resolve => stub.server.close(resolve)); }
+});

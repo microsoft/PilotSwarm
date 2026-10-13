@@ -563,6 +563,8 @@ high-frequency ones:
 | `P` | Pin / unpin session |
 | `V` / `Space` / `Esc` | Multi-select |
 | `Ctrl+A` | Attach file |
+| `Ctrl+X` | Stop the running turn |
+| `Ctrl+T` | Steer the running turn with the prompt text |
 | `r` | Refresh |
 | `a` | Linked-item picker |
 | `Shift+A` | Admin Console |
