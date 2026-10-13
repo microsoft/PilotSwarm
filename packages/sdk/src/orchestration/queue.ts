@@ -290,7 +290,16 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
-        } else if (state.carriedSteers.length > 0 && !state.pendingInputQuestion && !timerGate(state.activeTimer)) {
+        } else if (state.carriedSteers.length > 0 && !state.pendingInputQuestion && !state.pendingShutdown && !timerGate(state.activeTimer)) {
+            // A follow-up held by an agent wait is pending work that decide
+            // will not dispatch. End the wait as a new message would, and let
+            // the follow-up carry the steers; breaking with it still held
+            // made the run loop spin without yielding.
+            if (state.pendingPrompt && state.waitingForAgentIds) {
+                ctx.traceInfo(`[drain] carried steers interrupted agent wait`);
+                state.waitingForAgentIds = null;
+                if (state.activeTimer?.type === "agent-poll") state.activeTimer = null;
+            }
             // Give already-pending user work priority. Otherwise the carry
             // enters the same timer-interrupt path as a newly arrived message.
             if (stash.length > 0 || state.pendingPrompt || state.pendingToolActions.length > 0 || hasFifoItems(runtime)) break;
@@ -548,7 +557,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
 
             if (state.pendingChildDigest?.updates.length) {
-                userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                if (msg.carriedSteersWake === true) {
+                    // The wake marker is itself a [SYSTEM: ...] text; merging
+                    // the digest into it would dissolve the marker. Merge the
+                    // digest into the notes after it instead.
+                    const notes = flushPendingChildDigestIntoPrompt(
+                        runtime,
+                        userPrompt.slice(CARRIED_STEERS_WAKE_PROMPT.length).trim() || undefined,
+                    );
+                    userPrompt = notes ? `${CARRIED_STEERS_WAKE_PROMPT}\n\n${notes}` : CARRIED_STEERS_WAKE_PROMPT;
+                } else {
+                    userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                }
             }
 
             const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);

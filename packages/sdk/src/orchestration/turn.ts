@@ -343,8 +343,15 @@ export function* processPrompt(
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
     requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
+    // Session turn control: a turn whose only work is carried steers starts
+    // with CARRIED_STEERS_WAKE_PROMPT, possibly followed by [SYSTEM: ...]
+    // notes (a timer interrupt, a child digest) and, on a retry, the turn's
+    // own <system_context> block. Keep the marker as the whole prompt and move
+    // every note into the turn's system context, so the worker can replace
+    // the marker with the carried text and the model never sees it.
     const splitPrompt = splitSystemContextBlock(promptText);
-    const carriedOnlyTurn = splitPrompt.prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT);
+    const carriedOnlyTurn = state.carriedSteers.length > 0
+        && splitPrompt.prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT);
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
@@ -377,7 +384,12 @@ export function* processPrompt(
         prompt = INTERNAL_SYSTEM_TURN_PROMPT;
         promptIsBootstrap = true;
     }
-    if (carriedOnlyTurn) prompt = CARRIED_STEERS_WAKE_PROMPT;
+    if (carriedOnlyTurn) {
+        // Machinery, never anybody's words: a retry continues as new without
+        // the queue's bootstrap flag, so set it here for every attempt.
+        prompt = CARRIED_STEERS_WAKE_PROMPT;
+        promptIsBootstrap = true;
+    }
     // 1.0.71: the note is delivered INSIDE the user turn, not the system
     // message. `turnSystemPrompt` is still set — session-proxy records it as
     // the `system.message` event, exactly as before — but the flag tells
@@ -584,6 +596,10 @@ export function* processPrompt(
     state.config.turnSystemPrompt = undefined;
 
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+    // Carried steers leave the state only on proof of consumption (plan P12),
+    // which includes a stopped consuming turn (D6). A returned error keeps
+    // them even when the model ran: its retry re-sends the same prompt and
+    // folds them again. Late steers of this turn are appended after the clear.
     if (result.type !== "error" && result.carriedSteersConsumed === true) {
         state.carriedSteers = [];
     }

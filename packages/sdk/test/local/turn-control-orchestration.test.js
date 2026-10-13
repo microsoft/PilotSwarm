@@ -344,4 +344,138 @@ describe("1.0.81 turn control orchestration", () => {
         const scheduled = calls => calls.filter(c => c.effect !== "race").map(c => ({ effect: c.effect, args: c.args }));
         expect(scheduled(current.calls)).toEqual(scheduled(legacy.calls));
     });
+
+    it("a 1.0.80 input continued into 1.0.81 runs its next turn through the V4 contract", () => {
+        const h = harness({ sourceOrchestrationVersion: "1.0.80", iteration: 7 });
+        h.run({ type: "completed", content: "done" });
+        expect(h.routes.length).toBeGreaterThan(0);
+        expect(h.routes.every(route => route.contract === "turn-control-v1")).toBe(true);
+        expect(h.turns[0][2]).toBe(7);
+    });
+
+    describe("carried wake scheduling", () => {
+        const START = 1_750_000_000_000;
+        const drainCalls = h => {
+            const before = h.calls.length;
+            h.drive(drain(h.runtime));
+            return h.calls.slice(before);
+        };
+
+        it("a pending question holds the carry: drain blocks for the answer", () => {
+            const h = harness({ carriedSteers: [steer(50)] });
+            h.runtime.state.pendingInputQuestion = { question: "which path?", iteration: 4 };
+            const before = h.calls.length;
+            expect(() => h.drive(drain(h.runtime))).toThrow("unexpected blocking dequeue");
+            const drained = h.calls.slice(before);
+            expect(drained.some(c => c.effect === "race")).toBe(false);
+            expect(drained.at(-1)).toMatchObject({ effect: "dequeue", name: "messages" });
+            expect(h.runtime.state.carriedSteers).toEqual([steer(50)]);
+        });
+
+        it("a gate wait holds the carry: drain races the gate timer, not a wake", () => {
+            const h = harness({ carriedSteers: [steer(51)] });
+            h.runtime.state.activeTimer = {
+                type: "wait", deadlineMs: START + 3_600_000, originalDurationMs: 3_600_000, reason: "budget", budget: true,
+            };
+            const races = drainCalls(h).filter(c => c.effect === "race");
+            expect(races[0].right).toMatchObject({ effect: "timer" });
+            expect(races[0].right.ms).toBeGreaterThan(1_000);
+            expect(h.turns).toEqual([]);
+            expect(h.runtime.state.carriedSteers).toEqual([steer(51)]);
+        });
+
+        it("a pending shutdown holds the carry: drain races the shutdown poll, not a wake", () => {
+            const h = harness({ carriedSteers: [steer(54)] });
+            h.runtime.state.pendingShutdown = {
+                mode: "done", reason: "finished", startedAtMs: START, deadlineAtMs: START + 60_000,
+                targetAgentIds: ["agent-1"], commandId: "cmd-1",
+            };
+            h.runtime.state.waitingForAgentIds = ["agent-1"];
+            h.runtime.state.activeTimer = {
+                type: "agent-poll", deadlineMs: START + 3_600_000, originalDurationMs: 3_600_000,
+                reason: "shutting down", agentIds: ["agent-1"],
+            };
+            const races = drainCalls(h).filter(c => c.effect === "race");
+            expect(races[0].right.ms).toBeGreaterThan(1_000);
+            expect(h.turns).toEqual([]);
+            expect(h.runtime.state.carriedSteers).toEqual([steer(54)]);
+        });
+
+        it("a carried wake interrupts a wait like a message and resumes it after the turn", () => {
+            const h = harness({ carriedSteers: [steer(52)] });
+            h.runtime.state.activeTimer = {
+                type: "wait", deadlineMs: START + 3_600_000, originalDurationMs: 3_600_000, reason: "poll later",
+            };
+            h.drive(drain(h.runtime));
+            expect(h.runtime.state.interruptedWaitTimer).toMatchObject({ reason: "poll later", interruptKind: "user" });
+            h.results.push({ type: "completed", content: "steered", carriedSteersConsumed: true });
+            h.drive(decide(h.runtime));
+            const [prompt, bootstrap, , meta] = h.turns.at(-1);
+            expect(prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
+            expect(prompt).toContain("interrupted your 3600s timer");
+            expect(bootstrap).toBe(true);
+            expect(meta.carriedSteers).toEqual([steer(52)]);
+            expect(h.runtime.state.carriedSteers).toEqual([]);
+            expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", reason: "poll later" });
+        });
+
+        it("a carried wake interrupts cron like a message and keeps the schedule", () => {
+            const h = harness({ carriedSteers: [steer(53)], cronSchedule: { intervalSeconds: 300, reason: "original cron" } });
+            h.runtime.state.activeTimer = {
+                type: "cron", deadlineMs: START + 300_000, originalDurationMs: 300_000, reason: "original cron",
+            };
+            h.drive(drain(h.runtime));
+            expect(h.runtime.state.interruptedCronTimer).toMatchObject({ reason: "original cron" });
+            h.results.push({ type: "completed", content: "steered", carriedSteersConsumed: true });
+            h.drive(decide(h.runtime));
+            expect(h.turns.at(-1)[0].startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
+            expect(h.runtime.state.cronSchedule).toMatchObject({ intervalSeconds: 300, reason: "original cron" });
+            expect(h.runtime.state.activeTimer).toMatchObject({ type: "cron" });
+        });
+
+        it("a follow-up held by an agent wait carries the steers instead of spinning", () => {
+            const h = harness({ carriedSteers: [steer(56)] });
+            h.runtime.state.pendingPrompt = "spawned agent confirmations";
+            h.runtime.state.waitingForAgentIds = ["agent-1"];
+            h.runtime.state.activeTimer = {
+                type: "agent-poll", deadlineMs: START + 30_000, originalDurationMs: 30_000,
+                reason: "waiting for 1 agent(s)", agentIds: ["agent-1"],
+            };
+            h.drive(drain(h.runtime));
+            expect(h.runtime.state.waitingForAgentIds).toBeNull();
+            h.results.push({ type: "completed", content: "done", carriedSteersConsumed: true });
+            expect(h.drive(decide(h.runtime))).toBe(true);
+            expect(h.turns).toHaveLength(1);
+            expect(h.turns[0][0]).toContain("spawned agent confirmations");
+            expect(h.turns[0][3].carriedSteers).toEqual([steer(56)]);
+            expect(h.runtime.state.carriedSteers).toEqual([]);
+        });
+
+        it("a carried-only wake keeps its marker when a child digest rides with it", () => {
+            const h = harness({ carriedSteers: [steer(55)] });
+            h.runtime.state.pendingChildDigest = {
+                startedAtMs: START, ready: true,
+                updates: [{ sessionId: "child-1", updateType: "completed", content: "child finished" }],
+            };
+            h.drive(drain(h.runtime));
+            h.results.push({ type: "completed", content: "steered", carriedSteersConsumed: true });
+            h.drive(decide(h.runtime));
+            const [prompt, bootstrap, , meta] = h.turns.at(-1);
+            expect(prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
+            expect(prompt).toContain("child finished");
+            expect(bootstrap).toBe(true);
+            expect(meta.carriedSteers).toEqual([steer(55)]);
+            expect(h.runtime.state.pendingChildDigest).toBeNull();
+        });
+
+        it("a carried-only retry keeps the bootstrap flag of its first attempt", () => {
+            const h = harness({ carriedSteers: [steer(57)] });
+            h.run({ type: "error", message: "transient", carriedSteersConsumed: true }, CARRIED_STEERS_WAKE_PROMPT);
+            const next = h.calls.find(c => c.effect === "can").input;
+            const retry = harness(next);
+            retry.run({ type: "completed", content: "retry", carriedSteersConsumed: true }, next.prompt);
+            expect(retry.turns[0][0].startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
+            expect(retry.turns[0][1]).toBe(true);
+        });
+    });
 });

@@ -25,6 +25,11 @@ pending ordinary work takes priority. If there is no pending prompt, the next
 turn uses an internal wake marker. It enters the existing timer-interrupt path,
 so an interrupted wait and recurring schedule remain intact. The marker remains
 internal in shared sessions and survives prompt normalization and retry notes.
+A follow-up held by an agent wait ends that wait, as a new message would, and
+carries the guidance. A pending graceful shutdown holds the guidance; the
+terminal write closes it. A buffered child digest rides after the marker, never
+inside it. Every carried-only attempt, including a retry, runs as a bootstrap
+turn.
 The worker replaces it with guidance text and must not record a second user
 message.
 
@@ -44,7 +49,9 @@ There is no carried-steer closing activity or yield.
 | Graceful completion, cancellation, deletion, or failed shutdown | Existing terminal/delete operations close controls in SQL. Clear orchestration carry. |
 | Creation-policy rejection or worker-managed-agent rejection | Existing startup state write before any turn can open controls. |
 | Persisted connection-loss recovery | The prompt is retried through continue-as-new, not abandoned. Keep carry. |
-| Budget/workspace refusal or stale turn start | The prompt or guidance remains pending; no give-up close. |
+| Budget/workspace refusal | The prompt and guidance remain pending in the gate stash and carry; no give-up close. |
+| Stale turn start (`cancelled` result) | Only a trace: the turn's prompt is not retried and no state is written. Carried guidance is kept and runs in the next wake turn. |
+| Prompt dropped by a cancel tombstone or as a duplicate client message id | A session event records the drop; no state write. The user asked for it or already sent the prompt. |
 | Regeneration archive/distill failure | The regeneration request is refused or falls back; queued work is retained, not abandoned. |
 | Epoch-boundary commit or invalid cron computation failure | These remain execution failures, not successful give-up returns; do not silently consume carried guidance. |
 

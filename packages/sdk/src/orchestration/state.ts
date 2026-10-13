@@ -135,6 +135,15 @@ export interface DurableSessionState {
      * turn actually runs.
      */
     budgetStash: BudgetStashedPrompt[] | null;
+    /**
+     * Session turn control (1.0.81): steers accepted too late for the turn
+     * that received them, in seq order. Every turn sends them as
+     * `carriedSteers`; the worker folds them into the prompt and records no
+     * new user message. They leave this state only when a result reports
+     * `carriedSteersConsumed` (and is not an error), or on a give-up or
+     * terminal path, whose state write closes them in SQL. A returned error
+     * that will be retried keeps them, so the retry folds them again.
+     */
     carriedSteers: LateSteer[];
     interruptedCronTimer: InterruptedCronTimer | null;
 
@@ -191,8 +200,9 @@ export interface DurableSessionState {
     /**
      * Which incarnation of the SDK transcript is live. 0 = original.
      * Carried across every continue-as-new; incremented only by the
-     * regenerate flip. The turn index is NEVER reset (stopTurn queues,
-     * turn metrics, cascade ids all rely on its monotonicity).
+     * regenerate flip. The turn index is NEVER reset (turn controls in the
+     * CMS, stopTurn queues of older versions, turn metrics and cascade ids
+     * all rely on its monotonicity).
      */
     transcriptEpoch: number;
     /**
