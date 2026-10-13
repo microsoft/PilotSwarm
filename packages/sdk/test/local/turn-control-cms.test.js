@@ -12,6 +12,9 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { DATABASE_URL, TEST_SCHEMA_PREFIX } from "../helpers/local-env.js";
 import { PgSessionCatalogProvider } from "../../src/index.ts";
+import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
+import { runMigrations } from "../../src/pg-migrator.ts";
+import { runCmsMigrations } from "../../src/cms-migrator.ts";
 
 const TIMEOUT = 120_000;
 
@@ -402,6 +405,32 @@ describe("turn control procedures (migration 0082)", () => {
         expect(row.title).toBe("t");
         expect(row.turnHigh).toBe(-1);
         expect((await catalog.listSessions()).some((r) => r.sessionId === s)).toBe(true);
+    }, TIMEOUT);
+
+    it("upgrades a database at 0081 with a running legacy turn", async () => {
+        const schema = `${TEST_SCHEMA_PREFIX}_turn_control_up_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+        try {
+            await runMigrations(pool, schema, CMS_MIGRATIONS(schema).filter((m) => m.version <= "0081"), 0x63_6D_73);
+            const q = (text, values) => pool.query(text.replaceAll("SCHEMA", `"${schema}"`), values);
+            await q("SELECT SCHEMA.cms_create_session($1, 'm', NULL, NULL, false, NULL, NULL, NULL, NULL, 'private')", ["legacy"]);
+            await q("SELECT SCHEMA.cms_set_active_turn_index($1, 6)", ["legacy"]);
+            expect((await q("SELECT to_regproc($1) AS f", [`"${schema}".cms_turn_start`])).rows[0].f).toBe(null);
+
+            await runCmsMigrations(pool, schema);
+            const upgraded = await PgSessionCatalogProvider.create(env.store, schema);
+            await upgraded.initialize();
+            try {
+                const row = await upgraded.getSession("legacy");
+                expect(row).toMatchObject({ activeTurnIndex: 6, turnHigh: -1 });
+                expect(await upgraded.turnControlAdd("legacy", "stop", "halt", rid(), null)).toEqual({ refused: "legacy_turn" });
+                expect(await upgraded.completeTurnWriteback(writebackInput("legacy", 6))).toBe(false);
+                expect((await upgraded.getSession("legacy")).activeTurnIndex).toBe(null);
+            } finally {
+                await upgraded.close();
+            }
+        } finally {
+            await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+        }
     }, TIMEOUT);
 
     it("publishes the sessions.steering flag off, without user override", async () => {

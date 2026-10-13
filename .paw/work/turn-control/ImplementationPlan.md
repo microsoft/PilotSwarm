@@ -163,7 +163,7 @@ I1 integration (parent) ──► U0 deployment route (parent) ──► U1 UX t
 
 Workstream A (this branch):
 - [x] **Phase A1: Contract** - Shared types, constants, routing names and tag, scheduling hooks, CMS method signatures and the `sessions.steering` definition; merged before B and C start.
-- [ ] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
+- [x] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
 - [ ] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
 - [ ] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
 - [ ] **Phase A5: End-to-end, crash and multi-worker verification** - Real-CLI integration, fault-point crash matrix, stale worker, measurements.
