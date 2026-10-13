@@ -149,7 +149,8 @@ END $$;
 -- ── 1. Client: add a Steer or a Stop ─────────────────────────────
 
 CREATE OR REPLACE FUNCTION ${s}.cms_turn_control_add(
-    p_session TEXT, p_kind TEXT, p_text TEXT, p_request_id TEXT, p_actor JSONB
+    p_session TEXT, p_kind TEXT, p_text TEXT, p_request_id TEXT, p_actor JSONB,
+    p_steering_allowed BOOLEAN DEFAULT true
 ) RETURNS JSONB LANGUAGE plpgsql AS $$
 DECLARE
     v_active INT;
@@ -183,6 +184,12 @@ BEGIN
             RETURN '{"refused":"request_id_reused"}'::jsonb;
         END IF;
         RETURN jsonb_build_object('seq', v_prior.seq, 'turn', v_prior.data->'turn', 'repeat', true);
+    END IF;
+
+    -- After the retry lookup, so a lost-response retry gets its first answer
+    -- after steering was turned off. A Stop ignores the flag.
+    IF p_kind = 'steer' AND NOT COALESCE(p_steering_allowed, true) THEN
+        RETURN '{"refused":"steering_disabled"}'::jsonb;
     END IF;
 
     IF v_active IS NULL THEN

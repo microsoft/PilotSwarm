@@ -2569,13 +2569,12 @@ export class PilotSwarmManagementClient {
         if (requestId === undefined) {
             throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
         }
-        // The flag gates new steers only. A retry of an already recorded
-        // request id still gets its first answer (or request_id_reused)
-        // from the catalog, even after the flag was turned off.
-        if (!(await this._steeringEnabled(opts?.caller)) && !(await this._steerRequestRecorded(sessionId, requestId))) {
-            return { outcome: "steering_disabled" };
-        }
-        const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts?.caller);
+        // The flag gates new steers only. The catalog checks it under the
+        // session row lock after its request-id retry lookup, so a retry of
+        // an already recorded request id still gets its first answer (or
+        // request_id_reused) after the flag was turned off.
+        const steeringAllowed = await this._steeringEnabled(opts?.caller);
+        const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts?.caller, steeringAllowed);
         if ("refused" in added) return { outcome: added.refused };
         return {
             outcome: "accepted",
@@ -2631,17 +2630,6 @@ export class PilotSwarmManagementClient {
         return this._waitForStopOutcome(sessionId, added.seq, added.turn, timeoutMs);
     }
 
-    /** Whether a `user.steer` with this request id is already recorded for the session. */
-    private async _steerRequestRecorded(sessionId: string, requestId: string): Promise<boolean> {
-        let after = 0;
-        for (;;) {
-            const page = await this._catalog!.getSessionEvents(sessionId, after, OUTCOME_PAGE_LIMIT, [TURN_CONTROL_EVENT_TYPES.steer]);
-            if (page.some((event) => (event.data as { requestId?: unknown } | null)?.requestId === requestId)) return true;
-            if (page.length < OUTCOME_PAGE_LIMIT) return false;
-            after = page[page.length - 1].seq;
-        }
-    }
-
     /** Resolve `sessions.steering` for the caller's viewer (cluster scope without one). */
     private async _steeringEnabled(caller: TurnControlCaller | undefined): Promise<boolean> {
         const features = this._catalog?.features;
@@ -2666,12 +2654,16 @@ export class PilotSwarmManagementClient {
         text: string,
         requestId: string,
         caller: TurnControlCaller | undefined,
+        steeringAllowed = true,
     ): Promise<TurnControlAddResult> {
         const actor = normalizeMessageSender(caller?.sender) ?? null;
         try {
-            return await this._catalog!.turnControlAdd(sessionId, kind, text, requestId, actor);
+            return await this._catalog!.turnControlAdd(sessionId, kind, text, requestId, actor, steeringAllowed);
         } catch (error) {
-            if (error instanceof TurnControlUnavailableError) return { refused: "legacy_turn" };
+            if (error instanceof TurnControlUnavailableError) {
+                // Without the procedures nothing was recorded, so no retry can be owed an answer.
+                return kind === "steer" && !steeringAllowed ? { refused: "steering_disabled" } : { refused: "legacy_turn" };
+            }
             throw error;
         }
     }

@@ -1176,7 +1176,13 @@ export interface SessionCatalog {
 
     // ── Session turn control (migration 0082) ───────────────────
     /** Client: add a Steer or a Stop to the running turn, or get a refusal. */
-    turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult>;
+    /**
+     * `steeringAllowed` (default true): the resolved Steer feature flag. A
+     * retried request id gets its first answer before the flag is checked;
+     * a new Steer is refused with `steering_disabled` when it is false. A
+     * Stop ignores it.
+     */
+    turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed?: boolean): Promise<TurnControlAddResult>;
     /** Worker T3: mark the turn running and return its open controls. Replaces setActiveTurnIndex on the turn-control path. */
     turnStart(sessionId: string, turn: number): Promise<TurnStartResult>;
     /** Worker: one batched look for the worker's running turns. */
@@ -1931,11 +1937,11 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Session turn control (migration 0082) ───────────────────
 
     /** Adds a control atomically, or returns its refusal or existing request-id receipt. */
-    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult> {
+    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed = true): Promise<TurnControlAddResult> {
         const { rows } = await this.turnControlQuery(
             "turnControlAdd",
-            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb) AS r`,
-            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null],
+            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb, $6::boolean) AS r`,
+            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null, steeringAllowed],
         );
         const r = rows[0]?.r ?? {};
         if (r.refused) return { refused: r.refused };

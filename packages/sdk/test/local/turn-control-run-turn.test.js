@@ -343,6 +343,41 @@ describe("runTurnV4: carried steers (P12, P17, D6)", () => {
     });
 });
 
+describe("runTurnV4: an attempt re-dispatched after turn start records the prompt once", () => {
+    const recorded = (h) => h.recordedEvents.filter((e) => e.eventType === "user.message" || e.eventType === "system.message").map((e) => e.eventType);
+    const input = { turnIndex: 4, prompt: "check the build", config: { turnSystemPrompt: "turn note" } };
+
+    it("the first attempt records the prompt and the system message", async () => {
+        const v4 = turnControlCatalog({ writeback: false });
+        const h = makeRunTurnHarness({
+            catalogExtras: { ...v4.extras, getSession: vi.fn(async (sessionId) => ({ sessionId, owner: null, turnHigh: 3 })) },
+        });
+        await h.runTurn("s", input, "runTurnV4");
+        expect(recorded(h)).toEqual(["system.message", "user.message"]);
+        expect(v4.calls.map((c) => c[0])).toContain("turnStart");
+    });
+
+    it("an attempt after an earlier one passed turn start (worker loss) records nothing again", async () => {
+        const v4 = turnControlCatalog({ writeback: false });
+        const h = makeRunTurnHarness({
+            catalogExtras: { ...v4.extras, getSession: vi.fn(async (sessionId) => ({ sessionId, owner: null, turnHigh: 4 })) },
+        });
+        const result = await h.runTurn("s", input, "runTurnV4");
+        expect(result.type).toBe("completed");
+        expect(recorded(h)).toEqual([]);
+        expect(h.session.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("runTurnV3 keeps recording on a re-dispatch, as before", async () => {
+        const v3 = turnControlCatalog({ writeback: false });
+        const h = makeRunTurnHarness({
+            catalogExtras: { ...v3.extras, getSession: vi.fn(async (sessionId) => ({ sessionId, owner: null, turnHigh: 4 })) },
+        });
+        await h.runTurn("s", input, "runTurnV3");
+        expect(recorded(h)).toEqual(["system.message", "user.message"]);
+    });
+});
+
 describe("runTurnV3 is unchanged", () => {
     it("never calls turn start or turn end, and ignores carried steers", async () => {
         const v3 = turnControlCatalog({ writeback: true });

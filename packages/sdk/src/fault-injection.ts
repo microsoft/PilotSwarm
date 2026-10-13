@@ -8,6 +8,9 @@
  *   PILOTSWARM_FAULT_INJECT="turn.commit.before-cas:throw"   → throw on 1st hit
  *   PILOTSWARM_FAULT_INJECT="turn.commit.after-cas:exit:2"   → exit(137) on 2nd hit
  *
+ * `log` only prints the hit line and continues (an observation probe for
+ * timing tests, for example whether an activity cancellation reached JS).
+ *
  * `exit` (the default action) simulates a hard worker crash — the process
  * dies exactly at the protocol boundary, duroxide's activity retry takes it
  * from there. `throw` simulates a transient failure surfaced to the caller.
@@ -21,7 +24,8 @@
  * Session-scoped holds (turn control tests): `faultPointAsync(name, { sessionId })`
  * also honours `<point>:hold@<sessionId>[:<afterHits>]` entries and holds armed
  * with `armFaultHold(point, sessionId)`. A held point waits until the file
- * `$PILOTSWARM_FAULT_RELEASE_DIR/<point>.<sessionId>` exists, polling every
+ * `$PILOTSWARM_FAULT_RELEASE_DIR/<point>.<sessionId>` exists (it first writes
+ * `<point>.<sessionId>.held`, so a test knows the hold was reached), polling every
  * 50 ms, and throws after 120 s (`PILOTSWARM_FAULT_HOLD_MAX_MS` overrides). Only the named session blocks; hit counts
  * are kept per (point, session), so concurrent tests do not interfere.
  *
@@ -43,6 +47,7 @@ export function faultPoint(name: string): void {
         if (hits < fireAt) return;
         // eslint-disable-next-line no-console
         console.error(`[fault-injection] hit point=${name} action=${action} hit=${hits}/${fireAt}`);
+        if (action === "log") return;
         if (action === "throw") {
             throw new Error(`fault-injection: ${name}`);
         }
@@ -101,9 +106,11 @@ export async function faultPointAsync(name: string, opts: { sessionId?: string }
     if (hits !== fireAt) return;
     const dir = process.env.PILOTSWARM_FAULT_RELEASE_DIR;
     if (!dir) throw new Error(`fault-injection: hold ${name} for ${sessionId} needs PILOTSWARM_FAULT_RELEASE_DIR`);
-    const { existsSync } = await import("node:fs");
+    const { existsSync, writeFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const releaseFile = join(dir, `${name}.${sessionId}`);
+    // Tests wait for this marker before acting, so they know the hold was reached.
+    writeFileSync(`${releaseFile}.held`, "");
     // eslint-disable-next-line no-console
     console.error(`[fault-injection] hold point=${name} session=${sessionId} hit=${hits}`);
     const bound = Number.parseInt(process.env.PILOTSWARM_FAULT_HOLD_MAX_MS ?? "", 10) || DEFAULT_HOLD_BOUND_MS;
