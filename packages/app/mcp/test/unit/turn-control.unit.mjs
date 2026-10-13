@@ -142,6 +142,17 @@ async function main() {
         const { body } = await call(makeCtx([], { stop: { outcome: "stop_forced", turnIndex: 2 } }), "stop_turn", { session_id: UUID });
         record("stop stop_forced (legacy turn) → stopped true", body.outcome === "stop_forced" && body.stopped === true);
     }
+    for (const timeout_ms of [0, 300_000]) {
+        const calls = [];
+        const { res } = await call(makeCtx(calls, { stop: { outcome: "timeout", turnIndex: 1, controlSeq: 2 } }), "stop_turn", { session_id: UUID, timeout_ms });
+        record(`stop timeout_ms ${timeout_ms} → accepted and forwarded`,
+            !res.isError && op(calls, "stopSessionTurn")[0]?.[2]?.timeoutMs === timeout_ms);
+    }
+    for (const timeout_ms of [-1, 300_001, 1.5]) {
+        const calls = [];
+        const { res } = await call(makeCtx(calls, { stop: { outcome: "stopped" } }), "stop_turn", { session_id: UUID, timeout_ms });
+        record(`stop timeout_ms ${timeout_ms} → rejected by the schema`, res.isError === true && op(calls, "stopSessionTurn").length === 0);
+    }
     {
         const calls = [];
         const { res } = await call(makeCtx(calls, { session: null }), "stop_turn", { session_id: UUID });

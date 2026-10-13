@@ -52,7 +52,7 @@ function steeringSnapshot({ cluster, users = [] } = {}) {
  * control seq to the outcome event that appears after `appearAfterPolls`
  * outcome reads.
  */
-function createFakeCatalog({ row = null, add = () => ({ seq: 41, turn: 3 }), outcomes = {}, appearAfterPolls = 0, flag = { cluster: { enabled: true, allowUserOverride: false } }, features = true } = {}) {
+function createFakeCatalog({ row = null, add = () => ({ seq: 41, turn: 3 }), outcomes = {}, appearAfterPolls = 0, flag = { cluster: { enabled: true, allowUserOverride: false } }, features = true, recordedSteers = [] } = {}) {
     const calls = { add: [], eventReads: [], enqueues: [] };
     let outcomeReads = 0;
     const catalog = {
@@ -69,6 +69,12 @@ function createFakeCatalog({ row = null, add = () => ({ seq: 41, turn: 3 }), out
             return answer;
         },
         getSessionEvents: async (sessionId, afterSeq, limit, types) => {
+            if (types?.includes(TURN_CONTROL_EVENT_TYPES.steer)) {
+                calls.steerReads = (calls.steerReads || 0) + 1;
+                return recordedSteers
+                    .map(({ seq, requestId }) => ({ seq, sessionId, eventType: TURN_CONTROL_EVENT_TYPES.steer, data: { turn: 3, text: "x", requestId }, createdAt: new Date() }))
+                    .filter((event) => event.seq > afterSeq);
+            }
             calls.eventReads.push({ sessionId, afterSeq, limit, types });
             outcomeReads += 1;
             if (outcomeReads <= appearAfterPolls) return [];
@@ -178,6 +184,17 @@ describe("steerSessionTurn (fake catalog)", () => {
         const fake = createFakeCatalog({ features: false });
         expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "steering_disabled" });
         expect(fake.calls.add).toHaveLength(0);
+    });
+
+    it("with the flag off, a retry of a recorded request id still gets its first answer; a new one is refused", async () => {
+        const flag = { cluster: { enabled: false, allowUserOverride: false } };
+        const retry = createFakeCatalog({ flag, recordedSteers: [{ seq: 41, requestId: "kept-id" }], add: { seq: 41, turn: 3, repeat: true } });
+        expect(await createMgmt(retry).steerSessionTurn("s1", { text: "x", requestId: "kept-id" }))
+            .toEqual({ outcome: "accepted", steerId: 41, turn: 3, repeat: true });
+        expect(retry.calls.add).toHaveLength(1);
+        const fresh = createFakeCatalog({ flag, recordedSteers: [{ seq: 41, requestId: "kept-id" }] });
+        expect(await createMgmt(fresh).steerSessionTurn("s1", { text: "x", requestId: "new-id" })).toEqual({ outcome: "steering_disabled" });
+        expect(fresh.calls.add).toHaveLength(0);
     });
 
     it("the flag defaults to off with no user override", () => {
@@ -481,6 +498,24 @@ describe("turn control against real PostgreSQL", () => {
         expect(await mgmt.steerSessionTurn(sessionId, { text: "other text", requestId: "r-lost" })).toEqual({ outcome: "request_id_reused" });
         expect(await mgmt.steerSessionTurn(sessionId, { text: "new", requestId: "r-new" })).toEqual({ outcome: "no_turn" });
         expect(await countEvents(sessionId, TURN_CONTROL_EVENT_TYPES.steer)).toBe(1);
+    });
+
+    it("returns the first answer to a same-id retry after the flag was turned off; refuses a new steer", async () => {
+        const sessionId = await runningSession("tc-flag-off-retry");
+        const first = await mgmt.steerSessionTurn(sessionId, { text: "before the switch", requestId: "flag-r1" });
+        expect(first).toMatchObject({ outcome: "accepted", turn: 0 });
+        const admin = { principal: { provider: "test", subject: "admin" }, isAdmin: true };
+        const revision = (await catalog.features.read(admin, "cluster")).flags.find((flag) => flag.featureKey === STEERING).revision;
+        await catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: revision, requestId: `disable-${sessionId}`, enabled: false, allowUserOverride: false });
+        try {
+            expect(await mgmt.steerSessionTurn(sessionId, { text: "before the switch", requestId: "flag-r1" }))
+                .toEqual({ outcome: "accepted", steerId: first.steerId, turn: 0, repeat: true });
+            expect(await mgmt.steerSessionTurn(sessionId, { text: "after the switch", requestId: "flag-r2" })).toEqual({ outcome: "steering_disabled" });
+            expect(await countEvents(sessionId, TURN_CONTROL_EVENT_TYPES.steer)).toBe(1);
+        } finally {
+            const current = (await catalog.features.read(admin, "cluster")).flags.find((flag) => flag.featureKey === STEERING).revision;
+            await catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: current, requestId: `enable-again-${sessionId}`, enabled: true, allowUserOverride: false });
+        }
     });
 
     it("records a Stop and returns its outcome once turn end writes it", async () => {

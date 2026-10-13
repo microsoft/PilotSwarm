@@ -18,6 +18,14 @@ C1–C4; spec r8; design `docs/proposals/session-turn-control.md` revision 5.
   and request id, resolves `sessions.steering` for `caller.viewer` (cluster
   scope without one) from the feature catalog snapshot, records the control
   with `turnControlAdd` (actor = normalized `caller.sender`), maps refusals.
+- The flag gates new steers only: with the flag off, a request id that is
+  already recorded (a `user.steer` with that id) still goes to the catalog,
+  which returns its first answer (or `request_id_reused`), so a lost
+  response is never turned into a refusal. Residual: the lookup is not under
+  the catalog's row lock; a request recorded in an earlier orchestration
+  lifetime (before a revive reset `turn_base_seq`) would be recorded anew.
+  Closing that fully needs the flag decision inside `cms_turn_control_add`
+  (workstream A).
 - `stopSessionTurn(sessionId, { reason?, timeoutMs?, requestId?, caller? })`:
   validates `timeoutMs` (0–300,000 ms, default 30,000) before recording,
   records a `user.stop`, then polls `session.control_outcome` every 250 ms

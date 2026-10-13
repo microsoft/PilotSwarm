@@ -35,7 +35,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose current turn to stop"),
                 reason: z.string().optional().describe("Optional reason, surfaced to the session"),
-                timeout_ms: z.number().int().positive().optional().describe("Max time to wait for the turn to stop"),
+                timeout_ms: z.number().int().min(0).max(300_000).optional().describe("Max time to wait for the outcome, 0 to 300000 ms (default 30000)"),
                 request_id: requestIdShape().optional().describe(
                     "Idempotency key. Reuse it only to retry after a transport failure; a new id is generated when omitted"),
             },
