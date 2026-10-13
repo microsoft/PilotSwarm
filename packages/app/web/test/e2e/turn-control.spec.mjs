@@ -508,6 +508,24 @@ async function expectPhoneComposer(wire, { steer = true } = {}) {
     }
 }
 
+/**
+ * The phone composer after the turn ends: no Stop, Steer or turn-state chip,
+ * Send on the input's row, and the input at least `minWidth` wide. The
+ * minimums are the idle widths before turn control (228 px in the chat view,
+ * 324 px in Zen and MoA at 390 px) less 4 px.
+ */
+async function expectIdlePhoneComposer(wire, minWidth) {
+    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+    await expect(wire.turnState).toHaveAttribute("data-turn-state", "idle");
+    await expect(wire.turnState).toBeHidden();
+    await expect(wire.stopButton).toHaveCount(0);
+    await expect(wire.steerButton).toHaveCount(0);
+    const [input, send] = [await wire.input.boundingBox(), await wire.sendButton.boundingBox()];
+    expect(input.width, "the idle input keeps its width").toBeGreaterThanOrEqual(minWidth);
+    expect(send.y, "Send is on the input's row").toBeLessThan(input.y + input.height);
+    expect(send.x).toBeGreaterThanOrEqual(input.x + input.width);
+}
+
 /** Steer and Stop from `wire`; both requests must name `sessionId`. */
 async function steerAndStop(wire, sessionId, text) {
     const steers = wire.state.steers.length, stops = wire.state.stops.length;
@@ -610,6 +628,7 @@ for (const steering of [true, false]) {
             await expectPhoneComposer(zen);
             await page.screenshot({ path: test.info().outputPath("turn-control-phone-zen.png") });
             await steerAndStop(zen, SID, "zen steer");
+            await expectIdlePhoneComposer(zen, 320);
         } else {
             await expect(zen.steerButton).toHaveCount(0);
             await expectPhoneComposer(zen, { steer: false });
@@ -621,7 +640,7 @@ for (const steering of [true, false]) {
     });
 }
 
-test("phone chat 390x844: Stop and Steer fit under a wide input and act on the session; idle keeps one row", async ({ page }) => {
+test("phone chat 390x844: Stop and Steer fit under a wide input and act on the session; idle keeps one row and its width", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
@@ -631,11 +650,5 @@ test("phone chat 390x844: Stop and Steer fit under a wide input and act on the s
     await expectPhoneComposer(chat);
     await page.screenshot({ path: test.info().outputPath("turn-control-phone-chat.png") });
     await steerAndStop(chat, SID, "phone chat steer");
-    // The idle composer keeps Send on the input's row.
-    await chat.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
-    await expect(chat.stopButton).toHaveCount(0);
-    await expect(chat.steerButton).toHaveCount(0);
-    const [input, send] = [await chat.input.boundingBox(), await chat.sendButton.boundingBox()];
-    expect(send.y).toBeLessThan(input.y + input.height);
-    expect(send.x).toBeGreaterThanOrEqual(input.x + input.width);
+    await expectIdlePhoneComposer(chat, 224);
 });
