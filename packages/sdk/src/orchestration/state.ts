@@ -9,6 +9,7 @@ import type {
     SessionContextUsage,
     SubAgentEntry,
     TurnAction,
+    LateSteer,
 } from "../types.js";
 import { cloneContextUsage } from "./utils.js";
 
@@ -134,6 +135,7 @@ export interface DurableSessionState {
      * turn actually runs.
      */
     budgetStash: BudgetStashedPrompt[] | null;
+    carriedSteers: LateSteer[];
     interruptedCronTimer: InterruptedCronTimer | null;
 
     // ── Session workspaces (1.0.80) ──────────────────────────────
@@ -471,6 +473,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,
+        carriedSteers: input.carriedSteers ? [...input.carriedSteers] : [],
         interruptedCronTimer: input.interruptedCronTimer ?? null,
 
         workspaceRevision: typeof input.workspaceRevision === "number" && input.workspaceRevision > 0 ? input.workspaceRevision : 0,

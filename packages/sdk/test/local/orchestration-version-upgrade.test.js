@@ -26,6 +26,9 @@ function createCtx(values, queue = [], turns = [], calls = []) {
         resolveEffect(effect) {
             if (!effect) return undefined;
             switch (effect.effect) {
+                case "session.runTurn":
+                    turns.push(effect.args);
+                    return { type: "completed", content: "ok" };
                 case "utcNow":
                     return 1_713_083_589_000;
                 case "dequeueEvent":

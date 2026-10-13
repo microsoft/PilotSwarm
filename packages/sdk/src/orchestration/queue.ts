@@ -1,6 +1,7 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
 import { sanitizePromptAttachmentRefs, ATTACHMENTS_MAX_COUNT } from "../types.js";
 import { messageSenderKey } from "../message-sender.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
     maybeResolveAgentWaitCompletion,
@@ -288,6 +289,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const race: any = yield ctx.race(msgTask, timerTask);
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
+
+        } else if (state.carriedSteers.length > 0 && !state.pendingInputQuestion && !timerGate(state.activeTimer)) {
+            // Give already-pending user work priority. Otherwise the carry
+            // enters the same timer-interrupt path as a newly arrived message.
+            if (stash.length > 0 || state.pendingPrompt || state.pendingToolActions.length > 0 || hasFifoItems(runtime)) break;
+            const raced: any = yield ctx.race(
+                ctx.dequeueEvent("messages"),
+                ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
+            );
+            msg = raced.index === 1
+                ? { prompt: CARRIED_STEERS_WAKE_PROMPT }
+                : typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
 
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
