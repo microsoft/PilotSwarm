@@ -1516,14 +1516,6 @@ export class ManagedSession {
 
     // ── Session turn control: the send gate (design 4.6) ─────────
 
-    /**
-     * Gate of the controlled run, for diagnostics: pending until the initial
-     * send completes; "none" before runTurn starts and after it ends.
-     */
-    steerGateState(): "none" | "pending" | "open" | "closed" {
-        return this.steer?.gate ?? "none";
-    }
-
     /** Close the running turn's send gate, if it has one (Stop, abort, forced settle, failure, idle). */
     private closeSteerGate(): void {
         if (this.steer) this.steer.gate = "closed";
@@ -3404,11 +3396,22 @@ export class ManagedSession {
             return eventType === "session.idle";
         };
 
+        // The model run the handlers below settle: the first run, then each
+        // corrective run in this turn (nextRun). Every run settles the same
+        // way, on session.idle (or an aborted assistant.idle after our Stop).
+        let settleRun: () => void = () => {};
+        let failRun: (err: unknown) => void = () => {};
+        const nextRun = (): Promise<void> => new Promise<void>((resolve, reject) => {
+            settleRun = resolve;
+            failRun = reject;
+        });
         const turnComplete = new Promise<void>((resolve, reject) => {
-            // Hang-escalation hook: forceSettleTurn() resolves this promise when
-            // the SDK never fires session.idle (see stop-turn plan, edge E3).
-            this.settleTurnResolver = resolve;
-            this.settleTurnRejecter = reject;
+            settleRun = resolve;
+            failRun = reject;
+            // Hang-escalation hook: forceSettleTurn() resolves the current run
+            // when the SDK never fires session.idle (see stop-turn plan, edge E3).
+            this.settleTurnResolver = () => settleRun();
+            this.settleTurnRejecter = (err) => failRun(err);
             // Catch-all event handler — captures every event and fires onEvent immediately.
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
@@ -3679,7 +3682,7 @@ export class ManagedSession {
                     liveTurn?.finishTurn();
                     steer.onIdle();
                     this.staleIdlePending = true;
-                    resolve();
+                    settleRun();
                 }),
             );
 
@@ -3694,7 +3697,7 @@ export class ManagedSession {
                     publishReasoningSnapshot("session.idle", true);
                     liveTurn?.finishTurn();
                     if (!steer) {
-                        resolve();
+                        settleRun();
                         return;
                     }
                     // Turn control: close the send gate before anything else. A
@@ -3706,10 +3709,10 @@ export class ManagedSession {
                     steer.gate = "closed";
                     steer.onIdle();
                     if (this.stopRequest) {
-                        resolve();
+                        settleRun();
                         return;
                     }
-                    steer.settle = resolve;
+                    steer.settle = settleRun;
                     steer.trySettle();
                 }),
             );
@@ -3764,20 +3767,30 @@ export class ManagedSession {
             .filter((p): p is Promise<void> => p !== null);
         for (const guard of guards) guard.catch(() => {});
 
-        // Re-armable idle waiter used by the tool-call-as-text guard to wait for
-        // the model's response to a mid-turn correction without tearing down the
-        // event subscriptions set up above.
-        const waitForNextIdle = (): Promise<void> => new Promise<void>((resolve) => {
-            const unsub = this.copilotSession.on("session.idle", (event: any) => {
-                if (isNativeChildEvent(event)) return;
-                flushStreamingProgress(true);
-                publishReasoningSnapshot("session.idle", true);
-                liveTurn?.finishTurn();
-                unsub();
-                resolve();
-            });
-            unsubscribers.push(unsub);
-        });
+        // A corrective model run inside this turn (the tool-call-as-text and
+        // required-tool guards). It runs like the first run: turn control holds
+        // controls until the corrective prompt is sent, then applies steers and
+        // Stop live, and the run settles through the same handlers. A Stop,
+        // applied or still held, means no corrective prompt is sent. Returns
+        // false when the turn stops instead.
+        const runCorrection = async (message: Record<string, unknown>): Promise<boolean> => {
+            const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
+            if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
+            if (this.stopRequest) return false;
+            const done = nextRun();
+            if (this.steer) this.steer.gate = "pending";
+            await this.copilotSession.send(message as any);
+            if (this.steer && this.steer.gate === "pending") {
+                this.steer.gate = "open";
+                opts?.turnControl?.gateOpened();
+            }
+            if (guards.length > 0) {
+                await Promise.race([done, ...guards]);
+            } else {
+                await done;
+            }
+            return true;
+        };
 
         const effectivePrompt = opts?.requiredTool
             ? [
@@ -3861,13 +3874,7 @@ export class ManagedSession {
                 if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
 
                 finalContent = undefined;
-                const nextIdle = waitForNextIdle();
-                await this.copilotSession.send({ prompt: buildTextEmittedToolCallCorrection(offendingTool) });
-                if (guards.length > 0) {
-                    await Promise.race([nextIdle, ...guards]);
-                } else {
-                    await nextIdle;
-                }
+                if (!(await runCorrection({ prompt: buildTextEmittedToolCallCorrection(offendingTool) }))) break;
             }
 
             if (textEmittedToolCallRef.current) {
@@ -3907,16 +3914,7 @@ export class ManagedSession {
                 if (opts.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
 
                 finalContent = undefined;
-                const nextIdle = waitForNextIdle();
-                await this.copilotSession.send({
-                    prompt: buildRequiredToolCorrection(opts.requiredTool),
-                    requiredTool: opts.requiredTool,
-                } as any);
-                if (guards.length > 0) {
-                    await Promise.race([nextIdle, ...guards]);
-                } else {
-                    await nextIdle;
-                }
+                if (!(await runCorrection({ prompt: buildRequiredToolCorrection(opts.requiredTool), requiredTool: opts.requiredTool }))) break;
             }
 
             if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
@@ -4185,17 +4183,19 @@ export class ManagedSession {
      * Returns how many cancels were sent. Throws if tasks remain after the
      * last round.
      *
-     * `startedSince` (ms since the epoch) limits the cancel to tasks the CLI
-     * reports as started at or after that time, for example the tasks of one
-     * stopped turn. A task without a readable `startedAt` is kept: nothing is
+     * `startedWithin` ({ since, until }, ms since the epoch) limits the
+     * cancel to tasks the CLI reports as started in that window, for example
+     * the tasks of one stopped turn. The upper bound keeps a slow task list,
+     * or a cancel still running after its caller gave up, off the tasks of a
+     * later turn. A task without a readable `startedAt` is kept: nothing is
      * killed on missing data.
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedSince }: { rounds?: number; pauseMs?: number; startedSince?: number } = {}): Promise<number> {
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: { rounds?: number; pauseMs?: number; startedWithin?: { since: number; until: number } } = {}): Promise<number> {
         const startedInScope = (task: { startedAt?: unknown }) => {
-            if (startedSince === undefined) return true;
+            if (!startedWithin) return true;
             const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
-            return Number.isFinite(at) && at >= startedSince;
+            return Number.isFinite(at) && at >= startedWithin.since && at <= startedWithin.until;
         };
         const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
         let cancelled = 0;

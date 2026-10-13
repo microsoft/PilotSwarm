@@ -196,12 +196,47 @@ test("the steering flag is read for the viewer at session load", async () => {
     assert.equal(store.getState().turnControl.steeringEnabled, true);
 });
 
+for (const final of ["stopped", "too_late"]) {
+    test(`a pending Stop notice stays until its own outcome (${final}) arrives live, then clears`, async () => {
+        const { controller, view } = harness({ stop: { outcome: "timeout", turnIndex: 3, controlSeq: 9 } });
+        await controller.stopActiveSessionTurn();
+        assert.deepEqual([view().notice.reason, view().notice.controlSeq], ["stop_pending", 9]);
+        controller.mergeSessionEvent(SID, { seq: 20, eventType: "session.control_outcome", data: { seq: 8, turn: 3, outcome: "not_delivered" } });
+        assert.equal(view().notice?.reason, "stop_pending", "another control's outcome does not clear it");
+        controller.mergeSessionEvent(SID, { seq: 21, eventType: "session.control_outcome", data: { seq: 9, turn: 3, outcome: final } });
+        assert.equal(view().notice, null);
+    });
+}
+
+test("an outcome that arrives before the Stop's timeout answer: no pending notice is left behind", async () => {
+    const answer = deferred();
+    const { controller, view, store } = harness({ stop: () => answer.promise });
+    const stopping = controller.stopActiveSessionTurn();
+    controller.mergeSessionEvent(SID, { seq: 21, eventType: "session.control_outcome", data: { seq: 9, turn: 3, outcome: "stopped" } });
+    answer.resolve({ outcome: "timeout", turnIndex: 3, controlSeq: 9 });
+    await stopping;
+    assert.equal(view().notice, null);
+    assert.match(store.getState().ui.statusText, /Stop finished/);
+});
+
+test("a pending Stop notice also clears when its outcome arrives through a history load", async () => {
+    const { controller, view, store } = harness({ stop: { outcome: "timeout", turnIndex: 3, controlSeq: 9 } });
+    await controller.stopActiveSessionTurn();
+    assert.equal(view().notice.reason, "stop_pending");
+    controller.transport.getSessionEvents = async () => [
+        { seq: 21, eventType: "session.control_outcome", data: { seq: 9, turn: 3, outcome: "stopped" } },
+    ];
+    await controller.loadSessionHistory(SID, { force: true });
+    assert.equal(view().notice, null);
+    assert.ok(store.getState().history.bySessionId.get(SID));
+});
+
 test("Stop: each action has its own request id; too_late, no_active_turn and an accepted timeout", async () => {
     const answers = [
         { outcome: "stopped", turnIndex: 2, controlSeq: 5 },
         { outcome: "too_late", turnIndex: 2, controlSeq: 6 },
         { outcome: "no_active_turn", detail: "no turn is running" },
-        { outcome: "no_active_turn", detail: "too_many" },
+        { outcome: "no_active_turn", detail: "not_found" },
         { outcome: "timeout", turnIndex: 3, controlSeq: 9 },
         { outcome: "timeout", turnIndex: 3 },
     ];
@@ -214,9 +249,10 @@ test("Stop: each action has its own request id; too_late, no_active_turn and an 
     await controller.stopActiveSessionTurn();
     assert.equal(view().notice.reason, "no_active_turn");
     await controller.stopActiveSessionTurn();
-    assert.equal(view().notice.reason, "too_many");
+    assert.equal(view().notice.reason, "not_found");
     await controller.stopActiveSessionTurn();
-    assert.deepEqual([view().notice.reason, view().notice.controlSeq], ["stop_pending_retry", 9], "pending, not an error");
+    assert.deepEqual([view().notice.reason, view().notice.controlSeq], ["stop_pending", 9], "pending, not an error");
+    assert.match(store.getState().ui.statusText, /waiting for the turn to stop/);
     await controller.stopActiveSessionTurn();
     assert.equal(view().notice.reason, "timeout");
     assert.equal(new Set(calls.stop.map((call) => call.requestId)).size, 6, "one request id per Stop action");

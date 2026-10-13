@@ -107,7 +107,7 @@ These keys work whenever focus is not in the prompt editor.
 | `Option+Enter` / `Alt+Enter` | Insert a newline |
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
-| `Ctrl+T` | Steer: send the prompt text as guidance for the running turn (needs the `sessions.steering` feature and a turn that accepts it; otherwise the status line says why). Press again to resend an unconfirmed steer |
+| `Ctrl+T` | Steer: send the prompt text as guidance for the running turn (needs the `sessions.steering` feature and a turn that accepts it; otherwise the status line says why). Press again to resend an unconfirmed steer. On an empty prompt it restores steer text that was kept (not delivered); clear the prompt to discard it (the portal has a separate Discard button) |
 | `Option+T` / `Alt+T` | Give up an unconfirmed Stop or Steer (or clear a refused steer's notice); its steer text returns to the prompt after your draft |
 | `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
 | `←` / `→` | Move cursor by character |

@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { DATABASE_URL, TEST_SCHEMA_PREFIX } from "../helpers/local-env.js";
 import { PgSessionCatalogProvider } from "../../src/index.ts";
-import { TurnControlHub, pgListenClientFactory } from "../../src/turn-control.ts";
+import { TurnControlHub } from "../../src/turn-control.ts";
 
 const TIMEOUT = 60_000;
 
@@ -355,7 +355,8 @@ describe("turn control hub: real PostgreSQL", () => {
         const applicationName = appName();
         const hub = new TurnControlHub({
             catalog, schema,
-            createClient: pgListenClientFactory({ connectionString: DATABASE_URL, application_name: applicationName }),
+            // A plain LISTEN client with its own application name, so the test can count its connections.
+            createClient: () => new pg.Client({ connectionString: DATABASE_URL, application_name: applicationName, keepAlive: true }),
             lookIntervalMs: 60_000,
             ...opts,
         });

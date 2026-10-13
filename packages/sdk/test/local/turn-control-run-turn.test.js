@@ -16,6 +16,7 @@ import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readTurnCommitFile } from "../../src/snapshot-protocol.ts";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
+import { appendSystemContextBlock } from "../../src/prompt-system-context.ts";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 
 const roots = [];
@@ -231,6 +232,80 @@ describe("runTurnV4: turn control around the model run", () => {
         const result = await h.runTurn("s", { turnIndex: 4 }, "runTurnV4");
         expect(result.type).toBe("stopped");
         expect(v4.calls.at(-1)).toEqual(["turnEnd", "s", 4, 31, "stopped", []]);
+    });
+});
+
+describe("runTurnV4: an in-attempt recovery re-run keeps every folded steer", () => {
+    const lost = { type: "error", message: "Request session.send failed with message: Session not found: s" };
+    const corrupted = {
+        type: "error",
+        message: "400 An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: call_a",
+    };
+    const twoRuns = (first, onFirst) => {
+        let calls = 0;
+        return async (opts) => {
+            calls += 1;
+            if (calls === 1) {
+                await onFirst?.(opts);
+                return first;
+            }
+            return { type: "completed", content: "recovered" };
+        };
+    };
+
+    it("a lost live session after turn start: the re-run holds the carried and turn-start steers, and turn end labels them from that prompt", async () => {
+        const v4 = turnControlCatalog({ start: { stopped: false, controls: [control(31, "steer", "use the v2 API")] }, writeback: true });
+        const h = makeRunTurnHarness({ catalogExtras: v4.extras, turn: twoRuns(lost) });
+        const result = await h.runTurn("s", {
+            turnIndex: 6, prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: [{ seq: 5, text: "carried guidance" }],
+        }, "runTurnV4");
+        expect(h.session.runTurn).toHaveBeenCalledTimes(2);
+        const [first, rerun] = h.session.runTurn.mock.calls.map((c) => c[0]);
+        expect(first).toBe("carried guidance\n\nuse the v2 API");
+        expect(rerun).toContain("runtime recovered this session");
+        expect(rerun).toContain("carried guidance\n\nuse the v2 API");
+        expect(rerun).not.toContain(CARRIED_STEERS_WAKE_PROMPT);
+        expect(result).toMatchObject({ type: "completed", carriedSteersConsumed: true });
+        expect(v4.calls.at(-1)).toEqual(["turnEnd", "s", 6, 31, "other", [5]]);
+    });
+
+    it("a corrupted transcript: the re-run holds the turn-start steer; a steer confirmed only in the lost conversation is carried", async () => {
+        const v4 = turnControlCatalog({ start: { stopped: false, controls: [control(31, "steer", "use the v2 API")] }, writeback: true });
+        const s = steeringSession();
+        const h = makeRunTurnHarness({
+            catalogExtras: v4.extras, sessionExtras: s.extras,
+            turn: twoRuns(corrupted, async (opts) => {
+                s.open(opts.turnControl);
+                await opts.turnControl.enqueue([control(40, "steer", "live guidance")]);
+                s.close(opts.turnControl);
+            }),
+        });
+        const result = await h.runTurn("s", { turnIndex: 7, prompt: "check the tree" }, "runTurnV4");
+        expect(s.sent).toEqual(["live guidance"]);
+        const rerun = h.session.runTurn.mock.calls[1][0];
+        expect(rerun).toContain("live Copilot transcript became inconsistent");
+        expect(rerun).toContain("check the tree\n\nuse the v2 API");
+        expect(rerun).not.toContain("live guidance");
+        expect(result.type).toBe("completed");
+        // Cursor 31: the folded steer is delivered by the re-run; 40 is above it, so turn end carries it.
+        expect(v4.calls.at(-1)).toEqual(["turnEnd", "s", 7, 31, "other", []]);
+    });
+
+    it("a legacy (V3) recovery re-run is unchanged: the original prompt only", async () => {
+        const v3 = turnControlCatalog({ writeback: true });
+        const h = makeRunTurnHarness({ catalogExtras: v3.extras, turn: twoRuns(lost) });
+        await h.runTurn("s", { turnIndex: 2, prompt: "plain prompt", carriedSteers: [{ seq: 5, text: "x" }] }, "runTurnV3");
+        const rerun = h.session.runTurn.mock.calls[1][0];
+        expect(rerun).toContain("runtime recovered this session");
+        expect(rerun).toContain("plain prompt");
+        expect(rerun).not.toContain("x\n\nplain prompt");
+    });
+
+    it("turn-start steers go before a trailing system-context block, which stays last", async () => {
+        const v4 = turnControlCatalog({ start: { stopped: false, controls: [control(31, "steer", "use the v2 API")] }, writeback: true });
+        const h = makeRunTurnHarness({ catalogExtras: v4.extras });
+        await h.runTurn("s", { turnIndex: 2, prompt: appendSystemContextBlock("go", "turn note") }, "runTurnV4");
+        expect(h.session.runTurn.mock.calls[0][0]).toBe(appendSystemContextBlock("go\n\nuse the v2 API", "turn note"));
     });
 });
 

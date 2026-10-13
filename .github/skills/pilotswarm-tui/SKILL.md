@@ -130,7 +130,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   requests up (steer text returns to the prompt after the draft; the
   portal's Dismiss). The status hints show `ctrl-x stop` / `ctrl-t steer`
   (or `retry`, `restore steer text`, `alt-t give up`) only while they apply,
-  and `?` help lists all three. Steer is unavailable while a pending or
+  and `?` help lists all three. Kept steer text (not delivered) has no
+  separate TUI Discard key: `Ctrl+T` on an empty prompt restores it, and
+  clearing the prompt discards it; the portal shows Restore and Discard.
+  This divergence is deliberate (no extra key). Steer is unavailable while a pending or
   queued outbox message is selected. Stop and Steer notices are kept per
   kind, so one never hides the other's Retry. Portal: a readable turn-status chip and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and

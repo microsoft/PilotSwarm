@@ -198,7 +198,8 @@ BEGIN
     IF v_high IS DISTINCT FROM v_active THEN
         RETURN '{"refused":"legacy_turn"}'::jsonb;
     END IF;
-    IF (SELECT count(*) FROM ${s}.cms_turn_open_controls(p_session, v_active)) >= 20 THEN
+    -- The cap bounds Steers only: a Stop is never refused for it.
+    IF p_kind = 'steer' AND (SELECT count(*) FROM ${s}.cms_turn_open_controls(p_session, v_active)) >= 20 THEN
         RETURN '{"refused":"too_many"}'::jsonb;
     END IF;
 
@@ -347,6 +348,12 @@ DECLARE
     v_started_at TIMESTAMPTZ := COALESCE(p_started_at, v_ended_at);
     v_duration_ms INTEGER := GREATEST(0, COALESCE(p_duration_ms, FLOOR(EXTRACT(EPOCH FROM (v_ended_at - v_started_at)) * 1000)::INT));
 BEGIN
+    -- Turn control: the row lock orders this write against a concurrent add.
+    -- A stale attempt of an older turn must not end a newer turn that has
+    -- started (turn_high > p_turn_index): it skips the session-state part and
+    -- still records its metrics. Legacy turns never start through turn
+    -- control (turn_high = -1), so they always write as before.
+    PERFORM 1 FROM ${s}.sessions x WHERE x.session_id = p_session_id FOR UPDATE;
     UPDATE ${s}.sessions
     SET state = COALESCE(p_state, state),
         last_active_at = COALESCE(p_last_active_at, v_ended_at),
@@ -355,7 +362,8 @@ BEGIN
         wait_reason = p_wait_reason,
         active_turn_index = NULL,
         updated_at = now()
-    WHERE session_id = p_session_id;
+    WHERE session_id = p_session_id
+      AND (p_turn_index IS NULL OR turn_high <= p_turn_index);
 
     INSERT INTO ${s}.session_metrics (
         session_id, agent_id, model, reasoning_effort,
@@ -415,7 +423,7 @@ BEGIN
         p_worker_node_id
     );
 
-    -- Turn control: checked after the UPDATE above took the row lock, so a
+    -- Turn control: checked under the row lock taken above, so a
     -- control added just before is seen and none can be added after.
     RETURN EXISTS (SELECT 1 FROM ${s}.cms_turn_open_controls(p_session_id, COALESCE(p_turn_index, 0)));
 END;

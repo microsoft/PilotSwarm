@@ -104,7 +104,6 @@ function track(promise) {
 describe("turn control: ManagedSession send gate", () => {
     it("opens the gate after the initial prompt and closes it at idle before anything else", async () => {
         const { managed, fake, live, binding, opened } = setup();
-        expect(managed.steerGateState()).toBe("none");
         const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding });
         await opened;
         expect(fake.sent[0].prompt).toBe("work");
@@ -112,9 +111,10 @@ describe("turn control: ManagedSession send gate", () => {
         fake._emit("session.idle");
         expect(binding.port.gate()).toBe("closed");
         expect((await turn).type).toBe("completed");
+        // After the run the port reads closed and the control sends nothing.
         await live.enqueue([control(10, "steer")]);
+        expect(binding.port.gate()).toBe("closed");
         expect(steersSent(fake)).toEqual([]);
-        expect(managed.steerGateState()).toBe("none");
     });
 
     it("an observer of session.idle already sees the gate closed and cannot send", async () => {
@@ -277,6 +277,81 @@ describe("turn control: ManagedSession send gate", () => {
         expect(fake.abortCalls).toBe(1);
     });
 
+    it("a Stop while an earlier steer's send is still open: abort and stopped settlement before the send returns", async () => {
+        let releaseSend;
+        const fake = createFakeCopilotSession({
+            sendImpl: (msg, id) => (msg.mode === "immediate" ? new Promise((resolve) => { releaseSend = () => resolve(id); }) : id),
+        });
+        const { managed, live, binding, opened } = setup({ fake });
+        const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding });
+        await opened;
+        void live.enqueue([control(50, "steer", "slow")]);
+        await flush();
+        expect(steersSent(fake).map((m) => m.prompt)).toEqual(["slow"]);
+        await live.enqueue([control(51, "stop", "halt")]);
+        expect(fake.abortCalls).toBe(1);
+        const result = await turn;
+        expect(result).toMatchObject({ type: "stopped", reason: "halt" });
+        releaseSend();
+        await flush();
+        expect(steersSent(fake)).toHaveLength(1);
+        expect(live.cursor).toBe(0);
+    });
+
+    describe("corrective model runs inside the turn take controls like the first run", () => {
+        const invokeAsText = '<invoke name="bash"><parameter name="command">ls</parameter></invoke>';
+        const correctionSent = async (fake, n) => { for (let i = 0; i < 20 && fake.sent.length < n; i++) await flush(); };
+
+        for (const kind of ["tool-call-as-text", "required-tool"]) {
+            it(`${kind}: a steer reaches the corrective run, and a Stop aborts it (no session.idle after the abort)`, async () => {
+                const fake = abortWithoutSessionIdle(createFakeCopilotSession({ abortFiresIdle: false }));
+                const { managed, live, binding, opened } = setup({ fake });
+                const turn = managed.runTurn("work", {
+                    turnIndex: 4, turnControl: binding, ...(kind === "required-tool" ? { requiredTool: "wait" } : {}),
+                });
+                await opened;
+                if (kind === "tool-call-as-text") fake._emit("assistant.message", { content: invokeAsText });
+                fake._emit("session.idle");                    // the first run ends; a correction follows
+                await correctionSent(fake, 2);
+                expect(fake.sent).toHaveLength(2);
+                expect(binding.port.gate()).toBe("open");
+                await live.enqueue([control(60, "steer", "during the correction")]);
+                expect(steersSent(fake).map((m) => m.prompt)).toEqual(["during the correction"]);
+                fake._emit("user.message", { messageId: steersSent(fake)[0].id });
+                await live.enqueue([control(61, "stop", "halt")]);
+                expect(fake.abortCalls).toBe(1);
+                expect(await turn).toMatchObject({ type: "stopped", reason: "halt" });
+                expect(live.cursor).toBe(60);
+                expect(fake.sent).toHaveLength(3);
+            });
+        }
+
+        it("no corrective prompt after a Stop applied during the first run", async () => {
+            const fake = createFakeCopilotSession();
+            const { managed, live, binding, opened } = setup({ fake });
+            const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding, requiredTool: "wait" });
+            await opened;
+            await live.enqueue([control(70, "stop", "halt")]);
+            expect(await turn).toMatchObject({ type: "stopped", reason: "halt" });
+            expect(fake.sent).toHaveLength(1);
+        });
+
+        it("no corrective prompt after a Stop held while the first run settled", async () => {
+            const fake = createFakeCopilotSession();
+            const { managed, live, binding, opened } = setup({ fake });
+            const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding, requiredTool: "wait" });
+            await opened;
+            await live.enqueue([control(80, "steer", "late guidance")]);
+            fake._emit("session.idle");                        // closed: the steer is not confirmed yet
+            await live.enqueue([control(81, "stop", "halt")]);  // held, not applied
+            expect(fake.abortCalls).toBe(0);
+            fake._emit("user.message", { messageId: steersSent(fake)[0].id });
+            fake._emit("session.idle");
+            expect(await turn).toMatchObject({ type: "stopped", reason: "halt" });
+            expect(fake.sent).toHaveLength(2);                 // the prompt and the steer; no correction
+        });
+    });
+
     it("a late session.idle of the early-settled run does not settle the next run", async () => {
         const fake = abortWithoutSessionIdle(createFakeCopilotSession({ abortFiresIdle: false }));
         const first = setup({ fake });
@@ -299,11 +374,14 @@ describe("turn control: ManagedSession send gate", () => {
         fake._emit("session.idle");                       // the first run's late idle
         await flush();
         expect(managed.getActiveTurn()?.turnIndex).toBe(5);
-        expect(managed.steerGateState()).toBe("open");     // the stale idle did not close the new run's gate
+        // The stale idle did not close the new run's gate: a steer still goes out.
+        await live2.enqueue([control(20, "steer", "after the stale idle")]);
+        expect(steersSent(fake).map((m) => m.prompt)).toEqual(["after the stale idle"]);
         fake._emit("user.message", { messageId: "msg-next" });
-        fake._emit("assistant.message", { content: "next answer" });
+        fake._emit("user.message", { messageId: steersSent(fake)[0].id });
         fake._emit("session.idle");
         expect((await turn2).type).toBe("completed");
+        expect(live2.cursor).toBe(20);
     });
 
     it("assistant.idle { aborted } without a Stop does not settle: the turn still waits for session.idle", async () => {
@@ -384,7 +462,7 @@ describe("turn control: ManagedSession send gate", () => {
         expect(steersSent(fake)).toEqual([]);
         releaseFirst();
         await opened;
-        await live.idle();
+        await flush();
         expect(steersSent(fake).map((m) => m.prompt)).toEqual(["early"]);
         fake._emit("user.message", { messageId: steersSent(fake)[0].id });
         fake._emit("session.idle");
@@ -410,7 +488,6 @@ describe("turn control: ManagedSession send gate", () => {
         const turn = managed.runTurn("work", { turnIndex: 1 });
         await flush();
         expect(fake.sent.length).toBe(1);
-        expect(managed.steerGateState()).toBe("none");
         fake._emit("session.idle");
         expect((await turn).type).toBe("completed");
     });
@@ -440,11 +517,11 @@ describe("turn control: the live loop keeps position order (no gate races)", () 
         port.state = "open";
         live.gateOpened();
         await queued;
-        await live.idle();
+        await flush();
         expect(port.sends).toEqual(["one", "two"]);
     });
 
-    it("a held steer goes before a newer Stop, and nothing is sent after the Stop", async () => {
+    it("a Stop held behind held steers applies first when the gate opens: nothing is sent (the stopped turn would not deliver them)", async () => {
         const aborts = [];
         const live = newLive(aborts);
         const port = manualPort();
@@ -454,10 +531,30 @@ describe("turn control: the live loop keeps position order (no gate races)", () 
         port.state = "open";
         live.gateOpened();
         await queued;
-        await live.idle();
-        expect(port.sends).toEqual(["one"]);
+        await flush();
+        expect(port.sends).toEqual([]);
         expect(aborts).toEqual(["halt"]);
         expect(port.state).toBe("closed");
+    });
+
+    it("a Stop does not wait for an earlier steer's send: it closes the gate and aborts while the send is still open", async () => {
+        const aborts = [];
+        const live = newLive(aborts);
+        let releaseSend;
+        const port = manualPort();
+        port.state = "open";
+        port.sendSteer = (text) => { port.sends.push(text); return new Promise((resolve) => { releaseSend = resolve; }); };
+        live.attach(port);
+        void live.enqueue([control(1, "steer", "slow")]);
+        await flush();
+        expect(port.sends).toEqual(["slow"]);
+        await live.enqueue([control(2, "stop", "halt"), control(3, "steer", "after")]);
+        expect(aborts).toEqual(["halt"]);
+        expect(port.state).toBe("closed");
+        releaseSend();
+        await flush();
+        expect(port.sends).toEqual(["slow"]);
+        expect(aborts).toEqual(["halt"]);
     });
 });
 

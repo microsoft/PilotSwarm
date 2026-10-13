@@ -182,7 +182,8 @@ send the text as an ordinary message with a new client message id.
   `input_required` cleared `active_turn_index`. A Steer then answers
   `no_turn` and the client falls back to an ordinary message; a Stop answers
   "nothing to stop" and its reason is never sent as a message.
-- **Up to 20 open controls per turn** (`too_many` after that).
+- **Up to 20 open controls per turn**: a new Steer after that is refused
+  `too_many`. A Stop is never refused for the cap.
 
 ## API Reference
 
@@ -277,6 +278,17 @@ hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
 - **A stale worker skips T8 when no controls are open** (P15): its
   T6 writeback finds no open controls after the winner's T8. The outcome
   equals design 3.9, where both workers call T8.
+- **The live conversation is lost during the run** (a lost Copilot session,
+  or a corrupted tool-call transcript). The same attempt runs the turn again
+  on a fresh conversation. For a turn-control turn that re-run starts from
+  the folded turn prompt: the carried steers and the steers taken at turn
+  start are in it again, so turn end may label them delivered or "ran". A
+  steer confirmed only by the lost conversation goes back above the cursor
+  (`conversationLost`) and turn end carries it to the next turn. Found by
+  the final review: the re-run used the original prompt, so those steers
+  were labelled delivered or "ran" although the model never saw them. The
+  folded steers go before a trailing `<system_context>` block, which stays
+  last.
 - **A steer during a foreground shell.** With `mode: "immediate"`, Copilot
   CLI 1.0.83 moves a running foreground shell to the background so the steer
   reaches the model at once (confirmed in about 40 ms). The shell's result is
@@ -285,9 +297,11 @@ hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
   turn control does not change it.
 - **Stop ends the commands the stopped turn started, not earlier ones.** A
   V4 Stop aborts the run and then cancels the background tasks the CLI
-  reports as started at or after the stopped turn's start
+  reports as started between the stopped turn's start and the Stop
   (`abortWarmSessionTurn(..., { cancelTurnTasks: true })`, using
-  `cancelBackgroundTasks({ startedSince })`, which falls back to killing the
+  `cancelBackgroundTasks({ startedWithin })`; the upper bound keeps a slow
+  task list, or a cancel still running after its 1.5 s bound, off the next
+  turn's tasks). It falls back to killing the
   shell's process tree because `tasks.cancel` answers `cancelled: false`
   after an abort). Without this, a Stop of a turn held open by a
   steer-backgrounded shell waited out the 8 s unwind grace (found by the UX

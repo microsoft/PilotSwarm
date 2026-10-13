@@ -266,7 +266,7 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         const turnStart = managed.getActiveTurn().startedAt;
         const cancelled = withTaskList(copilot, [
             { id: "earlier-server", type: "shell", status: "running", startedAt: new Date(turnStart - 60_000).toISOString() },
-            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart + 5).toISOString() },
+            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart).toISOString() },
             { id: "no-start", type: "agent", status: "running" },
         ], { endTurnOnCancel: "this-turn-shell" });
 
@@ -285,6 +285,46 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         expect((await turnPromise).type).toBe("stopped");
     });
 
+    it("V4 Stop: a slow task list that already shows the next turn's task cancels only the stopped turn's task", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 6 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const turnStart = managed.getActiveTurn().startedAt;
+        const cancelled = [];
+        const tasks = [
+            { id: "stopped-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart).toISOString() },
+        ];
+        const current = () => ({ tasks: tasks.filter((t) => !cancelled.includes(t.id)) });
+        let releaseList;
+        let first = true;
+        copilot.rpc = {
+            tasks: {
+                // The first list answers late: by then the next turn has started a task of its own.
+                list: () => {
+                    if (!first) return Promise.resolve(current());
+                    first = false;
+                    return new Promise((resolve) => { releaseList = () => resolve(current()); });
+                },
+                cancel: async ({ id }) => { cancelled.push(id); return { cancelled: true }; },
+            },
+        };
+
+        const stopping = manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user", expectedTurnIndex: 6, unwindGraceMs: 100, cancelTurnTasks: true,
+        });
+        await waitFor(() => typeof releaseList === "function");
+        tasks.push({ id: "next-turn-shell", type: "shell", status: "running", startedAt: new Date(Date.now() + 5).toISOString() });
+        releaseList();
+        await stopping;
+        expect((await turnPromise).type).toBe("stopped");
+        await waitFor(() => cancelled.length > 0);
+        expect(cancelled).toEqual(["stopped-turn-shell"]);
+    });
+
     it("the legacy Stop (no cancelTurnTasks) cancels no background task", async () => {
         const manager = createBareSessionManager();
         const copilot = createFakeCopilotSession({ abortFiresIdle: false });
@@ -295,7 +335,7 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         await waitFor(() => managed.getActiveTurn() != null);
         const turnStart = managed.getActiveTurn().startedAt;
         const cancelled = withTaskList(copilot, [
-            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart + 5).toISOString() },
+            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart).toISOString() },
         ]);
 
         const result = await manager.abortWarmSessionTurn(managed.sessionId, {

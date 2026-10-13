@@ -18,7 +18,10 @@ import { startScriptedModel } from "./scripted-model.mjs";
 import { registerScriptedProvider, FIXTURE_QUALIFIED_MODEL } from "./scripted-workers.js";
 import { createGitFixture, git } from "./git-fixture.mjs";
 import { createRepoService } from "../../examples/repo-workspaces/repo-service.mjs";
-import { DURABLE_SESSION_LATEST_VERSION, TURN_CONTROL_ORCHESTRATION_MIN_VERSION } from "../../src/orchestration-version.ts";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
+
+/** First orchestration version whose turns accept Stop and Steer through the CMS. */
+const TURN_CONTROL_ORCHESTRATION_MIN_VERSION = "1.0.81";
 import { TURN_CONTROL_EVENT_TYPES } from "../../src/turn-control-contract.ts";
 
 const versionAtLeast = (v, min) => {

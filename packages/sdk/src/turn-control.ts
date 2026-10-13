@@ -17,7 +17,6 @@
  *
  * @internal
  */
-import type { ClientConfig } from "pg";
 import type { TurnControl, TurnLookInput, TurnLookRow } from "./types.js";
 import { TURN_CONTROL_CHANNEL, TURN_CONTROL_EVENT_TYPES, TURN_CONTROL_LOOK_INTERVAL_MS } from "./turn-control-contract.js";
 
@@ -72,9 +71,12 @@ export interface LiveTurnControlOptions {
  * The activity owns registration and the final outcome write.
  *
  * Controls wait in one queue ordered by position. A drain applies them only
- * while the gate is open, lowest position first, so controls held before the
- * initial send always go before later ones. Once the turn is retired, or its
- * run ended, nothing more is sent and no confirmation moves the cursor.
+ * while the gate is open, lowest position first, so controls held before a
+ * send always go before later ones. A Stop never waits: once the gate is open
+ * it closes the gate and aborts at once, also while an earlier steer's send
+ * has not returned; steers still queued then are not sent (the stopped turn
+ * labels them not delivered). Once the turn is retired, or its run ended,
+ * nothing more is sent and no confirmation moves the cursor.
  */
 export class LiveTurnControl implements TurnControlBinding {
     readonly sessionId: string;
@@ -88,6 +90,9 @@ export class LiveTurnControl implements TurnControlBinding {
     private port: TurnControlSessionPort | null = null;
     private runEnded = false;
     private retired = false;
+    /** A Stop was applied: nothing more is sent; a late send failure no longer fails the turn. */
+    private stopping = false;
+    private stopDone: Promise<void> = Promise.resolve();
     private readonly opts: LiveTurnControlOptions;
 
     constructor(opts: LiveTurnControlOptions) {
@@ -114,16 +119,9 @@ export class LiveTurnControl implements TurnControlBinding {
             this.sent = control.seq;
             this.queue.push(control);
         }
+        const stop = this.queue.find((c) => c.kind === "stop");
+        if (stop && this.gate() === "open") return this.applyStop(stop);
         return this.drainSoon();
-    }
-
-    /**
-     * Wait for work already on the apply chain. Before the initial send this
-     * includes holding controls, not delivering them; it does not wait for
-     * user.message confirmations or the model's answer.
-     */
-    idle(): Promise<void> {
-        return this.chain;
     }
 
     attach(port: TurnControlSessionPort): void {
@@ -170,31 +168,40 @@ export class LiveTurnControl implements TurnControlBinding {
             .then(() => this.drain())
             .catch((err) => {
                 const port = this.port;
-                if (!this.retired && port) port.failTurn(err);
+                if (!this.retired && !this.stopping && port) port.failTurn(err);
             });
         return this.chain;
     }
 
     private async drain(): Promise<void> {
-        while (this.queue.length > 0) {
-            const gate = this.gate();
-            if (gate === "closed") {                             // settling, stopping or ended: turn end labels the rest
-                this.queue.length = 0;
+        while (this.queue.length > 0 && !this.stopping) {
+            // Pending: before a send (P21). Closed: settling, or the run ended;
+            // held until a corrective run opens the gate again, else turn end
+            // labels them.
+            if (this.gate() !== "open") return;
+            const stop = this.queue.find((c) => c.kind === "stop");
+            if (stop) {
+                await this.applyStop(stop);
                 return;
             }
-            if (gate === "pending") return;                      // before the initial send: hold (P21)
-            const port = this.port!;
             const control = this.queue.shift()!;
-            if (control.kind === "stop") {
-                // Never send after an abort (spike cell C5b): close first.
-                port.close();
-                this.queue.length = 0;
-                this.opts.trace?.(`[turn-control] stop session=${this.sessionId} turn=${this.turn} seq=${control.seq}`);
-                await this.opts.abort(control.text);
-                return;
-            }
-            await port.sendSteer(control.text, (messageId) => this.confirmed(control, messageId));
+            await this.port!.sendSteer(control.text, (messageId) => this.confirmed(control, messageId));
         }
+    }
+
+    /** Close the gate, drop what is queued and abort, independently of any send still in flight. */
+    private applyStop(control: TurnControl): Promise<void> {
+        const port = this.port;
+        if (this.stopping || !port) return this.stopDone;
+        this.stopping = true;
+        // Never send after an abort (spike cell C5b): close first.
+        port.close();
+        this.queue.length = 0;
+        this.opts.trace?.(`[turn-control] stop session=${this.sessionId} turn=${this.turn} seq=${control.seq}`);
+        this.stopDone = this.opts.abort(control.text).then(() => {}, (err) => {
+            if (!this.retired) port.failTurn(err);
+        });
+        return this.stopDone;
     }
 
     private confirmed(control: TurnControl, messageId: string): void {
@@ -270,16 +277,10 @@ export class TurnControlHub {
     private stopped = true;
     private generation = 0;
     private connectedOnce = false;
-    private lookCount = 0;
 
     constructor(opts: TurnControlHubOptions) {
         this.opts = opts;
         this.timers = opts.timers ?? NODE_TIMERS;
-    }
-
-    /** Number of look queries made (diagnostics and tests). */
-    get looks(): number {
-        return this.lookCount;
     }
 
     /** Whether the LISTEN connection is up. */
@@ -353,7 +354,6 @@ export class TurnControlHub {
 
     private async look(turns: LiveTurnControl[]): Promise<void> {
         if (turns.length === 0) return;
-        this.lookCount += 1;
         let rows: TurnLookRow[];
         try {
             rows = await this.opts.catalog.turnLook(turns.map((t) => t.lookArgs()));
@@ -442,14 +442,6 @@ export class TurnControlHub {
             void this.connect();
         }, delay);
     }
-}
-
-/** Build the LISTEN connection factory from a pg client config. */
-export function pgListenClientFactory(config: ClientConfig): () => Promise<TurnControlListenClient> {
-    return async () => {
-        const { default: pg } = await import("pg");
-        return new pg.Client({ application_name: "pilotswarm-turn-control", ...config, keepAlive: true }) as unknown as TurnControlListenClient;
-    };
 }
 
 function turnKey(sessionId: string, turn: number): string {

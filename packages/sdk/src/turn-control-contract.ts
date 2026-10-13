@@ -21,7 +21,7 @@ export const TURN_CONTROL_EVENT_TYPES = {
 /** PostgreSQL notification channel that wakes the worker running a turn. Payload: `{ schema, sessionId }`. */
 export const TURN_CONTROL_CHANNEL = "pilotswarm_turn_control";
 
-/** Open controls allowed on one turn; the next is refused as `too_many`. */
+/** Open controls allowed on one turn; a new Steer beyond it is refused as `too_many` (a Stop never is). */
 export const TURN_CONTROL_MAX_OPEN = 20;
 
 /** Interval of the worker's batched look while it runs at least one turn. */
