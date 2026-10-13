@@ -81,12 +81,12 @@ function createHarness({ queue = [], turnResults = null, throwOnTurn = false } =
                 if (pending.length === 0) throw new Error("dequeue underflow");
                 return pending.shift();
             }
+            case "runTurn":
+                // 1.0.81 yields the turn directly; it no longer races a Stop queue.
+                if (throwOnTurn) return { throwError: new Error("LLM endpoint exploded") };
+                if (script && script.length > 0) return script.shift();
+                return { effect: "STOP_AT_TURN" };
             case "race": {
-                if (effect.left?.effect === "runTurn") {
-                    if (throwOnTurn) return { throwError: new Error("LLM endpoint exploded") };
-                    if (script && script.length > 0) return { index: 0, value: script.shift() };
-                    return { effect: "STOP_AT_TURN" };
-                }
                 const sides = [effect.left, effect.right];
                 const dequeueIx = sides.findIndex((s) => s?.effect === "dequeueEvent");
                 if (dequeueIx >= 0 && pending.length > 0) return { index: dequeueIx, value: pending.shift() };

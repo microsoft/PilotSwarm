@@ -387,6 +387,7 @@ export function* completeSession(
     clearPendingChildDigest(runtime);
     runtime.state.activeTimer = null;
 
+    runtime.state.carriedSteers = [];
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "completed", null, null);
     publishStatus(runtime, "completed");
     yield* notifyParentOfTerminalState(runtime, "completed", reason, commandId, requestedBy);
@@ -420,6 +421,7 @@ export function* cancelSession(
     runtime.state.activeTimer = null;
 
     const commandName = deleteAfterCancel ? "delete" : "cancel";
+    runtime.state.carriedSteers = [];
     if (!deleteAfterCancel) {
         yield runtime.manager.updateCmsState(runtime.input.sessionId, "cancelled", null, null);
         publishStatus(runtime, "cancelled");
@@ -496,6 +498,7 @@ export function* failPendingShutdown(
     }
 
     publishStatus(runtime, "failed", { error: errorMessage });
+    runtime.state.carriedSteers = [];
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", errorMessage, null);
     runtime.state.orchestrationResult = "failed";
 }

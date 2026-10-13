@@ -344,6 +344,7 @@ describe("orchestration warm resume durability", () => {
                 pendingChildDigest: null,
                 pendingToolActions: [],
                 pendingPrompt: undefined,
+                carriedSteers: [],
                 pendingInputQuestion: {
                     question: "Authorize feature registration?",
                     iteration: 3,

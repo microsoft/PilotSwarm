@@ -230,8 +230,7 @@ function createHarness({ messages = [], inputOverrides = {}, failDistill = false
             }
             if (resolved === STOP) {
                 if (resumeWith) {
-                    // Resume the stop-turn race with the supplied turn result.
-                    input = { index: 0, value: resumeWith };
+                    input = resumeWith;
                     resumeWith = null;
                     continue;
                 }
