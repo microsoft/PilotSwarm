@@ -228,7 +228,9 @@ The committed M1/M2 tests are the only in-repo callers that arm
 `turn.control.cancel-observed` and `turn.control.activity-end`, using the
 `log` action. Both points are no-ops unless named in `PILOTSWARM_FAULT_INJECT`.
 
-The action `log` prints the hit line and continues. When the cancel poll
+A `hold` writes `<point>.<sessionId>.held` in `PILOTSWARM_FAULT_RELEASE_DIR`
+when it is reached; tests wait for it before they add a control. The action
+`log` prints the hit line and continues. When the cancel poll
 observes a cancellation it also writes one warning trace:
 `[runTurn] activity cancelled for <session> turn <n> (its lock was lost); aborting the turn`.
 
@@ -275,6 +277,11 @@ hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
 - **A stale worker skips T8 when no controls are open** (P15): its
   T6 writeback finds no open controls after the winner's T8. The outcome
   equals design 3.9, where both workers call T8.
+- **A steer after the end-of-turn write.** T6 clears `active_turn_index`
+  under the session row lock, so a steer that arrives after it is refused
+  `no_turn` (nothing is recorded) and the client sends it as an ordinary
+  message. A steer that arrives before T6 is `carried` and runs in the next
+  turn. The real-CLI window cases test both orders.
 - **Sessions without a session store** (D4): a crash re-runs the turn from
   nothing, as today. A stopped turn's earlier delivered steer is labelled
   `not_delivered` although the live conversation keeps it.

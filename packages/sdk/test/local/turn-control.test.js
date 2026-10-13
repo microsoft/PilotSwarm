@@ -43,6 +43,12 @@ afterAll(() => {
 });
 
 const release = (point, sessionId) => fs.writeFileSync(path.join(releaseDir, `${point}.${sessionId}`), "");
+/** Wait until the worker has reached a session-scoped hold (it writes `<point>.<session>.held`). */
+const waitForHold = (point, sessionId) => until(
+    () => fs.existsSync(path.join(releaseDir, `${point}.${sessionId}.held`)),
+    `the ${point} hold was reached`,
+    REPLY_TIMEOUT,
+);
 const actor = { kind: "user", provider: "dev", subject: "alice" };
 const steer = (catalog, sessionId, text) => catalog.turnControlAdd(sessionId, "steer", text, randomUUID(), actor);
 const stop = (catalog, sessionId) => catalog.turnControlAdd(sessionId, "stop", "Stopped by user", randomUUID(), actor);
@@ -106,6 +112,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
             armFaultHold("turn.control.before-writeback", sid);
             await session.send("Reply with the single word ALPHA.");
             await waitForEventCount(catalog, sid, "assistant.message", 1, REPLY_TIMEOUT);
+            await waitForHold("turn.control.before-writeback", sid);
             const added = await steer(catalog, sid, "Reply with the single word BETA.");
             release("turn.control.before-writeback", sid);
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "late"), "carried");
@@ -136,12 +143,29 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
         });
     });
 
+    it("a Stop with a pending steer ends the turn stopped and the steer not delivered", { timeout: TIMEOUT }, async () => {
+        await withTurnControl(async ({ client, catalog }) => {
+            const session = await client.createSession();
+            const sid = session.sessionId;
+            await session.send("Use the bash tool once to run `sleep 60 && echo never`. Then reply with one short sentence.");
+            await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            const pending = await steer(catalog, sid, "Mention KIWI in your reply.");
+            const added = await stop(catalog, sid);
+            assert(pending.seq && added.seq, "both controls were accepted");
+            assertEqual(await awaitOutcome(catalog, sid, added.seq, "pending-steer stop"), "stopped");
+            assertEqual(await awaitOutcome(catalog, sid, pending.seq, "pending steer"), "not_delivered");
+            await until(async () => (await catalog.getSession(sid))?.state === "idle", "the session is idle", REPLY_TIMEOUT);
+            assertEqual((await events(catalog, sid, "session.turn_started")).length, 1, "the turn was not retried");
+        });
+    });
+
     it("a Stop and a steer held before the initial send: no model run, the Stop ends stopped and the steer not delivered (P21)", { timeout: TIMEOUT }, async () => {
         await withTurnControl(async ({ client, catalog }) => {
             const session = await client.createSession();
             const sid = session.sessionId;
             armFaultHold("turn.control.before-send", sid);
             await session.send("Reply with the single word ALPHA.");
+            await waitForHold("turn.control.before-send", sid);
             await until(async () => (await catalog.getSession(sid))?.turnHigh >= 0, "turn start ran");
             const pending = await steer(catalog, sid, "Reply with the single word BETA.");
             const added = await stop(catalog, sid);
@@ -158,6 +182,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
             const sid = session.sessionId;
             armFaultHold("turn.control.before-send", sid);
             await session.send(MULTI_TOOL("held"));
+            await waitForHold("turn.control.before-send", sid);
             await until(async () => (await catalog.getSession(sid))?.turnHigh >= 0, "turn start ran");
             const added = await steer(catalog, sid, "Also mention the word KIWI in your final sentence.");
             release("turn.control.before-send", sid);
@@ -167,16 +192,25 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     for (const point of ["turn.control.before-writeback", "turn.control.after-writeback"]) {
-        it(`a steer racing the end-of-turn write (${point.split(".").pop()}) is carried and runs next`, { timeout: TIMEOUT }, async () => {
+        it(`a steer racing the end-of-turn write (${point.split(".").pop()}) gets its serialized outcome`, { timeout: TIMEOUT }, async () => {
             await withTurnControl(async ({ client, catalog }) => {
                 const session = await client.createSession();
                 const sid = session.sessionId;
                 armFaultHold(point, sid);
                 await session.send("Reply with the single word ALPHA.");
                 await waitForEventCount(catalog, sid, "assistant.message", 1, REPLY_TIMEOUT);
-                await until(async () => (await catalog.getSession(sid))?.turnHigh >= 0, "turn start ran");
+                await waitForHold(point, sid);
                 const added = await steer(catalog, sid, "Reply with the single word BETA.");
                 release(point, sid);
+                if (point === "turn.control.after-writeback") {
+                    // The end-of-turn write closed the turn under the row lock: the add came after it.
+                    await session.wait(REPLY_TIMEOUT);
+                    assertEqual(JSON.stringify(added), JSON.stringify({ refused: "no_turn" }), "writeback already closed the turn");
+                    assertEqual((await events(catalog, sid, EV.steer)).length, 0, "no steer was recorded");
+                    assertEqual((await events(catalog, sid, "assistant.message")).length, 1, "no carried turn ran");
+                    return;
+                }
+                assert(added.seq, "the steer was accepted before the end-of-turn write");
                 assertEqual(await awaitOutcome(catalog, sid, added.seq, point), "carried");
                 await waitForEventCount(catalog, sid, "assistant.message", 2, REPLY_TIMEOUT);
                 assertEqual((await outcomesOf(catalog, sid, added.seq)).length, 1, "one outcome");
@@ -191,6 +225,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
             armFaultHold("turn.control.before-writeback", sid);
             await session.send("Reply with the single word ALPHA.");
             await waitForEventCount(catalog, sid, "assistant.message", 1, REPLY_TIMEOUT);
+            await waitForHold("turn.control.before-writeback", sid);
             const late = await steer(catalog, sid, "Reply with the single word BETA.");
             const added = await stop(catalog, sid);
             release("turn.control.before-writeback", sid);
