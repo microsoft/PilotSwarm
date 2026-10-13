@@ -29,7 +29,8 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 "Stop the running turn of a PilotSwarm session without cancelling the session — it stays alive and "
                 + "accepts new messages. Use abort_session only when the whole session should end. The outcome is "
                 + "stopped, too_late (the turn had already finished its model run and completed normally), "
-                + "no_active_turn, or timeout (with control_seq: the Stop was accepted and applies when the turn runs). "
+                + "stop_forced (legacy turns only), no_active_turn, or timeout (with controlSeq: the Stop was accepted "
+                + "and applies when the turn runs). "
                 + "Pass request_id to make a retry after a lost response safe.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose current turn to stop"),
