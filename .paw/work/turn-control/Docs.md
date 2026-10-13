@@ -59,7 +59,9 @@ turn control on. The order of the turn-control steps:
    gate run first. A turn they refuse never reaches turn start and consumes
    no carried steer.
 2. **Prompt record.** The prompt and the turn's system message are recorded
-   once per turn (see "Worker loss and the prompt record").
+   before T3. A normal activity retry skips them; on a worker-loss retry with
+   `retryCount` 0, V4 uses `turn_high` to skip them if T3 already ran (see
+   "Worker loss and the prompt record").
 3. **T3 turn start** (`cms_turn_start`, replaces `setActiveTurnIndex`). It
    marks the turn running and returns its open controls and whether a
    stopped outcome is already recorded. A failure throws, so the turn retries
@@ -222,6 +224,10 @@ Armed only through `PILOTSWARM_FAULT_INJECT` (no-ops otherwise):
 | `turn.control.cancel-observed` | the cancel poll saw `isCancelled()` | stale-worker test M1 |
 | `turn.control.activity-end` | end of a V4 attempt | stale-worker test M2 |
 
+The committed M1/M2 tests are the only in-repo callers that arm
+`turn.control.cancel-observed` and `turn.control.activity-end`, using the
+`log` action. Both points are no-ops unless named in `PILOTSWARM_FAULT_INJECT`.
+
 The action `log` prints the hit line and continues. When the cancel poll
 observes a cancellation it also writes one warning trace:
 `[runTurn] activity cancelled for <session> turn <n> (its lock was lost); aborting the turn`.
@@ -230,7 +236,8 @@ observes a cancellation it also writes one warning trace:
 
 ### How to test
 
-The test files are in `packages/sdk/test/local/`:
+The behavioral test files are in `packages/sdk/test/local/`, except for the
+hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
 
 | File | Covers |
 |---|---|
@@ -241,7 +248,7 @@ The test files are in `packages/sdk/test/local/`:
 | `turn-control-crash.test.js` | US-5 crash matrix on forked worker processes. |
 | `turn-control-workspaces.test.js` | W1-W6 on the reference repo-workspaces deployment. |
 | `turn-control-multi-worker.test.js` | A stale worker comes back (design 3.9). |
-| `test/perf/turn-control-look-cost.mjs` | Look cost and connection budget, run by hand. |
+| `packages/sdk/test/perf/turn-control-look-cost.mjs` | Look cost and connection budget, run by hand. |
 
 ### Edge cases
 
@@ -254,17 +261,19 @@ The test files are in `packages/sdk/test/local/`:
 - **Stale worker (design 3.9).** duroxide 0.1.32 renews an activity's lock
   every `lock_timeout / 2` (minimum 1 s, for timeouts under 15 s) and cancels
   the activity when a renewal fails; duroxide-pg 0.1.36 fails a renewal whose
-  lock token was replaced. The default worker lock timeout is 10 s (renewal
-  every 5 s), so a resumed stale worker sees the cancellation within about
-  5 s plus one 2 s cancel poll, about 7 s. In the test (2 s lock) it was
-  2,003 ms. Until then correctness holds by the turn-end fence below.
+  lock token was replaced. The default worker lock timeout is 10 s
+  (`resolveDuroxideLockOptions` in `worker.ts` defaults it to 10,000 ms when
+  no option or environment override is set; renewal is every 5 s), so a
+  resumed stale worker sees cancellation within about `lock_timeout / 2` plus
+  one 2 s cancel poll, about 7 s. In the test (2 s lock) it was 2,003 ms.
+  Until then correctness holds by the turn-end fence below.
 - **Turn-end fence.** A late turn end for an older turn writes nothing for a
   newer turn. This comes from per-turn scoping and idempotency, not from an
   explicit `turn_high` check: it only closes that turn's open controls,
   clears `active_turn_index` only when it still equals that turn, and skips
   carried steers that are already closed.
 - **A stale worker skips T8 when no controls are open** (P15): its
-  end-of-turn write finds the winner's turn end already done. The outcome
+  T6 writeback finds no open controls after the winner's T8. The outcome
   equals design 3.9, where both workers call T8.
 - **Sessions without a session store** (D4): a crash re-runs the turn from
   nothing, as today. A stopped turn's earlier delivered steer is labelled
@@ -272,14 +281,19 @@ The test files are in `packages/sdk/test/local/`:
 
 ## Measurements
 
-`test/perf/turn-control-look-cost.mjs`, dev pod, PostgreSQL 16.15, local
-database, 200 looks per count, one open steer per 5 turns:
+`packages/sdk/test/perf/turn-control-look-cost.mjs`, dev pod, PostgreSQL
+16.15, local database, `PERF_TURNS=1,10,50`, `PERF_ITERATIONS=200`, and
+`PERF_STEER_EVERY=5` (open steers at zero-based indices 0, 5, ...). The script
+warms each count with 10 looks, collects 200 round-trip and CPU samples, and
+runs 100 server-side `EXPLAIN ANALYZE` samples:
 
 | Live turns | Round trip mean | Round trip p95 | Server mean | Server p95 | DB CPU per look |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 0.53 ms | 0.73 ms | 0.30 ms | 0.36 ms | 0.40 ms |
-| 10 | 0.91 ms | 1.23 ms | 0.59 ms | 0.62 ms | 0.69 ms |
-| 50 | 2.25 ms | 2.60 ms | 1.86 ms | 2.65 ms | 1.95 ms |
+| 1 | 0.53 ms | 0.71 ms | 0.32 ms | 0.41 ms | 0.38 ms |
+| 10 | 0.88 ms | 1.17 ms | 0.60 ms | 0.71 ms | 0.73 ms |
+| 50 | 2.16 ms | 2.25 ms | 1.79 ms | 1.91 ms | 1.98 ms |
+
+Run 2026-10-13T07:07:55Z (the script's own header).
 
 Server time is `EXPLAIN ANALYZE` execution time of the same look. DB CPU is
 the CPU time of one dedicated database backend running the same look, read
@@ -288,7 +302,7 @@ runs on the same host and the PID is provably that connection's backend:
 its process title must name the user, database and client port that
 `pg_stat_activity` reports for `pg_backend_pid()`. Otherwise it names the
 reason and prints no number. At the 5 s look interval, one worker with 50
-live turns uses about 1.95 ms of database CPU every 5 s, about 0.04% of one
+live turns uses about 1.98 ms of database CPU every 5 s, about 0.04% of one
 core.
 `pg_stat_statements` was not installed. One LISTEN connection per worker
 while the hub runs, none after stop.

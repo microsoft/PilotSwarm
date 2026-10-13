@@ -78,7 +78,8 @@ function backendCpuSource(pid, identity) {
     if (!cmdline.startsWith("postgres:")) return { status: "not the selected server (local PID is not a postgres backend)" };
     const title = `postgres: ${identity.user} ${identity.database} `;
     const port = `(${identity.port})`;
-    if (identity.port == null) return { status: "unknown: no client port (unix socket); cannot verify the backend" };
+    // pg_stat_activity reports -1 (or NULL) for a Unix-socket connection.
+    if (identity.port == null || Number(identity.port) < 0) return { status: "unknown: no client port (unix socket); cannot verify the backend" };
     if (!cmdline.startsWith(title) || !cmdline.includes(port)) {
         return { status: `not the selected server (local PID ${pid} is "${cmdline.slice(0, 80)}")` };
     }
