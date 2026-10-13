@@ -29,6 +29,6 @@ Custom Workflow Instructions: B-owned paths only. Do not edit the umbrella plan 
 
 ## Phase Status
 
-- [ ] B1: Freeze 1.0.80
+- [x] B1: Freeze 1.0.80 (Opus PASS at 8cacf9d0)
 - [ ] B2: Orchestration 1.0.81
 - [ ] B3: Documentation
