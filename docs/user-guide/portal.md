@@ -162,11 +162,25 @@ pause between two messages.
 - Try `cron`: ask the agent `Tell me the time every 30 seconds, three
   times`. The session uses `cron(30)` and re-arms itself.
 - **Stop a turn mid-flight**: while the agent is working, a red **■**
-  button appears next to Send. Click it — the in-flight turn aborts,
-  the transcript records `Turn stopped by user.`, and the session
-  returns to `idle` ready for your next prompt. This stops only the
-  current turn: the session (and any cron schedule it has) stays
-  alive, unlike **Terminate**, which ends the session.
+  button appears next to Send. Click it — the running turn stops, the
+  transcript shows a short **Stop** line with its outcome (**Stopped**,
+  or **Too late** when the turn had already finished), and the session
+  returns to `idle` ready for your next prompt. Older sessions show
+  `Turn stopped by user.` instead. This stops only the current turn:
+  the session (and any cron schedule it has) stays alive, unlike
+  **Terminate**, which ends the session.
+- **Steer a running turn**: with the `sessions.steering` feature on,
+  a **↪ Steer** button appears between Stop and Send while the turn
+  accepts guidance. Type a correction and press Steer — the model reads
+  it at its next step, without stopping the turn. The transcript shows
+  your text with a `steer` badge and its outcome: **Pending**,
+  **Delivered**, **Will run next** (it arrived as the turn ended; it
+  runs with the next turn), **Carried, ran next**, **Carried, then
+  stopped**, **Carried, not run** or **Not delivered** (the turn was
+  stopped first). If no turn accepts guidance any more, the text is sent
+  as an ordinary message instead and a notice says so. If the answer is
+  lost on the network, the notice offers **Retry**, which resends the
+  same request so it is recorded once.
 
 ---
 
@@ -601,6 +615,7 @@ as your app's portal.
 | Previous / next view (desktop) | **Back / Forward** arrows between Filter and Canvas, or compact arrows beside the exit/restore control when chrome is hidden; `Alt+-` / `Alt++` on Windows, `Option+-` / `Option++` on macOS. Works in the composer and preserves drafts; other text fields and open dialogs retain their keys. |
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
+| Steer the running turn | `↪` button between Stop and Send (needs the `sessions.steering` feature); sends the composer text as guidance for the running turn |
 | Attach file | Paperclip icon, or drag-and-drop |
 | Cycle inspector tabs | Click the tab; on mobile, swipe |
 | Rename session | Row menu → Rename |

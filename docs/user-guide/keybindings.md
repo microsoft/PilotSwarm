@@ -10,6 +10,7 @@ These keys work whenever focus is not in the prompt editor.
 |-----|--------|
 | `q` | Quit |
 | `Ctrl+C` | Quit immediately |
+| `Ctrl+X` / `Ctrl+Esc` | Stop the running turn of the active session (any pane); press again to resend an unconfirmed Stop |
 | `Esc` | Return focus to Sessions |
 | `Tab` / `Shift+Tab` | Cycle focus between panes |
 | `h` / `l` | Move focus left / right |
@@ -106,6 +107,7 @@ These keys work whenever focus is not in the prompt editor.
 | `Option+Enter` / `Alt+Enter` | Insert a newline |
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
+| `Ctrl+T` | Steer: send the prompt text as guidance for the running turn (needs the `sessions.steering` feature and a turn that accepts it; otherwise the status line says why). Press again to resend an unconfirmed steer |
 | `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
 | `←` / `→` | Move cursor by character |
 | `↑` / `↓` | Move cursor vertically across prompt lines, then enter/leave queued pending-prompt editing at the top/bottom boundary |

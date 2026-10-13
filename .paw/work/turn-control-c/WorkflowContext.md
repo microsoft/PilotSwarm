@@ -28,7 +28,7 @@ Approved Departures: (1) execution checkout is a dedicated git worktree of the s
 
 ## Phase Status (workstream C)
 
-- [ ] Phase C1: Management client and Web API (fake-catalog part done; real-PostgreSQL part waits for A2; stop-turn-live waits for A4 and B2)
-- [ ] Phase C2: MCP
-- [ ] Phase C3: Portal and TUI
-- [ ] Phase C4: Documentation, templates and samples
+- [ ] Phase C1: Management client and Web API — implemented (efb9601e), review r1 BLOCKED, revision 0ee90a08 under review r2; real-PostgreSQL tests wait for A2; stop-turn-live waits for A4 and B2
+- [x] Phase C2: MCP — 269bf0e8, review r1 PASS at 4f310a15 (reviewer docs patch)
+- [ ] Phase C3: Portal and TUI — implemented (946e9e96), review r1 in progress
+- [ ] Phase C4: Documentation, templates and samples — implemented, review pending

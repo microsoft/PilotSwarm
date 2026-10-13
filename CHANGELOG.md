@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+**Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later
+listens for controls through the session catalog. Stop ends the turn and
+reports `stopped`, or `too_late` when the model run had already finished. Steer (new, behind the
+`sessions.steering` feature, off by default) adds guidance that the model
+reads at its next step; a steer that arrives as the turn ends runs with the
+next turn. Every control is a session event with one outcome, shown in the
+portal and TUI transcripts.
+
+- Management client and Web API: `steerSessionTurn`
+  (`POST /management/sessions/:id/steer`, `session:write`); `stopSessionTurn`
+  takes `requestId` and reports `too_late`; the detailed session view gains
+  `activeTurnIndex`, `turnHigh` and `acceptsTurnControl`. The Web API stamps
+  the caller from the authenticated request.
+- MCP: new `steer_session_turn` tool; `stop_turn` takes `request_id` and sets
+  `stopped` from the outcome.
+- Portal: Steer button beside Stop, outcome badges, notices with Retry, and
+  stable `data-testid` selectors. TUI: `Ctrl+T` steers from the prompt pane.
+- Sessions on orchestration 1.0.80 and older keep the earlier Stop.
+
 ## 0.8.2 — 2026-10-04
 
 **Upgrade note: roll every worker and portal together.** This release moves
