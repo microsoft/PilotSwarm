@@ -176,7 +176,8 @@ describe("CMS turn metrics integration", () => {
             await catalog.createSession(sid, { agentId: "ag-writeback", model: "model-a", reasoningEffort: "medium" });
             const startedAt = new Date(Date.now() - 1_250);
             const endedAt = new Date();
-            await catalog.completeTurnWriteback({
+            // Migration 0082: the write reports whether the turn has open controls.
+            const hasControls = await catalog.completeTurnWriteback({
                 sessionId: sid,
                 agentId: "ag-writeback",
                 model: "model-a",
@@ -201,6 +202,7 @@ describe("CMS turn metrics integration", () => {
                 waitReason: null,
                 currentIteration: 7,
             });
+            assertEqual(hasControls, false, "a turn without controls reports none");
 
             const session = await catalog.getSession(sid);
             assertEqual(session.state, "idle", "session state updated");
