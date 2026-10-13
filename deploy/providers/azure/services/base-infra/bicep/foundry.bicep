@@ -3,11 +3,7 @@
 //
 // Optional, gated by `foundryEnabled` in main.bicep. Provisions a single
 // `Microsoft.CognitiveServices/accounts` (kind=AIServices) plus N model
-// deployments under it, all sharing one endpoint, one key, one auth surface.
-//
-// The data-plane key is read out of band by `auto-secrets.bicep` via
-// `listKeys()` and stamped into Key Vault as `azure-oai-key`. The worker
-// pod consumes it via the SPC + worker-deployment envFrom mount.
+// deployments under it, all sharing one endpoint and auth surface.
 //
 // Per-region: a single Foundry account lives in this RG with a custom
 // subdomain matching the resource name. All deployments are siblings; the
@@ -21,10 +17,10 @@
 // valid (provisions an account with no deployments) so a stamp can opt
 // into Foundry incrementally.
 //
-// Phase 1 scope: API-key auth (`disableLocalAuth: false`). Future
-// proposals: Entra-mode (workload-identity → AAD token; see
-// docs/proposals/foundry-entra-mode-auth.md) and Foundry-hosted Claude
-// (see docs/proposals/foundry-hosted-claude.md).
+// `entra` auth is the default: local auth is disabled, the worker UAMI gets
+// the Foundry data-plane role, and the staged catalog uses `foundry-wif`.
+// `key` remains an explicit compatibility mode for subscriptions that permit
+// local auth.
 // ==============================================================================
 
 @description('Azure region. Foundry resources are zonal-ish (data-plane lands in this region).')
@@ -42,8 +38,21 @@ param sku string = 'S0'
 @description('Array of model deployments to provision under this account. Each entry: { name: <deployment-name>, model: { format: <vendor>, name: <model>, version: <version> }, sku: { name: <sku>, capacity: <int> } }. Loaded from a per-stamp JSON file by the deploy orchestrator. Empty array → no deployments (account-only provisioning).')
 param deployments array = []
 
-@description('Key Vault name. The Foundry account primary key is written here as `azure-oai-key`. Co-located with the account resource so listKeys() runs in the same template scope (avoids BCP422 / BCP426 around conditional secure-output indirection).')
+@description('Key Vault name. `azure-oai-key` receives the account key in key mode or the standard unset sentinel in Entra mode. Co-located with the account resource so listKeys() remains in the same template scope.')
 param keyVaultName string
+
+@description('Data-plane auth mode. `entra` disables local auth and grants the worker workload identity access to the Foundry data plane. `key` keeps the legacy account-key path.')
+@allowed([
+  'key'
+  'entra'
+])
+param authMode string = 'entra'
+
+@description('Principal object ID of the worker workload identity. Granted Cognitive Services OpenAI User in `entra` mode.')
+param workloadIdentityPrincipalId string = ''
+
+var cognitiveServicesOpenAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+var keyVaultUnsetSentinel = '__PS_UNSET__'
 
 resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: accountName
@@ -61,10 +70,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     networkAcls: {
       defaultAction: 'Allow'
     }
-    // Phase 1: key-auth flow. The Entra-mode proposal flips this to true
-    // once the SDK has a token-provider codepath
-    // (docs/proposals/foundry-entra-mode-auth.md).
-    disableLocalAuth: false
+    disableLocalAuth: authMode == 'entra'
   }
 }
 
@@ -89,10 +95,11 @@ resource modelDeployments 'Microsoft.CognitiveServices/accounts/deployments@2024
   }
 }]
 
-// Foundry primary key → KV `azure-oai-key`. Written here (rather than in a
+// Foundry primary key -> KV `azure-oai-key`. Written here (rather than in a
 // downstream auto-secrets module) so listKeys() lives in the same scope
 // as the resource declaration. Re-running this module after a portal-side
-// rotation re-syncs the KV value.
+// rotation re-syncs the KV value. Entra mode writes the standard unset
+// sentinel because the stamp-invariant SPC still mounts this secret.
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
@@ -101,8 +108,18 @@ resource azureOaiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'azure-oai-key'
   properties: {
-    value: account.listKeys().key1
+    value: authMode == 'entra' ? keyVaultUnsetSentinel : account.listKeys().key1
     contentType: 'text/plain'
+  }
+}
+
+resource foundryDataPlaneRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (authMode == 'entra' && !empty(workloadIdentityPrincipalId)) {
+  name: guid(account.id, workloadIdentityPrincipalId, cognitiveServicesOpenAiUserRoleId)
+  scope: account
+  properties: {
+    principalId: workloadIdentityPrincipalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesOpenAiUserRoleId)
+    principalType: 'ServicePrincipal'
   }
 }
 

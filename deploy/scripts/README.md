@@ -524,7 +524,7 @@ The base catalog supplies three classes of providers:
 |---|---|---|
 | `ghcp` (GitHub Copilot) | `GITHUB_TOKEN` (KV → SPC, optional, sentinel-tolerant; per-user PAT via Admin overrides) | Static endpoint `https://api.githubcopilot.com` |
 | `anthropic` (direct) | `ANTHROPIC_API_KEY` (KV → SPC, optional, sentinel-tolerant) | Static endpoint `https://api.anthropic.com` |
-| `azure-foundry`, `azure-foundry-router` | `AZURE_OAI_KEY` (KV → SPC) | `__FOUNDRY_ENDPOINT__` placeholder, substituted at staging from the `FOUNDRY_ENDPOINT` Bicep output |
+| `azure-foundry`, `azure-foundry-router` | Workload identity by default; `AZURE_OAI_KEY` in explicit key mode | `__FOUNDRY_ENDPOINT__` placeholder, substituted at staging from the `FOUNDRY_ENDPOINT` Bicep output |
 
 Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
 - `foundry.bicep` is skipped and no Foundry account is created.
@@ -545,9 +545,12 @@ Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
 2. Run `--steps bicep` for `base-infra`. `foundry.bicep` provisions one
    `Microsoft.CognitiveServices/accounts` (kind=AIServices) per stamp,
    declares each entry as a child `accounts/deployments` resource, and
-   writes the account key to KV as `azure-oai-key` via co-located
-   `listKeys()` (no separate auto-secrets module). The endpoint is
-   surfaced to the env map as `FOUNDRY_ENDPOINT`.
+   defaults to Entra authentication, disables local auth, grants the worker
+   workload identity the Cognitive Services OpenAI User role, and writes the
+   standard unset sentinel to `azure-oai-key`. Set
+   `FOUNDRY_AUTH_MODE=key` only for a legacy stamp that requires account-key
+   authentication. The endpoint is surfaced to the env map as
+   `FOUNDRY_ENDPOINT`.
 3. Re-run `--steps manifests`. The placeholder
    `__FOUNDRY_ENDPOINT__/openai/v1` is rewritten to the real Foundry
    endpoint URL (trailing slash collapsed). Flux reconciles; the
@@ -557,15 +560,14 @@ Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
 
 Set `MODEL_PROVIDERS_FILE=deploy/envs/local/<stamp>/model_providers.json` in
 the ignored stamp env. Worker and portal stage the same JSON file. For a
-Foundry-only stamp, list only the `azure-foundry` provider, point its key at
-`env:AZURE_OAI_KEY`, keep `__FOUNDRY_ENDPOINT__/openai/v1` as its base URL,
-and set `defaultModel` to a deployment name in that stamp's
-`foundry-deployments.json`. Leave `GITHUB_TOKEN` empty.
+Foundry-only stamp, list only the `azure-foundry` provider, keep
+`__FOUNDRY_ENDPOINT__/openai/v1` as its base URL, and set `defaultModel` to a
+deployment name in that stamp's `foundry-deployments.json`. The manifests
+stage rewrites key-mode Foundry entries to `foundry-wif` and removes
+`apiKey` when Entra mode is active. Leave `GITHUB_TOKEN` empty.
 
-> Phase 2 (SDK Entra-mode) and Phase 3 (Foundry-hosted Claude) are
-> tracked in [`docs/proposals/foundry-entra-mode-auth.md`](../../docs/proposals/foundry-entra-mode-auth.md)
-> and [`docs/proposals/foundry-hosted-claude.md`](../../docs/proposals/foundry-hosted-claude.md).
-> Until those land, Foundry uses key auth and Claude is direct-Anthropic.
+> Foundry-hosted Claude remains tracked in
+> [`docs/proposals/foundry-hosted-claude.md`](../../docs/proposals/foundry-hosted-claude.md).
 
 ## Cross-references
 

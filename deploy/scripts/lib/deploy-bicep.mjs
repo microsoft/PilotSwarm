@@ -110,6 +110,9 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   if (!existsSync(bicepAbs)) throw new Error(`Bicep main missing: ${bicepAbs}`);
 
   if (moduleName === "horizondb") prepareHorizonDbEnvForRender(env);
+  if (moduleName === "base-infra") {
+    env.FOUNDRY_AUTH_MODE ??= "entra";
+  }
 
   // 1) Render params.
   log("info", `[${moduleName}] render params (${paramsRel})`);
