@@ -19,8 +19,9 @@ and procedures, the worker's notification hub and per-turn live loop, the
 send gate in `ManagedSession`, and the `runTurnV4` activity path. Workstream B
 (orchestration 1.0.81) schedules `runTurnV4` and carries late steers to the
 next turn. Workstream C (management client, Web API, MCP, TUI and portal)
-exposes Stop and Steer to users. Their documentation is in
-`.paw/work/turn-control-b/Docs.md` and `.paw/work/turn-control-c/Docs.md`.
+exposes Stop and Steer to users. Their documentation is in the
+[orchestration design](../../../docs/architecture/orchestration/design.md) (B)
+and [`.paw/work/turn-control-c/Docs.md`](../turn-control-c/Docs.md) (C).
 
 Binding design: [`docs/proposals/session-turn-control.md`](../../../docs/proposals/session-turn-control.md).
 
