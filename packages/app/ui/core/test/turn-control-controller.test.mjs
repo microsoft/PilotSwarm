@@ -353,3 +353,51 @@ test("a fallback behind an outbox send in flight is sent once its own send succe
     assert.equal(calls.send.length, 2);
     assert.equal(view().notice.clientMessageId, calls.send[1].clientMessageIds[0]);
 });
+
+for (const phase of ["pending", "queued"]) {
+    test(`Steer is unavailable while a ${phase} outbox message is selected and leaves it intact`, async () => {
+        const { controller, store, calls, view } = harness({ steer: { outcome: "accepted", steerId: 1, turn: 0 } });
+        const item = controller.buildOutboxItem("queued words", phase);
+        controller.setSessionOutboxItems(SID, [item]);
+        assert.equal(controller.enterPendingPromptEdit(SID, item.id), true);
+        assert.equal(view().canSteer, false);
+        await controller.steerActiveSessionTurn();
+        assert.equal(calls.steer.length, 0);
+        assert.equal(store.getState().ui.prompt, "queued words");
+        assert.equal(store.getState().outbox.bySessionId[SID][0].text, "queued words");
+        assert.match(store.getState().ui.statusText, /pending message is selected/);
+    });
+}
+
+test("a Stop keeps the unconfirmed steer's notice; each kind has its own Retry/Dismiss", async () => {
+    const { controller, calls, view } = harness({
+        steer: networkError(),
+        stop: { outcome: "stopped", turnIndex: 2, controlSeq: 4 },
+    });
+    controller.setPrompt("lost steer");
+    await controller.steerActiveSessionTurn();
+    await controller.stopActiveSessionTurn();
+    assert.equal(view().steer.phase, "unconfirmed");
+    assert.equal(view().steerNotice.reason, "unconfirmed");
+    assert.equal(view().steerNotice.requestId, calls.steer[0].requestId);
+    assert.equal(view().stopNotice, null);
+    // Eligibility ends, the notice and its request stay recoverable.
+    controller.mergeSessionEvent(SID, { sessionId: SID, seq: 3, eventType: "session.turn_stopped", data: { interrupt: "turn-result" }, createdAt: new Date() });
+    assert.equal(view().canSteer, false);
+    controller.transport.steerSessionTurn = async (sessionId, options) => { calls.steer.push({ sessionId, ...options }); return { outcome: "accepted", steerId: 9, turn: 2, repeat: true }; };
+    await controller.retryTurnControl("steer", SID);
+    assert.equal(calls.steer[1].requestId, calls.steer[0].requestId);
+    assert.equal(view().steerNotice, null);
+});
+
+test("Stop and Steer notices are dismissed separately", async () => {
+    const { controller, view } = harness({ steer: { outcome: "too_many" }, stop: { outcome: "no_active_turn", detail: "no turn is running" } });
+    controller.setPrompt("x");
+    await controller.steerActiveSessionTurn();
+    await controller.stopActiveSessionTurn();
+    assert.equal(view().steerNotice.reason, "too_many");
+    assert.equal(view().stopNotice.reason, "no_active_turn");
+    controller.dismissTurnControlNotice(SID, "stop");
+    assert.equal(view().stopNotice, null);
+    assert.equal(view().steerNotice.reason, "too_many");
+});

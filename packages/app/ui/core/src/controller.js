@@ -454,6 +454,7 @@ const STEERING_FEATURE_KEY = "sessions.steering";
 const STEERING_FEATURE_REFRESH_MS = 30_000;
 const TURN_CONTROL_NOTICE_MS = 8_000;
 const FALLBACK_DISPATCH_ATTEMPTS = 5;
+const noticeKey = (kind) => (kind === "stop" ? "stopNotice" : "steerNotice");
 // Events after which the running turn no longer accepts Stop/Steer controls.
 const TURN_CONTROL_ELIGIBILITY_END_EVENTS = new Set([
     "session.turn_completed",
@@ -10776,15 +10777,20 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "turnControl/session", sessionId, patch });
     }
 
+    /**
+     * Notices are kept per kind (steerNotice, stopNotice), so a Stop never
+     * hides the Retry/Dismiss of an unconfirmed steer, or the reverse.
+     */
     _showTurnControlNotice(sessionId, notice) {
         const stamped = { ...notice, at: Date.now() };
-        this._setTurnControl(sessionId, { notice: stamped });
+        const key = noticeKey(notice.kind);
+        this._setTurnControl(sessionId, { [key]: stamped });
         // Informational notices clear themselves; a notice that needs an
         // action (Retry, a failed fallback, or refused text that could not go
         // back into the composer) stays until it is handled.
         if (!notice.text && !["unconfirmed", "fallback_failed", "stop_pending_retry"].includes(notice.reason)) {
             const timer = setTimeout(() => {
-                if (this._turnControlEntry(sessionId).notice === stamped) this._setTurnControl(sessionId, { notice: null });
+                if (this._turnControlEntry(sessionId)[key] === stamped) this._setTurnControl(sessionId, { [key]: null });
             }, TURN_CONTROL_NOTICE_MS);
             timer?.unref?.();
         }
@@ -10808,10 +10814,10 @@ export class PilotSwarmUiController {
     /** Put the active session's kept steer text back into the composer (after any draft). */
     restoreTurnControlText(sessionId = this.getState().sessions.activeSessionId) {
         if (!sessionId || this.getState().sessions.activeSessionId !== sessionId) return false;
-        const notice = this._turnControlEntry(sessionId).notice;
+        const notice = this._turnControlEntry(sessionId).steerNotice;
         if (!notice?.text) return false;
         this._appendToComposer(notice.text);
-        this._setTurnControl(sessionId, { notice: null });
+        this._setTurnControl(sessionId, { steerNotice: null });
         return true;
     }
 
@@ -10821,19 +10827,22 @@ export class PilotSwarmUiController {
         this.setPrompt(next, next.length);
     }
 
-    dismissTurnControlNotice(sessionId = this.getState().sessions.activeSessionId) {
+    dismissTurnControlNotice(sessionId = this.getState().sessions.activeSessionId, kind = "steer") {
         if (!sessionId) return;
         const entry = this._turnControlEntry(sessionId);
-        const patch = { notice: null };
-        // Dismissing gives an unconfirmed request up. Any steer text it held
-        // (or kept refused text) returns to the composer so nothing typed is
-        // lost: after the current draft when there is one.
-        let text = entry.notice?.text;
+        // Dismissing gives that kind's unconfirmed request up. Any steer text
+        // it held (or kept refused text) returns to the composer so nothing
+        // typed is lost: after the current draft when there is one.
+        if (kind === "stop") {
+            this._setTurnControl(sessionId, { stopNotice: null, ...(entry.stop?.phase === "unconfirmed" ? { stop: null } : {}) });
+            return;
+        }
+        const patch = { steerNotice: null };
+        let text = entry.steerNotice?.text;
         if (entry.steer?.phase === "unconfirmed") {
             patch.steer = null;
             text = entry.steer.text;
         }
-        if (entry.stop?.phase === "unconfirmed") patch.stop = null;
         // Only the session's own composer dismisses: the text needs a place.
         if (text && this.getState().sessions.activeSessionId !== sessionId) return;
         if (text) this._appendToComposer(text);
@@ -10875,6 +10884,12 @@ export class PilotSwarmUiController {
         }
         const entry = this._turnControlEntry(sessionId);
         if (entry.steer?.phase === "sending") return;
+        // While a pending or queued outbox message is selected, the composer
+        // text belongs to that message: Steer must not take or resend it.
+        if (this.getPromptEditSessionMatch(sessionId)) {
+            this.dispatch({ type: "ui/status", text: "Steer is unavailable while a pending message is selected; press Esc for a new prompt" });
+            return;
+        }
         if (entry.steer?.phase === "unconfirmed") {
             await this.retryTurnControl("steer", sessionId);
             return;
@@ -10899,7 +10914,7 @@ export class PilotSwarmUiController {
             return;
         }
         const request = { requestId: this._newTurnControlRequestId(), kind: "steer", text, phase: "sending" };
-        this._setTurnControl(sessionId, { steer: request, notice: null });
+        this._setTurnControl(sessionId, { steer: request, steerNotice: null });
         // The text moves into the request: it is immutable until an answer.
         this.setPrompt("", 0);
         await this._sendSteer(sessionId, request);
@@ -10927,7 +10942,7 @@ export class PilotSwarmUiController {
         const outcome = result?.outcome || "error";
         this._setTurnControl(sessionId, { steer: null });
         if (outcome === "accepted") {
-            this._setTurnControl(sessionId, { notice: null });
+            this._setTurnControl(sessionId, { steerNotice: null });
             this.dispatch({ type: "ui/status", text: result?.repeat ? "Steer already accepted" : "Steer accepted" });
             this.syncSessionEvents(sessionId).catch(() => {});
             return;
@@ -10995,7 +11010,7 @@ export class PilotSwarmUiController {
         const request = this._turnControlEntry(sessionId)[kind];
         if (!request || request.phase !== "unconfirmed") return;
         const sending = { ...request, phase: "sending" };
-        this._setTurnControl(sessionId, { [kind]: sending, notice: null });
+        this._setTurnControl(sessionId, { [kind]: sending, [noticeKey(kind)]: null });
         if (kind === "steer") await this._sendSteer(sessionId, sending);
         else await this._sendStop(sessionId, sending);
     }
@@ -11026,7 +11041,7 @@ export class PilotSwarmUiController {
         const request = entry.stop?.phase === "unconfirmed"
             ? { ...entry.stop, phase: "sending" }
             : { requestId: this._newTurnControlRequestId(), kind: "stop", phase: "sending" };
-        this._setTurnControl(sessionId, { stop: request, notice: null });
+        this._setTurnControl(sessionId, { stop: request, stopNotice: null });
         await this._sendStop(sessionId, request);
     }
 

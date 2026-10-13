@@ -9678,7 +9678,7 @@ function TurnControlNotice({ controller, notice, sessionId }) {
         "aria-label": "Dismiss",
         title: reason === "unconfirmed" || notice.text ? "Dismiss (its text returns to the composer)" : "Dismiss",
         onPointerDown: (event) => event.preventDefault(),
-        onClick: () => controller.dismissTurnControlNotice(sessionId),
+        onClick: () => controller.dismissTurnControlNotice(sessionId, notice.kind === "stop" ? "stop" : "steer"),
     }, "✕"));
 }
 
@@ -9703,7 +9703,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             canSteer: turnControl.canSteer,
             steerPhase: turnControl.steer?.phase || null,
             stopPhase: turnControl.stop?.phase || null,
-            controlNotice: turnControl.notice,
+            steerNotice: turnControl.steerNotice,
+            stopNotice: turnControl.stopNotice,
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -9930,8 +9931,11 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             "data-turn-state": promptState.turnState,
             "data-accepts-controls": promptState.acceptsControls ? "true" : "false",
         }, promptState.acceptsControls ? `Turn ${promptState.turnState}; accepts Stop and Steer` : `Turn ${promptState.turnState}`),
-        promptState.controlNotice
-            ? React.createElement(TurnControlNotice, { controller, notice: promptState.controlNotice, sessionId: promptState.sessionId })
+        promptState.stopNotice
+            ? React.createElement(TurnControlNotice, { controller, notice: promptState.stopNotice, sessionId: promptState.sessionId })
+            : null,
+        promptState.steerNotice
+            ? React.createElement(TurnControlNotice, { controller, notice: promptState.steerNotice, sessionId: promptState.sessionId })
             : null,
         imageAttachments.length > 0
             ? React.createElement("div", { className: "ps-prompt-attachments" },

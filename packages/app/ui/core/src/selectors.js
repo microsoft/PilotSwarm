@@ -3392,16 +3392,23 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
     const entry = sessionId ? state?.turnControl?.bySessionId?.[sessionId] || null : null;
     const acceptsControls = Boolean(session && session.acceptsTurnControl === true && session.status === "running");
     const steeringEnabled = state?.turnControl?.steeringEnabled === true;
+    // A selected pending/queued outbox message owns the composer text.
+    const editingOutbox = Boolean(sessionId && state?.ui?.promptEdit?.sessionId === sessionId);
+    const steerNotice = entry?.steerNotice || null;
+    const stopNotice = entry?.stopNotice || null;
     return {
         sessionId: sessionId || null,
         turnState: session?.status || "pending",
         acceptsControls,
         steeringEnabled,
         canStop: canStopSessionTurn(session),
-        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
+        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled && !editingOutbox),
         steer: entry?.steer || null,
         stop: entry?.stop || null,
-        notice: entry?.notice || null,
+        steerNotice,
+        stopNotice,
+        // The most recent notice of either kind (status-line hints).
+        notice: steerNotice && stopNotice ? (steerNotice.at >= stopNotice.at ? steerNotice : stopNotice) : steerNotice || stopNotice,
     };
 }
 
@@ -6138,7 +6145,7 @@ export function selectStatusBar(state) {
     const turnControl = selectTurnControlView(state);
     if (turnControl.steer?.phase === "unconfirmed") {
         right = `ctrl-t retry steer · ${right}`;
-    } else if (turnControl.notice?.text && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
+    } else if (turnControl.steerNotice?.text && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
         right = `ctrl-t restore steer text · ${right}`;
     } else if (turnControl.canSteer && focus === FOCUS_REGIONS.PROMPT) {
         right = `ctrl-t steer · ${right}`;

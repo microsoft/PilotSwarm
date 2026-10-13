@@ -326,3 +326,23 @@ test("a refusal after a new draft keeps the steer text on the notice until Resto
     await expect(wire.input).toHaveValue("a new draft\n\nguidance first");
     await expect(wire.notice).toHaveCount(0);
 });
+
+test("an unconfirmed steer keeps its Retry after a Stop and after the turn ends", async ({ page }) => {
+    const wire = await open(page, { handlers: {
+        steer: ({ route, answer, state }) => (state.steers.length === 1 ? route.abort("connectionreset") : answer({ outcome: "accepted", steerId: 995, turn: 3, repeat: true })),
+        stop: ({ answer }) => answer({ outcome: "stopped", turnIndex: 3, controlSeq: 4_000_000 }),
+    } });
+    await wire.input.fill("steer before stop");
+    await wire.steerButton.click();
+    const steerNotice = wire.composer.locator('[data-testid="control-notice"][data-kind="steer"]');
+    await expect(steerNotice).toHaveAttribute("data-reason", "unconfirmed");
+    await wire.stopButton.click();
+    await expect.poll(() => wire.state.stops.length).toBe(1);
+    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+    await expect(wire.steerButton).toHaveCount(0);
+    await expect(steerNotice).toHaveAttribute("data-reason", "unconfirmed");
+    await steerNotice.getByTestId("control-retry-button").click();
+    await expect(steerNotice).toHaveCount(0);
+    expect(wire.state.steers[1].requestId).toBe(wire.state.steers[0].requestId);
+});
+
