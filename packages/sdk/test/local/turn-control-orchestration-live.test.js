@@ -7,6 +7,9 @@ import { withClient, defineTool } from "../helpers/local-workers.js";
 import { patchSessionStartInput, pinSessionStartVersion } from "../helpers/pinned-start.mjs";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
 import { stopTurnQueueName } from "../../src/types.ts";
+import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { handleTurnResult } from "../../src/orchestration/turn.ts";
+import { createInitialState, deriveOptions } from "../../src/orchestration/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 180_000;
@@ -47,6 +50,25 @@ function captureLateSteer(worker, sessionId, text) {
 
 async function closings(catalog, sessionId) {
     return (await catalog.getSessionEvents(sessionId, 0, 500, ["session.carried_steers_closed"])).map(e => e.data);
+}
+
+async function carriedFixture(catalog) {
+    const sessionId = randomUUID();
+    await catalog.createSession(sessionId, { model: "fixture" });
+    await catalog.turnStart(sessionId, 0);
+    const accepted = await catalog.turnControlAdd(sessionId, "steer", "B2 carried protocol guidance", randomUUID(), null);
+    const ended = await catalog.turnEnd(sessionId, 0, 0, "other", []);
+    expect(ended.late).toEqual([{ seq: accepted.seq, text: "B2 carried protocol guidance" }]);
+    return { sessionId, carried: ended.late };
+}
+
+function realControlMethods(catalog) {
+    return {
+        turnStart: catalog.turnStart.bind(catalog),
+        turnEnd: catalog.turnEnd.bind(catalog),
+        recordEvents: catalog.recordEvents.bind(catalog),
+        completeTurnWriteback: async () => false,
+    };
 }
 
 describe("B2 live orchestration turn controls after A4", () => {
@@ -197,5 +219,122 @@ describe("B2 live orchestration turn controls after A4", () => {
                 await catalog.close();
             }
         });
+    });
+
+    it("carry survives a pre-model error, budget wait, and thrown attempt before closing ran at a later index", { timeout: TIMEOUT }, async () => {
+        const catalog = await createCatalog(getEnv());
+        try {
+            const { sessionId, carried } = await carriedFixture(catalog);
+            let admission = "error";
+            let throws = false;
+            const prompts = [];
+            const h = makeRunTurnHarness({
+                catalogExtras: {
+                    ...realControlMethods(catalog),
+                    providers: {
+                        checkTurn: async () => {
+                            if (admission === "error") throw new Error("provider admission unavailable");
+                            if (admission === "wait") return {
+                                verdict: "paused", providerName: "fixture", modelQualified: null, exempt: false,
+                                pause: { kind: "limit", provider: "fixture" }, rules: [],
+                            };
+                            return { verdict: "allowed", providerName: "fixture", modelQualified: null, exempt: false, rules: [] };
+                        },
+                    },
+                },
+                turn: async () => {
+                    if (throws) throw new Error("model transport failed");
+                    return { type: "completed", content: "used" };
+                },
+            });
+            const input = { carriedSteers: carried, prompt: CARRIED_STEERS_WAKE_PROMPT };
+            const failedAdmission = await h.runTurn(sessionId, { ...input, turnIndex: 1 }, "runTurnV4");
+            expect(failedAdmission.type).toBe("error");
+            expect(failedAdmission.carriedSteersConsumed).toBeUndefined();
+            expect(await closings(catalog, sessionId)).toEqual([]);
+            admission = "wait";
+            const wait = await h.runTurn(sessionId, { ...input, turnIndex: 2 }, "runTurnV4");
+            expect(wait).toMatchObject({ type: "wait", budget: true });
+            expect(wait.carriedSteersConsumed).toBeUndefined();
+            admission = "allow";
+            throws = true;
+            await expect(h.runTurn(sessionId, { ...input, turnIndex: 3 }, "runTurnV4")).rejects.toThrow("model transport failed");
+            expect(await closings(catalog, sessionId)).toEqual([]);
+            throws = false;
+            const completed = await h.runTurn(sessionId, { ...input, turnIndex: 7 }, "runTurnV4");
+            expect(completed.carriedSteersConsumed).toBe(true);
+            prompts.push(...h.session.runTurn.mock.calls.map(call => call[0]));
+            expect(prompts).toEqual(["B2 carried protocol guidance", "B2 carried protocol guidance"]);
+            expect(prompts.some(prompt => prompt.includes(CARRIED_STEERS_WAKE_PROMPT))).toBe(false);
+            expect(await closings(catalog, sessionId)).toEqual([
+                { seqs: [carried[0].seq], turnIndex: 7, reason: "ran" },
+            ]);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a returned retryable carried-only error is folded again and closes only after the consuming retry", { timeout: TIMEOUT }, async () => {
+        const catalog = await createCatalog(getEnv());
+        try {
+            const { sessionId, carried } = await carriedFixture(catalog);
+            let error = true;
+            const h = makeRunTurnHarness({
+                catalogExtras: realControlMethods(catalog),
+                turn: async () => error
+                    ? { type: "error", message: "retry this turn" }
+                    : { type: "completed", content: "used" },
+            });
+            const first = await h.runTurn(sessionId, { turnIndex: 1, prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: carried }, "runTurnV4");
+            expect(first.type).toBe("error");
+            expect(first.carriedSteersConsumed).toBeUndefined();
+            expect(await closings(catalog, sessionId)).toEqual([]);
+            error = false;
+            const retry = await h.runTurn(sessionId, { turnIndex: 2, retryCount: 1, bootstrap: true, prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: carried }, "runTurnV4");
+            expect(retry.carriedSteersConsumed).toBe(true);
+            expect(h.session.runTurn.mock.calls.map(call => call[0])).toEqual([
+                "B2 carried protocol guidance", "B2 carried protocol guidance",
+            ]);
+            expect(await closings(catalog, sessionId)).toEqual([{ seqs: [carried[0].seq], turnIndex: 2, reason: "ran" }]);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("the orchestration give-up write closes carried guidance once as gave_up in real PostgreSQL", { timeout: TIMEOUT }, async () => {
+        const catalog = await createCatalog(getEnv());
+        try {
+            const { sessionId, carried } = await carriedFixture(catalog);
+            const input = { sessionId, config: {}, iteration: 6, carriedSteers: carried, isSystem: true, blobEnabled: false };
+            const options = deriveOptions(input);
+            const state = createInitialState(input, options);
+            const kv = new Map();
+            const runtime = {
+                input, state, options,
+                ctx: {
+                    traceInfo() {}, setCustomStatus() {},
+                    getValue: key => kv.get(key),
+                    setValue: (key, value) => kv.set(key, value),
+                    utcNow: () => Date.now(),
+                },
+                manager: {
+                    updateCmsState: (id, status, lastError, waitReason, opts) =>
+                        catalog.updateSession(id, { state: status, lastError, waitReason, ...opts }),
+                },
+            };
+            const gen = handleTurnResult(runtime, { type: "error", message: "non-retryable failure", retryable: false }, CARRIED_STEERS_WAKE_PROMPT);
+            let value;
+            for (let step = 0; step < 20; step++) {
+                const next = gen.next(value);
+                if (next.done) break;
+                value = await next.value;
+            }
+            expect(state.carriedSteers).toEqual([]);
+            expect(await closings(catalog, sessionId)).toEqual([{ seqs: [carried[0].seq], turnIndex: 0, reason: "gave_up" }]);
+            await catalog.updateSession(sessionId, { state: "error", closeControls: true });
+            expect(await closings(catalog, sessionId)).toHaveLength(1);
+        } finally {
+            await catalog.close();
+        }
     });
 });
