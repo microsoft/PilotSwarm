@@ -218,14 +218,14 @@ describe("1.0.81 turn control orchestration", () => {
     it("storeless connection-loss give-up adds only one CMS write to the legacy activity sequence", () => {
         const input = { carriedSteers: [steer(28)], retryCount: 3 };
         const current = harness(input);
-        current.run(new Error("live Copilot connection closed unexpectedly"));
+        current.run(new Error("Connection is closed"));
         const writes = current.calls.filter(c => c.effect === "manager.updateCmsState");
         expect(writes).toHaveLength(1);
         expect(writes[0].args[2]).toContain("Durable handoff is unavailable because blob persistence is disabled.");
         expect(writes[0].args[4]).toEqual({ closeControls: true });
         expect(current.runtime.state.carriedSteers).toEqual([]);
         const legacy = harness(input);
-        legacy.results.push(new Error("live Copilot connection closed unexpectedly"));
+        legacy.results.push(new Error("Connection is closed"));
         legacy.drive(legacyProcessPrompt(legacy.runtime, "original prompt", false));
         expect(current.calls.filter(c => c.effect !== "manager.updateCmsState").map(c => c.effect))
             .toEqual(legacy.calls.filter(c => c.effect !== "race").map(c => c.effect));
@@ -278,7 +278,7 @@ describe("1.0.81 turn control orchestration", () => {
         ["retry exhaustion", { type: "error", message: "transient" }, { retryCount: 2 }],
         ["non-retryable", { type: "error", message: "not retryable", retryable: false }, {}],
         ["auth", { type: "error", message: "401 unauthorized" }, {}],
-        ["storeless connection-loss exhaustion", new Error("live Copilot connection closed unexpectedly"), { retryCount: 3 }],
+        ["storeless connection-loss exhaustion", new Error("Connection is closed"), { retryCount: 3 }],
     ]) {
         it(`${label} closes controls in the give-up state write`, () => {
             const h = harness({ ...input, carriedSteers: [steer(30)] });
