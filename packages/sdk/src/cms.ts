@@ -13,7 +13,9 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult } from "./types.js";
+import type { MessageSender } from "./message-sender.js";
+import { TurnControlUnavailableError } from "./turn-control-contract.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -137,6 +139,13 @@ export interface SessionRow {
      * stopSessionTurn() to address the turn-scoped stop queue.
      */
     activeTurnIndex: number | null;
+    /**
+     * Session turn control: the highest turn started on the turn-control path
+     * in this orchestration lifetime (-1 for none). A running turn accepts
+     * Stop and Steer through the CMS when it equals `activeTurnIndex`.
+     * Absent before migration 0082.
+     */
+    turnHigh?: number | null;
     /** If this session is a sub-agent, the parent session's ID. */
     parentSessionId: string | null;
     /** Whether this is a system session (e.g. Sweeper Agent). */
@@ -247,6 +256,12 @@ export interface SessionRowUpdates {
     agentId?: string | null;
     splash?: string | null;
     splashMobile?: string | null;
+    /**
+     * Session turn control (orchestration give-up paths): close every open
+     * control (Stop → stopped, Steer → not_delivered) and every unclosed
+     * carried steer (gave_up). Needs migration 0082.
+     */
+    closeControls?: boolean;
 }
 
 /** Identity used to scope group placements (a user's private organization). */
@@ -1158,6 +1173,21 @@ export interface SessionCatalog {
     /** Publish the in-flight turn index (stop-turn targeting). */
     setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
+    // ── Session turn control (migration 0082) ───────────────────
+    /** Client: add a Steer or a Stop to the running turn, or get a refusal. */
+    turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult>;
+    /** Worker T3: mark the turn running and return its open controls. Replaces setActiveTurnIndex on the turn-control path. */
+    turnStart(sessionId: string, turn: number): Promise<TurnStartResult>;
+    /** Worker: one batched look for the worker's running turns. */
+    turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]>;
+    /**
+     * Worker T8: give every open control one outcome from the saved cursor,
+     * and close the carried steers folded into this turn (`carried`) as ran
+     * or stopped unless `kind` is error. An error leaves them open for retry.
+     * Redelivery passes the same carried seqs; closing is idempotent.
+     */
+    turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+
     /** Soft-delete a session (set deleted_at). */
     softDeleteSession(sessionId: string): Promise<void>;
 
@@ -1302,8 +1332,11 @@ export interface SessionCatalog {
     /** Insert one per-turn metrics row. */
     insertTurnMetric(input: InsertTurnMetricInput): Promise<void>;
 
-    /** Complete one turn's CMS writeback atomically. */
-    completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<void>;
+    /**
+     * Complete one turn's CMS writeback atomically. Resolves true when the
+     * turn has open controls after the write (migration 0082), else false.
+     */
+    completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean>;
 
     /** Get bounded per-session turn metrics, newest-first. */
     getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]>;
@@ -1846,6 +1879,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
         if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
         if (updates.splashMobile !== undefined) jsonUpdates.splashMobile = updates.splashMobile;
+        if (updates.closeControls === true) jsonUpdates.closeControls = true;
 
         if (Object.keys(jsonUpdates).length === 0) return;
 
@@ -1860,6 +1894,23 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.sql.fn.setActiveTurnIndex}($1, $2)`,
             [sessionId, turnIndex],
         );
+    }
+
+    // Session turn control: the procedures arrive with migration 0082.
+    async turnControlAdd(_sessionId: string, _kind: TurnControlKind, _text: string, _requestId: string, _actor: MessageSender | null): Promise<TurnControlAddResult> {
+        throw new TurnControlUnavailableError("turnControlAdd");
+    }
+
+    async turnStart(_sessionId: string, _turn: number): Promise<TurnStartResult> {
+        throw new TurnControlUnavailableError("turnStart");
+    }
+
+    async turnLook(_turns: TurnLookInput[]): Promise<TurnLookRow[]> {
+        throw new TurnControlUnavailableError("turnLook");
+    }
+
+    async turnEnd(_sessionId: string, _turn: number, _cursor: number, _kind: TurnEndKind, _carried: number[]): Promise<TurnEndResult> {
+        throw new TurnControlUnavailableError("turnEnd");
     }
 
     async softDeleteSession(sessionId: string): Promise<void> {
@@ -2774,9 +2825,9 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<void> {
-        await this.pool.query(
-            `SELECT ${this.sql.fn.completeTurnWriteback}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+    async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.completeTurnWriteback}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) AS has_controls`,
             [
                 input.sessionId,
                 input.agentId,
@@ -2803,6 +2854,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.currentIteration,
             ],
         );
+        // VOID before migration 0082: null, so false.
+        return rows[0]?.has_controls === true;
     }
 
     async getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]> {
@@ -3821,6 +3874,7 @@ function rowToSessionRow(row: any): SessionRow {
         lastError: row.last_error ?? null,
         waitReason: row.wait_reason ?? null,
         activeTurnIndex: row.active_turn_index ?? null,
+        turnHigh: row.turn_high ?? null,
         parentSessionId: row.parent_session_id ?? null,
         isSystem: row.is_system ?? false,
         serviceKind: row.service_kind ?? null,
