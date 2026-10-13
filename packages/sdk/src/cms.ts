@@ -13,7 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 
@@ -1524,6 +1524,10 @@ function sqlForSchema(schema: string) {
             insertTurnMetric:           `${s}.cms_insert_turn_metric`,
             completeTurnWriteback:      `${s}.cms_complete_turn_writeback`,
             setActiveTurnIndex:         `${s}.cms_set_active_turn_index`,
+            turnControlAdd:             `${s}.cms_turn_control_add`,
+            turnStart:                  `${s}.cms_turn_start`,
+            turnLook:                   `${s}.cms_turn_look`,
+            turnEnd:                    `${s}.cms_turn_end`,
             getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
             getSessionTokensByModel:    `${s}.cms_get_session_tokens_by_model`,
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
@@ -1896,21 +1900,62 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    // Session turn control: the procedures arrive with migration 0082.
-    async turnControlAdd(_sessionId: string, _kind: TurnControlKind, _text: string, _requestId: string, _actor: MessageSender | null): Promise<TurnControlAddResult> {
-        throw new TurnControlUnavailableError("turnControlAdd");
+    // ── Session turn control (migration 0082) ───────────────────
+
+    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnControlAdd",
+            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb) AS r`,
+            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null],
+        );
+        const r = rows[0]?.r ?? {};
+        if (r.refused) return { refused: r.refused };
+        return { seq: Number(r.seq), turn: Number(r.turn), ...(r.repeat ? { repeat: true as const } : {}) };
     }
 
-    async turnStart(_sessionId: string, _turn: number): Promise<TurnStartResult> {
-        throw new TurnControlUnavailableError("turnStart");
+    async turnStart(sessionId: string, turn: number): Promise<TurnStartResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnStart",
+            `SELECT ${this.sql.fn.turnStart}($1, $2) AS r`,
+            [sessionId, turn],
+        );
+        const r = rows[0]?.r ?? {};
+        if (r.stale) return { stale: true };
+        return { stopped: r.stopped === true, controls: toTurnControls(r.controls) };
     }
 
-    async turnLook(_turns: TurnLookInput[]): Promise<TurnLookRow[]> {
-        throw new TurnControlUnavailableError("turnLook");
+    async turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]> {
+        if (turns.length === 0) return [];
+        const { rows } = await this.turnControlQuery(
+            "turnLook",
+            `SELECT * FROM ${this.sql.fn.turnLook}($1::jsonb)`,
+            [JSON.stringify(turns.map((t) => ({ session: t.sessionId, turn: t.turn, after: t.after })))],
+        );
+        return rows.map((row: any) => ({ sessionId: row.session_id, turn: Number(row.turn), controls: toTurnControls(row.controls) }));
     }
 
-    async turnEnd(_sessionId: string, _turn: number, _cursor: number, _kind: TurnEndKind, _carried: number[]): Promise<TurnEndResult> {
-        throw new TurnControlUnavailableError("turnEnd");
+    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnEnd",
+            `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`,
+            [sessionId, turn, cursor, kind, carried],
+        );
+        const r = rows[0]?.r ?? {};
+        return {
+            stopped: r.stopped === true,
+            late: Array.isArray(r.late) ? r.late.map((l: any) => ({ seq: Number(l.seq), text: String(l.text ?? "") })) : [],
+        };
+    }
+
+    /** Runs a turn-control procedure; a catalog without migration 0082 reports TurnControlUnavailableError. */
+    private async turnControlQuery(operation: string, text: string, values: unknown[]): Promise<{ rows: any[] }> {
+        try {
+            return await this.pool.query(text, values);
+        } catch (err: any) {
+            // A schema before migration 0082 has no turn-control procedures.
+            if (isUndefinedFunctionError(err)) throw new TurnControlUnavailableError(operation);
+            throw err;
+        }
     }
 
     async softDeleteSession(sessionId: string): Promise<void> {
@@ -2014,7 +2059,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
                 `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
-                    s.context_tier, s.model_resolution_source
+                    s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
@@ -3843,6 +3888,17 @@ export class PgSessionCatalog implements SessionCatalog {
 // ─── Helpers ─────────────────────────────────────────────────────
 
 /** Map a PG row (snake_case) to SessionRow (camelCase). */
+/** Map the JSON controls of the turn-control procedures. */
+function toTurnControls(raw: unknown): TurnControl[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((c: any) => ({
+        seq: Number(c.seq),
+        kind: c.kind === "stop" ? "stop" : "steer",
+        text: String(c.text ?? ""),
+        createdAt: typeof c.createdAt === "string" ? c.createdAt : new Date(c.createdAt).toISOString(),
+    }));
+}
+
 function rowToSessionRow(row: any): SessionRow {
     const owner = row.owner_provider && row.owner_subject
         ? {
