@@ -3,9 +3,11 @@ import { PilotSwarmManagementClient } from "../../src/management-client.js";
 import { stopTurnQueueName } from "../../src/types.js";
 
 /**
- * PilotSwarmManagementClient.stopSessionTurn (moved verbatim from
+ * PilotSwarmManagementClient.stopSessionTurn on a legacy turn (moved from
  * stop-turn.test.js): CMS pre-check, turn-scoped stop queue addressing,
- * command-response polling, timeout.
+ * command-response polling, timeout. The fake catalog answers every Stop
+ * with `legacy_turn`, as for a turn of orchestration 1.0.80 or older; the
+ * turn-control path is covered by turn-control-management.test.js.
  *
  * No live LLM, database, or duroxide runtime required.
  */
@@ -21,8 +23,13 @@ function createMgmtHarness({ row, response } = {}) {
             enqueues.push({ orchestrationId, queue, payload: JSON.parse(payload) });
         },
     };
+    const controls = [];
     mgmt._catalog = {
         getSession: async () => row ?? null,
+        turnControlAdd: async (sessionId, kind, text, requestId) => {
+            controls.push({ sessionId, kind, text, requestId });
+            return { refused: "legacy_turn" };
+        },
     };
     mgmt._assertOrchestrationLive = async () => {};
     mgmt._readJsonValue = async (_sessionId, key) => {
@@ -31,7 +38,7 @@ function createMgmtHarness({ row, response } = {}) {
         }
         return null;
     };
-    return { mgmt, enqueues };
+    return { mgmt, enqueues, controls };
 }
 
 describe("PilotSwarmManagementClient.stopSessionTurn", () => {
@@ -67,6 +74,17 @@ describe("PilotSwarmManagementClient.stopSessionTurn", () => {
 
         expect(result.outcome).toBe("stopped");
         expect(result.turnIndex).toBe(4);
+    });
+
+    it("asks the catalog first and falls back to the legacy path only on legacy_turn", async () => {
+        const { mgmt, enqueues, controls } = createMgmtHarness({
+            row: { sessionId: "s4", state: "running", activeTurnIndex: 2, deletedAt: null },
+            response: { result: { outcome: "stop_forced", turnIndex: 2 } },
+        });
+        const result = await mgmt.stopSessionTurn("s4", { reason: "legacy", requestId: "req-legacy" });
+        expect(controls).toEqual([{ sessionId: "s4", kind: "stop", text: "legacy", requestId: "req-legacy" }]);
+        expect(enqueues.map((e) => e.queue)).toEqual(["stopTurn.2"]);
+        expect(result).toEqual({ outcome: "stop_forced", turnIndex: 2 });
     });
 
     it("times out honestly when no response ever lands (stale-stop window)", async () => {

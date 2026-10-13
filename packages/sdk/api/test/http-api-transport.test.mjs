@@ -81,3 +81,17 @@ test("move/assign alias wrappers return the per-root result array", async () => 
     assert.deepEqual(await transport.moveSessionsToGroup(null, ["a"]), results);
     assert.deepEqual(await transport.assignSessionsToGroup("g1", ["a"]), results);
 });
+
+test("Stop and Steer forward every option, including the request id, unchanged", async () => {
+    const { transport, calls } = createTransport({ responses: [
+        jsonResponse({ ok: true, result: { outcome: "accepted", steerId: 9, turn: 2 } }),
+        jsonResponse({ ok: true, result: { outcome: "stopped", turnIndex: 2, controlSeq: 10 } }),
+    ] });
+    assert.deepEqual(await transport.steerSessionTurn("s1", { text: "go", requestId: "r-1" }), { outcome: "accepted", steerId: 9, turn: 2 });
+    assert.deepEqual(await transport.stopSessionTurn("s1", { requestId: "r-2", reason: "enough", timeoutMs: 5000 }),
+        { outcome: "stopped", turnIndex: 2, controlSeq: 10 });
+    assert.equal(calls[0].url, `https://portal.example.com${API_PREFIX}/management/sessions/s1/steer`);
+    assert.deepEqual(JSON.parse(calls[0].options.body), { options: { text: "go", requestId: "r-1" } });
+    assert.equal(calls[1].url, `https://portal.example.com${API_PREFIX}/management/sessions/s1/stop-turn`);
+    assert.deepEqual(JSON.parse(calls[1].options.body), { options: { requestId: "r-2", reason: "enough", timeoutMs: 5000 } });
+});

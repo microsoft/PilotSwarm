@@ -2288,6 +2288,24 @@ function baseReducer(state, action) {
             };
         }
 
+        case "turnControl/steering": {
+            const enabled = action.enabled === true;
+            if ((state.turnControl?.steeringEnabled === true) === enabled) return state;
+            return { ...state, turnControl: { ...(state.turnControl || { bySessionId: {} }), steeringEnabled: enabled } };
+        }
+
+        // patch keys: steer, stop (request or null), notice (or null).
+        case "turnControl/session": {
+            const sessionId = action.sessionId;
+            if (!sessionId || !action.patch) return state;
+            const bySessionId = { ...(state.turnControl?.bySessionId || {}) };
+            const next = { ...(bySessionId[sessionId] || {}), ...action.patch };
+            for (const key of Object.keys(next)) if (next[key] == null) delete next[key];
+            if (Object.keys(next).length === 0) delete bySessionId[sessionId];
+            else bySessionId[sessionId] = next;
+            return { ...state, turnControl: { steeringEnabled: state.turnControl?.steeringEnabled === true, bySessionId } };
+        }
+
         case "outbox/setSessionItems": {
             const sessionId = action.sessionId;
             if (!sessionId) return state;

@@ -70,6 +70,7 @@ function recordingMgmt(calls) {
         getExecutionHistory: track("getExecutionHistory", []),
         listChildOutcomes: track("listChildOutcomes", []),
         stopSessionTurn: track("stopSessionTurn", { stopped: true }),
+        steerSessionTurn: track("steerSessionTurn", { outcome: "accepted", steerId: 1, turn: 0 }),
         setSessionModel: track("setSessionModel", undefined),
         completeSession: track("completeSession", undefined),
         cancelPendingMessage: track("cancelPendingMessage", undefined),

@@ -268,6 +268,10 @@ export class HttpApiTransport {
         return this.api.call("stopSessionTurn", { sessionId, options });
     }
 
+    async steerSessionTurn(sessionId, options = {}) {
+        return this.api.call("steerSessionTurn", { sessionId, options });
+    }
+
     // ── Messaging ───────────────────────────────────────────────────────
 
     async sendMessage(sessionId, prompt, options = {}) {
