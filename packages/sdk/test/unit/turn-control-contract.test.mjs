@@ -85,30 +85,236 @@ test("1.0.81 forwards carried steers only when there are some", () => {
     assert.equal("carriedSteers" in JSON.parse(wire(proxy.runTurn("work", false, 3)).input), false);
 });
 
-test("legacy and handoff contracts schedule exactly today's descriptors, even when handed carried steers", () => {
-    const ctx = context();
-    const meta = {
-        retryCount: 1, clientMessageIds: ["c1"], snapshot: { turnKey: "k" }, transcriptEpoch: 2,
-        stashedPrompts: ["held"], workspaceNotice: "note", requiredTool: undefined, parentSessionId: null,
+// Literal descriptors produced by the scheduling proxy at b2722575, before
+// any turn-control code, for both prior contracts across normal, epoch-start
+// and workspace turns, bare and with omitted/null/empty optional metadata.
+// The metadata also carries carriedSteers, which the prior contracts ignore.
+const BASELINE_B2722575 = {
+        "legacy/plain/normal/bare": {
+            "type": "activity",
+            "name": "runTurn",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"turnIndex\":5}",
+            "sessionId": "affinity"
+        },
+        "legacy/plain/normal/meta": {
+            "type": "activity",
+            "name": "runTurn",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"}}",
+            "sessionId": "affinity"
+        },
+        "legacy/plain/epoch/bare": {
+            "type": "activity",
+            "name": "runTurn2",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"turnIndex\":5,\"epochStart\":true}",
+            "sessionId": "affinity"
+        },
+        "legacy/plain/epoch/meta": {
+            "type": "activity",
+            "name": "runTurn2",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"bootstrap\":true,\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"},\"epochStart\":true}",
+            "sessionId": "affinity"
+        },
+        "legacy/workspace/normal/bare": {
+            "type": "activity",
+            "name": "runTurn",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"turnIndex\":5}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "legacy/workspace/normal/meta": {
+            "type": "activity",
+            "name": "runTurn",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"}}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "legacy/workspace/epoch/bare": {
+            "type": "activity",
+            "name": "runTurn2",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"turnIndex\":5,\"epochStart\":true}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "legacy/workspace/epoch/meta": {
+            "type": "activity",
+            "name": "runTurn2",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"bootstrap\":true,\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"},\"epochStart\":true}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "agent-handoff-v2/plain/normal/bare": {
+            "type": "activity",
+            "name": "runTurnV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"turnIndex\":5}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.agent-handoff.v2"
+        },
+        "agent-handoff-v2/plain/normal/meta": {
+            "type": "activity",
+            "name": "runTurnV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"}}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.agent-handoff.v2"
+        },
+        "agent-handoff-v2/plain/epoch/bare": {
+            "type": "activity",
+            "name": "runTurnEpochV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"turnIndex\":5,\"epochStart\":true}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.agent-handoff.v2"
+        },
+        "agent-handoff-v2/plain/epoch/meta": {
+            "type": "activity",
+            "name": "runTurnEpochV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"model\":\"m\"},\"bootstrap\":true,\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"},\"epochStart\":true}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.agent-handoff.v2"
+        },
+        "agent-handoff-v2/workspace/normal/bare": {
+            "type": "activity",
+            "name": "runTurnV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"turnIndex\":5}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "agent-handoff-v2/workspace/normal/meta": {
+            "type": "activity",
+            "name": "runTurnV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"}}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "agent-handoff-v2/workspace/epoch/bare": {
+            "type": "activity",
+            "name": "runTurnEpochV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"turnIndex\":5,\"epochStart\":true}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "agent-handoff-v2/workspace/epoch/meta": {
+            "type": "activity",
+            "name": "runTurnEpochV3",
+            "input": "{\"sessionId\":\"s\",\"prompt\":\"work\",\"config\":{\"workspace\":{\"schema\":1,\"root\":\"a\",\"folder\":\"repo-x\"}},\"bootstrap\":true,\"turnIndex\":5,\"nestingLevel\":0,\"retryCount\":0,\"snapshot\":{\"turnKey\":\"k\"},\"epochStart\":true}",
+            "sessionId": "affinity",
+            "tag": "pilotswarm.workspaces.v1"
+        },
+        "manager/legacy/plain": {
+            "status": {
+                "type": "activity",
+                "name": "getSessionStatus",
+                "input": "{\"sessionId\":\"c\"}"
+            },
+            "list": {
+                "type": "activity",
+                "name": "listChildSessions",
+                "input": "{\"parentSessionId\":\"p\"}"
+            },
+            "update": {
+                "type": "activity",
+                "name": "updateCmsState",
+                "input": "{\"sessionId\":\"s\",\"state\":\"error\",\"lastError\":\"boom\",\"waitReason\":null}"
+            }
+        },
+        "manager/legacy/provenance": {
+            "status": {
+                "type": "activity",
+                "name": "getSessionStatusV2",
+                "input": "{\"sessionId\":\"c\"}"
+            },
+            "list": {
+                "type": "activity",
+                "name": "listChildSessionsV2",
+                "input": "{\"parentSessionId\":\"p\"}"
+            },
+            "update": {
+                "type": "activity",
+                "name": "updateCmsState",
+                "input": "{\"sessionId\":\"s\",\"state\":\"error\",\"lastError\":\"boom\",\"waitReason\":null}"
+            }
+        },
+        "manager/agent-handoff-v2/plain": {
+            "status": {
+                "type": "activity",
+                "name": "getSessionStatus",
+                "input": "{\"sessionId\":\"c\"}"
+            },
+            "list": {
+                "type": "activity",
+                "name": "listChildSessions",
+                "input": "{\"parentSessionId\":\"p\"}"
+            },
+            "update": {
+                "type": "activity",
+                "name": "updateCmsState",
+                "input": "{\"sessionId\":\"s\",\"state\":\"error\",\"lastError\":\"boom\",\"waitReason\":null}"
+            }
+        },
+        "manager/agent-handoff-v2/provenance": {
+            "status": {
+                "type": "activity",
+                "name": "getSessionStatusV2",
+                "input": "{\"sessionId\":\"c\"}",
+                "tag": "pilotswarm.agent-handoff.v2"
+            },
+            "list": {
+                "type": "activity",
+                "name": "listChildSessionsV2",
+                "input": "{\"parentSessionId\":\"p\"}",
+                "tag": "pilotswarm.agent-handoff.v2"
+            },
+            "update": {
+                "type": "activity",
+                "name": "updateCmsState",
+                "input": "{\"sessionId\":\"s\",\"state\":\"error\",\"lastError\":\"boom\",\"waitReason\":null}"
+            }
+        }
     };
-    const cases = [
-        [createSessionProxy(ctx, "s", "affinity", { model: "m" }), false, {
-            type: "activity", name: "runTurn", sessionId: "affinity",
-            input: '{"sessionId":"s","prompt":"work","config":{"model":"m"},"turnIndex":5,"retryCount":1,"clientMessageIds":["c1"],"snapshot":{"turnKey":"k"},"transcriptEpoch":2,"stashedPrompts":["held"],"workspaceNotice":"note"}',
-        }],
-        [createSessionProxy(ctx, "s", "affinity", { model: "m" }, "agent-handoff-v2"), false, {
-            type: "activity", name: "runTurnV3", sessionId: "affinity", tag: AGENT_HANDOFF_CAPABILITY,
-            input: '{"sessionId":"s","prompt":"work","config":{"model":"m"},"turnIndex":5,"retryCount":1,"clientMessageIds":["c1"],"snapshot":{"turnKey":"k"},"transcriptEpoch":2,"stashedPrompts":["held"],"workspaceNotice":"note"}',
-        }],
-        [createSessionProxy(ctx, "s", "affinity", { workspace }, "agent-handoff-v2"), true, {
-            type: "activity", name: "runTurnEpochV3", sessionId: "affinity", tag: WORKSPACE_CAPABILITY,
-            input: '{"sessionId":"s","prompt":"work","config":{"workspace":{"schema":1,"root":"a","folder":"repo-x"}},"turnIndex":5,"retryCount":1,"clientMessageIds":["c1"],"snapshot":{"turnKey":"k"},"transcriptEpoch":2,"epochStart":true,"stashedPrompts":["held"],"workspaceNotice":"note"}',
-        }],
-    ];
-    for (const [proxy, epochStart, expected] of cases) {
-        const task = proxy.runTurn("work", false, 5, { ...meta, ...(epochStart ? { epochStart: true } : {}), carriedSteers: carried });
-        assert.deepEqual(wire(task), expected);
+
+const baselineMeta = {
+    retryCount: 0, clientMessageIds: [], parentSessionId: null, nestingLevel: 0, requiredTool: undefined,
+    snapshot: { turnKey: "k" }, transcriptEpoch: 0, stashedPrompts: [], workspaceRevision: 0, workspaceNotice: "",
+    sender: null, carriedSteers: carried,
+};
+
+test("legacy and handoff contracts schedule exactly the b2722575 descriptors, even when handed carried steers", () => {
+    const ctx = new OrchestrationContext({ instanceId: "session-s", executionId: "1", orchestrationName: "durable-session-v2", orchestrationVersion: "1.0.80" });
+    let compared = 0;
+    for (const contract of [undefined, "agent-handoff-v2"]) {
+        for (const [cfgName, cfg] of [["plain", { model: "m" }], ["workspace", { workspace }]]) {
+            for (const epoch of [false, true]) {
+                const proxy = createSessionProxy(ctx, "s", "affinity", cfg, contract);
+                const key = `${contract ?? "legacy"}/${cfgName}/${epoch ? "epoch" : "normal"}`;
+                assert.deepEqual(wire(proxy.runTurn("work", false, 5, epoch ? { epochStart: true } : undefined)), BASELINE_B2722575[`${key}/bare`], `${key}/bare`);
+                assert.deepEqual(wire(proxy.runTurn("work", epoch, 5, { ...baselineMeta, ...(epoch ? { epochStart: true } : {}) })), BASELINE_B2722575[`${key}/meta`], `${key}/meta`);
+                compared += 2;
+            }
+        }
     }
+    for (const contract of [undefined, "agent-handoff-v2"]) {
+        for (const provenance of [false, true]) {
+            const manager = createSessionManagerProxy(ctx, contract, provenance ? { childResultProvenance: true } : undefined);
+            const key = `manager/${contract ?? "legacy"}/${provenance ? "provenance" : "plain"}`;
+            assert.deepEqual({
+                status: wire(manager.getSessionStatus("c")),
+                list: wire(manager.listChildSessions("p")),
+                update: wire(manager.updateCmsState("s", "error", "boom", null)),
+            }, BASELINE_B2722575[key], key);
+            compared += 1;
+        }
+    }
+    assert.equal(compared, Object.keys(BASELINE_B2722575).length);
+});
+
+test("under turn-control-v1 status and child-list provenance keep the handoff names and tag", () => {
+    const manager = createSessionManagerProxy(context(), "turn-control-v1", { childResultProvenance: true });
+    assert.deepEqual(wire(manager.getSessionStatus("c")), {
+        type: "activity", name: "getSessionStatusV2", input: '{"sessionId":"c"}', tag: AGENT_HANDOFF_CAPABILITY,
+    });
+    assert.deepEqual(wire(manager.listChildSessions("p")), {
+        type: "activity", name: "listChildSessionsV2", input: '{"parentSessionId":"p"}', tag: AGENT_HANDOFF_CAPABILITY,
+    });
+    const plain = createSessionManagerProxy(context(), "turn-control-v1");
+    assert.deepEqual(wire(plain.getSessionStatus("c")), { type: "activity", name: "getSessionStatus", input: '{"sessionId":"c"}' });
 });
 
 test("under turn-control-v1 every other routed activity keeps the handoff names and tag", () => {

@@ -1812,7 +1812,11 @@ export type TurnControlAddResult =
 /** Answer of turn start (T3). */
 export type TurnStartResult =
     | { stale: true }
-    | { stopped: boolean; controls: TurnControl[] };
+    | {
+        /** A stopped outcome was already recorded. Open Stops remain in controls. */
+        stopped: boolean;
+        controls: TurnControl[];
+    };
 
 /** One running turn of the worker's batched look. */
 export interface TurnLookInput {

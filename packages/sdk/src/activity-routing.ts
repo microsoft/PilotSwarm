@@ -70,6 +70,10 @@ export const TURN_CONTROL_ACTIVITY_NAMES = {
     runTurn2: "runTurnEpochV4",
 } as const;
 
+/**
+ * Route a V4 turn with only the turn-control capability tag. Fail closed
+ * when the runtime cannot express that tag; never schedule an untagged turn.
+ */
 export function routeTurnControlActivity(task: any): any {
     if (typeof task.withTag !== "function") {
         throw new Error("Session turn control requires Duroxide activity tag routing support");

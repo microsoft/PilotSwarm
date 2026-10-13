@@ -1183,7 +1183,8 @@ export interface SessionCatalog {
     /**
      * Worker T8: give every open control one outcome from the saved cursor,
      * and close the carried steers folded into this turn (`carried`) as ran
-     * or stopped. Idempotent.
+     * or stopped unless `kind` is error. An error leaves them open for retry.
+     * Redelivery passes the same carried seqs; closing is idempotent.
      */
     turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
 
