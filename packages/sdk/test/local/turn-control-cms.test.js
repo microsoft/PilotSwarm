@@ -10,11 +10,10 @@
 import { describe, it, beforeAll, afterAll, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { DATABASE_URL, TEST_SCHEMA_PREFIX } from "../helpers/local-env.js";
 import { PgSessionCatalogProvider } from "../../src/index.ts";
 
 const TIMEOUT = 120_000;
-const getEnv = useSuiteEnv(import.meta.url);
 
 let env;
 let catalog;
@@ -64,8 +63,9 @@ function writebackInput(sessionId, turnIndex, extra = {}) {
 const steer = (s, text = "guidance", requestId = rid()) => catalog.turnControlAdd(s, "steer", text, requestId, { kind: "user", provider: "dev", subject: "alice" });
 const stop = (s, reason = "Stopped by user", requestId = rid()) => catalog.turnControlAdd(s, "stop", reason, requestId, null);
 
+// One schema for the whole file (the suite env resets its schemas after each test).
 beforeAll(async () => {
-    env = getEnv();
+    env = { store: DATABASE_URL, cmsSchema: `${TEST_SCHEMA_PREFIX}_turn_control_cms_${randomUUID().replaceAll("-", "").slice(0, 12)}` };
     catalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);
     await catalog.initialize();
     pool = new pg.Pool({ connectionString: env.store, max: 4 });
@@ -73,6 +73,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
     await catalog?.close();
+    await pool?.query(`DROP SCHEMA IF EXISTS "${env.cmsSchema}" CASCADE`).catch(() => {});
     await pool?.end();
 });
 
