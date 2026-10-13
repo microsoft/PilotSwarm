@@ -16,6 +16,7 @@ import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readTurnCommitFile } from "../../src/snapshot-protocol.ts";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
+import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 
 const roots = [];
 afterEach(() => {
@@ -310,5 +311,53 @@ describe("runTurnV3 is unchanged", () => {
         expect(h.session.runTurn.mock.calls[0][0]).toBe("go");
         expect(h.session.runTurn.mock.calls[0][1].turnControl).toBeUndefined();
         expect(result.carriedSteersConsumed).toBeUndefined();
+    });
+});
+
+describe("runTurnV4: workspace sessions report the attach on every result", () => {
+    function workspaceHarness(v4, turn, { refuse = false } = {}) {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-tc-ws-"));
+        roots.push(root);
+        fs.mkdirSync(path.join(root, "repo"), { recursive: true });
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        if (refuse) provider.script({ type: "fail", code: "WORKSPACE_IN_USE", message: "held elsewhere" });
+        return makeRunTurnHarness({
+            catalogExtras: v4.extras,
+            workspaceProvider: provider,
+            managerExtras: { holdWorkspaceFolders: vi.fn(), noteWorkspaceAttached: vi.fn() },
+            ...(turn ? { turn } : {}),
+        });
+    }
+    const workspaceInput = (extra = {}) => ({ turnIndex: 3, workspaceRevision: 1, config: { workspace: { schema: 1, root: "a", folder: "repo" } }, ...extra });
+
+    it("a Stop applied at turn start", async () => {
+        const v4 = turnControlCatalog({ start: { stopped: false, controls: [control(9, "stop")] }, end: { stopped: true, late: [] } });
+        const h = workspaceHarness(v4);
+        const result = await h.runTurn("s", workspaceInput(), "runTurnV4");
+        expect(result).toMatchObject({ type: "stopped", workspaceAttached: true });
+        expect(h.session.runTurn).not.toHaveBeenCalled();
+    });
+
+    it("a carried-steers-only turn", async () => {
+        const v4 = turnControlCatalog({ writeback: false });
+        const h = workspaceHarness(v4);
+        const result = await h.runTurn("s", workspaceInput({ prompt: CARRIED_STEERS_WAKE_PROMPT, carriedSteers: [{ seq: 5, text: "carried" }] }), "runTurnV4");
+        expect(result).toMatchObject({ type: "completed", workspaceAttached: true, carriedSteersConsumed: true });
+    });
+
+    it("a turn the workspace gate refuses never starts: no turn start, no turn end", async () => {
+        const v4 = turnControlCatalog();
+        const h = workspaceHarness(v4, undefined, { refuse: true });
+        const result = await h.runTurn("s", workspaceInput(), "runTurnV4");
+        expect(result).toMatchObject({ type: "wait", gate: "workspace" });
+        expect(v4.calls).toEqual([]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
+    });
+
+    it("a turn that ends stopped", async () => {
+        const v4 = turnControlCatalog({ writeback: true, end: { stopped: true, late: [] } });
+        const h = workspaceHarness(v4, async () => ({ type: "completed", content: "done" }));
+        const result = await h.runTurn("s", workspaceInput(), "runTurnV4");
+        expect(result).toMatchObject({ type: "stopped", workspaceAttached: true });
     });
 });
