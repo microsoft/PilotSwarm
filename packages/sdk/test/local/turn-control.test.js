@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import { execFileSync } from "node:child_process";
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
@@ -132,7 +133,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
         await withTurnControl(async ({ client, catalog }) => {
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send("Use the bash tool once to run `sleep 60 && echo never`. Then reply with one short sentence.");
+            await session.send("Use the bash tool once, in the foreground, to run `for i in 1 2 3 4 5 6; do echo working $i; sleep 10; done`. Then reply with one short sentence.");
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
             const added = await stop(catalog, sid);
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "stop"), "stopped");
@@ -147,7 +148,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
         await withTurnControl(async ({ client, catalog }) => {
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send("Use the bash tool once to run `sleep 60 && echo never`. Then reply with one short sentence.");
+            await session.send("Use the bash tool once, in the foreground, to run `for i in 1 2 3 4 5 6; do echo working $i; sleep 10; done`. Then reply with one short sentence.");
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
             const pending = await steer(catalog, sid, "Mention KIWI in your reply.");
             const added = await stop(catalog, sid);
@@ -156,6 +157,79 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
             assertEqual(await awaitOutcome(catalog, sid, pending.seq, "pending steer"), "not_delivered");
             await until(async () => (await catalog.getSession(sid))?.state === "idle", "the session is idle", REPLY_TIMEOUT);
             assertEqual((await events(catalog, sid, "session.turn_started")).length, 1, "the turn was not retried");
+        });
+    });
+
+    it("a Stop after a steer moved a long shell to the background ends the turn within 2 s and stops the shell", { timeout: TIMEOUT }, async () => {
+        await withTurnControl(async ({ client, catalog }) => {
+            const marker = `tcbg${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+            const alive = () => {
+                try { return execFileSync("pgrep", ["-f", marker], { encoding: "utf8" }).trim().length > 0; } catch { return false; }
+            };
+            const session = await client.createSession();
+            const sid = session.sessionId;
+            await session.send(`Use the bash tool once, in the foreground (not in the background), to run \`for i in 1 2 3 4 5 6; do echo ${marker} $i; sleep 10; done\`. Then reply with one short sentence.`);
+            await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            const steered = await steer(catalog, sid, "Also mention the word KIWI in your reply.");
+            // The CLI takes an immediate message during a sync shell by moving
+            // the shell to the background; the model then answers while the
+            // shell keeps running and the turn stays open.
+            await until(async () => (await events(catalog, sid, EV.steerConfirmed)).some((e) => e.data.seq === steered.seq), "the steer was confirmed", REPLY_TIMEOUT);
+            const confirmedAt = Math.max(...(await events(catalog, sid, EV.steerConfirmed)).map((e) => e.seq));
+            await until(async () => (await events(catalog, sid, "assistant.message")).some((e) => e.seq > confirmedAt), "the model answered after the steer", REPLY_TIMEOUT);
+            assert(alive(), "the backgrounded shell is still running");
+            assertEqual((await catalog.getSession(sid))?.state, "running", "the turn is still open");
+
+            const stoppedAt = Date.now();
+            const added = await stop(catalog, sid);
+            assertEqual(await awaitOutcome(catalog, sid, added.seq, "stop with a background shell"), "stopped");
+            const ms = Date.now() - stoppedAt;
+            console.log(`  stop with a background shell: outcome after ${ms} ms`);
+            assert(ms <= 2_000, `the Stop ended the turn within 2 s (${ms} ms)`);
+            await until(() => !alive(), "the shell is gone", 5_000);
+
+            // The warm session is usable at once: the next prompt runs and
+            // answers normally, without a busy error and without a new hydrate.
+            await until(async () => (await catalog.getSession(sid))?.state === "idle", "the session is idle", REPLY_TIMEOUT);
+            const hydratedBefore = (await events(catalog, sid, "session.hydrated")).length;
+            const next = await session.sendAndWait("Reply with the single word NEXT.", REPLY_TIMEOUT);
+            assert(typeof next === "string" && next.trim().length > 0, `the next turn answered (${next})`);
+            assert(!/busy|already processing/i.test(next), `no busy error (${next})`);
+            assertEqual((await events(catalog, sid, "session.hydrated")).length, hydratedBefore, "no extra hydrate");
+            assertEqual((await catalog.getSession(sid))?.state, "idle", "the session is idle after the next turn");
+        });
+    });
+
+    it("a Stop ends the commands the stopped turn started, not a background command from an earlier turn", { timeout: TIMEOUT }, async () => {
+        await withTurnControl(async ({ client, catalog }) => {
+            const tag = randomUUID().replaceAll("-", "").slice(0, 10);
+            const earlier = `tcearly${tag}`;
+            const current = `tcnow${tag}`;
+            const alive = (marker) => {
+                try { return execFileSync("pgrep", ["-f", marker], { encoding: "utf8" }).trim().length > 0; } catch { return false; }
+            };
+            try {
+                const session = await client.createSession();
+                const sid = session.sessionId;
+                await session.sendAndWait(`Call the bash tool exactly once with mode "async" and detach true to start \`sleep 300; echo ${earlier}\`. Do not wait for it. Then reply with the single word STARTED.`, REPLY_TIMEOUT);
+                await until(() => alive(earlier), "turn 1 left a background command running", 15_000);
+
+                await session.send(`Use the bash tool once, in the foreground (not in the background), to run \`for i in 1 2 3 4 5 6; do echo ${current} $i; sleep 10; done\`. Then reply with one short sentence.`);
+                await until(() => alive(current), "turn 2 started its command", REPLY_TIMEOUT);
+                const steered = await steer(catalog, sid, "Also mention the word KIWI in your reply.");
+                await until(async () => (await events(catalog, sid, EV.steerConfirmed)).some((e) => e.data.seq === steered.seq), "the steer was confirmed", REPLY_TIMEOUT);
+
+                const stoppedAt = Date.now();
+                const added = await stop(catalog, sid);
+                assertEqual(await awaitOutcome(catalog, sid, added.seq, "stop of turn 2"), "stopped");
+                const ms = Date.now() - stoppedAt;
+                assert(ms <= 2_000, `the Stop ended turn 2 within 2 s (${ms} ms)`);
+                await until(() => !alive(current), "turn 2's command is gone", 5_000);
+                assert(alive(earlier), "turn 1's background command still runs");
+            } finally {
+                try { execFileSync("pkill", ["-f", earlier]); } catch {}
+                try { execFileSync("pkill", ["-f", current]); } catch {}
+            }
         });
     });
 

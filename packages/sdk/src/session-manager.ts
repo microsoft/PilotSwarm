@@ -605,6 +605,9 @@ const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
  */
 const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
 
+/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind. */
+const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
+
 function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -1738,7 +1741,7 @@ export class SessionManager {
      */
     async abortWarmSessionTurn(
         sessionId: string,
-        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number },
+        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number; cancelTurnTasks?: boolean },
     ): Promise<AbortTurnResult> {
         const managed = this.sessions.get(sessionId);
         if (!managed) {
@@ -1768,6 +1771,23 @@ export class SessionManager {
             // Abort RPC failure is non-fatal: the force-settle escalation below
             // still unwinds the turn.
             void err;
+        }
+
+        // Session turn control (V4 Stop): stop the background tasks this turn
+        // started. A shell the CLI moved to the background keeps the turn open
+        // (no session.idle) and survives the abort; tasks of earlier turns are
+        // kept. Bounded and never throws: the grace wait below is the backstop.
+        if (opts.cancelTurnTasks) {
+            try {
+                const cancelled = await withWorkspaceDeadline(
+                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedSince: active.startedAt }),
+                    "stop task cancel",
+                    STOP_TASK_CANCEL_DEADLINE_MS,
+                );
+                if (cancelled > 0) emitSessionManagerTrace(sessionId, `stop cancelled ${cancelled} background task(s) of turn ${active.turnIndex}`);
+            } catch (error: unknown) {
+                emitSessionManagerTrace(sessionId, `stop could not cancel the turn's background tasks: ${normalizeError(error).message}`, { level: "warn" });
+            }
         }
 
         const graceMs = opts.unwindGraceMs ?? 8_000;

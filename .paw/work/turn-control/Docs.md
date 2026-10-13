@@ -277,6 +277,35 @@ hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
 - **A stale worker skips T8 when no controls are open** (P15): its
   T6 writeback finds no open controls after the winner's T8. The outcome
   equals design 3.9, where both workers call T8.
+- **A steer during a foreground shell.** With `mode: "immediate"`, Copilot
+  CLI 1.0.83 moves a running foreground shell to the background so the steer
+  reaches the model at once (confirmed in about 40 ms). The shell's result is
+  still owed to the model, so the turn stays open (no `session.idle`) until
+  the shell ends, and the model may answer again then. This is CLI behaviour;
+  turn control does not change it.
+- **Stop ends the commands the stopped turn started, not earlier ones.** A
+  V4 Stop aborts the run and then cancels the background tasks the CLI
+  reports as started at or after the stopped turn's start
+  (`abortWarmSessionTurn(..., { cancelTurnTasks: true })`, using
+  `cancelBackgroundTasks({ startedSince })`, which falls back to killing the
+  shell's process tree because `tasks.cancel` answers `cancelled: false`
+  after an abort). Without this, a Stop of a turn held open by a
+  steer-backgrounded shell waited out the 8 s unwind grace (found by the UX
+  pass: 8.1 s). A task without a readable `startedAt` is kept: nothing is
+  killed on missing data. A server or watcher started in an earlier turn
+  keeps running. The cancel is bounded (1.5 s) and never fails the Stop; the
+  8 s grace stays as the backstop. The legacy (1.0.80) Stop and the turn
+  timeout are unchanged.
+- **Stop settles on an aborted `assistant.idle`.** After an abort in that
+  state, CLI 1.0.83 sends `assistant.idle { aborted: true }` and no
+  `session.idle`, even once the shell is gone. After our own Stop of a
+  turn-control run, that event settles the turn as stopped (the legacy Stop
+  still waits for `session.idle`). Measured with the real CLI: 204 ms
+  instead of 8.3 s. The warm session stays in use: the next prompt answers
+  normally without a new hydrate (tested). A `session.idle` of the settled
+  run that arrives later is ignored by the next run until that run's own
+  `user.message` or `assistant.turn_start`; one arriving after those would
+  still settle the next run early (not observed with CLI 1.0.83).
 - **A throw after the commit (found by the integration run).** `runTurn`
   has no activity retry policy, so a throw reaches the orchestration, which
   retries the turn. Before the fix the retry drew a new snapshot `turnKey`;
