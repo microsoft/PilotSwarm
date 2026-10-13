@@ -113,6 +113,24 @@ test("loadEnv does NOT cascade values from template.env", () => {
   }
 });
 
+test("a process variable can configure the optional image-build registry", () => {
+  cleanup();
+  const before = process.env.NPM_REGISTRY;
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n", "utf8");
+    process.env.NPM_REGISTRY = "https://registry.example.test/npm/";
+
+    const { env } = loadEnv(TEST_NAME);
+
+    assert.equal(env.NPM_REGISTRY, process.env.NPM_REGISTRY);
+  } finally {
+    if (before === undefined) delete process.env.NPM_REGISTRY;
+    else process.env.NPM_REGISTRY = before;
+    cleanup();
+  }
+});
+
 test("old local env accepts a process override for newly introduced database keys", () => {
   cleanup();
   const keys = ["DEPLOY_POSTGRES", "DATABASE_URL_SECRET_NAME", "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY", ...DATABASE_URL_KEYS];
