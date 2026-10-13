@@ -76,7 +76,9 @@ turn control on. The order of the turn-control steps:
    model run; registering triggers one look for it.
 7. **T6 writeback** (`cms_complete_turn_writeback`, now returning whether
    controls are open). The result is three-valued (P15): `true`, `false`, or
-   `undefined` when the best-effort write failed. Only `false` skips T8.
+   `undefined` when the best-effort write failed. Only `false` skips T8. It
+   updates the session state only when no newer turn has started
+   (`turn_high <= p_turn_index`); the metrics are always recorded.
 8. **T7 save.** The turn commit file saves `controlCursor` only when the
    cursor is not 0. When a racing attempt already saved the turn, this
    attempt adopts the winner's result and cursor. An unpublished save
@@ -192,9 +194,9 @@ send the text as an ordinary message with a new client message id.
 | Component | Role |
 |---|---|
 | `TurnControlHub` (`turn-control.ts`) | Worker-owned LISTEN connection and registry of running turns. One connection attempt at a time per start..stop span (generation counter); `stop()` ends a client that is still connecting; concurrent `start()` calls share one claim. Reconnects with backoff (1 s to 15 s) and looks once after a reconnect. Injectable timers. |
-| `LiveTurnControl` (`turn-control.ts`) | One turn's bookkeeping: `sent` (taken from the CMS), `cursor` (confirmed). One position-ordered queue; `retire()` drops it and ignores late confirmations and failures. |
+| `LiveTurnControl` (`turn-control.ts`) | One turn's bookkeeping: `sent` (taken from the CMS), `cursor` (confirmed). One position-ordered queue, drained only while the gate is open. A Stop applies at once when the gate is open (closes the gate, drops queued steers, aborts), also while an earlier send is open; at gate opening a held Stop goes before held steers. `retire()` drops the queue and ignores late confirmations and failures. |
 | `TurnControlBinding` / `TurnControlSessionPort` | The run-bound interface between the live loop and `ManagedSession`: `attach(port)`, `heldStop()`, `gateOpened()`, `detach()`; the port's `gate()`, `close()`, `sendSteer()`, `failTurn()` are bound to one model run. |
-| `ManagedSession` send gate | `pending` until the initial send, `open` during the run, `closed` on Stop, abort, forced settle, either turn guard (wall-clock timeout, inactivity watchdog), any error unwind, and before `session.idle` observers run. An unconfirmed steer delays settlement until its confirmation and a later idle. |
+| `ManagedSession` send gate | `pending` until the initial send (or a corrective prompt) is sent, `open` during the run, `closed` on Stop, abort, forced settle, either turn guard (wall-clock timeout, inactivity watchdog), any error unwind, and before `session.idle` observers run; controls wait while it is not open. An unconfirmed steer delays settlement until its confirmation and a later idle. Corrective runs (tool-call-as-text, required tool) use the same gate and one settle pointer; no corrective prompt is sent after an applied or held Stop. |
 
 ### Configuration options
 
@@ -274,7 +276,9 @@ hand-run measurement at `packages/sdk/test/perf/turn-control-look-cost.mjs`:
   newer turn. This comes from per-turn scoping and idempotency, not from an
   explicit `turn_high` check: it only closes that turn's open controls,
   clears `active_turn_index` only when it still equals that turn, and skips
-  carried steers that are already closed.
+  carried steers that are already closed. The end-of-turn write (T6) is
+  fenced by `turn_high`: a late T6 of an older turn records its metrics and
+  leaves a newer started turn running and open to controls.
 - **A stale worker skips T8 when no controls are open** (P15): its
   T6 writeback finds no open controls after the winner's T8. The outcome
   equals design 3.9, where both workers call T8.
