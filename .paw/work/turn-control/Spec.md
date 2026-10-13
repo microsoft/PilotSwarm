@@ -1,16 +1,17 @@
 # Feature Specification: Session Turn Control (Stop and Steer)
 
-**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r7, after planning-docs review cycle 2)  |  **Status**: Draft
+**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r8, owner plan approval: amendment S1, workspace-lease guards, deltas approved)  |  **Status**: Draft
 **Input Brief**: Let a user stop a running agent turn within about a second, or steer it with guidance the model receives inside the same turn, without losing, doubling or hiding any request across crashes.
 
 Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected, except for the design deltas below; the parent records them in design revision 6.
 
-Design deltas (D6 owner-approved; the rest proposed, approved with the plan) (the plan's decision IDs in brackets):
+Design deltas (all owner-approved on 2026-10-13: D6 directly, the rest with the plan) (the plan's decision IDs in brackets):
 - D6 (owner): a carried steer whose consuming turn ends "stopped" is not run again (US-3.5).
 - Carried steers leave the orchestration only when a turn actually used them, not merely when it passed its gates, because a provider-admission error is returned before the gates; they follow the prompt they were folded into, so a returned-error retry folds them again [P12].
-- Each carried steer gets at most one closing record (ran, stopped, gave up, terminal), written idempotently before the orchestration forgets it; clients use it for the label, and a session ended from outside (no record) shows "Carried, not run" [P17].
+- Each carried steer gets at most one closing record (ran, stopped, gave up, terminal), written inside writes that already happen: the consuming turn's end for ran and stopped, the session-state write for gave up and terminal, and a revive for the old lifetime; clients use it for the label [P17].
 - The highest started turn, and the control events that turn start and turn end read, are scoped to one orchestration lifetime, because a restarted or revived session counts turns from zero again; this adds a second session column, a lifetime base position [P19].
 - Any terminal session state closes open controls, whoever writes it [P20].
+- Turn control does not change workspace attach or release; every result of a turn that attached the workspace reports it, including a Stop applied before the model ran [A4].
 - The model run accepts controls only after its initial prompt is sent; earlier controls wait; registering a running turn triggers one look [P21].
 - New-version Stop shows one transcript item, the Stop line, without the old "Turn stopped by user." message [P22].
 - Steer confirmation is recorded as a session event outside the transcript [P13].
