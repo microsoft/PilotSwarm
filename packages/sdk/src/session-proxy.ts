@@ -4170,17 +4170,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     start = Math.max(start, ...openSteers.map((c) => c.seq));
                 }
                 tc.startCursor = start;
-                const liveSession = () => session as any;
                 tc.live = new LiveTurnControl({
                     sessionId: input.sessionId,
                     turn: tc.turn,
                     start,
-                    port: {
-                        steerGateState: () => liveSession()?.steerGateState?.() ?? "none",
-                        closeSteerGate: () => liveSession()?.closeSteerGate?.(),
-                        sendSteer: (text, onConfirmed) => liveSession().sendSteer(text, onConfirmed),
-                        failTurn: (err) => liveSession()?.failTurn?.(err),
-                    },
                     abort: (reason) => sessionManager.abortWarmSessionTurn(input.sessionId, {
                         reason,
                         ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
@@ -4190,7 +4183,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     },
                     trace: (message) => activityCtx.traceInfo(message),
                 });
-                sessionManager.getTurnControlHub?.()?.register(tc.live);
+                void sessionManager.getTurnControlHub?.()?.register(tc.live);
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
@@ -4549,7 +4542,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // long enough to deliver the final latest-value snapshot.
             }
 
-            if (tc?.live) sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            if (tc?.live) {
+                tc.live.retire();
+                sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            }
             if (cancelled) return { type: "cancelled" };
             if (tc) await faultPointAsync("turn.control.before-writeback", { sessionId: input.sessionId });
 
@@ -4823,6 +4819,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
         } finally {
+            if (tc?.live) {
+                tc.live.retire();
+                sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            }
             if (turnTelemetry.modelSummary) {
                 turnSpan.setAttribute("pilotswarm.model_summary", turnTelemetry.modelSummary);
             }

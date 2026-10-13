@@ -48,19 +48,25 @@ function turnControlCatalog({ start = { stopped: false, controls: [] }, writebac
     return { calls, extras };
 }
 
-/** A model session that has a send gate, like ManagedSession with turn control. */
+/**
+ * A model session that has a send gate, like ManagedSession with turn control:
+ * the run attaches its port to the binding, opens the gate after the initial
+ * send and detaches when it ends.
+ */
 function steeringSession() {
-    let gate = "none";
+    let gate = "pending";
     const sent = [];
+    const port = {
+        gate: () => gate,
+        close: () => { gate = "closed"; },
+        sendSteer: async (text, onConfirmed) => { sent.push(text); onConfirmed(`m-${sent.length}`); },
+        failTurn: () => {},
+    };
     return {
         sent,
-        setGate: (state) => { gate = state; },
-        extras: {
-            steerGateState: () => gate,
-            closeSteerGate: () => { gate = "closed"; },
-            sendSteer: async (text, onConfirmed) => { sent.push(text); onConfirmed(`m-${sent.length}`); },
-            failTurn: () => {},
-        },
+        extras: {},
+        open(binding) { binding.attach(port); gate = "open"; binding.gateOpened(); },
+        close(binding) { gate = "closed"; binding.detach(); },
     };
 }
 
@@ -169,9 +175,9 @@ describe("runTurnV4: turn control around the model run", () => {
             catalogExtras: v4.extras, sessionExtras: s.extras, sessionStore: store, sessionStateDir,
             turn: async (opts) => {
                 makeSessionLayout(sessionStateDir, sessionId);
-                s.setGate("open");
+                s.open(opts.turnControl);
                 await opts.turnControl.enqueue([control(31, "steer", "use the v2 API")]);
-                s.setGate("closed");
+                s.close(opts.turnControl);
                 return { type: "completed", content: "ok" };
             },
         });
@@ -193,9 +199,9 @@ describe("runTurnV4: turn control around the model run", () => {
             catalogExtras: v4.extras, sessionExtras: s.extras, sessionStore: store, sessionStateDir,
             turn: async (opts) => {
                 makeSessionLayout(sessionStateDir, sessionId);
-                s.setGate("open");
+                s.open(opts.turnControl);
                 await opts.turnControl.enqueue([control(31, "steer")]);
-                s.setGate("closed");
+                s.close(opts.turnControl);
                 return { type: "completed", content: "saved answer" };
             },
         });
@@ -214,9 +220,9 @@ describe("runTurnV4: turn control around the model run", () => {
         const h = makeRunTurnHarness({
             catalogExtras: v4.extras, sessionExtras: s.extras,
             turn: async (opts) => {
-                s.setGate("open");
+                s.open(opts.turnControl);
                 await opts.turnControl.enqueue([control(31, "steer")]);
-                s.setGate("closed");
+                s.close(opts.turnControl);
                 return { type: "stopped", reason: "Stopped by user" };
             },
         });
