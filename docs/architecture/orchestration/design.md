@@ -207,7 +207,7 @@ picks one of the dequeue modes below:
 | Mode | When | Behavior |
 |---|---|---|
 | **legacy carry-forward** | `state.legacyPendingMessage !== undefined` | replay one already-dequeued message from a pre-v1.0.32 input |
-| **carried guidance** | carry exists, no unanswered question, pending shutdown, or gate wait | pending work takes priority; otherwise a non-blocking dequeue selects a queued message or an internal carried-only wake |
+| **carried guidance** | carry exists and there is no unanswered question, pending shutdown, or gate wait | pending work takes priority; otherwise a non-blocking dequeue selects a queued message or an internal carried-only wake |
 | **active-timer race** | `activeTimer` set, OR pending child digest waiting to ripen | `race(dequeueEvent, scheduleTimer(remainingMs))`. Timer-side wins push a `{kind:"timer", timer, firedAtMs}` into the stash |
 | **blocking dequeue** | nothing else to do (no timer, no FIFO, no pending prompt/tool actions) | `dequeueEvent` blocks; only allowed on the first drain iteration |
 | **non-blocking dequeue** | otherwise | `race(dequeueEvent, scheduleTimer(NON_BLOCKING_TIMER_MS=10ms))`; timer-side breaks the loop |

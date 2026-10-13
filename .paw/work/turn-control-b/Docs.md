@@ -52,7 +52,8 @@ There is no carried-steer closing activity or yield.
 | Creation-policy rejection or worker-managed-agent rejection | Existing startup state write before any turn can open controls. |
 | Persisted connection-loss recovery | The prompt is retried through continue-as-new, not abandoned. Keep carry. |
 | Budget/workspace refusal | The prompt and guidance remain pending in the gate stash and carry; no give-up close. |
-| Stale turn start (`cancelled` result) | Only a trace: the turn's prompt is not retried and no state is written. Carried guidance is kept and runs in the next wake turn. |
+| Stale turn start | The worker throws before the model runs. The generic retry path keeps the carry for each retry; when the retries are exhausted, its give-up write closes it with `closeControls: true`. |
+| Activity cancellation (`cancelled` result) | Only a trace: no state is written and the prompt is not retried. Carried guidance is kept and runs in the next wake turn. |
 | Prompt dropped by a cancel tombstone or as a duplicate client message id | A session event records the drop; no state write. The user asked for it or already sent the prompt. |
 | Regeneration archive/distill failure | The regeneration request is refused or falls back; queued work is retained, not abandoned. |
 | Epoch-boundary commit or invalid cron computation failure | These remain execution failures, not successful give-up returns; do not silently consume carried guidance. |
@@ -89,7 +90,10 @@ mid-turn close as stopped; an unrelated later Stop adds no closing record;
 admission errors, a budget wait and a thrown attempt retain guidance until a
 later consuming index; returned errors fold guidance again; real-CLI retries
 never see the wake marker; give-up closes once in SQL; and frozen 1.0.80 still
-uses its event Stop path.
+uses its event Stop path. After the reviewer's exact hardening patch (a unique
+turn-stopped event, exact cron status, exact stopped consumption, a
+deterministic no-rerun follow-up turn and no wake-marker user message), the
+same nine scenarios pass again.
 
 The model-selection and bound-agent-backfill live cases cannot be verified here
 with a usable `gpt-5.4` provider. Their exact environment-only baseline failures
