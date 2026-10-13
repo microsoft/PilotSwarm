@@ -13,9 +13,10 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
+import type { TurnControlListenClient } from "./turn-control.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1187,6 +1188,12 @@ export interface SessionCatalog {
      * Redelivery passes the same carried seqs; closing is idempotent.
      */
     turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+    /**
+     * A dedicated LISTEN connection for the worker's turn-control hub, reached
+     * the way this catalog reaches its database. Optional: without it the hub
+     * runs on its periodic look only.
+     */
+    createTurnControlListener?(): Promise<TurnControlListenClient>;
 
     /** Soft-delete a session (set deleted_at). */
     softDeleteSession(sessionId: string): Promise<void>;
@@ -1524,6 +1531,10 @@ function sqlForSchema(schema: string) {
             insertTurnMetric:           `${s}.cms_insert_turn_metric`,
             completeTurnWriteback:      `${s}.cms_complete_turn_writeback`,
             setActiveTurnIndex:         `${s}.cms_set_active_turn_index`,
+            turnControlAdd:             `${s}.cms_turn_control_add`,
+            turnStart:                  `${s}.cms_turn_start`,
+            turnLook:                   `${s}.cms_turn_look`,
+            turnEnd:                    `${s}.cms_turn_end`,
             getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
             getSessionTokensByModel:    `${s}.cms_get_session_tokens_by_model`,
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
@@ -1597,6 +1608,8 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
+    private listenConfig: Record<string, unknown> | null = null;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
@@ -1651,7 +1664,26 @@ export class PgSessionCatalog implements SessionCatalog {
             console.error('[cms] pool idle client error (non-fatal):', err.message);
         });
 
-        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const catalog = new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const { max: _max, idleTimeoutMillis: _idle, ...listenConfig } = poolConfig as Record<string, unknown>;
+        catalog.listenConfig = listenConfig;
+        return catalog;
+    }
+
+    /**
+     * Session turn control: one dedicated LISTEN connection to the same
+     * database, with the same connection settings (TLS, credentials) as this
+     * catalog's pool. The worker's hub gets its connection here, so the
+     * catalog provider owns how the database is reached.
+     */
+    async createTurnControlListener(): Promise<TurnControlListenClient> {
+        if (!this.listenConfig) throw new TurnControlUnavailableError("createTurnControlListener");
+        const { default: pg } = await import("pg");
+        return new pg.Client({
+            application_name: "pilotswarm-turn-control",
+            ...this.listenConfig,
+            keepAlive: true,
+        }) as unknown as TurnControlListenClient;
     }
 
 
@@ -1896,21 +1928,66 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    // Session turn control: the procedures arrive with migration 0082.
-    async turnControlAdd(_sessionId: string, _kind: TurnControlKind, _text: string, _requestId: string, _actor: MessageSender | null): Promise<TurnControlAddResult> {
-        throw new TurnControlUnavailableError("turnControlAdd");
+    // ── Session turn control (migration 0082) ───────────────────
+
+    /** Adds a control atomically, or returns its refusal or existing request-id receipt. */
+    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnControlAdd",
+            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb) AS r`,
+            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null],
+        );
+        const r = rows[0]?.r ?? {};
+        if (r.refused) return { refused: r.refused };
+        return { seq: Number(r.seq), turn: Number(r.turn), ...(r.repeat ? { repeat: true as const } : {}) };
     }
 
-    async turnStart(_sessionId: string, _turn: number): Promise<TurnStartResult> {
-        throw new TurnControlUnavailableError("turnStart");
+    /** Marks a turn active and returns its controls, stopped disposition, or stale-start refusal. */
+    async turnStart(sessionId: string, turn: number): Promise<TurnStartResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnStart",
+            `SELECT ${this.sql.fn.turnStart}($1, $2) AS r`,
+            [sessionId, turn],
+        );
+        const r = rows[0]?.r ?? {};
+        if (r.stale) return { stale: true };
+        return { stopped: r.stopped === true, controls: toTurnControls(r.controls) };
     }
 
-    async turnLook(_turns: TurnLookInput[]): Promise<TurnLookRow[]> {
-        throw new TurnControlUnavailableError("turnLook");
+    /** Reads open controls after each turn's cursor in one query; an empty batch performs no query. */
+    async turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]> {
+        if (turns.length === 0) return [];
+        const { rows } = await this.turnControlQuery(
+            "turnLook",
+            `SELECT * FROM ${this.sql.fn.turnLook}($1::jsonb)`,
+            [JSON.stringify(turns.map((t) => ({ session: t.sessionId, turn: t.turn, after: t.after })))],
+        );
+        return rows.map((row: any) => ({ sessionId: row.session_id, turn: Number(row.turn), controls: toTurnControls(row.controls) }));
     }
 
-    async turnEnd(_sessionId: string, _turn: number, _cursor: number, _kind: TurnEndKind, _carried: number[]): Promise<TurnEndResult> {
-        throw new TurnControlUnavailableError("turnEnd");
+    /** Closes controls after the save and records carried-steer disposition idempotently. */
+    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnEnd",
+            `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`,
+            [sessionId, turn, cursor, kind, carried],
+        );
+        const r = rows[0]?.r ?? {};
+        return {
+            stopped: r.stopped === true,
+            late: Array.isArray(r.late) ? r.late.map((l: any) => ({ seq: Number(l.seq), text: String(l.text ?? "") })) : [],
+        };
+    }
+
+    /** Runs a turn-control procedure; a catalog without migration 0082 reports TurnControlUnavailableError. */
+    private async turnControlQuery(operation: string, text: string, values: unknown[]): Promise<{ rows: any[] }> {
+        try {
+            return await this.pool.query(text, values);
+        } catch (err: any) {
+            // A schema before migration 0082 has no turn-control procedures.
+            if (isUndefinedFunctionError(err)) throw new TurnControlUnavailableError(operation);
+            throw err;
+        }
     }
 
     async softDeleteSession(sessionId: string): Promise<void> {
@@ -2008,13 +2085,13 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
-        // Join the two regeneration columns from the raw sessions table in the
+        // Join later-added session columns from the raw sessions table in the
         // same round-trip rather than widening the shared cms_get_session
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
                 `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
-                    s.context_tier, s.model_resolution_source
+                    s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
@@ -3841,6 +3918,17 @@ export class PgSessionCatalog implements SessionCatalog {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
+
+/** Map the JSON controls of the turn-control procedures. */
+function toTurnControls(raw: unknown): TurnControl[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((c: any) => ({
+        seq: Number(c.seq),
+        kind: c.kind === "stop" ? "stop" : "steer",
+        text: String(c.text ?? ""),
+        createdAt: typeof c.createdAt === "string" ? c.createdAt : new Date(c.createdAt).toISOString(),
+    }));
+}
 
 /** Map a PG row (snake_case) to SessionRow (camelCase). */
 function rowToSessionRow(row: any): SessionRow {

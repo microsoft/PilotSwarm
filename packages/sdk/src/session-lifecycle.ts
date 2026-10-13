@@ -478,3 +478,15 @@ export async function runTurnCommit(
         ? lastError
         : new Error(`Turn commit failed for ${ctx.sessionId}: ${String(lastError)}`);
 }
+
+/**
+ * Session turn control: the cursor saved with a turn's result (plan P17, design
+ * 4.8). A result saved for another turn holds none of this turn's steers, so
+ * its cursor counts as 0.
+ */
+export function savedControlCursor(result: unknown, turn: number): number {
+    const saved = (result as { controlCursor?: { turn?: unknown; cursor?: unknown } } | null | undefined)?.controlCursor;
+    if (!saved || saved.turn !== turn) return 0;
+    const cursor = Number(saved.cursor);
+    return Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+}
