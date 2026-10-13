@@ -508,4 +508,59 @@ describe("1.0.81 turn control orchestration", () => {
             expect(retry.turns[0][1]).toBe(true);
         });
     });
+
+    describe("the retry of a thrown turn keeps its turnKey (no double commit)", () => {
+        const keyOf = (turn) => turn[3]?.snapshot?.turnKey;
+        const canInputs = (h) => h.calls.filter((c) => c.effect === "can").map((c) => c.input);
+
+        it("a throw keeps the key; the retry after continue-as-new sends it again and draws no new GUID; a result clears it", () => {
+            const h = harness({ blobEnabled: true });
+            h.run(new Error("turn end failed after the commit"));
+            const thrownKey = keyOf(h.turns[0]);
+            expect(thrownKey).toMatch(/^recorded-guid-/);
+            const [can] = canInputs(h);
+            expect(can).toMatchObject({ prompt: "original prompt", retryCount: 1, thrownTurnKey: thrownKey });
+
+            const retry = harness(can);
+            const guidsBefore = retry.calls.filter((c) => c.effect === "guid").length;
+            retry.run({ type: "completed", content: "adopted" }, can.prompt);
+            expect(keyOf(retry.turns[0])).toBe(thrownKey);
+            expect(retry.calls.filter((c) => c.effect === "guid").length).toBe(guidsBefore);
+            expect(retry.runtime.state.thrownTurnKey).toBeNull();
+
+            // The next prompt draws a fresh GUID (this harness's counter restarts, so compare draws).
+            retry.run({ type: "completed", content: "next" }, "a new prompt");
+            expect(retry.calls.filter((c) => c.effect === "guid").length).toBe(guidsBefore + 1);
+        });
+
+        it("a returned error is a result: its retry draws a new key", () => {
+            const h = harness({ blobEnabled: true });
+            h.run({ type: "error", message: "model failed" });
+            const [can] = canInputs(h);
+            expect(can.retryCount).toBe(1);
+            expect(can.thrownTurnKey).toBeUndefined();
+            expect(h.runtime.state.thrownTurnKey).toBeNull();
+        });
+
+        it("a new prompt never reuses a carried key (no retry in progress)", () => {
+            const h = harness({ blobEnabled: true, retryCount: 0, thrownTurnKey: "recorded-guid-old" });
+            h.run({ type: "completed", content: "fresh" }, "a new prompt");
+            expect(keyOf(h.turns[0])).not.toBe("recorded-guid-old");
+            expect(h.runtime.state.thrownTurnKey).toBeNull();
+        });
+
+        it("a give-up drops the key: the next prompt draws a new one", () => {
+            const h = harness({ blobEnabled: true, retryCount: 2, thrownTurnKey: "recorded-guid-old" });
+            h.run(new Error("turn end failed again"), "original prompt");
+            expect(keyOf(h.turns[0])).toBe("recorded-guid-old");
+            expect(canInputs(h)).toEqual([]);
+            expect(h.runtime.state.retryCount).toBe(0);
+            expect(h.runtime.state.thrownTurnKey).toBeNull();
+            expect(h.calls.some((c) => c.effect === "manager.updateCmsState" && c.args[4]?.closeControls)).toBe(true);
+
+            h.run({ type: "completed", content: "next" }, "a new prompt");
+            expect(keyOf(h.turns[1])).not.toBe("recorded-guid-old");
+        });
+    });
 });
+

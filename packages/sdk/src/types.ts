@@ -1085,6 +1085,15 @@ export interface OrchestrationInput {
      * recorded again.
      */
     carriedSteers?: LateSteer[];
+    /**
+     * 1.0.81+: the snapshot turnKey of a runTurn attempt that threw. The retry
+     * of that same turn sends it again, so when the attempt had already
+     * committed its snapshot the worker's preamble adopts the saved result
+     * instead of running and committing the turn a second time. Carried only
+     * by the retry's continue-as-new; never reused for a new prompt or after
+     * a give-up.
+     */
+    thrownTurnKey?: string;
     // ─── Session workspaces (1.0.80) ─────────────────────────
     /** Rises by one on every workspace set or clear. Absent = 0. */
     workspaceRevision?: number;

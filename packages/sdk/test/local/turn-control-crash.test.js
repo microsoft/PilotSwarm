@@ -15,6 +15,10 @@
  *   T7 save (commit)     turn.control.after-commit
  *   T8 turn end          turn.control.after-end
  *
+ * A throw after T7 (the action `throw` instead of `exit`) is retried by the
+ * orchestration; the retry keeps the thrown attempt's turnKey, so it adopts
+ * the saved turn instead of running and committing it again.
+ *
  * The scripted model makes live steers deterministic without sleeps: while
  * a steer is expected, it keeps answering with a short tool call until a
  * request carries the steer, then it answers.
@@ -26,7 +30,8 @@
  */
 import { describe, it, beforeAll, afterEach } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
-import { expectFaultDeath } from "../helpers/kill-harness.js";
+import { expectFaultDeath, killStoreDir } from "../helpers/kill-harness.js";
+import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import {
     TURN_CONTROL_ORCHESTRATION, deferred, until, outcomesOf, awaitOutcome, copiesIn, forkedDeployment,
@@ -55,7 +60,8 @@ afterEach(async () => {
 function scripted(prompt, { expect = null, hold = null } = {}) {
     const step0 = deferred();
     const respond = async (_body, position, record) => {
-        if (!position.lastUserText.includes(prompt) && !position.firstUserText.includes(prompt)) return { content: "ok" };
+        // A turn's prompt is somewhere in its conversation (a later turn's last user message can be a steer).
+        if (!JSON.stringify(record.body.messages).includes(prompt)) return { content: "ok" };
         if (position.step === 0) {
             step0.resolve();
             if (hold) await hold;
@@ -173,6 +179,34 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control: crash matrix (US-5)"
             assertEqual((await outcomesOf(d.catalog, sessionId, stop.seq)).length, 1, "still one outcome for the Stop");
         });
     }
+
+    it("a throw after T7 (for example a failed turn end): the retry adopts the saved turn; one commit, one model run, the outcomes written", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const d = await forkedDeployment(env, cleanups);
+        const prompt = "C7 summarize the plan";
+        const steer = "C7-STEER mention the risks";
+        const go = deferred();
+        const s = scripted(prompt, { expect: steer, hold: go.promise });
+        d.model.setResponder(s.respond);
+        // The second commit point of this worker throws: turn 1 is healthy, turn 2 throws after its commit.
+        const worker = await d.fork("c7-1", { faultInject: "turn.control.after-commit:throw:2" });
+        const { sessionId, session } = await d.session();
+        await session.sendAndWait("C7 warm up", REPLY_TIMEOUT);
+        const store = new FilesystemSessionStore(killStoreDir(env), env.sessionStateDir);
+        assertEqual((await store.probeSnapshot(sessionId))?.version, 1, "turn 1 committed v1");
+
+        await session.send(prompt);
+        await s.step0;
+        const added = await d.steer(sessionId, steer);
+        go.resolve();
+        assertEqual(await session.wait(REPLY_TIMEOUT), `answer:${prompt}`, "the retry returned the saved answer");
+        await exactlyOneOutcome(d, sessionId, added.seq, "delivered", "c7");
+        assertEqual((await store.probeSnapshot(sessionId))?.version, 2, "turn 2 committed v2 exactly once");
+        // A run starts with the prompt as the latest user message (a steer is a later user message).
+        const firstSteps = requestsFor(d, prompt).filter((r) => r.position.step === 0 && r.position.lastUserText.includes(prompt)).length;
+        assertEqual(firstSteps, 1, "the model ran turn 2 once");
+        assertEqual(worker.logs.filter((l) => l.includes("hit point=turn.control.after-commit")).length, 1, "the throw fired once");
+    });
 
     it("a thrown error, then a Stop during the retry backoff: the retried turn ends stopped without a model run (US-5 #6)", { timeout: TIMEOUT }, async () => {
         const d = await forkedDeployment(getEnv(), cleanups);
