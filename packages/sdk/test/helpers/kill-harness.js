@@ -133,6 +133,11 @@ export function forkKillWorker(env, id, opts = {}) {
             await Promise.race([exited, new Promise((r) => setTimeout(r, 3_000))]);
             try { child.kill("SIGKILL"); } catch {}
         },
+        /** Graceful drain; resolves with the exit once the worker finished it. */
+        drain() {
+            try { child.send({ type: "drain" }); } catch {}
+            return exited;
+        },
         killHard() {
             child.kill("SIGKILL");
             return exited;

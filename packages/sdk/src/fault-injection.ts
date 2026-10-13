@@ -8,6 +8,9 @@
  *   PILOTSWARM_FAULT_INJECT="turn.commit.before-cas:throw"   → throw on 1st hit
  *   PILOTSWARM_FAULT_INJECT="turn.commit.after-cas:exit:2"   → exit(137) on 2nd hit
  *
+ * `log` only prints the hit line and continues (an observation probe for
+ * timing tests, for example whether an activity cancellation reached JS).
+ *
  * `exit` (the default action) simulates a hard worker crash — the process
  * dies exactly at the protocol boundary, duroxide's activity retry takes it
  * from there. `throw` simulates a transient failure surfaced to the caller.
@@ -43,6 +46,7 @@ export function faultPoint(name: string): void {
         if (hits < fireAt) return;
         // eslint-disable-next-line no-console
         console.error(`[fault-injection] hit point=${name} action=${action} hit=${hits}/${fireAt}`);
+        if (action === "log") return;
         if (action === "throw") {
             throw new Error(`fault-injection: ${name}`);
         }

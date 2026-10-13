@@ -84,6 +84,7 @@ export function copiesIn(request, text) {
  * @param {Array<() => Promise<void>>} cleanups
  * @param {object} [opts]
  * @param {boolean} [opts.workspaces]  reference repo workspaces (git fixture and repo service)
+ * @param {object}  [opts.client]      extra client options (for example `dehydrateOnIdle`)
  */
 export async function forkedDeployment(env, cleanups, opts = {}) {
     let fixture = null;
@@ -114,6 +115,7 @@ export async function forkedDeployment(env, cleanups, opts = {}) {
         cmsSchema: env.cmsSchema,
         factsSchema: env.factsSchema,
         modelProvidersPath,
+        ...(opts.client || {}),
     });
     await client.start();
     cleanups.push(() => client.stop());
@@ -140,18 +142,19 @@ export async function forkedDeployment(env, cleanups, opts = {}) {
             await worker.killHard();
             alive.delete(`kill-${worker.id}`);
         },
+        /** Freeze a worker process (it stops renewing its locks) and let it go on. */
+        pause(worker) { process.kill(worker.child.pid, "SIGSTOP"); },
+        resume(worker) { process.kill(worker.child.pid, "SIGCONT"); },
         /** Release a session-scoped hold (plan P23). */
         release(point, sessionId) {
             fs.writeFileSync(path.join(releaseDir, `${point}.${sessionId}`), "");
         },
-        async session(sessionOpts = {}) {
-            const sessionId = randomUUID();
+        async session(sessionOpts = {}, sessionId = randomUUID()) {
             const session = await client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL, ...sessionOpts });
             return { sessionId, session };
         },
         /** A clone for a new session tree, and the session working in it. */
-        async sessionInClone() {
-            const sessionId = randomUUID();
+        async sessionInClone(sessionId = randomUUID()) {
             const made = await fetch(new URL("/v1/clones", url), {
                 method: "POST", headers: { "content-type": "application/json" },
                 body: JSON.stringify({ rootSessionId: sessionId, repo: "app" }),

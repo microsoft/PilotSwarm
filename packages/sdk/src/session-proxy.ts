@@ -67,7 +67,7 @@ import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCurso
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
-import { faultPointAsync } from "./fault-injection.js";
+import { faultPoint, faultPointAsync } from "./fault-injection.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
@@ -3879,6 +3879,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         cancelPoll = setInterval(() => {
             if (activityCtx.isCancelled()) {
                 cancelled = true;
+                traceWarn(`[runTurn] activity cancelled for ${input.sessionId} turn ${input.turnIndex ?? 0} (its lock was lost); aborting the turn`);
+                faultPoint("turn.control.cancel-observed");
                 session?.abort?.();
                 if (cancelPoll) clearInterval(cancelPoll);
             }
@@ -4836,6 +4838,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 tc.live.retire();
                 sessionManager.getTurnControlHub?.()?.unregister(tc.live);
             }
+            // Observation probe for multi-worker tests: this attempt's body is over.
+            if (tc) faultPoint("turn.control.activity-end");
             if (turnTelemetry.modelSummary) {
                 turnSpan.setAttribute("pilotswarm.model_summary", turnTelemetry.modelSummary);
             }

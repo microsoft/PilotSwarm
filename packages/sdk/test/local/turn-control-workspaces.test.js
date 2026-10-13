@@ -30,8 +30,10 @@
  * before it is registered they are skipped.
  */
 import { describe, it, beforeAll, afterEach } from "vitest";
+import { randomUUID } from "node:crypto";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
+import { waitForEventCount } from "../helpers/cms-helpers.js";
 import {
     TURN_CONTROL_ORCHESTRATION, deferred, firstLine, until, eventsWith, awaitOutcome, copiesIn, forkedDeployment,
 } from "../helpers/turn-control-harness.mjs";
@@ -170,5 +172,86 @@ describe("turn control: workspace leases across worker loss", () => {
         for (const r of withSteer) assertEqual(copiesIn(r, steer), 1, "the steer is in the conversation once");
         assertEqual(await awaitOutcome(d.catalog, sessionId, steerSeq, "w3"), "delivered", "the steer ends delivered");
         assertEqual(d.entry(checkout, sessionId)?.workerNodeId, "kill-w3-2", "the lease is on worker 2");
+    });
+
+});
+
+/** A turn whose first model call never answers on its own: only a Stop ends it. */
+function heldTurn(prompt, cleanups) {
+    const step0 = deferred();
+    const never = deferred();
+    cleanups.push(async () => never.resolve());
+    const respond = async (_body, position) => {
+        if (!position.lastUserText.includes(prompt)) return { content: "ok" };
+        step0.resolve();
+        await never.promise;
+        return { content: "late" };
+    };
+    return { respond, step0: step0.promise };
+}
+
+describe("turn control: stopped turns release their workspace as before", () => {
+    it.skipIf(!TURN_CONTROL_ORCHESTRATION)("W4: a Stop during the run: the turn ends stopped, the hold window releases the workspace and no lease entry stays", { timeout: TIMEOUT }, async () => {
+        const d = await forkedDeployment(getEnv(), cleanups, { workspaces: true, client: { dehydrateOnIdle: 3 } });
+        const prompt = "W4 run the long job";
+        const held = heldTurn(prompt, cleanups);
+        d.model.setResponder(held.respond);
+        await d.fork("w4a-1");
+        const { sessionId, session, checkout } = await d.sessionInClone();
+        await session.send(prompt);
+        await held.step0;
+        assert(d.entry(checkout, sessionId), "the running turn holds the clone");
+        const stop = await d.stop(sessionId);
+        assertEqual(await awaitOutcome(d.catalog, sessionId, stop.seq, "w4a"), "stopped");
+        const [released] = await waitForEventCount(d.catalog, sessionId, "session.workspace_released", 1, 60_000);
+        assertEqual(released.data.reason, "idle", "the hold window released it (the provider's reason is moved)");
+        await until(() => d.entry(checkout, sessionId) === null, "w4a: no lease entry stays");
+    });
+
+    it.skipIf(!TURN_CONTROL_ORCHESTRATION)("W4: a Stop held before the initial send: no model run, the turn ends stopped, the hold window releases the workspace and no lease entry stays", { timeout: TIMEOUT }, async () => {
+        const d = await forkedDeployment(getEnv(), cleanups, { workspaces: true, client: { dehydrateOnIdle: 3 } });
+        const prompt = "W4 at start run the job";
+        let modelCalls = 0;
+        d.model.setResponder((_body, position) => {
+            if (position.lastUserText.includes(prompt)) modelCalls += 1;
+            return { content: "ok" };
+        });
+        const sessionId = randomUUID();
+        const one = await d.fork("w4b-1", { faultInject: `turn.control.before-send:hold@${sessionId}` });
+        const { session, checkout } = await d.sessionInClone(sessionId);
+        await session.send(prompt);
+        await until(() => one.logs.some((l) => l.includes("[fault-injection] hold point=turn.control.before-send")), "w4b: the turn is held before its initial send");
+        assert(d.entry(checkout, sessionId), "the held turn attached the clone");
+        const stop = await d.stop(sessionId);
+        d.release("turn.control.before-send", sessionId);
+        assertEqual(await awaitOutcome(d.catalog, sessionId, stop.seq, "w4b"), "stopped");
+        assertEqual(modelCalls, 0, "the model never ran");
+        const [released] = await waitForEventCount(d.catalog, sessionId, "session.workspace_released", 1, 60_000);
+        assertEqual(released.data.reason, "idle");
+        await until(() => d.entry(checkout, sessionId) === null, "w4b: no lease entry stays");
+    });
+
+    it.skipIf(!TURN_CONTROL_ORCHESTRATION)("W5: a graceful drain with a pending Stop applies the Stop before the drain ends; worker 1 releases the clone; the next turn attaches on worker 2", { timeout: TIMEOUT }, async () => {
+        const d = await forkedDeployment(getEnv(), cleanups, { workspaces: true });
+        const prompt = "W5 run the long job";
+        const held = heldTurn(prompt, cleanups);
+        d.model.setResponder(held.respond);
+        const one = await d.fork("w5-1");
+        const { sessionId, session, checkout } = await d.sessionInClone();
+        await session.send(prompt);
+        await held.step0;
+        const drained = one.drain();
+        await until(() => one.logs.some((l) => l.includes("draining")), "w5: worker 1 is draining");
+        const stop = await d.stop(sessionId);
+        assertEqual(await awaitOutcome(d.catalog, sessionId, stop.seq, "w5"), "stopped", "the hub still listened during the drain");
+        const exit = await Promise.race([drained, new Promise((r) => setTimeout(() => r(null), 90_000))]);
+        assert(exit, "the drain finished");
+        assertEqual(exit.code, 0, `worker 1 exited cleanly: ${one.logs.slice(-10).join("\n")}`);
+        d.alive.delete("kill-w5-1");
+        assert(one.logs.some((l) => l.includes("drain released 1 workspace session")), "worker 1 released the clone on shutdown");
+        assertEqual(d.entry(checkout, sessionId), null, "no lease entry of worker 1 stays");
+        await d.fork("w5-2");
+        assertEqual(await session.sendAndWait("W5 next", REPLY_TIMEOUT), "ok", "the next turn runs on worker 2");
+        assertEqual(d.entry(checkout, sessionId)?.workerNodeId, "kill-w5-2", "worker 2 attached the clone");
     });
 });

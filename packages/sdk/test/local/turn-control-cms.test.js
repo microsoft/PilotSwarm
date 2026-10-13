@@ -182,6 +182,30 @@ describe("turn control procedures (migration 0082)", () => {
         }, TIMEOUT);
     });
 
+    it("a stale turn end for an older turn (design 3.9) changes nothing of the newer turn and writes nothing twice", async () => {
+        const s = await newSession();
+        await catalog.turnStart(s, 4);
+        const carriedFrom4 = await steer(s, "from 4");
+        await catalog.turnEnd(s, 4, 0, "other", []);
+        await catalog.turnStart(s, 5);
+        const a = await steer(s, "during 5");
+        // Worker B ends turn 5 (the winner), then turn 6 starts with an open steer.
+        const winner = await catalog.turnEnd(s, 5, a.seq, "other", [carriedFrom4.seq]);
+        await catalog.turnStart(s, 6);
+        const b = await steer(s, "during 6");
+        const before = await events(s);
+
+        // Worker A, stale, ends turn 5 late with the adopted result.
+        expect(await catalog.turnEnd(s, 5, a.seq, "other", [carriedFrom4.seq])).toEqual(winner);
+        // ...or with a different result kind: still nothing for turn 6.
+        await catalog.turnEnd(s, 5, 0, "stopped", [carriedFrom4.seq]);
+
+        expect((await events(s)).length).toBe(before.length);
+        expect((await sessionRow(s)).active_turn_index).toBe(6);
+        expect((await catalog.turnLook([{ sessionId: s, turn: 6, after: 0 }]))[0].controls.map((c) => c.seq)).toEqual([b.seq]);
+        expect((await outcomes(s))[a.seq]).toBe("delivered");
+    }, TIMEOUT);
+
     it("turn start marks the turn running, returns open controls in order, refuses stale starts and reports stopped", async () => {
         const s = await newSession();
         expect(await catalog.turnStart(s, 2)).toEqual({ stopped: false, controls: [] });

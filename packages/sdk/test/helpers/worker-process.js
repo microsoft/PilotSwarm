@@ -48,6 +48,15 @@ process.on("message", async (msg) => {
                     try { await worker.stop(); } catch {}
                     process.exit(0);
                 }
+                // Graceful drain (lifecycle protocol §3.8): finish in-flight
+                // turns, release idle workspaces, then exit.
+                if (stopMsg.type === "drain") {
+                    // gracefulShutdown() ends with stop().
+                    try { await worker.gracefulShutdown(); } catch (err) {
+                        process.send({ type: "drain-error", error: err?.message ?? String(err) });
+                    }
+                    process.exit(0);
+                }
             });
         } catch (err) {
             process.send({ type: "error", error: err.message });
