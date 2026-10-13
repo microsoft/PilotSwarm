@@ -178,6 +178,7 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `LOCATION`, `RESOURCE_GROUP`, `RESOURCE_PREFIX` | bicep, manifests, rollout | Region + RG + Bicep `resourceNamePrefix`. |
 | `GLOBAL_RESOURCE_GROUP`, `GLOBAL_RESOURCE_PREFIX` | bicep (globalinfra) | Front Door RG + prefix. |
 | `PORTAL_RESOURCE_NAME` | bicep (portal) | Portal logical name. |
+| `NPM_REGISTRY` | build | Optional package registry URL forwarded to application image builds. Leave empty to use the Dockerfile default. |
 | `NAMESPACE` | manifests, rollout | Target Kubernetes namespace (`pilotswarm` per A-11). |
 | `EDGE_MODE` | bicep, manifests, rollout | `afd` (default) or `private`. Controls AFD/AppGw/AGIC vs AKS web-app-routing addon. Drives Portal overlay path. |
 | `TLS_SOURCE` | bicep, manifests | `letsencrypt` \| `akv` \| `akv-selfsigned`. Drives Portal overlay path and AKV cert issuer. See [docs/developer/deploy/aks.md](../../docs/developer/deploy/aks.md) for the supported `(EDGE_MODE × TLS_SOURCE)` combos. |
