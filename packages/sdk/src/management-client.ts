@@ -320,6 +320,17 @@ function validTurnControlRequestId(value: unknown, operation: string): string | 
     return value;
 }
 
+const STOP_TIMEOUT_MAX_MS = 300_000;
+
+/** A Stop's outcome wait: the default when omitted, else a finite duration in range. */
+function validStopTimeoutMs(value: unknown): number {
+    if (value === undefined || value === null) return TURN_CONTROL_STOP_TIMEOUT_MS;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > STOP_TIMEOUT_MAX_MS) {
+        throw invalidTurnControlRequest(`stopSessionTurn timeoutMs must be a number from 0 to ${STOP_TIMEOUT_MAX_MS}`);
+    }
+    return value;
+}
+
 function buildLifecycleCommandId(prefix: string): string {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -2581,8 +2592,9 @@ export class PilotSwarmManagementClient {
      * path. Stop is never gated by a feature flag. Valid for system sessions
      * too; only group/container rows are not sessions and cannot be stopped.
      *
-     * Pass `requestId` to make a retry after a transport failure safe: the
-     * retry gets the first answer and records nothing new.
+     * On the turn-control path, pass `requestId` to make a retry after a
+     * transport failure safe: it reuses the recorded control. The legacy
+     * event path does not deduplicate requests by this id.
      *
      * Outcomes:
      *  - stopped: the turn ended stopped.
@@ -2591,9 +2603,9 @@ export class PilotSwarmManagementClient {
      *  - stop_forced: legacy path only.
      *  - no_active_turn: nothing was running (`detail` names any other
      *    refusal, for example `too_many`).
-     *  - timeout: no outcome before `timeoutMs`. With `controlSeq` the Stop
-     *    was accepted and is still open (for example during a retry
-     *    backoff); it applies when the turn runs again.
+     *  - timeout: no outcome was observed before `timeoutMs`. `controlSeq`
+     *    identifies the accepted Stop, not proof that it is still open.
+     *    Read its outcome before deciding whether another action is needed.
      */
     async stopSessionTurn(sessionId: string, opts?: StopTurnOptions): Promise<StopTurnResult> {
         this._ensureStarted();
@@ -2602,7 +2614,7 @@ export class PilotSwarmManagementClient {
             throw invalidTurnControlRequest("stopSessionTurn reason must be a string");
         }
         const requestId = validTurnControlRequestId(opts?.requestId, "stopSessionTurn") ?? crypto.randomUUID();
-        const timeoutMs = opts?.timeoutMs ?? TURN_CONTROL_STOP_TIMEOUT_MS;
+        const timeoutMs = validStopTimeoutMs(opts?.timeoutMs);
         const added = await this._turnControlAdd(sessionId, "stop", reason, requestId, opts?.caller);
         if ("refused" in added) {
             if (added.refused === "legacy_turn") {
@@ -2655,10 +2667,12 @@ export class PilotSwarmManagementClient {
         const deadline = Date.now() + Math.max(0, timeoutMs);
         let after = seq;
         for (;;) {
+            // A failed read reaches the caller: it is not an empty page. A
+            // retry with the same request id is safe and reads again.
             const page = await this._catalog!.getSessionEvents(
                 sessionId, after, OUTCOME_PAGE_LIMIT, [TURN_CONTROL_EVENT_TYPES.outcome],
-            ).catch(() => null);
-            for (const event of page ?? []) {
+            );
+            for (const event of page) {
                 if (event.seq > after) after = event.seq;
                 const data = event.data as Partial<ControlOutcomeEventData> | null;
                 if (Number(data?.seq) !== seq) continue;
@@ -2666,7 +2680,7 @@ export class PilotSwarmManagementClient {
                     return { outcome: data.outcome, turnIndex: turn, controlSeq: seq };
                 }
             }
-            if (page && page.length >= OUTCOME_PAGE_LIMIT) continue;
+            if (page.length >= OUTCOME_PAGE_LIMIT) continue;
             const remaining = deadline - Date.now();
             if (remaining <= 0) break;
             await sleep(Math.min(TURN_CONTROL_OUTCOME_POLL_MS, remaining));
@@ -2675,7 +2689,7 @@ export class PilotSwarmManagementClient {
             outcome: "timeout",
             turnIndex: turn,
             controlSeq: seq,
-            detail: "the Stop was accepted but has no outcome yet; it applies when the turn runs",
+            detail: "the Stop was accepted; no outcome was observed before the timeout",
         };
     }
 

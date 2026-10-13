@@ -25,7 +25,6 @@ import { createApiRouter } from "../../../app/web/api/router.js";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 import { createTestEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
 const STEERING = "sessions.steering";
 const ALICE = { provider: "test", subject: "alice", displayName: "Alice" };
@@ -231,6 +230,28 @@ describe("stopSessionTurn (fake catalog)", () => {
         expect(fake.calls.add[0].text).toBe("enough");
     });
 
+    it("reports a failed outcome read instead of a timeout", async () => {
+        const fake = createFakeCatalog({ add: { seq: 50, turn: 3 } });
+        fake.catalog.getSessionEvents = async () => { throw new Error("outcome read failed: connection reset"); };
+        await expect(createMgmt(fake).stopSessionTurn("s1", { requestId: "stop-r" })).rejects.toThrow(/outcome read failed/);
+        expect(fake.calls.add).toHaveLength(1);
+    });
+
+    it("rejects an invalid timeout before recording anything; accepts the default, zero and a positive value", async () => {
+        for (const timeoutMs of ["not-a-number", { ms: 5 }, Number.NaN, Number.POSITIVE_INFINITY, -1, 300_001]) {
+            const fake = createFakeCatalog({ add: { seq: 50, turn: 3 }, outcomes: { 50: "stopped" } });
+            await expect(createMgmt(fake).stopSessionTurn("s1", { timeoutMs })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+            expect(fake.calls.add).toHaveLength(0);
+        }
+        for (const timeoutMs of [undefined, 0, 1_000]) {
+            const fake = createFakeCatalog({ add: { seq: 50, turn: 3 }, outcomes: { 50: "stopped" } });
+            expect((await createMgmt(fake).stopSessionTurn("s1", { timeoutMs })).outcome).toBe("stopped");
+        }
+        const zero = createFakeCatalog({ add: { seq: 51, turn: 3 } });
+        expect(await createMgmt(zero).stopSessionTurn("s1", { timeoutMs: 0 })).toMatchObject({ outcome: "timeout", controlSeq: 51 });
+        expect(zero.calls.eventReads).toHaveLength(1);
+    });
+
     it("generates a request id when none is given", async () => {
         const fake = createFakeCatalog({ add: { seq: 50, turn: 3 }, outcomes: { 50: "stopped" } });
         await createMgmt(fake).stopSessionTurn("s1");
@@ -347,6 +368,27 @@ describe("Web API mode (fake catalog, real runtime and router)", () => {
         }
     });
 
+    it("Web API: an invalid Stop timeout is a 400 and records nothing; a failed outcome read is an error", async () => {
+        const fake = createFakeCatalog({ add: { seq: 70, turn: 3 } });
+        const harness = await startWebHarness(createMgmt(fake));
+        try {
+            for (const timeoutMs of ["not-a-number", { ms: 5 }]) {
+                const response = await fetch(`${harness.apiUrl}/api/v1/management/sessions/s1/stop-turn`, {
+                    method: "POST", headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ options: { timeoutMs, requestId: "r" } }),
+                });
+                expect(response.status).toBe(400);
+                expect((await response.json()).error.code).toBe("INVALID_REQUEST");
+            }
+            expect(fake.calls.add).toHaveLength(0);
+            fake.catalog.getSessionEvents = async () => { throw new Error("outcome read failed"); };
+            await expect(harness.web.stopSessionTurn("s1", { requestId: "r-read" })).rejects.toMatchObject({ status: 500 });
+            expect(fake.calls.add).toHaveLength(1);
+        } finally {
+            await harness.close();
+        }
+    });
+
     it("forwards steer options unchanged and maps the same answers as direct mode", async () => {
         const flag = { cluster: { enabled: true, allowUserOverride: false } };
         const fake = createFakeCatalog({ flag, add: ({ requestId }) => (requestId === "dup" ? { seq: 7, turn: 3, repeat: true } : { refused: "no_turn" }) });
@@ -444,14 +486,22 @@ describe("turn control against real PostgreSQL", () => {
     it("records a Stop and returns its outcome once turn end writes it", async () => {
         const sessionId = await runningSession("tc-stop");
         const pending = mgmt.stopSessionTurn(sessionId, { requestId: "s-1", caller: { sender: { kind: "user", provider: "test", subject: "alice" } } });
+        // Observe the pending Stop at once, so a failing assertion below
+        // never leaves an unhandled rejection behind.
+        const settled = pending.then((value) => ({ value }), (error) => ({ error }));
         let stops = [];
         for (let i = 0; i < 40 && stops.length === 0; i += 1) {
             stops = await catalog.getSessionEvents(sessionId, 0, 10, [TURN_CONTROL_EVENT_TYPES.stop]);
             if (stops.length === 0) await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        expect(stops).toHaveLength(1);
-        await catalog.turnEnd(sessionId, 0, 0, "stopped", []);
-        expect(await pending).toEqual({ outcome: "stopped", turnIndex: 0, controlSeq: stops[0].seq });
+        try {
+            expect(stops).toHaveLength(1);
+            await catalog.turnEnd(sessionId, 0, 0, "stopped", []);
+        } finally {
+            const result = await settled;
+            if (result.error) throw result.error;
+            expect(result.value).toEqual({ outcome: "stopped", turnIndex: 0, controlSeq: stops[0]?.seq });
+        }
         expect(await mgmt.stopSessionTurn(sessionId, { requestId: "s-2" })).toMatchObject({ outcome: "no_active_turn" });
         expect(await countEvents(sessionId, TURN_CONTROL_EVENT_TYPES.stop)).toBe(1);
     });
@@ -474,7 +524,7 @@ describe("turn control against real PostgreSQL", () => {
 
     it("delivers a no-turn steer once as an ordinary message", async () => {
         await withClient(env, async (client) => {
-            const session = await client.createSession(ONEWORD_CONFIG);
+            const session = await client.createSession();
             await session.sendAndWait("Say hello.", 120_000);
             const text = "Steer fallback: answer with the word fallback.";
             expect(await mgmt.steerSessionTurn(session.sessionId, { text, requestId: "fb-1" })).toEqual({ outcome: "no_turn" });
