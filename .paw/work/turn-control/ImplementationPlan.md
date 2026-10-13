@@ -91,7 +91,7 @@ Every file belongs to exactly one workstream. Another workstream that needs a ch
 | `packages/sdk/src/worker.ts`, `managed-session.ts`, `session-manager.ts`, `session-lifecycle.ts`, `snapshot-protocol.ts`, `fault-injection.ts`, `turn-control.ts` (new) | A | |
 | `packages/sdk/src/client.ts` | none needed | P20 closes controls in SQL, so no change; any change goes through the parent |
 | `packages/sdk/src/orchestration/**`, `orchestration_1_0_80/**` (new), `orchestration-registry.ts`, `orchestration-version.ts`, `orchestration.ts` | B | |
-| `packages/sdk/src/management-client.ts`, `packages/sdk/src/web/**`, `packages/sdk/api/**` | C | |
+| `packages/sdk/src/management-client.ts`, `packages/sdk/src/web/**`, `packages/sdk/api/**` | C | exception: A1 adds `sessions.steering` to `PUBLIC_FEATURE_KEYS` in `packages/sdk/api/src/admin-diagnostics.js` (the worker-telemetry allowlist must list every code-defined flag) |
 | `packages/app/**` (web, ui/core, ui/react, tui, mcp) | C | |
 | `.github/skills/pilotswarm-tui/SKILL.md`, `templates/builder-agents/**`, `examples/**`, `CHANGELOG.md` | C | |
 | `docs/architecture/internals/cms-schema.md`, `docs/architecture/system-reference.md` | A | |
@@ -162,7 +162,7 @@ I1 integration (parent) ──► U0 deployment route (parent) ──► U1 UX t
 ## Phase Status
 
 Workstream A (this branch):
-- [ ] **Phase A1: Contract** - Shared types, constants, routing names and tag, scheduling hooks, CMS method signatures and the `sessions.steering` definition; merged before B and C start.
+- [x] **Phase A1: Contract** - Shared types, constants, routing names and tag, scheduling hooks, CMS method signatures and the `sessions.steering` definition; merged before B and C start.
 - [ ] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
 - [ ] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
 - [ ] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
