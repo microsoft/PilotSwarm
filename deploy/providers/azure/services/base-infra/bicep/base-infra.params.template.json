@@ -56,6 +56,9 @@
     "foundrySku": {
       "value": "${FOUNDRY_SKU}"
     },
+    "foundryLocation": {
+      "value": "${FOUNDRY_LOCATION}"
+    },
     "vpnGatewayEnabled": {
       "value": ${VPN_GATEWAY_ENABLED}
     },
