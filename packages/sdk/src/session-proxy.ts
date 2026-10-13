@@ -292,6 +292,27 @@ export async function resolveAgentDefinitionForRequiredToolForCaller(opts: {
 // existing importers keep their path.
 export { CANVAS_ARTIFACT_FILENAME, canvasArtifactFilename } from "./canvas-support.js";
 
+/**
+ * Session turn control: fold carried steers (in place of the carried-steers
+ * wake prompt, or before the prompt) and steers accepted before turn start
+ * (after the prompt) into a turn prompt. A trailing system-context block
+ * stays last. The turn's own prompt and its in-attempt recovery re-runs use
+ * the same fold, so a re-run from the start still holds every steer that
+ * turn end will label delivered or ran.
+ */
+function foldTurnControlText(prompt: string, carriedText: string, steerText: string): string {
+    if (!carriedText && !steerText) return prompt;
+    const split = splitSystemContextBlock(prompt);
+    let body = split.prompt;
+    if (carriedText) {
+        body = body.includes(CARRIED_STEERS_WAKE_PROMPT)
+            ? body.replace(CARRIED_STEERS_WAKE_PROMPT, carriedText)
+            : `${carriedText}\n\n${body}`;
+    }
+    if (steerText) body = `${body}\n\n${steerText}`;
+    return appendSystemContextBlock(body, split.note);
+}
+
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
     "Some very recent in-memory state may have been lost. Re-read the visible conversation and continue carefully from the latest durable state.]";
@@ -1622,6 +1643,9 @@ export function registerActivities(
                 carriedTaken: false,
                 /** T3 ran in this attempt. */
                 started: false,
+                /** Text folded into the prompt at T3; a recovery re-run folds it again. */
+                carriedText: "",
+                foldedSteerText: "",
             }
             : null;
         const sessionDirOf = () => path.join(sessionManager.getSessionStateDir(), input.sessionId);
@@ -4173,17 +4197,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // carried-steers wake prompt) and steers accepted for this
                 // turn before it started (after the prompt). Never recorded again.
                 if (tc.carried.length > 0) {
-                    const carriedText = tc.carried.map((c) => c.text).join("\n\n");
-                    effectivePrompt = effectivePrompt.includes(CARRIED_STEERS_WAKE_PROMPT)
-                        ? effectivePrompt.replace(CARRIED_STEERS_WAKE_PROMPT, carriedText)
-                        : `${carriedText}\n\n${effectivePrompt}`;
+                    tc.carriedText = tc.carried.map((c) => c.text).join("\n\n");
                     tc.carriedTaken = true;
                 }
                 const openSteers = open.filter((c) => c.kind === "steer");
                 if (openSteers.length > 0) {
-                    effectivePrompt = `${effectivePrompt}\n\n${openSteers.map((c) => c.text).join("\n\n")}`;
+                    tc.foldedSteerText = openSteers.map((c) => c.text).join("\n\n");
                     start = Math.max(start, ...openSteers.map((c) => c.seq));
                 }
+                effectivePrompt = foldTurnControlText(effectivePrompt, tc.carriedText, tc.foldedSteerText);
                 tc.startCursor = start;
                 tc.live = new LiveTurnControl({
                     sessionId: input.sessionId,
@@ -4431,7 +4453,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return await failForMissingState(fatalMessage);
                 }
 
-                const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, input.prompt]) || input.prompt;
+                // Turn control: the re-run starts from the folded turn prompt,
+                // so the carried and turn-start steers reach the model again.
+                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, recoveryBase]) || recoveryBase;
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
                 tc?.live?.conversationLost();
@@ -4500,7 +4525,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return { type: "error", message: fatalMessage } as TurnResult;
                 }
 
-                const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, input.prompt]) || input.prompt;
+                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, recoveryBase]) || recoveryBase;
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
                 tc?.live?.conversationLost();

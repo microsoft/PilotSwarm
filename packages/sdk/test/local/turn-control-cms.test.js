@@ -86,7 +86,10 @@ describe("turn control procedures (migration 0082)", () => {
         await catalog.turnStart(s, 3);
         const listener = new pg.Client({ connectionString: env.store });
         await listener.connect();
-        const got = new Promise((resolve) => listener.on("notification", (m) => resolve(m)));
+        // The channel is shared by every schema (other test files notify on it too): wait for this session's.
+        const got = new Promise((resolve) => listener.on("notification", (m) => {
+            if (JSON.parse(m.payload ?? "{}").sessionId === s) resolve(m);
+        }));
         await listener.query("LISTEN pilotswarm_turn_control");
         try {
             const requestId = rid();
@@ -117,6 +120,10 @@ describe("turn control procedures (migration 0082)", () => {
         await catalog.turnStart(full, 1);
         for (let i = 0; i < 20; i++) expect((await steer(full, `s${i}`)).seq).toEqual(expect.any(Number));
         expect(await steer(full, "21st")).toEqual({ refused: "too_many" });
+        // The cap bounds Steers only: a Stop is still accepted with 20 open controls.
+        const halt = await stop(full, "Stopped by user");
+        expect(halt.seq).toEqual(expect.any(Number));
+        expect((await events(full, ["user.stop"])).map((e) => e.seq)).toEqual([halt.seq]);
 
         const reused = await newSession();
         await catalog.turnStart(reused, 1);
@@ -181,6 +188,34 @@ describe("turn control procedures (migration 0082)", () => {
             expect(fresh.turn).toBe(0);
         }, TIMEOUT);
     });
+
+    it("a stale end-of-turn write for an older turn leaves a newer started turn running and open to controls", async () => {
+        const s = await newSession();
+        await catalog.turnStart(s, 5);
+        // Worker B finishes turn 5 and starts turn 6; worker A's turn-5 write was held and comes late.
+        await catalog.completeTurnWriteback(writebackInput(s, 5));
+        await catalog.turnEnd(s, 5, 0, "other", []);
+        await catalog.updateSession(s, { state: "running" });
+        await catalog.turnStart(s, 6);
+        expect(await catalog.completeTurnWriteback(writebackInput(s, 5, { state: "idle", currentIteration: 99 }))).toBe(false);
+        const row = await sessionRow(s);
+        expect(row.active_turn_index).toBe(6);
+        expect((await catalog.getSession(s)).state).toBe("running");
+        expect((await catalog.getSession(s)).currentIteration).not.toBe(99);
+        expect((await steer(s, "for turn 6")).turn).toBe(6);
+
+        // The current turn's own write still ends it.
+        expect(await catalog.completeTurnWriteback(writebackInput(s, 6))).toBe(true);
+        expect((await sessionRow(s)).active_turn_index).toBe(null);
+    }, TIMEOUT);
+
+    it("a legacy turn's end-of-turn write ends it as before (no turn control: turn_high -1)", async () => {
+        const s = await newSession();
+        await catalog.setActiveTurnIndex(s, 2);
+        expect(await catalog.completeTurnWriteback(writebackInput(s, 2))).toBe(false);
+        expect((await sessionRow(s)).active_turn_index).toBe(null);
+        expect((await catalog.getSession(s)).state).toBe("idle");
+    }, TIMEOUT);
 
     it("a stale turn end for an older turn (design 3.9) changes nothing of the newer turn and writes nothing twice", async () => {
         const s = await newSession();

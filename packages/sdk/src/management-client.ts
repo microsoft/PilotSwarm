@@ -2604,7 +2604,7 @@ export class PilotSwarmManagementClient {
      *    finished; the turn completed normally.
      *  - stop_forced: legacy path only.
      *  - no_active_turn: nothing was running (`detail` names any other
-     *    refusal, for example `too_many`).
+     *    refusal, for example `not_found`).
      *  - timeout: no outcome was observed before `timeoutMs`. `controlSeq`
      *    identifies the accepted Stop, not proof that it is still open.
      *    Read its outcome before deciding whether another action is needed.

@@ -215,6 +215,19 @@ describe("1.0.81 turn control orchestration", () => {
             .toEqual(legacy.calls.map(c => c.effect));
     });
 
+    it("hydrate exhaustion is a give-up: it drops a thrown turn's key and resets the retry count, with no extra yield", () => {
+        const input = { blobEnabled: true, needsHydration: true, hydrateError: "storage failed", retryCount: 2, thrownTurnKey: "recorded-guid-old" };
+        const current = harness(input);
+        current.run({ type: "completed", content: "must not run" });
+        expect(current.turns).toEqual([]);
+        expect(current.runtime.state.thrownTurnKey).toBeNull();
+        expect(current.runtime.state.retryCount).toBe(0);
+        const legacy = harness(input);
+        legacy.drive(legacyProcessPrompt(legacy.runtime, "original prompt", false));
+        expect(current.calls.filter(c => c.effect !== "manager.updateCmsState").map(c => c.effect))
+            .toEqual(legacy.calls.map(c => c.effect));
+    });
+
     it("storeless connection-loss give-up adds only one CMS write to the legacy activity sequence", () => {
         const input = { carriedSteers: [steer(28)], retryCount: 3 };
         const current = harness(input);

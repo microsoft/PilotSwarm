@@ -291,7 +291,7 @@ test("every other steer answer shows its notice and keeps the draft", async ({ p
     expect(wire.state.sends).toHaveLength(0);
 });
 
-test("every Stop notice: no active turn, timeout, pending retry, unconfirmed with Retry, forbidden, error", async ({ page }) => {
+test("every Stop notice: no active turn, timeout, pending Stop, unconfirmed with Retry, forbidden, error", async ({ page }) => {
     let current = null;
     const wire = await open(page, { handlers: { stop: (args) => current(args) } });
     const press = async (handler, reason) => {
@@ -302,7 +302,7 @@ test("every Stop notice: no active turn, timeout, pending retry, unconfirmed wit
     };
     await press(({ answer }) => answer({ outcome: "no_active_turn", detail: "no turn is running" }), "no_active_turn");
     await press(({ answer }) => answer({ outcome: "timeout", turnIndex: 3 }), "timeout");
-    await press(({ answer }) => answer({ outcome: "timeout", turnIndex: 3, controlSeq: 3_000_000 }), "stop_pending_retry");
+    await press(({ answer }) => answer({ outcome: "timeout", turnIndex: 3, controlSeq: 3_000_000 }), "stop_pending");
     await press(({ fail }) => fail(403, "FORBIDDEN", "Forbidden"), "forbidden");
     await press(({ fail }) => fail(400, "INVALID_REQUEST", "bad"), "error");
     await press(({ route }) => route.abort("connectionreset"), "unconfirmed");

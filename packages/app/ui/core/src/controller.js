@@ -468,7 +468,7 @@ const TURN_CONTROL_NOTICE_REASONS = new Set([
 ]);
 const TURN_CONTROL_REFUSAL_TEXT = {
     not_found: "the session was not found",
-    too_many: "too many open Stop/Steer requests on this turn",
+    too_many: "too many open steers on this turn",
     request_id_reused: "the request id was already used for a different request",
     steering_disabled: "steering is not enabled for you",
 };
@@ -5900,9 +5900,18 @@ export class PilotSwarmUiController {
      * bulk-load paths (`ensureSessionHistory`). Bulk loads previously skipped
      * this and left outbox items stranded as "queued" or "cancelling" forever
      * even after the durable event was already in CMS.
+     *
+     * Session turn control: a pending Stop's notice is the same kind of local
+     * state; it goes when that Stop's `session.control_outcome` arrives.
      */
     reconcileOutboxAgainstEvent(sessionId, event) {
         if (!sessionId || !event) return;
+        if (event.eventType === "session.control_outcome") {
+            const notice = this._turnControlEntry(sessionId).stopNotice;
+            if (notice?.reason === "stop_pending" && notice.controlSeq === Number(event.data?.seq)) {
+                this._setTurnControl(sessionId, { stopNotice: null });
+            }
+        }
         if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -10789,7 +10798,7 @@ export class PilotSwarmUiController {
         this._setTurnControl(sessionId, { [key]: stamped });
         // Informational notices clear themselves; a notice that needs an
         // action (Retry, a failed fallback, a pending Stop) stays.
-        if (!["unconfirmed", "fallback_failed", "stop_pending_retry"].includes(notice.reason)) {
+        if (!["unconfirmed", "fallback_failed", "stop_pending"].includes(notice.reason)) {
             const timer = setTimeout(() => {
                 if (this._turnControlEntry(sessionId)[key] === stamped) this._setTurnControl(sessionId, { [key]: null });
             }, TURN_CONTROL_NOTICE_MS);
@@ -11112,15 +11121,15 @@ export class PilotSwarmUiController {
             this._showTurnControlNotice(sessionId, { kind: "stop", reason: refusal });
             this.dispatch({ type: "ui/status", text: "No active turn to stop" });
         } else if (outcome === "timeout") {
-            // An accepted Stop without an outcome yet stays pending on its
-            // transcript item (for example during a retry backoff).
+            // An accepted Stop without an outcome yet stays pending until its
+            // session.control_outcome arrives (mergeSessionEvent clears it).
             const pendingAccepted = Number.isFinite(Number(result?.controlSeq)) && result?.controlSeq != null;
             this._showTurnControlNotice(sessionId, {
-                kind: "stop", reason: pendingAccepted ? "stop_pending_retry" : "timeout",
+                kind: "stop", reason: pendingAccepted ? "stop_pending" : "timeout",
                 ...(pendingAccepted ? { controlSeq: Number(result.controlSeq) } : {}),
             });
             this.dispatch({ type: "ui/status", text: pendingAccepted
-                ? "Stop accepted; it applies when the turn runs again"
+                ? "Stop accepted; waiting for the turn to stop"
                 : "Stop requested — waiting for the turn to unwind" });
         } else if (outcome === "too_late") {
             this.dispatch({ type: "ui/status", text: "Too late to stop: the turn had already finished" });

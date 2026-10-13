@@ -449,6 +449,8 @@ export function* processPrompt(
                     });
                     yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
                     state.carriedSteers = [];
+                    state.thrownTurnKey = null;
+                    state.retryCount = 0;
                     break;
                 }
                 const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);

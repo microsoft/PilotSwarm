@@ -86,7 +86,7 @@ Stop and Steer of a running turn
 
 | Procedure | Role |
 |---|---|
-| `cms_turn_control_add(session, kind, text, request_id, actor, steering_allowed)` | Under the session row lock: returns the first answer for a retried request id in this lifetime, then refuses a new Steer when steering is not allowed, then refuses `no_turn`, `legacy_turn` or `too_many`; writes the event and notifies. |
+| `cms_turn_control_add(session, kind, text, request_id, actor, steering_allowed)` | Under the session row lock: returns the first answer for a retried request id in this lifetime, then refuses a new Steer when steering is not allowed, then refuses `no_turn` or `legacy_turn`, and a new Steer with `too_many` when 20 controls of the turn are open (a Stop is never refused for it); writes the event and notifies. |
 | `cms_turn_start(session, turn)` | Marks the turn running (`active_turn_index`, `turn_high`); returns its open controls and whether it is stopped, or `stale` for an older turn. |
 | `cms_turn_look(turns)` | One batched read of each running turn's controls after its cursor. |
 | `cms_turn_end(session, turn, cursor, result, carried)` | Gives every open control of the turn one outcome; closes the carried steers folded into the turn; idempotent. |

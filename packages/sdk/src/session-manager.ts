@@ -1780,7 +1780,8 @@ export class SessionManager {
         if (opts.cancelTurnTasks) {
             try {
                 const cancelled = await withWorkspaceDeadline(
-                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedSince: active.startedAt }),
+                    // From the stopped turn's start to the Stop: never a later turn's tasks.
+                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } }),
                     "stop task cancel",
                     STOP_TASK_CANCEL_DEADLINE_MS,
                 );
