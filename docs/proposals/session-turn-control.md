@@ -43,7 +43,9 @@ Revision 6 is checked against `waldemort/turn-control` after phases A5
 merged. Revision 7 adds the fixes from the final review of the integrated
 feature and is checked against `waldemort/turn-control` at `e945c07f`. The
 rows after the turnKey row are revision 7. Workstream A's notes are in
-`.paw/work/turn-control/Docs.md`.
+`.paw/work/turn-control/Docs.md`. The `.paw/work/turn-control/` planning files
+cited in this document are not in the tree; they are in the branch history at
+commit `1803c8cb`.
 
 | Change | Why | Section |
 |---|---|---|
