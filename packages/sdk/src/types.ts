@@ -148,6 +148,12 @@ export interface TurnOptions {
     liveTurn?: boolean;
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
     turnIndex?: number;
+    /**
+     * Session turn control (runTurnV4): the running turn's live control loop.
+     * Enables the send gate; controls that arrive before the initial prompt
+     * is sent are held, and a held Stop skips the send (plan P21).
+     */
+    turnControl?: import("./turn-control.js").TurnControlBinding;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */

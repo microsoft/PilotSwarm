@@ -905,6 +905,10 @@ export class ManagedSession {
     private stopRequest: { reason: string; requestedAt: number } | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
     private settleTurnResolver: (() => void) | null = null;
+    /** Rejecter for the current turn's completion promise — failTurn(). */
+    private settleTurnRejecter: ((err: unknown) => void) | null = null;
+    /** Session turn control: the running turn's send gate and steers (null without turn control). */
+    private steer: SteerTurnState | null = null;
 
     constructor(
         sessionId: string,
@@ -1458,6 +1462,10 @@ export class ManagedSession {
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        const binding = opts?.turnControl ?? null;
+        const steer = binding ? new SteerTurnState() : null;
+        this.steer = steer;
+        if (binding && steer) binding.attach(this.steerPort(steer));
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
@@ -1489,7 +1497,77 @@ export class ManagedSession {
             this.activeTurn = null;
             this.stopRequest = null;
             this.settleTurnResolver = null;
+            this.settleTurnRejecter = null;
+            if (steer) {
+                steer.ended = true;
+                steer.gate = "closed";
+            }
+            if (this.steer === steer) this.steer = null;
+            binding?.detach();
         }
+    }
+
+    // ── Session turn control: the send gate (design 4.6) ─────────
+
+    /**
+     * Gate of the controlled run, for diagnostics: pending until the initial
+     * send completes; "none" before runTurn starts and after it ends.
+     */
+    steerGateState(): "none" | "pending" | "open" | "closed" {
+        return this.steer?.gate ?? "none";
+    }
+
+    /** Close the running turn's send gate, if it has one (Stop, abort, forced settle, failure, idle). */
+    private closeSteerGate(): void {
+        if (this.steer) this.steer.gate = "closed";
+    }
+
+    /**
+     * The send-gate port of one controlled run. Every call is bound to `steer`:
+     * once that run ended, or another run started, the gate reads closed, a
+     * send is refused and a failure reaches no turn.
+     */
+    private steerPort(steer: SteerTurnState): import("./turn-control.js").TurnControlSessionPort {
+        const current = () => this.steer === steer && !steer.ended;
+        return {
+            gate: () => (current() ? steer.gate : "closed"),
+            close: () => { steer.gate = "closed"; },
+            sendSteer: (text, onConfirmed) => this.sendSteerOn(steer, text, onConfirmed),
+            failTurn: (err) => {
+                if (!current()) return;
+                steer.gate = "closed";
+                try { this.settleTurnRejecter?.(err); } catch {}
+            },
+        };
+    }
+
+    /**
+     * Send a steer into the running turn with mode "immediate". The watch for
+     * its user.message is armed before the send, because the event can come
+     * before send() resolves. `onConfirmed` runs once, when the run confirms
+     * the steer. A send that throws fails the turn (the caller's chain does).
+     * A send that resolves after its run ended confirms nothing.
+     */
+    private async sendSteerOn(steer: SteerTurnState, text: string, onConfirmed: (messageId: string) => void): Promise<void> {
+        if (this.steer !== steer || steer.ended || steer.gate !== "open") throw new Error("The steer gate is not open");
+        steer.inFlight += 1;
+        let messageId: string;
+        try {
+            messageId = await this.copilotSession.send({ prompt: text, mode: "immediate" } as any);
+        } finally {
+            steer.inFlight -= 1;
+        }
+        if (steer.ended) return;
+        // Compare SDK event order, not RPC completion time: confirmation and
+        // its following idle can both precede the send result.
+        const seenAt = steer.seen.get(messageId);
+        if (seenAt !== undefined) {
+            steer.lastConfirmOrder = Math.max(steer.lastConfirmOrder, seenAt);
+            onConfirmed(messageId);
+        } else {
+            steer.unconfirmed.set(messageId, onConfirmed);
+        }
+        steer.trySettle();
     }
 
     /** The in-flight turn, if any. Read by the lock-bypassing stop path. */
@@ -1504,6 +1582,8 @@ export class ManagedSession {
      */
     requestStop(reason: string): { turnIndex: number } | null {
         if (!this.activeTurn) return null;
+        // Never send a steer after a Stop or an abort (spike cell C5b).
+        this.closeSteerGate();
         this.stopRequest = { reason, requestedAt: Date.now() };
         return { turnIndex: this.activeTurn.turnIndex };
     }
@@ -1517,6 +1597,7 @@ export class ManagedSession {
      */
     forceSettleTurn(reason: string): boolean {
         if (!this.activeTurn) return false;
+        this.closeSteerGate();
         if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
         try { this.settleTurnResolver?.(); } catch {}
         return true;
@@ -3308,6 +3389,7 @@ export class ManagedSession {
             // Hang-escalation hook: forceSettleTurn() resolves this promise when
             // the SDK never fires session.idle (see stop-turn plan, edge E3).
             this.settleTurnResolver = resolve;
+            this.settleTurnRejecter = reject;
             // Catch-all event handler — captures every event and fires onEvent immediately.
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
@@ -3315,6 +3397,17 @@ export class ManagedSession {
                     const eventType = event.type ?? event.eventType ?? "unknown";
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;
+                    // Session turn control: a top-level idle closes the send gate
+                    // before anything observes the event (no observer may send
+                    // after it: spike cell C4c).
+                    if (eventType === "session.idle" && this.steer && !isNativeChildEvent(event)) {
+                        this.steer.gate = "closed";
+                    }
+                    // Session turn control: a user.message confirms a steer by its messageId.
+                    if (eventType === "user.message" && this.steer && !isNativeChildEvent(event)) {
+                        const messageId = (rawEventData as any)?.messageId;
+                        if (typeof messageId === "string") this.steer.onUserMessage(messageId);
+                    }
 
                     if (typeof rawEventData === "object" && rawEventData !== null) {
                         eventData = { ...rawEventData };
@@ -3554,10 +3647,29 @@ export class ManagedSession {
             unsubscribers.push(
                 this.copilotSession.on("session.idle", (event: any) => {
                     if (isNativeChildEvent(event)) return;
+                    const steer = this.steer;
+                    if (steer) steer.gate = "closed";
                     flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
                     liveTurn?.finishTurn();
-                    resolve();
+                    if (!steer) {
+                        resolve();
+                        return;
+                    }
+                    // Turn control: close the send gate before anything else. A
+                    // steer sent but not yet confirmed keeps the turn open until
+                    // its user.message and the following idle; a send after
+                    // idle would start a new CLI run (spike cells C4a-C4c). The
+                    // turn timeout still bounds the wait. A stopped turn settles
+                    // at once: its steers are not delivered anyway.
+                    steer.gate = "closed";
+                    steer.onIdle();
+                    if (this.stopRequest) {
+                        resolve();
+                        return;
+                    }
+                    steer.settle = resolve;
+                    steer.trySettle();
                 }),
             );
         });
@@ -3568,7 +3680,11 @@ export class ManagedSession {
         let turnTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = TURN_TIMEOUT > 0
             ? new Promise<void>((_, reject) => {
-                turnTimeoutTimer = setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+                turnTimeoutTimer = setTimeout(() => {
+                    // The guard aborts the run next: no steer may be sent from here on (spike cell C5b).
+                    this.closeSteerGate();
+                    reject(new Error("Turn timed out"));
+                }, TURN_TIMEOUT);
                 (turnTimeoutTimer as any).unref?.();
             })
             : null;
@@ -3585,6 +3701,7 @@ export class ManagedSession {
                     inactivityTimer = setTimeout(() => {
                         const idleMs = Date.now() - lastEventAt;
                         if (idleMs >= INACTIVITY_TIMEOUT) {
+                            this.closeSteerGate();
                             reject(new Error(
                                 `No events from the Copilot CLI subprocess for ${Math.round(idleMs / 1000)}s — `
                                 + `${TURN_INACTIVITY_ERROR_MARKER}; treating the turn as lost.`,
@@ -3634,6 +3751,15 @@ export class ManagedSession {
         try {
             normalizeCopilotSessionMessageHistory(this.copilotSession as any);
 
+            // Turn control: a Stop that arrived before the prompt was sent
+            // ends the turn without a model run (plan P21).
+            const heldStop = opts?.turnControl?.heldStop() ?? null;
+            if (this.steer && heldStop !== null) {
+                this.steer.gate = "closed";
+                if (!this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
+                return { type: "stopped", reason: heldStop };
+            }
+
             // Fire the prompt — non-blocking. Image attachments arrive as
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
             // activity host); the Copilot runtime packs them into the
@@ -3653,6 +3779,13 @@ export class ManagedSession {
                     }
                     : {}),
             });
+
+            // Turn control: the prompt is sent, so steers may follow. Controls
+            // held until now are applied in order.
+            if (this.steer && this.steer.gate === "pending") {
+                this.steer.gate = "open";
+                opts?.turnControl?.gateOpened();
+            }
 
             // Wait for session.idle, or a guard rejection (wall-clock cap /
             // inactivity watchdog) when enabled.
@@ -3762,6 +3895,9 @@ export class ManagedSession {
                 } as any;
             }
         } catch (err: any) {
+            // Every error unwind ends the run, and the guards below abort it:
+            // close the send gate before any abort (spike cell C5b).
+            this.closeSteerGate();
             const errMsg = err.message ?? String(err);
             // Session workspaces: set_session_workspace told the model the
             // change was accepted. A turn that then fails still carries the
@@ -3887,6 +4023,7 @@ export class ManagedSession {
      * Session remains alive for future runTurn() calls.
      */
     abort(): void {
+        this.closeSteerGate();
         void Promise.resolve(this.copilotSession.abort()).catch(() => {});
     }
 
@@ -4105,5 +4242,59 @@ export class ManagedSession {
     /** Get the underlying CopilotSession (for direct access when needed). */
     getCopilotSession(): CopilotSession {
         return this.copilotSession;
+    }
+}
+
+/**
+ * Session turn control: the running turn's send gate and its sent but not yet
+ * confirmed steers (design 4.6). Settles the turn at an idle only when no
+ * steer is in flight or unconfirmed and an idle came after the last
+ * confirmation.
+ *
+ * @internal
+ */
+class SteerTurnState {
+    gate: "pending" | "open" | "closed" = "pending";
+    /** The run that owns this state returned. */
+    ended = false;
+    /** send() calls not yet resolved. */
+    inFlight = 0;
+    /** Sent steers whose user.message has not been seen: messageId → callback. */
+    readonly unconfirmed = new Map<string, (messageId: string) => void>();
+    /** user.message ids seen, with their event order (a confirmation can come before send() resolves). */
+    readonly seen = new Map<string, number>();
+    private order = 0;
+    private lastIdleOrder = -1;
+    lastConfirmOrder = -1;
+    /** Resolves the turn once settlement is allowed (set at the first idle). */
+    settle: (() => void) | null = null;
+
+    onUserMessage(messageId: string): void {
+        this.order += 1;
+        const cb = this.unconfirmed.get(messageId);
+        if (cb) {
+            this.unconfirmed.delete(messageId);
+            this.lastConfirmOrder = this.order;
+            cb(messageId);
+        } else {
+            this.seen.set(messageId, this.order);
+        }
+        this.trySettle();
+    }
+
+    onIdle(): void {
+        this.order += 1;
+        this.lastIdleOrder = this.order;
+    }
+
+    trySettle(): void {
+        if (!this.settle) return;
+        if (this.inFlight > 0 || this.unconfirmed.size > 0) return;
+        // A confirmation after the most recent idle belongs to work whose
+        // answer still needs a later idle, even if its send has already returned.
+        if (this.lastIdleOrder <= this.lastConfirmOrder) return;
+        const settle = this.settle;
+        this.settle = null;
+        settle();
     }
 }

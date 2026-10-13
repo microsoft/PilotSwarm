@@ -108,6 +108,7 @@ Every file belongs to exactly one workstream. Another workstream that needs a ch
 | `packages/sdk/test/local/stop-turn.test.js` | A | after A1 keeps only ManagedSession and SessionManager abort tests |
 | `packages/sdk/test/local/stop-turn-race-legacy.test.js` (new in A1, moved from `stop-turn.test.js`) | B | the race-normalizer tests; B1 points its import at `orchestration_1_0_80/turn.js` |
 | `packages/sdk/test/local/stop-turn-management.test.js` (new in A1, moved from `stop-turn.test.js`) | C | the management `stopSessionTurn` tests; C1 updates its fake catalog |
+| `packages/sdk/test/local/snapshot-lineage-jump.test.js`, `orchestration-workspace-compat.test.js`, `workspace-turn.test.js` (their orchestration version pins); `orchestration-budget-resume.test.js`, `prefix-cache-system-context.test.js`, `orchestration-retry-exhaustion.test.js`, `race-failed-winner.test.js`, `bound-agent-backfill.test.js` | B | the first three pin the latest version as 1.0.80; B1 updates the pins. The other five drive the old Stop race or the old history names; B2 updates them. A4/A5 ask the parent first before any change to these eight files |
 | `packages/sdk/test/local/child-update-batching.test.js`, `child-wake-diet.test.js`, `model-selection.test.js` | B | they encode the Stop race in a fake `ctx`; B2 updates their drivers |
 | `packages/sdk/test/local/stop-turn-live.test.js` | C | C1 updates it to the new path (P22: assert the `user.stop` line and `stopped` outcome, not the system message) and keeps a legacy-version case |
 | `.paw/work/turn-control/**` | A | umbrella Spec, CodeResearch, this plan, reviews. B and C keep their own PAW work folders `.paw/work/turn-control-b/` and `.paw/work/turn-control-c/` |
@@ -163,8 +164,8 @@ I1 integration (parent) ──► U0 deployment route (parent) ──► U1 UX t
 
 Workstream A (this branch):
 - [x] **Phase A1: Contract** - Shared types, constants, routing names and tag, scheduling hooks, CMS method signatures and the `sessions.steering` definition; merged before B and C start.
-- [ ] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
-- [ ] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
+- [x] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
+- [x] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
 - [ ] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
 - [ ] **Phase A5: End-to-end, crash and multi-worker verification** - Real-CLI integration, fault-point crash matrix, stale worker, measurements.
 - [ ] **Phase A6: Documentation (A)** - Docs.md for workstream A, CMS schema and system reference docs.
@@ -304,6 +305,14 @@ Consumes A1, A2. Design 4.4-4.6; Spec FR-005 to FR-008, FR-022. Test plan 7.2, p
 - [ ] The worker holds exactly one extra connection while running (checked with `pg_stat_activity` in the hub test)
 
 ---
+
+### A3 implementation notes
+- Installed `@github/copilot-sdk` 1.0.13: `send(options: MessageOptions): Promise<string>` returns the message id; `MessageOptions.mode` is `"enqueue" | "immediate"`; `user.message` data carries `messageId` matching the id `send` returned, and `delivery` (`idle`, `steering`, ...). Recorded again in Docs.md (A6).
+- The hub's LISTEN connection uses `application_name = "pilotswarm-turn-control"` so operators can find it in `pg_stat_activity`.
+- A failed steer send ends the turn as an `error` result (the turn's existing error path), not a throw; the activity retries from the saved conversation with the steer still open.
+- HorizonDB hub run: not covered in the dev pod (no `.env.horizondb` there); I1 decides per file (S9).
+- Review r1 rework: the notification client comes from the catalog provider (`SessionCatalog.createTurnControlListener()`, plain `pg.Client` built from the catalog's own connection config); the worker does not import the cloud-aware pool factory. The live path uses one position-ordered queue that drains only while the attached run's gate is open; the session hands the control a run-bound port (`attach`/`detach`), and a retired control or ended run ignores late confirmations and failures. The hub uses a generation counter and a single in-flight connect attempt; `stop()` ends a client that is still connecting. Tests use injected timers and deferred promises, not sleeps.
+- Review r2 rework: the wall-clock timeout and the inactivity watchdog close the send gate when they fire, and every error unwind closes it before any abort. Concurrent `start()` calls share one claim on the next generation; `stop()` invalidates the claim, so a stale start cannot restart a stopped hub or install a second interval.
 
 ## Phase A4: runTurnV4
 

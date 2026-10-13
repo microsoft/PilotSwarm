@@ -378,8 +378,10 @@ test("acceptsTurnControl: a running turn that started on the turn-control path",
     assert.equal(acceptsTurnControl(undefined), false);
 });
 
-test("the catalog's turn-control methods are unavailable until migration 0082", async () => {
+test("the catalog's turn-control methods report a schema without migration 0082 as unavailable", async () => {
     const catalog = Object.create(PgSessionCatalog.prototype);
+    catalog.sql = { fn: { turnControlAdd: "x.a", turnStart: "x.b", turnLook: "x.c", turnEnd: "x.d" } };
+    catalog.pool = { query: async () => { throw Object.assign(new Error("function does not exist"), { code: "42883" }); } };
     for (const [method, args] of [
         ["turnControlAdd", ["s", "steer", "t", "r", null]],
         ["turnStart", ["s", 1]],
@@ -410,4 +412,17 @@ test("updateSession sends closeControls only when true", async () => {
     await catalog.updateSession("s", { state: "error", closeControls: false });
     await catalog.updateSession("s", { state: "idle" });
     assert.deepEqual(sent, [{ state: "error", closeControls: true }, { state: "error" }, { state: "idle" }]);
+});
+
+test("other catalog errors from turn-control procedures pass through", async () => {
+    const catalog = Object.create(PgSessionCatalog.prototype);
+    catalog.sql = { fn: { turnStart: "x.b" } };
+    catalog.pool = { query: async () => { throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }); } };
+    await assert.rejects(() => catalog.turnStart("s", 1), /connection refused/);
+});
+
+test("turnLook with no running turns makes no query", async () => {
+    const catalog = Object.create(PgSessionCatalog.prototype);
+    catalog.pool = { query: async () => { throw new Error("no query expected"); } };
+    assert.deepEqual(await catalog.turnLook([]), []);
 });
