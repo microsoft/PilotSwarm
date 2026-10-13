@@ -263,6 +263,7 @@ export class TurnControlHub {
     private listener: TurnControlListenClient | null = null;
     private pendingClient: TurnControlListenClient | null = null;
     private connecting: Promise<void> | null = null;
+    private starting: { generation: number; ready: Promise<boolean> } | null = null;
     private timer: unknown = null;
     private reconnectTimer: unknown = null;
     private reconnectDelayMs = RECONNECT_MIN_MS;
@@ -288,16 +289,33 @@ export class TurnControlHub {
 
     async start(): Promise<void> {
         if (!this.stopped) return;
+        // Concurrent starts share one claim on the next generation; stop()
+        // invalidates it. Only a claim that is still current when the earlier
+        // span's attempt has finished starts the hub, so a stale start never
+        // revives a stopped hub nor installs a second interval.
+        let claim = this.starting;
+        if (!claim || claim.generation !== this.generation) {
+            const generation = ++this.generation;
+            const ready = this.claim(generation);
+            const own = { generation, ready };
+            claim = own;
+            this.starting = own;
+            void ready.finally(() => { if (this.starting === own) this.starting = null; }).catch(() => {});
+        }
+        if (await claim.ready) await this.connect();
+    }
+
+    private async claim(generation: number): Promise<boolean> {
         // An attempt from an earlier start..stop span must finish first.
-        if (this.connecting) await this.connecting;
+        while (this.connecting) await this.connecting;
+        if (generation !== this.generation || !this.stopped) return false;
         this.stopped = false;
-        this.generation += 1;
         this.reconnectDelayMs = RECONNECT_MIN_MS;
         const interval = this.opts.lookIntervalMs ?? TURN_CONTROL_LOOK_INTERVAL_MS;
         this.timer = this.timers.setInterval(() => {
             if (this.live.size > 0) void this.lookAll();
         }, interval);
-        await this.connect();
+        return true;
     }
 
     async stop(): Promise<void> {

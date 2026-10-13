@@ -8,7 +8,7 @@
  * No live model, database, or duroxide runtime required.
  */
 import { describe, it, expect } from "vitest";
-import { ManagedSession } from "../../src/managed-session.js";
+import { ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-session.js";
 import { LiveTurnControl } from "../../src/turn-control.js";
 
 function deferred() {
@@ -218,6 +218,42 @@ describe("turn control: ManagedSession send gate", () => {
         await turn;
         expect(steersSent(fake)).toEqual([]);
     });
+
+    // The guards are real timers: their firing is the behaviour under test.
+    // Everything after it is driven by deferred signals.
+    for (const guard of [
+        { name: "wall-clock timeout", config: { turnTimeoutMs: 40, turnInactivityTimeoutMs: 0 }, message: /taking too long/ },
+        { name: "inactivity watchdog", config: { turnTimeoutMs: 0, turnInactivityTimeoutMs: 40 }, message: new RegExp(TURN_INACTIVITY_ERROR_MARKER) },
+    ]) {
+        it(`the ${guard.name} closes the gate before its abort; nothing is sent while the abort is pending`, async () => {
+            const fake = createFakeCopilotSession({ abortFiresIdle: false });
+            const { managed, live, binding, opened } = setup({ fake, config: guard.config });
+            const abortCalled = deferred();
+            const abortDone = deferred();
+            let gateAtAbort = null;
+            fake.abort = () => {
+                fake.abortCalls++;
+                gateAtAbort = binding.port.gate();
+                abortCalled.resolve();
+                return abortDone.promise;
+            };
+            const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding });
+            await opened;
+            expect(binding.port.gate()).toBe("open");
+            await abortCalled.promise;
+            expect(gateAtAbort).toBe("closed");
+            await expect(binding.port.sendSteer("during the abort", () => {})).rejects.toThrow(/not open/);
+            await live.enqueue([control(7, "steer")]);
+            await flush();
+            expect(steersSent(fake)).toEqual([]);
+            abortDone.resolve();
+            const result = await turn;
+            expect(result.type).toBe("error");
+            expect(result.message).toMatch(guard.message);
+            expect(fake.abortCalls).toBe(1);
+            expect(steersSent(fake)).toEqual([]);
+        });
+    }
 
     it("a steer whose send throws ends the turn as an error", async () => {
         const fake = createFakeCopilotSession({

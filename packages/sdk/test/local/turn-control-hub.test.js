@@ -236,6 +236,63 @@ describe("turn control hub: lifecycle (in-memory clients, hand-driven timers)", 
         await hub.stop();
     });
 
+    for (const restarts of [1, 2]) {
+        it(`${restarts === 2 ? "two restarts" : "a restart"} waiting on an obsolete attempt: one replacement listener, one interval, nothing left after stop`, async () => {
+            const timers = manualTimers();
+            const catalog = countingCatalog();
+            const created = deferred();
+            const old = fakeClient();
+            const clients = [];
+            const hub = new TurnControlHub({
+                catalog, schema: "s", timers,
+                createClient: () => {
+                    if (clients.length === 0) { clients.push(old); return created.promise; }
+                    const c = fakeClient();
+                    clients.push(c);
+                    return c;
+                },
+            });
+            const first = hub.start();                        // 1. blocked in client creation
+            await flush();
+            const stopping = hub.stop();                      // 2. not awaited
+            const starts = Array.from({ length: restarts }, () => hub.start());   // 3. wait on the old attempt
+            await flush();
+            created.resolve(old);                             // 4. the obsolete client is closed
+            await Promise.all([first, stopping, ...starts]);  // 5, 6. the restarts continue
+            expect(old.ended).toBe(true);
+            expect(clients.length).toBe(2);
+            expect(clients[1].ended).toBe(false);
+            expect(hub.listening).toBe(true);
+            expect(timers.intervals.filter((h) => !h.cleared).length).toBe(1);
+            await hub.register(stubTurn("a", 1));
+            await hub.stop();
+            expect(clients[1].ended).toBe(true);
+            expect(timers.active()).toBe(0);
+            const looks = catalog.calls.length;
+            for (const h of timers.intervals) if (!h.cleared) h.fn();
+            await flush();
+            expect(catalog.calls.length).toBe(looks);
+        });
+    }
+
+    it("a start racing a later stop leaves the hub stopped", async () => {
+        const timers = manualTimers();
+        const created = deferred();
+        const old = fakeClient();
+        let n = 0;
+        const hub = new TurnControlHub({ catalog: countingCatalog(), schema: "s", timers, createClient: () => (++n === 1 ? created.promise : fakeClient()) });
+        const first = hub.start();
+        await flush();
+        const stop1 = hub.stop();
+        const restart = hub.start();
+        const stop2 = hub.stop();
+        created.resolve(old);
+        await Promise.all([first, stop1, restart, stop2]);
+        expect(hub.listening).toBe(false);
+        expect(n).toBe(1);
+        expect(timers.active()).toBe(0);
+    });
+
     it("a repeated start makes no second connection", async () => {
         const timers = manualTimers();
         let n = 0;

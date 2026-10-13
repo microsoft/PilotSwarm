@@ -3680,7 +3680,11 @@ export class ManagedSession {
         let turnTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = TURN_TIMEOUT > 0
             ? new Promise<void>((_, reject) => {
-                turnTimeoutTimer = setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+                turnTimeoutTimer = setTimeout(() => {
+                    // The guard aborts the run next: no steer may be sent from here on (spike cell C5b).
+                    this.closeSteerGate();
+                    reject(new Error("Turn timed out"));
+                }, TURN_TIMEOUT);
                 (turnTimeoutTimer as any).unref?.();
             })
             : null;
@@ -3697,6 +3701,7 @@ export class ManagedSession {
                     inactivityTimer = setTimeout(() => {
                         const idleMs = Date.now() - lastEventAt;
                         if (idleMs >= INACTIVITY_TIMEOUT) {
+                            this.closeSteerGate();
                             reject(new Error(
                                 `No events from the Copilot CLI subprocess for ${Math.round(idleMs / 1000)}s — `
                                 + `${TURN_INACTIVITY_ERROR_MARKER}; treating the turn as lost.`,
@@ -3890,6 +3895,9 @@ export class ManagedSession {
                 } as any;
             }
         } catch (err: any) {
+            // Every error unwind ends the run, and the guards below abort it:
+            // close the send gate before any abort (spike cell C5b).
+            this.closeSteerGate();
             const errMsg = err.message ?? String(err);
             // Session workspaces: set_session_workspace told the model the
             // change was accepted. A turn that then fails still carries the
