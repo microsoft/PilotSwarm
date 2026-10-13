@@ -62,8 +62,12 @@ function createFakeCatalog({ row = null, add = () => ({ seq: 41, turn: 3 }), out
             sessionId, rootSessionId: sessionId, visibility: "private", viewerShareAccess: null,
             viewerIsOwner: viewer?.subject === ALICE.subject,
         }),
-        turnControlAdd: async (sessionId, kind, text, requestId, actor) => {
-            calls.add.push({ sessionId, kind, text, requestId, actor });
+        // Models cms_turn_control_add: a retried request id gets its first
+        // answer, then a new Steer is refused when steering is not allowed.
+        turnControlAdd: async (sessionId, kind, text, requestId, actor, steeringAllowed = true) => {
+            calls.add.push({ sessionId, kind, text, requestId, actor, steeringAllowed });
+            const retried = recordedSteers.some((steer) => steer.requestId === requestId);
+            if (kind === "steer" && !steeringAllowed && !retried) return { refused: "steering_disabled" };
             const answer = typeof add === "function" ? add({ sessionId, kind, text, requestId, actor }) : add;
             if (answer instanceof Error) throw answer;
             return answer;
@@ -153,7 +157,7 @@ describe("steerSessionTurn (fake catalog)", () => {
         const result = await mgmt.steerSessionTurn("s1", { text: "  use metric units  ", requestId: "req-1", caller: { sender } });
         expect(result).toEqual({ outcome: "accepted", steerId: 41, turn: 3 });
         expect(fake.calls.add).toEqual([{ sessionId: "s1", kind: "steer", text: "  use metric units  ", requestId: "req-1",
-            actor: { kind: "user", provider: "test", subject: "alice", display: "Alice", relation: "owner", origin: "portal" } }]);
+            actor: { kind: "user", provider: "test", subject: "alice", display: "Alice", relation: "owner", origin: "portal" }, steeringAllowed: true }]);
     });
 
     it("passes a repeat answer through and records a null actor without a sender", async () => {
@@ -179,11 +183,13 @@ describe("steerSessionTurn (fake catalog)", () => {
         for (const flag of [{}, { cluster: { enabled: false, allowUserOverride: false } }]) {
             const fake = createFakeCatalog({ flag });
             expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "steering_disabled" });
-            expect(fake.calls.add).toHaveLength(0);
+            expect(fake.calls.add).toHaveLength(1);
+            expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: false });
         }
         const fake = createFakeCatalog({ features: false });
         expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "steering_disabled" });
-        expect(fake.calls.add).toHaveLength(0);
+        expect(fake.calls.add).toHaveLength(1);
+        expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: false });
     });
 
     it("with the flag off, a retry of a recorded request id still gets its first answer; a new one is refused", async () => {
@@ -192,9 +198,11 @@ describe("steerSessionTurn (fake catalog)", () => {
         expect(await createMgmt(retry).steerSessionTurn("s1", { text: "x", requestId: "kept-id" }))
             .toEqual({ outcome: "accepted", steerId: 41, turn: 3, repeat: true });
         expect(retry.calls.add).toHaveLength(1);
+        expect(retry.calls.add[0]).toMatchObject({ requestId: "kept-id", steeringAllowed: false });
         const fresh = createFakeCatalog({ flag, recordedSteers: [{ seq: 41, requestId: "kept-id" }] });
         expect(await createMgmt(fresh).steerSessionTurn("s1", { text: "x", requestId: "new-id" })).toEqual({ outcome: "steering_disabled" });
-        expect(fresh.calls.add).toHaveLength(0);
+        expect(fresh.calls.add).toHaveLength(1);
+        expect(fresh.calls.add[0]).toMatchObject({ requestId: "new-id", steeringAllowed: false });
     });
 
     it("the flag defaults to off with no user override", () => {
@@ -234,7 +242,7 @@ describe("stopSessionTurn (fake catalog)", () => {
         const result = await createMgmt(fake).stopSessionTurn("s1", { requestId: "stop-1", caller: { sender } });
         expect(result).toEqual({ outcome: "stopped", turnIndex: 3, controlSeq: 50 });
         expect(fake.calls.add).toEqual([{ sessionId: "s1", kind: "stop", text: "Stopped by user", requestId: "stop-1",
-            actor: { kind: "user", provider: "test", subject: "bob", relation: "collaborator" } }]);
+            actor: { kind: "user", provider: "test", subject: "bob", relation: "collaborator" }, steeringAllowed: true }]);
         expect(fake.calls.eventReads.length).toBe(3);
         expect(fake.calls.eventReads.every((read) => read.afterSeq === 50 && read.types.length === 1
             && read.types[0] === "session.control_outcome")).toBe(true);
@@ -370,7 +378,9 @@ describe("Web API mode (fake catalog, real runtime and router)", () => {
             };
             // Bob's override would enable Steer; the server resolves the flag for Alice.
             expect(await harness.web.steerSessionTurn("s1", { text: "x", requestId: "r1", caller: forged })).toEqual({ outcome: "steering_disabled" });
-            expect(fake.calls.add).toHaveLength(0);
+            expect(fake.calls.add).toHaveLength(1);
+            expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: false });
+            fake.calls.add.length = 0;
 
             fake.catalog.turnControlAdd = async (sessionId, kind, text, requestId, actor) => {
                 fake.calls.add.push({ sessionId, kind, text, requestId, actor });
