@@ -139,6 +139,49 @@ describe("turn control procedures (migration 0082)", () => {
         expect((await events(s, ["user.steer"])).length).toBe(1);
     }, TIMEOUT);
 
+    describe("steering turned off (the resolved flag, checked under the row lock after the retry lookup)", () => {
+        const add = (s, kind, text, requestId, allowed) => catalog.turnControlAdd(s, kind, text, requestId, null, allowed);
+
+        it("a lost-response retry gets its first answer; a new Steer is refused; a Stop ignores the flag", async () => {
+            const s = await newSession();
+            await catalog.turnStart(s, 4);
+            const id = rid();
+            const first = await add(s, "steer", "guidance", id, true);
+            expect(first.seq).toBeGreaterThan(0);
+            expect(await add(s, "steer", "guidance", id, false)).toEqual({ ...first, repeat: true });
+            expect(await add(s, "steer", "new guidance", rid(), false)).toEqual({ refused: "steering_disabled" });
+            const halt = await add(s, "stop", "Stopped by user", rid(), false);
+            expect(halt.seq).toBeGreaterThan(first.seq);
+            expect((await events(s, ["user.steer"])).length).toBe(1);
+        }, TIMEOUT);
+
+        it("the flag is checked before the turn state: a Steer with no running turn is refused as disabled, a retry still answers", async () => {
+            const s = await newSession();
+            await catalog.turnStart(s, 1);
+            const id = rid();
+            const first = await add(s, "steer", "guidance", id, true);
+            await catalog.completeTurnWriteback(writebackInput(s, 1));
+            await catalog.turnEnd(s, 1, 0, "other", []);
+            expect(await add(s, "steer", "guidance", id, false)).toEqual({ ...first, repeat: true });
+            expect(await add(s, "steer", "other", rid(), false)).toEqual({ refused: "steering_disabled" });
+        }, TIMEOUT);
+
+        it("a retry after a revive follows the lifetime rule: the old request id is not answered from the old lifetime", async () => {
+            const s = await newSession();
+            await catalog.turnStart(s, 2);
+            const id = rid();
+            const old = await add(s, "steer", "guidance", id, true);
+            await catalog.softDeleteSession(s);
+            await catalog.createSession(s, { model: "m" });
+            await catalog.turnStart(s, 0);
+            expect(await add(s, "steer", "guidance", id, false)).toEqual({ refused: "steering_disabled" });
+            const fresh = await add(s, "steer", "guidance", id, true);
+            expect(fresh.repeat).toBeUndefined();
+            expect(fresh.seq).toBeGreaterThan(old.seq);
+            expect(fresh.turn).toBe(0);
+        }, TIMEOUT);
+    });
+
     it("turn start marks the turn running, returns open controls in order, refuses stale starts and reports stopped", async () => {
         const s = await newSession();
         expect(await catalog.turnStart(s, 2)).toEqual({ stopped: false, controls: [] });
