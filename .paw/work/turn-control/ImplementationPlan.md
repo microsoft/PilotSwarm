@@ -165,7 +165,7 @@ I1 integration (parent) ──► U0 deployment route (parent) ──► U1 UX t
 Workstream A (this branch):
 - [x] **Phase A1: Contract** - Shared types, constants, routing names and tag, scheduling hooks, CMS method signatures and the `sessions.steering` definition; merged before B and C start.
 - [x] **Phase A2: CMS migration 0082** - Column, procedures, flag row, `cms.ts` implementations and procedure tests.
-- [ ] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
+- [x] **Phase A3: Worker live control** - TurnControlHub, LiveTurnControl, ManagedSession send gate and settlement, worker start/stop of the listener.
 - [ ] **Phase A4: runTurnV4** - Turn start, fold, live registration, cursor save and turn end in the activity; the V4 names run the new handler.
 - [ ] **Phase A5: End-to-end, crash and multi-worker verification** - Real-CLI integration, fault-point crash matrix, stale worker, measurements.
 - [ ] **Phase A6: Documentation (A)** - Docs.md for workstream A, CMS schema and system reference docs.
@@ -305,6 +305,12 @@ Consumes A1, A2. Design 4.4-4.6; Spec FR-005 to FR-008, FR-022. Test plan 7.2, p
 - [ ] The worker holds exactly one extra connection while running (checked with `pg_stat_activity` in the hub test)
 
 ---
+
+### A3 implementation notes
+- Installed `@github/copilot-sdk` 1.0.13: `send(options: MessageOptions): Promise<string>` returns the message id; `MessageOptions.mode` is `"enqueue" | "immediate"`; `user.message` data carries `messageId` matching the id `send` returned, and `delivery` (`idle`, `steering`, ...). Recorded again in Docs.md (A6).
+- The hub's LISTEN connection uses `application_name = "pilotswarm-turn-control"` so operators can find it in `pg_stat_activity`.
+- A failed steer send ends the turn as an `error` result (the turn's existing error path), not a throw; the activity retries from the saved conversation with the steer still open.
+- HorizonDB hub run: not covered in the dev pod (no `.env.horizondb` there); I1 decides per file (S9).
 
 ## Phase A4: runTurnV4
 
