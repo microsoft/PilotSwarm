@@ -208,6 +208,17 @@ for (const final of ["stopped", "too_late"]) {
     });
 }
 
+test("an outcome that arrives before the Stop's timeout answer: no pending notice is left behind", async () => {
+    const answer = deferred();
+    const { controller, view, store } = harness({ stop: () => answer.promise });
+    const stopping = controller.stopActiveSessionTurn();
+    controller.mergeSessionEvent(SID, { seq: 21, eventType: "session.control_outcome", data: { seq: 9, turn: 3, outcome: "stopped" } });
+    answer.resolve({ outcome: "timeout", turnIndex: 3, controlSeq: 9 });
+    await stopping;
+    assert.equal(view().notice, null);
+    assert.match(store.getState().ui.statusText, /Stop finished/);
+});
+
 test("a pending Stop notice also clears when its outcome arrives through a history load", async () => {
     const { controller, view, store } = harness({ stop: { outcome: "timeout", turnIndex: 3, controlSeq: 9 } });
     await controller.stopActiveSessionTurn();

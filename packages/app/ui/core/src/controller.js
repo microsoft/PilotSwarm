@@ -10806,6 +10806,13 @@ export class PilotSwarmUiController {
         }
     }
 
+    /** Whether the session's loaded history already has the outcome of this control. */
+    _stopOutcomeSeen(sessionId, controlSeq) {
+        if (controlSeq == null || !Number.isFinite(Number(controlSeq))) return false;
+        const events = this.getState().history.bySessionId.get(sessionId)?.events || [];
+        return events.some((event) => event.eventType === "session.control_outcome" && Number(event.data?.seq) === Number(controlSeq));
+    }
+
     _composerFreeFor(sessionId) {
         const state = this.getState();
         return state.sessions.activeSessionId === sessionId && !this.getPromptEditSessionMatch(sessionId);
@@ -11120,9 +11127,12 @@ export class PilotSwarmUiController {
             const refusal = TURN_CONTROL_NOTICE_REASONS.has(result?.detail) ? result.detail : "no_active_turn";
             this._showTurnControlNotice(sessionId, { kind: "stop", reason: refusal });
             this.dispatch({ type: "ui/status", text: "No active turn to stop" });
+        } else if (outcome === "timeout" && this._stopOutcomeSeen(sessionId, result?.controlSeq)) {
+            // The outcome arrived before this answer: the transcript already shows it.
+            this.dispatch({ type: "ui/status", text: `Stop finished for ${sessionId.slice(0, 8)}` });
         } else if (outcome === "timeout") {
             // An accepted Stop without an outcome yet stays pending until its
-            // session.control_outcome arrives (mergeSessionEvent clears it).
+            // session.control_outcome arrives (reconcileOutboxAgainstEvent clears it).
             const pendingAccepted = Number.isFinite(Number(result?.controlSeq)) && result?.controlSeq != null;
             this._showTurnControlNotice(sessionId, {
                 kind: "stop", reason: pendingAccepted ? "stop_pending" : "timeout",
