@@ -25,7 +25,11 @@ C1–C4; spec r8; design `docs/proposals/session-turn-control.md` revision 5.
   the catalog's row lock; a request recorded in an earlier orchestration
   lifetime (before a revive reset `turn_base_seq`) would be recorded anew.
   Closing that fully needs the flag decision inside `cms_turn_control_add`
-  (workstream A).
+  (workstream A). Hand-off (parent decision, 2026-10-13): A moves the flag
+  decision into `cms_turn_control_add` in A5, so dedup and the flag check
+  share one row lock and one lifetime rule; after this PR merges, A replaces
+  the client-side `_steerRequestRecorded` lookup with a flag parameter on the
+  add call.
 - `stopSessionTurn(sessionId, { reason?, timeoutMs?, requestId?, caller? })`:
   validates `timeoutMs` (0–300,000 ms, default 30,000) before recording,
   records a `user.stop`, then polls `session.control_outcome` every 250 ms
