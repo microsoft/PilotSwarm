@@ -301,7 +301,8 @@ from `/proc/<pid>/schedstat`. The script reads it only when the database
 runs on the same host and the PID is provably that connection's backend:
 its process title must name the user, database and client port that
 `pg_stat_activity` reports for `pg_backend_pid()`. Otherwise it names the
-reason and prints no number. At the 5 s look interval, one worker with 50
+reason and prints no number. A Unix-socket connection has no client port
+(`client_port` is -1), so it is not measured: run the script over TCP. At the 5 s look interval, one worker with 50
 live turns uses about 1.98 ms of database CPU every 5 s, about 0.04% of one
 core.
 `pg_stat_statements` was not installed. One LISTEN connection per worker
