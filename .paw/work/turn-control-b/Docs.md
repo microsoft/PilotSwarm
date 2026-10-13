@@ -105,6 +105,7 @@ parent's integration run retains that coverage; no fixture or source skip was
 added. All seven changed fake-context model-switch cases passed.
 
 Canonical documentation is
-[`docs/architecture/orchestration/design.md`](../../../../docs/architecture/orchestration/design.md).
-B3 updates only that design reference and this workstream document. Full B2
+[`docs/architecture/orchestration/design.md`](../../../docs/architecture/orchestration/design.md).
+B3 updates only that design reference, this workstream document, and the
+workflow status. Full B2
 acceptance remains pending the A4 merge and live-control verification delta.

@@ -10,7 +10,7 @@ hydration, and bounds duroxide history with continue-as-new.
 It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
-Primary source: [`packages/sdk/src/orchestration/`](../../../../packages/sdk/src/orchestration).
+Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
 The current latest version is `1.0.81`. Frozen prior versions live as siblings
 (single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
 directories `orchestration_1_0_52/` … `orchestration_1_0_80/`) and run
@@ -31,7 +31,7 @@ src/orchestration/
   runtime.ts     createRuntime, runLoop, startup gates, versioned tracing
   state.ts       DurableSessionState, DurableSessionRuntime, createInitialState, constants
   utils.ts       pure helpers — prompt parsing, context-usage reducer, error classifiers
-  lifecycle.ts   status, response/command writers, dehydrate, checkpoint, summarize,
+  lifecycle.ts   status, response/command writers, affinity release, summarize,
                  child digest, cron action, cancellation tombstones, continueAsNew, handleCommand
   queue.ts       KV FIFO primitives, drain, decide, processAnswer, processPendingChildDigest
   turn.ts        processPrompt, handleTurnResult, processTimer, retry / lossy-handoff
@@ -77,9 +77,10 @@ interface DurableSessionRuntime {
 — there is no closure of `let`s and there are no adapter shapes.
 
 `options` holds per-execution thresholds derived from input
-(`dehydrateThreshold`, `idleTimeout`, `inputGracePeriod`, `checkpointInterval`,
-`isSystem`, `parentSessionId`, `nestingLevel`, `baseSystemMessage`). These do
-not change inside an execution.
+(`idleTimeout`, `inputGracePeriod`, `isSystem`, `parentSessionId`,
+`nestingLevel`, `baseSystemMessage`). These do not change inside an execution.
+Legacy `dehydrateThreshold` and `checkpointInterval` inputs are accepted but
+ignored.
 
 ### Key state fields
 
@@ -88,8 +89,8 @@ not change inside an execution.
 | `iteration` | yes | LLM-turn counter |
 | `loopIteration` | no | resets each execution; bounded by `MAX_ITERATIONS_PER_EXECUTION` |
 | `config` | yes | session config; mutated by `set_model`, agent merge, task-context injection |
-| `affinityKey` | yes | rotates on dehydrate |
-| `needsHydration` / `preserveAffinityOnHydrate` | yes | hydration flags |
+| `affinityKey` | yes | rotates on affinity release or legacy hydration |
+| `needsHydration` / `preserveAffinityOnHydrate` | yes | legacy (≤1.0.56) hydration flags |
 | `pendingPrompt` / `pendingSystemPrompt` / `pendingRequiredTool` / `bootstrapPrompt` | yes | dispatch on next turn |
 | `pendingToolActions` | yes | replay queue for multi-action turns |
 | `carriedSteers` | yes, when non-empty | ordered `{ seq, text }` guidance accepted too late for an earlier turn; retained until consumed or closed on give-up/termination |
@@ -105,7 +106,7 @@ not change inside an execution.
 | `legacyPendingMessage` | no | one-shot legacy carry-forward |
 | `orchestrationResult` | no | sentinel — when non-null, runLoop returns it |
 
-The full type is in [state.ts](../../../../packages/sdk/src/orchestration/state.ts).
+The full type is in [state.ts](../../../packages/sdk/src/orchestration/state.ts).
 
 ---
 
@@ -388,10 +389,10 @@ The big switch on `result.type`. Two pre-passes:
 | `result.type` | Behavior |
 |---|---|
 | `completed` | `writeLatestResponse`; if sub-agent, notify parent (system sub-agents return immediately); forgotten-timer safety check; auto-resume `interruptedWaitTimer` / `interruptedCronTimer`; else if `cronSchedule` set, arm cron timer; else if blob+idleTimeout enabled, arm idle timer; else fall through (loop will CAN) |
-| `wait` | gate refusals hold prompts without a model run; other waits clear `interruptedWaitTimer`, ensure `taskContext`, and apply the parent wake policy; `planHoldRelease` decides affinity release; write a response if `content`; arm the wait timer |
+| `wait` | a workspace refusal holds the prompt and arms a workspace retry; a budget refusal stashes the prompt, then follows the normal wait path; the normal path clears `interruptedWaitTimer`, ensures `taskContext`, applies the parent wake policy, lets `planHoldRelease` decide affinity release, writes a response if `content`, and arms the wait timer |
 | `cron` | `applyCronAction` — set or cancel `cronSchedule` in state |
 | `cron_at` | `applyCronAtAction` — set or cancel the wall-clock schedule (`cronAtSchedule`) in state |
-| `input_required` | write the question and set `pendingInputQuestion`; with persistence, arm input grace when positive or the idle hold directly when zero; an answer within the hold lands warm |
+| `input_required` | write the question and set `pendingInputQuestion`; with persistence, arm input grace when positive or the idle hold directly when zero; no timer without persistence or with a negative grace; an answer within the hold lands warm |
 | `cancelled` | trace and return |
 | `stopped` | record `session.turn_stopped` with the turn index and client message ids, write idle, reset retry count, and resume timers/cron; no automatic turn retry and no legacy system Stop message |
 | `spawn_agent` / `message_agent` / `check_agents` / `list_sessions` / `wait_for_agents` / `complete_agent` / `cancel_agent` / `delete_agent` | `handleSubAgentAction(runtime, result)` |
@@ -585,10 +586,11 @@ worker's preamble; they do not ask the orchestration for a hydration probe.
 
 | Trigger | Reason tag |
 |---|---|
-| `wait`/`cron` timer arming beyond the hold window | `"timer"` / `"cron"` |
+| `wait`/`cron`/`cron_at` timer arming beyond the hold window | `"timer"` / `"cron"` / `"cron_at"` |
 | `idle` timer fires | `"idle"` |
 | Connection-closed error during retry | `"error"` |
 | Connection-closed retries exhausted | `"lossy_handoff"` |
+| Two or more consecutive workspace failures on one worker | `"workspace_unavailable"` |
 
 Before rotating the recorded affinity GUID, workspace sessions release their
 workspace through the worker activity, bounded by a durable cap. A cleared
@@ -695,9 +697,9 @@ src/orchestration/            ← current latest (1.0.81)
 ```
 
 All registered versions are listed in
-[`orchestration-registry.ts`](../../../../packages/sdk/src/orchestration-registry.ts).
+[`orchestration-registry.ts`](../../../packages/sdk/src/orchestration-registry.ts).
 The registry retains versions down to the compatibility floor (`1.0.47`).
-Older versions are pruned from the repo.
+Older version files may remain for tests, but they are not registered.
 
 A frozen version is replay-only. New starts and every CAN target the current
 latest. The latest must accept `OrchestrationInput` produced by the oldest
@@ -735,7 +737,7 @@ replayed verbatim afterwards.
 - **decide** — the phase that pops one item from the FIFO (or pendingPrompt /
   pendingToolActions / pendingChildDigest) and dispatches it.
 - **affinity key** — a per-session GUID that pins the active session to a
-  specific worker via duroxide affinity. Rotated on dehydrate.
+  specific worker via duroxide affinity. Rotated on affinity release.
 - **tombstone** — a recorded cancellation for a client message id that
   suppresses any prompt that arrives with that id.
 - **digest** — a 30-second batched summary of child updates dispatched as a
