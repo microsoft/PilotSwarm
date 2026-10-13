@@ -826,7 +826,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     // a fresh session — true, and beside the point: with
                     // [kickoff, B, C] queued, appending B left [C, B], and the
                     // person's own two messages ran in the wrong order.
-                    if (Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
+                    // A carried-steers wake is a turn of its own: its marker
+                    // must stay the whole prompt.
+                    if (item.carriedSteersWake === true || peek.carriedSteersWake === true
+                        || Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
                         prependToFifo(runtime, peek);
                         break;
                     }

@@ -468,6 +468,36 @@ describe("1.0.81 turn control orchestration", () => {
             expect(h.runtime.state.pendingChildDigest).toBeNull();
         });
 
+        it("a carried-only turn after legacy hydration keeps the resume note as system context", () => {
+            const h = harness({
+                carriedSteers: [steer(58)], blobEnabled: true, needsHydration: true,
+                rehydrationMessage: "Resumed after a lossy handoff.",
+            });
+            h.run({ type: "completed", content: "steered", carriedSteersConsumed: true }, CARRIED_STEERS_WAKE_PROMPT);
+            const [prompt, bootstrap, , meta] = h.turns[0];
+            expect(prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
+            expect(prompt).toContain("Resumed after a lossy handoff.");
+            expect(bootstrap).toBe(true);
+            expect(meta.carriedSteers).toEqual([steer(58)]);
+            expect(h.runtime.state.pendingRehydrationMessage).toBeUndefined();
+        });
+
+        it("a carried-steers wake never merges with another queued bootstrap prompt", () => {
+            const h = harness({ carriedSteers: [steer(59)] });
+            appendToFifo(h.runtime, [
+                { kind: "prompt", prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true },
+                { kind: "prompt", prompt: "agent kickoff", bootstrap: true },
+            ]);
+            h.results.push({ type: "completed", content: "steered", carriedSteersConsumed: true });
+            h.drive(decide(h.runtime));
+            expect(h.turns[0][0].startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
+            expect(h.turns[0][0]).not.toContain("agent kickoff");
+            h.results.push({ type: "completed", content: "kicked off" });
+            h.drive(decide(h.runtime));
+            expect(h.turns[1][0]).toContain("agent kickoff");
+            expect(h.turns[1][3].carriedSteers).toBeUndefined();
+        });
+
         it("a carried-only retry keeps the bootstrap flag of its first attempt", () => {
             const h = harness({ carriedSteers: [steer(57)] });
             h.run({ type: "error", message: "transient", carriedSteersConsumed: true }, CARRIED_STEERS_WAKE_PROMPT);

@@ -30,6 +30,8 @@ carries the guidance. A pending graceful shutdown holds the guidance; the
 terminal write closes it. A buffered child digest rides after the marker, never
 inside it. Every carried-only attempt, including a retry, runs as a bootstrap
 turn.
+The wake never merges with another queued prompt. A resume note from legacy
+hydration rides as system context, so the marker stays the whole prompt.
 The worker replaces it with guidance text and must not record a second user
 message.
 

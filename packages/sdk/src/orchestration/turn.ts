@@ -363,8 +363,15 @@ export function* processPrompt(
     // against the versioned store; state.needsHydration survives only as
     // one-shot normalization of legacy (≤1.0.56) continue-as-new inputs.
 
+    let carriedResumeNote: string | undefined;
     if (state.needsHydration && state.blobEnabled && prompt) {
-        prompt = wrapWithResumeContext(runtime, prompt);
+        if (carriedOnlyTurn) {
+            // The marker must stay the whole prompt: deliver the resume note
+            // (which consumes the pending rehydration message) as system context.
+            carriedResumeNote = extractPromptSystemContext(wrapWithResumeContext(runtime, "")).systemPrompt;
+        } else {
+            prompt = wrapWithResumeContext(runtime, prompt);
+        }
     }
 
     let turnSystemPrompt = state.pendingSystemPrompt;
@@ -374,7 +381,7 @@ export function* processPrompt(
         : prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
-    if (carriedOnlyTurn) turnSystemPrompt = mergePrompt(turnSystemPrompt, splitPrompt.note);
+    if (carriedOnlyTurn) turnSystemPrompt = mergePrompt(mergePrompt(turnSystemPrompt, splitPrompt.note), carriedResumeNote);
     if (prompt && state.runtimeModelNotice) {
         turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
         state.runtimeModelNotice = undefined;
