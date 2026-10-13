@@ -383,7 +383,8 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `stop_turn` | Abort the in-flight turn; the session stays alive |
+| `stop_turn` | Stop the running turn; the session stays alive. Outcome `stopped`, `too_late`, `no_active_turn` or `timeout`; optional `request_id` for safe retries |
+| `steer_session_turn` | Add guidance (`text`) to the running turn; the model receives it at its next model call. Needs the `sessions.steering` feature. Outcome `accepted` or a refusal; on `no_turn` / `legacy_turn` send the text with `send_message` instead. Optional `request_id` for safe retries |
 | `complete_session` | Mark a session completed (successful terminal state, distinct from cancel) |
 | `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
 | `send_session_event` | Inject a custom named event into a session *(web)* |
