@@ -67,9 +67,12 @@ export type TurnPreambleOutcome =
      * Local dir was cleared (or never existed) and the store holds nothing:
      * getOrCreate decides fresh-create vs lossy replay exactly as today.
      * `lossy` marks the data-loss flavor (turns were committed but the store
-     * lost them) for observability.
+     * lost them) for observability. `uncommittedDiscard`: an earlier turn on
+     * this worker left a conversation that was created fresh and never saved
+     * (a stopped turn, see TurnSentinel.freshChain), so there is nothing to
+     * lose: the caller starts a fresh conversation without the lossy replay.
      */
-    | { kind: "fresh"; baseVersion: number; lossy: boolean };
+    | { kind: "fresh"; baseVersion: number; lossy: boolean; uncommittedDiscard: boolean };
 
 export interface TurnCommitOutcome {
     version: number;
@@ -290,9 +293,18 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
         // Dirty or unusable local + empty store → fresh; lossy iff turns had
         // been committed before (marker present, or a frozen orchestration
         // still reports a nonzero expected version). W3 in the protocol doc.
+        // An earlier turn (not an attempt of this one: its key differs)
+        // started on a conversation created fresh with nothing saved and left
+        // it unsaved (a stopped turn). A save writes the marker before it
+        // clears the sentinel, so a marker without a saved version confirms
+        // nothing was saved since. Nothing is lost.
+        const lossy = (marker?.version ?? ctx.expectedVersion) > 0;
+        const uncommittedDiscard = !lossy && sentinel?.freshChain === true
+            && Boolean(sentinel.turnKey) && sentinel.turnKey !== ctx.turnKey
+            && localDirUsable && !epochMismatch && (marker?.version ?? 0) === 0;
         await ctx.dropWarmSession();
         fs.rmSync(sessionDir, { recursive: true, force: true });
-        return { kind: "fresh", baseVersion: 0, lossy: (marker?.version ?? ctx.expectedVersion) > 0 };
+        return { kind: "fresh", baseVersion: 0, lossy, uncommittedDiscard };
     }
 
     // Legacy snapshot (pre-protocol, no version metadata, counts as v0): a

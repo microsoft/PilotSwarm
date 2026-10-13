@@ -1730,6 +1730,11 @@ export function registerActivities(
         let lifecycleBaseVersion = 0;
         let lifecycleRehydrated = false;
         let lifecyclePreambleFresh = false;
+        let lifecycleUncommittedDiscard = false;
+        let lifecyclePreambleLossy = false;
+        // The conversation was recreated by the lossy replay: it is not a
+        // fresh chain for the next turn's witness (TurnSentinel.freshChain).
+        let lossyReplayed = false;
         // Protocol-native persistence stats: the legacy dehydrate/hydrate
         // activities no longer run, so the preamble/commit paths feed the
         // same CMS summary + events the Stats pane reads. Best-effort only.
@@ -1776,6 +1781,8 @@ export function registerActivities(
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
             lifecyclePreambleFresh = pre.kind === "fresh";
+            lifecycleUncommittedDiscard = pre.kind === "fresh" && pre.uncommittedDiscard;
+            lifecyclePreambleLossy = pre.kind === "fresh" && pre.lossy;
             if (lifecycleRehydrated) {
                 await recordLifecycleHydration(pre.baseVersion);
             }
@@ -2195,7 +2202,18 @@ export function registerActivities(
         // grounding turn recovers via already-committed above; a non-empty
         // chain resumes — an unconditional reset would erase a committed
         // grounding turn on activity retry.
-        const epochCreate = input.epochStart === true && (!lifecycle || lifecyclePreambleFresh);
+        //
+        // An empty chain after turn 0 is no loss when an earlier turn on this
+        // worker left a conversation that was created fresh and never saved
+        // (a stopped turn; the preamble's uncommittedDiscard): this turn
+        // starts a fresh conversation the same way, quietly. Without that
+        // local evidence (a store that lost saved turns, an attempt of this
+        // same turn, or another worker) the lossy replay below still runs.
+        const emptyByDesign = lifecycleUncommittedDiscard && !input.epochStart && (input.turnIndex ?? 0) > 0;
+        if (emptyByDesign) {
+            trace(`session=${input.sessionId} turn ${input.turnIndex}: the discarded conversation never saved a turn; starting a fresh conversation`);
+        }
+        const epochCreate = (input.epochStart === true && (!lifecycle || lifecyclePreambleFresh)) || emptyByDesign;
         try {
             session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                 turnIndex: input.turnIndex,
@@ -2248,6 +2266,7 @@ export function registerActivities(
                     `session=${input.sessionId} missing resumable state before turn ${input.turnIndex ?? "unknown"}; ` +
                     "starting lossy fresh-session replay",
                 );
+                lossyReplayed = true;
                 await recordLossyHandoffEvent(
                     catalog,
                     input.sessionId,
@@ -2308,6 +2327,9 @@ export function registerActivities(
             writeTurnSentinel(
                 path.join(sessionManager.getSessionStateDir(), input.sessionId),
                 input.snapshot!.turnKey,
+                // This turn's conversation was created fresh with nothing
+                // saved; an unsaved end keeps that true for the next turn.
+                { freshChain: lifecyclePreambleFresh && !lifecyclePreambleLossy && !lossyReplayed },
             );
             if (lifecycleRehydrated) {
                 effectivePrompt = mergePromptSections([REHYDRATED_SESSION_NOTICE, effectivePrompt]) || effectivePrompt;
@@ -5369,8 +5391,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const trimmed = String(content).trim();
                         // Canvas actions are wire-format JSON, not prose —
                         // titling a session "canvas-action action send data"
-                        // is how one leaked into a session list.
-                        if (trimmed && !trimmed.startsWith("[canvas-action] ")) {
+                        // is how one leaked into a session list. Runtime
+                        // notices ("[SYSTEM: ...]") are not the user's words.
+                        if (trimmed && !trimmed.startsWith("[canvas-action] ") && !/^\[SYSTEM:/i.test(trimmed)) {
                             lines.push(`User: ${trimmed.slice(0, 200)}`);
                             userMessages.push(trimmed);
                         }

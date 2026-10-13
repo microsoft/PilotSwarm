@@ -166,6 +166,7 @@
     "test/local/turn-control-orchestration.test.js",
     "test/local/turn-control-parent.test.js",
     "test/local/turn-control-run-turn.test.js",
+    "test/local/turn-control-stopped-next-turn.test.js",
     "test/local/turn-control-workspaces.test.js",
     "test/local/turn-inactivity-watchdog.test.js",
     "test/local/turn-lifecycle.test.js",

@@ -14,7 +14,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
-import { readTurnCommitFile } from "../../src/snapshot-protocol.ts";
+import { readTurnCommitFile, readTurnSentinel, writeSnapshotMarker, writeTurnSentinel } from "../../src/snapshot-protocol.ts";
+import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
 import { appendSystemContextBlock } from "../../src/prompt-system-context.ts";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
@@ -450,6 +451,116 @@ describe("runTurnV4: an attempt re-dispatched after turn start records the promp
         });
         await h.runTurn("s", input, "runTurnV3");
         expect(recorded(h)).toEqual(["system.message", "user.message"]);
+    });
+});
+
+describe("the turn after a stopped turn that left no committed snapshot", () => {
+    /**
+     * The local state an unsaved (stopped) turn leaves: its session dir with
+     * the in-progress sentinel still set (`sentinel`: its turn key and
+     * whether that turn started on a fresh, never-saved conversation), the
+     * marker `marker`, and nothing in the store. getOrCreate behaves like the
+     * real one: a turn > 0 without resumable state is missing state.
+     */
+    function afterStoppedTurn({ local = true, marker = null, sentinel = { turnKey: "stopped-turn-key", freshChain: true } } = {}) {
+        const { sessionStateDir, store } = lifecycleDirs();
+        const sessionId = `stopped-${randomUUID()}`;
+        const dir = path.join(sessionStateDir, sessionId);
+        if (local) {
+            makeSessionLayout(sessionStateDir, sessionId);
+            writeTurnSentinel(dir, sentinel.turnKey, { freshChain: sentinel.freshChain });
+            if (marker) writeSnapshotMarker(dir, marker);
+        }
+        const opened = [];
+        const h = makeRunTurnHarness({
+            sessionStore: store, sessionStateDir,
+            turn: async () => { makeSessionLayout(sessionStateDir, sessionId); return { type: "completed", content: "ok" }; },
+        });
+        h.sessionManager.getOrCreate.mockImplementation(async (_id, _config, opts) => {
+            opened.push(opts);
+            if (opts.turnIndex > 0 && !opts.epochStart) {
+                throw new Error(`${SESSION_STATE_MISSING_PREFIX} turn ${opts.turnIndex} expected resumable Copilot session state for ${sessionId}, but none was found in memory, on disk, or in the session store.`);
+            }
+            return h.session;
+        });
+        const lossy = () => h.recordedEvents.filter((e) => e.eventType === "session.lossy_handoff");
+        const restartText = () => h.recordedEvents.filter((e) => e.eventType === "system.message" && /worker restart/.test(String(e.data?.content)));
+        const run = (turnIndex) => h.runTurn(sessionId, { turnIndex, prompt: "next prompt", snapshot: { turnKey: `k${turnIndex}` } });
+        const stopNextTurn = () => t.h.session.runTurn.mockImplementationOnce(async () => {
+            makeSessionLayout(sessionStateDir, sessionId);
+            return { type: "stopped", reason: "stop" };
+        });
+        const t = { h, dir, opened, lossy, restartText, run, stopNextTurn };
+        return t;
+    }
+
+    it("never saved a turn: a fresh conversation, quietly, and the chain stays fresh", async () => {
+        const t = afterStoppedTurn();
+        expect((await t.run(1)).type).toBe("completed");
+        expect(t.opened).toEqual([expect.objectContaining({ turnIndex: 1, epochStart: true })]);
+        expect(t.lossy()).toEqual([]);
+        expect(t.restartText()).toEqual([]);
+        expect(t.h.session.runTurn.mock.calls[0][0]).toBe("next prompt");
+    });
+
+    it("the turn's sentinel records a fresh chain only after a fresh, lossless preamble", async () => {
+        const { sessionStateDir, store } = lifecycleDirs();
+        const sessionId = `sentinel-${randomUUID()}`;
+        const dir = path.join(sessionStateDir, sessionId);
+        let seen = [];
+        const h = makeRunTurnHarness({
+            sessionStore: store, sessionStateDir,
+            turn: async () => { seen.push(readTurnSentinel(dir)); makeSessionLayout(sessionStateDir, sessionId); return { type: "stopped", reason: "stop" }; },
+        });
+        await h.runTurn(sessionId, { turnIndex: 0, snapshot: { turnKey: "k0" } });
+        await h.runTurn(sessionId, { turnIndex: 1, snapshot: { turnKey: "k1" } });
+        expect(seen.map((x) => [x.turnKey, x.freshChain === true])).toEqual([["k0", true], ["k1", true]]);
+        expect(readTurnSentinel(dir)).toMatchObject({ turnKey: "k1", freshChain: true });
+        expect(h.recordedEvents.filter((e) => e.eventType === "session.lossy_handoff")).toEqual([]);
+    });
+
+    it("a lossy replay's conversation is no fresh chain: when it is stopped, the next turn replays lossily again", async () => {
+        const t = afterStoppedTurn({ local: false });
+        t.stopNextTurn();
+        await t.run(2);
+        expect(t.lossy()).toHaveLength(1);
+        expect(readTurnSentinel(t.dir)).toMatchObject({ turnKey: "k2" });
+        expect(readTurnSentinel(t.dir).freshChain).toBeUndefined();
+        await t.run(3);
+        expect(t.lossy()).toHaveLength(2);
+        expect(t.opened.map((o) => [o.turnIndex, o.epochStart === true])).toEqual([[2, false], [0, false], [3, false], [0, false]]);
+    });
+
+    const lossyCases = [
+        ["the dir saved a turn before (marker v2), and the store lost it", { marker: { version: 2, turnKey: "k1", contentHash: "h" } }],
+        ["another worker: no local evidence", { local: false }],
+        ["an earlier attempt of this same turn left the sentinel", { sentinel: { turnKey: "k2", freshChain: true } }],
+        ["the conversation was not created fresh (a legacy or warm dir)", { sentinel: { turnKey: "stopped-turn-key", freshChain: false } }],
+    ];
+    for (const [name, local] of lossyCases) {
+        it(`${name}: still the lossy replay`, async () => {
+            const t = afterStoppedTurn(local);
+            expect((await t.run(2)).type).toBe("completed");
+            expect(t.opened.map((o) => [o.turnIndex, o.epochStart === true])).toEqual([[2, false], [0, false]]);
+            expect(t.lossy()).toHaveLength(1);
+            expect(t.restartText()).toHaveLength(1);
+            expect(t.h.session.runTurn.mock.calls[0][0]).toMatch(/^\[SYSTEM: The runtime is replaying this turn/);
+        });
+    }
+});
+
+describe("auto-titling ignores runtime notices", () => {
+    it("a session whose only user text is a [SYSTEM: ...] notice gets no title from it", async () => {
+        const h = makeRunTurnHarness({
+            catalogExtras: {
+                getSession: vi.fn(async (sessionId) => ({ sessionId, title: "Original" })),
+                getSessionEvents: vi.fn(async () => [
+                    { eventType: "user.message", data: { content: "[SYSTEM: The runtime is replaying this turn after a worker restart.]" } },
+                ]),
+            },
+        });
+        expect(await h.handlers.summarizeSession({ traceInfo() {} }, { sessionId: "titled" })).toBe("");
+        expect(h.catalog.updateSession).not.toHaveBeenCalled();
     });
 });
 

@@ -44,7 +44,8 @@ merged. Revision 7 adds the fixes from the final review of the integrated
 feature and is checked against `waldemort/turn-control` at `e945c07f`. The
 rows after the turnKey row are revision 7. Revision 8 adds parent agent
 controls of a sub-agent's turn (4.13), which the owner approved for the same
-pull request; its rows are the last three. Workstream A's notes are in
+pull request, and a quiet next turn after a stopped first turn (5.1); its
+rows are the last four. Workstream A's notes are in
 `.paw/work/turn-control/Docs.md`. The `.paw/work/turn-control/` planning files
 cited in this document are not in the tree; they are in the branch history at
 commit `1803c8cb`.
@@ -85,6 +86,7 @@ commit `1803c8cb`.
 | `message_agent` gains `deliver` (`next_turn`, the default, or `now`). `now` steers the child's running turn through `steerSessionTurn`. A `no_turn`, `legacy_turn`, `steering_disabled` or `too_many` refusal sends the text through the default next-turn path, and the tool result says which happened. The request id is derived from the tool call. | A parent could only queue a message for the child's next turn or end the child. | 4.13 |
 | New tool `stop_agent_turn(agent_id, reason?)` stops a child's current turn through `stopSessionTurn` (legacy path for an older turn), waits up to 15 s and keeps the child alive. | `cancel_agent` ends the whole child. | 4.13 |
 | A parent's control records the sender `{ kind: "agent", sessionId, display }`. The portal and the TUI name the parent agent on the item; portal items carry `data-actor-kind`. `sessions.steering` resolves for the parent session's owner. Stop is not gated. | A person reading the child's transcript must see who steered or stopped it. | 4.10, 4.13 |
+| The turn after a stopped turn that left nothing saved (a stopped first turn) starts a fresh conversation quietly, without a lossy handoff or a restart notice; auto-titling ignores `[SYSTEM: ...]` notices. | A pre-existing fault, also on `main`, that the UX pass found after a Stop of a first turn. | 5.1 |
 
 ## 1. Problem statement
 
@@ -1354,6 +1356,22 @@ the activity lock expires.
 | thrown error | controls open, carried steers kept by the orchestration | the orchestration retries the same turn index. Turn start returns the controls; the carried steers ride in the input. | correct (3.12) |
 | T7 and a throw (for example turn end fails after its in-place retries) | turn saved under the attempt's turnKey, controls open | the retry of a thrown turn sends the same turnKey again (1.0.81), so it takes the "already saved" path: no model run, then turn end | correct; before this rule, a new key ran the model again and saved twice |
 | session without a store | no saved conversation | re-runs from nothing. A stopped turn's earlier delivered steer is labelled `not_delivered`, although the live conversation keeps it. | as today (D4) |
+
+**The turn after a stopped turn.** A stopped turn's snapshot is not saved
+(on every version, as before turn control), so the next turn starts from the
+last saved turn. When the stopped turn set aside a conversation that never
+saved a turn (for example a stopped first turn), the next turn starts a fresh
+conversation quietly: no `session.lossy_handoff`, no "worker restart" notice.
+The evidence is local: the stopped turn's in-progress sentinel is still in
+the session directory, names a different turn, and records that its turn
+started on a conversation created fresh with nothing saved and not by a
+lossy replay (`freshChain`);
+the marker has no saved version, and the store is empty. Without that
+evidence (a store that lost saved turns, a retry of the same turn, a legacy
+directory, or the next turn on another worker) the lossy replay still runs. Before this rule the next
+turn recorded a lossy handoff on `main` too. PilotSwarm's auto-titling
+ignores `[SYSTEM: ...]` notices; it never reads the Copilot CLI's own
+`session.title_changed` event.
 
 The reverse order, turn end before the save, is wrong in every form: a crash
 between them leaves outcomes for a conversation that was never saved. Keep
