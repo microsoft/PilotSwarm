@@ -106,6 +106,9 @@ param foundrySku string = 'S0'
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
 
+@description('Optional Azure region for the Foundry account, decoupled from the stamp region. Empty keeps the account co-located with the stamp.')
+param foundryLocation string = ''
+
 // ----- VPN P2S ingress (additive, optional) ---------------------------------
 // All defaults preserve byte-equivalent param shape for non-VPN stamps.
 
@@ -542,7 +545,7 @@ module KeyVault './keyvault.bicep' = {
 module Foundry './foundry.bicep' = if (foundryEnabled) {
   name: '${resourceNamePrefix}-foundry-${dTime}'
   params: {
-    location: location
+    location: empty(foundryLocation) ? location : toLower(foundryLocation)
     accountName: foundryAccountName
     sku: foundrySku
     deployments: foundryDeployments

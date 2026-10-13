@@ -547,7 +547,9 @@ Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
    declares each entry as a child `accounts/deployments` resource, and
    writes the account key to KV as `azure-oai-key` via co-located
    `listKeys()` (no separate auto-secrets module). The endpoint is
-   surfaced to the env map as `FOUNDRY_ENDPOINT`.
+   surfaced to the env map as `FOUNDRY_ENDPOINT`. Set `FOUNDRY_LOCATION`
+   when model availability requires the Foundry account to use a different
+   Azure region from the rest of the stamp.
 3. Re-run `--steps manifests`. The placeholder
    `__FOUNDRY_ENDPOINT__/openai/v1` is rewritten to the real Foundry
    endpoint URL (trailing slash collapsed). Flux reconciles; the
