@@ -238,7 +238,7 @@ describe("B2 live orchestration turn controls after A4", () => {
                                 verdict: "paused", providerName: "fixture", modelQualified: null, exempt: false,
                                 pause: { kind: "limit", provider: "fixture" }, rules: [],
                             };
-                            return { verdict: "allowed", providerName: "fixture", modelQualified: null, exempt: false, rules: [] };
+                            return { verdict: "clear", providerName: "fixture", modelQualified: null, exempt: false, rules: [] };
                         },
                     },
                 },
