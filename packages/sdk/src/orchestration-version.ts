@@ -12,7 +12,7 @@
  *
  * @internal
  */
-export const DURABLE_SESSION_LATEST_VERSION = "1.0.80";
+export const DURABLE_SESSION_LATEST_VERSION = "1.0.81";
 export const DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION = "1.0.47";
 
 /**
@@ -20,3 +20,6 @@ export const DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION = "1.0.47";
  * results of set_session_workspace and the spawn `workspace` parameter.
  */
 export const WORKSPACE_ORCHESTRATION_MIN_VERSION = "1.0.80";
+
+/** First orchestration version whose turns accept Stop and Steer through the CMS. */
+export const TURN_CONTROL_ORCHESTRATION_MIN_VERSION = "1.0.81";
