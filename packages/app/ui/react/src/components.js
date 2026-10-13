@@ -957,59 +957,11 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
     });
 });
 
-const StatusBar = React.memo(function StatusBar({ controller }) {
+export const StatusBar = React.memo(function StatusBar({ controller, width }) {
     const platform = useUiPlatform();
-    const statusState = useControllerSelector(controller, (state) => ({
-        connected: state.connection.connected,
-        workersOnline: state.connection.workersOnline,
-        focusRegion: state.ui.focusRegion,
-        inspectorTab: state.ui.inspectorTab,
-        fullscreenPane: state.ui.fullscreenPane || null,
-        logsAvailable: state.logs.available,
-        logsTailing: state.logs.tailing,
-        filesFullscreen: Boolean(state.files.fullscreen),
-        mode: state.connection.mode,
-        statusText: state.ui.statusText,
-        modal: state.ui.modal,
-        activeSessionId: state.sessions.activeSessionId,
-        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
-        selectedIds: state.sessions.selectedIds,
-        selectMode: state.sessions.selectMode,
-    }), shallowEqualObject);
-    const selectorState = React.useMemo(() => ({
-        connection: {
-            connected: statusState.connected,
-            workersOnline: statusState.workersOnline,
-            mode: statusState.mode,
-        },
-        ui: {
-            focusRegion: statusState.focusRegion,
-            inspectorTab: statusState.inspectorTab,
-            fullscreenPane: statusState.fullscreenPane,
-            statusText: statusState.statusText,
-            modal: statusState.modal,
-        },
-        logs: {
-            available: statusState.logsAvailable,
-            tailing: statusState.logsTailing,
-        },
-        files: {
-            fullscreen: statusState.filesFullscreen,
-        },
-        sessions: {
-            activeSessionId: statusState.activeSessionId,
-            selectedIds: statusState.selectedIds,
-            selectMode: statusState.selectMode,
-            byId: statusState.activeSessionId && statusState.activeSession
-                ? { [statusState.activeSessionId]: statusState.activeSession }
-                : {},
-        },
-    }), [statusState]);
-    const status = React.useMemo(() => selectStatusBar(selectorState), [selectorState]);
-    const viewport = typeof platform.getViewport === "function"
-        ? platform.getViewport()
-        : { width: 120 };
-    const innerWidth = Math.max(20, (viewport.width || 120) - 4);
+    // The full state, as in the portal: the hints read turn control and the prompt.
+    const status = useControllerSelector(controller, (state) => selectStatusBar(state), shallowEqualObject);
+    const innerWidth = Math.max(20, (width || 120) - 4);
     const rightMax = Math.min(Math.max(18, Math.floor(innerWidth * 0.45)), innerWidth - 8);
     const leftMax = Math.max(8, innerWidth - rightMax - 3);
 
@@ -2598,7 +2550,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
                     ),
                 ],
         ),
-        React.createElement(StatusBar, { controller }),
+        React.createElement(StatusBar, { controller, width: viewportWidth }),
         React.createElement(PromptBar, { controller, rows: layoutState.promptRows }),
         React.createElement(RenameSessionModalContainer, { controller }),
         React.createElement(ShareSessionModalContainer, { controller }),
