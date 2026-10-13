@@ -1556,11 +1556,15 @@ export class NodeSdkTransport {
         });
     }
 
+    // Stop and Steer options (reason, timeoutMs, requestId, text, caller)
+    // pass through unchanged: a retry must reach the server with the same
+    // requestId, and the portal runtime stamps `caller` before this call.
     async stopSessionTurn(sessionId, options = {}) {
-        return this.mgmt.stopSessionTurn(sessionId, {
-            reason: options.reason || "Stopped by user",
-            ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-        });
+        return this.mgmt.stopSessionTurn(sessionId, options);
+    }
+
+    async steerSessionTurn(sessionId, options = {}) {
+        return this.mgmt.steerSessionTurn(sessionId, options);
     }
 
     async deleteSessionGroup(groupId) {
