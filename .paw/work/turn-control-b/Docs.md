@@ -84,3 +84,27 @@ worker that registers V4 names as a trap.
 Live CMS Stop and carried-closing coverage requires workstream A4. The branch
 must not be released with the A1 placeholder V4 handler. This workstream does
 not change management, API, TUI, or portal surfaces.
+
+## Verification evidence
+
+B1 passed implementation review at `8cacf9d0`: SDK and app builds, 1,461 SDK
+unit cases passed with one existing root-permission skip, and 96 targeted
+regression cases passed.
+
+B2's scripted scope passed Opus implementation review at `ff2188b1`: SDK build,
+1,461 unit passes with the same existing skip, and 195 scripted/routing cases
+across 17 files. The three product regression cases fail against `4c62cf99`
+and pass after the fixes. No assertions or concurrency settings were weakened.
+
+Nine model-selection cases and the multi-worker stale-seed case match the
+unchanged `f5b3aa7d` baseline by exact name and error. The six bound-agent-backfill
+cases also retain their exact baseline names and
+`ModelUnresolvedError: No usable provider serves model "gpt-5.4".` No new
+backfill failure was introduced. These are environment-only, not passes. The
+parent's integration run retains that coverage; no fixture or source skip was
+added. All seven changed fake-context model-switch cases passed.
+
+Canonical documentation is
+[`docs/architecture/orchestration/design.md`](../../../../docs/architecture/orchestration/design.md).
+B3 updates only that design reference and this workstream document. Full B2
+acceptance remains pending the A4 merge and live-control verification delta.

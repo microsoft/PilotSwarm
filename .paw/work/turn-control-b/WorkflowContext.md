@@ -26,9 +26,10 @@ Runtime Limits: maxActiveActivityChildren=2, maxUnresolvedCorrectionRounds=3
 User Configuration: none
 Approved Departures: dedicated worktree of the session clone; committed clean candidates verified in the engineer-owned dev pod; parent accepts the workstream PR into the umbrella branch.
 Custom Workflow Instructions: B-owned paths only. Do not edit the umbrella plan or A-owned files. B2 live tests wait for the parent's A4 merge notice. Preserve every frozen version. Parent owns provider coverage registration and cross-workstream final review.
+Updated Phase Order: parent authorized B3 after scoped B2 review and umbrella merge on 2026-10-13; full B2 live delta follows A4 with the same reviewer.
 
 ## Phase Status
 
 - [x] B1: Freeze 1.0.80 (Opus PASS at 8cacf9d0)
-- [ ] B2: Orchestration 1.0.81
+- [ ] B2: Orchestration 1.0.81 (scripted scope Opus PASS at ff2188b1; merged into umbrella at 16176529; live delta pending A4)
 - [ ] B3: Documentation
