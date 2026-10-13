@@ -22,27 +22,36 @@ import type { TurnControl, TurnLookInput, TurnLookRow } from "./types.js";
 import { TURN_CONTROL_CHANNEL, TURN_CONTROL_EVENT_TYPES, TURN_CONTROL_LOOK_INTERVAL_MS } from "./turn-control-contract.js";
 
 /** State of a turn's send gate (owned by ManagedSession). */
-export type SteerGateState = "none" | "pending" | "open" | "closed";
+export type SteerGateState = "pending" | "open" | "closed";
 
-/** What the live loop needs from the model run (implemented by ManagedSession). */
+/**
+ * One model run's send gate, handed by ManagedSession to the live loop when
+ * the run starts and detached when it ends. Every call is bound to that run:
+ * after the run ended the gate reads "closed", a send is refused, and a
+ * failure no longer reaches any turn.
+ */
 export interface TurnControlSessionPort {
-    steerGateState(): SteerGateState;
-    closeSteerGate(): void;
+    gate(): SteerGateState;
+    close(): void;
     /** Send a steer with mode "immediate". Resolves when sent; `onConfirmed` runs when the run confirms it. */
     sendSteer(text: string, onConfirmed: (messageId: string) => void): Promise<void>;
-    /** Fail the running turn (a steer that could not be sent). */
+    /** Fail this run (a steer that could not be sent). No-op once the run ended. */
     failTurn(err: unknown): void;
 }
 
 /**
- * The binding a running turn hands to ManagedSession.runTurn so that controls
- * arriving before the initial prompt is sent are held (plan P21).
+ * The binding a running turn hands to ManagedSession.runTurn. Controls that
+ * arrive before the initial prompt is sent are held (plan P21).
  */
 export interface TurnControlBinding {
+    /** ManagedSession's run started: the port of its send gate. */
+    attach(port: TurnControlSessionPort): void;
     /** The reason of a Stop that arrived before the initial send, if any. ManagedSession then does not send. */
     heldStop(): string | null;
     /** ManagedSession opened the send gate after the initial send; held controls may now be applied. */
     gateOpened(): void;
+    /** ManagedSession's run ended. */
+    detach(): void;
 }
 
 export interface LiveTurnControlOptions {
@@ -50,7 +59,6 @@ export interface LiveTurnControlOptions {
     turn: number;
     /** Position up to which controls are already taken (folded into the prompt, or saved). */
     start: number;
-    port: TurnControlSessionPort;
     /** Abort the running model run (today's lock-bypassing abort). */
     abort: (reason: string) => Promise<unknown>;
     /** Best-effort durable record of a confirmed steer (session.steer_confirmed). */
@@ -58,16 +66,28 @@ export interface LiveTurnControlOptions {
     trace?: (message: string) => void;
 }
 
+/**
+ * One turn's CMS delivery bookkeeping. `sent` deduplicates controls taken
+ * during this attempt; only confirmed steers advance the recoverable `cursor`.
+ * The activity owns registration and the final outcome write.
+ *
+ * Controls wait in one queue ordered by position. A drain applies them only
+ * while the gate is open, lowest position first, so controls held before the
+ * initial send always go before later ones. Once the turn is retired, or its
+ * run ended, nothing more is sent and no confirmation moves the cursor.
+ */
 export class LiveTurnControl implements TurnControlBinding {
     readonly sessionId: string;
     readonly turn: number;
-    /** The last control taken from the CMS (sent, applied or held). */
+    /** The last control taken from the CMS (queued, sent or applied). */
     sent: number;
     /** The last steer the model run confirmed; saved with the turn. */
     cursor: number;
     private chain: Promise<void> = Promise.resolve();
-    private held: TurnControl[] = [];
-    private stopReason: string | null = null;
+    private readonly queue: TurnControl[] = [];
+    private port: TurnControlSessionPort | null = null;
+    private runEnded = false;
+    private retired = false;
     private readonly opts: LiveTurnControlOptions;
 
     constructor(opts: LiveTurnControlOptions) {
@@ -86,69 +106,99 @@ export class LiveTurnControl implements TurnControlBinding {
         return { sessionId: this.sessionId, turn: this.turn, after: this.sent };
     }
 
-    /** Apply new controls, one at a time and in position order. */
+    /** Take new controls; they are applied one at a time, in position order. */
     enqueue(controls: TurnControl[]): Promise<void> {
-        const sorted = [...controls].sort((a, b) => a.seq - b.seq);
-        this.chain = this.chain
-            .then(() => this.apply(sorted))
-            .catch((err) => this.opts.port.failTurn(err));
-        return this.chain;
+        if (this.retired) return this.chain;
+        for (const control of [...controls].sort((a, b) => a.seq - b.seq)) {
+            if (control.seq <= this.sent) continue;              // a duplicate wake-up
+            this.sent = control.seq;
+            this.queue.push(control);
+        }
+        return this.drainSoon();
     }
 
-    /** Resolves when every control enqueued so far has been applied. */
+    /**
+     * Wait for work already on the apply chain. Before the initial send this
+     * includes holding controls, not delivering them; it does not wait for
+     * user.message confirmations or the model's answer.
+     */
     idle(): Promise<void> {
         return this.chain;
     }
 
+    attach(port: TurnControlSessionPort): void {
+        if (this.retired) return;
+        this.port = port;
+        this.runEnded = false;
+    }
+
     heldStop(): string | null {
-        return this.stopReason;
+        return this.queue.find((c) => c.kind === "stop")?.text ?? null;
     }
 
     gateOpened(): void {
-        const held = this.held;
-        this.held = [];
+        void this.drainSoon();
+    }
+
+    detach(): void {
+        this.runEnded = true;
+        this.port = null;
+    }
+
+    /**
+     * The model run's conversation was lost and the turn re-runs from the
+     * start prompt: steers applied to the lost conversation are no longer in
+     * it. Later controls continue from `sent`; turn end carries the rest.
+     */
+    conversationLost(): void {
+        this.cursor = this.opts.start;
+    }
+
+    /** The turn is over: drop queued controls, send nothing more, ignore late confirmations. */
+    retire(): void {
+        this.retired = true;
+        this.queue.length = 0;
+    }
+
+    private gate(): SteerGateState {
+        if (this.retired || this.runEnded) return "closed";
+        return this.port ? this.port.gate() : "pending";
+    }
+
+    private drainSoon(): Promise<void> {
         this.chain = this.chain
-            .then(() => this.applyNow(held))
-            .catch((err) => this.opts.port.failTurn(err));
+            .then(() => this.drain())
+            .catch((err) => {
+                const port = this.port;
+                if (!this.retired && port) port.failTurn(err);
+            });
+        return this.chain;
     }
 
-    private async apply(controls: TurnControl[]): Promise<void> {
-        for (const control of controls) {
-            if (control.seq <= this.sent) continue;              // a duplicate wake-up
-            const gate = this.opts.port.steerGateState();
-            if (gate === "closed") return;                       // settling or stopping: turn end labels the rest
-            this.sent = control.seq;
-            if (gate === "none" || gate === "pending") {
-                // Before the initial prompt is sent: hold in order (plan P21).
-                this.held.push(control);
-                if (control.kind === "stop" && this.stopReason === null) this.stopReason = control.text;
-                continue;
+    private async drain(): Promise<void> {
+        while (this.queue.length > 0) {
+            const gate = this.gate();
+            if (gate === "closed") {                             // settling, stopping or ended: turn end labels the rest
+                this.queue.length = 0;
+                return;
             }
-            if (!(await this.applyOne(control))) return;
+            if (gate === "pending") return;                      // before the initial send: hold (P21)
+            const port = this.port!;
+            const control = this.queue.shift()!;
+            if (control.kind === "stop") {
+                // Never send after an abort (spike cell C5b): close first.
+                port.close();
+                this.queue.length = 0;
+                this.opts.trace?.(`[turn-control] stop session=${this.sessionId} turn=${this.turn} seq=${control.seq}`);
+                await this.opts.abort(control.text);
+                return;
+            }
+            await port.sendSteer(control.text, (messageId) => this.confirmed(control, messageId));
         }
-    }
-
-    private async applyNow(controls: TurnControl[]): Promise<void> {
-        for (const control of controls) {
-            if (this.opts.port.steerGateState() !== "open") return;
-            if (!(await this.applyOne(control))) return;
-        }
-    }
-
-    /** Applies one control to an open gate. Returns false when nothing more may be sent. */
-    private async applyOne(control: TurnControl): Promise<boolean> {
-        if (control.kind === "stop") {
-            // Never send after an abort (spike cell C5b): close first.
-            this.opts.port.closeSteerGate();
-            this.opts.trace?.(`[turn-control] stop session=${this.sessionId} turn=${this.turn} seq=${control.seq}`);
-            await this.opts.abort(control.text);
-            return false;
-        }
-        await this.opts.port.sendSteer(control.text, (messageId) => this.confirmed(control, messageId));
-        return true;
     }
 
     private confirmed(control: TurnControl, messageId: string): void {
+        if (this.retired) return;
         this.cursor = Math.max(this.cursor, control.seq);
         this.opts.trace?.(`[turn-control] steer-confirmed session=${this.sessionId} turn=${this.turn} seq=${control.seq} messageId=${messageId}`);
         const record = this.opts.record;
@@ -167,6 +217,21 @@ export interface TurnControlListenClient {
     on(event: "error" | "end", listener: (err?: unknown) => void): unknown;
 }
 
+/** Timers the hub uses; tests replace them to drive the look and the reconnect by hand. */
+export interface TurnControlHubTimers {
+    setInterval(fn: () => void, ms: number): unknown;
+    clearInterval(handle: unknown): void;
+    setTimeout(fn: () => void, ms: number): unknown;
+    clearTimeout(handle: unknown): void;
+}
+
+const NODE_TIMERS: TurnControlHubTimers = {
+    setInterval: (fn, ms) => { const h = setInterval(fn, ms); (h as any).unref?.(); return h; },
+    clearInterval: (h) => clearInterval(h as any),
+    setTimeout: (fn, ms) => { const h = setTimeout(fn, ms); (h as any).unref?.(); return h; },
+    clearTimeout: (h) => clearTimeout(h as any),
+};
+
 export interface TurnControlHubOptions {
     catalog: { turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]> };
     /** The CMS schema; notifications from other schemas are ignored. */
@@ -175,24 +240,40 @@ export interface TurnControlHubOptions {
     createClient?: (() => TurnControlListenClient | Promise<TurnControlListenClient>) | null;
     lookIntervalMs?: number;
     log?: (message: string) => void;
+    /** Defaults to Node timers, unref'd so the hub never keeps a process alive. */
+    timers?: TurnControlHubTimers;
 }
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 
+/**
+ * Worker-owned notification listener and registry of running controlled turns.
+ * Notifications are hints; the catalog's positional read is authoritative.
+ * The activity registers a live loop, then unregisters that exact instance.
+ *
+ * Connection attempts run one at a time and belong to one start..stop span
+ * (the generation): stop() ends a connecting client and waits for the
+ * attempt, so no listener is published after stop and none leaks.
+ */
 export class TurnControlHub {
     private readonly live = new Map<string, LiveTurnControl>();
     private readonly opts: TurnControlHubOptions;
+    private readonly timers: TurnControlHubTimers;
     private listener: TurnControlListenClient | null = null;
-    private timer: ReturnType<typeof setInterval> | null = null;
-    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private pendingClient: TurnControlListenClient | null = null;
+    private connecting: Promise<void> | null = null;
+    private timer: unknown = null;
+    private reconnectTimer: unknown = null;
     private reconnectDelayMs = RECONNECT_MIN_MS;
     private stopped = true;
+    private generation = 0;
     private connectedOnce = false;
     private lookCount = 0;
 
     constructor(opts: TurnControlHubOptions) {
         this.opts = opts;
+        this.timers = opts.timers ?? NODE_TIMERS;
     }
 
     /** Number of look queries made (diagnostics and tests). */
@@ -207,30 +288,39 @@ export class TurnControlHub {
 
     async start(): Promise<void> {
         if (!this.stopped) return;
+        // An attempt from an earlier start..stop span must finish first.
+        if (this.connecting) await this.connecting;
         this.stopped = false;
+        this.generation += 1;
+        this.reconnectDelayMs = RECONNECT_MIN_MS;
         const interval = this.opts.lookIntervalMs ?? TURN_CONTROL_LOOK_INTERVAL_MS;
-        this.timer = setInterval(() => {
+        this.timer = this.timers.setInterval(() => {
             if (this.live.size > 0) void this.lookAll();
         }, interval);
-        (this.timer as any).unref?.();
         await this.connect();
     }
 
     async stop(): Promise<void> {
         this.stopped = true;
-        if (this.timer) clearInterval(this.timer);
+        this.generation += 1;
+        if (this.timer !== null) this.timers.clearInterval(this.timer);
         this.timer = null;
-        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        if (this.reconnectTimer !== null) this.timers.clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
         const listener = this.listener;
         this.listener = null;
+        const pending = this.pendingClient;
+        this.pendingClient = null;
+        // Ending a connecting client makes its connect() or LISTEN fail.
+        if (pending) await pending.end().catch(() => {});
         if (listener) await listener.end().catch(() => {});
+        if (this.connecting) await this.connecting;
     }
 
     /** Track a running turn and look once for controls that arrived before it registered. */
-    register(turn: LiveTurnControl): void {
+    register(turn: LiveTurnControl): Promise<void> {
         this.live.set(turn.key, turn);
-        void this.look([turn]);
+        return this.look([turn]);
     }
 
     unregister(turn: LiveTurnControl): void {
@@ -259,38 +349,61 @@ export class TurnControlHub {
         }
     }
 
-    private async connect(): Promise<void> {
-        const create = this.opts.createClient;
-        if (!create || this.stopped) return;
+    /** Single-flight: a second call joins the running attempt. */
+    private connect(): Promise<void> {
+        if (!this.opts.createClient || this.stopped) return Promise.resolve();
+        if (!this.connecting) {
+            const generation = this.generation;
+            this.connecting = this.attempt(generation).finally(() => { this.connecting = null; });
+        }
+        return this.connecting;
+    }
+
+    private async attempt(generation: number): Promise<void> {
+        const current = () => !this.stopped && generation === this.generation;
         let client: TurnControlListenClient | null = null;
+        let failed: unknown = null;
         try {
-            client = await create();
-            client.on("notification", (message) => {
-                if (message.channel !== TURN_CONTROL_CHANNEL) return;
+            client = await this.opts.createClient!();
+            if (!current()) {
+                await client.end().catch(() => {});
+                return;
+            }
+            this.pendingClient = client;
+            const own = client;
+            own.on("notification", (message) => {
+                if (this.listener !== own || message.channel !== TURN_CONTROL_CHANNEL) return;
                 let payload: { schema?: string; sessionId?: string } = {};
                 try { payload = JSON.parse(message.payload ?? "{}"); } catch { return; }
                 if (payload.schema !== this.opts.schema) return;
                 void this.lookAll(payload.sessionId);
             });
-            const lost = () => this.connectionLost(client!);
-            client.on("error", lost);
-            client.on("end", lost);
-            await client.connect();
-            await client.query(`LISTEN ${TURN_CONTROL_CHANNEL}`);
-            if (this.stopped) {
-                await client.end().catch(() => {});
+            const lost = (err?: unknown) => {
+                if (this.listener === own) this.connectionLost(own);
+                else if (this.pendingClient === own && failed === null) failed = err ?? new Error("connection ended during setup");
+            };
+            own.on("error", lost);
+            own.on("end", lost);
+            await own.connect();
+            await own.query(`LISTEN ${TURN_CONTROL_CHANNEL}`);
+            if (this.pendingClient === own) this.pendingClient = null;
+            if (!current() || failed !== null) {
+                await own.end().catch(() => {});
+                if (failed !== null && current()) throw failed;
                 return;
             }
-            this.listener = client;
+            this.listener = own;
             this.reconnectDelayMs = RECONNECT_MIN_MS;
             // After a reconnect, a notification may have been missed.
             if (this.connectedOnce) void this.lookAll();
             this.connectedOnce = true;
         } catch (err) {
+            if (client && this.pendingClient === client) this.pendingClient = null;
+            if (client) await client.end().catch(() => {});
+            if (!current()) return;
             // A provider without LISTEN, or a database that is down: keep the
             // periodic look and try again later. Never fail the worker.
             this.opts.log?.(`[turn-control] LISTEN unavailable, using the ${this.opts.lookIntervalMs ?? TURN_CONTROL_LOOK_INTERVAL_MS} ms look: ${String((err as Error)?.message ?? err)}`);
-            if (client) await client.end().catch(() => {});
             this.scheduleReconnect();
         }
     }
@@ -303,14 +416,13 @@ export class TurnControlHub {
     }
 
     private scheduleReconnect(): void {
-        if (this.stopped || this.reconnectTimer) return;
+        if (this.stopped || this.reconnectTimer !== null) return;
         const delay = this.reconnectDelayMs;
         this.reconnectDelayMs = Math.min(RECONNECT_MAX_MS, this.reconnectDelayMs * 2);
-        this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = this.timers.setTimeout(() => {
             this.reconnectTimer = null;
             void this.connect();
         }, delay);
-        (this.reconnectTimer as any).unref?.();
     }
 }
 

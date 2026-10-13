@@ -311,6 +311,7 @@ Consumes A1, A2. Design 4.4-4.6; Spec FR-005 to FR-008, FR-022. Test plan 7.2, p
 - The hub's LISTEN connection uses `application_name = "pilotswarm-turn-control"` so operators can find it in `pg_stat_activity`.
 - A failed steer send ends the turn as an `error` result (the turn's existing error path), not a throw; the activity retries from the saved conversation with the steer still open.
 - HorizonDB hub run: not covered in the dev pod (no `.env.horizondb` there); I1 decides per file (S9).
+- Review r1 rework: the notification client comes from the catalog provider (`SessionCatalog.createTurnControlListener()`, plain `pg.Client` built from the catalog's own connection config); the worker does not import the cloud-aware pool factory. The live path uses one position-ordered queue that drains only while the attached run's gate is open; the session hands the control a run-bound port (`attach`/`detach`), and a retired control or ended run ignores late confirmations and failures. The hub uses a generation counter and a single in-flight connect attempt; `stop()` ends a client that is still connecting. Tests use injected timers and deferred promises, not sleeps.
 
 ## Phase A4: runTurnV4
 

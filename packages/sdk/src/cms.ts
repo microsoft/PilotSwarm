@@ -16,6 +16,7 @@ import { FeatureStore } from "./feature-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
+import type { TurnControlListenClient } from "./turn-control.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1187,6 +1188,12 @@ export interface SessionCatalog {
      * Redelivery passes the same carried seqs; closing is idempotent.
      */
     turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+    /**
+     * A dedicated LISTEN connection for the worker's turn-control hub, reached
+     * the way this catalog reaches its database. Optional: without it the hub
+     * runs on its periodic look only.
+     */
+    createTurnControlListener?(): Promise<TurnControlListenClient>;
 
     /** Soft-delete a session (set deleted_at). */
     softDeleteSession(sessionId: string): Promise<void>;
@@ -1601,6 +1608,8 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
+    private listenConfig: Record<string, unknown> | null = null;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
@@ -1655,7 +1664,26 @@ export class PgSessionCatalog implements SessionCatalog {
             console.error('[cms] pool idle client error (non-fatal):', err.message);
         });
 
-        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const catalog = new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const { max: _max, idleTimeoutMillis: _idle, ...listenConfig } = poolConfig as Record<string, unknown>;
+        catalog.listenConfig = listenConfig;
+        return catalog;
+    }
+
+    /**
+     * Session turn control: one dedicated LISTEN connection to the same
+     * database, with the same connection settings (TLS, credentials) as this
+     * catalog's pool. The worker's hub gets its connection here, so the
+     * catalog provider owns how the database is reached.
+     */
+    async createTurnControlListener(): Promise<TurnControlListenClient> {
+        if (!this.listenConfig) throw new TurnControlUnavailableError("createTurnControlListener");
+        const { default: pg } = await import("pg");
+        return new pg.Client({
+            application_name: "pilotswarm-turn-control",
+            ...this.listenConfig,
+            keepAlive: true,
+        }) as unknown as TurnControlListenClient;
     }
 
 

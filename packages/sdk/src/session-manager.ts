@@ -1186,6 +1186,7 @@ export class SessionManager {
         this.turnControlHub = hub;
     }
 
+    /** The worker's hub for activity registration, or null when unavailable. */
     getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
         return this.turnControlHub;
     }

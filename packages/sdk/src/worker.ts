@@ -14,8 +14,7 @@ import {
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
-import { TurnControlHub, pgListenClientFactory, type TurnControlListenClient } from "./turn-control.js";
-import { buildSessionCatalogPgClientConfig } from "./pg-pool-factory.js";
+import { TurnControlHub } from "./turn-control.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
@@ -726,12 +725,12 @@ export class PilotSwarmWorker {
         // Session turn control: one LISTEN connection per worker (design 4.4).
         // Without a PostgreSQL client config the hub still runs on its 5 s look.
         if (this._catalog) {
-            let createClient: (() => Promise<TurnControlListenClient>) | null = null;
-            try {
-                createClient = pgListenClientFactory(buildSessionCatalogPgClientConfig(this.config, process.env));
-            } catch (err) {
-                console.warn(`[PilotSwarmWorker] turn-control notifications unavailable: ${String((err as Error)?.message ?? err).slice(0, 200)}`);
-            }
+            // The catalog provider owns how its database is reached (TLS,
+            // credentials); the hub only uses PostgreSQL LISTEN.
+            const catalog = this._catalog;
+            const createClient = catalog.createTurnControlListener
+                ? () => catalog.createTurnControlListener!()
+                : null;
             this._turnControlHub = new TurnControlHub({
                 catalog: this._catalog,
                 // resolveStorageConfig always fills it; the type keeps it optional.
