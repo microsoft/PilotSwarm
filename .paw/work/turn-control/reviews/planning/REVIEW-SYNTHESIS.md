@@ -50,3 +50,26 @@ All must-fix (5 distinct) and should-fix (13 distinct) findings are applied; all
 ## Re-review
 
 One finding-scoped re-review cycle on the revised bundle follows (cycle limit 2).
+
+---
+
+# Cycle 2 (re-review of Spec r6 / plan r5 at `03874901`)
+
+**Reviewers**: azure-openai:gpt-6.1-sol (`REVIEW-gpt-6.1-sol-r2.md`), anthropic-wif:claude-opus-5-5 (`REVIEW-claude-opus-5-5-r2.md`)
+**First-cycle findings**: gpt F2-F7 resolved, F1 partly; opus 24 of 25 resolved, M3 partly. Both partial items are the same residual (old "next turn" derivation), fixed below.
+
+| Finding | Source | Severity | Disposition (Spec r7 / plan r6) |
+|---|---|---|---|
+| Old "next turn" derivation and gate-based carrying-turn definition remain | gpt R2-1, opus N1 (consensus) | should-fix | Applied: D6 row, P12, C3 and Spec D6/US-3.5 use the consuming turn (P12) and the P17 record only; SC-005 reworded to be measurable |
+| Closing record has no reliable, idempotent write | gpt R2-2 | must-fix | Applied: P17 `closeCarriedSteers` activity (critical retry) and A2 procedure `cms_close_carried_steers` (row lock, dedup by seq, first reason wins); B2 awaits it before clearing; failure keeps the steers |
+| Closing event not fetched by history paging | gpt R2-3, opus N2 (consensus) | should-fix | Applied: added to `CHAT_HISTORY_EVENT_TYPES` as a label input; page-boundary test |
+| Window UX coverage reduced to observation without a delta | gpt R2-4 | should-fix | Applied without a delta: U1b runs window scenarios mandatorily on a local instance of the exact candidate with a real model and session-scoped holds; Spec evidence row 7.6 updated |
+| Stale UX references | gpt R2-5, opus N8 | consider | Applied (P13 → UX-19; FR-009 row adds UX-11) |
+| Retried error drops a consumed carried steer | opus N3 | should-fix | Applied: carried steers follow their prompt; a retryable `error` keeps them and records nothing; `ran` only for non-error, non-stopped results; B2 test for a carried-only turn that errors and retries |
+| `hold` is process-wide | opus N4 | should-fix | Applied: P23 session-scoped hold, per-(point, session) counts, `armFaultHold` for in-process tests |
+| Three race-harness tests unowned | opus N5 | should-fix | Applied: owned by B, in B2's criteria |
+| Revive keeps old turn-indexed events | opus N6 | should-fix | Applied: P19 `turn_base_seq` lifetime base; procedures ignore earlier events; A2 soft-delete/revive test |
+| `closeControls` on terminal writes; "one closing record"; session-ending result with late steers | opus N7 | consider | Applied: terminal writes rely on P20; Spec says "at most one"; session-ending result closes as `terminal` |
+| Delta lists omit `created_at` and the register look | opus N8 | consider | Applied to Spec deltas and the I1 design revision 6 list |
+
+**Cycle limit reached (2).** All cycle-2 findings are applied in Spec r7 / plan r6. Per the skill, no third automated review cycle runs; the revision goes to the parent and owner with the plan-ready report.

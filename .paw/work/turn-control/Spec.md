@@ -1,20 +1,21 @@
 # Feature Specification: Session Turn Control (Stop and Steer)
 
-**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r6, after planning-docs review)  |  **Status**: Draft
+**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r7, after planning-docs review cycle 2)  |  **Status**: Draft
 **Input Brief**: Let a user stop a running agent turn within about a second, or steer it with guidance the model receives inside the same turn, without losing, doubling or hiding any request across crashes.
 
-Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected, except for the approved design deltas below; the parent records them in design revision 6.
+Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected, except for the design deltas below; the parent records them in design revision 6.
 
-Approved design deltas (owner decision or required by the existing code; the plan's decision IDs in brackets):
+Design deltas (D6 owner-approved; the rest proposed, approved with the plan) (the plan's decision IDs in brackets):
 - D6 (owner): a carried steer whose consuming turn ends "stopped" is not run again (US-3.5).
-- Carried steers leave the orchestration only when a turn actually used them, not merely when it passed its gates, because a provider-admission error is returned before the gates [P12].
-- Each carried steer gets one closing record (ran, stopped, gave up, terminal) that clients use for its label [P17].
-- The highest started turn is scoped to one orchestration lifetime, because a restarted system session counts turns from zero again [P19].
+- Carried steers leave the orchestration only when a turn actually used them, not merely when it passed its gates, because a provider-admission error is returned before the gates; they follow the prompt they were folded into, so a returned-error retry folds them again [P12].
+- Each carried steer gets at most one closing record (ran, stopped, gave up, terminal), written idempotently before the orchestration forgets it; clients use it for the label, and a session ended from outside (no record) shows "Carried, not run" [P17].
+- The highest started turn, and the control events that turn start and turn end read, are scoped to one orchestration lifetime, because a restarted or revived session counts turns from zero again; this adds a second session column, a lifetime base position [P19].
 - Any terminal session state closes open controls, whoever writes it [P20].
-- The model run accepts controls only after its initial prompt is sent; earlier controls wait [P21].
+- The model run accepts controls only after its initial prompt is sent; earlier controls wait; registering a running turn triggers one look [P21].
 - New-version Stop shows one transcript item, the Stop line, without the old "Turn stopped by user." message [P22].
 - Steer confirmation is recorded as a session event outside the transcript [P13].
 - The steering flag cannot be enabled by a user override unless the operator allows overrides.
+- The open-controls read also returns each control's creation time (for latency evidence) [A2].
 
 ## Overview
 
@@ -75,7 +76,7 @@ Acceptance Scenarios:
 2. Given a turn that ends by asking the user a question, When a steer was carried, Then the carried steer rides with the user's answer (D3).
 3. Given a turn that returns an error (no Stop open) and is retried, When a steer was carried, Then the retry includes it; a retry never drops it.
 4. Given a turn the session gives up on (retries exhausted or a fatal error) or a session that reaches a terminal state, When steers or Stops are still open, Then open steers become "not delivered" and open Stops become "stopped"; a steer that was carried but not yet run is not run and every client shows it as "Carried, not run".
-5. Given a carried steer, When the turn that carries it (the next turn that gets past its gates, not necessarily the next turn index) ends "stopped" (a Stop at its start or during it), Then the steer is not run again; its outcome stays "carried" and every client shows it as "Carried, then stopped", before and after a reload (D6).
+5. Given a carried steer, When the turn that consumes it (the first later turn that reaches the model run with it, or that takes it and then ends "stopped"; not necessarily the next turn index) ends "stopped" (a Stop at its start or during it), Then the steer is not run again; its outcome stays "carried" and every client shows it as "Carried, then stopped", before and after a reload (D6).
 
 ### US-4 (P2) – Every request is visible once and has one outcome
 
@@ -191,7 +192,7 @@ Acceptance Scenarios:
 - SC-002: 95th percentile time from an accepted steer to the model run's confirmation of it is at most 2 s over 30 runs while the turn is between tool calls. (FR-002, FR-005, FR-007)
 - SC-003: Every cell of the FR-009 table is produced by at least one test and yields exactly one outcome event per request; each request appears once in the transcript of every client, before and after a reload. (FR-004, FR-009, FR-010, FR-019)
 - SC-004: In the crash matrix of US-5 (crash after turn start, after the end-of-turn write, after the save, after outcomes; stopped turn before and after outcomes; Stop during a thrown-error backoff; stale worker), each case ends with its expected outcome as stated in US-5, and, for sessions with a session store, every accepted, not-stopped steer reaches the surviving conversation exactly once. Sessions without a store are checked only for today's re-run behaviour (D4). (FR-010, FR-011, FR-012, FR-015)
-- SC-005: A late steer always runs with the turn that carries it, including after an error retry and with an answer to a question; none is dropped across continue-as-new or before the model runs. A carried steer is not run only when its carrying turn is stopped (D6) or the session gives up or ends, and then every client shows why. (FR-008, FR-013)
+- SC-005: Each late steer runs once, in the first later turn that consumes it, including after an error retry (the retry folds it again, as it re-sends its prompt) and with an answer to a question; none is dropped across continue-as-new or before the model runs. It is not run only when its consuming turn ends stopped (D6) or the session gives up or ends, and then every client shows which, before and after a reload. (FR-008, FR-013)
 - SC-006: A turn without controls makes the same number of turn-path CMS calls as today and its saved result has no cursor field. (FR-021)
 - SC-007: Per worker: one additional database connection; zero periodic looks while idle; one batched periodic look every 5 s while busy; a lost notification delays delivery by at most 5 s; the connection is closed after worker stop. (FR-005, FR-022)
 - SC-008: Sessions on the previous orchestration version stop through today's path; a worker without the capability never runs a new-version turn; with the flag off no client offers Steer and the API refuses it; a read-only caller cannot steer. (FR-016, FR-017, FR-018)
@@ -207,7 +208,7 @@ Acceptance Scenarios:
 | 7.3 | Integration tests with the real CLI and default model: delivered between tools and after a long tool, carried, stopped, stopped with pending steer, too late, no-controls turn, lost notification, worker stop | US-1, US-2, US-3, US-7 |
 | 7.4 | Fault-injection crash matrix of US-5 | US-5; SC-004 |
 | 7.5 | Stale worker cancelled with winner-result adoption; replay with the previous version frozen; capability routing; legacy-session Stop | US-5, US-6; FR-015, FR-016 |
-| 7.6 | Browser and terminal UI flows with a real model; outcome labels before and after reload; 30-run Stop and Steer latency; keybinding and help parity | US-1, US-2, US-4; SC-001, SC-002, SC-003 |
+| 7.6 | Browser and terminal UI flows with a real model; outcome labels before and after reload, including the window outcomes (carried, too late, carried then stopped) driven by a session-scoped test hold on a local instance of the exact candidate; 30-run Stop and Steer latency; keybinding and help parity | US-1, US-2, US-4; SC-001, SC-002, SC-003 |
 | 7.7 | Provider cells (immediate send during tools, during a long tool, at the final message, after idle, abort then send) on Azure AI Foundry OpenAI Responses, GitHub Copilot and Anthropic; missing credentials recorded | US-2; FR-007 |
 | 7.8 | Look query time and database CPU at 1, 10 and 50 running turns per worker; connection-budget fit against the deployment's `max_connections`; listener on stock PostgreSQL and on HorizonDB | US-7; FR-022 |
 | 4.12 | Stop and Steer walked by hand in the local instance (`scripts/local-pilotswarm.sh`) against its local PostgreSQL | US-1, US-2 |
@@ -219,7 +220,7 @@ Acceptance Scenarios:
 - D3: late steers of a turn that ended with a question ride with the user's answer.
 - D4: sessions without a session store keep today's crash behaviour; no crash guarantee for steers.
 - D5: a Stop after the turn finished is "too late" and cancels any carried steers.
-- D6 (decided by the owner on 2026-10-13, option A): a carried steer whose next turn ends "stopped" is not run again; its outcome stays "carried" and clients show "Carried, then stopped".
+- D6 (decided by the owner on 2026-10-13, option A): a carried steer whose consuming turn ends "stopped" is not run again; its outcome stays "carried" and clients show "Carried, then stopped".
 - The pinned Copilot SDK/CLI folds an "immediate" send into a running turn and confirms it with the same message id (spike evidence on the Azure AI Foundry OpenAI Responses provider; other providers are checked per the evidence matrix).
 - The durable runtime cancels an activity whose lock renewal fails, and the Node binding reports it (duroxide-node 0.2.1 on this branch).
 - Stock PostgreSQL supports LISTEN for workers; HorizonDB support is checked per the evidence matrix.
