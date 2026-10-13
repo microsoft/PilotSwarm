@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build Stop and Steer through the CMS, as designed in `docs/proposals/session-turn-control.md` (revision 5) and specified in `Spec.md` (r3). A client writes a control as a session event through one stored procedure that also checks that a turn is running and sends a notification. The worker that runs the turn listens, reads the turn's new controls and applies them to the live model run: Stop aborts it, Steer is sent with the CLI's "immediate" mode. The turn saves a cursor with its result and, after the save, gives every open control exactly one outcome. The orchestration keeps running one `runTurn` per turn. A new orchestration version, 1.0.81, drops today's Stop race and carries late steers into the next turn.
+Build Stop and Steer through the CMS, as designed in `docs/proposals/session-turn-control.md` (revision 5) and specified in `Spec.md` (r6). A client writes a control as a session event through one stored procedure that also checks that a turn is running and sends a notification. The worker that runs the turn listens, reads the turn's new controls and applies them to the live model run: Stop aborts it, Steer is sent with the CLI's "immediate" mode. The turn saves a cursor with its result and, after the save, gives every open control exactly one outcome. The orchestration keeps running one `runTurn` per turn. A new orchestration version, 1.0.81, drops today's Stop race and carries late steers into the next turn.
 
 The work is split into three workstreams with disjoint file ownership, a contract phase that lands first, and parent-owned integration, UX test pass and final PR phases:
 
@@ -56,17 +56,24 @@ From `CodeResearch.md` (refreshed at `8ffed787`):
 | P4 | The carried-steer-only turn uses an internal wake prompt constant `CARRIED_STEERS_WAKE_PROMPT` (A1); the worker replaces it with the carried text and records no `user.message` (A4). | Same as the budget wake prompt and `stashedPrompts` fold (`session-proxy.ts:1964-1979`). |
 | P5 | `cms_get_session` also returns `turn_high`; `SessionRow.turnHigh` is added. Clients derive "accepts controls" as `activeTurnIndex != null && turnHigh === activeTurnIndex`. | Design 4.10 shows Steer only when the running turn listens for controls. List procedures stay unchanged (0024 note). |
 | P6 | The management client waits for a Stop outcome by polling `getSessionEvents(sessionId, seq, …, ["session.control_outcome"])` every 250 ms, up to 30 s by default. | Existing read API; no new procedure; 250 ms keeps the 2 s target. |
-| P7 | Flag gating: `steerSessionTurn` resolves `sessions.steering` for the caller and returns refusal `steering_disabled` when off. Stop is never gated. | FR-017. |
+| P7 | Flag gating: `steerSessionTurn` resolves `sessions.steering` for the caller's viewer (P18) and returns refusal `steering_disabled` when off. The flag defaults to off and to no user override: the operator enables it at cluster scope and may then allow user overrides. Stop is never gated. | FR-017; planning-docs review (claude-opus-5-5): with user override allowed, any user could enable Steer without the operator. |
 | P8 | MCP tool name `steer_session_turn` (design 4.3), next to the existing `stop_turn`. | Binding design. |
 | P9 | TUI Steer is Ctrl+T in the prompt pane: it sends the prompt text as a steer when the active session's turn accepts controls and the flag is on; otherwise the status line shows why. Portal: a Steer button next to Stop. | Ctrl+T is unused (research Q18); Ctrl+S is XOFF in many terminals. |
 | P10 | New fault points: `turn.control.after-start` (T3), `turn.control.after-writeback` (T6), `turn.control.after-commit` (T7), `turn.control.after-end` (T8). | Design 7.4. |
 | P11 | Mid-turn `state=waiting`/`input_required` clears `active_turn_index` today (`cms_update_session`). A control after that point is refused as "no turn running": a Steer then falls back to an ordinary message (FR-004); a Stop answers "nothing to stop" and its reason is never sent as a message. Kept as is. | Design 4.1: cleared by any state change away from running. Documented in A6. |
 | P12 | Carried steers leave orchestration state only on proof of consumption: the activity result carries `carriedSteersConsumed: true` only when the carried text was folded into a prompt that reached the model run, or when the already-committed path returns a saved turn (its earlier attempt ran with the same input). Gate waits, pre-model returned errors (for example a provider-admission error, `session-proxy.ts:1773-1785`), thrown errors and a stale start keep them. A carried steer whose next turn ends "stopped" follows D6. | FR-013, SC-005; plan review finding 2. The existing `pastGates` predicate (`turn.ts:1301-1320`) is not copied. |
 | D6 | **Decided by the owner on 2026-10-13: option A.** A carried steer rides into the next turn and that turn ends "stopped" (a Stop applied at its start, or during it): the stopped turn counts as consumption; the steer is not run again; its durable outcome stays "carried" (outcomes are written once, design 2.3.4) and clients derive the label "Carried, then stopped" from the next turn's Stop. `carriedSteersConsumed` then also marks this authorized stopped disposition, not proof of delivery. | Design 4.9 clears carried steers once a turn passes its gates; owner decision relayed by the parent; plan review r2/r3. |
-| P13 | Steer confirmation latency (SC-002, UX-18) is measured from a structured worker trace line written when `LiveTurnControl` sees the confirmation: `[turn-control] steer-confirmed session=<id> turn=<n> seq=<seq> messageId=<id> acceptedAt=<ISO> confirmedAt=<ISO>` (`acceptedAt` is the control event's `createdAt`, returned with the control by `cms_turn_look`/`cms_turn_start`). No new session event; SDK `user.message` stays filtered from CMS (`session-proxy.ts:3803-3810`). | Plan review finding 9; design 4.11 (no new metric tables). |
+| P13 | Steer confirmation is recorded durably: when `LiveTurnControl` sees the CLI's confirmation it records a non-transcript session event `session.steer_confirmed { seq, turn, messageId }` (best-effort, through the existing event recording) and writes the trace line `[turn-control] steer-confirmed session=<id> turn=<n> seq=<seq> messageId=<id>`. SC-002/UX-18 latency = `createdAt(session.steer_confirmed) − createdAt(user.steer)`: both are database clock times, so there is no clock skew; insertion lag makes the figure conservative. The event is reachable through the existing event reads and tuner event tools; it is not in the transcript allowlist; SDK `user.message` stays filtered from CMS (`session-proxy.ts:3803-3810`); outcomes are still written only at turn end. | Plan review finding 9; planning-docs review (both models): design 4.11 and the repository observability rule. |
 | P14 | Client request ids: each user Stop/Steer action creates one request id kept with its immutable kind and text until a definite answer. A transport failure (no answer) shows an "unconfirmed" state with a Retry action that reuses the same id; it never falls back to a message. Only a definite `no_turn` or `legacy_turn` refusal of a Steer triggers the ordinary-message fallback, with a new client message id; the refused request id is never retried. Every transport forwards `requestId` unchanged. | FR-004, design 4.3 client contract; plan review finding 4. |
 | P15 | Writeback result is three-valued: `true` (open controls), `false` (none), `undefined` (the best-effort write failed, `cms-retry.ts:135-145`). Only `false` skips turn end; `undefined` runs turn end. | Design 4.7; plan review finding 6. |
 | P16 | The A1 aliases of `runTurnV4`/`runTurnEpochV4` (P3) exist only on the integration branch. Nothing is released, deployed or merged to `main` before A4 replaces them. | Plan review finding 12. |
+| P17 | Carried-steer closing record. Whenever the orchestration clears `state.carriedSteers`, it first records `session.carried_steers_closed { seqs, turnIndex, reason }` with `reason` one of `ran` (consumed by a turn that did not end stopped), `stopped` (D6), `gave_up` (retries exhausted or a non-retryable error), `terminal` (completed, failed, cancelled by the orchestration). Clients derive the label of a `carried` steer only from this event: none yet → "Will run next"; `ran` → "Carried, ran next"; `stopped` → "Carried, then stopped"; `gave_up`/`terminal` → "Carried, not run". If no closing event exists and the session is in a terminal state (for example a child cancelled by its parent, where the orchestration writes nothing), clients show "Carried, not run". Outcomes stay immutable (design 2.3.4). | Planning-docs review (both models): D6 needs a durable link to the consuming turn, which is not always the next index (a returned error advances it, `turn.ts:650-651`); give-up dropped carried steers silently. Aligns with Spec US-3.4 (give-up closes steers as not run). |
+| P18 | Trusted caller. Stop and Steer carry a server-stamped caller like `sendMessage` (`runtime.js:1105-1108`): A1 adds `TurnControlCaller { sender?: MessageSender; viewer?: FeatureViewer }` to `SteerTurnOptions` and `StopTurnOptions`. The Web API runtime overwrites both from the authenticated context and ignores body values. In direct mode (a trusted subsystem) the caller is optional: without a viewer, `sessions.steering` resolves at cluster scope; without a sender, the control's actor is null. | Planning-docs review (gpt-6.1-sol): A1 lacked the caller contract that P7 and attribution need. |
+| P19 | `turn_high` is scoped to one orchestration lifetime: migration 0082 resets `turn_high = -1` and `active_turn_index = NULL` in `cms_archive_system_session_for_restart` and in the revive branch of `cms_create_session`, the two paths that restart an orchestration at iteration 0 under a retained session id (`system-agents.ts:212-218`, `cms-migrations.ts:5536-5588`, `:8155-8206`). A2 audits other id-reuse paths. | Planning-docs review (claude-opus-5-5): a restarted system session would refuse every turn as stale. |
+| P20 | Terminal states close controls in SQL: 0082's `cms_update_session` closes every open control (Stop → `stopped`, Steer → `not_delivered`) whenever `state` becomes `completed`, `failed` or `cancelled`, whoever writes it (orchestration, `cancelSession` activity, management delete/status sync, `client.ts` status sync). `closeControls` stays for the `error` give-up write. | Planning-docs review (claude-opus-5-5): terminal writes outside the orchestration left controls pending. |
+| P21 | Turn start window: the send gate opens only after `ManagedSession` has sent the initial prompt; controls that arrive between turn start (T3) and that send are held in order and applied when the gate opens; a Stop held this way prevents the initial send and ends the turn "stopped" without a model run. Registering a `LiveTurnControl` triggers one look for it. `turnStart` failure throws (the turn retries), unlike the best-effort `setActiveTurnIndex` it replaces. | Planning-docs review (claude-opus-5-5): window T3→send undefined. |
+| P22 | 1.0.81 visible Stop record: no `system.message` "Turn stopped by user." on the 1.0.81 path; the `user.stop` transcript line is the visible record (one item per Stop, FR-019). Legacy (1.0.80 and older) sessions keep today's system message and `session.turn_stopped`; C3 marks that existing line with the selector `control-stop-legacy`. | Planning-docs review (both models). |
+| P23 | Deterministic test hook: `fault-injection.ts` gains the action `hold` through an async `faultPointAsync(name)`: an armed point waits until the file `$PILOTSWARM_FAULT_RELEASE_DIR/<point>` exists (bounded at 120 s, then it throws). New points `turn.control.before-writeback` (after the gate closed, before T6) and `turn.control.before-send` (after T3, before the initial send). Tests use it to land a control in a window without sleeps. | Planning-docs review (claude-opus-5-5): carried, too_late and the end-of-turn race need a deterministic window. |
 
 ## Shared files and ownership
 
@@ -81,7 +88,8 @@ Every file belongs to exactly one workstream. Another workstream that needs a ch
 | `packages/sdk/src/session-proxy.ts` | A | includes the scheduling proxy that B calls (A1) |
 | `packages/sdk/src/cms.ts`, `cms-migrations.ts`, `migrations/**` | A | |
 | `packages/sdk/src/feature-flags.ts` | A | A1 code definition; A2 publishes the catalog row |
-| `packages/sdk/src/worker.ts`, `managed-session.ts`, `session-manager.ts`, `session-lifecycle.ts`, `snapshot-protocol.ts`, `turn-control.ts` (new) | A | |
+| `packages/sdk/src/worker.ts`, `managed-session.ts`, `session-manager.ts`, `session-lifecycle.ts`, `snapshot-protocol.ts`, `fault-injection.ts`, `turn-control.ts` (new) | A | |
+| `packages/sdk/src/client.ts` | none needed | P20 closes controls in SQL, so no change; any change goes through the parent |
 | `packages/sdk/src/orchestration/**`, `orchestration_1_0_80/**` (new), `orchestration-registry.ts`, `orchestration-version.ts`, `orchestration.ts` | B | |
 | `packages/sdk/src/management-client.ts`, `packages/sdk/src/web/**`, `packages/sdk/api/**` | C | |
 | `packages/app/**` (web, ui/core, ui/react, tui, mcp) | C | |
@@ -94,14 +102,19 @@ Every file belongs to exactly one workstream. Another workstream that needs a ch
 | `packages/sdk/test/helpers/run-turn-activity-harness.mjs`, `test/helpers/kill-harness.js` | A | A4 extends the activity harness with the new catalog methods and a V4 selector; A5 extends the kill harness only if needed |
 | `packages/sdk/test/perf/turn-control-look-cost.mjs` (new) | A | A5 measurement script |
 | `.github/workflows/**`, `.github/DEPLOYMENT.md` | parent | U0 only |
-| Test files | the workstream that creates them | B owns `test/unit/agent-handoff-routing.test.mjs` and the orchestration freeze/upgrade tests; A owns `stop-turn*.test.js` changes; C owns `packages/app/**/test/**` |
+| `scripts/run-tests.sh` | parent | I1 connection-headroom check only; never lowers parallelism |
+| Test files | the workstream that creates them | B owns `test/unit/agent-handoff-routing.test.mjs` and the orchestration freeze/upgrade tests; C owns `packages/app/**/test/**`. Existing Stop tests are split in A1 (below) so each part has one owner |
+| `packages/sdk/test/local/stop-turn.test.js` | A | after A1 keeps only ManagedSession and SessionManager abort tests |
+| `packages/sdk/test/local/stop-turn-race-legacy.test.js` (new in A1, moved from `stop-turn.test.js`) | B | the race-normalizer tests; B1 points its import at `orchestration_1_0_80/turn.js` |
+| `packages/sdk/test/local/stop-turn-management.test.js` (new in A1, moved from `stop-turn.test.js`) | C | the management `stopSessionTurn` tests; C1 updates its fake catalog |
+| `packages/sdk/test/local/stop-turn-live.test.js` | C | C1 updates it to the new path (P22: assert the `user.stop` line and `stopped` outcome, not the system message) and keeps a legacy-version case |
 | `.paw/work/turn-control/**` | A | umbrella Spec, CodeResearch, this plan, reviews. B and C keep their own PAW work folders `.paw/work/turn-control-b/` and `.paw/work/turn-control-c/` |
 
 ## Dependencies and order
 
 ```
 A1 (contract) ──► merged into waldemort/turn-control ──► B1, B2, C1, C2, C3 start; A2, A3 continue
-A2 + A3 ──► A4 ──► merged ──► A5 (needs B2 merged), B2 live tests, C1 live tests
+A2 + A3 ──► A4 ──► merged ──► A5 (needs B2 merged), B2 live tests (need A4), C1 live tests and stop-turn-live.test.js (need A4 and B2)
 A6, B3, C4 (docs) after their code phases
 I1 integration (parent) ──► U0 deployment route (parent) ──► U1 UX test pass (parent) ──► F1 final PR to main (parent)
 ```
@@ -119,28 +132,28 @@ I1 integration (parent) ──► U0 deployment route (parent) ──► U1 UX t
 |---|---|---|
 | FR-001, FR-002 | A2 (`cms_turn_control_add`), C1 | `turn-control-cms.test.js`; `turn-control-management.test.js` |
 | FR-003 | A2, C1 (`steering_disabled`, size limit) | `turn-control-cms.test.js`; C1 tests |
-| FR-004 | A2 (dedup), C1 + C3 (P14) | `turn-control-cms.test.js`; `turn-control-management.test.js`; `turn-control-controller.test.mjs`; UX-20 |
+| FR-004 | A2 (dedup), C1 + C3 (P14) | `turn-control-cms.test.js`; `turn-control-management.test.js`; `turn-control-controller.test.mjs`; UX-21 |
 | FR-005 | A3 | `turn-control-hub.test.js`; `turn-control.test.js` (lost notification) |
-| FR-006 | A3, A4, B2 | `turn-control-live.test.js`; `turn-control.test.js`; B2 live Stop; UX-07 |
+| FR-006 | A3, A4, B2 | `turn-control-live.test.js`; `turn-control.test.js`; B2 live Stop; UX-08 |
 | FR-007, FR-008 | A3 | `turn-control-live.test.js`; `turn-control.test.js`; UX-02 to UX-04 |
-| FR-009, FR-010 | A2, A4 | `turn-control-cms.test.js`; `turn-control-run-turn.test.js`; UX-08 to UX-10 |
+| FR-009, FR-010 | A2, A4 | `turn-control-cms.test.js`; `turn-control-run-turn.test.js`; A5 window tests; UX-09, UX-10 |
 | FR-011, FR-012 | A4, A5 | `turn-control-run-turn.test.js`; `turn-control-crash.test.js` |
-| FR-013 | A4 (P12 evidence), B2 | `turn-control-run-turn.test.js`; `turn-control-orchestration.test.js`; UX-05, UX-06 |
-| FR-014 | A2 (`closeControls`), B2 | `turn-control-cms.test.js`; `turn-control-orchestration.test.js` |
-| FR-015 | A2 (`turn_high`), A5 | `turn-control-cms.test.js`; `turn-control-multi-worker.test.js` |
-| FR-016 | A1 (routing), B1, B2 | `turn-control-contract.test.mjs`; B2 routing, legacy and upgrade tests; UX-14 |
+| FR-013 | A4 (P12 evidence), B2 | `turn-control-run-turn.test.js`; `turn-control-orchestration.test.js` (P17); A5 window tests; UX-06, UX-07, UX-23 |
+| FR-014 | A2 (`closeControls`, P20 terminal closing), B2 (give-up, P17) | `turn-control-cms.test.js`; `turn-control-orchestration.test.js` |
+| FR-015 | A2 (`turn_high`, P19 lifetime reset), A5 | `turn-control-cms.test.js`; `turn-control-multi-worker.test.js` |
+| FR-016 | A1 (routing), B1, B2 | `turn-control-contract.test.mjs`; B2 routing, legacy and upgrade tests; UX-15 |
 | FR-017 | A1 (flag), C1, C3 | `turn-control-management.test.js`; controller tests; UX-01 |
-| FR-018 | C1 (`session:write`) | API tests; UX-13 |
-| FR-019 | C1, C2, C3 | parity, MCP, history and e2e tests; UX-15, UX-16 |
+| FR-018 | C1 (`session:write`, P18 caller) | API and caller tests; UX-14 |
+| FR-019 | C1, C2, C3 | parity, MCP, history and e2e tests; UX-16, UX-17, UX-24 |
 | FR-020 | I1 (procedure and docs), B1 (frozen 1.0.80) | I1 documentation; `orchestration-version-upgrade.test.js` |
 | FR-021 | A4 | `turn-control-run-turn.test.js` (call count, no cursor) |
 | FR-022 | A3, A5 | `turn-control-hub.test.js`; `turn-control.test.js` (worker stop); A5 measurements |
-| SC-001, SC-002 | A3, A4; measured in I1/U1 | UX-17, UX-18 |
-| SC-003 | A2, A4, C3 | `turn-control-cms.test.js` (every FR-009 cell); history tests; UX-15 |
+| SC-001, SC-002 | A3, A4; measured in I1/U1 | UX-18, UX-19 (P13 event) |
+| SC-003 | A2, A4, C3 | `turn-control-cms.test.js` (every FR-009 cell); history tests; UX-16 |
 | SC-004 | A5 | `turn-control-crash.test.js`; `turn-control-multi-worker.test.js` |
-| SC-005 | A4, B2 | P12 tests; UX-05, UX-06 |
+| SC-005 | A4, B2 | P12 and P17 tests; A5 window tests; UX-06, UX-07 |
 | SC-006, SC-007 | A3, A4, A5 | `turn-control-run-turn.test.js`; `turn-control-hub.test.js`; A5 measurements |
-| SC-008 | A1, B2, C1, C3 | routing, legacy, flag and access tests; UX-01, UX-13, UX-14 |
+| SC-008 | A1, B2, C1, C3 | routing, legacy, flag and access tests; UX-01, UX-14, UX-15 |
 | SC-009 | B1, B2; full suites in I1 | replay, multi-worker, chaos, stop suites |
 | SC-010 | A5, I1, U1 | evidence matrix with covered/not-covered labels |
 
@@ -190,7 +203,10 @@ Consumes: design 4.1-4.9, 6; Spec FR-001 to FR-022. Produces the interfaces B an
   - `TurnControlRefusal = "no_turn" | "legacy_turn" | "not_found" | "too_many" | "request_id_reused" | "steering_disabled"`; `TurnControlAddResult = { seq: number; turn: number; repeat?: true } | { refused: TurnControlRefusal }`; `TurnStartResult = { stale: true } | { stopped: boolean; controls: TurnControl[] }`; `TurnLookInput { sessionId: string; turn: number; after: number }` (mapped to the procedure's `{session, turn, after}`); `TurnLookRow { sessionId: string; turn: number; controls: TurnControl[] }`; `TurnEndKind = "stopped" | "error" | "other"`; `TurnEndResult { stopped: boolean; late: LateSteer[] }`. The control actor is the existing `MessageSender` (`message-sender.ts:15`), normalized.
   - `SteerTurnOptions { text: string; requestId: string }`; `SteerTurnResult = { outcome: "accepted"; steerId: number; turn: number; repeat?: true } | { outcome: TurnControlRefusal }`; new named `StopTurnOptions { reason?: string; timeoutMs?: number; requestId?: string }` (the method's inline options type today, `management-client.ts:2498-2501`, is replaced by it in C1); `StopTurnResult` gains outcome `"too_late"` and optional `controlSeq`.
   - Orchestration continue-as-new input gains `carriedSteers?: LateSteer[]` (next to `budgetStash`, `types.ts:1047`).
-- **`packages/sdk/src/turn-control-contract.ts`** (new): `TURN_CONTROL_EVENT_TYPES` (`user.steer`, `user.stop`, `session.control_outcome`), `TURN_CONTROL_CHANNEL = "pilotswarm_turn_control"`, `TURN_CONTROL_MAX_OPEN = 20`, `TURN_CONTROL_LOOK_INTERVAL_MS = 5000`, `TURN_CONTROL_OUTCOME_POLL_MS = 250`, `CARRIED_STEERS_WAKE_PROMPT`, `STEERING_FEATURE_KEY = "sessions.steering"`, and `acceptsTurnControl(row)` (P5).
+  - `TurnControlCaller { sender?: MessageSender; viewer?: FeatureViewer }` (P18), included in `SteerTurnOptions` and `StopTurnOptions` as `caller?`.
+  - Event payload interfaces C parses (no edits to `types.ts` by C): `UserSteerEventData { turn; text; requestId; actor }`, `UserStopEventData` (same), `ControlOutcomeEventData { seq; turn; outcome: TurnControlOutcome }`, `SteerConfirmedEventData { seq; turn; messageId }` (P13), `CarriedSteersClosedEventData { seqs: number[]; turnIndex: number; reason: "ran" | "stopped" | "gave_up" | "terminal" }` (P17).
+  - `StopTurnResult` with outcome `timeout` keeps `controlSeq` when the Stop was accepted (a Stop accepted during a thrown-error backoff applies when the retry starts; clients show the control as pending, not as an error).
+- **`packages/sdk/src/turn-control-contract.ts`** (new): `TURN_CONTROL_EVENT_TYPES` (`user.steer`, `user.stop`, `session.control_outcome`, `session.steer_confirmed`, `session.carried_steers_closed`), `TURN_CONTROL_CHANNEL = "pilotswarm_turn_control"`, `TURN_CONTROL_MAX_OPEN = 20`, `TURN_CONTROL_LOOK_INTERVAL_MS = 5000`, `TURN_CONTROL_OUTCOME_POLL_MS = 250`, `CARRIED_STEERS_WAKE_PROMPT`, `STEERING_FEATURE_KEY = "sessions.steering"`, and `acceptsTurnControl(row)` (P5).
 - **`packages/sdk/src/activity-routing.ts`**: `TURN_CONTROL_CAPABILITY`, contract `"turn-control-v1"`, `TURN_CONTROL_ACTIVITY_NAMES { runTurn: "runTurnV4", runTurn2: "runTurnEpochV4" }`, `routeTurnControlActivity(task)`, and `registerTurnControlActivity(runtime, name, handler)`. Existing exports unchanged.
 - **`packages/sdk/src/session-proxy.ts`** (scheduling side and pass-through only):
   - `createSessionProxy(..., "turn-control-v1").runTurn` schedules the V4 name and tags it with `TURN_CONTROL_CAPABILITY` for every turn, workspace or not; it forwards `turnMeta.carriedSteers` into the activity input only when non-empty. Behaviour for `undefined` and `"agent-handoff-v2"` stays byte-for-byte the same (frozen versions).
@@ -199,8 +215,10 @@ Consumes: design 4.1-4.9, 6; Spec FR-001 to FR-022. Produces the interfaces B an
   - Register `runTurnV4`/`runTurnEpochV4` to today's `runTurnHandler` (P3). The handler input type gains `carriedSteers?: LateSteer[]` (ignored until A4).
 - **`packages/sdk/src/worker.ts`**: add `TURN_CONTROL_CAPABILITY` to `workerTagFilter.defaultAnd`.
 - **`packages/sdk/src/cms.ts`**: `SessionCatalog` gains `turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null): Promise<TurnControlAddResult>`, `turnStart(sessionId: string, turn: number): Promise<TurnStartResult>`, `turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]>`, `turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind): Promise<TurnEndResult>`; `completeTurnWriteback` returns `Promise<boolean>` (`PgSessionCatalog` returns `rows[0]?.<column> === true`, which is `false` against today's `VOID` procedure; the activity's best-effort wrapper turns a failed write into `undefined`, P15). `SessionRowUpdates` gains `closeControls?: boolean`; `SessionRow` gains `turnHigh?: number | null`. The four new `PgSessionCatalog` methods throw `TurnControlUnavailableError` until A2.
-- **`packages/sdk/src/feature-flags.ts`**: `"sessions.steering"` (display "Steer running turns", default off, user override allowed, no required capability). Its catalog row is published by migration 0082 (A2).
+- **`packages/sdk/src/feature-flags.ts`**: `"sessions.steering"` (display "Steer running turns", default off, `defaultAllowUserOverride: false` (P7), no required capability). Its catalog row is published by migration 0082 (A2).
 - **`packages/sdk/src/index.ts`**: export the new types, constants, `acceptsTurnControl` and `TurnControlUnavailableError`.
+- **`packages/sdk/src/fault-injection.ts`**: the `hold` action and `faultPointAsync` (P23); existing `exit`/`throw` behaviour unchanged.
+- **Split of the existing Stop tests (no behaviour change)**: move the race-normalizer tests from `stop-turn.test.js` to `stop-turn-race-legacy.test.js` (B-owned) and the management `stopSessionTurn` tests to `stop-turn-management.test.js` (C-owned), verbatim.
 - **Tests**: `packages/sdk/test/unit/turn-control-contract.test.mjs`: routing names and tag; the proxy with a fake `ctx` schedules V4 with the turn-control tag only under `"turn-control-v1"`, forwards `carriedSteers` only when non-empty; for `undefined` and `"agent-handoff-v2"` a snapshot of activity name, input (including omitted and null optional fields), affinity key and tag for normal, epoch-start and workspace turns is identical to today's; `updateCmsState` payload includes `closeControls` only when set (property absent otherwise); the flag definition values; `acceptsTurnControl`; the exported types compile (a `.d.ts` usage fixture under `test/types/` if that folder's pattern applies).
 
 ### Success Criteria:
@@ -209,7 +227,8 @@ Consumes: design 4.1-4.9, 6; Spec FR-001 to FR-022. Produces the interfaces B an
 - [ ] Build: `npm run build` (dev pod)
 - [ ] `node --test packages/sdk/test/unit/turn-control-contract.test.mjs packages/sdk/test/unit/agent-handoff-routing.test.mjs packages/sdk/test/unit/cms-migrations-shape.test.mjs`
 - [ ] `npm run test:unit --workspace=pilotswarm-sdk` passes (frozen-proxy behaviour unchanged)
-- [ ] Targeted Vitest: `stop-turn.test.js`, `feature-flags.test.js`, `feature-store.test.js`, `session-proxy-events.test.js`
+- [ ] Targeted Vitest: `stop-turn.test.js`, `stop-turn-race-legacy.test.js`, `stop-turn-management.test.js`, `feature-flags.test.js`, `feature-store.test.js`, `session-proxy-events.test.js`, `turn-lifecycle.test.js` (fault-point compatibility)
+- [ ] A unit test for `hold`: blocks until the release file exists, throws after the bound; `exit`/`throw` unchanged
 - [ ] Privacy check passes
 
 #### Manual Verification:
@@ -225,14 +244,15 @@ Consumes A1. Design 4.1, 4.2, 5.2, 5.3; Spec FR-001 to FR-004, FR-009, FR-010, F
 ### Changes Required:
 - **`packages/sdk/src/migrations/turn-control-0082.ts`** (new SQL builder, pattern `model-event-logging-flag-0081.ts`), registered as `{ version: "0082", name: "turn_control" }` in `cms-migrations.ts`:
   - `sessions.turn_high INTEGER NOT NULL DEFAULT -1`.
-  - `cms_turn_open_controls`, `cms_turn_control_add` (with `pg_notify` on `pilotswarm_turn_control`, payload `{ schema, sessionId }`), `cms_turn_start`, `cms_turn_look`, `cms_turn_end` exactly as design 4.2, outcome table design 5.2.
+  - `cms_turn_open_controls`, `cms_turn_control_add` (with `pg_notify` on `pilotswarm_turn_control`, payload `{ schema, sessionId }`), `cms_turn_start`, `cms_turn_look`, `cms_turn_end` as design 4.2, outcome table design 5.2, with one deliberate delta: `cms_turn_open_controls` also returns the event's `created_at` (A1 `TurnControl.createdAt`), shown in `0082_diff.md`.
   - `DROP FUNCTION` + `CREATE` of `cms_complete_turn_writeback` with the same 23 parameters returning `BOOLEAN`: after the existing row update (row lock) it returns whether the turn has open controls.
-  - `CREATE OR REPLACE cms_update_session` (latest from 0059, same signature) adding `closeControls`: an outcome for every open control of the session (`stopped` for a Stop, `not_delivered` for a Steer).
+  - `CREATE OR REPLACE cms_update_session` (latest from 0059, same signature) adding `closeControls`: an outcome for every open control of the session (`stopped` for a Stop, `not_delivered` for a Steer); the same closing also runs whenever `state` becomes `completed`, `failed` or `cancelled` (P20).
+  - Lifetime reset (P19): `cms_archive_system_session_for_restart` and the revive branch of `cms_create_session` also set `turn_high = -1` and `active_turn_index = NULL` (DROP/CREATE or CREATE OR REPLACE per return type, deltas in the diff file). Audit other paths that reuse a session id with a fresh orchestration; record the result in `0082_diff.md`.
   - `cms_get_session` returns `turn_high` (DROP + CREATE because the row shape changes; P5). Start from the overload that `PgSessionCatalog.getSession` actually calls today (including the placement-aware variant) and keep every existing column, parameter and default; the diff file shows it.
   - Publish the `sessions.steering` definition row, as 0081 does.
 - **`packages/sdk/src/migrations/0082_diff.md`**: the delta for each changed procedure against its previous definition, the new procedures, the column and the flag row.
 - **`packages/sdk/src/cms.ts`**: implement the four methods (procedure calls only), `completeTurnWriteback` boolean, `closeControls` in `updateSession`'s field map, `turnHigh` mapping in `SessionRow`; add the procedure names to the qualified-name map.
-- **Tests**: `packages/sdk/test/local/turn-control-cms.test.js` (real PostgreSQL), every row of design 7.1: accepted add with event and notification (a `LISTEN` client sees `{schema, sessionId}`); refusals `no_turn`, `legacy_turn`, `not_found`, `too_many` (21st), `request_id_reused`; retry returns the first seq with `repeat`; turn start sets both columns, returns open controls in order, `stale` for an older turn, `stopped` after a stopped outcome; look filters by `after`; turn end produces every cell of the Spec FR-009 table and is idempotent; writeback boolean, and both orders of add versus writeback on two connections (`pg_sleep` inside one transaction); `closeControls`; `cms_get_session` returns `turn_high`; the call count for a no-controls turn. Extend `cms-turn-metrics.integration.test.js` for the boolean return and `cms-migrations-shape.test.mjs` if it pins return shapes.
+- **Tests**: `packages/sdk/test/local/turn-control-cms.test.js` (real PostgreSQL), every row of design 7.1: accepted add with event and notification (a `LISTEN` client sees `{schema, sessionId}`); refusals `no_turn`, `legacy_turn`, `not_found`, `too_many` (21st), `request_id_reused`; retry returns the first seq with `repeat`; turn start sets both columns, returns open controls in order, `stale` for an older turn, `stopped` after a stopped outcome; look filters by `after`; turn end produces every cell of the Spec FR-009 table and is idempotent; writeback boolean, and both orders of add versus writeback on two connections (`pg_sleep` inside one transaction); `closeControls`; `cms_get_session` returns `turn_high`; the call count for a no-controls turn; terminal-state closing for `completed`, `failed`, `cancelled` (P20); archive and revive reset `turn_high` and `active_turn_index` (P19); `cms_turn_open_controls` returns `created_at`; mixed-version calls (0081-era catalog calls: writeback ignoring the result, `getSession` with the extra column, `updateSession` without `closeControls`) work against 0082. Extend `cms-turn-metrics.integration.test.js` for the boolean return and `cms-migrations-shape.test.mjs` if it pins return shapes.
 
 ### Success Criteria:
 
@@ -258,17 +278,21 @@ Consumes A1, A2. Design 4.4-4.6; Spec FR-005 to FR-008, FR-022. Test plan 7.2, p
   - `TurnControlHub`: one dedicated `pg.Client` from `buildSessionCatalogPgClientConfig` with keepAlive; `LISTEN pilotswarm_turn_control`; filters by schema; reconnect with backoff (pattern `live-plane.js:93-154`); on reconnect, one look for all live turns; a 5 s batched look only while it has live turns (`unref`'d timer); `register`/`unregister` by exact `session/turn` instance; `start()`/`stop()`.
   - `LiveTurnControl`: `sent`/`cursor`, an in-order apply chain, skip `seq <= sent`, stop sending when the gate is closed, Stop closes the gate before `abortWarmSessionTurn`, Steer through `ManagedSession.sendSteer` and moves `cursor` only on confirmation; an apply error fails the turn.
 - **`packages/sdk/src/managed-session.ts`**: per-turn send gate; `sendSteer(text, onConfirmed)` arms a `user.message` watch before `copilotSession.send({ prompt, mode: "immediate" })`, recognises a confirmation that arrives before `send` resolves (by the returned message id); the unconfirmed set; on `session.idle` close the gate first, settle only when no steer is unconfirmed, else wait for the confirmations and the next idle, bounded by the existing turn timeout; a send failure fails the turn; `closeSteerGate()`/`steerGateOpen()`. Confirm the installed SDK `send` typing (`mode`, returned id) in the dev pod's `node_modules` (research O1) and record it in Docs.md.
+- **Turn start window (P21)**: the send gate opens only after the initial prompt send; earlier controls are held in order; a held Stop prevents the initial send and ends the turn "stopped"; `register` triggers one look.
+- **Confirmation record (P13)**: on confirmation, record `session.steer_confirmed` (best-effort) and the trace line.
+- **LISTEN refused**: if `LISTEN` fails (for example a provider that does not support it), the hub logs a warning, keeps the 5 s look for live turns, and does not fail worker start.
 - **`packages/sdk/src/session-manager.ts`**: access to the per-worker hub for the activity, and an abort entry that the live loop can call while the run-turn lock is held (reuse `abortWarmSessionTurn`, which bypasses the lock).
 - **`packages/sdk/src/worker.ts`**: create the hub after the catalog (`:700-720`), `start()` it before the runtime starts, `stop()` it in `stop()` before the catalog closes; pass it to `registerActivities`.
 - **Tests**:
-  - `packages/sdk/test/local/turn-control-live.test.js` (fake Copilot session, pattern `stop-turn.test.js:30-66`): gate closes at idle before anything else; an unconfirmed steer delays settlement until its `user.message` and the next idle; early confirmation; Stop closes the gate before abort and a later steer is not sent; a throwing send fails the turn; duplicates skipped and order kept; settlement bounded by the turn timeout.
-  - `packages/sdk/test/local/turn-control-hub.test.js` (real PostgreSQL): a notification wakes the right live turn; a killed LISTEN connection (`pg_terminate_backend`) still delivers within 5 s by the periodic look and reconnects; no look while no turn is registered; one batched look for several turns; `stop()` closes the connection.
+  - `packages/sdk/test/local/turn-control-live.test.js` (fake Copilot session, pattern `stop-turn.test.js:30-66`): gate closes at idle before anything else; an unconfirmed steer delays settlement until its `user.message` and the next idle; early confirmation; Stop closes the gate before abort and a later steer is not sent; a Stop or steer arriving before the initial send is held (Stop prevents the send; steer is sent after it); `session.steer_confirmed` recorded once per confirmed steer; a throwing send fails the turn; duplicates skipped and order kept; settlement bounded by the turn timeout.
+  - `packages/sdk/test/local/turn-control-hub.test.js` (real PostgreSQL): a notification wakes the right live turn; a killed LISTEN connection (`pg_terminate_backend`) still delivers within 5 s by the periodic look and reconnects; no look while no turn is registered; registering triggers one look; one batched look for several turns; LISTEN refused degrades to the periodic look without failing start; `stop()` closes the connection.
 
 ### Success Criteria:
 
 #### Automated Verification:
 - [ ] Build passes
 - [ ] `npx vitest run test/local/turn-control-live.test.js test/local/turn-control-hub.test.js test/local/stop-turn.test.js test/local/turn-inactivity-watchdog.test.js test/local/managed-session-reasoning.test.js`
+- [ ] HorizonDB: `turn-control-hub.test.js` against HorizonDB when the dev pod has its configuration (`.env.horizondb`); result recorded for I1's coverage decision (S9), else "not covered" with the reason
 - [ ] `npm run test:unit --workspace=pilotswarm-sdk`
 - [ ] Privacy check passes
 
@@ -285,16 +309,15 @@ Consumes A1-A3. Design 4.7, 4.8, 5.1, 5.2; Spec FR-009 to FR-013, FR-021. Test p
 ### Changes Required:
 - **`packages/sdk/src/session-proxy.ts`**: a turn-control path in the run-turn handler, selected only for `runTurnV4`/`runTurnEpochV4` (V3 path unchanged):
   - already-committed preamble result → `finishTurn` with the saved cursor (T8 only);
-  - after the gates and the existing pre-turn writes: `turnStart` (T3) replaces `setActiveTurnIndex`; `stale` → throw; with controls or a stopped outcome, read the saved cursor from the turn-commit file only then; an open Stop or a stopped outcome → `finishTurn({type:"stopped"})` without a model run; else fold open steers (and `carriedSteers`, replacing `CARRIED_STEERS_WAKE_PROMPT` when it is the prompt) in front of the prompt without recording them again;
+  - after the gates and the existing pre-turn writes: `turnStart` (T3) replaces `setActiveTurnIndex` and throws on failure (P21); `stale` → throw; with controls or a stopped outcome, read the saved cursor from the turn-commit file only then; an open Stop or a stopped outcome → `finishTurn({type:"stopped"})` without a model run; else fold open steers (and `carriedSteers`, replacing `CARRIED_STEERS_WAKE_PROMPT` when it is the prompt) in front of the prompt without recording them again;
   - register a `LiveTurnControl` with the hub for the model run, unregister in `finally`;
   - T6 uses the writeback result by P15 (`false` skips T8; `true` and `undefined` run it); T7 saves `controlCursor` only when the cursor is not 0, adopts the winner's result and cursor on `alreadyCommitted`, uses cursor 0 when unpublished;
   - T8 `finishTurn`: cancellation check, `turnEnd`, retried in place on a database error then failing the activity; `stopped` → stopped result; late steers → `lateSteers` on the result; skipped when the writeback reported no controls;
   - `carriedSteersConsumed: true` on the result by P12: set when carried text was folded into a prompt that reached the model run and on the already-committed path; never on gate returns, pre-model returned errors or throws; also set when a Stop is applied at turn start or the turn ends "stopped" after folding them (D6 option A);
-  - the P13 trace line when a steer is confirmed;
-  - fault points P10 at T3, T6, T7, T8;
+  - fault points P10 at T3, T6, T7, T8, plus the `hold` points of P23;
   - register `runTurnV4`/`runTurnEpochV4` to the turn-control path (replacing A1's aliases).
 - **`packages/sdk/src/snapshot-protocol.ts` / `session-lifecycle.ts`**: `readTurnCommitFile(sessionDir)` and `savedControlCursor(result, turn)`; no protocol change.
-- **Tests**: `packages/sdk/test/local/turn-control-run-turn.test.js` (activity harness `test/helpers/run-turn-activity-harness.mjs`, extended with the new catalog methods, fake model session): no-controls turn makes today's calls and saves no cursor; steer folded at start; Stop at start ends without a model run; cursor saved and used on already-committed; each FR-009 result kind maps to the activity result (`stopped`, `lateSteers`, error with open Stop → stopped); turn end retried in place; carried steers folded and the wake prompt replaced; gate-refused turn never calls turn start; `carriedSteersConsumed` set and not set exactly per P12 (budget wait, workspace wait, provider-admission error without a workspace, thrown error, stale start, consumption, already-committed, Stop at start, stopped after folding (D6)); writeback `undefined` still runs turn end (P15). Update `turn-lifecycle.test.js` only if helpers move.
+- **Tests**: `packages/sdk/test/local/turn-control-run-turn.test.js` (activity harness `test/helpers/run-turn-activity-harness.mjs`, extended with the new catalog methods, fake model session): no-controls turn makes today's calls and saves no cursor; steer folded at start; Stop at start ends without a model run; cursor saved and used on already-committed; each FR-009 result kind maps to the activity result (`stopped`, `lateSteers`, error with open Stop → stopped); turn end retried in place; carried steers folded and the wake prompt replaced; gate-refused turn never calls turn start; `carriedSteersConsumed` set and not set exactly per P12 (budget wait, workspace wait, provider-admission error without a workspace, thrown error, stale start, consumption, already-committed, Stop at start, stopped after folding (D6)); writeback `undefined` still runs turn end (P15); `turnStart` failure throws; storeless session (D4): outcomes follow the outcome table, a stopped turn's earlier delivered steer is labelled `not_delivered` although the live conversation keeps it (documented in Docs.md). Update `turn-lifecycle.test.js` only if helpers move.
 
 ### Success Criteria:
 
@@ -317,6 +340,7 @@ Consumes A4 and B2 on `waldemort/turn-control` (A merges the integration branch 
 ### Changes Required:
 - **Tests**:
   - `packages/sdk/test/local/turn-control.test.js` (real CLI, default model): rows of design 7.3 — steer between tools delivered, steer during a long tool delivered after it, late steer carried and run next and shown once, Stop stopped with session idle and timers kept, Stop with pending steer, Stop too late with carried steers not delivered, no-controls turn, lost notification, worker stop closes the listener.
+  - Window cases with the P23 `hold` points (deterministic, no sleeps): a steer accepted after the gate closed and before the end-of-turn write → `carried`, and the next turn runs it once (`carried_steers_closed` `ran`); a Stop in the same window → `too_late`, carried steers `not_delivered`; a control racing the end-of-turn write in both orders; a Stop and a steer held before the initial send (P21).
   - `packages/sdk/test/local/turn-control-crash.test.js` (kill harness, fault points P10): the US-5 matrix, asserting outcomes, transcript and each steer once in the restored conversation (read the restored conversation's events).
   - `packages/sdk/test/local/turn-control-multi-worker.test.js`: stale worker paused past its lock, cancelled, one save wins, both turn ends write the same outcomes (design 3.9); verifies research O2-O4 live (cancellation reaches JS within the poll).
   - `packages/sdk/test/perf/turn-control-look-cost.mjs` (run by hand in the dev pod, not part of a suite): look query time and database CPU at 1, 10 and 50 live turns; one extra connection per worker. Connection budget: compare `max_connections` minus reserved connections with workers × (CMS pool max + facts pool max + duroxide pool max + 1 listener) + portal connections, using the deployment defaults (`PILOTSWARM_CMS_PG_POOL_MAX`, `PILOTSWARM_FACTS_PG_POOL_MAX`, `DUROXIDE_PG_POOL_MAX`). Results recorded in Docs.md; no pass/fail threshold is invented.
@@ -326,7 +350,8 @@ Consumes A4 and B2 on `waldemort/turn-control` (A merges the integration branch 
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `npx vitest run test/local/turn-control.test.js test/local/turn-control-crash.test.js test/local/turn-control-multi-worker.test.js test/local/fault-injection-live.test.js test/local/stop-turn-live.test.js`
+- [ ] `npx vitest run test/local/turn-control.test.js test/local/turn-control-crash.test.js test/local/turn-control-multi-worker.test.js test/local/fault-injection-live.test.js` (Stop through `catalog.turnControlAdd` directly; `stop-turn-live.test.js` is C's and needs C1)
+- [ ] Restart: a system session that ran 1.0.81 turns restarts and runs turn 0 normally (P19)
 - [ ] All A test files from A1-A4 still pass
 - [ ] Privacy check passes
 
@@ -357,13 +382,13 @@ Consumes nothing new. Orchestration versioning rules (`.github/copilot-instructi
 - **`packages/sdk/src/orchestration_1_0_80/`** (new): exact copy of `orchestration/` with imports adjusted, as for `orchestration_1_0_79/`.
 - **`orchestration-version.ts`**: `DURABLE_SESSION_LATEST_VERSION = "1.0.81"`; add `TURN_CONTROL_ORCHESTRATION_MIN_VERSION = "1.0.81"`.
 - **`orchestration-registry.ts`**, **`orchestration.ts`**: register `1.0.80` from the frozen folder and the latest from `orchestration/`.
-- **Tests**: `test/unit/orchestration-freeze-1-0-80.test.mjs` (pattern `orchestration-freeze-1-0-71.test.mjs`); update `test/unit/agent-handoff-routing.test.mjs` pins.
+- **Tests**: `test/unit/orchestration-freeze-1-0-80.test.mjs` (pattern `orchestration-freeze-1-0-71.test.mjs`); update `test/unit/agent-handoff-routing.test.mjs` pins; point `stop-turn-race-legacy.test.js` (B-owned since A1) at `orchestration_1_0_80/turn.js` for `normalizeRacedTurnValue`.
 
 ### Success Criteria:
 
 #### Automated Verification:
 - [ ] Build passes; `npm run test:unit --workspace=pilotswarm-sdk`
-- [ ] `npx vitest run test/local/orchestration-version-upgrade.test.js test/local/durability.test.js`
+- [ ] `npx vitest run test/local/orchestration-version-upgrade.test.js test/local/durability.test.js test/local/stop-turn-race-legacy.test.js`
 
 #### Manual Verification:
 - [ ] The frozen folder is byte-identical to `orchestration/` at the freeze commit except imports
@@ -380,7 +405,9 @@ Consumes A1 (contract), and A4 for its live tests. Design 4.9, 3.11, 3.12, 6; Sp
   - `processPrompt`: remove `stopTurn.<n>` dequeue, `ctx.race` and the `abortTurn` call; `yield` the turn task directly. Keep the "stopped" result handling (`:1577-1597`) as the Stop path: `session.turn_stopped` (with turn index and client message ids), idle, `retryCount = 0`, timers and cron kept, no retry.
   - Pass `state.carriedSteers` as `turnMeta.carriedSteers`. Clear it only when the result has `carriedSteersConsumed === true`, or on a give-up/terminal path (P12). Do not reuse the `budgetStash` `pastGates` predicate (`turn.ts:1301-1320`): a provider-admission error returned before the gates would satisfy it. Frozen versions keep their predicate unchanged.
   - After any result with `lateSteers`, append them to `state.carriedSteers`. Then: `input_required` → they ride with the answer (D3); a returned error → they ride with the retry; any other result → schedule the next turn at once, as if a user message had arrived when the turn ended, using `CARRIED_STEERS_WAKE_PROMPT` when no other prompt is pending.
-  - Give-up paths (retries exhausted, non-retryable, auth, fatal, missing state) and terminal paths call `updateCmsState(..., { closeControls: true })`.
+  - Give-up paths (retries exhausted, non-retryable, auth, fatal, missing state) call `updateCmsState(..., { closeControls: true })`; terminal states close controls in SQL (P20).
+  - Before clearing `state.carriedSteers`, record `session.carried_steers_closed` (P17) with the reason: `ran` when the result has `carriedSteersConsumed` and is not stopped; `stopped` when the result is stopped and consumed them (D6); `gave_up`/`terminal` on those paths.
+  - The stopped-result path writes no `system.message` (P22); the `user.stop` line is the visible record.
 - **`orchestration/state.ts`**: `carriedSteers` state field, initialised from input.
 - **`orchestration/lifecycle.ts`**: carry non-empty `carriedSteers` in the continue-as-new input (next to `budgetStash`, `:590`).
 - **`orchestration/agents.ts`**, **`runtime.ts`**: `closeControls` on terminal state writes.
@@ -389,17 +416,18 @@ Consumes A1 (contract), and A4 for its live tests. Design 4.9, 3.11, 3.12, 6; Sp
   - Routing: a worker without `pilotswarm.turn-control.v1` never runs `runTurnV4` (two workers with different tag filters).
   - Legacy: a 1.0.80 session still stops through the event path; the management client's `legacy_turn` fallback is exercised by C1's tests.
   - Upgrade: a 1.0.80 session continues-as-new into 1.0.81 and its next turn routes to V4.
-  - Live (after A4 merged): Stop on a 1.0.81 session ends "stopped" and the session is idle with timers kept.
+  - `carried_steers_closed`: a carried steer surviving a pre-model returned error, a wait and a thrown retry, then consumed at a later index (`ran`); then stopped at a later index (`stopped`); give-up (`gave_up`); a later unrelated Stop after a `ran` writes nothing for it.
+  - Live (after A4 merged): Stop through `catalog.turnControlAdd` on a 1.0.81 session ends "stopped", the session is idle with timers kept, and no `system.message` is written.
 
 ### Success Criteria:
 
 #### Automated Verification:
 - [ ] Build passes; `npm run test:unit --workspace=pilotswarm-sdk`
-- [ ] `npx vitest run test/local/turn-control-orchestration.test.js test/local/orchestration-version-upgrade.test.js test/local/multi-worker.test.js test/local/durability.test.js test/local/stop-turn-live.test.js test/local/session-regen-orchestration.test.js`
+- [ ] `npx vitest run test/local/turn-control-orchestration.test.js test/local/orchestration-version-upgrade.test.js test/local/multi-worker.test.js test/local/durability.test.js test/local/stop-turn-race-legacy.test.js test/local/session-regen-orchestration.test.js`
 
 #### Manual Verification:
 - [ ] No nondeterminism for replayed 1.0.80 sessions (frozen code untouched; the frozen folder's own version constant stays the literal `"1.0.80"`)
-- [ ] Every give-up and terminal path closes controls (diff review against the call list in research Q17)
+- [ ] Every give-up path closes controls and every carried-steer clear records its reason (diff review against the call list in research Q17)
 
 ---
 
@@ -421,8 +449,9 @@ Consumes A1; live tests need A2. Design 4.3; Spec FR-001 to FR-004, FR-017 to FR
 ### Changes Required:
 - **`packages/sdk/src/management-client.ts`**:
   - Public session view (`PilotSwarmSessionView`, `management-client.ts:392-442`; detailed view built at `:1315-1357`): add `activeTurnIndex: number | null`, `turnHigh: number | null` and `acceptsTurnControl: boolean` (always present, `false` when unknown) to the detailed view in direct and Web API modes. List rows do not carry them (list procedures unchanged); clients read eligibility only from the detailed view.
-  - `steerSessionTurn(sessionId, opts: SteerTurnOptions)` (flag check P7, text size limit as `sendMessage`, `turnControlAdd`, refusals mapped; `requestId` required and passed through unchanged); `stopSessionTurn(sessionId, opts?: StopTurnOptions)` new path: `turnControlAdd("stop", reason, requestId ?? new id)`; `no_turn` → `no_active_turn`; `legacy_turn` → today's event path (kept as `legacyStopSessionTurn`); accepted → wait for the outcome (P6) → `stopped` / `too_late` / `timeout`.
+  - `steerSessionTurn(sessionId, opts: SteerTurnOptions)` (caller per P18: the flag is resolved for `caller.viewer`, the actor is `caller.sender`; flag check P7, text size limit as `sendMessage`, `turnControlAdd`, refusals mapped; `requestId` required and passed through unchanged); `stopSessionTurn(sessionId, opts?: StopTurnOptions)` new path: `turnControlAdd("stop", reason, requestId ?? new id)`; `no_turn` → `no_active_turn`; `legacy_turn` → today's event path (kept as `legacyStopSessionTurn`); accepted → wait for the outcome (P6) → `stopped` / `too_late` / `timeout`.
 - **`packages/sdk/api/src/protocol.js`**: operation `steerSessionTurn`, `POST /management/sessions/:sessionId/steer`, access `session:write`; `stopSessionTurn` options accept `requestId`.
+- **`packages/app/web/runtime.js`**: Stop and Steer overwrite `options.caller` from the authenticated context (sender as `_buildSender`, viewer from the principal), ignoring body values, like `sendMessage` (`:1105-1108`).
 - **`packages/sdk/src/web/generated-op-methods.ts`** regenerated with `npm run generate:web-ops -w packages/sdk` (never hand-edited), **`web/web-management-client.ts`** (direct/web parity), **`packages/sdk/api/src/http-api-transport.js`**, **`packages/app/tui/src/node-sdk-transport.js`** (forward `requestId` and all Stop/Steer options unchanged; today it rebuilds Stop options, `:1559-1563`), **`packages/app/web/runtime.js`** dispatch.
 - **Tests**: `packages/sdk/test/local/turn-control-management.test.js`: with a fake catalog, every refusal and the accepted path, the Stop outcome wait and timeout, the legacy fallback, flag off, the detailed-view fields (direct and web shapes identical; `acceptsTurnControl` false when the turn ends, waits or is legacy); against real PostgreSQL after A2: accepted steer recorded once; an accepted request whose response is lost, then the turn ends, then a same-id retry returns the original answer with one control event; no-turn refusal followed by a message is delivered once. API tests in `packages/sdk/api/test/` for the route and `session:write` (read-only caller refused, nothing recorded); direct/web parity test.
 
@@ -430,7 +459,9 @@ Consumes A1; live tests need A2. Design 4.3; Spec FR-001 to FR-004, FR-017 to FR
 
 #### Automated Verification:
 - [ ] Build passes; `npm run test:api --workspace=pilotswarm-sdk`
-- [ ] `npx vitest run test/local/turn-control-management.test.js test/local/stop-turn.test.js test/local/management.test.js`
+- [ ] `npx vitest run test/local/turn-control-management.test.js test/local/stop-turn-management.test.js test/local/management.test.js`
+- [ ] After A4 and B2 are on the integration branch: `stop-turn-live.test.js` updated to the new path (asserts the `user.stop` line and `stopped` outcome, no system message, P22) plus a legacy-version case, passing
+- [ ] Caller tests: owner versus collaborator flag override, forged body sender overwritten, direct/web parity, Stop attributed with steering disabled
 
 #### Manual Verification:
 - [ ] Steer is reachable only through the management operation in both modes
@@ -456,7 +487,7 @@ Consumes C1. Design 4.10; Spec FR-018, FR-019; US-1 to US-4, US-6. Test plan 7.6
 
 ### Changes Required:
 - **`packages/app/ui/core/src/commands.js`, `controller.js`, `selectors.js`**: `STEER_TURN` command; request ids by P14 for Stop and Steer (pending `{requestId, kind, text}` kept across a transport failure, explicit Retry reuses it, no message fallback on transport failure); fallback to a normal message with a new client message id only after a definite `no_turn`/`legacy_turn` Steer refusal; `canSteer` = the detailed view's `acceptsTurnControl` and the viewer's `sessions.steering` (resolved through the existing feature read at session load and feature refresh); eligibility is refreshed from the detailed view on turn start, turn end, stop, wait and question events and set explicitly to `false` (never left undefined, since the merge skips undefined values, `controller.js:452-462`); Stop result `too_late` handled; a carried steer whose next turn ended "stopped" is rendered "Carried, then stopped" with badge `carried_then_stopped` (D6), derived from the next turn's Stop, bulk and live, surviving reload.
-- **`packages/app/ui/core/src/history.js`**: allowlist `user.steer`, `user.stop`, `session.control_outcome`; render a steer as a user message with a "steer" badge and its outcome (Delivered, Will run next, Not delivered, Stopped, Too late; "Pending" while open); render a Stop as a short system line with its outcome; bulk and live paths; survives reload.
+- **`packages/app/ui/core/src/history.js`**: allowlist `user.steer`, `user.stop`, `session.control_outcome` (not `session.steer_confirmed`); read `session.carried_steers_closed` to label carried steers (P17: Will run next, Carried, ran next, Carried, then stopped, Carried, not run; terminal session without the event → Carried, not run); mark the legacy "Turn stopped by user." system line (P22); render a steer as a user message with a "steer" badge and its outcome (Delivered, Will run next, Not delivered, Stopped, Too late; "Pending" while open); render a Stop as a short system line with its outcome; bulk and live paths; survives reload.
 - **`packages/app/ui/react/src/web-app.js`**: Steer button next to Stop; outcome badges; the `data-testid` contract below.
 - **`packages/app/tui/src/app.js`** and TUI selectors: Ctrl+T (P9); status hints, help/startup hint surfaces; `.github/skills/pilotswarm-tui/SKILL.md`.
 - **Portal `data-testid` contract** (stable; the parent's UX pass asserts and screenshots them):
@@ -465,16 +496,17 @@ Consumes C1. Design 4.10; Spec FR-018, FR-019; US-1 to US-4, US-6. Test plan 7.6
   |---|---|---|
   | `composer-input` | prompt input | |
   | `turn-stop-button` | Stop button | `data-state="ready"|"stopping"` |
-  | `turn-steer-button` | Steer button (present only when `canSteer`) | `data-state="ready"|"sending"` |
-  | `session-turn-state` | turn status indicator | `data-turn-state="running"|"idle"|"waiting"|"input_required"|"error"|"failed"|"completed"|"cancelled"` (product states pass through unnormalized), `data-accepts-controls="true"|"false"` |
+  | `turn-steer-button` | Steer button (present only when `canSteer`) | `data-state="ready"|"sending"|"disabled"` (`disabled` while the composer is empty) |
+  | `session-turn-state` | turn status indicator | `data-turn-state="pending"|"running"|"idle"|"waiting"|"input_required"|"error"|"failed"|"completed"|"cancelled"` (product states pass through unnormalized), `data-accepts-controls="true"|"false"` |
   | `control-steer` | transcript steer item | `data-control-seq`, `data-outcome` |
   | `control-stop` | transcript Stop line | `data-control-seq`, `data-outcome` |
-  | `control-outcome-badge` | outcome badge inside a control item | `data-outcome="pending"|"delivered"|"carried"|"carried_then_stopped"|"not_delivered"|"stopped"|"too_late"` |
-  | `control-notice` | toast/inline notice for every non-accepted answer, fallback and failure | `data-kind="steer"|"stop"`, `data-reason="no_turn"|"legacy_turn"|"not_found"|"too_many"|"request_id_reused"|"steering_disabled"|"forbidden"|"too_long"|"no_active_turn"|"timeout"|"unconfirmed"|"fallback_sent"|"fallback_failed"|"error"` |
+  | `control-outcome-badge` | outcome badge inside a control item | `data-outcome="pending"|"delivered"|"carried"|"carried_ran"|"carried_then_stopped"|"carried_not_run"|"not_delivered"|"stopped"|"too_late"` |
+  | `control-stop-legacy` | the existing legacy "Turn stopped by user." line (1.0.80 and older) | `data-outcome="stopped"|"stop_forced"` |
+  | `control-notice` | toast/inline notice for every non-accepted answer, fallback and failure | `data-kind="steer"|"stop"`, `data-reason="no_turn"|"legacy_turn"|"not_found"|"too_many"|"request_id_reused"|"steering_disabled"|"forbidden"|"too_long"|"no_active_turn"|"timeout"|"stop_pending_retry"|"unconfirmed"|"fallback_sent"|"fallback_failed"|"error"` |
   | `control-retry-button` | Retry action on an `unconfirmed` notice (reuses the request id, P14) | `data-request-id` |
   | `transcript-user-message` | ordinary user message (also the steer fallback) | `data-client-message-id` |
-  Every row and every attribute value above is a visible state; no Stop/Steer state is shown without one of them.
-- **Tests**: `packages/app/ui/core/test/turn-control-history.test.mjs` (every outcome, bulk and live, reload, once only), `turn-control-controller.test.mjs` (steer; request id kept across a lost response and reused by Retry with one transcript item; fallback only on definite refusal; canSteer with flag, legacy, read-only and eligibility refresh to false; Stop too_late); TUI keybinding/status tests; a portal e2e spec `packages/app/web/test/e2e/turn-control.spec.mjs` with a fake transport asserting every selector and every attribute value of the table.
+  Every row and every attribute value above is a visible state; no Stop/Steer state is shown without one of them. Selectors are scoped: each control lives inside the session's `data-session-id` transcript or composer container, so MoA panels never collide. A Stop that timed out with a `controlSeq` shows its `control-stop` item as pending plus notice `stop_pending_retry`, not an error.
+- **Tests**: `packages/app/ui/core/test/turn-control-history.test.mjs` (every outcome, bulk and live, reload, once only), `turn-control-controller.test.mjs` (steer; request id kept across a lost response and reused by Retry with one transcript item; fallback only on definite refusal; canSteer with flag, legacy, read-only and eligibility refresh to false; Stop too_late); TUI keybinding/status tests; a portal e2e spec `packages/app/web/test/e2e/turn-control.spec.mjs` with a fake transport asserting every selector and every attribute value of the table; extend `mobile-header-status.spec.mjs` with Steer beside Stop and Send at 320 x 400 (44 x 44 targets, draft and focus kept, pending disablement) and in Zen/MoA (focused-session routing, other panel unaffected).
 
 ### Success Criteria:
 
@@ -513,6 +545,9 @@ Consumes A, B, C. Spec SC-001 to SC-010; design 4.12, 7.6 (latency), 7.7.
 - Local instance walk (design 4.12).
 - Rollout and rollback procedure (FR-020, design 6): document in the deployment docs that migration 0082 is additive, capable workers and the portal/Web API roll out together, and a rollback keeps workers able to run 1.0.81 until its sessions drain unless a separately authorized coordinated database-and-code rollback is chosen; flag-off is not an orchestration rollback; no database reset.
 - Connection budget (evidence 7.8) for the test environment's configured worker count, from A5's method.
+- CI connection headroom: peak database connections of the full suite with and without the hub; adjust `scripts/run-tests.sh` guard thresholds if needed, never by lowering parallelism.
+- HorizonDB coverage decision per new test file from A3's hub result: HorizonDB coverage with a passing hub, or `baselineOnly` with the recorded reason.
+- Design delta: the parent publishes design revision 6 recording the approved deltas listed in Spec.md (D6, P12, P13, P17, P19, P20, P21, P22, flag default).
 
 ### Success Criteria:
 - [ ] Full stock suite passes (or qualified by the repository's sequential-verification rule)
@@ -530,36 +565,39 @@ The existing `deploy-azure.yml` deploys only a published release tag from `main`
 
 After I1 and U0 and before F1. The parent deploys the exact integration commit through the U0 route and runs a swarm of test agents with a real model. Each agent drives the portal (and the TUI where noted), asserts the `data-testid` contract of C3, and takes screenshots into an organized report (one folder per scenario, named by scenario id, with a pass/fail summary). Workstream C's own UI and controller tests remain required; this pass does not replace them.
 
-Acceptance scenarios (from Spec and design 7.6):
+Acceptance scenarios (from Spec and design 7.6). "Mandatory" scenarios must pass on the final candidate. "Window" scenarios need a control to land in a window of about 100 ms between the run's final idle and the end-of-turn write; their mandatory evidence is A5's deterministic `hold` tests (P23) plus C3's fake-transport rendering tests, and U1 runs them observationally (screenshots when the window is hit, never counted as a failure when it is missed). Drivers: "route hold" means Playwright holds the request (`page.route`) until the stated condition, then releases it; "route drop" means `route.fetch()` reaches the server and the browser then receives a network error.
 
-| ID | Scenario | Assert (selectors) | Spec / design |
-|---|---|---|---|
-| UX-01 | Steer hidden with the flag off; visible with it on while a turn runs | `turn-steer-button` absent / present; `data-accepts-controls` | US-6.3, FR-017; 7.6 |
-| UX-02 | Steer during a multi-tool turn | `control-steer` → `data-outcome="delivered"`; model follows it | US-2.1; 7.6 |
-| UX-03 | Steer during a long tool call | delivered after the tool ends | US-2.2 |
-| UX-04 | Two quick steers | two `control-steer`, in order, both delivered | US-2.3 |
-| UX-05 | Late steer at the final answer | `data-outcome="carried"`, then a new turn runs it; shown once | US-3.1 |
-| UX-06 | Late steer when the turn asks a question | carried, rides with the answer | US-3.2, D3 |
-| UX-07 | Stop a running turn | `turn-stop-button` `data-state` stopping → gone; `control-stop` `data-outcome="stopped"`; `session-turn-state` idle | US-1.1 |
-| UX-08 | Stop with a pending steer | steer `not_delivered`, Stop `stopped`, no new turn | US-1.2, D2 |
-| UX-09 | Steer delivered, then Stop | the delivered steer shows `not_delivered` | US-1.3 |
-| UX-10 | Stop just after the turn finished | `control-stop` `too_late`; carried steer `not_delivered` | US-1.5, D5 |
-| UX-11 | Stop with no running turn | `control-notice` `data-reason="no_active_turn"`, nothing recorded | US-1.6 |
-| UX-12 | Steer with no running turn | `control-notice` `fallback_sent`; one `transcript-user-message` | US-2.7, US-4.4 |
-| UX-13 | Read-only shared viewer | no `turn-steer-button`; API refusal shows `forbidden` | US-2.9, FR-018 |
-| UX-14 | Legacy session (started before the upgrade) | Stop works through today's path; no Steer | US-6.1 |
-| UX-15 | Reload after each outcome | every `control-*` item and badge unchanged, once | US-4; 7.6 |
-| UX-16 | TUI: the same flows (Ctrl+T, Ctrl+X) | status/help text shows the keys; outcomes match the portal | 7.6 TUI parity |
-| UX-17 | Stop latency, 30 runs | p95 ≤ 2 s from accept to outcome (event timestamps) | SC-001, D1 |
-| UX-18 | Steer latency, 30 runs between tool calls | p95 ≤ 2 s from `acceptedAt` to `confirmedAt` of the P13 trace line (nearest-rank 95th percentile of 30 runs; record model, provider, workload, duration and that each steer arrived between tool calls) | SC-002 |
-| UX-19 | Steer racing the end of the turn | either the steer has an outcome or a `control-notice` `fallback_sent` and one `transcript-user-message`; never both, never neither | Edge case; US-2.7 |
-| UX-20 | Lost response (network cut while steering) | `control-notice` `unconfirmed`; `control-retry-button` reuses the request id; one `control-steer` | US-4.2, P14 |
-| UX-22 | Carried steer, then Stop before or during the next turn, before and after reload | `control-steer` badge `data-outcome="carried_then_stopped"`; no further turn runs it | US-3.5, D6 |
-| UX-21 | Eligibility refresh | `data-accepts-controls` turns `false` when the turn ends, waits or asks a question; Steer button disappears | P5 |
+| ID | Kind | Scenario and driver | Assert (selectors) | Spec / design |
+|---|---|---|---|---|
+| UX-01 | Mandatory | Steer hidden with the flag off; visible with it on (cluster setting) while a turn runs | `turn-steer-button` absent / present; `data-accepts-controls` | US-6.3, FR-017; 7.6 |
+| UX-02 | Mandatory | Steer during a multi-tool turn | `control-steer` `data-outcome="delivered"`; model follows it | US-2.1; 7.6 |
+| UX-03 | Mandatory | Steer during a long tool call | delivered after the tool ends | US-2.2 |
+| UX-04 | Mandatory | Two quick steers | two `control-steer`, in order, both delivered | US-2.3 |
+| UX-05 | Mandatory | Steer while the model writes its final answer (before the run's final idle) | `delivered` in the same turn (design 4.6) | US-3, design 4.6 |
+| UX-06 | Window | Late steer after the run's final idle | `carried`, then `carried_ran` after the next turn runs it; shown once | US-3.1, P17 |
+| UX-07 | Window | Late steer when the turn ends with a question | carried, rides with the answer | US-3.2, D3 |
+| UX-08 | Mandatory | Stop a running turn | `turn-stop-button` `data-state` stopping → gone; `control-stop` `stopped`; `session-turn-state` idle; no "Turn stopped by user." line (P22) | US-1.1 |
+| UX-09 | Mandatory | Stop with a pending steer | steer `not_delivered`, Stop `stopped`, no new turn | US-1.2, D2 |
+| UX-10 | Mandatory | Steer delivered, then Stop | the delivered steer shows `not_delivered` | US-1.3 |
+| UX-11 | Window | Stop just after the run's final idle | `control-stop` `too_late`; carried steer `not_delivered` | US-1.5, D5 |
+| UX-12 | Mandatory | Stop when the turn has ended: route hold on stop-turn until `session-turn-state` is idle | `control-notice` `data-kind="stop"` `data-reason="no_active_turn"`; no control recorded | US-1.6 |
+| UX-13 | Mandatory | Steer when the turn has ended: route hold on steer until idle | `control-notice` `fallback_sent`; exactly one `transcript-user-message` with the text; no `control-steer` | US-2.7, US-4.4 |
+| UX-14 | Mandatory | Read-only collaborator: (a) no `turn-steer-button`; (b) an API steer authenticated as that user returns 403 and records nothing; (c) owner revokes write access while the collaborator's Steer is visible, collaborator clicks Steer | (a) absent; (b) no event; (c) `control-notice` `forbidden` | US-2.9, FR-018 |
+| UX-15 | Mandatory | Legacy session: deploy the base build through U0, start a session with a long tool call, upgrade to the candidate while it runs, press Stop | `control-stop-legacy` `stopped` (or `stop_forced`); no Steer offered on that turn | US-6.1, P22 |
+| UX-16 | Mandatory | Reload after each mandatory outcome above | every `control-*` item and badge unchanged, once | US-4; 7.6 |
+| UX-17 | Mandatory | TUI: the same flows (Ctrl+T, Ctrl+X) | status/help text shows the keys; outcomes match the portal | 7.6 TUI parity |
+| UX-18 | Mandatory | Stop latency, 30 runs | p95 ≤ 2 s from `createdAt(user.stop)` to `createdAt` of its outcome (nearest-rank 95th percentile; record model, provider, workload) | SC-001, D1 |
+| UX-19 | Mandatory | Steer latency, 30 runs between tool calls | p95 ≤ 2 s from `createdAt(user.steer)` to `createdAt(session.steer_confirmed)` (P13; nearest-rank 95th percentile of 30 runs; record model, provider, workload, duration, and that each steer arrived between tool calls) | SC-002 |
+| UX-20 | Window | Steer racing the end of the turn, natural timing | either an outcome or `fallback_sent` plus one `transcript-user-message`; never both, never neither | Edge case; US-2.7 |
+| UX-21 | Mandatory | Lost response: route drop on the steer request | `control-notice` `unconfirmed`; `control-retry-button` reuses the request id; exactly one `control-steer` | US-4.2, P14 |
+| UX-22 | Mandatory | Eligibility refresh | `data-accepts-controls` turns `false` when the turn ends, waits or asks a question; Steer button disappears | P5 |
+| UX-23 | Window | Carried steer, then Stop before or during the next turn, before and after reload | badge `carried_then_stopped`; no further turn runs it | US-3.5, D6, P17 |
+| UX-24 | Mandatory | Layout: 320 x 400 and desktop; Zen and a two-panel MoA dashboard; light and dark theme | Steer, Stop and Send reachable without overlap; controls act only on the focused session; the other panel shows no control change | Repository MoA rules; 7.6 |
 
 ### Success Criteria:
 - [ ] Every mandatory scenario passes on the final integration candidate. A failure goes back to its owning workstream; after the fix lands, the affected scenarios are re-run on the new candidate. Initial failure evidence is kept in the report.
-- [ ] UX-17 and UX-18 meet p95 ≤ 2 s under the stated conditions (UX-17 excludes a CLI that ignores abort), with percentiles and test parameters reported
+- [ ] UX-18 and UX-19 meet p95 ≤ 2 s under the stated conditions (UX-18 excludes a CLI that ignores abort), with percentiles and test parameters reported
+- [ ] Window scenarios: A5's deterministic evidence and C3's rendering tests pass; U1 screenshots attached when the window was hit
 - [ ] Evidence that cannot be produced (for example a missing provider credential) is labelled "not covered" with the reason; it never counts as a pass
 - [ ] The report names the deployed SHA and image digests
 
@@ -574,6 +612,6 @@ One PR from `waldemort/turn-control` to `main`, opened on behalf of @affandar, w
 ## References
 
 - Design: `docs/proposals/session-turn-control.md` (revision 5); design PR https://github.com/microsoft/PilotSwarm/pull/169
-- Spec: `.paw/work/turn-control/Spec.md` (r3)
+- Spec: `.paw/work/turn-control/Spec.md` (r6)
 - Research: `.paw/work/turn-control/CodeResearch.md`
 - Reviews: `.paw/work/turn-control/reviews/` (spec review r1-r3, plan review r1 and later rounds, planning-docs review)

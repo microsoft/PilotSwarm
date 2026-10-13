@@ -1,9 +1,20 @@
 # Feature Specification: Session Turn Control (Stop and Steer)
 
-**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r5, owner decision D6 recorded)  |  **Status**: Draft
+**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r6, after planning-docs review)  |  **Status**: Draft
 **Input Brief**: Let a user stop a running agent turn within about a second, or steer it with guidance the model receives inside the same turn, without losing, doubling or hiding any request across crashes.
 
-Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected.
+Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected, except for the approved design deltas below; the parent records them in design revision 6.
+
+Approved design deltas (owner decision or required by the existing code; the plan's decision IDs in brackets):
+- D6 (owner): a carried steer whose consuming turn ends "stopped" is not run again (US-3.5).
+- Carried steers leave the orchestration only when a turn actually used them, not merely when it passed its gates, because a provider-admission error is returned before the gates [P12].
+- Each carried steer gets one closing record (ran, stopped, gave up, terminal) that clients use for its label [P17].
+- The highest started turn is scoped to one orchestration lifetime, because a restarted system session counts turns from zero again [P19].
+- Any terminal session state closes open controls, whoever writes it [P20].
+- The model run accepts controls only after its initial prompt is sent; earlier controls wait [P21].
+- New-version Stop shows one transcript item, the Stop line, without the old "Turn stopped by user." message [P22].
+- Steer confirmation is recorded as a session event outside the transcript [P13].
+- The steering flag cannot be enabled by a user override unless the operator allows overrides.
 
 ## Overview
 
@@ -57,14 +68,14 @@ Acceptance Scenarios:
 
 ### US-3 (P2) – A late steer runs with the next turn
 
-Narrative: The user steers just as the model writes its final answer. The steer missed the running turn, so it runs automatically as the next turn, as if the user had sent it as a message at the moment the turn ended. It is shown once, with the outcome "will run next".
-Independent Test: Steer after the model's final model call; check that a new turn runs with the steer's text and that the transcript shows the steer once.
+Narrative: The user steers just as the model run finishes. A steer sent while the model still writes its final answer is answered in the same turn (US-2). A steer accepted after the model run has finished, but before the turn has ended, missed the running turn, so it runs automatically as the next turn, as if the user had sent it as a message at the moment the turn ended. It is shown once, with the outcome "will run next".
+Independent Test: Steer after the model run has finished and before the turn ends (a deterministic test hold); check that a new turn runs with the steer's text and that the transcript shows the steer once.
 Acceptance Scenarios:
-1. Given a steer accepted after the model's last model call, When the turn ends, Then the steer's outcome is "carried" ("will run next") and the next turn starts with its text without recording it again.
+1. Given a steer accepted after the model run's final idle and before the turn's end-of-turn write, When the turn ends, Then the steer's outcome is "carried" ("will run next") and the next turn starts with its text without recording it again.
 2. Given a turn that ends by asking the user a question, When a steer was carried, Then the carried steer rides with the user's answer (D3).
 3. Given a turn that returns an error (no Stop open) and is retried, When a steer was carried, Then the retry includes it; a retry never drops it.
-4. Given a turn the session gives up on (retries exhausted or a fatal error) or a session that reaches a terminal state, When steers or Stops are still open, Then open steers become "not delivered" and open Stops become "stopped".
-5. Given a carried steer, When the next turn that carries it ends "stopped" (a Stop at its start or during it), Then the steer is not run again; its outcome stays "carried" and every client shows it as "Carried, then stopped", before and after a reload (D6).
+4. Given a turn the session gives up on (retries exhausted or a fatal error) or a session that reaches a terminal state, When steers or Stops are still open, Then open steers become "not delivered" and open Stops become "stopped"; a steer that was carried but not yet run is not run and every client shows it as "Carried, not run".
+5. Given a carried steer, When the turn that carries it (the next turn that gets past its gates, not necessarily the next turn index) ends "stopped" (a Stop at its start or during it), Then the steer is not run again; its outcome stays "carried" and every client shows it as "Carried, then stopped", before and after a reload (D6).
 
 ### US-4 (P2) – Every request is visible once and has one outcome
 
@@ -149,11 +160,11 @@ Acceptance Scenarios:
 - FR-010: Writing outcomes is idempotent: repeating it after any crash writes nothing new and returns the same late steers and stopped flag. (US-5)
 - FR-011: The saved conversation records how far it provably got through the turn's steers (the cursor). A retried turn whose result was already saved reuses that result and cursor without running the model and applies FR-009. A retried turn with nothing of it saved applies an open Stop without running the model (FR-012), or else folds every open steer into its prompt. A stopped, superseded or lost conversation counts as cursor 0. (US-5)
 - FR-012: A retried turn that has nothing saved and finds an open Stop, or a "stopped" outcome already recorded for the turn, ends "stopped" without running the model. (US-1, US-5)
-- FR-013: Carried steers run with the next turn without being recorded again, including with a user's answer to a question and with an error retry; they survive the orchestration's continue-as-new. When they are the only pending work, their text is the next turn's prompt. When that next turn ends "stopped", they are not run again and clients show them as "Carried, then stopped" (D6). (US-3)
+- FR-013: Carried steers run with the next turn without being recorded again, including with a user's answer to a question and with an error retry; they survive the orchestration's continue-as-new. When they are the only pending work, their text is the next turn's prompt. They stay pending through gate waits and errors returned before the model runs. When the turn that carries them ends "stopped", they are not run again and clients show them as "Carried, then stopped" (D6); when the session gives up or ends first, clients show "Carried, not run"; after they ran, clients show "Carried, ran next". (US-3)
 - FR-014: When the session gives up on a turn, or reaches a terminal state, every open request is closed: steers "not delivered", Stops "stopped". (US-3, US-5)
-- FR-015: A delayed start of an older turn after a newer turn started is refused. (US-5)
+- FR-015: A delayed start of an older turn after a newer turn started is refused, within one orchestration lifetime; a restarted session starts a new lifetime. (US-5)
 - FR-016: New-version turns are routed only to workers that declare the turn-control capability; sessions on older orchestration versions keep today's Stop, which the client selects automatically. (US-6)
-- FR-017: Steer is offered by clients and accepted by the API only when the `sessions.steering` flag is on; Stop uses the new path for every turn that accepts controls, regardless of the flag. (US-6)
+- FR-017: Steer is offered by clients and accepted by the API only when the `sessions.steering` flag is on for the calling user; the operator turns it on and decides whether users may override it; Stop uses the new path for every turn that accepts controls, regardless of the flag. (US-6)
 - FR-018: Steer requires the same write access as sending a message; Stop keeps today's access rule. A refused caller causes no control event and no delivery. (US-2)
 - FR-019: Steer and the new Stop result are operations of the management client in both direct and Web API modes; the Web API, MCP, CLI, portal and terminal UI use that operation, never a side path. Each client renders each request once with its outcome; portal and terminal UI stay in parity. (US-2, US-4)
 - FR-020: Rollout is additive and rollback-safe: the migration keeps older workers working; capable workers and the portal/Web API roll out together; a rollback keeps workers able to run the new orchestration version until its sessions drain unless a separately authorized coordinated database-and-code rollback is chosen. Nothing in this feature authorizes a database reset. (US-6)
@@ -180,7 +191,7 @@ Acceptance Scenarios:
 - SC-002: 95th percentile time from an accepted steer to the model run's confirmation of it is at most 2 s over 30 runs while the turn is between tool calls. (FR-002, FR-005, FR-007)
 - SC-003: Every cell of the FR-009 table is produced by at least one test and yields exactly one outcome event per request; each request appears once in the transcript of every client, before and after a reload. (FR-004, FR-009, FR-010, FR-019)
 - SC-004: In the crash matrix of US-5 (crash after turn start, after the end-of-turn write, after the save, after outcomes; stopped turn before and after outcomes; Stop during a thrown-error backoff; stale worker), each case ends with its expected outcome as stated in US-5, and, for sessions with a session store, every accepted, not-stopped steer reaches the surviving conversation exactly once. Sessions without a store are checked only for today's re-run behaviour (D4). (FR-010, FR-011, FR-012, FR-015)
-- SC-005: A late steer always runs with the next turn, including after an error retry and with an answer to a question; none is dropped across continue-as-new. (FR-008, FR-013)
+- SC-005: A late steer always runs with the turn that carries it, including after an error retry and with an answer to a question; none is dropped across continue-as-new or before the model runs. A carried steer is not run only when its carrying turn is stopped (D6) or the session gives up or ends, and then every client shows why. (FR-008, FR-013)
 - SC-006: A turn without controls makes the same number of turn-path CMS calls as today and its saved result has no cursor field. (FR-021)
 - SC-007: Per worker: one additional database connection; zero periodic looks while idle; one batched periodic look every 5 s while busy; a lost notification delays delivery by at most 5 s; the connection is closed after worker stop. (FR-005, FR-022)
 - SC-008: Sessions on the previous orchestration version stop through today's path; a worker without the capability never runs a new-version turn; with the flag off no client offers Steer and the API refuses it; a read-only caller cannot steer. (FR-016, FR-017, FR-018)
@@ -224,6 +235,7 @@ In Scope:
 - The tests and measurements of the evidence matrix.
 
 Out of Scope:
+- A separate CLI subcommand for Stop or Steer: the CLI is the terminal UI, which gets both through key bindings.
 - Withdrawing or editing a steer after acceptance.
 - Steering a turn that has not started (that is an ordinary queued message).
 - Stopping a session waiting between turns, including a returned-error retry backoff.
@@ -237,7 +249,7 @@ Out of Scope:
 - duroxide-node 0.2.1 (duroxide 0.1.32, duroxide-pg 0.1.36), already on the branch.
 - Copilot SDK 1.0.13 with CLI 1.0.83 (current pins) and its "immediate" send mode.
 - PostgreSQL LISTEN/NOTIFY on the CMS database.
-- Feature flag `sessions.steering` (default off).
+- Feature flag `sessions.steering` (default off, user override off by default).
 - The existing session write-access policy (`session:write`) for Steer.
 
 ## Risks & Mitigations
