@@ -9839,6 +9839,14 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button,
 .ps-prompt-shell.is-compact .ps-steer-button { flex: none; min-width: 44px; min-height: 44px; }
+/* Phones: while Stop or Steer shows, the turn state and the actions take
+ * their own row under the input; on one row they left the text a few words
+ * wide. The idle composer (Send only) keeps one row. */
+@media (max-width: 600px) {
+  .ps-prompt-shell.is-mobile:has(> .ps-prompt-actions > :is(.ps-stop-button, .ps-steer-button)) { grid-template-columns: auto minmax(0, 1fr); }
+  .ps-prompt-shell.is-mobile.is-compact:has(> .ps-prompt-actions > :is(.ps-stop-button, .ps-steer-button)) { grid-template-columns: minmax(0, 1fr); }
+  .ps-prompt-shell.is-mobile:has(> .ps-prompt-actions > :is(.ps-stop-button, .ps-steer-button)) > .ps-prompt-actions { grid-column: 1 / -1; justify-content: flex-end; }
+}
 
 /* Permanent desktop navigation geometry. Context controls may change, but
    neither a mode change nor a long canvas title can move Back / Forward. */

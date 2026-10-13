@@ -491,6 +491,23 @@ async function expectControlsFit(controls) {
     }
 }
 
+/**
+ * The phone composer while a turn runs: the input, Stop, Steer (when shown)
+ * and Send fit and stay touch-sized, and the input keeps at least 70% of the
+ * composer width. With the actions on the input's row it kept under half:
+ * 122-152 px of 344-374 px in Zen and MoA, 34-64 px of 328-358 px in the
+ * chat view.
+ */
+async function expectPhoneComposer(wire, { steer = true } = {}) {
+    await expectControlsFit({ input: wire.input, stop: wire.stopButton, ...(steer ? { steer: wire.steerButton } : {}), send: wire.sendButton });
+    const [input, shell] = [await wire.input.boundingBox(), await wire.composer.boundingBox()];
+    expect(input.width, "the input keeps most of the composer width").toBeGreaterThanOrEqual(0.7 * shell.width);
+    for (const button of steer ? [wire.stopButton, wire.steerButton, wire.sendButton] : [wire.stopButton, wire.sendButton]) {
+        const box = await button.boundingBox();
+        expect(Math.min(box.width, box.height), "a touch target of at least 40 px").toBeGreaterThanOrEqual(40);
+    }
+}
+
 /** Steer and Stop from `wire`; both requests must name `sessionId`. */
 async function steerAndStop(wire, sessionId, text) {
     const steers = wire.state.steers.length, stops = wire.state.stops.length;
@@ -557,14 +574,14 @@ test("MoA: the sole composer's Steer and Stop act on the focused panel's session
 });
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
-    test(`phone MoA ${viewport.width}x${viewport.height}: the focused session's controls fit and follow the panel`, async ({ page }) => {
+    test(`phone MoA ${viewport.width}x${viewport.height}: the focused session's controls fit under a wide input and follow the panel`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile() });
         await openMoa(page, portal);
         await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
         const a = moaWire(page, portal, SID, "pa"), b = moaWire(page, portal, SID2, "pb");
         await a.input.fill("x");
-        await expectControlsFit({ input: a.input, stop: a.stopButton, steer: a.steerButton, send: a.sendButton });
+        await expectPhoneComposer(a);
         await steerAndStop(a, SID, "phone steer for A");
 
         await page.getByRole("button", { name: "Open panel map", exact: true }).click();
@@ -572,7 +589,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }
         await expect(moaPanel(page, "pb")).toHaveClass(/is-focused/);
         await expect(a.composer).toHaveCount(0);
         await b.input.fill("x");
-        await expectControlsFit({ input: b.input, stop: b.stopButton, steer: b.steerButton, send: b.sendButton });
+        await expectPhoneComposer(b);
         await page.screenshot({ path: test.info().outputPath(`turn-control-phone-moa-${viewport.width}.png`) });
         await steerAndStop(b, SID2, "phone steer for B");
         expect(portal.state.steers.map((steer) => steer.sessionId)).toEqual([SID, SID2]);
@@ -590,12 +607,12 @@ for (const steering of [true, false]) {
         await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
         await zen.input.fill("x");
         if (steering) {
-            await expectControlsFit({ input: zen.input, stop: zen.stopButton, steer: zen.steerButton, send: zen.sendButton });
+            await expectPhoneComposer(zen);
             await page.screenshot({ path: test.info().outputPath("turn-control-phone-zen.png") });
             await steerAndStop(zen, SID, "zen steer");
         } else {
             await expect(zen.steerButton).toHaveCount(0);
-            await expectControlsFit({ input: zen.input, stop: zen.stopButton, send: zen.sendButton });
+            await expectPhoneComposer(zen, { steer: false });
             await zen.stopButton.click();
             await expect.poll(() => portal.state.stops.length).toBe(1);
             expect(portal.state.stops[0].sessionId).toBe(SID);
@@ -603,3 +620,22 @@ for (const steering of [true, false]) {
         expect(portal.state.sends).toEqual([]);
     });
 }
+
+test("phone chat 390x844: Stop and Steer fit under a wide input and act on the session; idle keeps one row", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+    const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
+    await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
+    await chat.input.fill("x");
+    await expectPhoneComposer(chat);
+    await page.screenshot({ path: test.info().outputPath("turn-control-phone-chat.png") });
+    await steerAndStop(chat, SID, "phone chat steer");
+    // The idle composer keeps Send on the input's row.
+    await chat.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+    await expect(chat.stopButton).toHaveCount(0);
+    await expect(chat.steerButton).toHaveCount(0);
+    const [input, send] = [await chat.input.boundingBox(), await chat.sendButton.boundingBox()];
+    expect(send.y).toBeLessThan(input.y + input.height);
+    expect(send.x).toBeGreaterThanOrEqual(input.x + input.width);
+});
