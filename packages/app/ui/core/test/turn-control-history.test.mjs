@@ -154,6 +154,26 @@ test("the portal gets one turnControl line per control and a group around an ord
     assert.equal(selectChatLines(renderState(history), 80).some((line) => line?.kind === "groupStart"), false);
 });
 
+test("a parent agent's Steer and Stop name the parent agent in the TUI and the portal", () => {
+    const actor = { kind: "agent", sessionId: "parent-1", display: "Coordinator" };
+    const history = live([
+        evt(1, "user.steer", { turn: 1, text: "use metric units", requestId: "r-1", actor }), outcome(2, 1, "delivered"),
+        evt(3, "user.stop", { turn: 1, text: "Stopped by parent agent", requestId: "r-3", actor }), outcome(4, 3, "stopped"),
+        steer(5, "a person's steer"),
+    ]);
+    const text = selectChatLines(renderState(history), 80).map((line) => (Array.isArray(line) ? line.map((run) => run.text).join("") : line.text)).join("\n");
+    assert.match(text, /Coordinator \(steer\) · Delivered/);
+    assert.match(text, /■ Coordinator: Stop · Stopped — Stopped by parent agent/);
+    assert.match(text, /You \(steer\) · Pending/);
+    const portal = selectChatLines(renderState(history), 80, { tableMode: "sentinel" })
+        .filter((line) => line?.kind === "turnControl").map((line) => line.control);
+    assert.deepEqual(portal.map((control) => [control.controlKind, control.speaker, control.actorKind]), [
+        ["steer", "Coordinator", "agent"],
+        ["stop", "Coordinator", "agent"],
+        ["steer", "You", "user"],
+    ]);
+});
+
 test("labels reconcile across pages after a reload (steer, outcome and closing record on different pages)", async () => {
     // Transcript noise between the steer, its outcome and its closing
     // record, so even the type-filtered backward pages (300 events each)

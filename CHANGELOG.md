@@ -20,6 +20,10 @@ with one outcome, shown in the portal and TUI transcripts.
 - Portal: Steer button beside Stop, outcome badges, notices with Retry, and
   stable `data-testid` selectors. TUI: `Ctrl+T` steers from the prompt pane.
 - Sessions on orchestration 1.0.80 and older keep the earlier Stop.
+- Agents: `message_agent` takes `deliver: "now"` to steer a sub-agent's
+  running turn (queued for its next turn when it cannot be steered), and the
+  new `stop_agent_turn` stops a sub-agent's current turn without ending it.
+  The child's transcript names the parent agent on those items.
 
 ## 0.8.2 — 2026-10-04
 

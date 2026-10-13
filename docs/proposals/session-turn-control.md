@@ -1,11 +1,11 @@
 # Session turn control: Stop and Steer through the CMS
 
 **Status:** Approved; implemented on `waldemort/turn-control`.
-**Date:** 2026-10-13, revision 7.
+**Date:** 2026-10-13, revision 8.
 **Owner:** Affan Dar (@affandar).
 **Supersedes:** the steering-ledger design in draft PR 141 (spec) and PR 142
 (implementation), and the "async turns" exploration that followed them.
-**Source references:** References added in revisions 6 and 7 point at the
+**Source references:** References added in revisions 6 to 8 point at the
 implementation by file path, without line numbers. Older references with line
 numbers stay pinned to `main` at `12dfd3ee`.
 
@@ -28,11 +28,11 @@ the turn's result.
 9. [Alternatives considered](#9-alternatives-considered)
 10. [Appendices](#10-appendices)
 
-What changed since revision 5: [Changes in revisions 6 and 7](#changes-in-revisions-6-and-7).
+What changed since revision 5: [Changes in revisions 6 to 8](#changes-in-revisions-6-to-8).
 
-## Changes in revisions 6 and 7
+## Changes in revisions 6 to 8
 
-Revisions 6 and 7 record the design as built. The plan
+Revisions 6 to 8 record the design as built. The plan
 (`.paw/work/turn-control/ImplementationPlan.md`, decisions P1 to P23 and D6)
 and the specification (`.paw/work/turn-control/Spec.md`, "Design deltas")
 approved every change below on 2026-10-13. Where the code and the plan differ,
@@ -42,7 +42,9 @@ Revision 6 is checked against `waldemort/turn-control` after phases A5
 (end-to-end, crash and multi-worker verification) and A6 (documentation)
 merged. Revision 7 adds the fixes from the final review of the integrated
 feature and is checked against `waldemort/turn-control` at `e945c07f`. The
-rows after the turnKey row are revision 7. Workstream A's notes are in
+rows after the turnKey row are revision 7. Revision 8 adds parent agent
+controls of a sub-agent's turn (4.13), which the owner approved for the same
+pull request; its rows are the last three. Workstream A's notes are in
 `.paw/work/turn-control/Docs.md`. The `.paw/work/turn-control/` planning files
 cited in this document are not in the tree; they are in the branch history at
 commit `1803c8cb`.
@@ -80,6 +82,9 @@ commit `1803c8cb`.
 | An in-attempt recovery re-run (lost live session, corrupted transcript) of a turn-control turn starts from the folded turn prompt: the carried steers and the turn-start steers. Legacy re-runs are unchanged. Folded steers go before a trailing `<system_context>` block. | Turn end labels the folded steers from the conversation that ran. | 4.7, 4.8 |
 | A V4 Stop cancels the background tasks the stopped turn started (started between the turn's start and the Stop), and an aborted `assistant.idle` after the Stop settles the turn. | CLI 1.0.83 keeps a turn open while a shell that a steer moved to the background runs, and sends no `session.idle` after the abort. | 4.6 |
 | A Stop that times out without an outcome shows "Stop accepted; waiting for the turn to stop" (`stop_pending`). The notice clears when that Stop's `session.control_outcome` arrives. | The earlier text promised a retry that may not come. | 4.10 |
+| `message_agent` gains `deliver` (`next_turn`, the default, or `now`). `now` steers the child's running turn through `steerSessionTurn`. A `no_turn`, `legacy_turn`, `steering_disabled` or `too_many` refusal sends the text through the default next-turn path, and the tool result says which happened. The request id is derived from the tool call. | A parent could only queue a message for the child's next turn or end the child. | 4.13 |
+| New tool `stop_agent_turn(agent_id, reason?)` stops a child's current turn through `stopSessionTurn` (legacy path for an older turn), waits up to 15 s and keeps the child alive. | `cancel_agent` ends the whole child. | 4.13 |
+| A parent's control records the sender `{ kind: "agent", sessionId, display }`. The portal and the TUI name the parent agent on the item; portal items carry `data-actor-kind`. `sessions.steering` resolves for the parent session's owner. Stop is not gated. | A person reading the child's transcript must see who steered or stopped it. | 4.10, 4.13 |
 
 ## 1. Problem statement
 
@@ -1210,6 +1215,8 @@ The TUI and the portal share the controller, the history and the labels
   `session.control_outcome` and `session.carried_steers_closed` are label
   inputs, matched by seq across all loaded history pages, on the bulk and the
   live path. Labels survive a reload. `session.steer_confirmed` is not shown.
+- **Who.** An item names its sender when it is not the viewer: another
+  person by name, a parent agent's control (4.13) by the parent's title.
 - **Labels.** Pending, Delivered, Not delivered, Stopped, Too late. A
   `carried` steer is labelled only from its closing record: none gives "Will
   run next", `ran` gives "Carried, ran next", `stopped` gives "Carried, then
@@ -1229,7 +1236,7 @@ panels never collide.
 | `turn-stop-button` | `data-state`: `ready`, `stopping` |
 | `turn-steer-button` | `data-state`: `ready`, `sending`, `disabled` (empty composer). Present only when `canSteer`. |
 | `session-turn-state` | `data-turn-state` (the product state), `data-accepts-controls` |
-| `control-steer`, `control-stop` | `data-control-seq`, `data-outcome` |
+| `control-steer`, `control-stop` | `data-control-seq`, `data-outcome`, `data-actor-kind`: `user`, or `agent` for a parent agent's control (4.13) |
 | `control-outcome-badge` | `data-outcome`: `pending`, `delivered`, `carried`, `carried_ran`, `carried_then_stopped`, `carried_not_run`, `not_delivered`, `stopped`, `too_late` |
 | `control-stop-legacy` | `data-outcome`: `stopped`, `stop_forced` |
 | `control-notice` | `data-kind`: `steer`, `stop`; `data-reason`: every refusal, fallback and failure |
@@ -1286,6 +1293,46 @@ per-session access model.
 - `scripts/local-pilotswarm.sh`: no new setting is needed; LISTEN works against
   the local PostgreSQL container. Stop and Steer are walked by hand there in
   U1b (7.6).
+- Revision 8 (4.13): `docs/api/reference.md` (Stop and Steer),
+  `docs/architecture/system.md` (built-in agent tools),
+  `docs/user-guide/portal.md`, the base prompts
+  (`packages/sdk/plugins/system/`), and the always-on tool lists.
+
+### 4.13 Parent agent controls of a sub-agent's turn
+
+A parent agent can steer or stop the running turn of its own sub-agent. Both
+tools run inline in the parent's `runTurn` activity (the control bridge in
+`packages/sdk/src/session-proxy.ts`, the logic in
+`packages/sdk/src/parent-turn-control.ts`). They call the management client's
+`steerSessionTurn` and `stopSessionTurn` in direct mode, so the catalog, the
+child's worker and the clients treat them like a person's control. There is
+no orchestration yield and no orchestration change.
+
+| Tool | Behaviour |
+|---|---|
+| `message_agent(agent_id, message, contract_patch?, deliver?)` | `deliver: "next_turn"` (default) is unchanged: the message is queued as the child's next prompt. `deliver: "now"` steers the child's running turn. A `no_turn`, `legacy_turn`, `steering_disabled` or `too_many` refusal sends the message through the default path instead. The result says "Steered into the running turn ... (control seq N)" or "Not steered: <reason>. Queued the message for the next turn ...". Other refusals fail and send nothing. |
+| `stop_agent_turn(agent_id, reason?)` | Stops the child's current turn: `stopSessionTurn` with a 15 s outcome wait, the earlier event path for a turn of 1.0.80 or older. The child stays alive (`cancel_agent` ends it). The result reports stopped, too late, no running turn, or accepted but still pending, with the control seq. The default reason is "Stopped by parent agent". |
+
+- **Who may.** Only the child's own parent: the tools resolve `agent_id`
+  among the parent's direct children, as `message_agent` does, and refuse a
+  system agent. An unknown or foreign id fails and records nothing.
+- **Sender and flag.** The control's sender is
+  `{ kind: "agent", sessionId: <parent>, display: <parent title or agent name> }`.
+  `sessions.steering` resolves for the parent session's owner (the first
+  owned session up its parent chain), as the Web API resolves it for a
+  person. Stop is not gated.
+- **Request id.** One per tool call:
+  `parent-<kind>:<parent session id>:<hash of the tool call id>`. When the
+  same tool call runs again, the catalog returns the first answer and records
+  nothing new. A fallback to the next turn is the existing message path, which
+  is not deduplicated.
+- **Older child turns.** A child turn of 1.0.80 or older takes the earlier
+  Stop event path, which records no sender for anyone: its transcript shows
+  the legacy line "Turn stopped by user.", not the parent's name. Changing
+  that would change a frozen orchestration version.
+- **Surfaces.** `stop_agent_turn` joins the always-on sub-agent tools (not the
+  agent tuner's read-only set) and is refused to native tasks. The base
+  prompts name both controls in one sentence.
 
 ## 5. Recovery and edge cases
 
@@ -1488,6 +1535,16 @@ start, a carried-only turn and a stopped result; storeless outcomes (D4).
 | Lost notification (LISTEN connection killed): steer delivered within 5 s | R2 |
 | Worker `stop()` closes the LISTEN connection | R7 |
 | Window cases with the P23 holds: a steer and a Stop after the gate closed and before T6; a control racing the end-of-turn write in both orders; a Stop and a steer held before the initial send | R3, R4 |
+
+`turn-control-parent.test.js`, real Copilot CLI with the scripted model
+(4.13): a parent steers its child's running turn, the steer is delivered
+once with the parent as actor, and the same request id records nothing new;
+a parent stops the child's turn, the child stays idle and alive and runs the
+next message; with no running child turn, with steering off, and for a
+1.0.80 child the message goes to the next turn; the 1.0.80 child stops
+through the earlier path; an unknown or foreign agent id is refused. Unit
+level: `test/unit/parent-turn-control.test.mjs` (outcome mapping, request
+ids) and `inline-control-tools.test.js` (schemas, tool call id).
 
 ### 7.4 Crash and recovery
 

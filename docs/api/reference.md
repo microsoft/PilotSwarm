@@ -390,6 +390,13 @@ on the turn-control path; list rows do not carry these fields).
   feature flag or refused for the open-control cap. `sessions.steering` gates new steers only: a retry of an
   already recorded request id still returns its first answer after the flag
   is turned off.
+- **Parent agents.** An agent controls its own sub-agent's running turn with
+  two tools on the same paths: `message_agent` with `deliver: "now"` steers
+  it (after a `no_turn`, `legacy_turn`, `steering_disabled` or `too_many`
+  refusal the message is queued for the next turn instead), and
+  `stop_agent_turn` stops the turn and keeps the sub-agent alive. The
+  control's sender is the parent agent (`kind: "agent"`), and
+  `sessions.steering` resolves for the parent session's owner.
 
 ## Feature flags
 

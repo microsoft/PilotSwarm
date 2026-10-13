@@ -4017,8 +4017,9 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
  * A Stop or Steer transcript item (session turn control). A steer reads as
  * a user message with a "steer" badge and its outcome; a Stop as a short
  * system line. The data-testid contract here is asserted by the UX pass:
- * control-steer / control-stop / control-stop-legacy with data-control-seq
- * and data-outcome, and control-outcome-badge inside an item.
+ * control-steer / control-stop / control-stop-legacy with data-control-seq,
+ * data-outcome and data-actor-kind (user, or agent for a parent agent's
+ * control), and control-outcome-badge inside an item.
  */
 const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) {
     const outcome = control.outcome || "pending";
@@ -4045,6 +4046,7 @@ const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) 
             "data-testid": "control-stop",
             "data-control-seq": seq,
             "data-outcome": outcome,
+            "data-actor-kind": control.actorKind,
         }, time, React.createElement("span", { className: "ps-control-glyph", "aria-hidden": true }, "■"),
         React.createElement("span", { className: "ps-control-title" }, control.speaker && control.speaker !== "You" ? `${control.speaker}: Stop` : "Stop"),
         badge,
@@ -4055,6 +4057,7 @@ const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) 
         "data-testid": "control-steer",
         "data-control-seq": seq,
         "data-outcome": outcome,
+        "data-actor-kind": control.actorKind,
     },
     React.createElement("div", { className: "ps-control-header" },
         time,

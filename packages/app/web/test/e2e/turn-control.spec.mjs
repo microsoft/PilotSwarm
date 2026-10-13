@@ -255,6 +255,28 @@ test("Stop: stopping state, pending, stopped and too late, and the legacy line",
     await page.screenshot({ path: test.info().outputPath("turn-control-stop.png") });
 });
 
+test("a parent agent's Steer and Stop name the parent agent and carry data-actor-kind", async ({ page }) => {
+    const wire = await open(page);
+    const actor = { kind: "agent", sessionId: "22222222-2222-3333-4444-555555555555", display: "Coordinator" };
+    const steerSeq = wire.event("user.steer", { turn: 3, text: "use metric units", requestId: "parent-steer:p:1", actor });
+    const stopSeq = wire.event("user.stop", { turn: 3, text: "Stopped by parent agent", requestId: "parent-stop:p:2", actor });
+    const personSeq = wire.event("user.steer", { turn: 3, text: "a person's steer", requestId: "r-person", actor: null });
+    wire.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "delivered" });
+    wire.event("session.control_outcome", { seq: stopSeq, turn: 3, outcome: "stopped" });
+    const steerItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${steerSeq}"]`);
+    const stopItem = wire.transcript.locator(`[data-testid="control-stop"][data-control-seq="${stopSeq}"]`);
+    const personItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${personSeq}"]`);
+    await expect(steerItem).toHaveAttribute("data-actor-kind", "agent");
+    await expect(steerItem).toContainText("Coordinator");
+    await expect(steerItem.getByTestId("control-outcome-badge")).toHaveAttribute("data-outcome", "delivered");
+    await expect(stopItem).toHaveAttribute("data-actor-kind", "agent");
+    await expect(stopItem).toContainText("Coordinator: Stop");
+    await expect(stopItem).toContainText("Stopped by parent agent");
+    await expect(personItem).toHaveAttribute("data-actor-kind", "user");
+    await expect(personItem).toContainText("You");
+    await page.screenshot({ path: test.info().outputPath("turn-control-parent-agent.png") });
+});
+
 test("a definite no_turn refusal falls back to exactly one ordinary message", async ({ page }) => {
     let releaseSend;
     const wire = await open(page, { handlers: {

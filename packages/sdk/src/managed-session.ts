@@ -12,6 +12,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, TURN_RESULT_EXCLUDED_EVENT_TYPES } from "./turn-result-events.js";
@@ -387,6 +388,24 @@ const LOAD_AGENT_TOOL_SPEC = {
         },
     },
     handler: async () => "stub",
+} as const;
+
+/** message_agent's delivery choice and stop_agent_turn (parent turn controls). Shared by the stubs and the live tools. */
+const MESSAGE_AGENT_DELIVER_SCHEMA = {
+    type: "string",
+    enum: ["next_turn", "now"],
+    description: "next_turn (default): queue the message as the sub-agent's next prompt. now: steer it into the sub-agent's RUNNING turn, which reads it at its next model call; use it to redirect a child mid-task. Without a running turn that takes steers, the message is queued for the next turn and the result says so.",
+} as const;
+const STOP_AGENT_TURN_DESCRIPTION =
+    "Stop the CURRENT turn of a running sub-agent and keep the sub-agent alive (cancel_agent ends the sub-agent instead). "
+    + "Give it its next task with message_agent. Waits up to 15 seconds and reports stopped, too late (the turn had already finished its model run), no running turn, or still pending.";
+const STOP_AGENT_TURN_PARAMETERS = {
+    type: "object",
+    properties: {
+        agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+        reason: { type: "string", description: "Optional reason, shown in the sub-agent's transcript" },
+    },
+    required: ["agent_id"],
 } as const;
 
 const CHILD_SESSION_RESULT_SCHEMA = {
@@ -1296,13 +1315,14 @@ export class ManagedSession {
         const messageAgentTool = defineTool("message_agent", {
             description:
                 "Send a message to a running sub-agent. " +
-                "The message is enqueued as a prompt for the sub-agent's next turn.",
+                "By default the message is enqueued as a prompt for the sub-agent's next turn; deliver \"now\" steers it into the running turn.",
             parameters: {
                 type: "object",
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     message: { type: "string", description: "The message to send to the sub-agent" },
                     contract_patch: { type: "object", description: "Optional structured patch to the child contract for follow-up work. Use 'wakeOn' here to update the parent wake policy for this child mid-flight (e.g. quiet a chatty watcher with wakeOn='material_change' or wake it up with 'any')." },
+                    deliver: MESSAGE_AGENT_DELIVER_SCHEMA,
                 },
                 required: ["agent_id", "message"],
             },
@@ -1386,7 +1406,7 @@ export class ManagedSession {
     }
 
     /**
-     * Child management tool definitions (complete, cancel, delete).
+     * Child management tool definitions (complete, cancel, stop turn, delete).
      * Separated for clarity but included in subAgentToolDefs().
      */
     static _childManagementToolDefs(): Tool<any>[] {
@@ -1446,7 +1466,13 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [completeAgentTool, cancelAgentTool, deleteAgentTool];
+        const stopAgentTurnTool = defineTool("stop_agent_turn", {
+            description: STOP_AGENT_TURN_DESCRIPTION,
+            parameters: STOP_AGENT_TURN_PARAMETERS,
+            handler: async () => "stub",
+        });
+
+        return [completeAgentTool, cancelAgentTool, stopAgentTurnTool, deleteAgentTool];
     }
 
     /**
@@ -2573,7 +2599,7 @@ export class ManagedSession {
         const messageAgentTool = defineTool("message_agent", {
             description:
                 "Send a message to a running sub-agent. " +
-                "The message is enqueued as a prompt for the sub-agent's next turn. " +
+                "By default the message is enqueued as a prompt for the sub-agent's next turn; deliver \"now\" steers it into the running turn. " +
                 "Calling message_agent does NOT finish your turn. After it succeeds, continue with the remaining workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer.",
             parameters: {
                 type: "object",
@@ -2581,13 +2607,17 @@ export class ManagedSession {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     message: { type: "string", description: "The message to send to the sub-agent" },
                     contract_patch: { type: "object", description: "Optional structured patch to the child contract for follow-up work. Use 'wakeOn' here to update the parent wake policy for this child mid-flight (e.g. quiet a chatty watcher with wakeOn='material_change' or wake it up with 'any')." },
+                    deliver: MESSAGE_AGENT_DELIVER_SCHEMA,
                 },
                 required: ["agent_id", "message"],
             },
-            handler: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
+            handler: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown>; deliver?: MessageAgentDelivery }, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("message_agent");
+                if (args.deliver !== undefined && !MESSAGE_AGENT_DELIVER_SCHEMA.enum.includes(args.deliver)) {
+                    return "Error: deliver must be next_turn or now.";
+                }
                 if (controlBridge) {
-                    return await controlBridge.messageAgent(args);
+                    return await controlBridge.messageAgent(args, { toolCallId: invocation?.toolCallId });
                 }
                 turnState.pendingActions.push({
                     type: "message_agent",
@@ -2785,6 +2815,16 @@ export class ManagedSession {
             },
         });
 
+        const stopAgentTurnTool = defineTool("stop_agent_turn", {
+            description: STOP_AGENT_TURN_DESCRIPTION,
+            parameters: STOP_AGENT_TURN_PARAMETERS,
+            handler: async (args: { agent_id: string; reason?: string }, invocation?: { toolCallId?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("stop_agent_turn");
+                if (!controlBridge?.stopAgentTurn) return "Error: stop_agent_turn is unavailable in this session.";
+                return await controlBridge.stopAgentTurn(args, { toolCallId: invocation?.toolCallId });
+            },
+        });
+
         const deleteAgentTool = defineTool("delete_agent", {
             description:
                 "Gracefully delete a sub-agent entirely. " +
@@ -2809,7 +2849,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2916,6 +2956,7 @@ export class ManagedSession {
                     listSessionsTool,
                     completeAgentTool,
                     cancelAgentTool,
+                    stopAgentTurnTool,
                     deleteAgentTool,
                 ];
 

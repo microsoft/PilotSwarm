@@ -3346,10 +3346,15 @@ function buildTurnControlLines(message, maxWidth, options = {}) {
     const color = TURN_CONTROL_OUTCOME_COLORS[outcome] || "gray";
     const time = formatTimestamp(message?.createdAt || message?.time);
     const timeRuns = time ? [{ text: `[${time}] `, color: "gray" }] : [];
+    // A parent agent's control (stop_agent_turn, message_agent deliver "now")
+    // names the agent; a person's names them unless it is the viewer.
+    const actorKind = message?.sender?.kind === "agent" ? "agent" : "user";
     const senderKey = message?.sender?.kind === "user" ? ownerKeyForOwner(message.sender) : null;
-    const speaker = senderKey && options.viewerKey && senderKey !== options.viewerKey
-        ? (message.sender.display || message.sender.subject || "Someone")
-        : "You";
+    const speaker = actorKind === "agent"
+        ? (message.sender.display || "Parent agent")
+        : senderKey && options.viewerKey && senderKey !== options.viewerKey
+            ? (message.sender.display || message.sender.subject || "Someone")
+            : "You";
     const controlKind = message?.kind === "turn-stop-legacy" ? "stop-legacy" : message?.controlKind;
     const reason = controlKind === "stop" && message?.text && message.text !== "Stopped by user" ? message.text : "";
     if (options.tableMode === "sentinel") {
@@ -3365,6 +3370,7 @@ function buildTurnControlLines(message, maxWidth, options = {}) {
                 text: message?.text || "",
                 reason,
                 speaker,
+                actorKind,
                 time,
             },
         }];

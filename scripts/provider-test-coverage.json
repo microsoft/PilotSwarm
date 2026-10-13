@@ -164,6 +164,7 @@
     "test/local/turn-control-multi-worker.test.js",
     "test/local/turn-control-orchestration-live.test.js",
     "test/local/turn-control-orchestration.test.js",
+    "test/local/turn-control-parent.test.js",
     "test/local/turn-control-run-turn.test.js",
     "test/local/turn-control-workspaces.test.js",
     "test/local/turn-inactivity-watchdog.test.js",

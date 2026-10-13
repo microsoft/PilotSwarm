@@ -212,7 +212,16 @@ export interface TurnOptions {
         regenerateContext?(args: { handoff?: string }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for a DIRECT child (requestedBy-stamped). */
         regenerateAgent?(args: { agent_id: string; handoff?: string }): Promise<string>;
-        messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
+        /**
+         * `deliver: "now"` steers the child's running turn and, when it has
+         * none that takes steers, queues the message for its next turn.
+         * `call.toolCallId` makes the steer's request id, so a tool call that
+         * runs again records nothing new.
+         */
+        messageAgent(
+            args: { agent_id: string; message: string; contract_patch?: Record<string, unknown>; deliver?: import("./parent-turn-control.js").MessageAgentDelivery },
+            call?: { toolCallId?: string },
+        ): Promise<string>;
         checkAgents(args?: { full?: boolean }): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
         listSessions(args?: {
@@ -232,6 +241,8 @@ export interface TurnOptions {
         }): Promise<string>;
         completeAgent(args: { agent_id: string; result?: Record<string, unknown> }): Promise<string>;
         cancelAgent(args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }): Promise<string>;
+        /** Stop a DIRECT child's current turn; the child stays alive. */
+        stopAgentTurn?(args: { agent_id: string; reason?: string }, call?: { toolCallId?: string }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
         sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
         /** Session workspaces: the attach and path check for set_session_workspace, on this worker. */

@@ -67,6 +67,7 @@ import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCurso
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
+import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
@@ -2405,6 +2406,35 @@ export function registerActivities(
         };
 
         /**
+         * Parent controls of a child's running turn: this agent is the
+         * control's sender, and sessions.steering resolves for this
+         * session's owner, as the Web API resolves it for a person.
+         */
+        const parentControlCaller = async (): Promise<import("./types.js").TurnControlCaller> => {
+            const owner = catalog
+                ? await resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId).catch(() => null)
+                : null;
+            return {
+                sender: {
+                    kind: "agent",
+                    sessionId: input.sessionId,
+                    display: catalogSessionRow?.title || runConfig.agentIdentity || "Parent agent",
+                },
+                viewer: { principal: owner ? { provider: owner.provider, subject: owner.subject } : null, isAdmin: false },
+            };
+        };
+        const withManagementClient = async <T>(fn: (client: PilotSwarmManagementClient) => Promise<T>): Promise<T> => {
+            if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmManagementClient");
+            const client = new PilotSwarmManagementClient(internalClientConfig());
+            try {
+                await client.start();
+                return await fn(client);
+            } finally {
+                await client.stop().catch(() => {});
+            }
+        };
+
+        /**
          * Is the manager session's owner allowed to drive `targetSessionId`
          * as its user?
          *
@@ -3160,7 +3190,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: regenerate_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            messageAgent: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
+            messageAgent: async (
+                args: { agent_id: string; message: string; contract_patch?: Record<string, unknown>; deliver?: MessageAgentDelivery },
+                call?: { toolCallId?: string },
+            ) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     if (catalog && args.contract_patch) {
@@ -3178,12 +3211,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             );
                         }
                     }
-                    const sdkClient = await getInlineClient();
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ prompt: args.message }),
-                    );
+                    const queue = async () => {
+                        const sdkClient = await getInlineClient();
+                        await sdkClient._getDuroxideClient().enqueueEvent(
+                            child.orchId,
+                            "messages",
+                            JSON.stringify({ prompt: args.message }),
+                        );
+                    };
+                    if (args.deliver === "now") {
+                        const caller = await parentControlCaller();
+                        return await withManagementClient((client) => steerChildTurn(client, {
+                            childSessionId: child.sessionId,
+                            agentLabel: child.orchId,
+                            text: args.message,
+                            requestId: parentControlRequestId("steer", input.sessionId, call?.toolCallId || randomUUID()),
+                            caller,
+                            queue,
+                        }));
+                    }
+                    await queue();
                     return `[SYSTEM: Message sent to sub-agent ${child.orchId}: "${args.message.slice(0, 200)}". ` +
                         `Continue your work in this SAME turn. If you are waiting on the child, call wait_for_agents explicitly rather than stopping here.]`;
                 } catch (err: any) {
@@ -3425,6 +3472,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `Use check_agents or wait_for_agents to observe final termination.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
                     return `[SYSTEM: cancel_agent failed: ${err?.message || String(err)}]`;
+                }
+            },
+            stopAgentTurn: async (args: { agent_id: string; reason?: string }, call?: { toolCallId?: string }) => {
+                try {
+                    const child = await resolveManagedChild(args.agent_id);
+                    const caller = await parentControlCaller();
+                    return await withManagementClient((client) => stopChildTurn(client, {
+                        childSessionId: child.sessionId,
+                        agentLabel: child.orchId,
+                        reason: args.reason?.trim() || "Stopped by parent agent",
+                        requestId: parentControlRequestId("stop", input.sessionId, call?.toolCallId || randomUUID()),
+                        caller,
+                    }));
+                } catch (err: any) {
+                    return `[SYSTEM: stop_agent_turn failed: ${err?.message || String(err)}]`;
                 }
             },
             deleteAgent: async (args: { agent_id: string; reason?: string }) => {

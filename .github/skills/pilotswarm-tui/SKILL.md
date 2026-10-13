@@ -138,7 +138,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   kind, so one never hides the other's Retry. Portal: a readable turn-status chip and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and
   transcript items: a steer reads as a user message with a `steer` badge and
-  its outcome, a Stop as a short line with its outcome. Labels for carried
+  its outcome, a Stop as a short line with its outcome. Both surfaces name a
+  parent agent's control (`stop_agent_turn`, `message_agent` deliver "now")
+  by the parent's title instead of "You"; portal items carry
+  `data-actor-kind` (`user` or `agent`). Labels for carried
   steers come only from `session.carried_steers_closed`. Keep the portal
   `data-testid` contract (`composer-input`, `turn-stop-button`,
   `turn-steer-button`, `session-turn-state`, `control-steer`,

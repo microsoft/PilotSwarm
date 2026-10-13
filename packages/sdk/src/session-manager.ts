@@ -628,7 +628,7 @@ function buildEffectivePromptLayers(
     const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
     const layers: PromptLayerDescriptor[] = [];
     if (workerDefaults.frameworkBaseDescriptor) layers.push({ ...workerDefaults.frameworkBaseDescriptor,
-        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.0.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
+        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.1.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
     if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
         if (boundAgentCopy?.descriptor) layers.push(boundAgentCopy.descriptor);

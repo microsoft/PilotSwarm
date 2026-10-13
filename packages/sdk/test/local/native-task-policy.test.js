@@ -16,7 +16,7 @@ describe("native task capability policy", () => {
         const names=["repo_cache_run","github_repo_rest","ado_rest","exec_in_pod","store_fact","stage_agent_package_edit","publish_agent_package"];
         const access=new NativeTaskAccess({"swarm-task":names},names.map(name=>({name})),new Set(["store_fact","stage_agent_package_edit","publish_agent_package"]),{});
         expect(access.tools["swarm-task"]).toEqual(names);
-        for (const name of ["wait","wait_on_worker","cron","cron_at","report_cycle","ask_user","spawn_agent","message_agent","wait_for_agents","complete_agent","cancel_agent","delete_agent","regenerate_context","regenerate_agent","set_session_model","create_agent_session","message_agent_session","manage_agent_session","manage_embedder","start_pod_process"]) {
+        for (const name of ["wait","wait_on_worker","cron","cron_at","report_cycle","ask_user","spawn_agent","message_agent","wait_for_agents","complete_agent","cancel_agent","stop_agent_turn","delete_agent","regenerate_context","regenerate_agent","set_session_model","create_agent_session","message_agent_session","manage_agent_session","manage_embedder","start_pod_process"]) {
             expect(()=>validateNativeTaskTools({"swarm-task":[name]})).toThrow();
             expect(()=>validateNativeTaskTools({"swarm-task":[`remote/${name}`]})).toThrow();
         }

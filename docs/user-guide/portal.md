@@ -181,6 +181,10 @@ pause between two messages.
   as an ordinary message instead and a notice says so. If the answer is
   lost on the network, the notice offers **Retry**, which resends the
   same request so it is recorded once.
+- **A parent agent's Stop and Steer**: a parent agent can steer or stop its
+  sub-agent's running turn too (`message_agent` with `deliver: "now"`,
+  `stop_agent_turn`). In the sub-agent's transcript those items name the
+  parent agent instead of **You**.
 
 ---
 
