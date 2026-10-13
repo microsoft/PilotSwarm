@@ -386,6 +386,12 @@ Consumes A4 and B2 on `waldemort/turn-control` (A merges the integration branch 
 - [ ] Measurements recorded in Docs.md with test parameters (turn counts, duration)
 - [ ] HorizonDB listener result recorded (covered or not covered with reason)
 
+
+### A5 implementation notes
+- Owner-approved (parent, 2026-10-13 05:45Z): a worker loss re-dispatches the same activity with `retryCount` 0, so the V4 path recorded the prompt and the turn's system message again (a duplicate that already exists on V3). V4 now skips both records when the session row runTurn already loads before T3 has `turnHigh >= turnIndex`. V3 is unchanged and there is no new CMS call. Known limits, recorded in Docs.md: a crash between these records and T3 still duplicates them, and two attempts of the same turn that run at the same time (design 3.9) can both read the old value. The multi-worker test reports the second case if it occurs; the fix is not widened without the parent.
+- Worker-loss tests run on forked worker processes (the kill harness, extended with the scripted model catalog and the reference repo workspace provider) through `test/helpers/turn-control-harness.mjs`; `test/helpers/worker-process.js` is extended with the kill harness (A).
+- Look cost (dev pod, PostgreSQL 16.15, local database, 200 looks per count, one open steer per 5 turns): round trip mean 0.58 / 0.90 / 2.22 ms and server execution mean 0.29 / 0.58 / 1.82 ms at 1 / 10 / 50 live turns; one LISTEN connection per worker, none after stop; with max_connections 1,600, 3 reserved and 6 for the portal, 99 workers fit before and 93 with turn control (16 → 17 connections per worker at the default pool sizes).
+
 ---
 
 ## Phase A6: Documentation (A)

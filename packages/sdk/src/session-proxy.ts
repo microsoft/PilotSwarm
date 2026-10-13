@@ -4045,7 +4045,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 : input.prompt;
             const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(promptForRecord);
             const isRetryAttempt = (input.retryCount ?? 0) > 0;
-            if (catalog && input.config.turnSystemPrompt && !isRetryAttempt) {
+            // Turn control (V4): an earlier attempt of this turn already passed
+            // turn start, so it recorded the prompt and the system message. A
+            // worker loss re-dispatches the same activity with the same input
+            // (retryCount 0); record them once. `turnHigh` is read from the row
+            // loaded above, before T3. Known limits (Docs.md): a crash between
+            // these records and T3 still records them again, and two attempts
+            // running at the same time (design 3.9) can both read the old value.
+            const turnAlreadyStarted = Boolean(tc)
+                && typeof catalogSessionRow?.turnHigh === "number"
+                && catalogSessionRow.turnHigh >= tc!.turn;
+            if (turnAlreadyStarted) {
+                activityCtx.traceInfo(`[runTurn] turn ${tc!.turn} of ${input.sessionId} already started in an earlier attempt; prompt not recorded again`);
+            }
+            if (catalog && input.config.turnSystemPrompt && !isRetryAttempt && !turnAlreadyStarted) {
                 const persistedSystemPrompt = decorateRehydrationSystemPrompt(
                     input.config.turnSystemPrompt,
                     workerNodeId,
@@ -4062,7 +4075,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // 1.0.81: a turn that only runs carried steers records nothing new;
             // the steers are already in the transcript.
             const isCarriedWake = promptForRecord === CARRIED_STEERS_WAKE_PROMPT;
-            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && !isCarriedWake && promptForRecord) {
+            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && !turnAlreadyStarted && !isCarriedWake && promptForRecord) {
                 const promptEventType = isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message";
                 // v1.0.47: when the orchestration tagged the turn with one or
                 // more clientMessageIds (the UI-generated identities of the
