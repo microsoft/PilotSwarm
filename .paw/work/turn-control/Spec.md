@@ -1,6 +1,6 @@
 # Feature Specification: Session Turn Control (Stop and Steer)
 
-**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r3, after spec review round 2)  |  **Status**: Draft
+**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r4, D6 decision gate added during plan review)  |  **Status**: Draft
 **Input Brief**: Let a user stop a running agent turn within about a second, or steer it with guidance the model receives inside the same turn, without losing, doubling or hiding any request across crashes.
 
 Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected.
@@ -64,6 +64,7 @@ Acceptance Scenarios:
 2. Given a turn that ends by asking the user a question, When a steer was carried, Then the carried steer rides with the user's answer (D3).
 3. Given a turn that returns an error (no Stop open) and is retried, When a steer was carried, Then the retry includes it; a retry never drops it.
 4. Given a turn the session gives up on (retries exhausted or a fatal error) or a session that reaches a terminal state, When steers or Stops are still open, Then open steers become "not delivered" and open Stops become "stopped".
+5. Given a carried steer, When the next turn that carries it ends "stopped" (a Stop at its start or during it), Then the behaviour follows decision D6 (pending the owner; recommended: the steer is not run again and the transcript shows "Carried, then stopped").
 
 ### US-4 (P2) – Every request is visible once and has one outcome
 
@@ -207,6 +208,7 @@ Acceptance Scenarios:
 - D3: late steers of a turn that ended with a question ride with the user's answer.
 - D4: sessions without a session store keep today's crash behaviour; no crash guarantee for steers.
 - D5: a Stop after the turn finished is "too late" and cancels any carried steers.
+- D6 (pending, owner decision through the parent): a carried steer whose next turn ends "stopped". Recommended: it is not run again; its outcome stays "carried" and clients show "Carried, then stopped". Alternative: it rides with the next turn the user starts.
 - The pinned Copilot SDK/CLI folds an "immediate" send into a running turn and confirms it with the same message id (spike evidence on the Azure AI Foundry OpenAI Responses provider; other providers are checked per the evidence matrix).
 - The durable runtime cancels an activity whose lock renewal fails, and the Node binding reports it (duroxide-node 0.2.1 on this branch).
 - Stock PostgreSQL supports LISTEN for workers; HorizonDB support is checked per the evidence matrix.
