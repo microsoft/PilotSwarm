@@ -69,8 +69,13 @@ Web API stamps the caller in Web mode).
   text through the outbox as an ordinary message with a new client message id
   (the refusal notice shows while it is sent, then `fallback_sent` or
   `fallback_failed`). Other refusals and definite errors (`forbidden` 403,
-  `too_long` 413, `error` 400/401/404/409/422) restore the text to an empty
-  composer.
+  `too_long` 413, `error` 400/401/404/409/422) put the text back only when
+  the session is still active and its composer is empty; otherwise the
+  notice keeps the text (no auto-clear) with **Restore text** (portal) or an
+  empty-prompt `Ctrl+T` (TUI), which append it after any new draft. Dismiss
+  of an unconfirmed steer also appends its text. The message fallback is
+  reported as sent only when its own outbox envelope is queued or
+  acknowledged; an envelope already in flight is awaited first.
 - `canSteer` = `acceptsTurnControl && status === "running"` and the viewer's
   `sessions.steering` (read with `getMyFeatureFlags` at session load, at most
   every 30 s, and on every "mine" feature refresh; a `steering_disabled`

@@ -9662,11 +9662,21 @@ function TurnControlNotice({ controller, notice, sessionId }) {
             onClick: () => { controller.retryTurnControl(notice.kind, sessionId).catch(() => {}); },
         }, "Retry")
         : null,
+    notice.text
+        ? React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            "data-testid": "control-restore-button",
+            title: "Put the steer text back into the composer",
+            onPointerDown: (event) => event.preventDefault(),
+            onClick: () => controller.restoreTurnControlText(sessionId),
+        }, "Restore text")
+        : null,
     React.createElement("button", {
         type: "button",
         className: "ps-mini-button ps-control-notice-dismiss",
         "aria-label": "Dismiss",
-        title: reason === "unconfirmed" ? "Dismiss (gives the request up; its text returns to the composer)" : "Dismiss",
+        title: reason === "unconfirmed" || notice.text ? "Dismiss (its text returns to the composer)" : "Dismiss",
         onPointerDown: (event) => event.preventDefault(),
         onClick: () => controller.dismissTurnControlNotice(sessionId),
     }, "✕"));

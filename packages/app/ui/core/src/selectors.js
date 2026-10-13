@@ -6138,6 +6138,8 @@ export function selectStatusBar(state) {
     const turnControl = selectTurnControlView(state);
     if (turnControl.steer?.phase === "unconfirmed") {
         right = `ctrl-t retry steer · ${right}`;
+    } else if (turnControl.notice?.text && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
+        right = `ctrl-t restore steer text · ${right}`;
     } else if (turnControl.canSteer && focus === FOCUS_REGIONS.PROMPT) {
         right = `ctrl-t steer · ${right}`;
     }

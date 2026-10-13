@@ -16,7 +16,13 @@ import {
 
 const SID = "s1";
 
-function harness({ steer, stop, session = {}, flags = { effective: true } } = {}) {
+function deferred() {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+}
+
+function harness({ steer, stop, send, session = {}, flags = { effective: true } } = {}) {
     const calls = { steer: [], stop: [], send: [], features: 0 };
     const transport = {
         getSessionEvents: async () => [],
@@ -39,11 +45,17 @@ function harness({ steer, stop, session = {}, flags = { effective: true } } = {}
             if (answer instanceof Error) throw answer;
             return answer;
         },
-        sendMessage: async (sessionId, prompt, options) => { calls.send.push({ sessionId, prompt, ...options }); },
+        sendMessage: async (sessionId, prompt, options) => {
+            calls.send.push({ sessionId, prompt, ...options });
+            if (send) return send(calls.send.length, { sessionId, prompt, ...options });
+        },
     };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, title: "T", status: "running", ...session }] });
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: SID, title: "T", status: "running", ...session },
+        { sessionId: "s2", title: "Other", status: "idle" },
+    ] });
     store.dispatch({ type: "sessions/selected", sessionId: SID });
     store.dispatch({ type: "sessions/merged", session: { sessionId: SID, acceptsTurnControl: true, ...session } });
     store.dispatch({ type: "turnControl/steering", enabled: flags.effective });
@@ -237,4 +249,107 @@ test("error classification: definite answers end the request, anything else is u
     assert.equal(classifyTurnControlError(httpError(404, "NOT_FOUND")), "error");
     assert.equal(classifyTurnControlError(httpError(502)), "unconfirmed");
     assert.equal(classifyTurnControlError(networkError()), "unconfirmed");
+});
+
+test("a refusal that arrives after a session switch keeps the text for that session", async () => {
+    const answer = deferred();
+    const { controller, store, view } = harness({ steer: () => answer.promise });
+    controller.setPrompt("guidance for s1");
+    const pending = controller.steerActiveSessionTurn();
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    controller.setPrompt("draft in s2");
+    answer.resolve({ outcome: "too_many" });
+    await pending;
+    assert.equal(store.getState().ui.prompt, "draft in s2", "the other session's composer is untouched");
+    assert.equal(view().notice, null, "s2 has no notice");
+    store.dispatch({ type: "sessions/selected", sessionId: SID });
+    assert.equal(view().notice.reason, "too_many");
+    assert.equal(view().notice.text, "guidance for s1", "kept on the notice");
+    assert.equal(controller.restoreTurnControlText(SID), true);
+    assert.equal(store.getState().ui.prompt, "guidance for s1");
+    assert.equal(view().notice, null);
+});
+
+test("a refusal that arrives after a new draft keeps both; Restore appends after the draft", async () => {
+    const answer = deferred();
+    const { controller, store, view } = harness({ steer: () => answer.promise });
+    controller.setPrompt("first guidance");
+    const pending = controller.steerActiveSessionTurn();
+    controller.setPrompt("a new draft");
+    answer.reject(httpError(403, "FORBIDDEN"));
+    await pending;
+    assert.equal(store.getState().ui.prompt, "a new draft");
+    assert.deepEqual([view().notice.reason, view().notice.text], ["forbidden", "first guidance"]);
+    controller.restoreTurnControlText(SID);
+    assert.equal(store.getState().ui.prompt, "a new draft\n\nfirst guidance");
+});
+
+test("an empty-prompt Steer press restores kept text instead of sending", async () => {
+    const answer = deferred();
+    const { controller, store, calls } = harness({ steer: () => answer.promise });
+    controller.setPrompt("kept");
+    const pending = controller.steerActiveSessionTurn();
+    controller.setPrompt("other");
+    answer.resolve({ outcome: "not_found" });
+    await pending;
+    controller.setPrompt("");
+    await controller.steerActiveSessionTurn();
+    assert.equal(store.getState().ui.prompt, "kept");
+    assert.equal(calls.steer.length, 1);
+});
+
+test("dismissing an unconfirmed steer after a new draft keeps both texts", async () => {
+    const { controller, store, view } = harness({ steer: networkError() });
+    controller.setPrompt("lost answer");
+    await controller.steerActiveSessionTurn();
+    controller.setPrompt("typed meanwhile");
+    controller.dismissTurnControlNotice(SID);
+    assert.equal(view().steer, null);
+    assert.equal(store.getState().ui.prompt, "typed meanwhile\n\nlost answer");
+});
+
+test("a fallback behind an outbox send in flight reports its own send, not the earlier one", async () => {
+    const first = deferred();
+    const fallback = deferred();
+    const { controller, calls, view } = harness({
+        steer: { outcome: "no_turn" },
+        send: (n) => (n === 1 ? first.promise : fallback.promise),
+    });
+    controller.setPrompt("an ordinary message");
+    const sending = controller.sendPrompt();
+    controller.setPrompt("steer that falls back");
+    const steering = controller.steerActiveSessionTurn();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(view().notice.reason, "no_turn", "refusal shows while the fallback waits");
+    assert.equal(calls.send.length, 1, "the fallback waits for the envelope in flight");
+    first.resolve();
+    await sending;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.send.length, 2, "its own envelope is sent next");
+    assert.equal(calls.send[1].prompt, "steer that falls back");
+    assert.equal(view().notice.reason, "no_turn", "not sent until its own send is answered");
+    fallback.reject(httpError(403, "FORBIDDEN"));
+    await steering;
+    assert.equal(view().notice.reason, "fallback_failed");
+    assert.equal(view().notice.clientMessageId, calls.send[1].clientMessageIds[0]);
+});
+
+test("a fallback behind an outbox send in flight is sent once its own send succeeds", async () => {
+    const first = deferred();
+    const { controller, calls, view } = harness({
+        steer: { outcome: "legacy_turn" },
+        send: (n) => (n === 1 ? first.promise : undefined),
+    });
+    controller.setPrompt("an ordinary message");
+    const sending = controller.sendPrompt();
+    controller.setPrompt("fallback text");
+    const steering = controller.steerActiveSessionTurn();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(view().notice.reason, "legacy_turn");
+    first.resolve();
+    await sending;
+    await steering;
+    assert.equal(view().notice.reason, "fallback_sent");
+    assert.equal(calls.send.length, 2);
+    assert.equal(view().notice.clientMessageId, calls.send[1].clientMessageIds[0]);
 });
