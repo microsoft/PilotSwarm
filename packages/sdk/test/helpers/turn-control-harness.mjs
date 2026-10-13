@@ -18,7 +18,7 @@ import { startScriptedModel } from "./scripted-model.mjs";
 import { registerScriptedProvider, FIXTURE_QUALIFIED_MODEL } from "./scripted-workers.js";
 import { createGitFixture, git } from "./git-fixture.mjs";
 import { createRepoService } from "../../examples/repo-workspaces/repo-service.mjs";
-import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-registry.ts";
+import { DURABLE_SESSION_LATEST_VERSION, TURN_CONTROL_ORCHESTRATION_MIN_VERSION } from "../../src/orchestration-version.ts";
 import { TURN_CONTROL_EVENT_TYPES } from "../../src/turn-control-contract.ts";
 
 const versionAtLeast = (v, min) => {
@@ -29,7 +29,7 @@ const versionAtLeast = (v, min) => {
 };
 
 /** The orchestration that dispatches runTurnV4 (workstream B2) is registered. */
-export const TURN_CONTROL_ORCHESTRATION = versionAtLeast(DURABLE_SESSION_LATEST_VERSION, "1.0.81");
+export const TURN_CONTROL_ORCHESTRATION = versionAtLeast(DURABLE_SESSION_LATEST_VERSION, TURN_CONTROL_ORCHESTRATION_MIN_VERSION);
 
 export function deferred() {
     let resolve, reject;

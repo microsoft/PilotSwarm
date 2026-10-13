@@ -167,8 +167,10 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control: crash matrix (US-5)"
             const before = requestsFor(d, prompt).length;
             await d.fork(`c5-${short}-2`);
             await exactlyOneOutcome(d, sessionId, stop.seq, "stopped", `c5-${short}`);
-            await until(async () => (await d.catalog.getSession(sessionId))?.state === "idle", "the session is idle", REPLY_TIMEOUT);
             assertEqual(requestsFor(d, prompt).length, before, "the model did not run again");
+            // Worker 2 recovered the turn: the session takes the next prompt.
+            assertEqual(await session.sendAndWait(`C5-${short} next`, REPLY_TIMEOUT), "ok", "the next turn runs on worker 2");
+            assertEqual((await outcomesOf(d.catalog, sessionId, stop.seq)).length, 1, "still one outcome for the Stop");
         });
     }
 
