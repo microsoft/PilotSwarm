@@ -56,6 +56,9 @@
     "foundrySku": {
       "value": "${FOUNDRY_SKU}"
     },
+    "foundryAuthMode": {
+      "value": "${FOUNDRY_AUTH_MODE}"
+    },
     "vpnGatewayEnabled": {
       "value": ${VPN_GATEWAY_ENABLED}
     },
