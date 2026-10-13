@@ -186,12 +186,13 @@ function* handleConnectionClosedRetry(
         return;
     }
 
+    const giveUpMessage = `${handoffMessage} Durable handoff is unavailable because blob persistence is disabled.`;
     publishStatus(runtime, "error", {
-        error: `${handoffMessage} Durable handoff is unavailable because blob persistence is disabled.`,
+        error: giveUpMessage,
         retriesExhausted: true,
         lossyHandoff: false,
     });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", handoffMessage, null, { closeControls: true });
+    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
     state.carriedSteers = [];
     state.retryCount = 0;
 }
@@ -418,11 +419,12 @@ export function* processPrompt(
                 hydrateAttempts++;
                 ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
                 if (hydrateAttempts >= MAX_RETRIES) {
+                    const giveUpMessage = `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`;
                     publishStatus(runtime, "error", {
-                        error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
+                        error: giveUpMessage,
                         retriesExhausted: true,
                     });
-                    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", hMsg, null, { closeControls: true });
+                    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
                     state.carriedSteers = [];
                     break;
                 }

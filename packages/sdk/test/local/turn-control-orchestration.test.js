@@ -72,6 +72,9 @@ function harness(overrides = {}) {
                 if (result instanceof Error) throw result;
                 return result;
             }
+            case "session.hydrate":
+                if (overrides.hydrateError) throw new Error(overrides.hydrateError);
+                return undefined;
             case "manager.listChildSessions": return "[]";
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
             case "manager.resolveAgentConfig": return null;
@@ -195,6 +198,37 @@ describe("1.0.81 turn control orchestration", () => {
         expect(next.input.carriedSteers).toEqual([steer(21)]);
         expect(next.input.prompt).toBe("original prompt");
         expect(next.input.retryCount).toBe(1);
+    });
+
+    it("hydrate exhaustion adds only a give-up CMS write to the legacy activity sequence", () => {
+        const input = { carriedSteers: [steer(27)], blobEnabled: true, needsHydration: true, hydrateError: "storage failed" };
+        const current = harness(input);
+        current.run({ type: "completed", content: "must not run" });
+        const writes = current.calls.filter(c => c.effect === "manager.updateCmsState");
+        expect(writes).toHaveLength(1);
+        expect(writes[0].args).toEqual(["turn-control-fixture", "error", "Hydrate failed after 3 attempts: storage failed", null, { closeControls: true }]);
+        expect(current.runtime.state.carriedSteers).toEqual([]);
+        expect(current.turns).toEqual([]);
+        const legacy = harness(input);
+        legacy.drive(legacyProcessPrompt(legacy.runtime, "original prompt", false));
+        expect(current.calls.filter(c => c.effect !== "manager.updateCmsState").map(c => c.effect))
+            .toEqual(legacy.calls.map(c => c.effect));
+    });
+
+    it("storeless connection-loss give-up adds only one CMS write to the legacy activity sequence", () => {
+        const input = { carriedSteers: [steer(28)], retryCount: 3 };
+        const current = harness(input);
+        current.run(new Error("live Copilot connection closed unexpectedly"));
+        const writes = current.calls.filter(c => c.effect === "manager.updateCmsState");
+        expect(writes).toHaveLength(1);
+        expect(writes[0].args[2]).toContain("Durable handoff is unavailable because blob persistence is disabled.");
+        expect(writes[0].args[4]).toEqual({ closeControls: true });
+        expect(current.runtime.state.carriedSteers).toEqual([]);
+        const legacy = harness(input);
+        legacy.results.push(new Error("live Copilot connection closed unexpectedly"));
+        legacy.drive(legacyProcessPrompt(legacy.runtime, "original prompt", false));
+        expect(current.calls.filter(c => c.effect !== "manager.updateCmsState").map(c => c.effect))
+            .toEqual(legacy.calls.filter(c => c.effect !== "race").map(c => c.effect));
     });
 
     it("a retryable returned error retains old and new late steers even after consumption", () => {
