@@ -27,7 +27,7 @@ import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
-import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
+import { DEFAULT_CMS_SCHEMA, resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
@@ -734,7 +734,8 @@ export class PilotSwarmWorker {
             }
             this._turnControlHub = new TurnControlHub({
                 catalog: this._catalog,
-                schema: storage.runtime.cmsSchema,
+                // resolveStorageConfig always fills it; the type keeps it optional.
+                schema: storage.runtime.cmsSchema ?? DEFAULT_CMS_SCHEMA,
                 createClient,
                 log: (message) => console.warn(message),
             });

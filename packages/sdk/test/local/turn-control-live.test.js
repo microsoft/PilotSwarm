@@ -173,7 +173,11 @@ describe("turn control: ManagedSession send gate", () => {
         const turn = managed.runTurn("work", { turnIndex: 4, turnControl: live });
         await waitFor(() => managed.steerGateState() === "open");
         await live.enqueue([control(50, "steer")]);
-        await expect(turn).rejects.toThrow(/send failed/);
+        // The failure ends the turn as an error result; the activity retries it
+        // from the saved conversation with the steer still open.
+        const result = await turn;
+        expect(result.type).toBe("error");
+        expect(result.message).toMatch(/send failed/);
         expect(live.cursor).toBe(0);
     });
 
