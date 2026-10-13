@@ -1,6 +1,6 @@
 # Feature Specification: Session Turn Control (Stop and Steer)
 
-**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r2, after spec review)  |  **Status**: Draft
+**Branch**: waldemort/turn-control (umbrella), workstream branches below it  |  **Created**: 2026-10-13  |  **Revised**: 2026-10-13 (r3, after spec review round 2)  |  **Status**: Draft
 **Input Brief**: Let a user stop a running agent turn within about a second, or steer it with guidance the model receives inside the same turn, without losing, doubling or hiding any request across crashes.
 
 Design source (binding): `docs/proposals/session-turn-control.md`, revision 5 (design PR 169). Requirements R1-R7 and decisions D1-D5 are taken at the design's proposed defaults, as approved by the owner for this build. Where this specification and the design differ, the design wins and this specification is corrected.
@@ -82,7 +82,7 @@ Independent Test: Inject a crash at each turn boundary while a Stop or a steer i
 Acceptance Scenarios:
 1. Given a crash after the turn was marked running and before anything of the turn was saved, When a Stop arrives meanwhile, Then the retried turn ends "stopped" without a model run.
 2. Given a crash after the turn's end-of-turn write but before the conversation was saved, When the turn is retried, Then each open steer reaches the new conversation once and ends "delivered".
-3. Given a crash after the conversation was saved but before outcomes were written, When the turn is retried, Then the model does not run again, the saved result is reused, and outcomes follow the saved conversation: steers it holds are "delivered", later steers are "carried", and a Stop accepted after the model run is "too late".
+3. Given a crash after the conversation was saved but before outcomes were written, When the turn is retried, Then the model does not run again, the saved result is reused, and outcomes follow the saved conversation by the FR-009 table: steers it holds are "delivered"; a Stop accepted after the model run is "too late"; later steers are "carried" when no Stop is open, and "not delivered" when such a late Stop is open (D5).
 4. Given a crash after outcomes were written, When the turn is retried, Then nothing new is written and the same result is returned.
 5. Given a stopped turn, When the worker crashes before or after its outcomes are written, Then the retried turn ends "stopped" again.
 6. Given a thrown error while the turn waits for its retry, When a Stop is accepted during that backoff, Then the retried turn ends "stopped" without a model run; if retries run out first, the Stop ends "stopped" by the give-up close.
@@ -178,7 +178,7 @@ Acceptance Scenarios:
 - SC-001: 95th percentile time from an accepted Stop to the "stopped" outcome is at most 2 s over 30 runs with a real model, excluding a CLI that ignores abort. (FR-001, FR-005, FR-006)
 - SC-002: 95th percentile time from an accepted steer to the model run's confirmation of it is at most 2 s over 30 runs while the turn is between tool calls. (FR-002, FR-005, FR-007)
 - SC-003: Every cell of the FR-009 table is produced by at least one test and yields exactly one outcome event per request; each request appears once in the transcript of every client, before and after a reload. (FR-004, FR-009, FR-010, FR-019)
-- SC-004: In the crash matrix of US-5 (crash after turn start, after the end-of-turn write, after the save, after outcomes; stopped turn before and after outcomes; Stop during a thrown-error backoff; stale worker), each case ends with its expected outcome as stated in US-5, and every accepted, not-stopped steer reaches the surviving conversation exactly once. (FR-010, FR-011, FR-012, FR-015)
+- SC-004: In the crash matrix of US-5 (crash after turn start, after the end-of-turn write, after the save, after outcomes; stopped turn before and after outcomes; Stop during a thrown-error backoff; stale worker), each case ends with its expected outcome as stated in US-5, and, for sessions with a session store, every accepted, not-stopped steer reaches the surviving conversation exactly once. Sessions without a store are checked only for today's re-run behaviour (D4). (FR-010, FR-011, FR-012, FR-015)
 - SC-005: A late steer always runs with the next turn, including after an error retry and with an answer to a question; none is dropped across continue-as-new. (FR-008, FR-013)
 - SC-006: A turn without controls makes the same number of turn-path CMS calls as today and its saved result has no cursor field. (FR-021)
 - SC-007: Per worker: one additional database connection; zero periodic looks while idle; one batched periodic look every 5 s while busy; a lost notification delays delivery by at most 5 s; the connection is closed after worker stop. (FR-005, FR-022)
