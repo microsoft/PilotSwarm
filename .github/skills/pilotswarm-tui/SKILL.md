@@ -119,7 +119,25 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   icon-only down-triangle dashboard picker at the far right; never prepend
   the dashboard name or add a second mobile tab row. Both compact focus
   composers retain Stop during a running turn, with a 44px touch target and
-  disabled pending-request state beside Send.
+  disabled pending-request state beside Send. Steer sits between Stop and
+  Send with the same 44px target and pending state.
+- Session turn control (Stop and Steer). TUI: `Ctrl+X` (or `Ctrl+Esc`) stops
+  the running turn; `Ctrl+T` in the prompt pane sends the prompt text as a
+  steer when the turn accepts controls (`acceptsTurnControl` from the
+  detailed session view) and the viewer's `sessions.steering` feature is on;
+  otherwise the status line says why. The same key resends an unconfirmed
+  request with its original request id; the status hints show `ctrl-x stop`
+  / `ctrl-t steer` (or `retry`) only while they apply, and `?` help lists
+  both. Portal: a Steer button beside Stop, an inline notice for every
+  refusal, fallback and failure (with Retry for an unconfirmed request), and
+  transcript items: a steer reads as a user message with a `steer` badge and
+  its outcome, a Stop as a short line with its outcome. Labels for carried
+  steers come only from `session.carried_steers_closed`. Keep the portal
+  `data-testid` contract (`composer-input`, `turn-stop-button`,
+  `turn-steer-button`, `session-turn-state`, `control-steer`,
+  `control-stop`, `control-outcome-badge`, `control-stop-legacy`,
+  `control-notice`, `control-retry-button`, `transcript-user-message`)
+  stable and scoped by `data-session-id`; the UX test pass asserts it.
 - MoA's Close panel action uses a panel outline with an × and neutral styling.
   Keep it distinct from the Session group's trash/lifecycle action; closing a
   panel changes only its layout, leaving the session available.

@@ -52,7 +52,145 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     // Canvas revisions — kept in backward chat paging so the TUI's artifact
     // link line survives history loads (the portal skips the line either way).
     "session.canvas_updated",
+    // Session turn control: the Steer and Stop transcript items, and the two
+    // label inputs (their outcome and the carried-steer closing record).
+    // `session.steer_confirmed` is deliberately absent: it is not a chat item.
+    "user.steer",
+    "user.stop",
+    "session.control_outcome",
+    "session.carried_steers_closed",
 ];
+
+// ─── Session turn control (Stop and Steer) ──────────────────────
+//
+// A `user.steer` renders as a user message with a "steer" badge; a
+// `user.stop` as a short system line. Each shows its one outcome. The
+// outcome (`session.control_outcome`) and, for a carried steer, the closing
+// record (`session.carried_steers_closed`) are label inputs matched by the
+// control's seq, never chat items. Both the bulk and the live path bake the
+// resolved values into the item, so a reload renders the same labels.
+
+export const TURN_CONTROL_OUTCOME_LABELS = {
+    pending: "Pending",
+    delivered: "Delivered",
+    carried: "Will run next",
+    carried_ran: "Carried, ran next",
+    carried_then_stopped: "Carried, then stopped",
+    carried_not_run: "Carried, not run",
+    not_delivered: "Not delivered",
+    stopped: "Stopped",
+    too_late: "Too late",
+    stop_forced: "Stopped (forced)",
+};
+
+const CARRIED_CLOSE_OUTCOMES = {
+    ran: "carried_ran",
+    stopped: "carried_then_stopped",
+    gave_up: "carried_not_run",
+    terminal: "carried_not_run",
+};
+
+/**
+ * The displayed outcome of a control item: `pending` until its outcome is
+ * recorded; a carried steer is labelled only from its closing record.
+ */
+export function resolveTurnControlOutcome(item) {
+    if (item?.kind === "turn-stop-legacy") return item.outcome === "stop_forced" ? "stop_forced" : "stopped";
+    const outcome = item?.controlOutcome;
+    if (!outcome) return "pending";
+    if (outcome === "carried") return CARRIED_CLOSE_OUTCOMES[item.carriedReason] || "carried";
+    return outcome;
+}
+
+function eventTimeMs(event) {
+    return event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime();
+}
+
+function buildTurnControlItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const seq = Number(event.seq);
+    return {
+        id: `${event.sessionId}:${event.seq}:control`,
+        kind: "turn-control",
+        role: "turn-control",
+        controlKind: event.eventType === "user.steer" ? "steer" : "stop",
+        controlSeq: seq,
+        turn: Number.isFinite(Number(data.turn)) ? Number(data.turn) : null,
+        text: typeof data.text === "string" ? data.text : "",
+        ...(typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
+        ...(data.actor && typeof data.actor === "object" ? { sender: data.actor } : {}),
+        time: formatTimestamp(event.createdAt),
+        createdAt: eventTimeMs(event),
+    };
+}
+
+/**
+ * The legacy Stop record (orchestration 1.0.80 and older): the turn was
+ * stopped through the earlier event path, which also writes the
+ * "Turn stopped by user." system message. 1.0.81 marks its own stopped
+ * results `interrupt: "turn-result"` and shows the `user.stop` item instead.
+ */
+function buildLegacyStopItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    if (data.interrupt === "turn-result") return null;
+    return {
+        id: `${event.sessionId}:${event.seq}:stop-legacy`,
+        kind: "turn-stop-legacy",
+        role: "turn-control",
+        outcome: data.interrupt === "stop_forced" ? "stop_forced" : "stopped",
+        text: "Turn stopped by user.",
+        time: formatTimestamp(event.createdAt),
+        createdAt: eventTimeMs(event),
+    };
+}
+
+/** Outcome (`session.control_outcome`) and closing (`carried_steers_closed`) inputs, by control seq. */
+function collectTurnControlLabels(events) {
+    const outcomes = new Map();
+    const closed = new Map();
+    for (const event of events || []) {
+        if (event?.eventType === "session.control_outcome") {
+            const seq = Number(event.data?.seq);
+            if (Number.isFinite(seq) && !outcomes.has(seq) && typeof event.data?.outcome === "string") {
+                outcomes.set(seq, event.data.outcome);
+            }
+        } else if (event?.eventType === "session.carried_steers_closed") {
+            const seqs = Array.isArray(event.data?.seqs) ? event.data.seqs : [];
+            for (const raw of seqs) {
+                const seq = Number(raw);
+                if (Number.isFinite(seq) && !closed.has(seq) && typeof event.data?.reason === "string") {
+                    closed.set(seq, event.data.reason);
+                }
+            }
+        }
+    }
+    return { outcomes, closed };
+}
+
+function labelTurnControlItem(item, labels) {
+    if (item?.kind !== "turn-control") return item;
+    const controlOutcome = labels.outcomes.get(item.controlSeq) || item.controlOutcome;
+    const carriedReason = labels.closed.get(item.controlSeq) || item.carriedReason;
+    if (controlOutcome === item.controlOutcome && carriedReason === item.carriedReason) return item;
+    return {
+        ...item,
+        ...(controlOutcome ? { controlOutcome } : {}),
+        ...(carriedReason ? { carriedReason } : {}),
+    };
+}
+
+/** Apply one label event to the loaded control items (live path). */
+function applyTurnControlLabelEvent(chat, event) {
+    const labels = collectTurnControlLabels([event]);
+    if (labels.outcomes.size === 0 && labels.closed.size === 0) return chat;
+    let changed = false;
+    const next = chat.map((item) => {
+        const labelled = labelTurnControlItem(item, labels);
+        if (labelled !== item) changed = true;
+        return labelled;
+    });
+    return changed ? next : chat;
+}
 
 // Build the inline transcript divider marking a session-regeneration epoch
 // flip (proposal M2). The epoch_committed seq IS the epoch boundary, so the
@@ -495,7 +633,9 @@ function areMessagesEquivalent(left, right) {
     // reload, making the transcript disagree with what live append showed.
     if (left.kind === "canvas-update" || right.kind === "canvas-update"
         || left.kind === "chat-call" || right.kind === "chat-call"
-        || left.kind === "session-warning" || right.kind === "session-warning") {
+        || left.kind === "session-warning" || right.kind === "session-warning"
+        || left.kind === "turn-control" || right.kind === "turn-control"
+        || left.kind === "turn-stop-legacy" || right.kind === "turn-stop-legacy") {
         return left.kind === right.kind && left.id === right.id;
     }
 
@@ -1377,12 +1517,24 @@ export function buildHistoryModel(events = [], options = {}) {
             chat.push(buildRegenFailedItem(event));
             continue;
         }
+        if (event.eventType === "user.steer" || event.eventType === "user.stop") {
+            chat.push(buildTurnControlItem(event));
+            continue;
+        }
+        if (event.eventType === "session.turn_stopped") {
+            const legacyStop = buildLegacyStopItem(event);
+            if (legacyStop) chat.push(legacyStop);
+        }
         const activityItem = formatActivity(event);
         if (activityItem) activity.push(activityItem);
     }
+    const controlLabels = collectTurnControlLabels(storedEvents);
+    const labelledChat = controlLabels.outcomes.size || controlLabels.closed.size
+        ? chat.map((item) => labelTurnControlItem(item, controlLabels))
+        : chat;
 
     return {
-        chat: dedupeChatMessages(chat),
+        chat: dedupeChatMessages(labelledChat),
         activity,
         events: storedEvents.slice(-requestedLimit),
         loadedEventLimit: requestedLimit,
@@ -1447,7 +1599,24 @@ export function appendEventToHistory(history, event) {
                     : m
             ));
         }
+        const legacyStop = buildLegacyStopItem(event);
+        if (legacyStop && !next.chat.some((item) => item.id === legacyStop.id)) {
+            next.chat = clampHistoryItems([...next.chat, legacyStop], loadedEventLimit);
+        }
         Object.assign(next, clearLiveTurnFromHistory(next));
+        return next;
+    }
+
+    if (event.eventType === "user.steer" || event.eventType === "user.stop") {
+        const item = buildTurnControlItem(event);
+        if (!next.chat.some((existing) => existing.id === item.id)) {
+            // A label that arrived first (only on a replayed window) still applies.
+            next.chat = clampHistoryItems([...next.chat, labelTurnControlItem(item, collectTurnControlLabels(nextEvents))], loadedEventLimit);
+        }
+        return next;
+    }
+    if (event.eventType === "session.control_outcome" || event.eventType === "session.carried_steers_closed") {
+        next.chat = applyTurnControlLabelEvent(next.chat, event);
         return next;
     }
 

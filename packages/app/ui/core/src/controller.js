@@ -51,6 +51,7 @@ import {
     selectAdminConsole,
     selectSessionRows,
     selectSelectedFileBrowserItem,
+    selectTurnControlView,
     selectVisibleSessionRows,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
@@ -447,6 +448,44 @@ function shouldPreserveStaleCronVisual(previousSession, nextSession) {
         && !isTerminalSessionStatus(nextSession?.status)
         && !isTerminalOrchestrationStatus(nextSession?.orchestrationStatus)
         && isSameOrOlderSessionUpdate(previousSession, nextSession);
+}
+
+const STEERING_FEATURE_KEY = "sessions.steering";
+const STEERING_FEATURE_REFRESH_MS = 30_000;
+const TURN_CONTROL_NOTICE_MS = 8_000;
+// Events after which the running turn no longer accepts Stop/Steer controls.
+const TURN_CONTROL_ELIGIBILITY_END_EVENTS = new Set([
+    "session.turn_completed",
+    "session.turn_stopped",
+    "session.wait_started",
+    "session.input_required_started",
+]);
+// Answers that are shown as a notice reason as they are.
+const TURN_CONTROL_NOTICE_REASONS = new Set([
+    "no_turn", "legacy_turn", "not_found", "too_many", "request_id_reused", "steering_disabled",
+]);
+const TURN_CONTROL_REFUSAL_TEXT = {
+    not_found: "the session was not found",
+    too_many: "too many open Stop/Steer requests on this turn",
+    request_id_reused: "the request id was already used for a different request",
+    steering_disabled: "steering is not enabled for you",
+};
+
+/**
+ * Classify a failed Stop/Steer call. A definite server answer ends the
+ * request; anything else may have been recorded, so it is "unconfirmed" and
+ * may be retried with the same request id.
+ */
+export function classifyTurnControlError(error) {
+    const status = Number(error?.status ?? error?.statusCode);
+    const code = String(error?.code || "");
+    if (status === 403 || code === "FORBIDDEN") return "forbidden";
+    if (status === 413 || code === "PAYLOAD_TOO_LARGE") return "too_long";
+    if ([400, 401, 404, 409, 422].includes(status)
+        || ["INVALID_REQUEST", "UNAUTHORIZED", "NOT_FOUND", "CONFLICT", "VALIDATION_FAILED"].includes(code)) {
+        return "error";
+    }
+    return "unconfirmed";
 }
 
 function buildSessionMergePatch(previousSession, nextSession) {
@@ -3989,6 +4028,7 @@ export class PilotSwarmUiController {
                     : this.transport.getMyFeatureFlags());
             if (!current()) return false;
             this.dispatch({ type: "admin/features", patch: { data, loading: false, fetchedAt: Date.now() } });
+            if (features.mode === "mine") this._applySteeringFeatureView(data);
             return true;
         } catch (error) {
             if (current()) this.dispatch({ type: "admin/features", patch: { loading: false, fetchedAt: Date.now(), error: String(error?.message || error) } });
@@ -5812,6 +5852,7 @@ export class PilotSwarmUiController {
     async loadSession(sessionId) {
         if (!sessionId) return;
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
+        void this.refreshSteeringFeature();
         const active = this.getState().sessions.activeSessionId;
         if (active !== sessionId) {
             if (this.getState().ui.promptEdit) {
@@ -6252,6 +6293,13 @@ export class PilotSwarmUiController {
             sessionId,
             history: appendEventToHistory(existing, event),
         });
+        // Steer eligibility: a turn that ended, stopped, waits or asks no
+        // longer accepts controls. Set it explicitly (a merge skips undefined
+        // values); the detail sync below brings the authoritative value.
+        if (TURN_CONTROL_ELIGIBILITY_END_EVENTS.has(event.eventType)
+            && this.getState().sessions.byId[sessionId]?.acceptsTurnControl !== false) {
+            this.dispatch({ type: "sessions/merged", session: { sessionId, acceptsTurnControl: false } });
+        }
         // The input_required_started event carries the full question payload and
         // reaches us on the live event stream — well ahead of the slower
         // customStatus detail-sync (scheduleSessionDetailSync below). Set
@@ -10706,8 +10754,187 @@ export class PilotSwarmUiController {
         }
     }
 
+    // ─── Session turn control (Stop and Steer) ──────────────────────
+    //
+    // Each Stop or Steer action gets one request id, kept with its kind and
+    // text until a definite answer (P14). A transport failure (no answer)
+    // keeps the request as "unconfirmed": Retry resends the same id and never
+    // falls back to a message. Only a definite no_turn / legacy_turn Steer
+    // refusal sends the text as an ordinary message, with a new client
+    // message id.
+
+    _newTurnControlRequestId() {
+        return globalThis.crypto?.randomUUID?.() || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    _turnControlEntry(sessionId) {
+        return this.getState().turnControl?.bySessionId?.[sessionId] || {};
+    }
+
+    _setTurnControl(sessionId, patch) {
+        this.dispatch({ type: "turnControl/session", sessionId, patch });
+    }
+
+    _showTurnControlNotice(sessionId, notice) {
+        const stamped = { ...notice, at: Date.now() };
+        this._setTurnControl(sessionId, { notice: stamped });
+        // Informational notices clear themselves; a notice that needs an
+        // action (Retry, or a failed fallback) stays until it is handled.
+        if (!["unconfirmed", "fallback_failed", "stop_pending_retry"].includes(notice.reason)) {
+            const timer = setTimeout(() => {
+                if (this._turnControlEntry(sessionId).notice === stamped) this._setTurnControl(sessionId, { notice: null });
+            }, TURN_CONTROL_NOTICE_MS);
+            timer?.unref?.();
+        }
+    }
+
+    dismissTurnControlNotice(sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId) return;
+        const entry = this._turnControlEntry(sessionId);
+        const patch = { notice: null };
+        // Dismissing an unconfirmed steer gives it up: its text returns to
+        // the composer so nothing typed is lost.
+        if (entry.steer?.phase === "unconfirmed") {
+            patch.steer = null;
+            this._restoreSteerText(sessionId, entry.steer.text);
+        }
+        if (entry.stop?.phase === "unconfirmed") patch.stop = null;
+        this._setTurnControl(sessionId, patch);
+    }
+
+    _restoreSteerText(sessionId, text) {
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
+        if (String(this.getState().ui.prompt || "").trim()) return;
+        this.setPrompt(text, String(text || "").length);
+    }
+
+    /** Read the viewer's sessions.steering decision (session load and feature refresh). */
+    async refreshSteeringFeature({ force = false } = {}) {
+        if (typeof this.transport.getMyFeatureFlags !== "function") return;
+        const now = Date.now();
+        if (!force && this._steeringFeatureReadAt && now - this._steeringFeatureReadAt < STEERING_FEATURE_REFRESH_MS) return;
+        this._steeringFeatureReadAt = now;
+        try {
+            this._applySteeringFeatureView(await this.transport.getMyFeatureFlags());
+        } catch {
+            // Unknown stays as it was; the server still checks every steer.
+        }
+    }
+
+    _applySteeringFeatureView(view) {
+        if (!Array.isArray(view?.flags)) return;
+        const flag = view.flags.find((candidate) => candidate?.featureKey === STEERING_FEATURE_KEY);
+        this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true });
+    }
+
     /**
-     * Stop the active session's in-flight LLM turn without touching session
+     * Steer the active session's running turn with the composer text. With
+     * an unconfirmed steer pending, this retries it with the same request id.
+     */
+    async steerActiveSessionTurn() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) return;
+        const session = state.sessions.byId[sessionId];
+        if (!session || session.isGroup) return;
+        if (typeof this.transport.steerSessionTurn !== "function") {
+            this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
+            return;
+        }
+        const entry = this._turnControlEntry(sessionId);
+        if (entry.steer?.phase === "sending") return;
+        if (entry.steer?.phase === "unconfirmed") {
+            await this.retryTurnControl("steer", sessionId);
+            return;
+        }
+        const view = selectTurnControlView(state, sessionId);
+        if (!view.canSteer) {
+            this.dispatch({
+                type: "ui/status",
+                text: !view.steeringEnabled
+                    ? "Steering is not enabled for you"
+                    : "No running turn accepts steering; send the text as a message instead",
+            });
+            return;
+        }
+        const text = String(state.ui.prompt || "");
+        if (!text.trim()) {
+            this.dispatch({ type: "ui/status", text: "Type the guidance to steer the running turn" });
+            return;
+        }
+        const request = { requestId: this._newTurnControlRequestId(), kind: "steer", text, phase: "sending" };
+        this._setTurnControl(sessionId, { steer: request, notice: null });
+        // The text moves into the request: it is immutable until an answer.
+        this.setPrompt("", 0);
+        await this._sendSteer(sessionId, request);
+    }
+
+    async _sendSteer(sessionId, request) {
+        this.dispatch({ type: "ui/status", text: "Steering the running turn…" });
+        let result;
+        try {
+            result = await this.transport.steerSessionTurn(sessionId, { text: request.text, requestId: request.requestId });
+        } catch (error) {
+            const reason = classifyTurnControlError(error);
+            if (reason === "unconfirmed") {
+                this._setTurnControl(sessionId, { steer: { ...request, phase: "unconfirmed" } });
+                this._showTurnControlNotice(sessionId, { kind: "steer", reason, requestId: request.requestId });
+                this.dispatch({ type: "ui/status", text: `Steer unconfirmed: ${error?.message || error}. Retry sends it again with the same request.` });
+                return;
+            }
+            this._setTurnControl(sessionId, { steer: null });
+            this._showTurnControlNotice(sessionId, { kind: "steer", reason, detail: error?.message || String(error) });
+            this._restoreSteerText(sessionId, request.text);
+            this.dispatch({ type: "ui/status", text: `Steer refused: ${error?.message || error}` });
+            return;
+        }
+        const outcome = result?.outcome || "error";
+        this._setTurnControl(sessionId, { steer: null });
+        if (outcome === "accepted") {
+            this._setTurnControl(sessionId, { notice: null });
+            this.dispatch({ type: "ui/status", text: result?.repeat ? "Steer already accepted" : "Steer accepted" });
+            this.syncSessionEvents(sessionId).catch(() => {});
+            return;
+        }
+        if (outcome === "no_turn" || outcome === "legacy_turn") {
+            // A definite refusal: the text goes out as an ordinary message
+            // with a new client message id. The refused request id is done.
+            // The refusal shows while the message is being sent.
+            this._showTurnControlNotice(sessionId, { kind: "steer", reason: outcome });
+            const item = this.queuePromptInOutbox(sessionId, request.text);
+            try {
+                await this.dispatchPendingOutbox(sessionId);
+                this._showTurnControlNotice(sessionId, {
+                    kind: "steer", reason: "fallback_sent", refusal: outcome, clientMessageId: item.id,
+                });
+                this.dispatch({ type: "ui/status", text: "No turn accepts steering; sent as a message" });
+            } catch (error) {
+                this._showTurnControlNotice(sessionId, {
+                    kind: "steer", reason: "fallback_failed", refusal: outcome, clientMessageId: item.id,
+                    detail: error?.message || String(error),
+                });
+            }
+            return;
+        }
+        if (outcome === "steering_disabled") this.dispatch({ type: "turnControl/steering", enabled: false });
+        this._showTurnControlNotice(sessionId, { kind: "steer", reason: TURN_CONTROL_NOTICE_REASONS.has(outcome) ? outcome : "error" });
+        this._restoreSteerText(sessionId, request.text);
+        this.dispatch({ type: "ui/status", text: `Steer refused: ${TURN_CONTROL_REFUSAL_TEXT[outcome] || outcome}` });
+    }
+
+    /** Resend an unconfirmed Stop or Steer with its original request id. */
+    async retryTurnControl(kind, sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId || (kind !== "steer" && kind !== "stop")) return;
+        const request = this._turnControlEntry(sessionId)[kind];
+        if (!request || request.phase !== "unconfirmed") return;
+        const sending = { ...request, phase: "sending" };
+        this._setTurnControl(sessionId, { [kind]: sending, notice: null });
+        if (kind === "steer") await this._sendSteer(sessionId, sending);
+        else await this._sendStop(sessionId, sending);
+    }
+
+    /**
+     * Stop the active session's running turn without touching session
      * lifecycle. Applies to user AND system sessions; only group/container
      * rows are rejected. No confirmation modal — the action is non-destructive
      * (the session returns to idle and accepts the next prompt).
@@ -10725,24 +10952,55 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Stop turn is not supported by this transport" });
             return;
         }
-        if (!this._stopTurnInFlight) this._stopTurnInFlight = new Set();
-        if (this._stopTurnInFlight.has(sessionId)) return;
-        this._stopTurnInFlight.add(sessionId);
+        const entry = this._turnControlEntry(sessionId);
+        if (entry.stop?.phase === "sending") return;
+        // An unconfirmed Stop is resent with its own request id, so it is
+        // recorded at most once.
+        const request = entry.stop?.phase === "unconfirmed"
+            ? { ...entry.stop, phase: "sending" }
+            : { requestId: this._newTurnControlRequestId(), kind: "stop", phase: "sending" };
+        this._setTurnControl(sessionId, { stop: request, notice: null });
+        await this._sendStop(sessionId, request);
+    }
+
+    async _sendStop(sessionId, request) {
         this.dispatch({ type: "ui/status", text: `Stopping turn for ${sessionId.slice(0, 8)}…` });
+        let result;
         try {
-            const result = await this.transport.stopSessionTurn(sessionId, { reason: "Stopped by user" });
-            const outcome = result?.outcome || "stopped";
-            if (outcome === "no_active_turn") {
-                this.dispatch({ type: "ui/status", text: "No active turn to stop" });
-            } else if (outcome === "timeout") {
-                this.dispatch({ type: "ui/status", text: "Stop requested — waiting for the turn to unwind" });
+            result = await this.transport.stopSessionTurn(sessionId, { reason: "Stopped by user", requestId: request.requestId });
+        } catch (error) {
+            const reason = classifyTurnControlError(error);
+            if (reason === "unconfirmed") {
+                this._setTurnControl(sessionId, { stop: { ...request, phase: "unconfirmed" } });
+                this._showTurnControlNotice(sessionId, { kind: "stop", reason, requestId: request.requestId });
             } else {
-                this.dispatch({ type: "ui/status", text: `Stopped turn for ${sessionId.slice(0, 8)}` });
+                this._setTurnControl(sessionId, { stop: null });
+                this._showTurnControlNotice(sessionId, { kind: "stop", reason, detail: error?.message || String(error) });
             }
-        } catch (err) {
-            this.dispatch({ type: "ui/status", text: `Stop turn failed: ${err?.message || err}` });
-        } finally {
-            this._stopTurnInFlight.delete(sessionId);
+            this.dispatch({ type: "ui/status", text: `Stop turn failed: ${error?.message || error}` });
+            return;
+        }
+        this._setTurnControl(sessionId, { stop: null });
+        const outcome = result?.outcome || "stopped";
+        if (outcome === "no_active_turn") {
+            const refusal = TURN_CONTROL_NOTICE_REASONS.has(result?.detail) ? result.detail : "no_active_turn";
+            this._showTurnControlNotice(sessionId, { kind: "stop", reason: refusal });
+            this.dispatch({ type: "ui/status", text: "No active turn to stop" });
+        } else if (outcome === "timeout") {
+            // An accepted Stop without an outcome yet stays pending on its
+            // transcript item (for example during a retry backoff).
+            const pendingAccepted = Number.isFinite(Number(result?.controlSeq)) && result?.controlSeq != null;
+            this._showTurnControlNotice(sessionId, {
+                kind: "stop", reason: pendingAccepted ? "stop_pending_retry" : "timeout",
+                ...(pendingAccepted ? { controlSeq: Number(result.controlSeq) } : {}),
+            });
+            this.dispatch({ type: "ui/status", text: pendingAccepted
+                ? "Stop accepted; it applies when the turn runs again"
+                : "Stop requested — waiting for the turn to unwind" });
+        } else if (outcome === "too_late") {
+            this.dispatch({ type: "ui/status", text: "Too late to stop: the turn had already finished" });
+        } else {
+            this.dispatch({ type: "ui/status", text: `Stopped turn for ${sessionId.slice(0, 8)}` });
         }
         await this.refreshSessions();
         await this.refreshActiveSessionDetail?.().catch?.(() => {});
@@ -11325,6 +11583,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.STOP_TURN:
                 await this.stopActiveSessionTurn();
+                return;
+            case UI_COMMANDS.STEER_TURN:
+                await this.steerActiveSessionTurn();
                 return;
             case UI_COMMANDS.DONE_SESSION:
                 await this.completeActiveSession();

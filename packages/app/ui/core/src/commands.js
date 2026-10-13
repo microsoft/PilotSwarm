@@ -73,6 +73,7 @@ export const UI_COMMANDS = {
     DONE_SESSION: "doneSession",
     CANCEL_SESSION: "cancelSession",
     STOP_TURN: "stopTurn",
+    STEER_TURN: "steerTurn",
     DELETE_SESSION: "deleteSession",
     REGENERATE_SESSION: "regenerateSession",
     // Session workspaces: the session's working folder (set, clear, retry).

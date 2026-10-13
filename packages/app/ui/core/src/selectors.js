@@ -11,7 +11,9 @@ import {
     createSplashCard,
     isRehydrationNoticeText,
     parseAskedAndAnsweredExchange,
+    resolveTurnControlOutcome,
     stripLeadingRehydrationNoticeText,
+    TURN_CONTROL_OUTCOME_LABELS,
 } from "./history.js";
 import {
     buildMessageCardLines,
@@ -2259,6 +2261,8 @@ function flattenLineText(lineRuns) {
         // like trimLeadingBlankLines and the chat-spacer logic treat them
         // as content rather than padding.
         if (lineRuns?.kind === "markdownTable") return "[table]";
+        // A transcript group closes a message: spacing follows its content.
+        if (lineRuns?.kind === "groupEnd") return "[group]";
         return String(lineRuns?.text || "");
     }
     return (lineRuns || []).map((run) => run?.text || "").join("");
@@ -3285,9 +3289,22 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             lines.push(buildCanvasUpdateLine(message, message.sessionId || memoSessionId));
         } else if (message?.kind === "canvas-action") {
             lines.push(buildCanvasActionLine(message));
+        } else if (message?.kind === "turn-control" || message?.kind === "turn-stop-legacy") {
+            appendChatBlockLines(lines, buildTurnControlLines(message, maxWidth, buildOptions));
         } else {
             const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
             appendChatBlockLines(lines, messageLines);
+            if (options.tableMode === "sentinel" && isTranscriptUserMessage(message) && messageLines.length > 0) {
+                // The portal wraps an ordinary user message in one element
+                // (data-testid transcript-user-message). Bounds go around the
+                // message's own lines, after the spacing decision.
+                lines.splice(lines.length - messageLines.length, 0, {
+                    kind: "groupStart",
+                    group: "transcript-user-message",
+                    clientMessageIds: Array.isArray(message.clientMessageIds) ? message.clientMessageIds : [],
+                });
+                lines.push({ kind: "groupEnd", group: "transcript-user-message" });
+            }
         }
         const nextMessage = messages[index + 1];
         if (
@@ -3299,6 +3316,93 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         }
     }
     return memoize(lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }]);
+}
+
+function isTranscriptUserMessage(message) {
+    return message?.role === "user" && !message.kind && !message.optimistic && !message.pendingPhase;
+}
+
+const TURN_CONTROL_OUTCOME_COLORS = {
+    pending: "yellow",
+    delivered: "green",
+    carried: "cyan",
+    carried_ran: "green",
+    carried_then_stopped: "yellow",
+    carried_not_run: "gray",
+    not_delivered: "gray",
+    stopped: "red",
+    too_late: "yellow",
+    stop_forced: "red",
+};
+
+/**
+ * A Stop or Steer transcript item. The TUI renders the runs; the portal
+ * renders the `turnControl` sentinel line as its own element (the
+ * data-testid contract lives there). Both read the same resolved outcome.
+ */
+function buildTurnControlLines(message, maxWidth, options = {}) {
+    const outcome = resolveTurnControlOutcome(message);
+    const label = TURN_CONTROL_OUTCOME_LABELS[outcome] || outcome;
+    const color = TURN_CONTROL_OUTCOME_COLORS[outcome] || "gray";
+    const time = formatTimestamp(message?.createdAt || message?.time);
+    const timeRuns = time ? [{ text: `[${time}] `, color: "gray" }] : [];
+    const senderKey = message?.sender?.kind === "user" ? ownerKeyForOwner(message.sender) : null;
+    const speaker = senderKey && options.viewerKey && senderKey !== options.viewerKey
+        ? (message.sender.display || message.sender.subject || "Someone")
+        : "You";
+    const controlKind = message?.kind === "turn-stop-legacy" ? "stop-legacy" : message?.controlKind;
+    const reason = controlKind === "stop" && message?.text && message.text !== "Stopped by user" ? message.text : "";
+    if (options.tableMode === "sentinel") {
+        return [{
+            kind: "turnControl",
+            text: controlKind === "steer" ? `${speaker} (steer) · ${label}: ${message?.text || ""}` : `Stop · ${label}`,
+            control: {
+                controlKind,
+                seq: Number.isFinite(message?.controlSeq) ? message.controlSeq : null,
+                outcome,
+                label,
+                color,
+                text: message?.text || "",
+                reason,
+                speaker,
+                time,
+            },
+        }];
+    }
+    if (controlKind === "stop-legacy") {
+        return [[...timeRuns, { text: "■ ", color }, { text: message?.text || "Turn stopped by user.", color: "gray" },
+            ...(outcome === "stop_forced" ? [{ text: " (forced)", color }] : [])]];
+    }
+    if (controlKind === "stop") {
+        return [[...timeRuns, { text: "■ ", color }, { text: `${speaker === "You" ? "" : `${speaker}: `}Stop`, color: "white", bold: true },
+            { text: ` · ${label}`, color }, ...(reason ? [{ text: ` — ${reason}`, color: "gray" }] : [])]];
+    }
+    const header = [...timeRuns, { text: "↪ ", color }, { text: `${speaker} (steer)`, color: USER_CHAT_LABEL_COLOR, bold: true },
+        { text: ` · ${label}`, color }];
+    const body = tintRunsIfUnset(trimLeadingBlankLines(parseMarkdownLines(message?.text || "", {
+        width: Math.max(20, maxWidth - 2),
+        tableMode: options.tableMode,
+    })), USER_CHAT_COLOR).map((runs) => (Array.isArray(runs) ? [{ text: "  ", color: null }, ...runs] : runs));
+    return [header, ...body];
+}
+
+/** Stop and Steer state of one session, for the composer and the TUI status line. */
+export function selectTurnControlView(state, sessionId = state?.sessions?.activeSessionId) {
+    const session = sessionId ? state?.sessions?.byId?.[sessionId] || null : null;
+    const entry = sessionId ? state?.turnControl?.bySessionId?.[sessionId] || null : null;
+    const acceptsControls = Boolean(session && session.acceptsTurnControl === true && session.status === "running");
+    const steeringEnabled = state?.turnControl?.steeringEnabled === true;
+    return {
+        sessionId: sessionId || null,
+        turnState: session?.status || "pending",
+        acceptsControls,
+        steeringEnabled,
+        canStop: canStopSessionTurn(session),
+        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
+        steer: entry?.steer || null,
+        stop: entry?.stop || null,
+        notice: entry?.notice || null,
+    };
 }
 
 /**
@@ -6028,9 +6132,18 @@ export function selectStatusBar(state) {
     };
 
     let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];
-    // Surface the Stop-turn hint at the front (so truncation never eats it)
-    // exactly while a turn is running; it stays listed, grayed, in `?` help.
-    if (canStopSessionTurn(selectActiveSession(state))) {
+    // Surface the Stop/Steer hints at the front (so truncation never eats
+    // them) exactly while they apply; they stay listed, grayed, in `?` help.
+    // An unconfirmed request is retried by the same key, with its request id.
+    const turnControl = selectTurnControlView(state);
+    if (turnControl.steer?.phase === "unconfirmed") {
+        right = `ctrl-t retry steer · ${right}`;
+    } else if (turnControl.canSteer && focus === FOCUS_REGIONS.PROMPT) {
+        right = `ctrl-t steer · ${right}`;
+    }
+    if (turnControl.stop?.phase === "unconfirmed") {
+        right = `ctrl-x retry stop · ${right}`;
+    } else if (canStopSessionTurn(selectActiveSession(state))) {
         right = `ctrl-x stop · ${right}`;
     }
     return {
@@ -9358,7 +9471,8 @@ const KEYBINDING_HELP = [
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
         ["c / d / D", "cancel / done / delete session"],
-        ["ctrl-x  (ctrl-esc)", "stop the current turn", { dim: true }],
+        ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
+        ["ctrl-t", "prompt: steer the running turn with the prompt text (steering feature)", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
         ["q", "quit (double-tap)"],

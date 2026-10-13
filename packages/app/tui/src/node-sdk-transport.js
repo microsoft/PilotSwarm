@@ -1564,7 +1564,11 @@ export class NodeSdkTransport {
     }
 
     async steerSessionTurn(sessionId, options = {}) {
-        return this.mgmt.steerSessionTurn(sessionId, options);
+        // The portal runtime stamps `caller` from the authenticated request.
+        // The TUI in direct mode adds only its own viewer, so the steering
+        // feature resolves for the same person whose features it shows.
+        if (options.caller) return this.mgmt.steerSessionTurn(sessionId, options);
+        return this.mgmt.steerSessionTurn(sessionId, { ...options, caller: { viewer: await this._modelProviderViewer() } });
     }
 
     async deleteSessionGroup(groupId) {
