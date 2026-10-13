@@ -1556,11 +1556,19 @@ export class NodeSdkTransport {
         });
     }
 
+    // Stop and Steer options (reason, timeoutMs, requestId, text, caller)
+    // pass through unchanged: a retry must reach the server with the same
+    // requestId, and the portal runtime stamps `caller` before this call.
     async stopSessionTurn(sessionId, options = {}) {
-        return this.mgmt.stopSessionTurn(sessionId, {
-            reason: options.reason || "Stopped by user",
-            ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-        });
+        return this.mgmt.stopSessionTurn(sessionId, options);
+    }
+
+    async steerSessionTurn(sessionId, options = {}) {
+        // The portal runtime stamps `caller` from the authenticated request.
+        // The TUI in direct mode adds only its own viewer, so the steering
+        // feature resolves for the same person whose features it shows.
+        if (options.caller) return this.mgmt.steerSessionTurn(sessionId, options);
+        return this.mgmt.steerSessionTurn(sessionId, { ...options, caller: { viewer: await this._modelProviderViewer() } });
     }
 
     async deleteSessionGroup(groupId) {

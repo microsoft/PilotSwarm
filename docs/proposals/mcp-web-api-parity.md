@@ -101,6 +101,7 @@ portal can do turn-level surgery.
 | Proposed | Maps to |
 |---|---|
 | `stop_turn` | `POST /management/sessions/:id/stop-turn` — abort the in-flight turn, keep the session |
+| `steer_session_turn` | `POST /management/sessions/:id/steer` — add guidance to the running turn (shipped with session turn control) |
 | `complete_session` | `POST /management/sessions/:id/complete` — mark done (vs cancel) |
 | `cancel_pending_messages` | `POST /sessions/:id/cancel-pending` |
 | `send_session_event` | `POST /sessions/:id/events` — custom event injection |

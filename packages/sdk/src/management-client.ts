@@ -28,6 +28,12 @@ import type {
     SessionOwnerInfo,
     SessionSummaryState,
     StopTurnResult,
+    StopTurnOptions,
+    SteerTurnOptions,
+    SteerTurnResult,
+    TurnControlAddResult,
+    TurnControlCaller,
+    ControlOutcomeEventData,
     PromptAttachmentRef,
     SessionWorkspace,
     SessionWorkspaceView,
@@ -84,7 +90,15 @@ import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
-import { FeatureFlagError } from "./feature-flags.js";
+import { FeatureFlagError, resolveFeatureDefinition } from "./feature-flags.js";
+import {
+    TURN_CONTROL_EVENT_TYPES,
+    TURN_CONTROL_OUTCOME_POLL_MS,
+    TURN_CONTROL_STOP_TIMEOUT_MS,
+    STEERING_FEATURE_KEY,
+    acceptsTurnControl,
+    TurnControlUnavailableError,
+} from "./turn-control-contract.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -290,6 +304,33 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const OUTCOME_PAGE_LIMIT = 200;
+const TURN_CONTROL_REQUEST_ID_MAX = 200;
+
+function invalidTurnControlRequest(message: string): Error {
+    return Object.assign(new Error(message), { code: "INVALID_REQUEST", status: 400 });
+}
+
+/** A caller-supplied turn-control request id, or undefined when none was given. */
+function validTurnControlRequestId(value: unknown, operation: string): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string" || !value.trim() || value.length > TURN_CONTROL_REQUEST_ID_MAX) {
+        throw invalidTurnControlRequest(`${operation} requestId must be a non-empty string of at most ${TURN_CONTROL_REQUEST_ID_MAX} characters`);
+    }
+    return value;
+}
+
+const STOP_TIMEOUT_MAX_MS = 300_000;
+
+/** A Stop's outcome wait: the default when omitted, else a finite duration in range. */
+function validStopTimeoutMs(value: unknown): number {
+    if (value === undefined || value === null) return TURN_CONTROL_STOP_TIMEOUT_MS;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > STOP_TIMEOUT_MAX_MS) {
+        throw invalidTurnControlRequest(`stopSessionTurn timeoutMs must be a number from 0 to ${STOP_TIMEOUT_MAX_MS}`);
+    }
+    return value;
+}
+
 function buildLifecycleCommandId(prefix: string): string {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -439,6 +480,23 @@ export interface PilotSwarmSessionView {
     visibility?: SessionVisibility;
     /** Denormalized session-tree root id (self for top-level sessions). */
     rootSessionId?: string;
+    /**
+     * Session turn control, detailed view only (`getSession`): the running
+     * turn's index, or null between turns. List rows do not carry it.
+     */
+    activeTurnIndex?: number | null;
+    /**
+     * Session turn control, detailed view only: the highest turn started on
+     * the turn-control path in this orchestration lifetime, or null when the
+     * catalog does not report it.
+     */
+    turnHigh?: number | null;
+    /**
+     * Session turn control, detailed view only: whether the running turn
+     * accepts Stop and Steer through the CMS (`activeTurnIndex` equals
+     * `turnHigh`). Always present in the detailed view; false when unknown.
+     */
+    acceptsTurnControl?: boolean;
 }
 
 /** Cursor for keyset-paginated session listing. */
@@ -1354,6 +1412,9 @@ export class PilotSwarmManagementClient {
                     : undefined,
             contextUsage: normalizedContextUsage,
             statusVersion,
+            activeTurnIndex: typeof row.activeTurnIndex === "number" ? row.activeTurnIndex : null,
+            turnHigh: typeof row.turnHigh === "number" ? row.turnHigh : null,
+            acceptsTurnControl: acceptsTurnControl(row),
         };
     }
 
@@ -2479,23 +2540,183 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * Stop the session's in-flight LLM turn without completing, cancelling,
-     * or deleting the session (stop-turn plan,
-     * docs/proposals-impl/stop-button-turn-abort-plan.md).
+     * Steer the session's running turn: add guidance that the model receives
+     * at its next model call (session turn control,
+     * docs/proposals/session-turn-control.md section 4.3).
      *
-     * Enqueues a stop event on the TURN-SCOPED stop queue
-     * (stopTurn.<activeTurnIndex>) that the session orchestration races
-     * against the in-flight runTurn activity, then polls the KV
-     * command-response channel for the outcome. Valid for system sessions
+     * Needs the `sessions.steering` feature for `opts.caller.viewer` (cluster
+     * scope without a viewer). The steer is recorded as a `user.steer`
+     * session event in the same transaction that checks a turn-control turn
+     * is running; its one outcome (`session.control_outcome`) is written when
+     * the turn ends.
+     *
+     * Retry with the same `requestId` only after a transport failure: the
+     * retry gets the first answer (`repeat: true`) and records nothing new.
+     * After `no_turn` or `legacy_turn`, send the text as an ordinary message
+     * with a new client message id instead; never retry that request id.
+     *
+     * `opts.caller` is trusted: the Web API overwrites it from the
+     * authenticated request. The text size limit is the ordinary message
+     * limit of the transport (the Web API's JSON body limit).
+     */
+    async steerSessionTurn(sessionId: string, opts: SteerTurnOptions): Promise<SteerTurnResult> {
+        this._ensureStarted();
+        const text = opts?.text;
+        if (typeof text !== "string" || !text.trim()) {
+            throw invalidTurnControlRequest("steerSessionTurn requires non-empty text");
+        }
+        const requestId = validTurnControlRequestId(opts?.requestId, "steerSessionTurn");
+        if (requestId === undefined) {
+            throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
+        }
+        // The flag gates new steers only. A retry of an already recorded
+        // request id still gets its first answer (or request_id_reused)
+        // from the catalog, even after the flag was turned off.
+        if (!(await this._steeringEnabled(opts?.caller)) && !(await this._steerRequestRecorded(sessionId, requestId))) {
+            return { outcome: "steering_disabled" };
+        }
+        const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts?.caller);
+        if ("refused" in added) return { outcome: added.refused };
+        return {
+            outcome: "accepted",
+            steerId: added.seq,
+            turn: added.turn,
+            ...(added.repeat ? { repeat: true as const } : {}),
+        };
+    }
+
+    /**
+     * Stop the session's running turn without completing, cancelling or
+     * deleting the session.
+     *
+     * A turn that listens for controls (orchestration 1.0.81 and later) gets
+     * the Stop as a `user.stop` session event; this method then waits for
+     * its outcome. An older turn (`legacy_turn`) takes the earlier event
+     * path. Stop is never gated by a feature flag. Valid for system sessions
      * too; only group/container rows are not sessions and cannot be stopped.
      *
+     * On the turn-control path, pass `requestId` to make a retry after a
+     * transport failure safe: it reuses the recorded control. The legacy
+     * event path does not deduplicate requests by this id.
+     *
      * Outcomes:
-     *  - stopped / stop_forced: the turn was aborted mid-flight; session idle.
-     *  - no_active_turn: nothing was running (idempotent no-op).
-     *  - timeout: no response before timeoutMs — the stop may still land;
-     *    refresh session state rather than assuming failure.
+     *  - stopped: the turn ended stopped.
+     *  - too_late: the Stop was accepted after the turn's model run had
+     *    finished; the turn completed normally.
+     *  - stop_forced: legacy path only.
+     *  - no_active_turn: nothing was running (`detail` names any other
+     *    refusal, for example `too_many`).
+     *  - timeout: no outcome was observed before `timeoutMs`. `controlSeq`
+     *    identifies the accepted Stop, not proof that it is still open.
+     *    Read its outcome before deciding whether another action is needed.
      */
-    async stopSessionTurn(
+    async stopSessionTurn(sessionId: string, opts?: StopTurnOptions): Promise<StopTurnResult> {
+        this._ensureStarted();
+        const reason = opts?.reason ?? "Stopped by user";
+        if (typeof reason !== "string") {
+            throw invalidTurnControlRequest("stopSessionTurn reason must be a string");
+        }
+        const requestId = validTurnControlRequestId(opts?.requestId, "stopSessionTurn") ?? crypto.randomUUID();
+        const timeoutMs = validStopTimeoutMs(opts?.timeoutMs);
+        const added = await this._turnControlAdd(sessionId, "stop", reason, requestId, opts?.caller);
+        if ("refused" in added) {
+            if (added.refused === "legacy_turn") {
+                return this._legacyStopSessionTurn(sessionId, { reason, timeoutMs });
+            }
+            if (added.refused === "no_turn") {
+                return { outcome: "no_active_turn", detail: "no turn is running" };
+            }
+            return { outcome: "no_active_turn", detail: added.refused };
+        }
+        return this._waitForStopOutcome(sessionId, added.seq, added.turn, timeoutMs);
+    }
+
+    /** Whether a `user.steer` with this request id is already recorded for the session. */
+    private async _steerRequestRecorded(sessionId: string, requestId: string): Promise<boolean> {
+        let after = 0;
+        for (;;) {
+            const page = await this._catalog!.getSessionEvents(sessionId, after, OUTCOME_PAGE_LIMIT, [TURN_CONTROL_EVENT_TYPES.steer]);
+            if (page.some((event) => (event.data as { requestId?: unknown } | null)?.requestId === requestId)) return true;
+            if (page.length < OUTCOME_PAGE_LIMIT) return false;
+            after = page[page.length - 1].seq;
+        }
+    }
+
+    /** Resolve `sessions.steering` for the caller's viewer (cluster scope without one). */
+    private async _steeringEnabled(caller: TurnControlCaller | undefined): Promise<boolean> {
+        const features = this._catalog?.features;
+        if (!features) return false;
+        const snapshot = await features.snapshot([STEERING_FEATURE_KEY]);
+        const definition = snapshot?.definitions?.find((row) => row.featureKey === STEERING_FEATURE_KEY);
+        if (!definition) return false;
+        const settings = Array.isArray(snapshot.settings) ? snapshot.settings : [];
+        const cluster = settings.find((row) => row.featureKey === STEERING_FEATURE_KEY && row.scope === "cluster");
+        const principal = caller?.viewer?.principal;
+        const user = principal
+            ? settings.find((row) => row.featureKey === STEERING_FEATURE_KEY && row.scope === "user"
+                && row.owner?.provider === principal.provider && row.owner?.subject === principal.subject)
+            : undefined;
+        return resolveFeatureDefinition(definition, cluster, user).enabled;
+    }
+
+    /** Add a control; a catalog without the turn-control procedures answers like a legacy turn. */
+    private async _turnControlAdd(
+        sessionId: string,
+        kind: "steer" | "stop",
+        text: string,
+        requestId: string,
+        caller: TurnControlCaller | undefined,
+    ): Promise<TurnControlAddResult> {
+        const actor = normalizeMessageSender(caller?.sender) ?? null;
+        try {
+            return await this._catalog!.turnControlAdd(sessionId, kind, text, requestId, actor);
+        } catch (error) {
+            if (error instanceof TurnControlUnavailableError) return { refused: "legacy_turn" };
+            throw error;
+        }
+    }
+
+    /** Poll the accepted Stop's outcome (P6). */
+    private async _waitForStopOutcome(sessionId: string, seq: number, turn: number, timeoutMs: number): Promise<StopTurnResult> {
+        const deadline = Date.now() + Math.max(0, timeoutMs);
+        let after = seq;
+        for (;;) {
+            // A failed read reaches the caller: it is not an empty page. A
+            // retry with the same request id is safe and reads again.
+            const page = await this._catalog!.getSessionEvents(
+                sessionId, after, OUTCOME_PAGE_LIMIT, [TURN_CONTROL_EVENT_TYPES.outcome],
+            );
+            for (const event of page) {
+                if (event.seq > after) after = event.seq;
+                const data = event.data as Partial<ControlOutcomeEventData> | null;
+                if (Number(data?.seq) !== seq) continue;
+                if (data?.outcome === "stopped" || data?.outcome === "too_late") {
+                    return { outcome: data.outcome, turnIndex: turn, controlSeq: seq };
+                }
+            }
+            if (page.length >= OUTCOME_PAGE_LIMIT) continue;
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
+            await sleep(Math.min(TURN_CONTROL_OUTCOME_POLL_MS, remaining));
+        }
+        return {
+            outcome: "timeout",
+            turnIndex: turn,
+            controlSeq: seq,
+            detail: "the Stop was accepted; no outcome was observed before the timeout",
+        };
+    }
+
+    /**
+     * Today's Stop path for turns that do not listen for controls
+     * (orchestration 1.0.80 and older): a stop event on the turn-scoped stop
+     * queue (stopTurn.<activeTurnIndex>) that the orchestration races
+     * against the in-flight runTurn activity, then a poll of the KV
+     * command-response channel.
+     *
+     * Called by stopSessionTurn on a `legacy_turn` refusal.
+     */
+    private async _legacyStopSessionTurn(
         sessionId: string,
         opts?: { reason?: string; timeoutMs?: number },
     ): Promise<StopTurnResult> {
