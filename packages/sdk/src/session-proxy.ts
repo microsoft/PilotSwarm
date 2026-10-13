@@ -4136,8 +4136,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
                 let start = 0;
-                if (started.stopped || started.controls.length > 0) {
-                    // The saved cursor is read only when needed.
+                if (lifecycle && (started.stopped || started.controls.length > 0)) {
+                    // The saved cursor is read only when needed. A session
+                    // without a store saves nothing (D4): cursor 0.
                     start = savedControlCursor(readTurnCommitFile(sessionDirOf())?.result, tc.turn);
                 }
                 const open = started.controls.filter((c) => c.seq > start);
