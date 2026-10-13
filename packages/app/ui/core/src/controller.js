@@ -10918,14 +10918,17 @@ export class PilotSwarmUiController {
         }
         const entry = this._turnControlEntry(sessionId);
         if (entry.steer?.phase === "sending") return;
+        // A retry resends the request's own immutable text and never reads
+        // or writes the composer, so it is safe with an outbox message
+        // selected (a refusal keeps the text in the kept list then).
+        if (entry.steer?.phase === "unconfirmed") {
+            await this.retryTurnControl("steer", sessionId);
+            return;
+        }
         // While a pending or queued outbox message is selected, the composer
         // text belongs to that message: Steer must not take or resend it.
         if (this.getPromptEditSessionMatch(sessionId)) {
             this.dispatch({ type: "ui/status", text: "Steer is unavailable while a pending message is selected; press Esc for a new prompt" });
-            return;
-        }
-        if (entry.steer?.phase === "unconfirmed") {
-            await this.retryTurnControl("steer", sessionId);
             return;
         }
         if (!String(state.ui.prompt || "").trim() && this.restoreTurnControlText(sessionId)) {

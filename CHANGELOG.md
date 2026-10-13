@@ -4,11 +4,11 @@
 
 **Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later
 listens for controls through the session catalog. Stop ends the turn and
-reports `stopped`, or `too_late` when the model run had already finished. Steer (new, behind the
-`sessions.steering` feature, off by default) adds guidance that the model
-reads at its next step; a steer that arrives as the turn ends runs with the
-next turn. Every control is a session event with one outcome, shown in the
-portal and TUI transcripts.
+reports `stopped`, or `too_late` when the model run had already finished.
+Steer (new, behind the `sessions.steering` feature, off by default) adds
+guidance. The model receives it at its next model call; a steer that arrives
+as the turn ends runs with the next turn. Every control is a session event
+with one outcome, shown in the portal and TUI transcripts.
 
 - Management client and Web API: `steerSessionTurn`
   (`POST /management/sessions/:id/steer`, `session:write`); `stopSessionTurn`

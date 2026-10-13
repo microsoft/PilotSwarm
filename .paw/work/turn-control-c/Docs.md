@@ -98,7 +98,9 @@ Web API stamps the caller in Web mode).
 - Notices are per kind (`steerNotice`, `stopNotice`): a Stop never hides an
   unconfirmed steer's Retry/Dismiss, which stay usable after the turn ends.
 - Steer is unavailable while a pending or queued outbox message is selected
-  (its text belongs to that message).
+  (its text belongs to that message); retrying an unconfirmed steer still
+  works then, because it resends the request's own text and never touches
+  the composer.
 
 ### Portal `data-testid` contract
 

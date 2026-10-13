@@ -11,6 +11,7 @@ import {
     classifyTurnControlError,
     createInitialState,
     createStore,
+    selectStatusBar,
     selectTurnControlView,
 } from "../src/index.js";
 
@@ -523,4 +524,22 @@ test("a fallback behind an earlier attempted envelope that fails again is not se
     assert.deepEqual(calls.send.map((call) => call.prompt), ["earlier failed"], "the outbox sends the earlier envelope first");
     // The outbox keeps retrying its pending envelopes; end that here.
     controller.setSessionOutboxItems(SID, []);
+});
+
+test("Ctrl+T retries an unconfirmed steer even with an outbox message selected, leaving that message intact", async () => {
+    let n = 0;
+    const { controller, store, calls, view } = harness({ steer: () => (++n === 1 ? networkError() : { outcome: "too_many" }) });
+    controller.setPrompt("lost steer");
+    await controller.steerActiveSessionTurn();
+    const item = controller.buildOutboxItem("selected message", "pending");
+    controller.setSessionOutboxItems(SID, [item]);
+    controller.enterPendingPromptEdit(SID, item.id);
+    controller.setFocus("prompt");
+    assert.match(selectStatusBar(store.getState()).right, /ctrl-t retry steer/, "the hint is advertised");
+    await controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(calls.steer.length, 2, "and the key does retry");
+    assert.equal(calls.steer[1].requestId, calls.steer[0].requestId);
+    assert.equal(store.getState().outbox.bySessionId[SID][0].text, "selected message");
+    assert.equal(store.getState().ui.prompt, "selected message");
+    assert.deepEqual(view().kept.map((entry) => entry.text), ["lost steer"], "a refusal keeps the text aside");
 });

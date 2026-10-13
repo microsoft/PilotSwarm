@@ -171,8 +171,8 @@ pause between two messages.
   **Terminate**, which ends the session.
 - **Steer a running turn**: with the `sessions.steering` feature on,
   a **↪ Steer** button appears between Stop and Send while the turn
-  accepts guidance. Type a correction and press Steer — the model reads
-  it at its next step, without stopping the turn. The transcript shows
+  accepts guidance. Type a correction and press Steer — the model receives
+  it at its next model call, without stopping the turn. The transcript shows
   your text with a `steer` badge and its outcome: **Pending**,
   **Delivered**, **Will run next** (it arrived as the turn ended; it
   runs with the next turn), **Carried, ran next**, **Carried, then
