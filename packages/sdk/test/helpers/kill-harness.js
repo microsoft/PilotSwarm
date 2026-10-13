@@ -41,6 +41,10 @@ const FAST_LOCK_MS = "2000";
  * @param {string} id        worker id suffix (also the workerNodeId)
  * @param {object} [opts]
  * @param {string} [opts.faultInject]  PILOTSWARM_FAULT_INJECT value to arm
+ * @param {string} [opts.modelProvidersPath]  model catalog (for example the scripted model)
+ * @param {{rootName: string, rootPath: string, serviceUrl: string}} [opts.repoWorkspaces]
+ *        load the reference repo workspace provider against that repo service
+ * @param {Record<string, string>} [opts.env]  extra environment for the process
  */
 /** Shared snapshot-store dir for every kill-harness worker in this suite. */
 export function killStoreDir(env) {
@@ -61,6 +65,7 @@ export function forkKillWorker(env, id, opts = {}) {
             PILOTSWARM_WORKER_LOCK_TIMEOUT_MS: FAST_LOCK_MS,
             PILOTSWARM_COMMIT_RETRY_DELAY_MS: "100",
             ...(opts.faultInject ? { PILOTSWARM_FAULT_INJECT: opts.faultInject } : {}),
+            ...(opts.env || {}),
         },
         stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
@@ -111,6 +116,8 @@ export function forkKillWorker(env, id, opts = {}) {
         sessionStoreDir: storeDir,
         workerNodeId: `kill-${id}`,
         logLevel: process.env.DUROXIDE_LOG_LEVEL || "warn",
+        ...(opts.modelProvidersPath ? { modelProvidersPath: opts.modelProvidersPath } : {}),
+        ...(opts.repoWorkspaces ? { repoWorkspaces: opts.repoWorkspaces } : {}),
     });
 
     return {

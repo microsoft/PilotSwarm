@@ -11,6 +11,14 @@ import { PilotSwarmWorker, FilesystemSessionStore } from "../../dist/index.js";
 process.on("message", async (msg) => {
     if (msg.type === "start") {
         try {
+            // Kill-harness support for workspace tests: the reference repo
+            // workspace provider, talking to a repo service in the test process.
+            let workspaceProvider = null;
+            if (msg.repoWorkspaces) {
+                const { createRepoWorkspaceProvider } = await import("../../examples/repo-workspaces/provider.mjs");
+                const { rootName, rootPath, serviceUrl } = msg.repoWorkspaces;
+                workspaceProvider = createRepoWorkspaceProvider({ roots: [{ name: rootName, path: rootPath }], serviceUrls: { [rootName]: serviceUrl } });
+            }
             const worker = new PilotSwarmWorker({
                 store: msg.store,
                 githubToken: msg.githubToken,
@@ -21,6 +29,8 @@ process.on("message", async (msg) => {
                 workerNodeId: msg.workerNodeId,
                 disableManagementAgents: true,
                 logLevel: msg.logLevel || "warn",
+                ...(msg.modelProvidersPath ? { modelProvidersPath: msg.modelProvidersPath } : {}),
+                ...(workspaceProvider ? { workspaceProvider } : {}),
                 // Kill-harness support: an explicit SHARED snapshot store dir
                 // (separate worker "disks" + one store, like pods sharing
                 // blob storage). Without it, the store derives from
