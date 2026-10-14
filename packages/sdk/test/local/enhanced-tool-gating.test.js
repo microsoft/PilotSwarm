@@ -407,7 +407,7 @@ describe("E1c: agent-tuner is strictly read-only (never a mutating tool)", () =>
     // readOnlyTunerSubAgentToolNames); everything else here is a mutation.
     const MUTATING_SUBAGENT = [
         "spawn_agent", "message_agent", "wait_for_agents",
-        "complete_agent", "cancel_agent", "delete_agent",
+        "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent",
     ];
     const ALL_MUTATIONS = [...FACT_WRITES, ...GRAPH_WRITES, ...CRAWL_TOOLS, ...MUTATING_SYSTEM, ...MUTATING_SUBAGENT];
 

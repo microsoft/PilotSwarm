@@ -383,10 +383,23 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `stop_turn` | Abort the in-flight turn; the session stays alive |
+| `stop_turn` | Stop the running turn; the session stays alive. Outcome `stopped`, `too_late`, `stop_forced` (legacy turns only), `no_active_turn` or `timeout`; optional `request_id` for safe retries |
+| `steer_session_turn` | Add guidance (`text`) to the running turn; the model receives it at its next model call. Needs the `sessions.steering` feature. Outcome `accepted` or a refusal; on `no_turn` / `legacy_turn` send the text with `send_message` instead. Optional `request_id` for safe retries |
 | `complete_session` | Mark a session completed (successful terminal state, distinct from cancel) |
 | `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
 | `send_session_event` | Inject a custom named event into a session *(web)* |
+
+For safe retries, choose `request_id` before the first Stop or Steer call and keep
+it with the unchanged text or reason. Retry with that same id only after a lost
+response. If omitted, the server generates an id and returns it in a normal
+result; if that response is lost, the caller does not have the generated id for
+a safe retry. Do not fall back to `send_message` after a transport failure.
+Only a definite `no_turn` or `legacy_turn` Steer refusal permits that fallback:
+send the text with a new client message id and do not retry the refused control.
+
+Stop preserves the management result fields `turnIndex`, `controlSeq` and
+`detail`. A `timeout` with `controlSeq` means the Stop was accepted and is still
+pending, not refused. `stopped` is true only for `stopped` or `stop_forced`.
 
 ### Session Groups
 

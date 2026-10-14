@@ -14,6 +14,13 @@ export const FEATURE_FLAGS = {
         defaultAllowUserOverride: true,
         requiredCapability: "agents.base_v2",
     },
+    "sessions.steering": {
+        displayName: "Steer running turns",
+        description: "Let people add guidance to a running turn that the model receives at its next model call. Stop does not depend on this flag. The operator enables it; users may override it only when the operator allows.",
+        defaultEnabled: false,
+        defaultAllowUserOverride: false,
+        requiredCapability: null,
+    },
     "debug.enable_model_event_logging": {
         displayName: "Model event logging",
         description: "Record the Copilot CLI's model trace events (model.message, model.messages_snapshot, model.tool_execution, model.model_call_success) in the session event log. They repeat the whole conversation on every turn and are large; turn on only for debugging.",

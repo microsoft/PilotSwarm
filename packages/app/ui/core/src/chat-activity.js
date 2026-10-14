@@ -9,7 +9,7 @@ export const CHAT_CALL_EVENT_TYPES = [
     "session.agent_spawned",
 ];
 const callTypes = new Set(CHAT_CALL_EVENT_TYPES);
-const agentTools = /(?:^|[.:/])(?:spawn_agent|message_agent|send_message|send_session_message|reply_session_message|wait_for_agents|check_agents|complete_agent|cancel_agent|delete_agent|list_agents)$/;
+const agentTools = /(?:^|[.:/])(?:spawn_agent|message_agent|send_message|send_session_message|reply_session_message|wait_for_agents|check_agents|complete_agent|cancel_agent|stop_agent_turn|delete_agent|list_agents)$/;
 
 export function callText(value) {
     if (typeof value === "string") return value;

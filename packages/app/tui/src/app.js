@@ -277,6 +277,23 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.STOP_TURN).catch(() => {});
             return;
         }
+        // Steer the running turn with the prompt text, the selected queued
+        // message, or (empty prompt) every queued message — the TUI
+        // equivalent of the portal Steer button. Ctrl+S is XOFF in many
+        // terminals, so T.
+        // The controller explains in the status line when Steer does not
+        // apply (no turn listening, or the steering feature is off), and the
+        // same key resends an unconfirmed steer with its request id.
+        if (focus === "prompt" && !modal && matchesCtrlKey("t", "\u0014")) {
+            controller.handleCommand(UI_COMMANDS.STEER_TURN).catch(() => {});
+            return;
+        }
+        // Give up an unconfirmed Stop/Steer (the portal's Dismiss): its steer
+        // text returns to the prompt. Only consumed when there is one.
+        if (focus === "prompt" && !modal && key.meta && !key.ctrl && (input === "t" || key.name === "t")
+            && controller.giveUpTurnControl()) {
+            return;
+        }
         if (focus !== "prompt" && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
