@@ -173,8 +173,10 @@ describe("turn control: the steering flag through the real Web API", () => {
                 const [confirmed] = await waitForEventCount(catalog, sessionId, "session.steer_confirmed", 1, WAIT);
                 expect(confirmed.data.seq).toBe(steerId);
                 await waitForSessionState(catalog, sessionId, "idle", WAIT);
-                const outcomes = (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "session.control_outcome" && e.data.seq === steerId);
-                expect(outcomes.map((e) => e.data.outcome)).toEqual(["delivered"]);
+                // The state goes idle at the end-of-turn write; the outcome follows the save.
+                const outcomes = () => catalog.getSessionEvents(sessionId)
+                    .then((all) => all.filter((e) => e.eventType === "session.control_outcome" && e.data.seq === steerId).map((e) => e.data.outcome));
+                await expect.poll(outcomes, { timeout: WAIT }).toEqual(["delivered"]);
                 const recorded = await steers(sessionId);
                 expect(recorded).toHaveLength(1);
                 expect(recorded[0]).toMatchObject({ seq: steerId, data: { text: "PTW-STEER use metric units", requestId } });
