@@ -173,11 +173,13 @@ test("the turn state indicator passes every product status through", async ({ pa
     const wire = await open(page);
     await expect(wire.turnState).toHaveAttribute("data-turn-state", "running");
     await expect(wire.turnState).toBeVisible();
-    await expect(wire.turnState).toHaveText("running");
-    for (const status of ["pending", "idle", "waiting", "input_required", "error", "failed", "completed", "cancelled", "running"]) {
+    await expect(wire.turnState).toHaveAccessibleName("Running · accepts Stop and Steer");
+    const labels = { pending: "Pending", idle: "Idle", waiting: "Waiting", input_required: "Waiting for input", error: "Error",
+        failed: "Failed", completed: "Completed", cancelled: "Cancelled", running: "Running · accepts Stop and Steer" };
+    for (const [status, label] of Object.entries(labels)) {
         await wire.setDetail({ status, acceptsTurnControl: status === "running" });
         await expect(wire.turnState).toHaveAttribute("data-turn-state", status);
-        await expect(wire.turnState).toHaveText(status.replace(/_/g, " "));
+        await expect(wire.turnState).toHaveAccessibleName(label);
         await expect(wire.turnState).toHaveAttribute("data-accepts-controls", status === "running" ? "true" : "false");
     }
 });
@@ -535,15 +537,15 @@ async function expectPhoneComposer(wire, { steer = true } = {}) {
 }
 
 /**
- * The phone composer after the turn ends: no Stop, Steer or turn-state chip,
+ * The phone composer after the turn ends: no Stop or Steer, the status dot,
  * Send on the input's row, and the input at least `minWidth` wide. The
  * minimums are the idle widths before turn control (228 px in the chat view,
- * 324 px in Zen and MoA at 390 px) less 4 px.
+ * 324 px in Zen and MoA at 390 px) less the dot and its gap (26 px), less 4 px.
  */
 async function expectIdlePhoneComposer(wire, minWidth) {
     await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
     await expect(wire.turnState).toHaveAttribute("data-turn-state", "idle");
-    await expect(wire.turnState).toBeHidden();
+    await expect(wire.turnState).toHaveAccessibleName("Idle");
     await expect(wire.stopButton).toHaveCount(0);
     await expect(wire.steerButton).toHaveCount(0);
     const [input, send] = [await wire.input.boundingBox(), await wire.sendButton.boundingBox()];
@@ -654,7 +656,7 @@ for (const steering of [true, false]) {
             await expectPhoneComposer(zen);
             await page.screenshot({ path: test.info().outputPath("turn-control-phone-zen.png") });
             await steerAndStop(zen, SID, "zen steer");
-            await expectIdlePhoneComposer(zen, 320);
+            await expectIdlePhoneComposer(zen, 294);
         } else {
             await expect(zen.steerButton).toHaveCount(0);
             await expectPhoneComposer(zen, { steer: false });
@@ -676,7 +678,7 @@ test("phone chat 390x844: Stop and Steer fit under a wide input and act on the s
     await expectPhoneComposer(chat);
     await page.screenshot({ path: test.info().outputPath("turn-control-phone-chat.png") });
     await steerAndStop(chat, SID, "phone chat steer");
-    await expectIdlePhoneComposer(chat, 224);
+    await expectIdlePhoneComposer(chat, 198);
 });
 
 // ── Convert a queued message (Steer now) or cancel it ────────────────────
@@ -823,6 +825,9 @@ for (const theme of THEMES) {
         await shot(page, `convert-desktop-steering-off-${theme.name}`);
         await rows.cancel.click();
         await expect(rows.item).toHaveAttribute("data-phase", "cancelling");
+        // The orchestration reads the cancel when the running turn ends.
+        await expect(rows.item).toContainText("Cancelling · takes effect when the turn ends");
+        await shot(page, `convert-desktop-cancelling-${theme.name}`);
         wire.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "drain-incoming" });
         await expect(rows.item).toHaveCount(0);
         expect(wire.state.steers).toEqual([]);
@@ -1005,3 +1010,84 @@ test("phone 390x844: a converted message the model read says Delivered and leave
     await expect(rows.item).not.toHaveAttribute("data-confirmed", "true");
     await expect(rows.steerNow).toBeVisible();
 });
+
+// The turn status is a coloured dot at every width: no visible text; the
+// status is its accessible name and shows as a tooltip on hover and focus.
+const DOT_THEMES = ["terminal-green", "win95", "winamp", "ms-dos", "workspace-dark"];
+async function expectDot(dot, label) {
+    await expect(dot).toBeVisible();
+    await expect(dot).toHaveAccessibleName(label);
+    expect(await dot.evaluate((el) => el.innerText.trim())).toBe("");
+    const box = await dot.boundingBox();
+    expect(box.width).toBeLessThanOrEqual(20);
+    expect(box.height).toBeLessThanOrEqual(20);
+    const colour = await dot.evaluate((el) => getComputedStyle(el.querySelector(".ps-turn-state-dot")).backgroundColor);
+    expect(colour).not.toBe("rgba(0, 0, 0, 0)");
+}
+
+test("desktop: the status dot has no visible text, names the status and shows it on hover and focus", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 950 });
+    const wire = await open(page);
+    await expectDot(wire.turnState, "Running · accepts Stop and Steer");
+    await expect(wire.turnState).toHaveAttribute("data-tone", "running");
+    const tip = wire.turnState.locator(".ps-turn-state-tip");
+    await expect(tip).toBeHidden();
+    await wire.turnState.hover();
+    await expect(tip).toBeVisible();
+    await expect(tip).toHaveText("Running · accepts Stop and Steer");
+    await shot(page, "status-dot-desktop-running-hover");
+    await wire.input.hover();
+    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+    await expectDot(wire.turnState, "Idle");
+    await wire.turnState.focus();
+    await expect(tip).toHaveText("Idle");
+    await expect(tip).toBeVisible();
+    await shot(page, "status-dot-desktop-idle-focus");
+});
+
+test("narrow desktop 700x800: the dot fits beside the controls", async ({ page }) => {
+    await page.setViewportSize({ width: 700, height: 800 });
+    const wire = await open(page);
+    await expectDot(wire.turnState, "Running · accepts Stop and Steer");
+    await wire.input.fill("x");
+    await expectControlsFit({ dot: wire.turnState, input: wire.input, stop: wire.stopButton, steer: wire.steerButton, send: wire.sendButton });
+    await shot(page, "status-dot-desktop-700");
+});
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
+    test(`phone chat ${viewport.width}x${viewport.height}: the dot while running and idle; a tap shows the status`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+        const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
+        await expectDot(chat.turnState, "Running · accepts Stop and Steer");
+        await chat.input.fill("x");
+        await expectControlsFit({ dot: chat.turnState, input: chat.input, stop: chat.stopButton, steer: chat.steerButton, send: chat.sendButton });
+        await chat.input.fill("");
+        await shot(page, `status-dot-phone-${viewport.width}-running`);
+        await chat.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+        await expectDot(chat.turnState, "Idle");
+        await chat.turnState.dispatchEvent("pointerdown", { pointerType: "touch" });
+        await expect(chat.turnState.locator(".ps-turn-state-tip")).toBeVisible();
+        await shot(page, `status-dot-phone-${viewport.width}-idle-tap`);
+    });
+}
+
+for (const themeId of DOT_THEMES) {
+    for (const view of ["chat", "zen", "moa"]) {
+        test(`phone 390x844 ${view} (${themeId}): the status dot is visible, coloured and textless`, async ({ page }) => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: view === "moa" ? moaProfile(themeId) : { themeId } });
+            let wire;
+            if (view === "moa") {
+                await openMoa(page, portal);
+                wire = moaWire(page, portal, SID, "pa");
+            } else {
+                await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+                if (view === "zen") await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
+                wire = portal.wire(SID, { composerScope: page.locator(view === "zen" ? ".ps-mobile-zen-composer" : ".ps-chat-composer") });
+            }
+            await expectDot(wire.turnState, "Running · accepts Stop and Steer");
+        });
+    }
+}

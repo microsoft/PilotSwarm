@@ -31,7 +31,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 + "stopped, too_late (the turn had already finished its model run and completed normally), "
                 + "stop_forced (legacy turns only), no_active_turn, or timeout (with controlSeq: the Stop was accepted "
                 + "and applies when the turn runs). "
-                + "Pass request_id to make a retry after a lost response safe.",
+                + "Pass request_id to make a retry after a lost response safe. Stop discards the turn: the agent does not remember the stopped request or its partial work; send it again to continue.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose current turn to stop"),
                 reason: z.string().optional().describe("Optional reason, surfaced to the session"),

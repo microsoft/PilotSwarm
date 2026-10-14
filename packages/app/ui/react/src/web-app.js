@@ -74,6 +74,7 @@ import {
     selectStatusBar,
     selectThemePickerModal,
     selectTurnControlView,
+    selectTurnStateIndicator,
     selectConfirmModal,
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
@@ -9765,6 +9766,39 @@ function KeptSteerText({ controller, kept, sessionId }) {
         }, "Discard"));
 }
 
+/**
+ * The turn status as a coloured dot, at every width: no visible text. The
+ * status shows as a tooltip on hover and keyboard focus, and for a moment
+ * after a tap; it is also the accessible name.
+ */
+function TurnStateDot({ turnState, acceptsControls, stopping }) {
+    const { tone, label } = selectTurnStateIndicator({ status: turnState, acceptsControls, stopping });
+    const [tipOpen, setTipOpen] = React.useState(false);
+    React.useEffect(() => {
+        if (!tipOpen) return undefined;
+        const timer = setTimeout(() => setTipOpen(false), 2000);
+        return () => clearTimeout(timer);
+    }, [tipOpen]);
+    return React.createElement("span", {
+        className: `ps-turn-state is-${turnState} tone-${tone}${acceptsControls ? " accepts-controls" : ""}${tipOpen ? " is-tip-open" : ""}`,
+        role: "status",
+        tabIndex: 0,
+        "aria-label": label,
+        "data-testid": "session-turn-state",
+        "data-turn-state": turnState,
+        "data-accepts-controls": acceptsControls ? "true" : "false",
+        "data-tone": tone,
+        // A tap shows the status; it keeps focus (and the phone keyboard) in the composer.
+        onPointerDown: (event) => {
+            if (event.pointerType !== "touch") return;
+            event.preventDefault();
+            setTipOpen(true);
+        },
+    },
+    React.createElement("span", { className: "ps-turn-state-dot", "aria-hidden": true }),
+    React.createElement("span", { className: "ps-turn-state-tip", "aria-hidden": true }, label));
+}
+
 /** The busy Send content during an image upload: a turning glyph, and a label where it fits. */
 function UploadSpinner({ label }) {
     const frame = useSpinnerFrame(true);
@@ -10122,20 +10156,13 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
         }),
         React.createElement("div", { className: "ps-prompt-actions" },
-            // The turn status beside the Stop/Steer controls it governs:
-            // readable text, and the stable selector the UX pass asserts.
-            React.createElement("span", {
-                className: `ps-turn-state is-${promptState.turnState}${promptState.acceptsControls ? " accepts-controls" : ""}`,
-                role: "status",
-                title: promptState.acceptsControls
-                    ? `Turn ${promptState.turnState.replace(/_/g, " ")}: accepts Stop and Steer`
-                    : `Turn ${promptState.turnState.replace(/_/g, " ")}`,
-                "data-testid": "session-turn-state",
-                "data-turn-state": promptState.turnState,
-                "data-accepts-controls": promptState.acceptsControls ? "true" : "false",
-            },
-            React.createElement("span", { className: "ps-turn-state-dot", "aria-hidden": true }),
-            promptState.turnState.replace(/_/g, " ")),
+            // The turn status beside the Stop/Steer controls it governs: a
+            // coloured dot, and the stable selector the UX pass asserts.
+            React.createElement(TurnStateDot, {
+                turnState: promptState.turnState,
+                acceptsControls: promptState.acceptsControls,
+                stopping: stopState === "stopping",
+            }),
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.

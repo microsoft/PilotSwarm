@@ -1262,7 +1262,7 @@ panels never collide.
 |---|---|
 | `turn-stop-button` | `data-state`: `ready`, `stopping` |
 | `turn-steer-button` | `data-state`: `ready`, `sending`, `disabled` (empty composer). Present only when `canSteer`. |
-| `session-turn-state` | `data-turn-state` (the product state), `data-accepts-controls` |
+| `session-turn-state` | `data-turn-state` (the product state), `data-accepts-controls`; shown as a coloured dot with no visible text (tooltip and accessible name: the status, for example "Running · accepts Stop and Steer"; owner, 2026-10-14) |
 | `control-steer`, `control-stop` | `data-control-seq`, `data-outcome`, `data-actor-kind`: `user`, or `agent` for a parent agent's control (4.13) |
 | `control-outcome-badge` | `data-outcome`: `pending`, `delivered`, `carried`, `carried_ran`, `carried_then_stopped`, `carried_not_run`, `not_delivered`, `stopped`, `too_late` |
 | `control-stop-legacy` | `data-outcome`: `stopped`, `stop_forced` |
@@ -1488,6 +1488,12 @@ and `stopped` for its open Stops. So does any terminal state (P20).
 A converted steer (4.14) is never carried: after the cursor it gets
 `not_delivered`, also without a Stop, and its queued message runs in its
 place.
+
+**What a stopped turn keeps (D10).** A stopped turn is not saved, as on
+`main`: the model forgets the stopped request, its partial answer and that
+turn's tool results, while the transcript still shows them. To continue,
+re-send or rephrase the request. A steer the model read in that turn still
+shows "Delivered" (D8): it reached the model before the Stop.
 
 **Labels (D8).** Clients label a steer "Delivered" as soon as its
 `session.steer_confirmed` arrives, before the outcome, and keep that label
@@ -1814,6 +1820,7 @@ All decisions are decided by the owner.
 | D7 | Phone composer (viewport 600 px or less) while a turn runs | option A: the turn state, Stop, Steer and Send take their own row under the input, so the composer is exactly one action row taller than when idle. Nothing moves within a phase. The input keeps at least 70% of the composer width while Stop shows, and the controls fit on their row at 320 x 400 (2026-10-14) |
 | D8 | When a steer reads "Delivered" | as soon as `session.steer_confirmed` arrives; it stays "Delivered" when the turn is then stopped. A label change only: the kept-text offer after a Stop is unchanged (2026-10-14) |
 | D9 | Convert a queued message (4.14) | a delivered converted steer replaces the message; any other outcome leaves it queued; a converted steer is never carried; the double fault of 5.1 is an accepted residual (2026-10-14) |
+| D10 | What a stopped turn keeps | option A: a stopped turn is not saved (as on main): the model forgets the stopped request, its partial answer and the tool results of that turn; the transcript still shows them. To continue, re-send or rephrase the request. No code change (owner, 2026-10-14 04:47 UTC) |
 
 ### 8.2 Checks
 

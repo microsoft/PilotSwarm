@@ -143,7 +143,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   `queued-steer-now`, `queued-cancel`, `queued-notice`), so each message
   appears once; the strip is bounded above the composer in the chat view and
   ends the transcript in MoA panels and Zen; a steer reads Delivered as soon as it is confirmed. Stop and Steer notices are kept per
-  kind, so one never hides the other's Retry. Portal: a readable turn-status chip and a Steer button beside Stop, an inline notice for every
+  kind, so one never hides the other's Retry. Portal: a coloured turn-status dot (no visible text; the status is its tooltip and accessible name, `session-turn-state` keeps `data-turn-state` and `data-accepts-controls`) and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and
   transcript items: a steer reads as a user message with a `steer` badge and
   its outcome, a Stop as a short line with its outcome. Both surfaces name a

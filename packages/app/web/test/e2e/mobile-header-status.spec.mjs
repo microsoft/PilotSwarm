@@ -156,10 +156,10 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(sendBox.x);
             expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(320);
             expect(stopBox.y + stopBox.height).toBeLessThanOrEqual(400);
-            // The turn status is readable and on screen beside the controls.
+            // The turn status dot is on screen beside the controls; its status is its name.
             const turnState = surface.getByTestId('session-turn-state');
             await expect(turnState).toBeVisible();
-            await expect(turnState).toHaveText('running');
+            await expect(turnState).toHaveAccessibleName('Running · accepts Stop and Steer');
             const stateBox = await turnState.boundingBox();
             expect(stateBox.x).toBeGreaterThanOrEqual(0);
             expect(stateBox.x + stateBox.width).toBeLessThanOrEqual(stopBox.x);

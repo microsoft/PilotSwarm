@@ -563,7 +563,7 @@ high-frequency ones:
 | `P` | Pin / unpin session |
 | `V` / `Space` / `Esc` | Multi-select |
 | `Ctrl+A` | Attach file |
-| `Ctrl+X` | Stop the running turn |
+| `Ctrl+X` | Stop the running turn. Stop discards the turn: the agent does not remember the stopped request or its partial work; send it again to continue. |
 | `Ctrl+T` | Steer the running turn with the prompt text; with a queued message selected (`↑`), steer now with that message |
 | `d` | With a queued message selected (`↑`): cancel it |
 | `r` | Refresh |

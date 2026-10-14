@@ -3400,6 +3400,32 @@ function buildTurnControlLines(message, maxWidth, options = {}) {
 const NO_KEPT_STEERS = Object.freeze([]);
 
 /** Stop and Steer state of one session, for the composer and the TUI status line. */
+const TURN_STATE_TONES = {
+    running: "running",
+    idle: "idle",
+    waiting: "waiting",
+    input_required: "waiting",
+    error: "error",
+    failed: "error",
+    pending: "done",
+    completed: "done",
+    cancelled: "done",
+};
+const TURN_STATE_LABELS = { input_required: "Waiting for input" };
+
+/**
+ * The composer's turn status, shown as a coloured dot with no visible text:
+ * its tone, and the label used as its tooltip and accessible name.
+ */
+export function selectTurnStateIndicator({ status, acceptsControls = false, stopping = false } = {}) {
+    if (stopping) return { tone: "waiting", label: "Stopping…" };
+    const key = String(status || "pending");
+    const words = key.replace(/_/g, " ");
+    const label = key === "running" && acceptsControls ? "Running · accepts Stop and Steer"
+        : TURN_STATE_LABELS[key] || words.charAt(0).toUpperCase() + words.slice(1);
+    return { tone: TURN_STATE_TONES[key] || "idle", label };
+}
+
 export function selectTurnControlView(state, sessionId = state?.sessions?.activeSessionId) {
     const session = sessionId ? state?.sessions?.byId?.[sessionId] || null : null;
     const entry = sessionId ? state?.turnControl?.bySessionId?.[sessionId] || null : null;
@@ -3743,6 +3769,7 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
     if (entries.length === 0) return { header: null, blocks: [] };
 
     const safeWidth = Math.max(20, Number(maxWidth) || 80);
+    const turnRunning = state.sessions.byId?.[sessionId]?.status === "running";
     const messages = entries.map((entry) => entry.message);
     const queuedCount = messages.filter((message) => message.pendingPhase === "queued").length;
     const pendingCount = messages.filter((message) => message.pendingPhase === "pending").length;
@@ -3778,7 +3805,10 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
             itemId: item.id,
             phase: item.phase,
             confirmed,
-            phaseLabel: confirmed ? "Delivered · leaves the queue when the turn ends" : OUTBOX_PHASE_LABELS[item.phase] || null,
+            phaseLabel: confirmed ? "Delivered · leaves the queue when the turn ends"
+                // The orchestration reads a cancel when it drains, after the running turn.
+                : item.phase === "cancelling" && turnRunning ? "Cancelling · takes effect when the turn ends"
+                    : OUTBOX_PHASE_LABELS[item.phase] || null,
             canSteer: canConvertQueuedItem(state, sessionId, item),
             canCancel: item.phase === "queued",
             notice: formatConvertNotice(item.convertNotice),

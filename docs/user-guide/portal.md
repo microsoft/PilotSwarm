@@ -168,7 +168,7 @@ pause between two messages.
   returns to `idle` ready for your next prompt. Older sessions show
   `Turn stopped by user.` instead. This stops only the current turn:
   the session (and any cron schedule it has) stays alive, unlike
-  **Terminate**, which ends the session.
+  **Terminate**, which ends the session. Stop discards the turn: the agent does not remember the stopped request or its partial work; send it again to continue.
 - **Steer a running turn**: with the `sessions.steering` feature on,
   a **↪ Steer** button appears between Stop and Send while the turn
   accepts guidance. Type a correction and press Steer — the model receives

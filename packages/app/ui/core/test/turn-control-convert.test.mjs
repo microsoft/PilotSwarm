@@ -156,7 +156,7 @@ test("Cancel on a queued item sends the tombstone; its receipt removes it", asyn
     const x = h.queue();
     await h.controller.cancelOutboxItem(SID, x.id);
     assert.deepEqual(h.calls.cancel, [{ sessionId: SID, ids: [x.id] }]);
-    assert.equal(h.block(x.id).phaseLabel, "Cancelling…");
+    assert.equal(h.block(x.id).phaseLabel, "Cancelling · takes effect when the turn ends");
     h.event("pending_messages.cancelled", { clientMessageIds: [x.id], reason: "drain-incoming" }, 85);
     assert.equal(h.item(x.id), undefined);
 });
@@ -274,4 +274,15 @@ test("a confirmation already loaded when the steer is accepted marks the row at 
     ], lastSeq: 80 } });
     await h.controller.convertQueuedToSteer(SID, x.id);
     assert.equal(h.block(x.id).phaseLabel, "Delivered · leaves the queue when the turn ends");
+});
+
+test("a cancelled queued message says when the cancel takes effect: at turn end while a turn runs", async () => {
+    const running = harness();
+    const x = running.queue();
+    await running.controller.cancelOutboxItem(SID, x.id);
+    assert.equal(running.block(x.id).phaseLabel, "Cancelling · takes effect when the turn ends");
+    const idle = harness({ session: { status: "idle", acceptsTurnControl: false } });
+    const y = idle.queue();
+    await idle.controller.cancelOutboxItem(SID, y.id);
+    assert.equal(idle.block(y.id).phaseLabel, "Cancelling…");
 });
