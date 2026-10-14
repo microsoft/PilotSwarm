@@ -122,6 +122,11 @@ test("pooled clients fence tool policy by current session model and endpoint, in
     await client.requestHandler.sendRequest(new Request("https://example.invalid/openai/v1/chat/completions", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "primitive", tools }),
     }), { sessionId: "configured-session" });
+    // A reload that removes the session's model must not fail the request in the policy lookup.
+    manager.setModelProviders(new ModelProviderRegistry({ providers: [foundry({ models: [{ name: "replacement" }] })] }));
+    await client.requestHandler.sendRequest(new Request("https://example.invalid/openai/v1/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "primitive", tools }),
+    }), { sessionId: "configured-session" });
 });
 
 test("a model's wireApi applies when the provider sets none; a sibling without one leaves the key out", () => {

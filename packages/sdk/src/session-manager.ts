@@ -1352,17 +1352,24 @@ export class SessionManager {
         }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
             const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
             if (!config) return undefined;
-            const registry = this.workerDefaults.modelProviders;
-            const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
-            if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
-            const resolved = registry?.resolve(descriptor.qualifiedName);
-            if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
-            const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
-            const endpoint = new URL(provider.baseUrl);
-            const target = new URL(request.url);
-            if (target.origin !== endpoint.origin
-                || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
-            return descriptor.toolCatalog;
+            // Policy lookup must never fail the model request itself: a model
+            // removed by a catalog reload (or an unparsable URL) keeps the
+            // catalog unchanged and lets the provider answer.
+            try {
+                const registry = this.workerDefaults.modelProviders;
+                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
+                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
+                const resolved = registry?.resolve(descriptor.qualifiedName);
+                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
+                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
+                const endpoint = new URL(provider.baseUrl);
+                const target = new URL(request.url);
+                if (target.origin !== endpoint.origin
+                    || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
+                return descriptor.toolCatalog;
+            } catch {
+                return undefined;
+            }
         } : undefined);
         this.clients.set(clientKey, created);
         return created;
