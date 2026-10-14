@@ -195,3 +195,18 @@ test("the TUI status line offers ctrl-t steer now on a selected queued message o
     assert.match(help, /selected queued message: cancel it/);
     assert.ok(x.id);
 });
+
+test("the message's own receipt while Steering… removes it, and a late answer does not bring it back", async () => {
+    let answer;
+    const h = harness({ steer: () => new Promise((resolve) => { answer = resolve; }) });
+    const x = h.queue();
+    const pending = h.controller.convertQueuedToSteer(SID, x.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.item(x.id).phase, "steering");
+    h.event("user.message", { content: x.text, clientMessageIds: [x.id] }, 95);
+    assert.equal(h.item(x.id), undefined);
+    answer({ outcome: "already_received" });
+    await pending;
+    assert.equal(h.item(x.id), undefined);
+    assert.equal(h.controller.getSessionOutbox(SID).length, 0);
+});

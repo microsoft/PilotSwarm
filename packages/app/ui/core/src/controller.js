@@ -2143,9 +2143,10 @@ export class PilotSwarmUiController {
         const items = this.getSessionOutbox(sessionId);
 
         // Prefer exact id match if the durable event carried our clientMessageId.
+        // A message being converted (steering) is cleared only by its exact id.
         if (clientMessageId) {
             const idMatchIndex = items.findIndex((item) => (
-                (item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling")
+                (item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling" || item?.phase === "steering")
                 && Array.isArray(item.clientMessageIds)
                 && item.clientMessageIds.includes(clientMessageId)
             ));
