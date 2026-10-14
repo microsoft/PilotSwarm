@@ -174,6 +174,15 @@ test("a parent agent's Steer and Stop name the parent agent in the TUI and the p
     ]);
 });
 
+test("an agent's message is a call row, never wrapped as a person's transcript message", () => {
+    const history = live([
+        evt(1, "user.message", { content: "from the parent", sender: { kind: "agent", sessionId: "parent-1", display: "Coordinator" } }),
+    ]);
+    const lines = selectChatLines(renderState(history), 80, { tableMode: "sentinel" });
+    assert.equal(lines.some((line) => line?.kind === "groupStart"), false);
+    assert.equal(lines.some((line) => line?.kind === "chatCall"), true);
+});
+
 test("labels reconcile across pages after a reload (steer, outcome and closing record on different pages)", async () => {
     // Transcript noise between the steer, its outcome and its closing
     // record, so even the type-filtered backward pages (300 events each)

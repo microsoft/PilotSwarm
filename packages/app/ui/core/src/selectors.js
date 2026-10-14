@@ -3318,8 +3318,11 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     return memoize(lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }]);
 }
 
+// An agent's message renders as a call row inside an activity run, not as a
+// person's message: wrapping it would split that run.
 function isTranscriptUserMessage(message) {
-    return message?.role === "user" && !message.kind && !message.optimistic && !message.pendingPhase;
+    return message?.role === "user" && !message.kind && !message.optimistic && !message.pendingPhase
+        && message.sender?.kind !== "agent" && message.agentCallPreview === undefined;
 }
 
 const TURN_CONTROL_OUTCOME_COLORS = {
