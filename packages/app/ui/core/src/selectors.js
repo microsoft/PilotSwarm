@@ -6201,7 +6201,7 @@ export function selectStatusBar(state) {
             ? `type answer · enter reply · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
             : editingPendingOutbox
                 ? selectedQueuedOutbox
-                    ? `queued prompt selected · ${selectedQueuedCanSteer ? "ctrl-t steer now · " : ""}d delete · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    ? `queued prompt selected · ${selectedQueuedCanSteer ? "ctrl-t steer now · " : ""}d cancel · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : selectedCancellingOutbox
                         ? `cancelling prompt selected · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                         : `edit pending prompt · enter send batch · up/down cycle pending · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`

@@ -183,12 +183,12 @@ test("the TUI status line offers ctrl-t steer now on a selected queued message o
     const x = h.queue();
     h.controller.selectPreviousPendingPrompt(SID);
     h.store.dispatch({ type: "ui/focus", focusRegion: "prompt" });
-    assert.match(selectStatusBar(h.store.getState()).right, /queued prompt selected · ctrl-t steer now · d delete/);
+    assert.match(selectStatusBar(h.store.getState()).right, /queued prompt selected · ctrl-t steer now · d cancel/);
     const off = harness({ flags: { effective: false } });
     off.queue();
     off.controller.selectPreviousPendingPrompt(SID);
     off.store.dispatch({ type: "ui/focus", focusRegion: "prompt" });
-    assert.match(selectStatusBar(off.store.getState()).right, /queued prompt selected · d delete/);
+    assert.match(selectStatusBar(off.store.getState()).right, /queued prompt selected · d cancel/);
     assert.doesNotMatch(selectStatusBar(off.store.getState()).right, /steer now/);
     const help = buildHelpModalRows().map((row) => row.map((run) => run.text).join("")).join("\n");
     assert.match(help, /selected queued message: steer now/);
@@ -209,4 +209,31 @@ test("the message's own receipt while Steering… removes it, and a late answer 
     await pending;
     assert.equal(h.item(x.id), undefined);
     assert.equal(h.controller.getSessionOutbox(SID).length, 0);
+});
+
+test("no answer, then the steer's record and its not_delivered outcome arrive: queued with that notice, and the next Steer now uses a new request id", async () => {
+    let call = 0;
+    const h = harness({ steer: () => (++call === 1 ? networkError() : { outcome: "accepted", steerId: 120, turn: 3 }) });
+    const x = h.queue();
+    await h.controller.convertQueuedToSteer(SID, x.id);
+    const lost = h.calls.steer[0].requestId;
+    assert.equal(h.item(x.id).phase, "queued");
+    // The server had recorded it: its steer and outcome arrive on the stream.
+    h.event("user.steer", { turn: 2, text: x.text, requestId: lost, actor: null, replacesClientMessageId: x.id }, 100);
+    h.event("session.control_outcome", { seq: 100, turn: 2, outcome: "not_delivered" }, 101);
+    assert.equal(h.item(x.id).phase, "queued");
+    assert.equal(h.block(x.id).notice, "Could not steer: the turn ended before the agent read it. Still queued.");
+    await h.controller.convertQueuedToSteer(SID, x.id);
+    assert.notEqual(h.calls.steer[1].requestId, lost);
+});
+
+test("no answer, then the steer's record and a delivered outcome arrive: the converted_to_steer receipt removes the message", async () => {
+    const h = harness({ steer: () => networkError() });
+    const x = h.queue();
+    await h.controller.convertQueuedToSteer(SID, x.id);
+    const lost = h.calls.steer[0].requestId;
+    h.event("user.steer", { turn: 2, text: x.text, requestId: lost, actor: null, replacesClientMessageId: x.id }, 100);
+    h.event("session.control_outcome", { seq: 100, turn: 2, outcome: "delivered" }, 101);
+    h.event("pending_messages.cancelled", { clientMessageIds: [x.id], reason: "converted_to_steer" }, 102);
+    assert.equal(h.item(x.id), undefined);
 });

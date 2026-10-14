@@ -1123,7 +1123,12 @@ Notes:
   message ids is written on any start when no prompt record of the session
   holds one of its ids; it is also passed on a retry, which repairs a turn
   whose earlier attempt never recorded it. A record without ids is written on
-  the turn's first start only, and not on a retry. A worker loss, a crash
+  the turn's first start only, and not on a retry: a returned error's retry
+  runs under the next turn index, where it would be a first start again and
+  record the prompt twice. So, as before this change and as on V3, the retry
+  of a turn whose earlier attempt threw before T3 does not record an id-less
+  prompt (an agent's or an API caller's message without a client message id;
+  such a message cannot be converted either). A worker loss, a crash
   before T3 and two attempts of one turn (3.9) therefore record the prompt
   once. There are no best-effort prompt writes on the V4 path; V3 is
   unchanged.

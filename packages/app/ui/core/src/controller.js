@@ -5963,6 +5963,9 @@ export class PilotSwarmUiController {
             }
             this._applyConvertOutcome(sessionId, Number(event.data?.seq), event.data?.outcome);
         }
+        if (event.eventType === "user.steer" && typeof event.data?.replacesClientMessageId === "string") {
+            this._linkConvertSteer(sessionId, event.data.requestId, Number(event.seq));
+        }
         if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -11095,6 +11098,12 @@ export class PilotSwarmUiController {
             const reason = classifyTurnControlError(error);
             this._returnConvertToQueue(sessionId, itemId, { reason, detail: error?.message || String(error) },
                 reason === "unconfirmed" ? { requestId, retry: true } : null);
+            // The server may have recorded it: a steer and outcome already loaded settle the retry.
+            if (reason === "unconfirmed") {
+                const events = this.getState().history.bySessionId.get(sessionId)?.events || [];
+                const steer = events.find((event) => event.eventType === "user.steer" && event.data?.requestId === requestId);
+                if (steer) this._linkConvertSteer(sessionId, requestId, Number(steer.seq));
+            }
             return false;
         }
         const outcome = result?.outcome || "error";
@@ -11114,11 +11123,26 @@ export class PilotSwarmUiController {
         return true;
     }
 
-    /** A converted message's steer got its outcome: anything but delivered queues the message again. */
+    /**
+     * A converted message's steer got its outcome. Anything but delivered
+     * queues the message again; for a request that got no answer it ends the
+     * retry, so the next Steer now is a new request.
+     */
     _applyConvertOutcome(sessionId, steerSeq, outcome) {
         if (!Number.isFinite(steerSeq) || outcome === "delivered") return;
-        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.phase === "steering" && candidate.convert?.steerSeq === steerSeq);
-        if (item) this._returnConvertToQueue(sessionId, item.id, { reason: "not_delivered" }, null);
+        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.convert?.steerSeq === steerSeq);
+        if (item?.phase === "steering") this._returnConvertToQueue(sessionId, item.id, { reason: "not_delivered" }, null);
+        else if (item?.phase === "queued") this._updateOutboxItem(sessionId, item.id, { convert: null, convertNotice: { reason: "not_delivered" } });
+    }
+
+    /** The recorded steer of a conversion that got no answer: learn its position, and a loaded outcome. */
+    _linkConvertSteer(sessionId, requestId, steerSeq) {
+        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.convert?.requestId === requestId && candidate.convert.steerSeq == null);
+        if (!item || !Number.isFinite(steerSeq)) return;
+        this._updateOutboxItem(sessionId, item.id, { convert: { ...item.convert, steerSeq } });
+        const outcome = (this.getState().history.bySessionId.get(sessionId)?.events || [])
+            .find((event) => event.eventType === "session.control_outcome" && Number(event.data?.seq) === steerSeq);
+        if (outcome) this._applyConvertOutcome(sessionId, steerSeq, outcome.data?.outcome);
     }
 
     _returnConvertToQueue(sessionId, itemId, notice, convert) {
