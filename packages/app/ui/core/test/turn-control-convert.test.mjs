@@ -236,6 +236,36 @@ test("while the queue is being steered, Steer on typed text or a selected messag
     assert.deepEqual(h.calls.steer.map((call) => call.replacesClientMessageId), [a.id, b.id]);
 });
 
+test("one steer request at a time: while a typed steer or a queued message's steer waits for its answer, Steer does nothing", async () => {
+    const answers = [];
+    let seq = 70;
+    const h = harness({ steer: () => new Promise((resolve) => answers.push(() => resolve({ outcome: "accepted", steerId: seq++, turn: 2 }))) });
+    const x = h.queue("queued");
+    h.controller.setPrompt("typed guidance");
+    const typed = h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    h.controller.enterPendingPromptEdit(SID, x.id);
+    h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.calls.steer.length, 1);
+    assert.equal(h.store.getState().ui.statusText, "A steer is being sent; wait for its answer");
+    answers.shift()();
+    await typed;
+    // The selected message's steer waits; typed text meanwhile stays in the box.
+    const converting = h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.item(x.id).phase, "steering");
+    assert.equal(selectSteerAction(h.store.getState(), SID).sending, true);
+    h.controller.setPrompt("more guidance");
+    h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.calls.steer.length, 2);
+    assert.equal(h.store.getState().ui.prompt, "more guidance");
+    answers.shift()();
+    await converting;
+    assert.equal(selectSteerAction(h.store.getState(), SID).sending, false);
+});
+
 test("past the open-steer cap the first messages go; the rest stay queued with the too-many notice and are not sent", async () => {
     let call = 0;
     const h = harness({ steer: () => (++call === 1 ? { outcome: "accepted", steerId: 70, turn: 2 } : { outcome: "too_many" }) });

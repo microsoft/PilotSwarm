@@ -11035,10 +11035,13 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
             return;
         }
-        // One steer of the queue at a time; nothing else steers meanwhile, so
-        // the requests go in order.
-        if (this._turnControlEntry(sessionId).steeringQueue) {
-            this.dispatch({ type: "ui/status", text: "Steering your queued messages; wait for it to finish" });
+        // One steer request at a time (a typed steer, a queued message, or the
+        // queue), so the requests go in order.
+        const entry = this._turnControlEntry(sessionId);
+        if (selectSteerAction(state, sessionId).sending) {
+            this.dispatch({ type: "ui/status", text: entry.steeringQueue
+                ? "Steering your queued messages; wait for it to finish"
+                : "A steer is being sent; wait for its answer" });
             return;
         }
         // A selected queued message: Steer sends it as a steer.
@@ -11048,8 +11051,6 @@ export class PilotSwarmUiController {
             await this.convertQueuedToSteer(sessionId, selected.id);
             return;
         }
-        const entry = this._turnControlEntry(sessionId);
-        if (entry.steer?.phase === "sending") return;
         // A retry resends the request's own immutable text and never reads
         // or writes the composer, so it is safe with an outbox message
         // selected (a refusal keeps the text in the kept list then).

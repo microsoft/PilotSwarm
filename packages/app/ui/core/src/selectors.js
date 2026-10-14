@@ -3449,13 +3449,15 @@ const hasImages = (item) => Array.isArray(item?.attachments) && item.attachments
  * empty box, every queued message in order. A steer is text only, so a
  * message with an image cannot be steered, and with one queued the queue
  * cannot be steered either. `blocked` says why Steer does nothing;
- * `sending` is true while a steer or a steer of the queue is in flight.
+ * `sending` is true while a steer request is in flight: a typed steer, a
+ * queued message's steer (steering, its answer not yet in), or the queue.
  */
 export function selectSteerAction(state, sessionId = state?.sessions?.activeSessionId) {
     const outbox = sessionId && Array.isArray(state?.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
     const view = selectTurnControlView(state, sessionId);
     const action = { available: view.canSteer, target: "none", count: 0, itemIds: [], blocked: null,
-        sending: view.steer?.phase === "sending" || view.steeringQueue };
+        sending: view.steer?.phase === "sending" || view.steeringQueue
+            || outbox.some((item) => item?.phase === "steering" && item.convert && item.convert.steerSeq == null) };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
     if (promptEdit) {
         const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
