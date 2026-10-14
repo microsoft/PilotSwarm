@@ -4066,6 +4066,8 @@ export class PilotSwarmUiController {
         if (features.mode !== "mine" && !this._featureIsAdmin()) return;
         const context = this._featureContext();
         const current = () => this._featureRefreshSerial === serial && this._featureContext() === context;
+        // The viewer's own view also answers the steering decision: one shared generation.
+        const steeringRead = features.mode === "mine" ? this._nextSteeringRead() : null;
         this.dispatch({ type: "admin/features", patch: { loading: true, ...(background ? {} : { error: null }) } });
         // Directory/adoption are independent diagnostics: neither may block policy.
         if (!background && this._featureIsAdmin()) {
@@ -4078,7 +4080,7 @@ export class PilotSwarmUiController {
                     : this.transport.getMyFeatureFlags());
             if (!current()) return false;
             this.dispatch({ type: "admin/features", patch: { data, loading: false, fetchedAt: Date.now() } });
-            if (features.mode === "mine") this._applySteeringFeatureView(data);
+            if (steeringRead !== null && steeringRead === this._steeringFeatureSerial) this._applySteeringFeatureView(data);
             return true;
         } catch (error) {
             if (current()) this.dispatch({ type: "admin/features", patch: { loading: false, fetchedAt: Date.now(), error: String(error?.message || error) } });
@@ -5971,6 +5973,7 @@ export class PilotSwarmUiController {
         if (event.eventType === "user.steer" && typeof event.data?.replacesClientMessageId === "string") {
             this._linkConvertSteer(sessionId, event.data.requestId, Number(event.seq));
         }
+        if (event.eventType === "session.steer_confirmed") this._applyConvertConfirmed(sessionId, Number(event.data?.seq));
         if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -10993,8 +10996,7 @@ export class PilotSwarmUiController {
         const now = Date.now();
         if (!force && this._steeringFeatureReadAt && now - this._steeringFeatureReadAt < STEERING_FEATURE_REFRESH_MS) return;
         this._steeringFeatureReadAt = now;
-        const serial = (this._steeringFeatureSerial || 0) + 1;
-        this._steeringFeatureSerial = serial;
+        const serial = this._nextSteeringRead();
         try {
             const view = await this.transport.getMyFeatureFlags();
             // Reads overlap: only the newest answer applies.
@@ -11004,10 +11006,14 @@ export class PilotSwarmUiController {
         }
     }
 
+    /** Start a read of the steering decision; only the newest started read may apply its answer. */
+    _nextSteeringRead() {
+        this._steeringFeatureSerial = (this._steeringFeatureSerial || 0) + 1;
+        return this._steeringFeatureSerial;
+    }
+
     _applySteeringFeatureView(view) {
         if (!Array.isArray(view?.flags)) return;
-        // A newer answer from any path wins over a read still in flight.
-        this._steeringFeatureSerial = (this._steeringFeatureSerial || 0) + 1;
         const flag = view.flags.find((candidate) => candidate?.featureKey === STEERING_FEATURE_KEY);
         this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true });
     }
@@ -11126,10 +11132,7 @@ export class PilotSwarmUiController {
         const steerSeq = Number(result.steerId);
         this._updateOutboxItem(sessionId, itemId, { convert: { requestId, steerSeq } });
         this.dispatch({ type: "ui/status", text: "Steer accepted; the queued message waits for it" });
-        // A repeated answer can name a steer whose outcome is already loaded.
-        const known = (this.getState().history.bySessionId.get(sessionId)?.events || [])
-            .find((event) => event.eventType === "session.control_outcome" && Number(event.data?.seq) === steerSeq);
-        if (known) this._applyConvertOutcome(sessionId, steerSeq, known.data?.outcome);
+        this._applyLoadedConvertLabels(sessionId, steerSeq);
         this.syncSessionEvents(sessionId).catch(() => {});
         return true;
     }
@@ -11151,9 +11154,23 @@ export class PilotSwarmUiController {
         const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.convert?.requestId === requestId && candidate.convert.steerSeq == null);
         if (!item || !Number.isFinite(steerSeq)) return;
         this._updateOutboxItem(sessionId, item.id, { convert: { ...item.convert, steerSeq } });
-        const outcome = (this.getState().history.bySessionId.get(sessionId)?.events || [])
-            .find((event) => event.eventType === "session.control_outcome" && Number(event.data?.seq) === steerSeq);
+        this._applyLoadedConvertLabels(sessionId, steerSeq);
+    }
+
+    /** A confirmation or an outcome of a conversion's steer that is already loaded (a repeated answer, a race). */
+    _applyLoadedConvertLabels(sessionId, steerSeq) {
+        const events = this.getState().history.bySessionId.get(sessionId)?.events || [];
+        if (events.some((event) => event.eventType === "session.steer_confirmed" && Number(event.data?.seq) === steerSeq)) {
+            this._applyConvertConfirmed(sessionId, steerSeq);
+        }
+        const outcome = events.find((event) => event.eventType === "session.control_outcome" && Number(event.data?.seq) === steerSeq);
         if (outcome) this._applyConvertOutcome(sessionId, steerSeq, outcome.data?.outcome);
+    }
+
+    /** The model read a converted message's steer: its row says so until the message is dropped. */
+    _applyConvertConfirmed(sessionId, steerSeq) {
+        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.phase === "steering" && candidate.convert?.steerSeq === steerSeq);
+        if (item && !item.convert.confirmed) this._updateOutboxItem(sessionId, item.id, { convert: { ...item.convert, confirmed: true } });
     }
 
     _returnConvertToQueue(sessionId, itemId, notice, convert) {

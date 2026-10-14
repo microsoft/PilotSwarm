@@ -765,6 +765,13 @@ for (const theme of THEMES) {
         wire.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
         const steerItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${steerSeq}"]`);
         await expect(steerItem).toHaveAttribute("data-outcome", "delivered");
+        // Read by the model: the queued row waits only for the drop, and says so.
+        await expect(rows.item).toHaveAttribute("data-phase", "steering");
+        await expect(rows.item).toHaveAttribute("data-confirmed", "true");
+        await expect(rows.item).toContainText("Delivered · leaves the queue when the turn ends");
+        await expect(rows.steerNow).toHaveCount(0);
+        await expect(rows.cancel).toHaveCount(0);
+        await shot(page, `convert-desktop-confirmed-${theme.name}`);
         wire.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "delivered" });
         wire.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "converted_to_steer" });
         await expect(rows.item).toHaveCount(0);
@@ -969,3 +976,32 @@ for (const theme of THEMES) {
         await shot(page, `convert-desktop-two-queued-${theme.name}`);
     });
 }
+
+test("phone 390x844: a converted message the model read says Delivered and leaves the queue at turn end; Stop requeues it", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    let held;
+    const portal = await fakePortal(page, { sessions: TWO_SESSIONS, handlers: { steer: (args) => held.handler(args) } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+    const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
+    await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
+    held = heldSteer(chat);
+    held.release();
+    await queueMessage(chat);
+    const rows = queuedRows(chat);
+    await rows.steerNow.click();
+    await expect.poll(() => portal.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
+    const steerSeq = portal.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
+    chat.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
+    await expect(rows.item).toHaveAttribute("data-confirmed", "true");
+    await expect(rows.item).toContainText("Delivered · leaves the queue when the turn ends");
+    // The label wraps inside the strip; nothing is cut off at the right edge.
+    expect(await rows.item.evaluate((el) => {
+        const label = el.querySelector(".ps-queued-item-phase").getBoundingClientRect();
+        return label.right <= el.getBoundingClientRect().right + 1;
+    })).toBe(true);
+    await shot(page, "convert-phone-390-confirmed");
+    chat.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "not_delivered" });
+    await expect(rows.item).toHaveAttribute("data-phase", "queued");
+    await expect(rows.item).not.toHaveAttribute("data-confirmed", "true");
+    await expect(rows.steerNow).toBeVisible();
+});

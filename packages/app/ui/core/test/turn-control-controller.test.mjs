@@ -632,3 +632,18 @@ test("overlapping steering reads: only the newest answer applies, also when it a
     await older;
     assert.equal(store.getState().turnControl.steeringEnabled, false);
 });
+
+test("the viewer's own feature view shares the steering read generation: an older answer from it does not overwrite a newer read", async () => {
+    const answers = [];
+    const { controller, store } = harness();
+    controller.transport.getMyFeatureFlags = () => new Promise((resolve) => answers.push(resolve));
+    const adminView = controller.refreshFeatureFlags();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(answers.length, 1, "the viewer's feature view is reading");
+    const newer = controller.refreshSteeringFeature({ force: true });
+    answers[1]({ userId: 1, flags: [{ featureKey: "sessions.steering", effective: false }] });
+    await newer;
+    answers[0]({ userId: 1, flags: [{ featureKey: "sessions.steering", effective: true }] });
+    await adminView;
+    assert.equal(store.getState().turnControl.steeringEnabled, false);
+});

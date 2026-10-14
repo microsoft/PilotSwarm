@@ -1411,7 +1411,9 @@ Why the text runs exactly once (for a session with a store; D4 otherwise):
 - **Not delivered.** X stays queued and runs in its own place. The client
   never re-sends it: X is its own fallback.
 
-The client keeps X queued with the phase `steering` ("Steering…") until X is
+The client keeps X queued with the phase `steering` ("Steering…"; once the
+model has read the steer, `session.steer_confirmed`, "Delivered · leaves the
+queue when the turn ends" with no buttons and `data-confirmed="true"`) until X is
 dropped (its `pending_messages.cancelled` receipt) or its steer's outcome is
 not `delivered`; then X is queued again with a notice ("Could not steer: <reason>.
 Still queued."). A refusal does the same. `already_received` says the agent

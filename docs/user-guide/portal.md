@@ -187,8 +187,10 @@ pause between two messages.
   **Steer now** and **Cancel**. **Steer now** (needs the
   `sessions.steering` feature, a turn that accepts guidance, and a message
   without images) sends it to the running turn now, as a steer that replaces
-  the queued message: the row shows **Steering…**, and when the model reads
-  it the row goes away and the transcript shows the steer as **Delivered**.
+  the queued message: the row shows **Steering…**; when the model reads it,
+  the transcript shows the steer as **Delivered** and the row says
+  **Delivered · leaves the queue when the turn ends** until the turn ends
+  (a Stop before then puts it back in the queue).
   If the turn ends or is stopped first, the message stays queued and runs as
   usual (the row says why, and the steer reads **Not delivered · still
   queued**); its text runs once either way. **Cancel** removes the queued

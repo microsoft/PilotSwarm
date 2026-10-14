@@ -7187,6 +7187,7 @@ function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
             "data-testid": "queued-item",
             "data-phase": block.phase,
             "data-item-id": block.itemId,
+            "data-confirmed": block.confirmed ? "true" : undefined,
         },
         React.createElement("div", { className: "ps-queued-item-lines" },
             normalizeLines(block.lines).map((line, index) => React.createElement(Line, { key: index, line, theme }))),

@@ -3772,10 +3772,13 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
         if (nextMessage && shouldInsertChatSpacer(message, nextMessage) && flattenLineText(all[all.length - 1]).trim().length > 0) {
             all.push(createBlankLine());
         }
+        // The model read a converted message's steer: it waits only for the drop.
+        const confirmed = item.phase === "steering" && item.convert?.confirmed === true;
         return {
             itemId: item.id,
             phase: item.phase,
-            phaseLabel: OUTBOX_PHASE_LABELS[item.phase] || null,
+            confirmed,
+            phaseLabel: confirmed ? "Delivered · leaves the queue when the turn ends" : OUTBOX_PHASE_LABELS[item.phase] || null,
             canSteer: canConvertQueuedItem(state, sessionId, item),
             canCancel: item.phase === "queued",
             notice: formatConvertNotice(item.convertNotice),

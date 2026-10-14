@@ -250,3 +250,28 @@ test("the strip shows each message once: its blocks are exactly the flattened st
     assert.match(text(blocks[0]), /first queued message/);
     assert.doesNotMatch(text(blocks[0]), /second queued message/);
 });
+
+test("once the model has read the converted steer, its row says Delivered · leaves the queue when the turn ends (no buttons) until the drop; a Stop still brings it back queued", async () => {
+    const h = harness();
+    const x = h.queue();
+    await h.controller.convertQueuedToSteer(SID, x.id);
+    assert.equal(h.block(x.id).phaseLabel, "Steering…");
+    h.event("session.steer_confirmed", { seq: 70, turn: 2, messageId: "m-1" }, 80);
+    assert.equal(h.item(x.id).phase, "steering");
+    assert.deepEqual([h.block(x.id).phaseLabel, h.block(x.id).confirmed, h.block(x.id).canSteer, h.block(x.id).canCancel], ["Delivered · leaves the queue when the turn ends", true, false, false]);
+    // The turn is then stopped: the steer is not delivered and the message is queued again.
+    h.event("session.control_outcome", { seq: 70, turn: 2, outcome: "not_delivered" }, 81);
+    assert.equal(h.item(x.id).phase, "queued");
+    assert.equal(h.block(x.id).confirmed, false);
+    assert.equal(h.block(x.id).notice, "Could not steer: the turn ended before the agent read it. Still queued.");
+});
+
+test("a confirmation already loaded when the steer is accepted marks the row at once", async () => {
+    const h = harness();
+    const x = h.queue();
+    h.store.dispatch({ type: "history/set", sessionId: SID, history: { chat: [], activity: [], events: [
+        { sessionId: SID, seq: 80, eventType: "session.steer_confirmed", data: { seq: 70, turn: 2, messageId: "m-1" } },
+    ], lastSeq: 80 } });
+    await h.controller.convertQueuedToSteer(SID, x.id);
+    assert.equal(h.block(x.id).phaseLabel, "Delivered · leaves the queue when the turn ends");
+});

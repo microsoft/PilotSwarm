@@ -3697,7 +3697,7 @@ body.is-resizing-pane-y iframe {
   gap: 2px 8px;
 }
 .ps-queued-item-lines { flex: 1 1 16ch; min-width: 0; }
-.ps-queued-item-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.ps-queued-item-actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; gap: 6px; }
 .ps-queued-item-phase { color: var(--ps-muted); }
 .ps-queued-item .ps-mini-button { min-height: 32px; }
 .ps-queued-item-notice { flex: 1 0 100%; color: var(--ps-warning, #e5a50a); }
