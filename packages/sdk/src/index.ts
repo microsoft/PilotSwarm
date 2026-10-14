@@ -67,6 +67,16 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
+export { runWithTurnLifecycleProviders } from "./turn-lifecycle-hooks.js";
+export type {
+    AfterTurnContext,
+    AfterTurnHook,
+    BeforeTurnHook,
+    RunWithTurnLifecycleProvidersOptions,
+    TurnLifecycleContext,
+    TurnLifecycleProvider,
+    TurnLifecycleStatus,
+} from "./turn-lifecycle-hooks.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";

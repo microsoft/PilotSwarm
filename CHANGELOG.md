@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add composable, process-local turn lifecycle providers to the generic worker.
+
 ## 0.8.2 — 2026-10-04
 
 **Upgrade note: roll every worker and portal together.** This release moves

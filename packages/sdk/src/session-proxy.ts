@@ -69,6 +69,7 @@ import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
+import { runWithTurnLifecycleProviders } from "./turn-lifecycle-hooks.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -1191,6 +1192,8 @@ export function registerActivities(
     workerNodeId?: string,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /** Process-local lifecycle providers around complete run-turn attempts. */
+    turnLifecycleProviders?: readonly import("./turn-lifecycle-hooks.js").TurnLifecycleProvider<SerializableSessionConfig, TurnResult>[],
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1394,7 +1397,7 @@ export function registerActivities(
     };
 
     // ── runTurn ──────────────────────────────────────────────
-    const runTurnHandler = async (
+    const runTurnBodyHandler = async (
         activityCtx: any,
         input: {
             sessionId: string;
@@ -4646,6 +4649,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
+    const runTurnHandler = async (
+        activityCtx: any,
+        input: Parameters<typeof runTurnBodyHandler>[1],
+    ): Promise<TurnResult> => runWithTurnLifecycleProviders({
+        providers: turnLifecycleProviders,
+        context: {
+            sessionId: input.sessionId,
+            turnIndex: input.turnIndex,
+            config: input.config,
+            trace: (message) => activityCtx.traceInfo(message),
+        },
+        run: () => runTurnBodyHandler(activityCtx, input),
+    });
+
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
