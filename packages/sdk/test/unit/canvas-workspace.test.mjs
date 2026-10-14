@@ -284,6 +284,24 @@ describe("the local runner", () => {
         assert.equal(plain.exitCode, 0, "settings removed: git runs again");
     });
 
+    it("a repository with a trailer command or a pager setting gets no git at all", async () => {
+        for (const [key, value] of [["trailer.x.command", "cat"], ["trailer.x.cmd", "cat"], ["pager.status", "cat"]]) {
+            git(repo, "config", key, value);
+            try {
+                await rejectsWith(runCanvasCommandLocally({ program: "git", args: ["status"] }, repo), X.DENIED);
+            } finally {
+                git(repo, "config", "--unset", key);
+            }
+        }
+        git(repo, "config", "trailer.x.where", "end");
+        try {
+            const other = await runCanvasCommandLocally({ program: "git", args: ["status", "--short"] }, repo);
+            assert.equal(other.exitCode, 0, "a trailer setting that starts nothing is fine");
+        } finally {
+            git(repo, "config", "--unset", "trailer.x.where");
+        }
+    });
+
     it("never a repository above the folder", async () => {
         const inner = path.join(repo, "sub");
         fs.mkdirSync(inner, { recursive: true });

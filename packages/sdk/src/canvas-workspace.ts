@@ -490,6 +490,10 @@ const GIT_PROGRAM_SETTINGS = [
     /^remote\..+\.(uploadpack|receivepack|vcs|proxy)$/,
     /^protocol\./,
     /^submodule\..+\.update$/,
+    // A trailer command runs on `git commit --trailer`; pager.<cmd> beats the
+    // core.pager override for that command.
+    /^trailer\..+\.(command|cmd)$/,
+    /^pager\./,
 ];
 
 /** Runs git with the canvas environment; its output, or null when it fails, times out or cannot start. */
