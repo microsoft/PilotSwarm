@@ -9707,6 +9707,8 @@ const TURN_CONTROL_NOTICE_TEXT = {
  */
 function TurnControlNotice({ controller, notice, sessionId }) {
     const reason = notice.reason || "error";
+    // One steer request at a time: a steer Retry waits for the one in flight.
+    const otherSteerSending = useControllerSelector(controller, (state) => notice.kind !== "stop" && selectSteerAction(state, sessionId).sending);
     const text = TURN_CONTROL_NOTICE_TEXT[reason] || TURN_CONTROL_NOTICE_TEXT.error;
     return React.createElement("div", {
         className: `ps-control-notice is-${reason}`,
@@ -9723,6 +9725,7 @@ function TurnControlNotice({ controller, notice, sessionId }) {
             className: "ps-mini-button",
             "data-testid": "control-retry-button",
             "data-request-id": notice.requestId || undefined,
+            disabled: otherSteerSending,
             onPointerDown: (event) => event.preventDefault(),
             onClick: () => { controller.retryTurnControl(notice.kind, sessionId).catch(() => {}); },
         }, "Retry")

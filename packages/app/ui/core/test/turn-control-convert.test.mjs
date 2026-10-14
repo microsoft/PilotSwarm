@@ -266,6 +266,30 @@ test("one steer request at a time: while a typed steer or a queued message's ste
     assert.equal(selectSteerAction(h.store.getState(), SID).sending, false);
 });
 
+test("Retry of an unconfirmed steer waits too while a queued message's steer waits for its answer", async () => {
+    const answers = [];
+    let call = 0;
+    const h = harness({ steer: () => (++call === 1 ? networkError() : new Promise((resolve) => answers.push(() => resolve({ outcome: "accepted", steerId: 70 + call, turn: 2 })))) });
+    const x = h.queue("queued");
+    h.controller.setPrompt("typed guidance");
+    await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(h.store.getState().turnControl.bySessionId[SID].steer.phase, "unconfirmed");
+    const converting = h.controller.convertQueuedToSteer(SID, x.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    h.controller.retryTurnControl("steer", SID);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.calls.steer.length, 2);
+    assert.equal(h.store.getState().ui.statusText, "A steer is being sent; wait for its answer");
+    answers.shift()();
+    await converting;
+    const retry = h.controller.retryTurnControl("steer", SID);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.calls.steer.length, 3);
+    assert.equal(h.calls.steer[2].requestId, h.calls.steer[0].requestId);
+    answers.shift()();
+    await retry;
+});
+
 test("past the open-steer cap the first messages go; the rest stay queued with the too-many notice and are not sent", async () => {
     let call = 0;
     const h = harness({ steer: () => (++call === 1 ? { outcome: "accepted", steerId: 70, turn: 2 } : { outcome: "too_many" }) });

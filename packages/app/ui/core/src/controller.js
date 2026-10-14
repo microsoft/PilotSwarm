@@ -11327,6 +11327,11 @@ export class PilotSwarmUiController {
         if (!sessionId || (kind !== "steer" && kind !== "stop")) return;
         const request = this._turnControlEntry(sessionId)[kind];
         if (!request || request.phase !== "unconfirmed") return;
+        // One steer request at a time (steerActiveSessionTurn).
+        if (kind === "steer" && selectSteerAction(this.getState(), sessionId).sending) {
+            this.dispatch({ type: "ui/status", text: "A steer is being sent; wait for its answer" });
+            return;
+        }
         const sending = { ...request, phase: "sending" };
         this._setTurnControl(sessionId, { [kind]: sending, [noticeKey(kind)]: null });
         if (kind === "steer") await this._sendSteer(sessionId, sending);
