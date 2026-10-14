@@ -280,6 +280,8 @@ spawn_agent(
 
 Use `contract.wakeOn` for every delegation: `any` for chatty work where every update matters, and `material_change` for finite task results and watcher changes. A finite child's ordinary final reply leaves it alive and idle, so validate the result and close it explicitly with `complete_agent`. Reserve `completion` for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict. Use `message_agent(..., contract_patch={ wakeOn: "..." })` to adjust the policy later.
 
+To redirect a child while its turn runs, call `message_agent(..., deliver="now")`: the text is steered into the running turn (session turn control), or queued for the next turn when the child has no running turn that takes steers. `stop_agent_turn(agent_id)` stops the child's current turn and keeps the child alive, unlike `cancel_agent`.
+
 ### Cross-session request/response
 
 Use `send_session_message(..., expects_response=true)` to ask another session for help. The target session must call `reply_session_message(request_id=..., session_id=<sender>, body=...)`; answering only in its own transcript does not deliver a response back to the sender.

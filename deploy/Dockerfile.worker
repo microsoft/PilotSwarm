@@ -1,7 +1,8 @@
-# Single-stage: install from npm (linux binary published to registry)
+# Build runtime artifacts from the checked-in source before assembling the
+# production image.
 # trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
-FROM node:24-trixie-slim
+FROM node:24-trixie-slim AS build
 
 # CA certificates for HTTPS. git for agents that work in session workspaces
 # (docs/proposals/session-workspaces.md, section 5.4: 2.46 or later; trixie
@@ -36,10 +37,33 @@ COPY scripts/postinstall.js ./scripts/
 # lockfile stays authoritative and the image stays reproducible.
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV npm_config_registry=${NPM_REGISTRY}
-RUN npm ci --omit=dev --force
+RUN npm ci --force
+
+COPY packages/sdk/ ./packages/sdk/
+COPY packages/horizon-store/ ./packages/horizon-store/
+
+RUN rm -rf packages/sdk/dist packages/horizon-store/dist \
+    && npm run build --workspace=packages/sdk \
+    && npm run build --workspace=pilotswarm-horizon-store \
+    && npm prune --omit=dev --force
+
+FROM node:24-trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git nfs-common \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod u-s /usr/sbin/mount.nfs
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/app/package.json ./packages/app/
+COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY --from=build /app/node_modules/ ./node_modules/
 
 # Copy built SDK dist + bundled plugins, worker script, and app plugins
-COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY --from=build /app/packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 # The session-workspaces sample: the provider and clone tools
@@ -57,7 +81,7 @@ COPY packages/sdk/api/src/ ./packages/sdk/api/src/
 # horizon-store built output + runtime-read migrations (the migrator reads the
 # numbered migrations/*.sql from disk relative to dist/). Sibling layout matters:
 # dist/src/horizon-migrator.js resolves ../../migrations.
-COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY --from=build /app/packages/horizon-store/dist/ ./packages/horizon-store/dist/
 COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 
 # AKS legacy-bootstrap catalog. Never copy the private gitignored local catalog

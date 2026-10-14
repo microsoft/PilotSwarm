@@ -401,6 +401,30 @@ test("body limits: the workspace file routes take a whole file; other routes kee
     }
 });
 
+test("body limits: a steer has the same 2 MB cap as an ordinary message", async () => {
+    const app = express();
+    installJsonBodyLimits(app, { workspaceFileMb: 20 });
+    app.use((req, res) => res.json({ ok: true }));
+    app.use((error, _req, res, _next) => res.status(error.status || 500).json({ ok: false, type: error.type }));
+    const server = await new Promise((resolve) => { const s = app.listen(0, () => resolve(s)); });
+    try {
+        const base = `http://localhost:${server.address().port}/api/v1`;
+        const post = (path, text, field) => fetch(`${base}${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(field === "prompt" ? { prompt: text } : { options: { text, requestId: "r" } }),
+        });
+        const big = "x".repeat(2 * 1024 * 1024 + 1);
+        const small = "x".repeat(1024 * 1024);
+        assert.equal((await post("/sessions/s1/messages", big, "prompt")).status, 413);
+        assert.equal((await post("/management/sessions/s1/steer", big, "steer")).status, 413);
+        assert.equal((await post("/sessions/s1/messages", small, "prompt")).status, 200);
+        assert.equal((await post("/management/sessions/s1/steer", small, "steer")).status, 200);
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
 test("/api/v1 errors keep a workspace conflict's etag, a too-large size, and an exposed 5xx message", async () => {
     const errors = {
         changed: Object.assign(new Error("the file changed since it was read"), { code: "WORKSPACE_FILES_CONFLICT", status: 409, etag: "sha256:abc" }),

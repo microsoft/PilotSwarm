@@ -123,7 +123,7 @@ const WEB_TOOLS = ["list_artifacts", "get_artifact", "upload_artifact", "copy_ar
 const ADMIN_TOOLS = ["restart_system_session", "facts_admin"];
 const ALWAYS_TOOLS = [
     "create_session", "send_message", "send_and_wait", "list_sessions", "get_session_detail",
-    "get_capabilities", "stop_turn", "complete_session", "cancel_pending_messages",
+    "get_capabilities", "stop_turn", "steer_session_turn", "complete_session", "cancel_pending_messages",
     "list_session_groups", "manage_session_group", "get_session_metrics", "get_fleet_overview",
     "list_child_outcomes", "get_execution_history", "list_agents", "get_agent_tree",
     "debug_session",

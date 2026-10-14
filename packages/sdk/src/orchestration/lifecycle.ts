@@ -33,12 +33,15 @@ import {
     timerGate,
     workspaceChangedNote,
     extraFoldersChangedNote,
+    addCancelledMessageIds,
+    touchRecentClientMessageIds,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
     appendSystemContext,
     extractPromptSystemContext,
     mergePrompt,
+    validClientMessageIds,
 } from "./utils.js";
 
 // ─── Custom status / KV helpers ─────────────────────────────
@@ -204,7 +207,7 @@ export function* releaseAffinity(
         }
     }
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",
@@ -341,7 +344,7 @@ export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime,
     const revision = state.workspaceRevision + 1;
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     state.config.workspace = next;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     state.workspaceRevision = revision;
     const note = extraFoldersChangedNote(previous, next, extraPaths);
     if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
@@ -399,6 +402,33 @@ export function* recordCancelledMessageIds(
             reason,
         },
     }]);
+}
+
+/**
+ * Drop a cancelled prompt. Its ids leave the cancel set (the prompt is
+ * consumed) and join the duplicate window, so a re-send of the same message
+ * is still suppressed.
+ */
+export function* dropCancelledPrompt(
+    runtime: DurableSessionRuntime,
+    ids: string[],
+    reason: string,
+): Generator<any, void, any> {
+    for (const id of ids) runtime.state.cancelledMessageIds.delete(id);
+    touchRecentClientMessageIds(runtime.state, ids);
+    yield* recordCancelledMessageIds(runtime, ids, reason);
+}
+
+/**
+ * 1.0.81: queued messages that delivered converted steers replaced (from a
+ * turn result or a give-up write). They join the cancel set before anything
+ * is dequeued, so they never run as their own turn.
+ */
+export function* dropConvertedMessages(runtime: DurableSessionRuntime, raw: unknown): Generator<any, void, any> {
+    const ids = validClientMessageIds(raw);
+    if (ids.length === 0) return;
+    addCancelledMessageIds(runtime.state, ids);
+    yield* recordCancelledMessageIds(runtime, ids, "converted_to_steer");
 }
 
 // ─── Pending child-digest accumulation ──────────────────────
@@ -552,6 +582,7 @@ export function buildContinueInput(
         ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
         ...(state.recentClientMessageIds?.length ? { recentClientMessageIds: [...state.recentClientMessageIds] } : {}),
+        ...(state.cancelledMessageIds.size > 0 ? { cancelledMessageIds: [...state.cancelledMessageIds] } : {}),
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(state.runtimeModelNotice ? { runtimeModelNotice: state.runtimeModelNotice } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),
@@ -561,6 +592,10 @@ export function buildContinueInput(
         ...(promptForInput && state.pendingAttachments?.length
             ? { attachments: [...state.pendingAttachments] }
             : {}),
+        ...(promptForInput && state.pendingClientMessageIds?.length
+            ? { clientMessageIds: [...state.pendingClientMessageIds] }
+            : {}),
+        ...(promptForInput && state.pendingSender ? { sender: state.pendingSender } : {}),
         ...(carriedRequiredTool ? { requiredTool: carriedRequiredTool } : {}),
         ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
         ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),
@@ -588,6 +623,7 @@ export function buildContinueInput(
         // A queued-while-blocked prompt must survive the epoch boundary too,
         // or continue-as-new becomes one more way to destroy it.
         ...(state.budgetStash && state.budgetStash.length > 0 ? { budgetStash: state.budgetStash } : {}),
+        ...(state.carriedSteers.length > 0 ? { carriedSteers: [...state.carriedSteers] } : {}),
         // Session workspaces (1.0.80): each field only when set, so a session
         // without a workspace continues-as-new with the same input as before.
         ...(state.workspaceRevision > 0 ? { workspaceRevision: state.workspaceRevision } : {}),
@@ -1033,7 +1069,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     else delete state.config.workspace;
     // The proxy carries the config into every turn; rebuild it from the
     // changed config rather than rely on sharing one object.
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
     // directory, so its note names the extra folders alone. A note not yet

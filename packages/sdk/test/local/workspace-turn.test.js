@@ -23,6 +23,7 @@ import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { patchSessionStartInput, pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { createManagementClient } from "../helpers/local-workers.js";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -806,7 +807,7 @@ describe("workspace turn", () => {
         }
     });
 
-    it("a session pinned at 1.0.79 replays on a new worker, then a command moves it to 1.0.80 with its state (C4)", { timeout: TIMEOUT }, async () => {
+    it("a session pinned at 1.0.79 replays on a new worker, then a command moves it to the latest version with its state (C4)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const model = await startScriptedModel({ respond: scriptTurns([[{ content: "c4 one" }], [{ content: "continued" }], [{ content: "c4 three" }]]) });
         const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
@@ -849,7 +850,7 @@ describe("workspace turn", () => {
             } finally {
                 await catalog.close?.();
             }
-            assertEqual(await sessionOrchestrationVersion(client, sessionId), "1.0.80", "the command moved the session to 1.0.80");
+            assertEqual(await sessionOrchestrationVersion(client, sessionId), DURABLE_SESSION_LATEST_VERSION, `the command moved the session to ${DURABLE_SESSION_LATEST_VERSION}`);
 
             // No execution failed; the conversation and the turn count carried over.
             const duroxide = client._getDuroxideClient();
@@ -862,7 +863,7 @@ describe("workspace turn", () => {
             assert(!/fail/i.test((await duroxide.getInstanceInfo(instanceId)).status), "the instance is not failed");
             assertEqual(await session.sendAndWait("c4 turn three", TIMEOUT), "c4 three");
             const three = model.sessionRequests("c4 turn one").find((r) => r.position.lastUserText.includes("c4 turn three"));
-            assert(three && three.position.turn >= 3, `the same conversation continued on 1.0.80 (turn ${three?.position.turn})`);
+            assert(three && three.position.turn >= 3, `the same conversation continued on ${DURABLE_SESSION_LATEST_VERSION} (turn ${three?.position.turn})`);
         } finally {
             await client.stop().catch(() => {});
             await workerB?.stop().catch(() => {});

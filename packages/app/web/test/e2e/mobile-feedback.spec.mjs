@@ -17,8 +17,10 @@ for (const browserName of ['chromium', 'webkit']) {
  const maximize=page.locator('.ps-chat-panel').getByRole('button',{name:'Enter mobile zen'});
  await expect(maximize).toBeVisible();
  await expect(page.locator('.ps-toolbar').getByRole('button',{name:'Enter mobile zen'})).toHaveCount(0);
- const label=await page.locator('.ps-prompt-label').boundingBox(), input=await page.locator('.ps-prompt-input').boundingBox();
- expect(Math.abs(label.y+label.height/2-input.y-input.height/2)).toBeLessThan(2);
+ // Phones show no "you" label: the input takes its place on one line.
+ await expect(page.locator('.ps-prompt-label')).toBeHidden();
+ const input=await page.locator('.ps-prompt-input').boundingBox(), send=await page.locator('.ps-send-button').boundingBox();
+ expect(Math.abs(send.y+send.height/2-input.y-input.height/2)).toBeLessThan(2);
  const status=await page.locator('.ps-chat-panel .ps-panel-title-right').boundingBox();
  expect((await maximize.boundingBox()).x).toBeGreaterThanOrEqual(status.x+status.width);
  const main=page.getByRole('button',{name:'Sessions — list and chat (tap for chat only)',exact:true});

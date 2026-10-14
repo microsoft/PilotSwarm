@@ -45,7 +45,7 @@ import {
     selectActiveOutboxMessages,
     selectChatLines,
     selectChatPaneChrome,
-    selectOutboxOverlayLines,
+    selectOutboxOverlayBlocks,
     selectCanvasView,
     selectFileBrowserItems,
     selectFilesFilterModal,
@@ -73,6 +73,11 @@ import {
     selectSessionStatusSummary,
     selectStatusBar,
     selectThemePickerModal,
+    selectTurnControlView,
+    selectTurnStateLabel,
+    selectSteerAction,
+    nextSteerHold,
+    STEER_HOLD_MS,
     selectConfirmModal,
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
@@ -85,6 +90,11 @@ import {
 import { useControllerSelector } from "./use-controller-state.js";
 
 const MOBILE_BREAKPOINT = 920;
+// Phones: the one-line composer (no "you" label, the blue button steers).
+const PHONE_MEDIA_QUERY = "(max-width: 600px)";
+// A touch keyboard (no hover, coarse pointer): its return key adds a line and
+// the button sends. With a physical keyboard Enter sends at every width.
+const TOUCH_KEYBOARD_MEDIA_QUERY = "(hover: none) and (pointer: coarse)";
 const GRID_CELL_WIDTH = 7;
 const GRID_CELL_HEIGHT = 19;
 const PORTAL_SESSION_COLUMN_RATIO = 0.24;
@@ -902,7 +912,8 @@ function normalizeLines(lines) {
         // recognize and render them (e.g. markdownTable → HTML <table>,
         // cardStart/cardEnd → styled card with structured body,
         // imageAttachments → authenticated thumbnail strip).
-        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments") {
+        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments"
+            || line?.kind === "turnControl" || line?.kind === "groupStart" || line?.kind === "groupEnd") {
             normalized.push(line);
             continue;
         }
@@ -1156,6 +1167,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     stickyBottom = false,
     historyPullEnabled = false,
     historySessionId = null,
+    // Changes when content after the lines (a scroll tail) changes, so a
+    // reader at the bottom follows it as it follows new lines.
+    tailRevision = "",
 } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
@@ -1292,7 +1306,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             scrollOffset,
         };
         previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
-    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision]);
+    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision, tailRevision]);
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
         controller.dispatch({ type: "ui/scroll", pane: paneKey, offset });
@@ -3566,6 +3580,40 @@ function parseStructuredChatBlocks(lines = []) {
             continue;
         }
 
+        // Session turn control: a Stop or Steer transcript item.
+        if (currentLine?.kind === "turnControl") {
+            blocks.push({ type: "turnControl", control: currentLine.control || {} });
+            index += 1;
+            continue;
+        }
+
+        // A transcript group (an ordinary user message): one element around
+        // the message's own blocks, carrying its test id and identity.
+        if (currentLine?.kind === "groupStart") {
+            const innerLines = [];
+            let depth = 1;
+            index += 1;
+            while (index < lines.length) {
+                const kind = lines[index]?.kind;
+                if (kind === "groupStart") depth += 1;
+                if (kind === "groupEnd" && --depth === 0) break;
+                innerLines.push(lines[index]);
+                index += 1;
+            }
+            if (index < lines.length) index += 1;
+            blocks.push({
+                type: "group",
+                group: currentLine.group || "",
+                clientMessageIds: Array.isArray(currentLine.clientMessageIds) ? currentLine.clientMessageIds : [],
+                blocks: parseStructuredChatBlocks(innerLines),
+            });
+            continue;
+        }
+        if (currentLine?.kind === "groupEnd") {
+            index += 1;
+            continue;
+        }
+
         // Sentinel card bounds emitted by buildMessageCardLines in sentinel
         // mode. The body lines between the bounds are UNWRAPPED, so parse
         // them recursively — box-drawn/markdown tables inside the card
@@ -3977,6 +4025,60 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
             ? React.createElement("div", { className: "ps-preview-status" }, "Preview paused — the full answer will appear when complete.")
             : null)));
 });
+/**
+ * A Stop or Steer transcript item (session turn control). A steer reads as
+ * a user message with a "steer" badge and its outcome; a Stop as a short
+ * system line. The data-testid contract here is asserted by the UX pass:
+ * control-steer / control-stop / control-stop-legacy with data-control-seq,
+ * data-outcome and data-actor-kind (user, or agent for a parent agent's
+ * control), and control-outcome-badge inside an item.
+ */
+const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) {
+    const outcome = control.outcome || "pending";
+    const badge = React.createElement("span", {
+        className: `ps-control-badge is-${outcome}`,
+        "data-testid": "control-outcome-badge",
+        "data-outcome": outcome,
+        style: { color: resolveColor(theme, control.color) },
+    }, control.label || outcome);
+    const time = control.time ? React.createElement("span", { className: "ps-control-time" }, control.time) : null;
+    if (control.controlKind === "stop-legacy") {
+        return React.createElement("div", {
+            className: "ps-control-item is-stop is-legacy",
+            "data-testid": "control-stop-legacy",
+            "data-outcome": outcome,
+        }, time, React.createElement("span", { className: "ps-control-glyph", "aria-hidden": true }, "■"),
+        React.createElement("span", null, control.text || "Turn stopped by user."),
+        outcome === "stop_forced" ? React.createElement("span", { className: "ps-control-note" }, "(forced)") : null);
+    }
+    const seq = control.seq == null ? undefined : String(control.seq);
+    if (control.controlKind === "stop") {
+        return React.createElement("div", {
+            className: "ps-control-item is-stop",
+            "data-testid": "control-stop",
+            "data-control-seq": seq,
+            "data-outcome": outcome,
+            "data-actor-kind": control.actorKind,
+        }, time, React.createElement("span", { className: "ps-control-glyph", "aria-hidden": true }, "■"),
+        React.createElement("span", { className: "ps-control-title" }, control.speaker && control.speaker !== "You" ? `${control.speaker}: Stop` : "Stop"),
+        badge,
+        control.reason ? React.createElement("span", { className: "ps-control-note" }, control.reason) : null);
+    }
+    return React.createElement("div", {
+        className: "ps-control-item is-steer",
+        "data-testid": "control-steer",
+        "data-control-seq": seq,
+        "data-outcome": outcome,
+        "data-actor-kind": control.actorKind,
+    },
+    React.createElement("div", { className: "ps-control-header" },
+        time,
+        React.createElement("span", { className: "ps-control-speaker" }, control.speaker || "You"),
+        React.createElement("span", { className: "ps-control-kind" }, "steer"),
+        badge),
+    React.createElement("div", { className: "ps-control-text" }, control.text || ""));
+});
+
 // Renders parsed chat blocks; sentinel card blocks recurse through this list
 // so structured content (box/markdown tables, code fences) inside a card
 // renders exactly the same as it does at top level.
@@ -3991,6 +4093,21 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             }
             if (block.type === "chatCallGroup") {
                 return React.createElement(ChatActivityRun, { key: block.groupKey, calls: block.calls });
+            }
+            if (block.type === "turnControl") {
+                return React.createElement(TurnControlItem, {
+                    key: `control:${block.control.controlKind}:${block.control.seq ?? index}`,
+                    control: block.control,
+                    theme,
+                });
+            }
+            if (block.type === "group") {
+                return React.createElement("div", {
+                    key: `group:${index}`,
+                    className: "ps-chat-group",
+                    "data-testid": block.group || undefined,
+                    "data-client-message-id": block.clientMessageIds.length > 0 ? block.clientMessageIds.join(" ") : undefined,
+                }, React.createElement(StructuredBlockList, { blocks: block.blocks, theme, controller }));
             }
             if (block.type === "assistantPreview") {
                 return React.createElement(AssistantPreviewCard, {
@@ -4317,7 +4434,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, historyPullEnabled = false, historySessionId = null, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, scrollTail = null, scrollTailKey = "", stickyLines = [], bottomStickyTop = null, bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, historyPullEnabled = false, historySessionId = null, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null, dataSessionId = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -4330,7 +4447,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     }, [panelRef]);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel, topPullDistance, loadingOlderHistory } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom, historyPullEnabled, historySessionId });
+    const { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel, topPullDistance, loadingOlderHistory } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom, historyPullEnabled, historySessionId, tailRevision: scrollTailKey });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
@@ -4429,17 +4546,19 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onTouchEnd, onTouchCancel },
+        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "data-session-id": dataSessionId || undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onTouchEnd, onTouchCancel },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme, controller })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
+            scrollTail,
         ),
-        (normalizedBottomSticky.length > 0 || reserveBottomSticky)
+        (bottomStickyTop || normalizedBottomSticky.length > 0 || reserveBottomSticky)
             ? React.createElement("div", {
                 className: `ps-panel-bottom-sticky${reserveBottomSticky ? " is-reserved" : ""}`,
             },
+                bottomStickyTop,
                 normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
             )
             : null,
@@ -7018,7 +7137,7 @@ function SessionHeaderStatus({ controller }) {
     const status = activity[0]?.map(run => run.text || "").join("")
         || (session ? String(session.status || "idle").replace(/^./, c => c.toUpperCase()) : "");
     const messages = selectActiveOutboxMessages(state);
-    const queue = ["pending", "queued", "cancelling", "rejected"].map(phase => {
+    const queue = ["pending", "queued", "steering", "cancelling", "rejected"].map(phase => {
         const count = messages.filter(message => message.pendingPhase === phase).length;
         return count ? `${count} ${phase}` : "";
     }).filter(Boolean).join(" · ");
@@ -7059,6 +7178,57 @@ function HistoryLoadIndicator({ loading, manual, pullDistance, onManualLoad }) {
             ? React.createElement("button", { type: "button", className: "ps-mini-button ps-load-older-button", onClick: onManualLoad }, label)
             : React.createElement("span", { className: "ps-history-label" }, label));
 }
+
+/**
+ * The queued-prompts strip: its header and one line block per message, each
+ * shown once, with its phase ("↪ steering", "Cancelling…") and notice. On a
+ * desktop a click on a queued or pending line selects it in the composer
+ * (as ↑ does), where Steer and ✕ act on it; phones have no line selection.
+ * On phones the strip scrolls inside a bounded height, so the composer stays
+ * on screen.
+ */
+function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
+    const phone = useMediaQuery(PHONE_MEDIA_QUERY);
+    const selectedItemId = useControllerSelector(controller, (state) => (
+        state.ui.promptEdit?.sessionId === sessionId ? state.ui.promptEdit.itemId : null
+    ));
+    return React.createElement("div", { className: "ps-outbox-strip", "data-testid": "queued-actions", "data-session-id": sessionId },
+        React.createElement(Line, { line: normalizeLines([header])[0], theme }),
+        blocks.map((block) => {
+            const selectable = !phone && OUTBOX_SELECTABLE_PHASES.has(block.phase);
+            const select = () => controller.enterPendingPromptEdit(sessionId, block.itemId);
+            return React.createElement("div", {
+                key: block.itemId,
+                className: `ps-queued-item is-${block.phase}${selectable ? " is-selectable" : ""}${selectedItemId === block.itemId ? " is-selected" : ""}`,
+                "data-testid": "queued-item",
+                "data-phase": block.phase,
+                "data-item-id": block.itemId,
+                "data-selected": selectedItemId === block.itemId ? "true" : undefined,
+                ...(selectable ? {
+                    role: "button",
+                    tabIndex: 0,
+                    title: "Select this message (Steer or delete it from the composer)",
+                    // Keeps focus (and the caret) in the composer.
+                    onMouseDown: (event) => event.preventDefault(),
+                    onClick: select,
+                    onKeyDown: (event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        select();
+                    },
+                } : {}),
+            },
+            React.createElement("div", { className: "ps-queued-item-lines" },
+                normalizeLines(block.lines).map((line, index) => React.createElement(Line, { key: index, line, theme }))),
+            block.phaseLabel
+                ? React.createElement("span", { className: "ps-queued-item-phase", role: "status" }, block.phaseLabel)
+                : null,
+            block.notice
+                ? React.createElement("div", { className: "ps-queued-item-notice", role: "status", "data-testid": "queued-notice" }, block.notice)
+                : null);
+        }));
+}
+const OUTBOX_SELECTABLE_PHASES = new Set(["pending", "queued", "cancelling"]);
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
@@ -7164,18 +7334,13 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // outbox overlay), NOT appended to the transcript — it must stay put while
     // chat content scrolls, and it drops the instant the turn ends.
     const pinnedActivityLines = liveActivityLines;
-    const outboxLines = React.useMemo(
-        () => selectOutboxOverlayLines(selectorState, contentWidth, { tableMode: "sentinel" }),
+    const outbox = React.useMemo(
+        () => selectOutboxOverlayBlocks(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
     );
-    const stickyBottom = React.useMemo(
-        () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
-        [outboxLines, pinnedActivityLines],
-    );
-    const transcriptLines = React.useMemo(
-        () => activityInHeader && outboxLines.length ? [...lines, ...outboxLines] : lines,
-        [activityInHeader, lines, outboxLines],
-    );
+    const outboxStrip = outbox.header
+        ? React.createElement(OutboxStrip, { controller, sessionId: viewState.activeSessionId, header: outbox.header, blocks: outbox.blocks, theme })
+        : null;
     // Read-only gating: a view-only viewer (shared_read / read grant, no write)
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
@@ -7234,14 +7399,21 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
         color: chrome.color,
         focused: viewState.focused,
-        lines: transcriptLines,
-        bottomStickyLines: activityInHeader ? EMPTY_ARRAY : stickyBottom,
+        lines,
+        // Compact views (MoA panels, Zen) keep the strip at the end of the
+        // transcript, where it scrolls; the others pin it above the composer.
+        scrollTail: activityInHeader ? outboxStrip : null,
+        scrollTailKey: activityInHeader ? outbox.revision : "",
+        bottomStickyTop: activityInHeader ? null : outboxStrip,
+        bottomStickyLines: activityInHeader ? EMPTY_ARRAY : pinnedActivityLines,
         reserveBottomSticky: !activityInHeader,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
         paneKey: "chat",
         historySessionId: viewState.activeSessionId,
+        // Scopes the transcript's turn-control selectors to this session.
+        dataSessionId: viewState.activeSessionId,
         historyPullEnabled: Boolean(viewState.activeHistory?.hasOlderEvents && !showLoadOlder),
         ariaLive: "polite",
         className: "is-wrapped",
@@ -9513,6 +9685,238 @@ function formatAttachmentSize(sizeBytes) {
     return `${bytes} B`;
 }
 
+const TURN_CONTROL_NOTICE_TEXT = {
+    no_turn: "No running turn accepts steering. Sending the text as a message…",
+    legacy_turn: "This turn does not accept steering. Sending the text as a message…",
+    not_found: "The session was not found.",
+    too_many: "Too many open steers on this turn. Try again when the turn ends.",
+    request_id_reused: "This request id was already used for a different request.",
+    steering_disabled: "Steering is not enabled for you.",
+    forbidden: "You need write access to this session.",
+    too_long: "The text is too long.",
+    no_active_turn: "No running turn to stop.",
+    timeout: "Stop sent; the turn has not stopped yet.",
+    stop_pending: "Stop accepted; waiting for the turn to stop.",
+    unconfirmed: "The request may not have reached the server. Retry sends the same request again.",
+    fallback_sent: "No running turn accepts steering, so the text was sent as a message.",
+    fallback_failed: "No running turn accepts steering, and sending the text as a message failed.",
+    error: "The request failed.",
+};
+
+/**
+ * The inline notice for every Stop/Steer answer that was not simply
+ * accepted: refusals, the message fallback and failures. An unconfirmed
+ * request offers Retry, which resends the same request id.
+ */
+function TurnControlNotice({ controller, notice, sessionId }) {
+    const reason = notice.reason || "error";
+    // One steer request at a time: a steer Retry waits for the one in flight.
+    const otherSteerSending = useControllerSelector(controller, (state) => notice.kind !== "stop" && selectSteerAction(state, sessionId).sending);
+    const text = TURN_CONTROL_NOTICE_TEXT[reason] || TURN_CONTROL_NOTICE_TEXT.error;
+    return React.createElement("div", {
+        className: `ps-control-notice is-${reason}`,
+        role: "status",
+        "data-testid": "control-notice",
+        "data-kind": notice.kind || "steer",
+        "data-reason": reason,
+    },
+    React.createElement("span", { className: "ps-control-notice-text" },
+        `${notice.kind === "stop" ? "Stop" : "Steer"}: ${text}`),
+    reason === "unconfirmed"
+        ? React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            "data-testid": "control-retry-button",
+            "data-request-id": notice.requestId || undefined,
+            disabled: otherSteerSending,
+            onPointerDown: (event) => event.preventDefault(),
+            onClick: () => { controller.retryTurnControl(notice.kind, sessionId).catch(() => {}); },
+        }, "Retry")
+        : null,
+    React.createElement("button", {
+        type: "button",
+        className: "ps-mini-button ps-control-notice-dismiss",
+        "aria-label": "Dismiss",
+        title: reason === "unconfirmed" ? "Dismiss (gives the request up; steer text is kept)" : "Dismiss",
+        onPointerDown: (event) => event.preventDefault(),
+        onClick: () => controller.dismissTurnControlNotice(sessionId, notice.kind === "stop" ? "stop" : "steer"),
+    }, "✕"));
+}
+
+/**
+ * Steer text that was not delivered and could not go back into the composer
+ * (the composer had a new draft, another session was open, or an outbox
+ * message was selected). It stays until Restore or Discard.
+ */
+function KeptSteerText({ controller, kept, sessionId }) {
+    const latest = kept[kept.length - 1]?.text || "";
+    const preview = latest.length > 80 ? `${latest.slice(0, 79)}…` : latest;
+    return React.createElement("div", { className: "ps-control-notice is-kept", role: "status", "data-testid": "control-kept-text", "data-count": String(kept.length) },
+        React.createElement("span", { className: "ps-control-notice-text" },
+            `Steer text kept${kept.length > 1 ? ` (${kept.length})` : ""}: “${preview}”`),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            "data-testid": "control-restore-button",
+            title: "Put the kept steer text back into the composer, after your draft",
+            onPointerDown: (event) => event.preventDefault(),
+            onClick: () => controller.restoreTurnControlText(sessionId),
+        }, "Restore"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            title: "Discard the kept steer text",
+            onPointerDown: (event) => event.preventDefault(),
+            onClick: () => controller.discardTurnControlText(sessionId),
+        }, "Discard"));
+}
+
+/**
+ * The turn status, with no visible pixels: a hidden status element whose
+ * accessible name and attributes carry it for screen readers and tests.
+ */
+function TurnStateStatus({ turnState, acceptsControls, stopping }) {
+    const label = selectTurnStateLabel({ status: turnState, acceptsControls, stopping });
+    return React.createElement("span", {
+        className: "ps-sr-only",
+        role: "status",
+        "aria-label": label,
+        "data-testid": "session-turn-state",
+        "data-turn-state": turnState,
+        "data-accepts-controls": acceptsControls ? "true" : "false",
+    }, label);
+}
+
+/**
+ * The phone's blue button while a turn accepts steering (phones have no
+ * separate Steer button). A tap steers what the composer holds: the typed
+ * text, or with an empty box every queued message (the count shows). With
+ * typed text a hold opens "Steer now" (lit) and "Queue" above it
+ * (nextSteerHold); from the keyboard, Enter or Space steers and ArrowUp (or
+ * the context-menu key) opens the menu, where the arrows move and Enter
+ * picks. The browser's own long-press menu and text selection are
+ * suppressed on it.
+ */
+function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
+    const buttonRef = React.useRef(null);
+    const menuRef = React.useRef(null);
+    const holdRef = React.useRef({ phase: "idle" });
+    const timerRef = React.useRef(null);
+    // The menu was opened from the keyboard: it takes the focus on its lit
+    // item, and gives it to the composer input when it closes (before the
+    // action, which can replace this button).
+    const keyboardMenuRef = React.useRef(false);
+    const [hold, setHold] = React.useState(holdRef.current);
+    const apply = React.useCallback((event) => {
+        const next = nextSteerHold(holdRef.current, event);
+        holdRef.current = next.state;
+        setHold(next.state);
+        if (next.state.phase === "idle" && keyboardMenuRef.current) {
+            keyboardMenuRef.current = false;
+            buttonRef.current?.closest(".ps-prompt-shell")?.querySelector("textarea")?.focus();
+        }
+        if (next.action === "steer") onSteer();
+        else if (next.action === "queue") onQueue();
+    }, [onSteer, onQueue]);
+    const clearTimer = () => { clearTimeout(timerRef.current); timerRef.current = null; };
+    React.useEffect(() => clearTimer, []);
+    const overAt = (event) => {
+        const node = document.elementFromPoint(event.clientX, event.clientY);
+        const item = node?.closest?.("[data-hold-item]");
+        if (item && menuRef.current?.contains(item)) return item.getAttribute("data-hold-item");
+        return buttonRef.current && buttonRef.current.contains(node) ? "button" : null;
+    };
+    const open = hold.phase === "open";
+    React.useEffect(() => {
+        if (open && keyboardMenuRef.current) menuRef.current?.querySelector(`[data-hold-item="${holdRef.current.highlight || "steer"}"]`)?.focus();
+    }, [open]);
+    const onMenuKeyDown = (event) => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        const item = holdRef.current.highlight === "queue" ? "steer" : "queue";
+        apply({ type: "move", over: item });
+        menuRef.current?.querySelector(`[data-hold-item="${item}"]`)?.focus();
+    };
+    // A press or tap anywhere else closes the menu; nothing is sent.
+    React.useEffect(() => {
+        if (!open) return undefined;
+        const onPointerDown = (event) => {
+            if (menuRef.current?.contains(event.target) || buttonRef.current?.contains(event.target)) return;
+            apply({ type: "dismiss" });
+        };
+        const onKeyDown = (event) => { if (event.key === "Escape") apply({ type: "dismiss" }); };
+        document.addEventListener("pointerdown", onPointerDown, true);
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => {
+            document.removeEventListener("pointerdown", onPointerDown, true);
+            document.removeEventListener("keydown", onKeyDown, true);
+        };
+    }, [open, apply]);
+    const ready = steer.state === "ready";
+    return React.createElement("span", { className: "ps-steer-send" },
+        open
+            ? React.createElement("div", { ref: menuRef, className: "ps-steer-hold-menu", role: "menu", "aria-label": "Steer or queue", "data-testid": "steer-hold-menu", onKeyDown: onMenuKeyDown },
+                [["steer", "↪", "Steer now", "into the running turn"], ["queue", "+", "Queue", "runs after this turn"]].map(([item, mark, title, sub]) => (
+                    React.createElement("button", {
+                        key: item,
+                        type: "button",
+                        role: "menuitem",
+                        className: `ps-steer-hold-item${hold.highlight === item ? " is-lit" : ""}`,
+                        "data-hold-item": item,
+                        "data-testid": `steer-hold-${item}`,
+                        onPointerDown: (event) => event.preventDefault(),
+                        onClick: () => apply({ type: "pick", item }),
+                    },
+                    React.createElement("span", { className: "ps-steer-hold-mark", "aria-hidden": true }, mark),
+                    React.createElement("span", { className: "ps-steer-hold-title" }, title),
+                    React.createElement("span", { className: "ps-steer-hold-sub" }, sub)))))
+            : null,
+        React.createElement("button", {
+            ref: buttonRef,
+            type: "button",
+            className: `ps-send-button is-inline is-steer${canHold ? " can-hold" : ""}${steer.state === "sending" ? " is-sending" : ""}`,
+            "data-testid": "composer-send",
+            "data-action": "steer",
+            "data-state": steer.state,
+            "data-steer-target": steer.target,
+            "data-count": steer.count || undefined,
+            disabled: !ready,
+            title: steer.title,
+            "aria-label": canHold ? "Steer now, hold for Queue" : steer.title,
+            "aria-haspopup": canHold ? "menu" : undefined,
+            "aria-expanded": canHold ? (open ? "true" : "false") : undefined,
+            onContextMenu: (event) => event.preventDefault(),
+            onPointerDown: (event) => {
+                // Keeps focus (and the phone keyboard) in the composer.
+                event.preventDefault();
+                if (open) return;
+                try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
+                apply({ type: "down", canHold });
+                clearTimer();
+                if (canHold) timerRef.current = setTimeout(() => apply({ type: "hold" }), STEER_HOLD_MS);
+            },
+            onPointerMove: (event) => { if (holdRef.current.phase === "open") apply({ type: "move", over: overAt(event) }); },
+            onPointerUp: (event) => { clearTimer(); apply({ type: "up", over: overAt(event) }); },
+            onPointerCancel: () => { clearTimer(); apply({ type: "cancel" }); },
+            // Keyboard activation (no pointer): steer.
+            onClick: (event) => { if (event.detail === 0) onSteer(); },
+            onKeyDown: (event) => {
+                if (!canHold || open || !(event.key === "ArrowUp" || event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
+                event.preventDefault();
+                keyboardMenuRef.current = true;
+                apply({ type: "open" });
+            },
+        }, "↪", steer.count ? React.createElement("span", { className: "ps-steer-count" }, steer.count) : null));
+}
+
+/** The busy Send content during an image upload: a turning glyph, and a label where it fits. */
+function UploadSpinner({ label }) {
+    const frame = useSpinnerFrame(true);
+    return React.createElement(React.Fragment, null,
+        React.createElement("span", { className: "ps-send-spinner", "aria-hidden": true }, frame),
+        label ? React.createElement("span", { className: "ps-send-busy-label" }, label) : null);
+}
+
 function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
@@ -9520,14 +9924,29 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
             ? state.outbox.bySessionId[activeSessionId]
             : [];
+        const turnControl = selectTurnControlView(state, activeSessionId);
+        const steerAction = selectSteerAction(state, activeSessionId);
         return {
+            sessionId: activeSessionId || null,
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
             canStopTurn: canStopSessionTurn(activeSession),
+            turnState: turnControl.turnState,
+            acceptsControls: turnControl.acceptsControls,
+            steerAvailable: steerAction.available,
+            steerTarget: steerAction.target,
+            steerCount: steerAction.count,
+            steerBlocked: steerAction.blocked,
+            steerSending: steerAction.sending,
+            stopPhase: turnControl.stop?.phase || null,
+            steerNotice: turnControl.steerNotice,
+            stopNotice: turnControl.stopNotice,
+            keptSteers: turnControl.kept,
             hasOutbox: outbox.length > 0,
+            uploading: Boolean(activeSessionId && state.ui.promptUpload?.sessionId === activeSessionId),
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -9542,6 +9961,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const inputRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    const phone = useMediaQuery(PHONE_MEDIA_QUERY);
+    const touchKeyboard = useMediaQuery(TOUCH_KEYBOARD_MEDIA_QUERY);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
@@ -9694,6 +10115,31 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             .catch(() => {})
             .finally(() => setStoppingTurn(false));
     }, [controller]);
+    const steerTurn = React.useCallback(() => {
+        controller.handleCommand(UI_COMMANDS.STEER_TURN).catch(() => {});
+    }, [controller]);
+    const stopState = stoppingTurn || promptState.stopPhase === "sending" ? "stopping" : "ready";
+    // What Steer acts on (selectSteerAction): the typed text, the selected
+    // queued message, or with an empty box every queued message.
+    const steer = {
+        target: promptState.steerTarget,
+        count: promptState.steerTarget === "queue" ? promptState.steerCount : 0,
+        state: promptState.steerSending ? "sending"
+            : promptState.steerTarget !== "none" && !promptState.steerBlocked ? "ready" : "disabled",
+        title: promptState.steerBlocked
+            || (promptState.steerTarget === "text" ? "Steer this text into the running turn now (Ctrl+T)"
+                : promptState.steerTarget === "selected" ? "Steer this queued message into the running turn now (Ctrl+T)"
+                    : promptState.steerTarget === "queue"
+                        ? `Steer your ${promptState.steerCount} queued message${promptState.steerCount === 1 ? "" : "s"} now`
+                        : "Type guidance to steer the running turn"),
+    };
+    const showSteer = promptState.steerAvailable || promptState.steerSending;
+    // Phones have no separate Steer button: while a turn accepts steering the
+    // blue button steers (a hold with typed text offers Queue). It stays the
+    // plain send/queue button for staged images, a pending batch to send, or
+    // a selected message.
+    const phoneSteer = phone && showSteer && !promptState.editingPending && !promptState.uploading
+        && imageAttachments.length === 0 && !(promptState.hasPendingOutbox && !promptState.value.trim());
 
     const cancelPending = React.useCallback(() => {
         if (controller.getState().ui.promptEdit) {
@@ -9717,6 +10163,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
 
     return React.createElement("div", {
         className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        // Scopes the composer's turn-control selectors to this session (MoA
+        // panels each have their own composer).
+        "data-session-id": promptState.sessionId || undefined,
         ...(canAttachImages ? {
             onDragOver: (event) => {
                 if (event.dataTransfer?.types?.includes?.("Files")) {
@@ -9736,6 +10185,15 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
         } : {}),
     },
+        promptState.stopNotice
+            ? React.createElement(TurnControlNotice, { controller, notice: promptState.stopNotice, sessionId: promptState.sessionId })
+            : null,
+        promptState.steerNotice
+            ? React.createElement(TurnControlNotice, { controller, notice: promptState.steerNotice, sessionId: promptState.sessionId })
+            : null,
+        promptState.keptSteers.length > 0
+            ? React.createElement(KeptSteerText, { controller, kept: promptState.keptSteers, sessionId: promptState.sessionId })
+            : null,
         imageAttachments.length > 0
             ? React.createElement("div", { className: "ps-prompt-attachments" },
                 imageAttachments.map((attachment, index) => {
@@ -9778,15 +10236,16 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",
+            "data-testid": "composer-input",
             // One line at rest; a layout effect grows it to the rendered
             // content and CSS max-height caps it. Never a manual resize grip.
             rows: 1,
             value: promptState.value,
             readOnly: selectedReadOnly,
             placeholder,
-            // On touch, Enter inserts a newline (the chevron sends) — the
-            // keyboard must not advertise a send that will not happen.
-            enterKeyHint: mobile ? "enter" : "send",
+            // On a touch keyboard, Enter inserts a newline (the button sends) —
+            // the keyboard must not advertise a send that will not happen.
+            enterKeyHint: touchKeyboard ? "enter" : "send",
             onFocus: () => controller.setFocus("prompt"),
             onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
@@ -9810,11 +10269,21 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     event.preventDefault();
                     return;
                 }
-                // Arrow keys are NOT intercepted: the textarea's native cursor
-                // movement understands soft-wrapped lines and goal columns;
-                // onSelect mirrors every move into the shared model. (The old
-                // hijack routed through the TUI's logical-line cursor and made
-                // Down jump whole paragraphs inside wrapped text.)
+                // Arrow keys are NOT intercepted while text is edited: the
+                // textarea's native cursor movement understands soft-wrapped
+                // lines and goal columns; onSelect mirrors every move into the
+                // shared model. (The old hijack routed through the TUI's
+                // logical-line cursor and made Down jump whole paragraphs
+                // inside wrapped text.) Only ↑ from an empty box selects the
+                // latest queued message, and ↑/↓ cycle while one is selected
+                // (↓ past the last leaves); phones have no selection.
+                if (!phone && (event.key === "ArrowUp" || event.key === "ArrowDown")
+                    && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey
+                    && (selectedReadOnly || (event.key === "ArrowUp" && !promptState.editingPending && !promptState.value))
+                    && (event.key === "ArrowUp" ? controller.selectPreviousPendingPrompt() : controller.selectNextPendingPrompt())) {
+                    event.preventDefault();
+                    return;
+                }
                 if (event.key === "Escape" && promptState.editingPending) {
                     event.preventDefault();
                     if (selectedReadOnly) {
@@ -9824,13 +10293,20 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     cancelPending();
                     return;
                 }
-                if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !mobile) {
+                if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !touchKeyboard) {
                     event.preventDefault();
                     sendPrompt();
                 }
             },
         }),
         React.createElement("div", { className: "ps-prompt-actions" },
+            // The turn status has no visible pixels: a hidden status for
+            // screen readers, and the stable selector the UX pass asserts.
+            React.createElement(TurnStateStatus, {
+                turnState: promptState.turnState,
+                acceptsControls: promptState.acceptsControls,
+                stopping: stopState === "stopping",
+            }),
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
@@ -9861,43 +10337,83 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                         onClick: () => attachInputRef.current?.click(),
                     }, "📎"))
                 : null,
-            promptState.editingPending && !selectedCancelling
+            // Phones have no per-message delete (no line selection there).
+            promptState.editingPending && !selectedCancelling && !phone
                 ? React.createElement("button", {
                     type: "button",
-                    className: "ps-mini-button",
-                    title: selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
-                    "aria-label": selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    className: `ps-mini-button${selectedQueued ? " ps-queued-delete" : ""}`,
+                    "data-testid": selectedQueued ? "queued-delete" : undefined,
+                    title: selectedQueued ? "Delete this queued message (Esc to leave)" : "Cancel selected pending prompt",
+                    "aria-label": selectedQueued ? "Delete this queued message" : "Cancel selected pending prompt",
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: cancelPending,
-                }, selectedQueued ? "Delete" : "Cancel")
+                }, selectedQueued ? "✕" : "Cancel")
                 : null,
-            (promptState.canStopTurn || stoppingTurn)
+            (promptState.canStopTurn || stopState === "stopping")
                 ? React.createElement("button", {
                     type: "button",
-                    className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
+                    className: `ps-stop-button${stopState === "stopping" ? " is-stopping" : ""}`,
                     title: "Stop the current turn (the session stays alive and returns to idle)",
                     "aria-label": "Stop the current turn",
-                    disabled: stoppingTurn,
+                    "data-testid": "turn-stop-button",
+                    "data-state": stopState,
+                    disabled: stopState === "stopping",
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: stopTurn,
                 }, "■")
                 : null,
-            React.createElement("button", {
+            showSteer && !phone
+                ? React.createElement("button", {
+                    type: "button",
+                    className: `ps-steer-button${steer.state === "sending" ? " is-sending" : ""}`,
+                    title: steer.title,
+                    "aria-label": steer.title,
+                    "data-testid": "turn-steer-button",
+                    "data-state": steer.state,
+                    "data-steer-target": steer.target,
+                    "data-count": steer.count || undefined,
+                    disabled: steer.state !== "ready",
+                    onPointerDown: (event) => event.preventDefault(),
+                    onClick: steerTurn,
+                }, React.createElement("span", { className: "ps-steer-arrow", "aria-hidden": true }, "↪"),
+                steer.count ? React.createElement("span", { className: "ps-steer-count" }, steer.count) : null)
+                : null,
+            phoneSteer
+                ? React.createElement(SteerSendButton, {
+                    steer,
+                    canHold: steer.target === "text",
+                    onSteer: steerTurn,
+                    onQueue: sendPrompt,
+                })
+                // While the images of a send upload, Send is busy: the message goes
+                // once, when the upload ends, and the draft stays meanwhile.
+                : React.createElement("button", {
                 type: "button",
-                className: `ps-send-button${mobile ? " is-inline" : ""}`,
-                title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
-                    ? "Send all queued prompts"
-                    : promptState.hasOutbox
-                        ? "Queue prompt behind the pending batch"
-                        : "Send prompt",
-                "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
-                    ? "Send queued prompts"
-                    : promptState.hasOutbox
-                        ? "Queue prompt"
-                        : "Send prompt",
+                className: `ps-send-button${mobile ? " is-inline" : ""}${promptState.uploading ? " is-uploading" : ""}`,
+                "data-testid": "composer-send",
+                "data-action": "send",
+                "data-state": promptState.uploading ? "uploading" : "ready",
+                disabled: promptState.uploading,
+                "aria-busy": promptState.uploading ? "true" : undefined,
+                title: promptState.uploading
+                    ? "Uploading the images; the message goes when they finish"
+                    : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                        ? "Send all queued prompts"
+                        : promptState.hasOutbox
+                            ? "Queue prompt behind the pending batch"
+                            : "Send prompt",
+                "aria-label": promptState.uploading
+                    ? "Uploading images"
+                    : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                        ? "Send queued prompts"
+                        : promptState.hasOutbox
+                            ? "Queue prompt"
+                            : "Send prompt",
                 onPointerDown: (event) => event.preventDefault(),
                 onClick: sendPrompt,
-            }, sendLabel),
+            }, promptState.uploading
+                ? React.createElement(UploadSpinner, { label: mobile ? "" : "Uploading…" })
+                : sendLabel),
         ),
     );
 }

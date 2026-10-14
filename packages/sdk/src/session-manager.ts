@@ -605,6 +605,9 @@ const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
  */
 const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
 
+/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind. */
+const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
+
 function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -625,7 +628,7 @@ function buildEffectivePromptLayers(
     const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
     const layers: PromptLayerDescriptor[] = [];
     if (workerDefaults.frameworkBaseDescriptor) layers.push({ ...workerDefaults.frameworkBaseDescriptor,
-        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.0.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
+        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.1.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
     if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
         if (boundAgentCopy?.descriptor) layers.push(boundAgentCopy.descriptor);
@@ -787,6 +790,8 @@ export class SessionManager {
     }
     private sessions = new Map<string, ManagedSession>();
     private featureFlags: FeatureFlagCache | null = null;
+    /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
+    private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1177,6 +1182,16 @@ export class SessionManager {
 
     getWorkspaceProvider(): WorkspaceProvider | null {
         return this.workspaceProvider;
+    }
+
+    /** Session turn control: set by the worker after it starts the hub. */
+    setTurnControlHub(hub: import("./turn-control.js").TurnControlHub | null): void {
+        this.turnControlHub = hub;
+    }
+
+    /** The worker's hub for activity registration, or null when unavailable. */
+    getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
+        return this.turnControlHub;
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
@@ -1755,7 +1770,7 @@ export class SessionManager {
      */
     async abortWarmSessionTurn(
         sessionId: string,
-        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number },
+        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number; cancelTurnTasks?: boolean },
     ): Promise<AbortTurnResult> {
         const managed = this.sessions.get(sessionId);
         if (!managed) {
@@ -1785,6 +1800,24 @@ export class SessionManager {
             // Abort RPC failure is non-fatal: the force-settle escalation below
             // still unwinds the turn.
             void err;
+        }
+
+        // Session turn control (V4 Stop): stop the background tasks this turn
+        // started. A shell the CLI moved to the background keeps the turn open
+        // (no session.idle) and survives the abort; tasks of earlier turns are
+        // kept. Bounded and never throws: the grace wait below is the backstop.
+        if (opts.cancelTurnTasks) {
+            try {
+                const cancelled = await withWorkspaceDeadline(
+                    // From the stopped turn's start to the Stop: never a later turn's tasks.
+                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } }),
+                    "stop task cancel",
+                    STOP_TASK_CANCEL_DEADLINE_MS,
+                );
+                if (cancelled > 0) emitSessionManagerTrace(sessionId, `stop cancelled ${cancelled} background task(s) of turn ${active.turnIndex}`);
+            } catch (error: unknown) {
+                emitSessionManagerTrace(sessionId, `stop could not cancel the turn's background tasks: ${normalizeError(error).message}`, { level: "warn" });
+            }
         }
 
         const graceMs = opts.unwindGraceMs ?? 8_000;

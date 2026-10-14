@@ -60,7 +60,7 @@ class FakeCopilotSession {
                 const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error(`Missing fake tool: ${call.name}`);
                 this.emit("tool.execution_start", { data: { toolName: call.name, arguments: call.args ?? {} } });
-                const result = await tool.handler(call.args ?? {});
+                const result = await tool.handler(call.args ?? {}, { toolCallId: call.id ?? `call-${call.name}` });
                 this.emit("tool.execution_complete", { data: { toolName: call.name, arguments: call.args ?? {}, result } });
             }
             for (const delta of scriptedSend.assistantDeltas ?? []) {
@@ -211,6 +211,56 @@ describe("inline control tool execution", () => {
         expect(spawnTool?.parameters?.properties?.contract?.description).toContain("no separate contract tool exists");
         expect(completeTool?.parameters?.properties?.result?.type).toBe("object");
         expect(cancelTool?.parameters?.properties?.partial_result?.type).toBe("object");
+    });
+
+    it("message_agent deliver and stop_agent_turn: schemas match the stubs, and the tool call id reaches the bridge", async () => {
+        const stubs = ManagedSession.subAgentToolDefs();
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [
+            { name: "message_agent", id: "call-steer", args: { agent_id: "child", message: "use metric", deliver: "now" } },
+            { name: "message_agent", id: "call-bad", args: { agent_id: "child", message: "x", deliver: "later" } },
+            { name: "stop_agent_turn", id: "call-stop", args: { agent_id: "child", reason: "wrong file" } },
+        ];
+        fakeSession.assistantContent = "Controlled.";
+        const controlToolBridge = {
+            spawnAgent: vi.fn(),
+            messageAgent: vi.fn(async () => "[SYSTEM: steered]"),
+            checkAgents: vi.fn(),
+            resolveWaitForAgents: vi.fn(),
+            listSessions: vi.fn(),
+            completeAgent: vi.fn(),
+            cancelAgent: vi.fn(),
+            stopAgentTurn: vi.fn(async () => "[SYSTEM: stopped]"),
+            deleteAgent: vi.fn(),
+        };
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        const managed = new ManagedSession("inline-parent-controls", fakeSession, {});
+        const result = await managed.runTurn("control the child", { controlToolBridge });
+
+        for (const name of ["message_agent", "stop_agent_turn"]) {
+            const live = fakeSession.registeredTools.find((tool) => tool.name === name);
+            const stub = stubs.find((tool) => tool.name === name);
+            expect(live?.parameters).toEqual(stub?.parameters);
+            expect(live?.description.startsWith(stub?.description.split(" Calling")[0])).toBe(true);
+        }
+        expect(stubs.find((tool) => tool.name === "message_agent").parameters.properties.deliver.enum).toEqual(["next_turn", "now"]);
+        expect(controlToolBridge.messageAgent).toHaveBeenCalledTimes(1);
+        expect(controlToolBridge.messageAgent).toHaveBeenCalledWith(
+            { agent_id: "child", message: "use metric", deliver: "now" }, { toolCallId: "call-steer" });
+        expect(controlToolBridge.stopAgentTurn).toHaveBeenCalledWith({ agent_id: "child", reason: "wrong file" }, { toolCallId: "call-stop" });
+        expect(results).toEqual(["[SYSTEM: steered]", "Error: deliver must be next_turn or now.", "[SYSTEM: stopped]"]);
+        expect(result.type).toBe("completed");
+    });
+
+    it("stop_agent_turn without the bridge method refuses instead of hanging", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "stop_agent_turn", args: { agent_id: "child" } }];
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        const managed = new ManagedSession("inline-parent-stop-missing", fakeSession, {});
+        await managed.runTurn("stop the child", { controlToolBridge: { spawnAgent: vi.fn(), messageAgent: vi.fn() } });
+        expect(results).toEqual(["Error: stop_agent_turn is unavailable in this session."]);
     });
 
     it("advertises cross-session reply requirements", () => {

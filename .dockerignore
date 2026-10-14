@@ -6,6 +6,7 @@
 node_modules
 **/node_modules
 coverage
+deploy/.tmp
 docs
 perf
 scripts/tmp

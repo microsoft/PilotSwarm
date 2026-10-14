@@ -10,7 +10,7 @@ const forbidden = new Set([
     "create_session", "send_message", "send_and_wait", "stop_session", "delete_session", "restart_session", "fork_session",
     "write_agent", "manage_schedule", "run_factory", "factories_manage", "schedule", "cron",
     "wait_on_worker", "cron_at", "report_cycle", "set_session_model", "regenerate_context", "regenerate_agent",
-    "message_agent", "wait_for_agents", "cancel_agent", "delete_agent", "manage_embedder",
+    "message_agent", "wait_for_agents", "cancel_agent", "stop_agent_turn", "delete_agent", "manage_embedder",
     "manage_system_session_model", "force_terminate_session", "cleanup_session", "prune_orchestrations",
     "start_pod_process",
     "bash", "powershell", "view", "rg", "grep", "glob", "read_bash", "list_bash", "stop_bash", "stop_powershell",

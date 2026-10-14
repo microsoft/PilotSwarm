@@ -1,5 +1,5 @@
 import { sanitizePromptAttachmentRefs } from "../types.js";
-import type { MessageSender } from "../message-sender.js";
+import { normalizeMessageSender, type MessageSender } from "../message-sender.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { RegenState, PendingEpochCommit } from "../types.js";
 export type { RegenState, PendingEpochCommit } from "../types.js";
@@ -9,8 +9,9 @@ import type {
     SessionContextUsage,
     SubAgentEntry,
     TurnAction,
+    LateSteer,
 } from "../types.js";
-import { cloneContextUsage } from "./utils.js";
+import { cloneContextUsage, validClientMessageIds } from "./utils.js";
 
 export interface ActiveTimer {
     deadlineMs: number;
@@ -99,6 +100,9 @@ export interface DurableSessionState {
     pendingPrompt?: string;
     /** Attachment refs for the carried pendingPrompt — dropped silently before 1.0.65's carry fix. */
     pendingAttachments?: import("../types.js").PromptAttachmentRef[];
+    /** 1.0.81: the client message ids and sender of the carried pendingPrompt. */
+    pendingClientMessageIds?: string[];
+    pendingSender?: MessageSender;
     pendingRequiredTool?: string;
     pendingSystemPrompt?: string;
     runtimeModelNotice?: string;
@@ -134,6 +138,22 @@ export interface DurableSessionState {
      * turn actually runs.
      */
     budgetStash: BudgetStashedPrompt[] | null;
+    /**
+     * Session turn control (1.0.81): steers accepted too late for the turn
+     * that received them, in seq order. Every turn sends them as
+     * `carriedSteers`; the worker folds them into the prompt and records no
+     * new user message. They leave this state only when a result reports
+     * `carriedSteersConsumed` (and is not an error), or on a give-up or
+     * terminal path, whose state write closes them in SQL. A returned error
+     * that will be retried keeps them, so the retry folds them again.
+     */
+    carriedSteers: LateSteer[];
+    /**
+     * 1.0.81: the snapshot turnKey of a runTurn attempt that threw, kept for
+     * the retry of that same turn (see `OrchestrationInput.thrownTurnKey`).
+     * Cleared when any turn result arrives and on give-up paths.
+     */
+    thrownTurnKey: string | null;
     interruptedCronTimer: InterruptedCronTimer | null;
 
     // ── Session workspaces (1.0.80) ──────────────────────────────
@@ -189,8 +209,9 @@ export interface DurableSessionState {
     /**
      * Which incarnation of the SDK transcript is live. 0 = original.
      * Carried across every continue-as-new; incremented only by the
-     * regenerate flip. The turn index is NEVER reset (stopTurn queues,
-     * turn metrics, cascade ids all rely on its monotonicity).
+     * regenerate flip. The turn index is NEVER reset (turn controls in the
+     * CMS, stopTurn queues of older versions, turn metrics and cascade ids
+     * all rely on its monotonicity).
      */
     transcriptEpoch: number;
     /**
@@ -398,14 +419,28 @@ function clonePendingShutdown(input: OrchestrationInput["pendingShutdown"]): Pen
     };
 }
 
-export function normalizeRecentClientMessageIds(value: unknown): string[] {
+export function normalizeRecentClientMessageIds(value: unknown, limit = RECENT_CLIENT_MESSAGE_ID_LIMIT): string[] {
     if (!Array.isArray(value)) return [];
     const ids: string[] = [];
     for (const raw of value) {
         if (typeof raw !== "string" || !raw || ids.includes(raw)) continue;
         ids.push(raw);
     }
-    return ids.slice(-RECENT_CLIENT_MESSAGE_ID_LIMIT);
+    return ids.slice(-limit);
+}
+
+/** 1.0.81: cancelled ids kept while their prompt has not been dropped (oldest evicted first). */
+export const CANCELLED_MESSAGE_ID_LIMIT = 200;
+
+/** Add cancelled or converted ids; past the limit the oldest is evicted. */
+export function addCancelledMessageIds(state: DurableSessionState, ids: string[]): void {
+    for (const id of ids) {
+        if (!id || state.cancelledMessageIds.has(id)) continue;
+        state.cancelledMessageIds.add(id);
+        if (state.cancelledMessageIds.size > CANCELLED_MESSAGE_ID_LIMIT) {
+            state.cancelledMessageIds.delete(state.cancelledMessageIds.values().next().value as string);
+        }
+    }
 }
 
 export function touchRecentClientMessageIds(state: DurableSessionState, ids: string[]): void {
@@ -448,6 +483,10 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         pendingPrompt: input.prompt,
         pendingAttachments: sanitizePromptAttachmentRefs(input.attachments),
+        pendingClientMessageIds: input.prompt && validClientMessageIds(input.clientMessageIds).length > 0
+            ? validClientMessageIds(input.clientMessageIds)
+            : undefined,
+        pendingSender: input.prompt ? normalizeMessageSender(input.sender) : undefined,
         pendingRequiredTool: input.requiredTool,
         pendingSystemPrompt: input.systemPrompt,
         runtimeModelNotice: input.runtimeModelNotice,
@@ -471,6 +510,8 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,
+        carriedSteers: input.carriedSteers ? [...input.carriedSteers] : [],
+        thrownTurnKey: typeof input.thrownTurnKey === "string" && input.thrownTurnKey ? input.thrownTurnKey : null,
         interruptedCronTimer: input.interruptedCronTimer ?? null,
 
         workspaceRevision: typeof input.workspaceRevision === "number" && input.workspaceRevision > 0 ? input.workspaceRevision : 0,
@@ -491,7 +532,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         lastCommandVersion: 0,
         lastCommandId: undefined,
 
-        cancelledMessageIds: new Set<string>(),
+        cancelledMessageIds: new Set<string>(normalizeRecentClientMessageIds(input.cancelledMessageIds, CANCELLED_MESSAGE_ID_LIMIT)),
         emittedCancelledMessageIds: new Set<string>(),
         recentClientMessageIds: normalizeRecentClientMessageIds(input.recentClientMessageIds),
 

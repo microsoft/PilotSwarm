@@ -1,5 +1,5 @@
 /**
- * A provider type that stores no key: `anthropic-wif`.
+ * Provider types that store no key: `anthropic-wif` and `foundry-wif`.
  *
  * Everything in the provider machinery was built around a stored credential.
  * The registry drops a non-github provider with no `apiKey`; the deployment
@@ -41,6 +41,11 @@ import {
     attachWorkloadIdentity,
     readAnthropicWifSettings,
 } from "../../dist/wif-credentials.js";
+import {
+    FOUNDRY_AAD_SCOPE,
+    foundryBearerTokenProvider,
+    _setFoundryAadCredentialForTests,
+} from "../../dist/foundry-credentials.js";
 
 const MODELS = [{ name: "claude-opus-5" }];
 
@@ -65,8 +70,9 @@ const ENTRA_ENV = {
 
 // ── the type itself ──────────────────────────────────────────────
 
-test("only anthropic-wif authenticates as the worker", () => {
+test("only workload-identity types authenticate as the worker", () => {
     assert.equal(providerTypeUsesWorkloadIdentity("anthropic-wif"), true);
+    assert.equal(providerTypeUsesWorkloadIdentity("foundry-wif"), true);
     for (const type of ["anthropic", "openai", "openai-proxy", "azure", "github", undefined, null, ""]) {
         assert.equal(providerTypeUsesWorkloadIdentity(type), false, `${type} must not be exempt`);
     }
@@ -79,6 +85,78 @@ test("anthropic-wif is anthropic on the wire", () => {
     assert.equal(toSdkProviderType("anthropic"), "anthropic");
     assert.equal(toSdkProviderType("openai"), "openai");
     assert.equal(toSdkProviderType("azure"), "azure");
+});
+
+const FOUNDRY_CONFIG = {
+    providers: [
+        {
+            id: "foundry",
+            type: "foundry-wif",
+            baseUrl: "https://example-foundry.cognitiveservices.azure.com/openai/v1",
+            models: [{ name: "test-model" }],
+        },
+    ],
+};
+
+function stubAadCredential(token = "aad-access-token") {
+    return {
+        getToken: async () => ({ token, expiresOnTimestamp: Date.now() + 3_600_000 }),
+    };
+}
+
+test("foundry-wif is openai on the wire", () => {
+    assert.equal(toSdkProviderType("foundry-wif"), "openai");
+});
+
+test("the registry keeps a keyless foundry-wif provider", () => {
+    const registry = new ModelProviderRegistry(FOUNDRY_CONFIG);
+    assert.deepEqual(registry.getModelsByProvider().map((group) => group.providerId), ["foundry"]);
+});
+
+test("resolve() yields a keyless workload-identity Foundry provider", () => {
+    const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:test-model");
+    assert.equal(resolved.type, "foundry-wif");
+    assert.equal(resolved.usesWorkloadIdentity, true);
+    assert.equal(resolved.sdkProvider.type, "openai");
+    assert.equal(resolved.sdkProvider.baseUrl, "https://example-foundry.cognitiveservices.azure.com/openai/v1");
+    assert.ok(!("apiKey" in resolved.sdkProvider));
+});
+
+test("foundry-wif receives an AAD bearer callback", async () => {
+    _setFoundryAadCredentialForTests(stubAadCredential("aad-live"));
+    try {
+        const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:test-model");
+        const provider = attachWorkloadIdentity(resolved);
+        assert.equal(provider.type, "openai");
+        assert.equal(typeof provider.bearerTokenProvider, "function");
+        assert.equal(await provider.bearerTokenProvider(), "aad-live");
+        assert.ok(!("apiKey" in provider));
+    } finally {
+        _setFoundryAadCredentialForTests(null);
+    }
+});
+
+test("foundryBearerTokenProvider requests the Cognitive Services scope", async () => {
+    let seenScope;
+    const credential = {
+        getToken: async (scope) => {
+            seenScope = scope;
+            return { token: "scoped-token", expiresOnTimestamp: Date.now() + 3_600_000 };
+        },
+    };
+    assert.equal(await foundryBearerTokenProvider({ credential })(), "scoped-token");
+    assert.equal(seenScope, FOUNDRY_AAD_SCOPE);
+});
+
+test("foundry token failures identify the missing workload identity setup", async () => {
+    await assert.rejects(
+        foundryBearerTokenProvider({ credential: { getToken: async () => null } })(),
+        (error) => {
+            assert.match(error.message, /Cognitive Services OpenAI User/);
+            assert.match(error.message, /DefaultAzureCredential/);
+            return true;
+        },
+    );
 });
 
 // ── the registry ─────────────────────────────────────────────────

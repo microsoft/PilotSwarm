@@ -143,7 +143,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;
-        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     }
 }
 
@@ -170,8 +170,8 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", { childResultProvenance: true });
-    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    const manager = createSessionManagerProxy(ctx, "turn-control-v1", { childResultProvenance: true });
+    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "turn-control-v1");
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
 

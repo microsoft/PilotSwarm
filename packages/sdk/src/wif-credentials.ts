@@ -36,7 +36,8 @@
  * @module
  */
 
-import type { ResolvedProvider } from "./model-providers.js";
+import { foundryBearerTokenProvider } from "./foundry-credentials.js";
+import type { ProviderType, ResolvedProvider } from "./model-providers.js";
 
 /** Where the identity token that proves who this worker is comes from. */
 export type WifIdentitySource =
@@ -447,6 +448,7 @@ export function resetAnthropicWifCredentials(): void {
 export function attachWorkloadIdentity(
     resolved: {
         providerId: string;
+        type?: ProviderType | undefined;
         usesWorkloadIdentity?: boolean | undefined;
         sdkProvider?: ResolvedProvider["sdkProvider"];
     },
@@ -454,6 +456,10 @@ export function attachWorkloadIdentity(
 ): Record<string, unknown> {
     const provider = resolved.sdkProvider as Record<string, unknown>;
     if (!resolved.usesWorkloadIdentity) return provider;
+
+    if (resolved.type === "foundry-wif") {
+        return { ...provider, bearerTokenProvider: foundryBearerTokenProvider() };
+    }
 
     // Said once at session creation, naming the variables that are absent,
     // rather than as an opaque 401 on the first turn of every session that

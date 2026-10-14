@@ -175,6 +175,7 @@ async function runStage(name, ctx) {
         envName: ctx.envName,
         imageTag: ctx.imageTag,
         stagingDir: ctx.stagingDir,
+        npmRegistry: ctx.env.NPM_REGISTRY,
       });
       return;
     case "push":
