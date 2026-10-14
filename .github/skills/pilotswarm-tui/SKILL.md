@@ -119,8 +119,12 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   icon-only down-triangle dashboard picker at the far right; never prepend
   the dashboard name or add a second mobile tab row. Both compact focus
   composers retain Stop during a running turn, with a 44px touch target and
-  disabled pending-request state beside Send. Steer sits between Stop and
-  Send with the same 44px target and pending state.
+  disabled pending-request state beside Send. Phones (600 px or less) have
+  no separate Steer button: the composer is one line (`[input][📎][■][blue
+  button]`, no "you" label) and does not grow when a turn starts; while the
+  turn accepts steering the blue button shows `↪` (`composer-send`,
+  `data-action="steer"`): a tap steers, and with typed text a hold (about
+  0.45 s) opens "Steer now" (lit) and "Queue" (`steer-hold-menu`).
 - Session turn control (Stop and Steer). TUI: `Ctrl+X` (or `Ctrl+Esc`) stops
   the running turn; `Ctrl+T` in the prompt pane sends the prompt text as a
   steer when the turn accepts controls (`acceptsTurnControl` from the
@@ -138,12 +142,16 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   (`↑`), `Ctrl+T` steers now with that message (it replaces the queued message
   when delivered; otherwise it stays queued) and `d` cancels it; the status
   hint shows `ctrl-t steer now` only while it applies, and `?` help lists both.
-  The portal puts **Steer now** and **Cancel** on each message's line inside
-  the queued-prompts strip (`queued-actions`, `queued-item`,
-  `queued-steer-now`, `queued-cancel`, `queued-notice`), so each message
-  appears once; the strip is bounded above the composer in the chat view and
-  ends the transcript in MoA panels and Zen; a steer reads Delivered as soon as it is confirmed. Stop and Steer notices are kept per
-  kind, so one never hides the other's Retry. Portal: a coloured turn-status dot (no visible text; the status is its tooltip and accessible name, `session-turn-state` keeps `data-turn-state` and `data-accepts-controls`) and a Steer button beside Stop, an inline notice for every
+  With an empty prompt and queued messages, `Ctrl+T` steers them all in order
+  (hint `ctrl-t steer N queued`; refused when one has an image). The portal's
+  `↪` does the same (D11): typed text, the selected message (`↑` or a click
+  on its line, desktop only; `✕` deletes it), or with an empty box the whole
+  queue (`↪ N`, `data-steer-target`, `data-count`). The queued-prompts strip
+  has no buttons (`queued-actions`, `queued-item`, `queued-notice`), so each
+  message appears once; a steered line reads "↪ steering" and leaves the
+  strip once the model reads it. The strip is bounded above the composer in
+  the chat view and ends the transcript in MoA panels and Zen. Stop and Steer notices are kept per
+  kind, so one never hides the other's Retry. Portal: no visible turn status (a hidden `session-turn-state` keeps `data-turn-state` and `data-accepts-controls` and names the status) and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and
   transcript items: a steer reads as a user message with a `steer` badge and
   its outcome, a Stop as a short line with its outcome. Both surfaces name a

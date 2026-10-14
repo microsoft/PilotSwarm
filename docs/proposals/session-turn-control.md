@@ -28,7 +28,7 @@ the turn's result.
 9. [Alternatives considered](#9-alternatives-considered)
 10. [Appendices](#10-appendices)
 
-What changed since revision 5: [Changes in revisions 6 to 8](#changes-in-revisions-6-to-8) and [Changes in revision 9](#changes-in-revision-9).
+What changed since revision 5: [Changes in revisions 6 to 8](#changes-in-revisions-6-to-8), [Changes in revision 9](#changes-in-revision-9) and [Changes in revision 10](#changes-in-revision-10).
 
 ## Changes in revisions 6 to 8
 
@@ -105,6 +105,21 @@ schema; its delta is in `packages/sdk/src/migrations/0083_diff.md`.
 | The orchestration's cancel set survives continue-as-new (the newest 200 ids; an id leaves when its prompt is dropped). | An error result's retry continued as new and lost the set, so a replaced message, or a cancelled one, ran. | 4.14 |
 | The give-up state write (`closeControls`) returns the replaced messages of the given-up turn. | A turn end that delivered a converted steer, followed by retries that all threw, would otherwise leave the message queued. | 4.14, 5.1 |
 | **D8.** A steer reads "Delivered" as soon as `session.steer_confirmed` arrives, and keeps it when the turn is then stopped. The kept-text offer after a Stop is unchanged. A converted steer that is not delivered reads "Not delivered · still queued". | Owner decision (2026-10-14). | 4.10, 5.2, 8.1 |
+
+## Changes in revision 10
+
+Revision 10 replaces the per-message Steer now and Cancel buttons with the
+composer's own Steer button (D11, owner decision 2026-10-14 06:37 UTC). It
+supersedes D7: the phone composer is one line again and does not grow when a
+turn starts. The server side is unchanged.
+
+| Change | Why | Section |
+|---|---|---|
+| **D11.** Steer acts on what the composer holds: the typed text; a selected queued message (desktop: `↑` from an empty box or a click on its line); or, with an empty box, every queued text message in order (one steer each, the count on the button). A queued message with an image blocks Steer on the queue and on that message. Past the open-steer cap the rest stay queued with the `too_many` notice. | One Steer button for every case; no buttons on each queued line. | 4.10, 4.14, 8.1 |
+| A selected queued message shows `✕` (delete) in the composer. Phones have no per-message steer or delete (no line selection), as on `main`. | Desktop parity with the TUI's `↑`, `Ctrl+T` and `d`. | 4.10, 4.14 |
+| Phones (600 px or less): one line, `[input][📎][■ while a turn runs][blue button]`, no "you" label. While a turn accepts steering the blue button shows `↪`: a tap steers; with typed text a hold (about 0.45 s) opens "Steer now" (lit) and "Queue" above it. Otherwise it is the plain send or queue button. | No layout jump, and a wide input at 360 px. | 4.10, 8.1 |
+| The composer shows no turn status (no dot, no text). A hidden status element keeps `session-turn-state` and its attributes for screen readers and tests. | Owner decision. | 4.10 |
+| A queued message sent as a steer reads "↪ steering" in the strip. Once the model reads it (`session.steer_confirmed`) its line leaves the strip and the transcript steer item reads "Delivered". If the turn ends or is stopped first, it returns to `✓` queued with one notice and runs next, once. The interim "Delivered · leaves the queue when the turn ends" label is removed. | Owner decision 2 (2026-10-14). | 4.14 |
 
 ## 1. Problem statement
 
@@ -1223,11 +1238,19 @@ The TUI and the portal share the controller, the history and the labels
   `sessions.steering`. The controller sets `acceptsTurnControl` to `false` on
   turn end, Stop, wait and question events. The next detail read brings the
   authoritative value.
-- **Portal.** A Steer button (`↪`) between Stop and Send. A non-accepted
-  answer shows an inline notice with Retry and Dismiss. A Stop that timed out
+- **Portal.** A Steer button (`↪`) between Stop and Send. It acts on what
+  the composer holds (D11): the typed text, a selected queued message, or
+  with an empty box every queued message (`↪ N`). A queued image disables it
+  for the queue and for that message; the reason is its tooltip. On phones
+  (600 px or less) the blue button steers instead: a tap steers, and with
+  typed text a hold opens "Steer now" and "Queue". The composer shows no turn
+  status. A non-accepted answer shows an inline notice with Retry and
+  Dismiss. A Stop that timed out
   without an outcome shows "Stop accepted; waiting for the turn to stop"
   (`stop_pending`) until that Stop's `session.control_outcome` arrives.
-- **TUI.** `Ctrl+T` in the prompt pane steers with the prompt text. `Ctrl+X`
+- **TUI.** `Ctrl+T` in the prompt pane steers with the prompt text, the
+  queued message selected with `↑`, or (empty prompt) every queued text
+  message; a queued image refuses the last with a status-line hint. `Ctrl+X`
   or `Ctrl+Esc` stops. Pressing the same key again resends an unconfirmed
   request with the same id. `Alt+T` (`Option+T`) gives up unresolved requests,
   like the portal's Dismiss. The status hints and the `?` help show the keys
@@ -1261,8 +1284,11 @@ panels never collide.
 | Selector | Attributes |
 |---|---|
 | `turn-stop-button` | `data-state`: `ready`, `stopping` |
-| `turn-steer-button` | `data-state`: `ready`, `sending`, `disabled` (empty composer). Present only when `canSteer`. |
-| `session-turn-state` | `data-turn-state` (the product state), `data-accepts-controls`; shown as a coloured dot with no visible text (tooltip and accessible name: the status, for example "Running · accepts Stop and Steer"; owner, 2026-10-14) |
+| `turn-steer-button` | Desktop only. `data-state`: `ready`, `sending`, `disabled`; `data-steer-target`: `text`, `selected`, `queue`, `none`; `data-count` (the queued messages it steers). Present only when `canSteer`. |
+| `composer-send` | `data-action`: `send`, or `steer` (phones, while the turn accepts steering); with `steer` also `data-state`, `data-steer-target` and `data-count` as above |
+| `steer-hold-menu`, `steer-hold-steer`, `steer-hold-queue` | The phone hold menu (`role="menu"`) and its items (`role="menuitem"`); the lit item has the class `is-lit` |
+| `queued-delete` | The `✕` of a selected queued message (desktop) |
+| `session-turn-state` | `data-turn-state` (the product state), `data-accepts-controls`; no visible pixels: a hidden status whose accessible name is the status, for example "Running · accepts Stop and Steer" (owner, 2026-10-14) |
 | `control-steer`, `control-stop` | `data-control-seq`, `data-outcome`, `data-actor-kind`: `user`, or `agent` for a parent agent's control (4.13) |
 | `control-outcome-badge` | `data-outcome`: `pending`, `delivered`, `carried`, `carried_ran`, `carried_then_stopped`, `carried_not_run`, `not_delivered`, `stopped`, `too_late` |
 | `control-stop-legacy` | `data-outcome`: `stopped`, `stop_forced` |
@@ -1361,23 +1387,24 @@ no orchestration yield and no orchestration change.
   agent tuner's read-only set) and is refused to native tasks. The base
   prompts name both controls in one sentence.
 
-### 4.14 Convert a queued message (Steer now) and Cancel
+### 4.14 Steer a queued message, and Cancel
 
 A message the person sent while a turn runs waits in the orchestration's queue
-(the outbox shows it `✓` queued). Every such message gets two visible
-actions: **Steer now** and **Cancel**. Cancel is the existing tombstone
-(`cancelPendingMessage`) and is never gated. Steer now is offered only while
-the session's running turn accepts turn control, `sessions.steering` is
-effective for the viewer, and the message has no images (a steer is text
-only). The TUI acts on the queued message selected with `↑`: `Ctrl+T` steers
-now, `d` cancels.
+(the outbox shows it `✓` queued). Steer sends it to the running turn now
+(D11): the selected queued message, or with an empty composer every queued
+text message in order. Delete (`✕`, the TUI's `d`) is the existing tombstone
+(`cancelPendingMessage`) and is never gated. Steer is offered only while the
+session's running turn accepts turn control, `sessions.steering` is
+effective for the viewer, and no message it would send has images (a steer
+is text only). Past the open-steer cap (`too_many`) the messages not sent
+stay queued with that notice.
 
-Steer now sends the message's text as a steer that names it:
+Steer sends each message's text as a steer that names it:
 `steerSessionTurn(sessionId, { text, requestId, replacesClientMessageId })`
 (management client, Web API, MCP `replaces_client_message_id`).
 
 ```text
-client: X queued, "Steering…" ─► cms_turn_control_add(..., p_replaces = X)
+client: X queued, "↪ steering" ─► cms_turn_control_add(..., p_replaces = X)
    request-id retry → first answer │ same X, open or delivered → first answer
    steering_disabled │ X recorded as a prompt → already_received │ no_turn │ legacy_turn │ too_many
    else user.steer { ..., replacesClientMessageId: X }
@@ -1411,25 +1438,27 @@ Why the text runs exactly once (for a session with a store; D4 otherwise):
 - **Not delivered.** X stays queued and runs in its own place. The client
   never re-sends it: X is its own fallback.
 
-The client keeps X queued with the phase `steering` ("Steering…"; once the
-model has read the steer, `session.steer_confirmed`, "Delivered · leaves the
-queue when the turn ends" with no buttons and `data-confirmed="true"`) until X is
-dropped (its `pending_messages.cancelled` receipt) or its steer's outcome is
-not `delivered`; then X is queued again with a notice ("Could not steer: <reason>.
-Still queued."). A refusal does the same. `already_received` says the agent
+The client keeps X with the phase `steering` ("↪ steering" in the strip)
+until X is dropped (its `pending_messages.cancelled` receipt) or its steer's
+outcome is not `delivered`; then X is queued again with a notice ("Could not
+steer: <reason>. Still queued."). Once the model has read the steer
+(`session.steer_confirmed`), X leaves the strip; it comes back queued with
+the notice if the turn is then stopped. A refusal does the same. `already_received` says the agent
 already has the message; its own receipt clears it. A request id is reused
 only to retry a request that got no answer; any definite answer ends it.
 
-The portal shows the actions inside the queued-prompts strip, one line per
-message, so each message appears once. In the chat view the strip sits in
-the bounded bottom area above the composer (at most 34% of the pane; it
-scrolls), so the input and Stop, Steer and Send stay on screen with any
+The portal shows the queued-prompts strip with one line per message, so each
+message appears once; its lines have no buttons. On a desktop a click on a
+line selects it in the composer, as `↑` does. In the chat view the strip sits
+in the bounded bottom area above the composer (at most 34% of the pane; it
+scrolls), so the input and the composer's buttons stay on screen with any
 number of queued messages. In the compact views (MoA panels, Zen) the strip
 ends the transcript and scrolls with it. Portal selectors: `queued-actions`
 (the strip, with `data-session-id`), `queued-item` (one per message;
 `data-phase`: `pending`, `queued`, `steering`, `cancelling`, `rejected`;
-`data-item-id`), `queued-steer-now`, `queued-cancel`, `queued-notice`. The transcript steer item keeps
-`control-steer`; its `data-outcome` can be `not_delivered_still_queued`.
+`data-item-id`; `data-selected="true"` when selected), `queued-notice`. The
+transcript steer item keeps `control-steer`; its `data-outcome` can be
+`not_delivered_still_queued`.
 
 ## 5. Recovery and edge cases
 
@@ -1728,7 +1757,10 @@ block, so these cases run concurrently with the rest of the file.
 ### 7.6 Browser and TUI
 
 Component level: `packages/app/ui/core/test/turn-control-history.test.mjs`,
-`turn-control-controller.test.mjs`, `packages/app/tui/test/turn-control-keys.test.mjs`,
+`turn-control-controller.test.mjs`, `turn-control-convert.test.mjs` (what
+Steer acts on, the image rule, the queue in order, the line leaving on
+confirmation), `steer-hold.test.mjs` (the phone hold menu),
+`packages/app/tui/test/turn-control-keys.test.mjs`,
 and the portal e2e specs `packages/app/web/test/e2e/turn-control.spec.mjs`
 and `mobile-header-status.spec.mjs`. They assert every selector and attribute
 of the `data-testid` contract (4.10), labels across history pages and after a
@@ -1817,10 +1849,11 @@ All decisions are decided by the owner.
 | D4 | Sessions without a session store | today's crash behaviour; no crash guarantee for steers |
 | D5 | A Stop that arrives after the turn finished | answered "too late", and it cancels any carried steers |
 | D6 | A carried steer whose consuming turn ends stopped | option A: it is not run again; its outcome stays `carried`; clients show "Carried, then stopped" (2026-10-13) |
-| D7 | Phone composer (viewport 600 px or less) while a turn runs | option A: the turn state, Stop, Steer and Send take their own row under the input, so the composer is exactly one action row taller than when idle. Nothing moves within a phase. The input keeps at least 70% of the composer width while Stop shows, and the controls fit on their row at 320 x 400 (2026-10-14) |
+| D7 | Phone composer (viewport 600 px or less) while a turn runs | superseded by D11 (the composer is one line again). Was option A: the turn state, Stop, Steer and Send take their own row under the input, so the composer is exactly one action row taller than when idle. Nothing moves within a phase. The input keeps at least 70% of the composer width while Stop shows, and the controls fit on their row at 320 x 400 (2026-10-14) |
 | D8 | When a steer reads "Delivered" | as soon as `session.steer_confirmed` arrives; it stays "Delivered" when the turn is then stopped. A label change only: the kept-text offer after a Stop is unchanged (2026-10-14) |
 | D9 | Convert a queued message (4.14) | a delivered converted steer replaces the message; any other outcome leaves it queued; a converted steer is never carried; the double fault of 5.1 is an accepted residual (2026-10-14) |
 | D10 | What a stopped turn keeps | option A: a stopped turn is not saved (as on main): the model forgets the stopped request, its partial answer and the tool results of that turn; the transcript still shows them. To continue, re-send or rephrase the request. No code change (owner, 2026-10-14 04:47 UTC) |
+| D11 | The composer design for Steer and the queue | Steer acts on the typed text, a selected queued message, or (empty box) every queued text message in order, with the count on the button; a queued image disables it for the queue and for that message; past the open-steer cap the rest stay queued with the notice. Desktop: `↪` (22 px, bold) between Stop and Send; `✕` deletes a selected queued message. Phones: one line, no "you" label, no separate Steer button; the blue button steers on a tap and offers Queue on a hold (about 0.45 s, typed text only; the default is Steer every time). No per-message steer or delete on phones. No visible turn status at any width. A steered queued message leaves the strip once the model reads it (owner, 2026-10-14 06:37 UTC) |
 
 ### 8.2 Checks
 

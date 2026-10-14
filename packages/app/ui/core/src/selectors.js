@@ -1779,6 +1779,9 @@ function buildAnsweredPendingQuestionMessage(session, chat = []) {
 
 function buildPendingOutboxMessage(sessionId, item) {
     if (!sessionId || !item?.id) return null;
+    // The model read its steer: it waits out of sight for the orchestration's
+    // drop (or comes back queued if the turn is stopped).
+    if (item.phase === "steering" && item.convert?.confirmed) return null;
     const text = String(item.text || "").trim();
     if (!text) return null;
     return {
@@ -1787,14 +1790,8 @@ function buildPendingOutboxMessage(sessionId, item) {
         text,
         time: "",
         createdAt: Number(item.createdAt) || Date.now(),
-        pendingPhase: item.phase === "cancelling"
-            ? "cancelling"
-            : item.phase === "rejected"
-                ? "rejected"
-                // A message being converted (Steer now) is still durably queued.
-                : item.phase === "queued" || item.phase === "steering"
-                    ? "queued"
-                    : "pending",
+        // A message sent as a steer waits as "steering" (still durably queued).
+        pendingPhase: ["cancelling", "rejected", "queued", "steering"].includes(item.phase) ? item.phase : "pending",
     };
 }
 
@@ -2201,6 +2198,9 @@ function describeChatMessageHeader(message, options = {}) {
     } else if (message?.pendingPhase === "queued") {
         glyph = "✓";
         glyphColor = "cyan";
+    } else if (message?.pendingPhase === "steering") {
+        glyph = "↪";
+        glyphColor = "cyan";
     } else if (message?.pendingPhase === "cancelling" || message?.pendingPhase === "rejected") {
         glyph = "x";
         glyphColor = "red";
@@ -2224,7 +2224,7 @@ function describeChatMessageHeader(message, options = {}) {
 
     const roleColor = message?.pendingPhase === "pending"
         ? "yellow"
-        : message?.pendingPhase === "queued"
+        : message?.pendingPhase === "queued" || message?.pendingPhase === "steering"
             ? "cyan"
             : message?.pendingPhase === "cancelling" || message?.pendingPhase === "rejected"
                 ? "red"
@@ -3399,40 +3399,26 @@ function buildTurnControlLines(message, maxWidth, options = {}) {
 
 const NO_KEPT_STEERS = Object.freeze([]);
 
-/** Stop and Steer state of one session, for the composer and the TUI status line. */
-const TURN_STATE_TONES = {
-    running: "running",
-    idle: "idle",
-    waiting: "waiting",
-    input_required: "waiting",
-    error: "error",
-    failed: "error",
-    pending: "done",
-    completed: "done",
-    cancelled: "done",
-};
 const TURN_STATE_LABELS = { input_required: "Waiting for input" };
 
 /**
- * The composer's turn status, shown as a coloured dot with no visible text:
- * its tone, and the label used as its tooltip and accessible name.
+ * The turn status in words. The composer shows no turn status; this label is
+ * the accessible name of its hidden status element, which tests also read.
  */
-export function selectTurnStateIndicator({ status, acceptsControls = false, stopping = false } = {}) {
-    if (stopping) return { tone: "waiting", label: "Stopping…" };
+export function selectTurnStateLabel({ status, acceptsControls = false, stopping = false } = {}) {
+    if (stopping) return "Stopping…";
     const key = String(status || "pending");
     const words = key.replace(/_/g, " ");
-    const label = key === "running" && acceptsControls ? "Running · accepts Stop and Steer"
+    return key === "running" && acceptsControls ? "Running · accepts Stop and Steer"
         : TURN_STATE_LABELS[key] || words.charAt(0).toUpperCase() + words.slice(1);
-    return { tone: TURN_STATE_TONES[key] || "idle", label };
 }
 
+/** Stop and Steer state of one session, for the composer and the TUI status line. */
 export function selectTurnControlView(state, sessionId = state?.sessions?.activeSessionId) {
     const session = sessionId ? state?.sessions?.byId?.[sessionId] || null : null;
     const entry = sessionId ? state?.turnControl?.bySessionId?.[sessionId] || null : null;
     const acceptsControls = Boolean(session && session.acceptsTurnControl === true && session.status === "running");
     const steeringEnabled = state?.turnControl?.steeringEnabled === true;
-    // A selected pending/queued outbox message owns the composer text.
-    const editingOutbox = Boolean(sessionId && state?.ui?.promptEdit?.sessionId === sessionId);
     const steerNotice = entry?.steerNotice || null;
     const stopNotice = entry?.stopNotice || null;
     return {
@@ -3441,7 +3427,7 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         acceptsControls,
         steeringEnabled,
         canStop: canStopSessionTurn(session),
-        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled && !editingOutbox),
+        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
         steer: entry?.steer || null,
         stop: entry?.stop || null,
         steerNotice,
@@ -3451,6 +3437,32 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         // The most recent notice of either kind (status-line hints).
         notice: steerNotice && stopNotice ? (steerNotice.at >= stopNotice.at ? steerNotice : stopNotice) : steerNotice || stopNotice,
     };
+}
+
+const hasImages = (item) => Array.isArray(item?.attachments) && item.attachments.length > 0;
+
+/**
+ * What Steer acts on now (the desktop ↪ button, the phone's blue button and
+ * Ctrl+T): the typed text; else a selected queued message; else, with an
+ * empty box, every queued message in order. A steer is text only, so a
+ * message with an image cannot be steered, and with one queued the queue
+ * cannot be steered either. `blocked` says why Steer does nothing.
+ */
+export function selectSteerAction(state, sessionId = state?.sessions?.activeSessionId) {
+    const outbox = sessionId && Array.isArray(state?.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
+    const action = { available: selectTurnControlView(state, sessionId).canSteer, target: "none", count: 0, itemIds: [], blocked: null };
+    const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
+    if (promptEdit) {
+        const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
+        if (item?.phase !== "queued") return { ...action, target: "selected", blocked: "Only a queued message can be steered" };
+        if (hasImages(item)) return { ...action, target: "selected", blocked: "This message has an image; images cannot be steered" };
+        return { ...action, target: "selected", count: 1, itemIds: [item.id] };
+    }
+    if (String(state?.ui?.prompt || "").trim()) return { ...action, target: "text" };
+    const queued = outbox.filter((item) => item?.phase === "queued");
+    if (queued.length === 0) return action;
+    if (queued.some(hasImages)) return { ...action, target: "queue", count: queued.length, blocked: "A queued message has an image; images cannot be steered" };
+    return { ...action, target: "queue", count: queued.length, itemIds: queued.map((item) => item.id) };
 }
 
 /**
@@ -3718,8 +3730,8 @@ export function selectActiveOutboxMessages(state) {
         : [];
 }
 
-// Convert a queued message (Steer now): the notice a queued item shows when a
-// conversion did not happen. The message itself stays queued and runs.
+// A queued message sent as a steer: the notice it shows when the steer did
+// not happen. The message itself stays queued and runs.
 const CONVERT_NOTICE_REASONS = {
     not_delivered: "the turn ended before the agent read it",
     no_turn: "no turn is running",
@@ -3741,26 +3753,21 @@ export function formatConvertNotice(notice) {
 }
 
 /**
- * Whether Steer now is offered for a queued outbox item: a durably queued
- * text message (no images: a steer is text only) of a session whose running
- * turn accepts steering for this viewer.
+ * Whether a queued outbox item can be sent as a steer: a durably queued text
+ * message (no images: a steer is text only) of a session whose running turn
+ * accepts steering for this viewer.
  */
 export function canConvertQueuedItem(state, sessionId, item) {
-    const session = sessionId ? state?.sessions?.byId?.[sessionId] : null;
-    return Boolean(session && !session.isGroup && !session.serviceKind
-        && session.acceptsTurnControl === true && session.status === "running"
-        && state?.turnControl?.steeringEnabled === true
-        && item?.phase === "queued" && !(Array.isArray(item.attachments) && item.attachments.length > 0));
+    return selectTurnControlView(state, sessionId).canSteer && item?.phase === "queued" && !hasImages(item);
 }
 
-const OUTBOX_PHASE_LABELS = { steering: "Steering…", cancelling: "Cancelling…" };
+const OUTBOX_PHASE_LABELS = { steering: "steering", cancelling: "Cancelling…" };
 
 /**
  * The outbox strip of the active session: its header line and one block per
- * message (its transcript lines, its phase and its actions: Steer now, which
- * converts a queued message to a steer of the running turn, and Cancel).
- * The portal renders the blocks with their buttons; the TUI renders the
- * flattened lines and acts on the selected message (Ctrl+T, d).
+ * message (its transcript lines, its phase label and its notice). The portal
+ * renders the blocks; the TUI renders the flattened lines. Steer and Cancel
+ * act on the selected message or the queue from the composer.
  * `revision` changes with everything a block shows, so a view that keeps the
  * strip after its transcript follows any change of it.
  */
@@ -3775,11 +3782,13 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
     const messages = entries.map((entry) => entry.message);
     const queuedCount = messages.filter((message) => message.pendingPhase === "queued").length;
     const pendingCount = messages.filter((message) => message.pendingPhase === "pending").length;
+    const steeringCount = messages.filter((message) => message.pendingPhase === "steering").length;
     const cancellingCount = messages.filter((message) => message.pendingPhase === "cancelling").length;
     const rejectedCount = messages.filter((message) => message.pendingPhase === "rejected").length;
     const parts = [];
     if (pendingCount > 0) parts.push(`${pendingCount} pending`);
     if (queuedCount > 0) parts.push(`${queuedCount} queued`);
+    if (steeringCount > 0) parts.push(`${steeringCount} steering`);
     if (cancellingCount > 0) parts.push(`${cancellingCount} cancelling`);
     if (rejectedCount > 0) parts.push(`${rejectedCount} rejected`);
     const label = parts.length > 0 ? parts.join(" · ") : "queued prompts";
@@ -3801,24 +3810,17 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
         if (nextMessage && shouldInsertChatSpacer(message, nextMessage) && flattenLineText(all[all.length - 1]).trim().length > 0) {
             all.push(createBlankLine());
         }
-        // The model read a converted message's steer: it waits only for the drop.
-        const confirmed = item.phase === "steering" && item.convert?.confirmed === true;
         return {
             itemId: item.id,
             phase: item.phase,
-            confirmed,
-            phaseLabel: confirmed ? "Delivered · leaves the queue when the turn ends"
-                // The orchestration reads a cancel when it drains, after the running turn.
-                : item.phase === "cancelling" && turnRunning ? "Cancelling · takes effect when the turn ends"
-                    : OUTBOX_PHASE_LABELS[item.phase] || null,
-            canSteer: canConvertQueuedItem(state, sessionId, item),
-            canCancel: item.phase === "queued",
+            // The orchestration reads a cancel when it drains, after the running turn.
+            phaseLabel: item.phase === "cancelling" && turnRunning ? "Cancelling · takes effect when the turn ends"
+                : OUTBOX_PHASE_LABELS[item.phase] || null,
             notice: formatConvertNotice(item.convertNotice),
             lines: all.slice(start),
         };
     });
-    const revision = blocks.map((block) => [block.itemId, block.phase, block.phaseLabel, block.canSteer, block.canCancel,
-        block.notice, block.lines.length].join(":")).join("|");
+    const revision = blocks.map((block) => [block.itemId, block.phase, block.phaseLabel, block.notice, block.lines.length].join(":")).join("|");
     return { header, blocks, revision };
 }
 
@@ -6116,8 +6118,9 @@ export function selectStatusBar(state) {
     const hasPendingOutbox = activeOutbox.some((item) => item?.phase === "pending");
     const editingPendingOutbox = state.ui.promptEdit?.sessionId === activeSession?.sessionId;
     const selectedQueuedOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "queued";
-    const selectedQueuedCanSteer = selectedQueuedOutbox && canConvertQueuedItem(state, state.ui.promptEdit.sessionId,
-        (state.outbox?.bySessionId?.[state.ui.promptEdit.sessionId] || []).find((item) => item?.id === state.ui.promptEdit.itemId));
+    const steerAction = selectSteerAction(state, activeSession?.sessionId);
+    const steerReady = steerAction.available && !steerAction.blocked;
+    const selectedQueuedCanSteer = selectedQueuedOutbox && steerReady;
     const selectedCancellingOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "cancelling";
     const fullscreenHint = paneFullscreen === focus ? "v/esc close fullscreen" : "v fullscreen";
     if (state.ui.modal?.type === "artifactUpload") {
@@ -6255,10 +6258,10 @@ export function selectStatusBar(state) {
     const turnControl = selectTurnControlView(state);
     if (turnControl.steer?.phase === "unconfirmed" && focus === FOCUS_REGIONS.PROMPT) {
         right = `ctrl-t retry steer · ${right}`;
-    } else if (turnControl.kept.length > 0 && focus === FOCUS_REGIONS.PROMPT && !String(state.ui.prompt || "").trim()) {
+    } else if (turnControl.kept.length > 0 && focus === FOCUS_REGIONS.PROMPT && steerAction.target === "none") {
         right = `ctrl-t restore steer text · ${right}`;
-    } else if (turnControl.canSteer && focus === FOCUS_REGIONS.PROMPT) {
-        right = `ctrl-t steer · ${right}`;
+    } else if (steerReady && focus === FOCUS_REGIONS.PROMPT && steerAction.target !== "selected") {
+        right = `ctrl-t steer${steerAction.target === "queue" ? ` ${steerAction.count} queued` : ""} · ${right}`;
     }
     if (focus === FOCUS_REGIONS.PROMPT && (turnControl.steer?.phase === "unconfirmed" || turnControl.stop?.phase === "unconfirmed")) {
         right = right.replace(/^((?:ctrl-t [a-z ]+ · )?)/, "$1alt-t give up · ");
@@ -9594,7 +9597,7 @@ const KEYBINDING_HELP = [
         ["m", "cycle inspector tab"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
-        ["ctrl-t", "prompt: steer the running turn with the prompt text, or steer now with a selected queued message (steering feature)", { dim: true }],
+        ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],
         ["alt-t", "prompt: give up an unconfirmed Stop/Steer; steer text returns to the prompt", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
@@ -9642,6 +9645,7 @@ const KEYBINDING_HELP = [
         ["↑ / ↓", "at the top / bottom line: select queued and pending messages"],
         ["d", "selected queued message: cancel it"],
         ["ctrl-t", "selected queued message: steer now (sends it to the running turn)"],
+        ["ctrl-t", "empty prompt: steer every queued message now, in order (not when one has an image)"],
     ] },
     { section: "Overlays", bindings: [
         ["Esc / q", "close"],

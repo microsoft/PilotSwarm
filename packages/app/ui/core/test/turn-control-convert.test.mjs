@@ -1,7 +1,7 @@
-// Convert a queued message to a steer, or cancel it (portal and TUI share
-// this controller). Steer now sends the queued text as a steer that replaces
-// the queued message; the message stays queued ("Steering…") until the
-// orchestration drops it (delivered) or the steer misses (still queued).
+// Convert queued messages to steers, or cancel them (portal and TUI share
+// this controller). Steer sends a queued text as a steer that replaces the
+// queued message; the message waits as "↪ steering" until the model reads the
+// steer (then it leaves the strip) or the steer misses (queued again).
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -13,6 +13,7 @@ import {
     selectOutboxOverlayBlocks,
     selectOutboxOverlayLines,
     selectStatusBar,
+    selectSteerAction,
     buildHelpModalRows,
 } from "../src/index.js";
 
@@ -48,13 +49,14 @@ function harness({ steer = { outcome: "accepted", steerId: 70, turn: 2 }, sessio
     };
     const item = (id) => controller.getSessionOutbox(SID).find((entry) => entry.id === id);
     const block = (id) => selectOutboxOverlayBlocks(store.getState(), 80).blocks.find((entry) => entry.itemId === id);
+    const text = (id) => block(id).lines.map((line) => line.map((run) => run.text).join("")).join("\n");
     const event = (eventType, data, seq) => controller.reconcileOutboxAgainstEvent(SID, { sessionId: SID, seq, eventType, data });
-    return { controller, store, calls, queue, item, block, event };
+    return { controller, store, calls, queue, item, block, text, event };
 }
 
 const networkError = () => new TypeError("fetch failed");
 
-test("Steer now sends the queued text as a steer that replaces the queued message, and shows Steering…", async () => {
+test("Steer sends the queued text as a steer that replaces the queued message; its line reads ↪ steering", async () => {
     const h = harness();
     const x = h.queue("check the build");
     await h.controller.convertQueuedToSteer(SID, x.id);
@@ -62,16 +64,16 @@ test("Steer now sends the queued text as a steer that replaces the queued messag
     assert.deepEqual({ text: h.calls.steer[0].text, replaces: h.calls.steer[0].replacesClientMessageId }, { text: "check the build", replaces: x.id });
     assert.ok(h.calls.steer[0].requestId);
     assert.equal(h.item(x.id).phase, "steering");
-    assert.equal(h.block(x.id).phaseLabel, "Steering…");
-    assert.equal(h.block(x.id).canSteer, false);
-    assert.equal(h.block(x.id).canCancel, false);
+    assert.equal(h.block(x.id).phaseLabel, "steering");
+    assert.match(h.text(x.id), /↪ You: check the build/);
+    assert.equal(selectOutboxOverlayBlocks(h.store.getState(), 80).header[0].text, " queued prompts: 1 steering ");
     // A second click while it is open sends nothing.
     await h.controller.convertQueuedToSteer(SID, x.id);
     assert.equal(h.calls.steer.length, 1);
     assert.equal(h.calls.send.length, 0);
 });
 
-test("delivered: the item stays Steering… until the orchestration's converted_to_steer receipt removes it", async () => {
+test("delivered: the item stays (out of the strip once read) until the orchestration's converted_to_steer receipt removes it", async () => {
     const h = harness();
     const x = h.queue();
     await h.controller.convertQueuedToSteer(SID, x.id);
@@ -134,20 +136,72 @@ test("no answer: queued again; Steer now retries with the same request id until 
     assert.notEqual(h.calls.steer[2].requestId, h.calls.steer[1].requestId);
 });
 
-test("Steer now is offered only on a queued text item while a running turn accepts steering; Cancel always", () => {
-    const allowed = harness();
-    const x = allowed.queue();
-    const pending = allowed.controller.buildOutboxItem("not yet durable", "pending");
-    allowed.controller.setSessionOutboxItems(SID, [...allowed.controller.getSessionOutbox(SID), pending]);
-    const withImage = allowed.queue("look", { attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] });
-    assert.deepEqual([allowed.block(x.id).canSteer, allowed.block(x.id).canCancel], [true, true]);
-    assert.deepEqual([allowed.block(pending.id).canSteer, allowed.block(pending.id).canCancel], [false, false]);
-    assert.deepEqual([allowed.block(withImage.id).canSteer, allowed.block(withImage.id).canCancel], [false, true]);
+test("Steer acts on the typed text, else a selected queued message, else every queued message (not while idle, legacy or steering off)", () => {
+    const h = harness();
+    const action = () => selectSteerAction(h.store.getState(), SID);
+    assert.deepEqual(action(), { available: true, target: "none", count: 0, itemIds: [], blocked: null });
+    const x = h.queue("first");
+    const pending = h.controller.buildOutboxItem("not yet durable", "pending");
+    h.controller.setSessionOutboxItems(SID, [...h.controller.getSessionOutbox(SID), pending]);
+    const y = h.queue("second");
+    assert.deepEqual(action(), { available: true, target: "queue", count: 2, itemIds: [x.id, y.id], blocked: null });
+    h.controller.setPrompt("typed guidance");
+    assert.deepEqual(action(), { available: true, target: "text", count: 0, itemIds: [], blocked: null });
+    h.controller.setPrompt("");
+    h.controller.enterPendingPromptEdit(SID, y.id);
+    assert.deepEqual(action(), { available: true, target: "selected", count: 1, itemIds: [y.id], blocked: null });
+    h.controller.enterPendingPromptEdit(SID, pending.id);
+    assert.deepEqual(action(), { available: true, target: "selected", count: 0, itemIds: [], blocked: "Only a queued message can be steered" });
+    for (const options of [{ flags: { effective: false } }, { session: { status: "idle", acceptsTurnControl: false } }, { session: { acceptsTurnControl: false } }, { session: { serviceKind: "distiller" } }]) {
+        const off = harness(options);
+        off.queue();
+        assert.equal(selectSteerAction(off.store.getState(), SID).available, false, JSON.stringify(options));
+    }
+});
 
-    for (const options of [{ flags: { effective: false } }, { session: { status: "idle" } }, { session: { acceptsTurnControl: false } }, { session: { serviceKind: "distiller" } }]) {
-        const h = harness(options);
-        const y = h.queue();
-        assert.deepEqual([h.block(y.id).canSteer, h.block(y.id).canCancel], [false, true], JSON.stringify(options));
+test("a message with an image cannot be steered: with one queued, Steer on the queue is blocked; selected, too", () => {
+    const h = harness();
+    const x = h.queue("text only");
+    const withImage = h.queue("look", { attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] });
+    const blocked = "A queued message has an image; images cannot be steered";
+    assert.deepEqual(selectSteerAction(h.store.getState(), SID), { available: true, target: "queue", count: 2, itemIds: [], blocked });
+    h.controller.enterPendingPromptEdit(SID, withImage.id);
+    assert.deepEqual(selectSteerAction(h.store.getState(), SID), { available: true, target: "selected", count: 0, itemIds: [], blocked: "This message has an image; images cannot be steered" });
+    h.controller.enterPendingPromptEdit(SID, x.id);
+    assert.equal(selectSteerAction(h.store.getState(), SID).blocked, null);
+});
+
+test("Steer with an empty box steers every queued message in order, each replacing its message", async () => {
+    let seq = 70;
+    const h = harness({ steer: () => ({ outcome: "accepted", steerId: seq++, turn: 2 }) });
+    const x = h.queue("first");
+    const y = h.queue("second");
+    await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.deepEqual(h.calls.steer.map((call) => [call.text, call.replacesClientMessageId]), [["first", x.id], ["second", y.id]]);
+    assert.notEqual(h.calls.steer[0].requestId, h.calls.steer[1].requestId);
+    assert.deepEqual([h.item(x.id).phase, h.item(y.id).phase], ["steering", "steering"]);
+    assert.equal(h.calls.send.length, 0);
+});
+
+test("Steer with an empty box and a queued image sends nothing and says why", async () => {
+    const h = harness();
+    h.queue("first");
+    h.queue("look", { attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] });
+    await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(h.calls.steer.length, 0);
+    assert.equal(h.store.getState().ui.statusText, "A queued message has an image; images cannot be steered");
+});
+
+test("past the open-steer cap the first messages go; the rest stay queued with the too-many notice and are not sent", async () => {
+    let call = 0;
+    const h = harness({ steer: () => (++call === 1 ? { outcome: "accepted", steerId: 70, turn: 2 } : { outcome: "too_many" }) });
+    const [a, b, c] = [h.queue("a"), h.queue("b"), h.queue("c")];
+    await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(h.calls.steer.length, 2);
+    assert.equal(h.item(a.id).phase, "steering");
+    for (const rest of [b, c]) {
+        assert.equal(h.item(rest.id).phase, "queued");
+        assert.equal(h.block(rest.id).notice, "Could not steer: too many open steers on this turn. Still queued.");
     }
 });
 
@@ -179,11 +233,15 @@ test("Steer (Ctrl+T) on a selected queued item converts it; on a selected pendin
     assert.equal(p.calls.steer.length, 0);
 });
 
-test("the TUI status line offers ctrl-t steer now on a selected queued message only when it applies; help lists the keys", () => {
+test("the TUI status line offers ctrl-t steer on a selected queued message, and on the queue with an empty prompt, only when it applies; help lists the keys", () => {
     const h = harness();
     const x = h.queue();
-    h.controller.selectPreviousPendingPrompt(SID);
     h.store.dispatch({ type: "ui/focus", focusRegion: "prompt" });
+    assert.match(selectStatusBar(h.store.getState()).right, /^ctrl-x stop · ctrl-t steer 1 queued · /);
+    h.queue("with image", { attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] });
+    assert.doesNotMatch(selectStatusBar(h.store.getState()).right, /ctrl-t steer/);
+    h.controller.setSessionOutboxItems(SID, [h.item(x.id)]);
+    h.controller.selectPreviousPendingPrompt(SID);
     assert.match(selectStatusBar(h.store.getState()).right, /queued prompt selected · ctrl-t steer now · d cancel/);
     const off = harness({ flags: { effective: false } });
     off.queue();
@@ -193,6 +251,7 @@ test("the TUI status line offers ctrl-t steer now on a selected queued message o
     assert.doesNotMatch(selectStatusBar(off.store.getState()).right, /steer now/);
     const help = buildHelpModalRows().map((row) => row.map((run) => run.text).join("")).join("\n");
     assert.match(help, /selected queued message: steer now/);
+    assert.match(help, /empty prompt: steer every queued message/);
     assert.match(help, /selected queued message: cancel it/);
     assert.ok(x.id);
 });
@@ -239,41 +298,44 @@ test("no answer, then the steer's record and a delivered outcome arrive: the con
     assert.equal(h.item(x.id), undefined);
 });
 
-test("the strip shows each message once: its blocks are exactly the flattened strip lines, with the actions on each block", () => {
+test("the strip shows each message once: its blocks are exactly the flattened strip lines", () => {
     const h = harness();
     const a = h.queue("first queued message");
     const b = h.queue("second queued message");
     const { header, blocks } = selectOutboxOverlayBlocks(h.store.getState(), 60);
     assert.deepEqual(selectOutboxOverlayLines(h.store.getState(), 60), [header, ...blocks.flatMap((block) => block.lines)]);
-    assert.deepEqual(blocks.map((block) => [block.itemId, block.canSteer, block.canCancel]), [[a.id, true, true], [b.id, true, true]]);
+    assert.deepEqual(blocks.map((block) => block.itemId), [a.id, b.id]);
     const text = (block) => block.lines.map((line) => line.map((run) => run.text).join("")).join("\n");
     assert.match(text(blocks[0]), /first queued message/);
     assert.doesNotMatch(text(blocks[0]), /second queued message/);
 });
 
-test("once the model has read the converted steer, its row says Delivered · leaves the queue when the turn ends (no buttons) until the drop; a Stop still brings it back queued", async () => {
+test("once the model has read the converted steer, its line leaves the strip; a later not_delivered brings it back queued with its notice", async () => {
     const h = harness();
     const x = h.queue();
+    const y = h.queue("still waiting");
     await h.controller.convertQueuedToSteer(SID, x.id);
-    assert.equal(h.block(x.id).phaseLabel, "Steering…");
+    assert.equal(h.block(x.id).phaseLabel, "steering");
     h.event("session.steer_confirmed", { seq: 70, turn: 2, messageId: "m-1" }, 80);
     assert.equal(h.item(x.id).phase, "steering");
-    assert.deepEqual([h.block(x.id).phaseLabel, h.block(x.id).confirmed, h.block(x.id).canSteer, h.block(x.id).canCancel], ["Delivered · leaves the queue when the turn ends", true, false, false]);
+    assert.equal(h.block(x.id), undefined);
+    assert.equal(selectOutboxOverlayBlocks(h.store.getState(), 80).header[0].text, " queued prompts: 1 queued ");
+    assert.ok(h.block(y.id));
     // The turn is then stopped: the steer is not delivered and the message is queued again.
     h.event("session.control_outcome", { seq: 70, turn: 2, outcome: "not_delivered" }, 81);
     assert.equal(h.item(x.id).phase, "queued");
-    assert.equal(h.block(x.id).confirmed, false);
     assert.equal(h.block(x.id).notice, "Could not steer: the turn ended before the agent read it. Still queued.");
 });
 
-test("a confirmation already loaded when the steer is accepted marks the row at once", async () => {
+test("a confirmation already loaded when the steer is accepted takes the line out at once", async () => {
     const h = harness();
     const x = h.queue();
     h.store.dispatch({ type: "history/set", sessionId: SID, history: { chat: [], activity: [], events: [
         { sessionId: SID, seq: 80, eventType: "session.steer_confirmed", data: { seq: 70, turn: 2, messageId: "m-1" } },
     ], lastSeq: 80 } });
     await h.controller.convertQueuedToSteer(SID, x.id);
-    assert.equal(h.block(x.id).phaseLabel, "Delivered · leaves the queue when the turn ends");
+    assert.equal(h.block(x.id), undefined);
+    assert.equal(selectOutboxOverlayBlocks(h.store.getState(), 80).header, null);
 });
 
 test("a cancelled queued message says when the cancel takes effect: at turn end while a turn runs", async () => {
@@ -287,7 +349,7 @@ test("a cancelled queued message says when the cancel takes effect: at turn end 
     assert.equal(idle.block(y.id).phaseLabel, "Cancelling…");
 });
 
-test("the strip's revision changes with everything a queued line shows, so a compact view follows label- and action-only changes", async () => {
+test("the strip's revision changes with everything a queued line shows, so a compact view follows label-only changes and a line that grows", async () => {
     const h = harness();
     const x = h.queue();
     const revision = () => selectOutboxOverlayBlocks(h.store.getState(), 80).revision;
@@ -297,17 +359,14 @@ test("the strip's revision changes with everything a queued line shows, so a com
         assert.ok(!seen.includes(next), why);
         seen.push(next);
     };
-    // Actions only: the running turn stops accepting steering, then accepts it again.
-    h.store.dispatch({ type: "sessions/merged", session: { sessionId: SID, acceptsTurnControl: false } });
-    changed("Steer now leaves");
-    h.store.dispatch({ type: "sessions/merged", session: { sessionId: SID, acceptsTurnControl: true } });
-    assert.equal(revision(), seen[0]);
-    seen.splice(0, seen.length, revision());
-    // Label only: the model reads the converted steer (phase stays steering).
+    // A queued line whose text grows: the same message, more lines.
+    h.controller.setSessionOutboxItems(SID, h.controller.getSessionOutbox(SID).map((item) => (
+        item.id === x.id ? { ...item, text: `${item.text}\nand a second paragraph that makes it longer` } : item
+    )));
+    changed("the line grows");
+    // Label only: the steer is sent (phase steering, ↪ steering).
     await h.controller.convertQueuedToSteer(SID, x.id);
-    changed("Steering…");
-    h.event("session.steer_confirmed", { seq: 70, turn: 2, messageId: "m-1" }, 80);
-    changed("Delivered · leaves the queue when the turn ends");
+    changed("steering");
     // Label only: a cancel waits for the turn end, then the turn ends (phase stays cancelling).
     const y = h.queue("a second line");
     changed("a second queued line");

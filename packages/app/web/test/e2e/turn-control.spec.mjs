@@ -6,7 +6,7 @@
 // session view, in the Master of Agents dashboard and in the phone focus views.
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect, chromium, webkit } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
 const SID = "11111110-2222-3333-4444-555555555550";
@@ -172,8 +172,10 @@ test("a read-only collaborator gets no composer and no Steer", async ({ page }) 
 test("the turn state indicator passes every product status through", async ({ page }) => {
     const wire = await open(page);
     await expect(wire.turnState).toHaveAttribute("data-turn-state", "running");
-    await expect(wire.turnState).toBeVisible();
     await expect(wire.turnState).toHaveAccessibleName("Running · accepts Stop and Steer");
+    // No visible pixels: screen readers and tests read it.
+    const box = await wire.turnState.boundingBox();
+    expect(box.width * box.height).toBeLessThanOrEqual(1);
     const labels = { pending: "Pending", idle: "Idle", waiting: "Waiting", input_required: "Waiting for input", error: "Error",
         failed: "Failed", completed: "Completed", cancelled: "Cancelled", running: "Running · accepts Stop and Steer" };
     for (const [status, label] of Object.entries(labels)) {
@@ -519,48 +521,48 @@ async function expectControlsFit(controls) {
     }
 }
 
-/**
- * The phone composer while a turn runs: the input, Stop, Steer (when shown)
- * and Send fit and stay touch-sized, and the input keeps at least 70% of the
- * composer width. With the actions on the input's row it kept under half:
- * 122-152 px of 344-374 px in Zen and MoA, 34-64 px of 328-358 px in the
- * chat view.
- */
-async function expectPhoneComposer(wire, { steer = true } = {}) {
-    await expectControlsFit({ input: wire.input, stop: wire.stopButton, ...(steer ? { steer: wire.steerButton } : {}), send: wire.sendButton });
-    const [input, shell] = [await wire.input.boundingBox(), await wire.composer.boundingBox()];
-    expect(input.width, "the input keeps most of the composer width").toBeGreaterThanOrEqual(0.7 * shell.width);
-    for (const button of steer ? [wire.stopButton, wire.steerButton, wire.sendButton] : [wire.stopButton, wire.sendButton]) {
-        const box = await button.boundingBox();
-        expect(Math.min(box.width, box.height), "a touch target of at least 40 px").toBeGreaterThanOrEqual(40);
-    }
+/** The turn status has no visible pixels; its accessible name carries it. */
+async function expectHiddenStatus(wire, label) {
+    await expect(wire.turnState).toHaveAccessibleName(label);
+    const box = await wire.turnState.boundingBox();
+    expect(box.width * box.height, "no visible pixels").toBeLessThanOrEqual(1);
 }
 
 /**
- * The phone composer after the turn ends: no Stop or Steer, the status dot,
- * Send on the input's row, and the input at least `minWidth` wide. The
- * minimums are the idle widths before turn control (228 px in the chat view,
- * 324 px in Zen and MoA at 390 px) less the dot and its gap (26 px), less 4 px.
+ * The phone composer is one line: the input and every control share the
+ * input's row, inside the viewport, touch-sized, with no "you" label.
+ * Returns the input width.
  */
-async function expectIdlePhoneComposer(wire, minWidth) {
-    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
-    await expect(wire.turnState).toHaveAttribute("data-turn-state", "idle");
-    await expect(wire.turnState).toHaveAccessibleName("Idle");
-    await expect(wire.stopButton).toHaveCount(0);
+async function expectOneLinePhoneComposer(wire, { stop }) {
+    const controls = { input: wire.input, ...(stop ? { stop: wire.stopButton } : {}), send: wire.sendButton };
+    await expectControlsFit(controls);
+    await expect(wire.composer.locator(".ps-prompt-label")).toBeHidden();
     await expect(wire.steerButton).toHaveCount(0);
-    const [input, send] = [await wire.input.boundingBox(), await wire.sendButton.boundingBox()];
-    expect(input.width, "the idle input keeps its width").toBeGreaterThanOrEqual(minWidth);
-    expect(send.y, "Send is on the input's row").toBeLessThan(input.y + input.height);
-    expect(send.x).toBeGreaterThanOrEqual(input.x + input.width);
+    const input = await wire.input.boundingBox();
+    for (const [name, locator] of Object.entries(controls)) {
+        if (name === "input") continue;
+        const box = await locator.boundingBox();
+        expect(box.y + box.height / 2, `${name} is on the input's row`).toBeGreaterThan(input.y);
+        expect(box.y + box.height / 2, `${name} is on the input's row`).toBeLessThan(input.y + input.height);
+        expect(box.x, `${name} is right of the input`).toBeGreaterThanOrEqual(input.x + input.width);
+        expect(Math.min(box.width, box.height), `${name}: a touch target of at least 40 px`).toBeGreaterThanOrEqual(40);
+    }
+    return input.width;
 }
 
-/** Steer and Stop from `wire`; both requests must name `sessionId`. */
-async function steerAndStop(wire, sessionId, text) {
+/** Steer `text` from `wire` (desktop: ↪; phones: a tap on the blue button), then Stop; both must name `sessionId`. */
+async function steerAndStop(wire, sessionId, text, { phone = false } = {}) {
     const steers = wire.state.steers.length, stops = wire.state.stops.length;
     await wire.input.fill(text);
-    await wire.steerButton.click();
+    if (phone) {
+        await expect(wire.sendButton).toHaveAttribute("data-action", "steer");
+        await wire.sendButton.click();
+    } else {
+        await wire.steerButton.click();
+    }
     await expect.poll(() => wire.state.steers.length).toBe(steers + 1);
     expect(wire.state.steers.at(-1)).toMatchObject({ sessionId, text });
+    expect(wire.state.steers.at(-1).replacesClientMessageId).toBeUndefined();
     await expect(wire.input).toHaveValue("");
     await wire.stopButton.click();
     await expect.poll(() => wire.state.stops.length).toBe(stops + 1);
@@ -610,7 +612,6 @@ test("MoA: the sole composer's Steer and Stop act on the focused panel's session
     const seqsB = echo(b, 1, "steer for agent B");
     await expectItems("pb", seqsB);
     await expectItems("pa", seqsA);
-    await page.screenshot({ path: test.info().outputPath("turn-control-moa.png") });
 
     await moaPanel(page, "pa").locator("header").first().click();
     await expect(a.input).toHaveValue("draft kept in A");
@@ -619,77 +620,18 @@ test("MoA: the sole composer's Steer and Stop act on the focused panel's session
     expect(portal.state.sends).toEqual([]);
 });
 
-for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
-    test(`phone MoA ${viewport.width}x${viewport.height}: the focused session's controls fit under a wide input and follow the panel`, async ({ page }) => {
-        await page.setViewportSize(viewport);
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile() });
-        await openMoa(page, portal);
-        await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
-        const a = moaWire(page, portal, SID, "pa"), b = moaWire(page, portal, SID2, "pb");
-        await a.input.fill("x");
-        await expectPhoneComposer(a);
-        await steerAndStop(a, SID, "phone steer for A");
-
-        await page.getByRole("button", { name: "Open panel map", exact: true }).click();
-        await page.locator(".ps-moa-map-list button").nth(1).click();
-        await expect(moaPanel(page, "pb")).toHaveClass(/is-focused/);
-        await expect(a.composer).toHaveCount(0);
-        await b.input.fill("x");
-        await expectPhoneComposer(b);
-        await page.screenshot({ path: test.info().outputPath(`turn-control-phone-moa-${viewport.width}.png`) });
-        await steerAndStop(b, SID2, "phone steer for B");
-        expect(portal.state.steers.map((steer) => steer.sessionId)).toEqual([SID, SID2]);
-        expect(portal.state.stops.map((stop) => stop.sessionId)).toEqual([SID, SID2]);
-    });
-}
-
-for (const steering of [true, false]) {
-    test(`phone Zen, steering ${steering ? "on" : "off"}: Stop${steering ? " and Steer act" : " acts"} on the session shown`, async ({ page }) => {
-        await page.setViewportSize({ width: 390, height: 844 });
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, steering });
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-        await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
-        const zen = portal.wire(SID, { composerScope: page.locator(".ps-mobile-zen-composer") });
-        await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
-        await zen.input.fill("x");
-        if (steering) {
-            await expectPhoneComposer(zen);
-            await page.screenshot({ path: test.info().outputPath("turn-control-phone-zen.png") });
-            await steerAndStop(zen, SID, "zen steer");
-            await expectIdlePhoneComposer(zen, 294);
-        } else {
-            await expect(zen.steerButton).toHaveCount(0);
-            await expectPhoneComposer(zen, { steer: false });
-            await zen.stopButton.click();
-            await expect.poll(() => portal.state.stops.length).toBe(1);
-            expect(portal.state.stops[0].sessionId).toBe(SID);
-        }
-        expect(portal.state.sends).toEqual([]);
-    });
-}
-
-test("phone chat 390x844: Stop and Steer fit under a wide input and act on the session; idle keeps one row and its width", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-    const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
-    await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
-    await chat.input.fill("x");
-    await expectPhoneComposer(chat);
-    await page.screenshot({ path: test.info().outputPath("turn-control-phone-chat.png") });
-    await steerAndStop(chat, SID, "phone chat steer");
-    await expectIdlePhoneComposer(chat, 198);
-});
-
-// ── Convert a queued message (Steer now) or cancel it ────────────────────
-// Every durably queued message has a row in the composer with Steer now and
-// Cancel. Steer now sends its text as a steer that replaces it; the row stays
-// "Steering…" until the message is dropped (delivered) or the steer misses
-// (queued again, with a notice). Screenshots go to the test output and, when
-// PS_UX_SHOTS_DIR is set, to that folder (the UX report).
+// ── The composer: Steer and the queue (owner design, 2026-10-14) ──────────
+// Desktop: ↪ steers the typed text, a selected queued message (↑ or a click
+// on its line), or with an empty box every queued message (↪ N); ✕ deletes a
+// selected queued message. Phones: one line, the blue button steers on a tap
+// and offers Queue on a hold. A message read by the model leaves the strip.
+// Screenshots go to the test output and, when PS_UX_SHOTS_DIR is set, to that
+// folder (the UX report).
 
 const THEMES = [{ name: "default", profile: null }, { name: "terminal-green", profile: { themeId: "terminal-green" } }];
 const QUEUED_TEXT = "and let me know what the agent is doing in this space";
+const PHONES = [{ width: 390, height: 844 }, { width: 360, height: 740 }];
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 
 async function shot(page, name) {
     const file = test.info().outputPath(`${name}.png`);
@@ -701,27 +643,35 @@ async function shot(page, name) {
     }
 }
 
-/** The queued-message rows of a composer. */
-/** The queued-prompts strip of the wire's session (in its chat panel), with its rows and actions. */
+/** The queued-prompts strip of the wire's session (in its chat panel), with its lines. */
 const queuedRows = (wire) => {
     const strip = wire.composer.page().locator(`[data-testid="queued-actions"][data-session-id="${wire.sessionId}"]`);
-    return {
-        strip,
-        item: strip.getByTestId("queued-item"),
-        steerNow: strip.getByTestId("queued-steer-now"),
-        cancel: strip.getByTestId("queued-cancel"),
-        notice: strip.getByTestId("queued-notice"),
-    };
+    return { strip, item: strip.getByTestId("queued-item"), notice: strip.getByTestId("queued-notice") };
 };
 
-/** Send `text` while the turn runs; it is durably queued. Returns its client message id. */
+/** Queue `text` while the turn runs (phones: the hold menu's Queue when the blue button steers). Returns its client message id. */
 async function queueMessage(wire, text = QUEUED_TEXT) {
+    const before = await queuedRows(wire).item.count();
     await wire.input.fill(text);
+    if (await wire.sendButton.getAttribute("data-action") === "steer") await holdAndPick(wire, "queue");
+    else await wire.sendButton.click();
+    const line = queuedRows(wire).item.filter({ hasText: text });
+    await expect(line).toHaveAttribute("data-phase", "queued");
+    await expect(queuedRows(wire).item).toHaveCount(before + 1);
+    return line.getAttribute("data-item-id");
+}
+
+/** Queue a message with an image: its line, and its client message id. */
+async function queueImageMessage(page, wire, text) {
+    await page.route("**/api/v1/sessions/*/artifacts/*", (route) => route.fulfill({
+        json: { ok: true, result: { filename: decodeURIComponent(route.request().url().split("/").pop()), sizeBytes: 3 } } }));
+    await wire.input.fill(text);
+    await wire.composer.locator('input[type="file"]').setInputFiles([{ name: "chart.png", mimeType: "image/png", buffer: PNG }]);
+    await expect(wire.sendButton).toHaveAttribute("data-action", "send");
     await wire.sendButton.click();
-    const rows = queuedRows(wire);
-    await expect(rows.item).toHaveAttribute("data-phase", "queued");
-    await expect(rows.item).toContainText(text);
-    return rows.item.getAttribute("data-item-id");
+    const line = queuedRows(wire).item.filter({ hasText: text });
+    await expect(line).toHaveAttribute("data-phase", "queued");
+    return line.getAttribute("data-item-id");
 }
 
 /** A steer route that records the steer as the server does, once the test releases it. */
@@ -739,152 +689,194 @@ function heldSteer(wire) {
     };
 }
 
+/** The steer the server recorded for `requestId` (its transcript seq). */
+const steerSeqOf = (wire, requestId) => wire.state.sessions[wire.sessionId].events
+    .find((event) => event.eventType === "user.steer" && event.data.requestId === requestId)?.seq;
+
+/** Press and hold the phone's blue button until its menu opens; returns the menu. */
+async function holdOpen(wire) {
+    const page = wire.composer.page();
+    const box = await wire.sendButton.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    const menu = wire.composer.getByTestId("steer-hold-menu");
+    await expect(menu).toBeVisible();
+    return menu;
+}
+
+/** Hold the blue button, slide onto `item` ("steer" or "queue") and release there. */
+async function holdAndPick(wire, item) {
+    const page = wire.composer.page();
+    const menu = await holdOpen(wire);
+    const target = await menu.getByTestId(`steer-hold-${item}`).boundingBox();
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 4 });
+    await expect(menu.getByTestId(`steer-hold-${item}`)).toHaveClass(/is-lit/);
+    await page.mouse.up();
+    await expect(menu).toHaveCount(0);
+}
+
+/** A phone view of SID: the plain chat, Zen, or the focused MoA panel. */
+async function openPhoneView(page, view, { viewport, ...options } = {}) {
+    await page.setViewportSize(viewport);
+    const portal = await fakePortal(page, { sessions: TWO_SESSIONS, ...options, profile: view === "moa" ? moaProfile(options.profile?.themeId) : options.profile || null });
+    if (view === "moa") {
+        await openMoa(page, portal);
+        await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
+        return { portal, wire: moaWire(page, portal, SID, "pa") };
+    }
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+    await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
+    if (view === "zen") await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
+    return { portal, wire: portal.wire(SID, { composerScope: page.locator(view === "zen" ? ".ps-mobile-zen-composer" : ".ps-chat-composer") }) };
+}
+
 for (const theme of THEMES) {
-    test(`desktop (${theme.name}): Steer now converts a queued message: Steering…, then Delivered and the queue empty; after a reload one row`, async ({ page }) => {
+    test(`desktop (${theme.name}): typed text steers; the empty box steers both queued messages (↪ 2), each leaves the strip once read`, async ({ page }) => {
         await page.setViewportSize({ width: 1600, height: 950 });
         let held;
         const wire = await open(page, { profile: theme.profile, handlers: { steer: (args) => held.handler(args) } });
         held = heldSteer(wire);
-        const id = await queueMessage(wire);
-        const rows = queuedRows(wire);
-        await expect(rows.steerNow).toBeVisible();
-        await expect(rows.cancel).toBeVisible();
-        await shot(page, `convert-desktop-queued-${theme.name}`);
-
-        await rows.steerNow.click();
-        await expect(rows.item).toHaveAttribute("data-phase", "steering");
-        await expect(rows.item).toContainText("Steering…");
-        await expect(rows.steerNow).toHaveCount(0);
-        await expect(rows.cancel).toHaveCount(0);
-        expect(wire.state.steers).toHaveLength(1);
-        expect(wire.state.steers[0]).toMatchObject({ text: QUEUED_TEXT, replacesClientMessageId: id, sessionId: SID });
-        await shot(page, `convert-desktop-steering-${theme.name}`);
-
         held.release();
-        await expect.poll(() => wire.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
-        const steerSeq = wire.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
-        await expect(rows.item).toHaveAttribute("data-phase", "steering");
-        wire.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
-        const steerItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${steerSeq}"]`);
-        await expect(steerItem).toHaveAttribute("data-outcome", "delivered");
-        // Read by the model: the queued row waits only for the drop, and says so.
-        await expect(rows.item).toHaveAttribute("data-phase", "steering");
-        await expect(rows.item).toHaveAttribute("data-confirmed", "true");
-        await expect(rows.item).toContainText("Delivered · leaves the queue when the turn ends");
-        await expect(rows.steerNow).toHaveCount(0);
-        await expect(rows.cancel).toHaveCount(0);
-        await shot(page, `convert-desktop-confirmed-${theme.name}`);
-        wire.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "delivered" });
-        wire.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "converted_to_steer" });
-        await expect(rows.item).toHaveCount(0);
-        await expect(steerItem).toHaveAttribute("data-outcome", "delivered");
-        await expect(steerItem).toContainText(QUEUED_TEXT);
-        await shot(page, `convert-desktop-delivered-${theme.name}`);
+        await expectHiddenStatus(wire, "Running · accepts Stop and Steer");
+        await expect(wire.steerButton.locator(".ps-steer-arrow")).toHaveCSS("font-size", "22px");
+        await wire.input.fill("compare with ClickHouse instead");
+        await expect(wire.steerButton).toHaveAttribute("data-steer-target", "text");
+        await expect(wire.steerButton).toHaveAttribute("title", "Steer this text into the running turn now (Ctrl+T)");
+        await shot(page, `composer-desktop-typed-${theme.name}`);
+        await wire.steerButton.click();
+        await expect.poll(() => wire.state.steers.length).toBe(1);
+        expect(wire.state.steers[0]).toMatchObject({ text: "compare with ClickHouse instead" });
 
-        await page.reload();
-        await expect(wire.transcript.getByTestId("control-steer")).toHaveCount(1);
-        await expect(wire.transcript.getByTestId("control-steer")).toHaveAttribute("data-outcome", "delivered");
-        await expect(wire.transcript.getByText(QUEUED_TEXT)).toHaveCount(1);
-        await expect(rows.item).toHaveCount(0);
-        expect(wire.state.sends).toHaveLength(1);
+        const first = await queueMessage(wire, "also cover MotherDuck");
+        const second = await queueMessage(wire, "keep it under one page");
+        await expect(wire.steerButton).toHaveAttribute("data-steer-target", "queue");
+        await expect(wire.steerButton).toHaveAttribute("data-count", "2");
+        await expect(wire.steerButton).toHaveText("↪2");
+        await expect(wire.steerButton).toHaveAttribute("title", "Steer your 2 queued messages now");
+        await shot(page, `composer-desktop-empty-two-queued-${theme.name}`);
+        await wire.steerButton.click();
+        await expect.poll(() => wire.state.steers.length).toBe(3);
+        expect(wire.state.steers.slice(1).map((steer) => [steer.text, steer.replacesClientMessageId]))
+            .toEqual([["also cover MotherDuck", first], ["keep it under one page", second]]);
+        const rows = queuedRows(wire);
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toHaveAttribute("data-phase", "steering");
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toContainText("↪");
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toContainText("steering");
+        await expect(rows.strip).toContainText("queued prompts: 2 steering");
+        await shot(page, `composer-desktop-steering-${theme.name}`);
+
+        // The model reads the first steer: its line leaves the strip; the transcript says Delivered.
+        await expect.poll(() => steerSeqOf(wire, wire.state.steers[1].requestId)).toBeTruthy();
+        const seq = steerSeqOf(wire, wire.state.steers[1].requestId);
+        wire.event("session.steer_confirmed", { seq, turn: 3, messageId: "m-1" });
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toHaveCount(0);
+        await expect(wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${seq}"]`)).toHaveAttribute("data-outcome", "delivered");
+        await expect(rows.item).toHaveCount(1);
+        await shot(page, `composer-desktop-delivered-${theme.name}`);
+        expect(wire.state.sends).toHaveLength(2);
     });
 
-    test(`desktop (${theme.name}): a steer that misses leaves the message queued with a notice; the transcript says still queued`, async ({ page }) => {
+    test(`desktop (${theme.name}): a selected queued message (a click on its line, or ↑): ↪ steers only it, ✕ deletes it; Esc leaves`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        const wire = await open(page, { profile: theme.profile });
+        await page.route("**/api/v1/sessions/*/cancel-pending", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: {} }) }));
+        const first = await queueMessage(wire, "also cover MotherDuck");
+        const second = await queueMessage(wire, "keep it under one page");
+        const rows = queuedRows(wire);
+        await rows.item.filter({ hasText: "keep it under one page" }).click();
+        await expect(rows.item.filter({ hasText: "keep it under one page" })).toHaveAttribute("data-selected", "true");
+        await expect(wire.input).toHaveValue("keep it under one page");
+        await expect(wire.input).toHaveAttribute("readonly", "");
+        const del = wire.composer.getByTestId("queued-delete");
+        await expect(del).toHaveText("✕");
+        await expect(del).toHaveAttribute("title", "Delete this queued message (Esc to leave)");
+        await expect(wire.steerButton).toHaveAttribute("data-steer-target", "selected");
+        await shot(page, `composer-desktop-selected-${theme.name}`);
+        await wire.input.press("Escape");
+        await expect(wire.input).toHaveValue("");
+        await expect(del).toHaveCount(0);
+        await expect(wire.steerButton).toHaveAttribute("data-steer-target", "queue");
+
+        await wire.input.press("ArrowUp");
+        await expect(rows.item.filter({ hasText: "keep it under one page" })).toHaveAttribute("data-selected", "true");
+        await wire.steerButton.click();
+        await expect.poll(() => wire.state.steers.length).toBe(1);
+        expect(wire.state.steers[0]).toMatchObject({ text: "keep it under one page", replacesClientMessageId: second });
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toHaveAttribute("data-phase", "queued");
+
+        await rows.item.filter({ hasText: "also cover MotherDuck" }).click();
+        await wire.composer.getByTestId("queued-delete").click();
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toHaveAttribute("data-phase", "cancelling");
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toContainText("Cancelling · takes effect when the turn ends");
+        await shot(page, `composer-desktop-cancelling-${theme.name}`);
+        wire.event("pending_messages.cancelled", { clientMessageIds: [first], reason: "drain-incoming" });
+        await expect(rows.item.filter({ hasText: "also cover MotherDuck" })).toHaveCount(0);
+        expect(wire.state.steers).toHaveLength(1);
+    });
+
+    test(`desktop (${theme.name}): a queued image disables ↪ on the queue and on that message; the reason is the tooltip`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        const wire = await open(page, { profile: theme.profile });
+        await queueMessage(wire, "also cover MotherDuck");
+        await queueImageMessage(page, wire, "and this chart");
+        await expect(wire.steerButton).toHaveAttribute("data-steer-target", "queue");
+        await expect(wire.steerButton).toBeDisabled();
+        await expect(wire.steerButton).toHaveAttribute("title", "A queued message has an image; images cannot be steered");
+        await shot(page, `composer-desktop-image-disabled-${theme.name}`);
+        await queuedRows(wire).item.filter({ hasText: "and this chart" }).click();
+        await expect(wire.steerButton).toBeDisabled();
+        await expect(wire.steerButton).toHaveAttribute("title", "This message has an image; images cannot be steered");
+        await queuedRows(wire).item.filter({ hasText: "also cover MotherDuck" }).click();
+        await expect(wire.steerButton).toBeEnabled();
+        expect(wire.state.steers).toEqual([]);
+    });
+
+    test(`desktop (${theme.name}): a steer that misses brings the line back queued with one notice; the transcript says still queued`, async ({ page }) => {
         await page.setViewportSize({ width: 1600, height: 950 });
         let held;
         const wire = await open(page, { profile: theme.profile, handlers: { steer: (args) => held.handler(args) } });
         held = heldSteer(wire);
         held.release();
         await queueMessage(wire);
-        const rows = queuedRows(wire);
-        await rows.steerNow.click();
-        await expect.poll(() => wire.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
-        const steerSeq = wire.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
+        await wire.steerButton.click();
+        await expect.poll(() => wire.state.steers.length).toBe(1);
+        await expect.poll(() => steerSeqOf(wire, wire.state.steers[0].requestId)).toBeTruthy();
+        const steerSeq = steerSeqOf(wire, wire.state.steers[0].requestId);
         wire.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "not_delivered" });
+        const rows = queuedRows(wire);
         await expect(rows.item).toHaveAttribute("data-phase", "queued");
         await expect(rows.notice).toHaveText("Could not steer: the turn ended before the agent read it. Still queued.");
         const steerItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${steerSeq}"]`);
         await expect(steerItem).toHaveAttribute("data-outcome", "not_delivered_still_queued");
-        await expect(steerItem).toContainText("Not delivered · still queued");
-        await expect(rows.steerNow).toBeVisible();
-        await shot(page, `convert-desktop-not-delivered-${theme.name}`);
+        await shot(page, `composer-desktop-not-delivered-${theme.name}`);
         expect(wire.state.sends).toHaveLength(1);
     });
 
-    test(`desktop (${theme.name}): steering off: Cancel only; Cancel drops the message`, async ({ page }) => {
+    test(`MoA (${theme.name}): the focused panel's queue and ↪ belong to its session`, async ({ page }) => {
         await page.setViewportSize({ width: 1600, height: 950 });
-        const portal = await fakePortal(page, { steering: false, profile: theme.profile, sessions: { [SID]: { title: "Turn control" } } });
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-        await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
-        const wire = portal.wire(SID);
-        await page.route("**/api/v1/sessions/*/cancel-pending", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: {} }) }));
-        const id = await queueMessage(wire);
-        const rows = queuedRows(wire);
-        await expect(rows.cancel).toBeVisible();
-        await expect(rows.steerNow).toHaveCount(0);
-        await shot(page, `convert-desktop-steering-off-${theme.name}`);
-        await rows.cancel.click();
-        await expect(rows.item).toHaveAttribute("data-phase", "cancelling");
-        // The orchestration reads the cancel when the running turn ends.
-        await expect(rows.item).toContainText("Cancelling · takes effect when the turn ends");
-        await shot(page, `convert-desktop-cancelling-${theme.name}`);
-        wire.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "drain-incoming" });
-        await expect(rows.item).toHaveCount(0);
-        expect(wire.state.steers).toEqual([]);
-    });
-
-    test(`MoA (${theme.name}): the queued rows and Steer now belong to the focused panel's session`, async ({ page }) => {
-        await page.setViewportSize({ width: 1600, height: 950 });
-        let held;
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile(theme.profile?.themeId || "workspace-dark"),
-            handlers: { steer: (args) => held.handler(args) } });
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile(theme.profile?.themeId || "workspace-dark") });
         await openMoa(page, portal);
         const a = moaWire(page, portal, SID, "pa"), b = moaWire(page, portal, SID2, "pb");
         await expect.poll(() => portal.liveSubscriptions(SID2)).toBeGreaterThan(0);
         await moaPanel(page, "pb").locator("header").first().click();
         await expect(moaPanel(page, "pb")).toHaveClass(/is-focused/);
-        held = heldSteer(b);
-        held.release();
         const id = await queueMessage(b, "queued for agent B");
-        await expect(queuedRows(b).steerNow).toBeVisible();
-        await shot(page, `convert-moa-${theme.name}`);
-        await queuedRows(b).steerNow.click();
+        await expect(b.steerButton).toHaveAttribute("data-count", "1");
+        await shot(page, `composer-moa-${theme.name}`);
+        await b.steerButton.click();
         await expect.poll(() => portal.state.steers.length).toBe(1);
         expect(portal.state.steers[0]).toMatchObject({ sessionId: SID2, replacesClientMessageId: id });
         await moaPanel(page, "pa").locator("header").first().click();
         await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
         await expect(queuedRows(a).item).toHaveCount(0);
+        await expect(a.steerButton).toHaveAttribute("data-steer-target", "none");
     });
-
-    for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
-        test(`phone ${viewport.width}x${viewport.height} (${theme.name}): a queued message shows Steer now and Cancel while the turn runs; Cancel drops it`, async ({ page }) => {
-            await page.setViewportSize(viewport);
-            const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: theme.profile });
-            await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-            await page.route("**/api/v1/sessions/*/cancel-pending", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: {} }) }));
-            const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
-            await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
-            const id = await queueMessage(chat);
-            const rows = queuedRows(chat);
-            await expectControlsFit({ steerNow: rows.steerNow, cancel: rows.cancel, input: chat.input, stop: chat.stopButton });
-            for (const button of [rows.steerNow, rows.cancel]) {
-                const box = await button.boundingBox();
-                expect(Math.min(box.width, box.height), "a touch target of at least 40 px").toBeGreaterThanOrEqual(40);
-            }
-            await shot(page, `convert-phone-${viewport.width}-queued-${theme.name}`);
-            await rows.cancel.click();
-            await expect(rows.item).toHaveAttribute("data-phase", "cancelling");
-            chat.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "drain-incoming" });
-            await expect(rows.item).toHaveCount(0);
-            await shot(page, `convert-phone-${viewport.width}-after-cancel-${theme.name}`);
-        });
-    }
 }
 
 // QC-10: the steering decision is per viewer. Opened without a deep link,
-// the portal restores the active session from the profile; its Steer and
-// Steer now must be offered without visiting another session first.
-test("opened without a deep link: the profile's restored running session offers Steer and Steer now", async ({ page }) => {
+// the portal restores the active session from the profile; its Steer must be
+// offered without visiting another session first.
+test("opened without a deep link: the profile's restored running session offers Steer on text and on the queue", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 950 });
     const portal = await fakePortal(page, { sessions: { [SID]: { title: "Restored" } }, profile: { activeSessionId: SID } });
     await page.goto(`http://127.0.0.1:${stub.port}/`);
@@ -895,7 +887,8 @@ test("opened without a deep link: the profile's restored running session offers 
     await expect(wire.steerButton).toHaveAttribute("data-state", "ready");
     await wire.input.fill("");
     await queueMessage(wire);
-    await expect(queuedRows(wire).steerNow).toBeVisible();
+    await expect(wire.steerButton).toHaveAttribute("data-steer-target", "queue");
+    await expect(wire.steerButton).toHaveAttribute("data-state", "ready");
 });
 
 test("MoA: a panel picks up the viewer's steering decision while it stays open", async ({ page }) => {
@@ -911,221 +904,207 @@ test("MoA: a panel picks up the viewer's steering decision while it stays open",
     await expect(a.steerButton).toHaveCount(1);
 });
 
-// QC-X3: Steer now and Cancel live inside the queued-prompts strip, one line
-// per queued message, each message shown once. On phones the strip scrolls
-// inside a bounded height, so the input and Stop, Steer and Send stay on
-// screen with any number of queued messages.
-async function queueMany(wire, count) {
-    const texts = Array.from({ length: count }, (_, i) => `queued message number ${i + 1} with enough words to wrap on a phone`);
-    for (const text of texts) {
-        await wire.input.fill(text);
-        await wire.sendButton.click();
-        await expect(queuedRows(wire).strip.getByText(text)).toHaveCount(1);
-    }
-    await expect(queuedRows(wire).strip.locator('[data-testid="queued-item"][data-phase="queued"]')).toHaveCount(count);
-    return texts;
-}
-
-async function expectQueuedLayout(page, wire, texts) {
-    const rows = queuedRows(wire);
-    await expect(rows.steerNow).toHaveCount(texts.length);
-    await expect(rows.cancel).toHaveCount(texts.length);
-    for (const text of texts) await expect(page.getByText(text)).toHaveCount(1);
-    await wire.input.fill("x");
-    await expectControlsFit({ input: wire.input, stop: wire.stopButton, steer: wire.steerButton, send: wire.sendButton });
-    await wire.input.fill("");
-    // The strip's visible area (the bounded bottom-sticky area, or the transcript in compact views) ends above the composer.
-    const visibleBottom = await rows.strip.evaluate((el) => el.closest(".ps-panel-bottom-sticky, .ps-scroll-panel").getBoundingClientRect().bottom);
-    expect(visibleBottom).toBeLessThanOrEqual((await wire.composer.boundingBox()).y + 2);
-}
-
-for (const viewport of [{ width: 360, height: 740 }, { width: 390, height: 844 }]) {
-    for (const count of [1, 2, 5]) {
-        test(`phone chat ${viewport.width}x${viewport.height}, ${count} queued: each once in the strip with its actions; the composer stays on screen`, async ({ page }) => {
-            await page.setViewportSize(viewport);
-            const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
-            await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-            const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
-            await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
-            await expectQueuedLayout(page, chat, await queueMany(chat, count));
-            if (count === 2) await shot(page, `convert-phone-${viewport.width}-two-queued`);
-        });
-    }
-    test(`phone Zen ${viewport.width}x${viewport.height}, 5 queued: the composer stays on screen`, async ({ page }) => {
-        await page.setViewportSize(viewport);
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-        await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
-        const zen = portal.wire(SID, { composerScope: page.locator(".ps-mobile-zen-composer") });
-        await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
-        await expectQueuedLayout(page, zen, await queueMany(zen, 5));
-    });
-    test(`phone MoA ${viewport.width}x${viewport.height}, 5 queued in the focused panel: the composer stays on screen`, async ({ page }) => {
-        await page.setViewportSize(viewport);
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile() });
-        await openMoa(page, portal);
-        await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
-        const a = moaWire(page, portal, SID, "pa");
-        await expectQueuedLayout(page, a, await queueMany(a, 5));
-    });
-}
-
-for (const theme of THEMES) {
-    test(`desktop and MoA (${theme.name}), 2 queued: one strip line each, with Steer now and Cancel`, async ({ page }) => {
-        await page.setViewportSize({ width: 1600, height: 950 });
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: theme.profile });
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-        await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
-        const wire = portal.wire(SID);
-        await expectQueuedLayout(page, wire, await queueMany(wire, 2));
-        await shot(page, `convert-desktop-two-queued-${theme.name}`);
-    });
-}
-
-test("phone 390x844: a converted message the model read says Delivered and leaves the queue at turn end; Stop requeues it", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    let held;
-    const portal = await fakePortal(page, { sessions: TWO_SESSIONS, handlers: { steer: (args) => held.handler(args) } });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-    const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
-    await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
-    held = heldSteer(chat);
-    held.release();
-    await queueMessage(chat);
-    const rows = queuedRows(chat);
-    await rows.steerNow.click();
-    await expect.poll(() => portal.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
-    const steerSeq = portal.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
-    chat.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
-    await expect(rows.item).toHaveAttribute("data-confirmed", "true");
-    await expect(rows.item).toContainText("Delivered · leaves the queue when the turn ends");
-    // The label wraps inside the strip; nothing is cut off at the right edge.
-    expect(await rows.item.evaluate((el) => {
-        const label = el.querySelector(".ps-queued-item-phase").getBoundingClientRect();
-        return label.right <= el.getBoundingClientRect().right + 1;
-    })).toBe(true);
-    await shot(page, "convert-phone-390-confirmed");
-    chat.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "not_delivered" });
-    await expect(rows.item).toHaveAttribute("data-phase", "queued");
-    await expect(rows.item).not.toHaveAttribute("data-confirmed", "true");
-    await expect(rows.steerNow).toBeVisible();
-});
-
-// The turn status is a coloured dot at every width: no visible text; the
-// status is its accessible name and shows as a tooltip on hover and focus.
-const DOT_THEMES = ["terminal-green", "win95", "winamp", "ms-dos", "workspace-dark"];
-async function expectDot(dot, label) {
-    await expect(dot).toBeVisible();
-    await expect(dot).toHaveAccessibleName(label);
-    expect(await dot.evaluate((el) => el.innerText.trim())).toBe("");
-    const box = await dot.boundingBox();
-    expect(box.width).toBeLessThanOrEqual(20);
-    expect(box.height).toBeLessThanOrEqual(20);
-    const colour = await dot.evaluate((el) => getComputedStyle(el.querySelector(".ps-turn-state-dot")).backgroundColor);
-    expect(colour).not.toBe("rgba(0, 0, 0, 0)");
-}
-
-test("desktop: the status dot has no visible text, names the status and shows it on hover and focus", async ({ page }) => {
-    await page.setViewportSize({ width: 1600, height: 950 });
-    const wire = await open(page);
-    await expectDot(wire.turnState, "Running · accepts Stop and Steer");
-    await expect(wire.turnState).toHaveAttribute("data-tone", "running");
-    const tip = wire.turnState.locator(".ps-turn-state-tip");
-    await expect(tip).toBeHidden();
-    await wire.turnState.hover();
-    await expect(tip).toBeVisible();
-    await expect(tip).toHaveText("Running · accepts Stop and Steer");
-    await shot(page, "status-dot-desktop-running-hover");
-    await wire.input.hover();
-    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
-    await expectDot(wire.turnState, "Idle");
-    await wire.turnState.focus();
-    await expect(tip).toHaveText("Idle");
-    await expect(tip).toBeVisible();
-    await shot(page, "status-dot-desktop-idle-focus");
-});
-
-test("narrow desktop 700x800: the dot fits beside the controls", async ({ page }) => {
+test("narrow desktop 700x800: Stop, ↪ and Send fit beside the input; no visible status", async ({ page }) => {
     await page.setViewportSize({ width: 700, height: 800 });
     const wire = await open(page);
-    await expectDot(wire.turnState, "Running · accepts Stop and Steer");
+    await expectHiddenStatus(wire, "Running · accepts Stop and Steer");
     await wire.input.fill("x");
-    await expectControlsFit({ dot: wire.turnState, input: wire.input, stop: wire.stopButton, steer: wire.steerButton, send: wire.sendButton });
-    await shot(page, "status-dot-desktop-700");
+    await expectControlsFit({ input: wire.input, stop: wire.stopButton, steer: wire.steerButton, send: wire.sendButton });
+    await shot(page, "composer-desktop-700");
 });
 
-for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
-    test(`phone chat ${viewport.width}x${viewport.height}: the dot while running and idle; a tap shows the status`, async ({ page }) => {
-        await page.setViewportSize(viewport);
-        const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-        const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
-        await expectDot(chat.turnState, "Running · accepts Stop and Steer");
-        await chat.input.fill("x");
-        await expectControlsFit({ dot: chat.turnState, input: chat.input, stop: chat.stopButton, steer: chat.steerButton, send: chat.sendButton });
-        await chat.input.fill("");
-        await shot(page, `status-dot-phone-${viewport.width}-running`);
-        await chat.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
-        await expectDot(chat.turnState, "Idle");
-        await chat.turnState.dispatchEvent("pointerdown", { pointerType: "touch" });
-        await expect(chat.turnState.locator(".ps-turn-state-tip")).toBeVisible();
-        await shot(page, `status-dot-phone-${viewport.width}-idle-tap`);
+// ── Phones: one line; the blue button steers ──────────────────────────────
+
+for (const viewport of PHONES) {
+    for (const view of ["chat", "zen", "moa"]) {
+        test(`phone ${view} ${viewport.width}x${viewport.height}: one line idle and running, no layout jump; a tap steers; Stop`, async ({ page }) => {
+            const { portal, wire } = await openPhoneView(page, view, { viewport });
+            await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+            await expectHiddenStatus(wire, "Idle");
+            await expect(wire.sendButton).toHaveAttribute("data-action", "send");
+            const idleWidth = await expectOneLinePhoneComposer(wire, { stop: false });
+            const idleHeight = (await wire.composer.boundingBox()).height;
+            if (view === "chat") await shot(page, `composer-phone-${viewport.width}-idle`);
+            await wire.setDetail({ status: "running", acceptsTurnControl: true, activeTurnIndex: 3 });
+            await expectHiddenStatus(wire, "Running · accepts Stop and Steer");
+            await expect(wire.sendButton).toHaveAttribute("data-action", "steer");
+            const runningWidth = await expectOneLinePhoneComposer(wire, { stop: true });
+            expect(Math.abs((await wire.composer.boundingBox()).height - idleHeight), "the composer does not grow when a turn starts").toBeLessThan(1);
+            test.info().annotations.push({ type: "input width", description: `${view} ${viewport.width}: idle ${Math.round(idleWidth)} px, running ${Math.round(runningWidth)} px` });
+            await wire.input.fill("compare with ClickHouse");
+            await expect(wire.sendButton).toHaveClass(/can-hold/);
+            await expect(wire.sendButton).toHaveAccessibleName("Steer now, hold for Queue");
+            await expect(wire.sendButton).toHaveAttribute("aria-haspopup", "menu");
+            if (view === "chat") await shot(page, `composer-phone-${viewport.width}-running-steerable`);
+            await steerAndStop(wire, SID, "compare with ClickHouse", { phone: true });
+            expect(portal.state.sends).toEqual([]);
+        });
+    }
+
+    for (const count of [0, 1, 2, 5]) {
+        test(`phone chat ${viewport.width}x${viewport.height}, ${count} queued: each message once; every control on the input's row and on screen`, async ({ page }) => {
+            const { wire } = await openPhoneView(page, "chat", { viewport });
+            const texts = Array.from({ length: count }, (_, i) => `queued message number ${i + 1} with enough words to wrap on a phone`);
+            for (const text of texts) await queueMessage(wire, text);
+            for (const text of texts) await expect(page.getByText(text)).toHaveCount(1);
+            await expect(queuedRows(wire).item.filter({ has: page.locator(".ps-queued-item-phase") })).toHaveCount(0);
+            await expectOneLinePhoneComposer(wire, { stop: true });
+            await wire.input.fill("x");
+            await expectOneLinePhoneComposer(wire, { stop: true });
+            if (count) {
+                const visibleBottom = await queuedRows(wire).strip.evaluate((el) => el.closest(".ps-panel-bottom-sticky, .ps-scroll-panel").getBoundingClientRect().bottom);
+                expect(visibleBottom).toBeLessThanOrEqual((await wire.composer.boundingBox()).y + 2);
+            }
+        });
+    }
+
+    for (const view of ["zen", "moa"]) {
+        test(`phone ${view} ${viewport.width}x${viewport.height}, 5 queued: every control on the input's row and on screen`, async ({ page }) => {
+            const { wire } = await openPhoneView(page, view, { viewport });
+            for (let i = 1; i <= 5; i += 1) await queueMessage(wire, `queued message number ${i} with enough words to wrap on a phone`);
+            await expectOneLinePhoneComposer(wire, { stop: true });
+        });
+    }
+
+    test(`phone chat ${viewport.width}x${viewport.height}: the empty box steers both queued messages (↪ 2); no per-message selection or ✕`, async ({ page }) => {
+        const { wire } = await openPhoneView(page, "chat", { viewport });
+        const first = await queueMessage(wire, "also cover MotherDuck");
+        const second = await queueMessage(wire, "keep it short");
+        await expect(wire.sendButton).toHaveAttribute("data-steer-target", "queue");
+        await expect(wire.sendButton).toHaveAttribute("data-count", "2");
+        await expect(wire.sendButton).toHaveText("↪2");
+        await expect(wire.sendButton).not.toHaveClass(/can-hold/);
+        await expect(queuedRows(wire).item.first()).not.toHaveAttribute("role", "button");
+        await queuedRows(wire).item.first().click();
+        await expect(wire.input).toHaveValue("");
+        await expect(wire.composer.getByTestId("queued-delete")).toHaveCount(0);
+        await shot(page, `composer-phone-${viewport.width}-empty-two-queued`);
+        await wire.sendButton.click();
+        await expect.poll(() => wire.state.steers.length).toBe(2);
+        expect(wire.state.steers.map((steer) => [steer.text, steer.replacesClientMessageId])).toEqual([["also cover MotherDuck", first], ["keep it short", second]]);
+    });
+
+    test(`phone chat ${viewport.width}x${viewport.height}: not steerable (steering off) the blue button is the plain +, no hold menu`, async ({ page }) => {
+        const { wire } = await openPhoneView(page, "chat", { viewport, steering: false });
+        await wire.input.fill("queue this one");
+        await expect(wire.sendButton).toHaveAttribute("data-action", "send");
+        await expect(wire.sendButton).not.toHaveAttribute("aria-haspopup", "menu");
+        await expectOneLinePhoneComposer(wire, { stop: true });
+        if (viewport.width === 390) await shot(page, "composer-phone-390-not-steerable");
+        await wire.sendButton.click();
+        await expect.poll(() => wire.state.sends.length).toBe(1);
+        expect(wire.state.steers).toEqual([]);
+    });
+
+    test(`phone chat ${viewport.width}x${viewport.height}: a queued image disables the blue button's steer of the queue`, async ({ page }) => {
+        const { wire } = await openPhoneView(page, "chat", { viewport });
+        await queueMessage(wire, "also cover MotherDuck");
+        await queueImageMessage(page, wire, "and this chart");
+        await expect(wire.sendButton).toHaveAttribute("data-action", "steer");
+        await expect(wire.sendButton).toBeDisabled();
+        await expect(wire.sendButton).toHaveAttribute("title", "A queued message has an image; images cannot be steered");
+        if (viewport.width === 390) await shot(page, "composer-phone-390-image-disabled");
+        expect(wire.state.steers).toEqual([]);
     });
 }
 
-for (const themeId of DOT_THEMES) {
-    for (const view of ["chat", "zen", "moa"]) {
-        test(`phone 390x844 ${view} (${themeId}): the status dot is visible, coloured and textless`, async ({ page }) => {
-            await page.setViewportSize({ width: 390, height: 844 });
-            const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: view === "moa" ? moaProfile(themeId) : { themeId } });
-            let wire;
-            if (view === "moa") {
-                await openMoa(page, portal);
-                wire = moaWire(page, portal, SID, "pa");
-            } else {
-                await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
-                if (view === "zen") await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
-                wire = portal.wire(SID, { composerScope: page.locator(view === "zen" ? ".ps-mobile-zen-composer" : ".ps-chat-composer") });
-            }
-            await expectDot(wire.turnState, "Running · accepts Stop and Steer");
-        });
-    }
+test("phone 390x844 (terminal-green): running steerable, the hold menu, and the empty box with ↪ 2", async ({ page }) => {
+    const { wire } = await openPhoneView(page, "chat", { viewport: PHONES[0], profile: { themeId: "terminal-green" } });
+    await wire.input.fill("compare with ClickHouse");
+    await expect(wire.sendButton).toHaveClass(/can-hold/);
+    await shot(page, "composer-phone-390-running-steerable-terminal-green");
+    await holdOpen(wire);
+    await shot(page, "composer-phone-390-hold-menu-terminal-green");
+    await page.mouse.move(10, 10, { steps: 3 });
+    await page.mouse.up();
+    await expect(wire.composer.getByTestId("steer-hold-menu")).toHaveCount(0);
+    await wire.input.fill("");
+    await queueMessage(wire, "also cover MotherDuck");
+    await queueMessage(wire, "keep it short");
+    await expect(wire.sendButton).toHaveText("↪2");
+    await shot(page, "composer-phone-390-empty-two-queued-terminal-green");
+});
+
+// The hold menu, in Chromium and WebKit: hold the blue button about 0.45 s
+// (with typed text) and Steer now / Queue open above it, Steer now lit.
+for (const browserName of ["chromium", "webkit"]) {
+    test.describe(browserName, () => {
+        for (const viewport of PHONES) {
+            test(`phone ${viewport.width}x${viewport.height}: hold opens Steer now / Queue; slide to Queue queues; release on the button keeps it for a tap; a tap away sends nothing`, async () => {
+                const browser = await ({ chromium, webkit }[browserName]).launch();
+                const page = await browser.newPage();
+                try {
+                    const { wire } = await openPhoneView(page, "chat", { viewport });
+                    // No browser long-press menu and no text selection on the button.
+                    await wire.input.fill("compare with ClickHouse");
+                    expect(await wire.sendButton.evaluate((el) => {
+                        const style = getComputedStyle(el);
+                        const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+                        el.dispatchEvent(event);
+                        return [style.userSelect || style.webkitUserSelect, style.touchAction, event.defaultPrevented];
+                    })).toEqual(["none", "none", true]);
+
+                    // Slide to Queue and release: queued, not steered.
+                    await holdAndPick(wire, "queue");
+                    await expect(queuedRows(wire).item.filter({ hasText: "compare with ClickHouse" })).toHaveAttribute("data-phase", "queued");
+                    expect(wire.state.steers).toEqual([]);
+
+                    // Release on the button: the menu stays, Steer now lit; a tap on it steers.
+                    await wire.input.fill("prefer the shorter answer");
+                    const menu = await holdOpen(wire);
+                    await expect(menu.getByRole("menuitem", { name: /Steer now/ })).toHaveClass(/is-lit/);
+                    await expect(menu.getByRole("menuitem")).toHaveCount(2);
+                    if (browserName === "chromium") await shot(page, `composer-phone-${viewport.width}-hold-menu`);
+                    await page.mouse.up();
+                    await expect(menu).toBeVisible();
+                    await menu.getByTestId("steer-hold-steer").click();
+                    await expect(menu).toHaveCount(0);
+                    await expect.poll(() => wire.state.steers.length).toBe(1);
+                    expect(wire.state.steers[0]).toMatchObject({ text: "prefer the shorter answer" });
+                    expect(wire.state.steers[0].replacesClientMessageId).toBeUndefined();
+
+                    // Release away from the menu, or a tap away: nothing is sent; the text stays.
+                    await wire.input.fill("not yet");
+                    await holdOpen(wire);
+                    await page.mouse.move(10, 10, { steps: 4 });
+                    await page.mouse.up();
+                    await expect(wire.composer.getByTestId("steer-hold-menu")).toHaveCount(0);
+                    await holdOpen(wire);
+                    await page.mouse.up();
+                    await page.mouse.click(10, 10);
+                    await expect(wire.composer.getByTestId("steer-hold-menu")).toHaveCount(0);
+                    await expect(wire.input).toHaveValue("not yet");
+                    expect(wire.state.steers).toHaveLength(1);
+                    expect(wire.state.sends).toHaveLength(1);
+                } finally {
+                    await browser.close();
+                }
+            });
+        }
+    });
 }
 
-test("phone Zen (compact view): the strip at the end of a long transcript stays in view when its label grows", async ({ page }) => {
+// A compact view (Zen, MoA panels) keeps the strip at the end of the
+// transcript: a reader at the bottom follows it when it grows.
+test("phone Zen (compact view): a reader at the bottom of a long transcript follows a new queued line", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    let held;
     const longChat = Array.from({ length: 60 }, (_, i) => ev(10 + i, "assistant.message", { content: `Earlier answer line ${i} with some words to fill the transcript.` }));
-    const portal = await fakePortal(page, { sessions: { [SID]: { title: "Agent A", events: longChat }, [SID2]: { title: "Agent B" } },
-        handlers: { steer: (args) => held.handler(args) } });
+    const portal = await fakePortal(page, { sessions: { [SID]: { title: "Agent A", events: longChat }, [SID2]: { title: "Agent B" } } });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
     const zen = portal.wire(SID, { composerScope: page.locator(".ps-mobile-zen-composer") });
     await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
-    held = heldSteer(zen);
-    held.release();
-    await queueMessage(zen, "a queued line at the end of a long transcript");
-    const rows = queuedRows(zen);
-    await rows.steerNow.click();
-    await expect(rows.item).toContainText("Steering…");
-    // The reader is at the bottom (and so follows it) when the model reads the steer.
+    await queueMessage(zen, "a first queued line");
     const scroller = page.locator(".ps-mobile-zen .ps-scroll-panel");
     await scroller.evaluate((node) => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event("scroll", { bubbles: true })); });
     await expect.poll(() => scroller.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(8);
     // Two frames: React has committed the follow state the scroll dispatched.
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const before = await rows.item.evaluate((el) => el.getBoundingClientRect().height);
-    await expect.poll(() => portal.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
-    const steerSeq = portal.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
-    zen.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
-    const label = rows.item.locator(".ps-queued-item-phase");
-    await expect(label).toHaveText("Delivered · leaves the queue when the turn ends");
-    expect(await rows.item.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThan(before);
-    // The whole label is inside the visible transcript: the reader at the bottom followed it.
-    await expect.poll(() => label.evaluate((el) => {
+    await queueMessage(zen, "a second queued line that the reader at the bottom must see");
+    const line = queuedRows(zen).item.filter({ hasText: "a second queued line" });
+    await expect.poll(() => line.evaluate((el) => {
         const panel = el.closest(".ps-scroll-panel").getBoundingClientRect();
         const box = el.getBoundingClientRect();
         return box.top >= panel.top && box.bottom <= panel.bottom + 1;
     })).toBe(true);
 });
-

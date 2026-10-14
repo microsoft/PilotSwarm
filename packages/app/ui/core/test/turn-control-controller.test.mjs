@@ -12,6 +12,7 @@ import {
     createInitialState,
     createStore,
     selectStatusBar,
+    selectSteerAction,
     selectTurnControlView,
 } from "../src/index.js";
 
@@ -401,7 +402,7 @@ for (const phase of ["pending", "attempted-pending", "cancelling"]) {
         if (phase === "attempted-pending") item.attempted = true;
         controller.setSessionOutboxItems(SID, [item]);
         assert.equal(controller.enterPendingPromptEdit(SID, item.id), true);
-        assert.equal(view().canSteer, false);
+        assert.equal(selectSteerAction(store.getState(), SID).blocked, "Only a queued message can be steered");
         await controller.steerActiveSessionTurn();
         assert.equal(calls.steer.length, 0);
         assert.equal(store.getState().ui.prompt, "queued words");

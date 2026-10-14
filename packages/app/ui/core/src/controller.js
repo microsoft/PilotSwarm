@@ -51,6 +51,7 @@ import {
     selectAdminConsole,
     selectSessionRows,
     selectSelectedFileBrowserItem,
+    selectSteerAction,
     selectTurnControlView,
     canConvertQueuedItem,
     formatConvertNotice,
@@ -11019,8 +11020,10 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Steer the active session's running turn with the composer text. With
-     * an unconfirmed steer pending, this retries it with the same request id.
+     * Steer the active session's running turn with what the composer holds
+     * (selectSteerAction): the typed text, a selected queued message, or,
+     * with an empty box, every queued message. With an unconfirmed steer
+     * pending, this retries it with the same request id.
      */
     async steerActiveSessionTurn() {
         const state = this.getState();
@@ -11032,7 +11035,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
             return;
         }
-        // A selected queued message: Steer converts it (Steer now).
+        // A selected queued message: Steer sends it as a steer.
         const promptEdit = this.getPromptEditSessionMatch(sessionId);
         const selected = promptEdit && this.getSessionOutbox(sessionId).find((item) => item.id === promptEdit.itemId);
         if (selected?.phase === "queued") {
@@ -11054,7 +11057,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Steer is unavailable while a pending message is selected; press Esc for a new prompt" });
             return;
         }
-        if (!String(state.ui.prompt || "").trim() && this.restoreTurnControlText(sessionId)) {
+        const action = selectSteerAction(state, sessionId);
+        if (action.target === "none" && this.restoreTurnControlText(sessionId)) {
             this.dispatch({ type: "ui/status", text: "Refused steer text restored to the prompt" });
             return;
         }
@@ -11066,6 +11070,11 @@ export class PilotSwarmUiController {
                     ? "Steering is not enabled for you"
                     : "No running turn accepts steering; send the text as a message instead",
             });
+            return;
+        }
+        if (action.target === "queue") {
+            if (action.blocked) this.dispatch({ type: "ui/status", text: action.blocked });
+            else await this.steerQueuedMessages(sessionId, action.itemIds);
             return;
         }
         const text = String(state.ui.prompt || "");
@@ -11081,25 +11090,46 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Steer now: send a durably queued message as a steer that replaces it.
-     * The message stays queued ("Steering…") until the orchestration drops it
-     * (its steer was delivered) or the steer misses (queued again, with a
-     * notice). Nothing is re-sent: the queued message is its own fallback,
-     * so its text runs exactly once. A request id is reused only to retry a
-     * request that got no answer.
+     * Steer every queued message, oldest first, each as its own steer. A
+     * refusal stops it there: that message says why; past the open-steer cap
+     * (too_many) each message not sent says so too. All stay queued and run.
+     */
+    async steerQueuedMessages(sessionId, itemIds) {
+        for (const [index, itemId] of itemIds.entries()) {
+            const outcome = await this.convertQueuedToSteer(sessionId, itemId);
+            if (outcome === "accepted") continue;
+            if (outcome === "too_many") {
+                for (const rest of itemIds.slice(index + 1)) {
+                    if (this.getSessionOutbox(sessionId).find((item) => item.id === rest)?.phase === "queued") {
+                        this._updateOutboxItem(sessionId, rest, { convertNotice: { reason: "too_many" } });
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    /**
+     * Send a durably queued message as a steer that replaces it. The message
+     * waits ("↪ steering") until the model reads the steer (it leaves the
+     * strip) and the orchestration drops it, or the steer misses (queued
+     * again, with a notice). Nothing is re-sent: the queued message is its
+     * own fallback, so its text runs exactly once. A request id is reused
+     * only to retry a request that got no answer. Returns the outcome
+     * ("accepted", a refusal reason, or "unavailable").
      */
     async convertQueuedToSteer(sessionId, itemId) {
         const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.id === itemId);
-        if (!item) return false;
+        if (!item) return "unavailable";
         if (typeof this.transport.steerSessionTurn !== "function") {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
-            return false;
+            return "unavailable";
         }
         if (!canConvertQueuedItem(this.getState(), sessionId, item)) {
             this.dispatch({ type: "ui/status", text: item.phase === "queued"
-                ? "Steer now needs a running turn that accepts steering, and a message without images"
-                : "Only a queued message can be steered now" });
-            return false;
+                ? "Steer needs a running turn that accepts steering, and a message without images"
+                : "Only a queued message can be steered" });
+            return "unavailable";
         }
         if (this.getPromptEditSessionMatch(sessionId)?.itemId === itemId) {
             this.exitPendingPromptEdit({ restoreDraft: true });
@@ -11121,26 +11151,26 @@ export class PilotSwarmUiController {
                 const steer = events.find((event) => event.eventType === "user.steer" && event.data?.requestId === requestId);
                 if (steer) this._linkConvertSteer(sessionId, requestId, Number(steer.seq));
             }
-            return false;
+            return reason;
         }
         const outcome = result?.outcome || "error";
         if (outcome !== "accepted") {
             if (outcome === "steering_disabled") this.dispatch({ type: "turnControl/steering", enabled: false });
             this._returnConvertToQueue(sessionId, itemId, { reason: outcome }, null);
-            return false;
+            return outcome;
         }
         const steerSeq = Number(result.steerId);
         this._updateOutboxItem(sessionId, itemId, { convert: { requestId, steerSeq } });
         this.dispatch({ type: "ui/status", text: "Steer accepted; the queued message waits for it" });
         this._applyLoadedConvertLabels(sessionId, steerSeq);
         this.syncSessionEvents(sessionId).catch(() => {});
-        return true;
+        return "accepted";
     }
 
     /**
      * A converted message's steer got its outcome. Anything but delivered
      * queues the message again; for a request that got no answer it ends the
-     * retry, so the next Steer now is a new request.
+     * retry, so the next Steer is a new request.
      */
     _applyConvertOutcome(sessionId, steerSeq, outcome) {
         if (!Number.isFinite(steerSeq) || outcome === "delivered") return;
@@ -11167,7 +11197,7 @@ export class PilotSwarmUiController {
         if (outcome) this._applyConvertOutcome(sessionId, steerSeq, outcome.data?.outcome);
     }
 
-    /** The model read a converted message's steer: its row says so until the message is dropped. */
+    /** The model read a converted message's steer: it leaves the strip (selectors) until the message is dropped. */
     _applyConvertConfirmed(sessionId, steerSeq) {
         const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.phase === "steering" && candidate.convert?.steerSeq === steerSeq);
         if (item && !item.convert.confirmed) this._updateOutboxItem(sessionId, item.id, { convert: { ...item.convert, confirmed: true } });

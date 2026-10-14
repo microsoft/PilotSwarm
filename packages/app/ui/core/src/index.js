@@ -12,6 +12,7 @@ export * from "./reducer.js";
 export * from "./portal-links.js";
 export * from "./store.js";
 export * from "./selectors.js";
+export * from "./steer-hold.js";
 export * from "./controller.js";
 export { isThemeLight } from "./themes/helpers.js";
 export * from "./themes/index.js";

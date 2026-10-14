@@ -277,8 +277,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.STOP_TURN).catch(() => {});
             return;
         }
-        // Steer the running turn with the prompt text — the TUI equivalent of
-        // the portal Steer button. Ctrl+S is XOFF in many terminals, so T.
+        // Steer the running turn with the prompt text, the selected queued
+        // message, or (empty prompt) every queued message — the TUI
+        // equivalent of the portal Steer button. Ctrl+S is XOFF in many
+        // terminals, so T.
         // The controller explains in the status line when Steer does not
         // apply (no turn listening, or the steering feature is off), and the
         // same key resends an unconfirmed steer with its request id.

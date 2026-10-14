@@ -564,7 +564,7 @@ high-frequency ones:
 | `V` / `Space` / `Esc` | Multi-select |
 | `Ctrl+A` | Attach file |
 | `Ctrl+X` | Stop the running turn. Stop discards the turn: the agent does not remember the stopped request or its partial work; send it again to continue. |
-| `Ctrl+T` | Steer the running turn with the prompt text; with a queued message selected (`↑`), steer now with that message |
+| `Ctrl+T` | Steer the running turn with the prompt text; with a queued message selected (`↑`), steer now with that message; with an empty prompt, steer every queued message in order (refused, with a hint, when one has an image) |
 | `d` | With a queued message selected (`↑`): cancel it |
 | `r` | Refresh |
 | `a` | Linked-item picker |

@@ -77,28 +77,9 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
                 const actual = await geometry();
                 for (const key of Object.keys(expected)) expect(Math.abs(actual[key] - expected[key]), key).toBeLessThan(1);
             };
-            // Phones (<= 600 px): while Stop shows, the turn state and the
-            // actions take their own row under the input (owner decision A).
-            // The composer then grows by exactly that row; the input row and
-            // the header do not move.
-            const composerRows = () => surface.locator('.ps-prompt-shell').evaluate(shell => {
-                const style = getComputedStyle(shell);
-                return { rows: style.gridTemplateRows.split(' ').map(parseFloat), gap: parseFloat(style.rowGap) || 0 };
-            });
-            const assertOneActionRowTaller = async (idleGeometry, idleRows) => {
-                const running = await composerRows();
-                expect(idleRows.rows).toHaveLength(1);
-                expect(running.rows).toHaveLength(2);
-                expect(Math.abs(running.rows[0] - idleRows.rows[0]), 'input row').toBeLessThan(1);
-                const actual = await geometry();
-                expect(Math.abs(idleGeometry.transcriptBottom - actual.transcriptBottom - (running.rows[1] + running.gap)), 'one action row').toBeLessThan(1);
-                expect(Math.abs(actual.headerTop - idleGeometry.headerTop), 'headerTop').toBeLessThan(1);
-                expect(Math.abs(actual.headerHeight - idleGeometry.headerHeight), 'headerHeight').toBeLessThan(1);
-                const shellBox = await surface.locator('.ps-prompt-shell').boundingBox();
-                expect((await input.boundingBox()).width / shellBox.width, 'input width share').toBeGreaterThanOrEqual(0.7);
-            };
+            // Phones (<= 600 px): one line. Stop joins the input's row when a
+            // turn runs, and the composer does not grow: nothing moves.
             const idle = await geometry();
-            const idleRows = await composerRows();
             await expect(stop).toHaveCount(0);
             await expect(chat.locator('.ps-panel-bottom-sticky')).toHaveCount(0);
             await update({ status: 'running', statusVersion: 5, updatedAt: T0 + 5000 });
@@ -108,8 +89,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await update({ status: 'running', statusVersion: 7, updatedAt: T0 + 1000 });
             await expect(footer).toContainText('Working');
             await expect(stop).toBeEnabled();
-            await assertOneActionRowTaller(idle, idleRows);
-            const running = await geometry();
+            await assertSame(idle);
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 2000 });
             await expect(footer).not.toContainText('Working');
             await expect(stop).toHaveCount(0);
@@ -118,17 +98,27 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await update({ status: 'running', statusVersion: 9, updatedAt: T0 + 3000 });
             await expect(footer).toContainText('Working');
             await expect(stop).toBeEnabled();
-            await assertSame(running);
+            await assertSame(idle);
+            // The blue button steers while the turn accepts steering; a hold
+            // offers Queue.
+            const blue = surface.getByTestId('composer-send');
             await input.fill('Preserve this queued prompt');
-            await surface.getByRole('button', { name: 'Send prompt', exact: true }).click();
+            await expect(blue).toHaveAttribute('data-action', 'steer');
+            const blueBox = await blue.boundingBox();
+            await page.mouse.move(blueBox.x + blueBox.width / 2, blueBox.y + blueBox.height / 2);
+            await page.mouse.down();
+            await page.clock.runFor(500);
+            const queueItem = await surface.getByTestId('steer-hold-queue').boundingBox();
+            await page.mouse.move(queueItem.x + queueItem.width / 2, queueItem.y + queueItem.height / 2, { steps: 3 });
+            await page.mouse.up();
             await page.clock.runFor(100);
             await expect.poll(() => sends).toBe(1);
+            expect(steers).toEqual([]);
             await expect(chat).toContainText('Preserve this queued prompt');
             await expect(footer).toContainText('1 queued');
-            // The queued strip, with Steer now and Cancel, ends the transcript: nothing moves.
+            // The queued strip ends the transcript: nothing moves.
             await expect(chat.getByTestId('queued-item')).toHaveAttribute('data-phase', 'queued');
-            await expect(chat.getByTestId('queued-steer-now')).toBeVisible();
-            await assertSame(running);
+            await assertSame(idle);
             expect(await chat.getByText(/Preserve this queued prompt/).count()).toBe(1);
             const queued = await geometry();
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 9000 });
@@ -140,47 +130,37 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await page.screenshot({path:`/tmp/mobile-header-${mode}-${themeId}.png`});
             const box = await surface.locator(mode==='zen'?'.ps-mobile-zen-composer':'.ps-moa-pane-composer').boundingBox();
             expect(Math.abs(box.y-(await geometry()).transcriptBottom)).toBeLessThan(5);
-            // Stop remains reachable alongside Send at the narrowest phone and
-            // keyboard viewport, and targets the focused session only.
+            // Stop remains reachable alongside the blue button at the narrowest
+            // phone and keyboard viewport, on the input's row, and targets the
+            // focused session only.
             await page.clock.resume();
             await page.setViewportSize({ width: 320, height: 400 });
             await expect.poll(async () => { const r = await stop.boundingBox(); return r.y + r.height; }).toBeLessThanOrEqual(400);
             const stopBox = await stop.boundingBox();
             const inputBox = await input.boundingBox();
-            const sendBox = await surface.locator('.ps-send-button').boundingBox();
+            const sendBox = await blue.boundingBox();
             expect(stopBox.width).toBeGreaterThanOrEqual(44);
             expect(stopBox.height).toBeGreaterThanOrEqual(44);
-            // The controls have their own row under the input.
-            expect(inputBox.y + inputBox.height).toBeLessThanOrEqual(stopBox.y);
+            expect(inputBox.x + inputBox.width).toBeLessThanOrEqual(stopBox.x);
             expect(Math.abs((sendBox.y + sendBox.height / 2) - (stopBox.y + stopBox.height / 2))).toBeLessThan(2);
             expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(sendBox.x);
             expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(320);
             expect(stopBox.y + stopBox.height).toBeLessThanOrEqual(400);
-            // The turn status dot is on screen beside the controls; its status is its name.
+            // The turn status has no visible pixels; its name carries it.
             const turnState = surface.getByTestId('session-turn-state');
-            await expect(turnState).toBeVisible();
             await expect(turnState).toHaveAccessibleName('Running · accepts Stop and Steer');
             const stateBox = await turnState.boundingBox();
-            expect(stateBox.x).toBeGreaterThanOrEqual(0);
-            expect(stateBox.x + stateBox.width).toBeLessThanOrEqual(stopBox.x);
-            expect(stateBox.y + stateBox.height).toBeLessThanOrEqual(400);
-            // Steer sits between Stop and Send with the same 44 x 44 target.
-            const steer = surface.getByTestId('turn-steer-button');
-            await expect(steer).toHaveAttribute('data-state', 'disabled');
+            expect(stateBox.width * stateBox.height).toBeLessThanOrEqual(1);
+            await expect(surface.getByTestId('turn-steer-button')).toHaveCount(0);
+            // A tap on the blue button steers the typed text.
             await input.fill('Steer the focused session');
-            await expect(steer).toHaveAttribute('data-state', 'ready');
-            const steerBox = await steer.boundingBox();
-            expect(steerBox.width).toBeGreaterThanOrEqual(44);
-            expect(steerBox.height).toBeGreaterThanOrEqual(44);
-            expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(steerBox.x);
-            expect(steerBox.x + steerBox.width).toBeLessThanOrEqual((await surface.locator('.ps-send-button').boundingBox()).x);
-            expect(steerBox.y + steerBox.height).toBeLessThanOrEqual(400);
-            await steer.click();
+            await expect(blue).toHaveAttribute('data-state', 'ready');
+            await blue.click();
             await expect.poll(() => steers.length).toBe(1);
             expect(steers[0].path).toBe(`/api/v1/management/sessions/${sessionId}/steer`);
             expect(steers[0].body.options.text).toBe('Steer the focused session');
-            await expect(steer).toHaveAttribute('data-state', 'sending');
-            await expect(steer).toBeDisabled();
+            await expect(blue).toHaveAttribute('data-state', 'sending');
+            await expect(blue).toBeDisabled();
             await expect(stop).toBeEnabled();
             await expect(input).toBeFocused();
             releaseSteer();

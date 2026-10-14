@@ -14,6 +14,7 @@ import {
     createInitialState,
     createStore,
     selectHelpModal,
+    selectOutboxOverlayLines,
     selectStatusBar,
 } from "pilotswarm/ui-core";
 import { StatusBar } from "../../ui/react/src/components.js";
@@ -120,4 +121,33 @@ test("Alt+T gives up unconfirmed requests; the hint and help list it", async () 
     assert.equal(lost.store.getState().ui.prompt, "lost words");
     lost.store.dispatch({ type: "ui/modal", modal: { type: "help", selectedIndex: 0 } });
     assert.match(JSON.stringify(selectHelpModal(lost.store.getState(), 120)), /alt-t/);
+});
+
+test("Ctrl+T with an empty prompt steers every queued text message in order; the status line says how many; an image refuses it", async () => {
+    let seq = 10;
+    const h = harness({ steer: undefined });
+    h.controller.transport.steerSessionTurn = async (sessionId, options) => { h.calls.push({ sessionId, ...options }); return { outcome: "accepted", steerId: seq++, turn: 0 }; };
+    const queue = (text, extra = {}) => {
+        const item = { ...h.controller.buildOutboxItem(text, "queued"), ...extra };
+        h.controller.setSessionOutboxItems("s1", [...h.controller.getSessionOutbox("s1"), item]);
+        return item;
+    };
+    const a = queue("first queued");
+    const b = queue("second queued");
+    assert.match(selectStatusBar(h.store.getState()).right, /^ctrl-x stop · ctrl-t steer 2 queued · /);
+    await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.deepEqual(h.calls.map((call) => [call.text, call.replacesClientMessageId]), [["first queued", a.id], ["second queued", b.id]]);
+    const strip = selectOutboxOverlayLines(h.store.getState(), 80).map((line) => line.map((run) => run.text).join("")).join("\n");
+    assert.match(strip, /queued prompts: 2 steering/);
+    assert.match(strip, /↪ You: first queued/);
+
+    const img = harness();
+    img.controller.setSessionOutboxItems("s1", [
+        img.controller.buildOutboxItem("text", "queued"),
+        { ...img.controller.buildOutboxItem("look", "queued"), attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] },
+    ]);
+    assert.doesNotMatch(selectStatusBar(img.store.getState()).right, /ctrl-t steer/);
+    await img.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(img.calls.length, 0);
+    assert.equal(img.store.getState().ui.statusText, "A queued message has an image; images cannot be steered");
 });
