@@ -7338,11 +7338,6 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     const outboxStrip = outbox.header
         ? React.createElement(OutboxStrip, { controller, sessionId: viewState.activeSessionId, header: outbox.header, blocks: outbox.blocks, theme })
         : null;
-    // Compact views (MoA panels, Zen) keep the strip at the end of the
-    // transcript, where it scrolls; the others pin it above the composer.
-    // Everything the strip renders, so a reader at the bottom follows any change of it.
-    const outboxStripKey = outbox.blocks.map((block) => [block.itemId, block.phase, block.phaseLabel, block.canSteer, block.canCancel,
-        block.notice, block.lines.length].join(":")).join("|");
     // Read-only gating: a view-only viewer (shared_read / read grant, no write)
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
@@ -7402,8 +7397,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         color: chrome.color,
         focused: viewState.focused,
         lines,
+        // Compact views (MoA panels, Zen) keep the strip at the end of the
+        // transcript, where it scrolls; the others pin it above the composer.
         scrollTail: activityInHeader ? outboxStrip : null,
-        scrollTailKey: activityInHeader ? outboxStripKey : "",
+        scrollTailKey: activityInHeader ? outbox.revision : "",
         bottomStickyTop: activityInHeader ? null : outboxStrip,
         bottomStickyLines: activityInHeader ? EMPTY_ARRAY : pinnedActivityLines,
         reserveBottomSticky: !activityInHeader,

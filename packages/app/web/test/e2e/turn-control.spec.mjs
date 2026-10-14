@@ -1112,7 +1112,8 @@ test("phone Zen (compact view): the strip at the end of a long transcript stays 
     const scroller = page.locator(".ps-mobile-zen .ps-scroll-panel");
     await scroller.evaluate((node) => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event("scroll", { bubbles: true })); });
     await expect.poll(() => scroller.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(8);
-    await page.waitForTimeout(50);
+    // Two frames: React has committed the follow state the scroll dispatched.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const before = await rows.item.evaluate((el) => el.getBoundingClientRect().height);
     await expect.poll(() => portal.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
     const steerSeq = portal.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;

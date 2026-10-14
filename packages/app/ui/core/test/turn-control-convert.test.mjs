@@ -286,3 +286,33 @@ test("a cancelled queued message says when the cancel takes effect: at turn end 
     await idle.controller.cancelOutboxItem(SID, y.id);
     assert.equal(idle.block(y.id).phaseLabel, "Cancelling…");
 });
+
+test("the strip's revision changes with everything a queued line shows, so a compact view follows label- and action-only changes", async () => {
+    const h = harness();
+    const x = h.queue();
+    const revision = () => selectOutboxOverlayBlocks(h.store.getState(), 80).revision;
+    const seen = [revision()];
+    const changed = (why) => {
+        const next = revision();
+        assert.ok(!seen.includes(next), why);
+        seen.push(next);
+    };
+    // Actions only: the running turn stops accepting steering, then accepts it again.
+    h.store.dispatch({ type: "sessions/merged", session: { sessionId: SID, acceptsTurnControl: false } });
+    changed("Steer now leaves");
+    h.store.dispatch({ type: "sessions/merged", session: { sessionId: SID, acceptsTurnControl: true } });
+    assert.equal(revision(), seen[0]);
+    seen.splice(0, seen.length, revision());
+    // Label only: the model reads the converted steer (phase stays steering).
+    await h.controller.convertQueuedToSteer(SID, x.id);
+    changed("Steering…");
+    h.event("session.steer_confirmed", { seq: 70, turn: 2, messageId: "m-1" }, 80);
+    changed("Delivered · leaves the queue when the turn ends");
+    // Label only: a cancel waits for the turn end, then the turn ends (phase stays cancelling).
+    const y = h.queue("a second line");
+    changed("a second queued line");
+    await h.controller.cancelOutboxItem(SID, y.id);
+    changed("Cancelling · takes effect when the turn ends");
+    h.store.dispatch({ type: "sessions/merged", session: { sessionId: SID, status: "idle", acceptsTurnControl: false } });
+    changed("Cancelling…");
+});

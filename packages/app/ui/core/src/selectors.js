@@ -3761,12 +3761,14 @@ const OUTBOX_PHASE_LABELS = { steering: "Steeringâ€¦", cancelling: "Cancellingâ€
  * converts a queued message to a steer of the running turn, and Cancel).
  * The portal renders the blocks with their buttons; the TUI renders the
  * flattened lines and acts on the selected message (Ctrl+T, d).
+ * `revision` changes with everything a block shows, so a view that keeps the
+ * strip after its transcript follows any change of it.
  */
 export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
     const sessionId = state.sessions.activeSessionId;
     const items = sessionId && Array.isArray(state.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
     const entries = items.map((item) => ({ item, message: buildPendingOutboxMessage(sessionId, item) })).filter((entry) => entry.message);
-    if (entries.length === 0) return { header: null, blocks: [] };
+    if (entries.length === 0) return { header: null, blocks: [], revision: "" };
 
     const safeWidth = Math.max(20, Number(maxWidth) || 80);
     const turnRunning = state.sessions.byId?.[sessionId]?.status === "running";
@@ -3815,7 +3817,9 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
             lines: all.slice(start),
         };
     });
-    return { header, blocks };
+    const revision = blocks.map((block) => [block.itemId, block.phase, block.phaseLabel, block.canSteer, block.canCancel,
+        block.notice, block.lines.length].join(":")).join("|");
+    return { header, blocks, revision };
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
