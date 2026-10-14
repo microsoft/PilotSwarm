@@ -13,7 +13,13 @@ import { SERVICE_IMAGE_INFO } from "./service-info.mjs";
 
 // Build a service image and write a gzipped OCI/docker tarball to the staging dir.
 // Returns the absolute path to the .tar.gz on disk.
-export async function buildImage({ service, envName, imageTag, stagingDir: stage }) {
+export async function buildImage({
+  service,
+  envName,
+  imageTag,
+  stagingDir: stage,
+  npmRegistry,
+}) {
   const info = SERVICE_IMAGE_INFO[service];
   if (!info) {
     throw new Error(
@@ -52,7 +58,24 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
 
   // 1) docker buildx build (platform pinned per repo Docker convention).
   log("info", `docker buildx build → ${localTag}`);
-  await runForeground("docker", [
+  const invocation = dockerBuildInvocation({
+    localTag,
+    dockerfileAbs,
+    npmRegistry,
+  });
+  await runForeground("docker", invocation.args, {
+    env: { ...process.env, ...invocation.envOverrides },
+  });
+
+  // 2) docker save | zlib gzip → <staging>/<repo>.tar.gz (no host gzip CLI).
+  const outPath = join(stage, `${dockerImageRepo}.tar.gz`);
+  log("info", `docker save | zlib gzip → ${outPath}`);
+  await pipedSaveToGzip(localTag, outPath);
+  return outPath;
+}
+
+export function dockerBuildInvocation({ localTag, dockerfileAbs, npmRegistry }) {
+  const args = [
     "buildx",
     "build",
     "--platform",
@@ -62,24 +85,27 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
     localTag,
     "-f",
     dockerfileAbs,
-    REPO_ROOT,
-  ]);
-
-  // 2) docker save | zlib gzip → <staging>/<repo>.tar.gz (no host gzip CLI).
-  const outPath = join(stage, `${dockerImageRepo}.tar.gz`);
-  log("info", `docker save | zlib gzip → ${outPath}`);
-  await pipedSaveToGzip(localTag, outPath);
-  return outPath;
+  ];
+  const registry = npmRegistry?.trim();
+  if (registry) {
+    args.push("--build-arg", "NPM_REGISTRY");
+  }
+  args.push(REPO_ROOT);
+  return {
+    args,
+    envOverrides: registry ? { NPM_REGISTRY: registry } : {},
+  };
 }
 
 // runForeground: spawn with inherited stdio, no shell, no batch-file weirdness
 // expected here (docker is a real .exe on Windows). Throws on non-zero exit.
-function runForeground(name, args) {
+function runForeground(name, args, { env = process.env } = {}) {
   return new Promise((resolve, reject) => {
     const cli = resolveCli(name);
     const child = spawn(cli, args, {
       shell: false,
       cwd: REPO_ROOT,
+      env,
       stdio: "inherit",
     });
     child.on("error", reject);
