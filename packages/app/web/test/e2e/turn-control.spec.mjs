@@ -1091,3 +1091,40 @@ for (const themeId of DOT_THEMES) {
         });
     }
 }
+
+test("phone Zen (compact view): the strip at the end of a long transcript stays in view when its label grows", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    let held;
+    const longChat = Array.from({ length: 60 }, (_, i) => ev(10 + i, "assistant.message", { content: `Earlier answer line ${i} with some words to fill the transcript.` }));
+    const portal = await fakePortal(page, { sessions: { [SID]: { title: "Agent A", events: longChat }, [SID2]: { title: "Agent B" } },
+        handlers: { steer: (args) => held.handler(args) } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+    await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
+    const zen = portal.wire(SID, { composerScope: page.locator(".ps-mobile-zen-composer") });
+    await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
+    held = heldSteer(zen);
+    held.release();
+    await queueMessage(zen, "a queued line at the end of a long transcript");
+    const rows = queuedRows(zen);
+    await rows.steerNow.click();
+    await expect(rows.item).toContainText("Steering…");
+    // The reader is at the bottom (and so follows it) when the model reads the steer.
+    const scroller = page.locator(".ps-mobile-zen .ps-scroll-panel");
+    await scroller.evaluate((node) => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    await expect.poll(() => scroller.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(8);
+    await page.waitForTimeout(50);
+    const before = await rows.item.evaluate((el) => el.getBoundingClientRect().height);
+    await expect.poll(() => portal.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
+    const steerSeq = portal.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
+    zen.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
+    const label = rows.item.locator(".ps-queued-item-phase");
+    await expect(label).toHaveText("Delivered · leaves the queue when the turn ends");
+    expect(await rows.item.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThan(before);
+    // The whole label is inside the visible transcript: the reader at the bottom followed it.
+    await expect.poll(() => label.evaluate((el) => {
+        const panel = el.closest(".ps-scroll-panel").getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        return box.top >= panel.top && box.bottom <= panel.bottom + 1;
+    })).toBe(true);
+});
+

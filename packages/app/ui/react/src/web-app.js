@@ -7340,7 +7340,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         : null;
     // Compact views (MoA panels, Zen) keep the strip at the end of the
     // transcript, where it scrolls; the others pin it above the composer.
-    const outboxStripKey = outbox.blocks.map((block) => `${block.itemId}:${block.phase}:${block.lines.length}:${block.notice || ""}`).join("|");
+    // Everything the strip renders, so a reader at the bottom follows any change of it.
+    const outboxStripKey = outbox.blocks.map((block) => [block.itemId, block.phase, block.phaseLabel, block.canSteer, block.canCancel,
+        block.notice, block.lines.length].join(":")).join("|");
     // Read-only gating: a view-only viewer (shared_read / read grant, no write)
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
