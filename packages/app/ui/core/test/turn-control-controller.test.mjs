@@ -619,3 +619,16 @@ for (const host of ["TUI (restored from user config)", "portal (restored from th
         }
     });
 }
+
+test("overlapping steering reads: only the newest answer applies, also when it arrives first", async () => {
+    const answers = [];
+    const { controller, store } = harness();
+    controller.transport.getMyFeatureFlags = () => new Promise((resolve) => answers.push(resolve));
+    const older = controller.refreshSteeringFeature({ force: true });
+    const newer = controller.refreshSteeringFeature({ force: true });
+    answers[1]({ userId: 1, flags: [{ featureKey: "sessions.steering", effective: false }] });
+    await newer;
+    answers[0]({ userId: 1, flags: [{ featureKey: "sessions.steering", effective: true }] });
+    await older;
+    assert.equal(store.getState().turnControl.steeringEnabled, false);
+});

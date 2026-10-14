@@ -10993,8 +10993,12 @@ export class PilotSwarmUiController {
         const now = Date.now();
         if (!force && this._steeringFeatureReadAt && now - this._steeringFeatureReadAt < STEERING_FEATURE_REFRESH_MS) return;
         this._steeringFeatureReadAt = now;
+        const serial = (this._steeringFeatureSerial || 0) + 1;
+        this._steeringFeatureSerial = serial;
         try {
-            this._applySteeringFeatureView(await this.transport.getMyFeatureFlags());
+            const view = await this.transport.getMyFeatureFlags();
+            // Reads overlap: only the newest answer applies.
+            if (serial === this._steeringFeatureSerial) this._applySteeringFeatureView(view);
         } catch {
             // Unknown stays as it was; the server still checks every steer.
         }
@@ -11002,6 +11006,8 @@ export class PilotSwarmUiController {
 
     _applySteeringFeatureView(view) {
         if (!Array.isArray(view?.flags)) return;
+        // A newer answer from any path wins over a read still in flight.
+        this._steeringFeatureSerial = (this._steeringFeatureSerial || 0) + 1;
         const flag = view.flags.find((candidate) => candidate?.featureKey === STEERING_FEATURE_KEY);
         this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true });
     }
