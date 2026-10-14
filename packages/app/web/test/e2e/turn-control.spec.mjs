@@ -861,3 +861,20 @@ for (const theme of THEMES) {
         });
     }
 }
+
+// QC-10: the steering decision is per viewer. Opened without a deep link,
+// the portal restores the active session from the profile; its Steer and
+// Steer now must be offered without visiting another session first.
+test("opened without a deep link: the profile's restored running session offers Steer and Steer now", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 950 });
+    const portal = await fakePortal(page, { sessions: { [SID]: { title: "Restored" } }, profile: { activeSessionId: SID } });
+    await page.goto(`http://127.0.0.1:${stub.port}/`);
+    await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
+    const wire = portal.wire(SID);
+    await expect(wire.turnState).toHaveAttribute("data-accepts-controls", "true");
+    await wire.input.fill("guidance for the restored turn");
+    await expect(wire.steerButton).toHaveAttribute("data-state", "ready");
+    await wire.input.fill("");
+    await queueMessage(wire);
+    await expect(queuedRows(wire).steerNow).toBeVisible();
+});

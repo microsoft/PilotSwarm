@@ -2731,6 +2731,9 @@ export class PilotSwarmUiController {
         // registry must refresh on every tick of the loop that provably runs.
         this.refreshWorkerRegistryIfStale().catch(() => {});
         this.refreshFeatureFlagsIfStale().catch(() => {});
+        // The viewer's steering decision is not per session: read it on this
+        // loop (throttled), so a session restored at startup gets it too.
+        void this.refreshSteeringFeature();
         // Refreshes OVERLAP. The catalog loop ticks every 4s and a dozen
         // actions call this directly, while one run awaits several sequential
         // round-trips (N catalog pages, the folder list, up to two getSession
@@ -5899,6 +5902,8 @@ export class PilotSwarmUiController {
     async loadSession(sessionId) {
         if (!sessionId) return;
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
+        // MoA panel controllers run no catalog loop: a panel reads the
+        // viewer's steering decision when it loads its session.
         void this.refreshSteeringFeature();
         const active = this.getState().sessions.activeSessionId;
         if (active !== sessionId) {
@@ -10982,7 +10987,7 @@ export class PilotSwarmUiController {
         if (given) this._keepSteerText(sessionId, given, { append: true });
     }
 
-    /** Read the viewer's sessions.steering decision (session load and feature refresh). */
+    /** Read the viewer's sessions.steering decision (catalog refresh and session load, at most every 30 s). */
     async refreshSteeringFeature({ force = false } = {}) {
         if (typeof this.transport.getMyFeatureFlags !== "function") return;
         const now = Date.now();

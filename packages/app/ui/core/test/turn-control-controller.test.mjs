@@ -188,7 +188,7 @@ test("the detailed view refreshes eligibility", async () => {
     assert.equal(store.getState().sessions.byId[SID].acceptsTurnControl, true);
 });
 
-test("the steering flag is read for the viewer at session load", async () => {
+test("the steering flag is read for the viewer on demand", async () => {
     const { controller, store, calls } = harness({ flags: { effective: true } });
     store.dispatch({ type: "turnControl/steering", enabled: false });
     await controller.refreshSteeringFeature({ force: true });
@@ -580,3 +580,42 @@ test("Ctrl+T retries an unconfirmed steer even with an outbox message selected, 
     assert.equal(store.getState().ui.prompt, "selected message");
     assert.deepEqual(view().kept.map((entry) => entry.text), ["lost steer"], "a refusal keeps the text aside");
 });
+
+// QC-10: the steering decision belongs to the viewer, not to a session. A
+// session restored at startup (TUI user config, portal profile) is already
+// active, so the first catalog refresh loads no session; the decision must
+// still be read.
+for (const host of ["TUI (restored from user config)", "portal (restored from the profile)"]) {
+    test(`${host}: the steering decision is read at startup for the restored session; its controls are offered`, async () => {
+        const calls = { features: 0 };
+        const session = { sessionId: SID, title: "T", status: "running", acceptsTurnControl: true, activeTurnIndex: 2, turnHigh: 2 };
+        const transport = {
+            start: async () => {},
+            stop: async () => {},
+            listSessions: async () => [session],
+            getSession: async () => session,
+            getSessionEvents: async () => [],
+            subscribeSession: () => () => {},
+            getMyFeatureFlags: async () => { calls.features += 1; return { userId: 1, flags: [{ featureKey: "sessions.steering", effective: true }] }; },
+        };
+        const initial = host.startsWith("TUI")
+            ? createInitialState({ mode: "remote", activeSessionId: SID })
+            : createInitialState({ mode: "remote" });
+        const store = createStore(appReducer, initial);
+        const controller = new PilotSwarmUiController({ store, transport });
+        if (!host.startsWith("TUI")) {
+            store.dispatch({ type: "sessions/loaded", sessions: [session] });
+            store.dispatch({ type: "sessions/selected", sessionId: SID });
+        }
+        try {
+            await controller.start();
+            await new Promise((resolve) => setImmediate(resolve));
+            assert.equal(store.getState().sessions.activeSessionId, SID);
+            assert.equal(calls.features, 1);
+            assert.equal(store.getState().turnControl.steeringEnabled, true);
+            assert.equal(selectTurnControlView(store.getState()).canSteer, true);
+        } finally {
+            await controller.stop();
+        }
+    });
+}
