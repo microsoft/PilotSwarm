@@ -12,6 +12,7 @@ import { SessionManager } from "../../src/session-manager.ts";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const MODEL = "gpt-5.6-terra";
+const TOOL_CATALOG = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
 const WIF_ENV = {
     ANTHROPIC_FEDERATION_RULE_ID: "fdrl_test", ANTHROPIC_ORGANIZATION_ID: "org-test",
     ANTHROPIC_SERVICE_ACCOUNT_ID: "svac_test", AZURE_FEDERATED_TOKEN_FILE: "/synthetic/token",
@@ -49,10 +50,15 @@ async function harness(run, serverOptions) {
 }
 
 describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, synthetic HTTP)", () => {
-    it("a shared BYOK client groups only model-router across model switches", { timeout: 60_000 }, async () => {
+    it("a shared BYOK client applies catalog opt-in to a primitive model across model switches", { timeout: 60_000 }, async () => {
         await harness(async ({ server, clients, options }) => {
             const provider = { type: "openai", wireApi: "completions", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key" };
-            const client = createCopilotClient(options, provider);
+            const registry = new ModelProviderRegistry({ providers: [{ ...provider, id: "synthetic", models: [
+                { name: MODEL, toolCatalog: TOOL_CATALOG },
+                { name: "model-router" },
+            ] }] });
+            const client = createCopilotClient(options, provider, (request, context, model) =>
+                registry.getDescriptor(`synthetic:${model}`)?.toolCatalog);
             clients.push(client);
             const calls = [];
             const tools = largeCatalogTools(async args => { calls.push(args); return args.value; });
@@ -74,7 +80,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                     expect(request.body.model).toBe(model);
                     expect(request.path).toMatch(/\/chat\/completions(?:\?|$)/);
                     const names = request.body.tools.map(tool => tool.function?.name ?? tool.custom?.name ?? tool.name);
-                    if (model === "model-router") {
+                    if (model === MODEL) {
                         expect(names.length).toBe(128);
                         expect(names).toContain("pilotswarm_tool_dispatch");
                     } else {
@@ -89,17 +95,17 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
         });
     });
 
-    it.each([false, true])("model-router keeps every overflow tool callable, streaming=%s, warm and cold", { timeout: 60_000 }, async streaming => {
+    it.each([false, true])("an opted-in primitive model keeps every overflow tool callable, streaming=%s, warm and cold", { timeout: 60_000 }, async streaming => {
         await harness(async ({ server, clients, options }) => {
             const provider = { type: "openai", wireApi: "completions", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key" };
-            const client = createCopilotClient(options, provider);
+            const client = createCopilotClient(options, provider, TOOL_CATALOG);
             clients.push(client);
             const calls = [];
             const guarded = [];
             let deny = false;
             const tools = largeCatalogTools(async args => { calls.push(args); return args.value; });
             const config = {
-                model: "model-router",
+                model: "gpt-5.4",
                 provider,
                 streaming,
                 onPermissionRequest: () => ({ kind: "approved" }),
@@ -118,17 +124,17 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
             expect(guarded).toEqual([{ name: "compat_echo", args: { value: "violet-739" } }]);
             expect(events.some(event => event.type === "assistant.usage")).toBe(true);
             const firstTools = server.requests[0].body.tools;
-            const advertised = firstTools.flatMap(tool => tool.function.parameters.anyOf
+            const advertised = firstTools.flatMap(tool => tool.function?.parameters?.anyOf
                 ? tool.function.parameters.anyOf.map(alternative => alternative.properties.tool_name.enum[0])
-                : [tool.function.name]);
+                : [tool.function?.name ?? tool.custom?.name ?? tool.name]);
             expect(advertised).toEqual(expect.arrayContaining(tools.map(tool => tool.name)));
-            const dispatcher = firstTools.find(tool => tool.function.parameters.anyOf?.some(alternative => alternative.properties.tool_name.enum[0] === "compat_echo"));
+            const dispatcher = firstTools.find(tool => tool.function?.parameters?.anyOf?.some(alternative => alternative.properties.tool_name.enum[0] === "compat_echo"));
             expect(dispatcher).toBeDefined();
             await session.sendAndWait({ prompt: "Say hello again" }, 20_000);
             const id = session.sessionId;
             await session.disconnect();
             await client.stop();
-            const resumed = createCopilotClient(options, provider);
+            const resumed = createCopilotClient(options, provider, TOOL_CATALOG);
             clients.push(resumed);
             session = await resumed.resumeSession(id, config);
             await session.sendAndWait({ prompt: "Recurring wake: call compat_echo with value violet-739" }, 20_000);
@@ -147,7 +153,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
     it("a large catalog follows the same session from Anthropic to model-router and across worker restart", { timeout: 60_000 }, async () => {
         await harness(async ({ home, server }) => {
             const registry = new ModelProviderRegistry({ providers: [
-                { id: "router", type: "openai", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key", models: [{ name: "model-router", wireApi: "completions" }] },
+                { id: "router", type: "openai", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key", models: [{ name: "model-router", wireApi: "completions", toolCatalog: TOOL_CATALOG }] },
                 { id: "anthropic", type: "anthropic", baseUrl: server.baseUrl, apiKey: "synthetic-key", models: ["claude-sonnet-5"] },
             ] });
             const sessionId = randomUUID();
@@ -176,6 +182,50 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                 expect(routerRequests.every(request => request.body.tools.length <= 128)).toBe(true);
             } finally { await manager.shutdown(); }
         }, { maxTools: 128 });
+    });
+
+    it("SessionManager isolates opt-in by qualified model even on the same endpoint and bare deployment name", { timeout: 60_000 }, async () => {
+        await harness(async ({ home, server }) => {
+            const registry = new ModelProviderRegistry({ providers: [
+                { id: "limited", type: "openai", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key", models: [{ name: MODEL, toolCatalog: TOOL_CATALOG }] },
+                { id: "unchanged", type: "openai", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key", models: [MODEL] },
+            ] });
+            const sessionId = randomUUID();
+            const otherSessionId = randomUUID();
+            const calls = [];
+            const tools = largeCatalogTools(async args => { calls.push(args); return args.value; });
+            const facts = { readFacts: async () => ({ count: 0, facts: [] }), storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) };
+            const manager = new SessionManager(undefined, null, { modelProviders: registry }, join(home, "session-state"));
+            manager.setFactStore(facts);
+            manager.setConfig(sessionId, { tools });
+            manager.setConfig(otherSessionId, { tools });
+            try {
+                const cases = [
+                    [sessionId, `limited:${MODEL}`, 0, true],
+                    [otherSessionId, `unchanged:${MODEL}`, 0, false],
+                    [sessionId, `unchanged:${MODEL}`, 1, false],
+                    [sessionId, `limited:${MODEL}`, 2, true],
+                ];
+                for (const [id, model, turnIndex, optedIn] of cases) {
+                    const session = await manager.getOrCreate(id, { model }, { turnIndex });
+                    const start = server.requests.length;
+                    expect((await session.runTurn("call compat_echo with value violet-739")).content).toContain("violet-739");
+                    const requests = server.requests.slice(start);
+                    expect(requests.length).toBeGreaterThan(0);
+                    for (const request of requests) {
+                        expect(request.body.model).toBe(MODEL);
+                        if (optedIn) {
+                            expect(request.body.tools.length).toBe(128);
+                            expect(request.body.tools.some(tool => tool.function?.name === "pilotswarm_tool_dispatch")).toBe(true);
+                        } else {
+                            expect(request.body.tools.length).toBeGreaterThan(128);
+                            expect(request.body.tools.some(tool => tool.function?.name === "pilotswarm_tool_dispatch")).toBe(false);
+                        }
+                    }
+                }
+                expect(calls).toHaveLength(4);
+            } finally { await manager.shutdown(); }
+        });
     });
 
     it("reproduces the unmodified CLI's rejected snippy field", { timeout: 30_000 }, async () => {
