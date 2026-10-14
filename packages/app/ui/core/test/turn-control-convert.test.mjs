@@ -10,7 +10,8 @@ import {
     appReducer,
     createInitialState,
     createStore,
-    selectQueuedMessageActions,
+    selectOutboxOverlayBlocks,
+    selectOutboxOverlayLines,
     selectStatusBar,
     buildHelpModalRows,
 } from "../src/index.js";
@@ -46,7 +47,7 @@ function harness({ steer = { outcome: "accepted", steerId: 70, turn: 2 }, sessio
         return item;
     };
     const item = (id) => controller.getSessionOutbox(SID).find((entry) => entry.id === id);
-    const block = (id) => selectQueuedMessageActions(store.getState(), SID).find((entry) => entry.itemId === id);
+    const block = (id) => selectOutboxOverlayBlocks(store.getState(), 80).blocks.find((entry) => entry.itemId === id);
     const event = (eventType, data, seq) => controller.reconcileOutboxAgainstEvent(SID, { sessionId: SID, seq, eventType, data });
     return { controller, store, calls, queue, item, block, event };
 }
@@ -140,7 +141,7 @@ test("Steer now is offered only on a queued text item while a running turn accep
     allowed.controller.setSessionOutboxItems(SID, [...allowed.controller.getSessionOutbox(SID), pending]);
     const withImage = allowed.queue("look", { attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] });
     assert.deepEqual([allowed.block(x.id).canSteer, allowed.block(x.id).canCancel], [true, true]);
-    assert.equal(allowed.block(pending.id), undefined, "a pending (not yet durable) message has no row");
+    assert.deepEqual([allowed.block(pending.id).canSteer, allowed.block(pending.id).canCancel], [false, false]);
     assert.deepEqual([allowed.block(withImage.id).canSteer, allowed.block(withImage.id).canCancel], [false, true]);
 
     for (const options of [{ flags: { effective: false } }, { session: { status: "idle" } }, { session: { acceptsTurnControl: false } }, { session: { serviceKind: "distiller" } }]) {
@@ -236,4 +237,16 @@ test("no answer, then the steer's record and a delivered outcome arrive: the con
     h.event("session.control_outcome", { seq: 100, turn: 2, outcome: "delivered" }, 101);
     h.event("pending_messages.cancelled", { clientMessageIds: [x.id], reason: "converted_to_steer" }, 102);
     assert.equal(h.item(x.id), undefined);
+});
+
+test("the strip shows each message once: its blocks are exactly the flattened strip lines, with the actions on each block", () => {
+    const h = harness();
+    const a = h.queue("first queued message");
+    const b = h.queue("second queued message");
+    const { header, blocks } = selectOutboxOverlayBlocks(h.store.getState(), 60);
+    assert.deepEqual(selectOutboxOverlayLines(h.store.getState(), 60), [header, ...blocks.flatMap((block) => block.lines)]);
+    assert.deepEqual(blocks.map((block) => [block.itemId, block.canSteer, block.canCancel]), [[a.id, true, true], [b.id, true, true]]);
+    const text = (block) => block.lines.map((line) => line.map((run) => run.text).join("")).join("\n");
+    assert.match(text(blocks[0]), /first queued message/);
+    assert.doesNotMatch(text(blocks[0]), /second queued message/);
 });

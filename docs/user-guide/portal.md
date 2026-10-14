@@ -183,7 +183,7 @@ pause between two messages.
   lost on the network, the notice offers **Retry**, which resends the
   same request so it is recorded once.
 - **A queued message: Steer now or Cancel**: a message you send while a
-  turn runs waits, queued (`✓`). Above the input, each queued message has
+  turn runs waits, queued (`✓`). In the queued-prompts strip, each queued message has
   **Steer now** and **Cancel**. **Steer now** (needs the
   `sessions.steering` feature, a turn that accepts guidance, and a message
   without images) sends it to the running turn now, as a steer that replaces
@@ -633,7 +633,7 @@ as your app's portal.
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
 | Steer the running turn | `↪` button between Stop and Send (needs the `sessions.steering` feature); sends the composer text as guidance for the running turn |
-| Steer now / cancel a queued message | **Steer now** or **Cancel** on the queued message's row above the input |
+| Steer now / cancel a queued message | **Steer now** or **Cancel** on the queued message's line in the queued-prompts strip |
 | Attach file | Paperclip icon, or drag-and-drop |
 | Cycle inspector tabs | Click the tab; on mobile, swipe |
 | Rename session | Row menu → Rename |

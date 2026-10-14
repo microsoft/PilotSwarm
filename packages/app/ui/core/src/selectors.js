@@ -3730,30 +3730,20 @@ export function canConvertQueuedItem(state, sessionId, item) {
 const OUTBOX_PHASE_LABELS = { steering: "Steering…", cancelling: "Cancelling…" };
 
 /**
- * The durably queued messages of a session with their actions: Steer now
- * (convert to a steer of the running turn) and Cancel. The portal renders one
- * row each; the TUI acts on the selected one (Ctrl+T steer now, d cancel).
+ * The outbox strip of the active session: its header line and one block per
+ * message (its transcript lines, its phase and its actions: Steer now, which
+ * converts a queued message to a steer of the running turn, and Cancel).
+ * The portal renders the blocks with their buttons; the TUI renders the
+ * flattened lines and acts on the selected message (Ctrl+T, d).
  */
-export function selectQueuedMessageActions(state, sessionId = state?.sessions?.activeSessionId) {
-    const items = sessionId && Array.isArray(state?.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
-    return items
-        .filter((item) => item?.id && (item.phase === "queued" || item.phase === "steering" || item.phase === "cancelling"))
-        .map((item) => ({
-            itemId: item.id,
-            phase: item.phase,
-            text: String(item.text || ""),
-            phaseLabel: OUTBOX_PHASE_LABELS[item.phase] || null,
-            canSteer: canConvertQueuedItem(state, sessionId, item),
-            canCancel: item.phase === "queued",
-            notice: formatConvertNotice(item.convertNotice),
-        }));
-}
-
-export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
-    const messages = selectActiveOutboxMessages(state);
-    if (!messages || messages.length === 0) return [];
+export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
+    const sessionId = state.sessions.activeSessionId;
+    const items = sessionId && Array.isArray(state.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
+    const entries = items.map((item) => ({ item, message: buildPendingOutboxMessage(sessionId, item) })).filter((entry) => entry.message);
+    if (entries.length === 0) return { header: null, blocks: [] };
 
     const safeWidth = Math.max(20, Number(maxWidth) || 80);
+    const messages = entries.map((entry) => entry.message);
     const queuedCount = messages.filter((message) => message.pendingPhase === "queued").length;
     const pendingCount = messages.filter((message) => message.pendingPhase === "pending").length;
     const cancellingCount = messages.filter((message) => message.pendingPhase === "cancelling").length;
@@ -3764,32 +3754,40 @@ export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
     if (cancellingCount > 0) parts.push(`${cancellingCount} cancelling`);
     if (rejectedCount > 0) parts.push(`${rejectedCount} rejected`);
     const label = parts.length > 0 ? parts.join(" · ") : "queued prompts";
-    const labelText = ` queued prompts: ${label} `;
     // The trailing rule is drawn by CSS, not by repeating "─" to a computed
     // character count. That count is derived from a pane width measured in
     // CHARACTERS, and when the estimate exceeds what actually fits — easily
     // triggered by a font-size change, or by probing a pane whose font differs
     // from this one — label + rule overflow and the rule wraps onto its own
     // line. A flex rule fills whatever space is really left, at any font size.
-    const lines = [
-        [
-            { text: labelText, color: "gray", trailingRule: true },
-        ],
-    ];
+    const header = [{ text: ` queued prompts: ${label} `, color: "gray", trailingRule: true }];
 
     const buildOptions = options?.tableMode ? { tableMode: options.tableMode } : {};
-    for (const [index, message] of messages.entries()) {
-        appendChatBlockLines(lines, buildChatMessageLines(message, safeWidth, buildOptions));
+    // One running line list, so the spacing between blocks matches the flattened strip.
+    const all = [header];
+    const blocks = entries.map(({ item, message }, index) => {
+        const start = all.length;
+        appendChatBlockLines(all, buildChatMessageLines(message, safeWidth, buildOptions));
         const nextMessage = messages[index + 1];
-        if (
-            nextMessage
-            && shouldInsertChatSpacer(message, nextMessage)
-            && flattenLineText(lines[lines.length - 1]).trim().length > 0
-        ) {
-            lines.push(createBlankLine());
+        if (nextMessage && shouldInsertChatSpacer(message, nextMessage) && flattenLineText(all[all.length - 1]).trim().length > 0) {
+            all.push(createBlankLine());
         }
-    }
-    return lines;
+        return {
+            itemId: item.id,
+            phase: item.phase,
+            phaseLabel: OUTBOX_PHASE_LABELS[item.phase] || null,
+            canSteer: canConvertQueuedItem(state, sessionId, item),
+            canCancel: item.phase === "queued",
+            notice: formatConvertNotice(item.convertNotice),
+            lines: all.slice(start),
+        };
+    });
+    return { header, blocks };
+}
+
+export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
+    const { header, blocks } = selectOutboxOverlayBlocks(state, maxWidth, options);
+    return header ? [header, ...blocks.flatMap((block) => block.lines)] : [];
 }
 
 export function selectActiveArtifactLinks(state) {

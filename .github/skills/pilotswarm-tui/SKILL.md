@@ -138,9 +138,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   (`↑`), `Ctrl+T` steers now with that message (it replaces the queued message
   when delivered; otherwise it stays queued) and `d` cancels it; the status
   hint shows `ctrl-t steer now` only while it applies, and `?` help lists both.
-  The portal shows a row per queued message above the input with **Steer
-  now** and **Cancel** (`queued-item`, `queued-steer-now`, `queued-cancel`,
-  `queued-notice`); a steer reads Delivered as soon as it is confirmed. Stop and Steer notices are kept per
+  The portal puts **Steer now** and **Cancel** on each message's line inside
+  the queued-prompts strip (`queued-actions`, `queued-item`,
+  `queued-steer-now`, `queued-cancel`, `queued-notice`), so each message
+  appears once; the strip is bounded above the composer in the chat view and
+  ends the transcript in MoA panels and Zen; a steer reads Delivered as soon as it is confirmed. Stop and Steer notices are kept per
   kind, so one never hides the other's Retry. Portal: a readable turn-status chip and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and
   transcript items: a steer reads as a user message with a `steer` badge and

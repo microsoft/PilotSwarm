@@ -3687,35 +3687,26 @@ body.is-resizing-pane-y iframe {
   opacity: 0.85;
 }
 
-/* Queued messages of the composer's session, with Steer now and Cancel. */
-.ps-queued-actions {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+/* The queued-prompts strip: one block per message, each with its actions
+ * (Steer now, Cancel). It sits in the bottom-sticky area, which is bounded
+ * (max-height 34%) and scrolls, so the composer below it stays on screen. */
 .ps-queued-item {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--ps-border) 70%, transparent);
-  border-radius: var(--ps-radius-sm);
-  background: color-mix(in srgb, var(--ps-surface) 94%, var(--ps-accent, #4ea1ff));
-  font-size: var(--ps-font-size-dense, 0.85rem);
+  align-items: flex-start;
+  gap: 2px 8px;
 }
-.ps-queued-item-text {
-  flex: 1 1 12ch;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.ps-queued-item-lines { flex: 1 1 16ch; min-width: 0; }
+.ps-queued-item-actions { display: flex; flex: none; align-items: center; gap: 6px; }
 .ps-queued-item-phase { color: var(--ps-muted); }
-.ps-queued-item .ps-mini-button { min-height: 32px; flex: none; }
+.ps-queued-item .ps-mini-button { min-height: 32px; }
 .ps-queued-item-notice { flex: 1 0 100%; color: var(--ps-warning, #e5a50a); }
-.ps-prompt-shell.is-mobile .ps-queued-item .ps-mini-button { min-height: 44px; min-width: 44px; }
+@media (max-width: 600px) {
+  /* Phones: the message keeps the full width; its buttons go under it. */
+  .ps-queued-item-lines { flex-basis: 100%; }
+  .ps-queued-item-actions { margin-left: auto; }
+  .ps-queued-item .ps-mini-button { min-height: 44px; min-width: 44px; }
+}
 
 /* Stop and Steer transcript items. */
 .ps-control-item { margin: 4px 0; }

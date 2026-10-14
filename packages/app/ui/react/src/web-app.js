@@ -45,8 +45,7 @@ import {
     selectActiveOutboxMessages,
     selectChatLines,
     selectChatPaneChrome,
-    selectOutboxOverlayLines,
-    selectQueuedMessageActions,
+    selectOutboxOverlayBlocks,
     selectCanvasView,
     selectFileBrowserItems,
     selectFilesFilterModal,
@@ -1159,6 +1158,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     stickyBottom = false,
     historyPullEnabled = false,
     historySessionId = null,
+    // Changes when content after the lines (a scroll tail) changes, so a
+    // reader at the bottom follows it as it follows new lines.
+    tailRevision = "",
 } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
@@ -1295,7 +1297,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             scrollOffset,
         };
         previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
-    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision]);
+    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision, tailRevision]);
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
         controller.dispatch({ type: "ui/scroll", pane: paneKey, offset });
@@ -4423,7 +4425,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, historyPullEnabled = false, historySessionId = null, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null, dataSessionId = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, scrollTail = null, scrollTailKey = "", stickyLines = [], bottomStickyTop = null, bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, historyPullEnabled = false, historySessionId = null, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null, dataSessionId = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -4436,7 +4438,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     }, [panelRef]);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel, topPullDistance, loadingOlderHistory } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom, historyPullEnabled, historySessionId });
+    const { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel, topPullDistance, loadingOlderHistory } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom, historyPullEnabled, historySessionId, tailRevision: scrollTailKey });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
@@ -4541,11 +4543,13 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 : structuredBlocks
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme, controller })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
+            scrollTail,
         ),
-        (normalizedBottomSticky.length > 0 || reserveBottomSticky)
+        (bottomStickyTop || normalizedBottomSticky.length > 0 || reserveBottomSticky)
             ? React.createElement("div", {
                 className: `ps-panel-bottom-sticky${reserveBottomSticky ? " is-reserved" : ""}`,
             },
+                bottomStickyTop,
                 normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
             )
             : null,
@@ -7166,6 +7170,57 @@ function HistoryLoadIndicator({ loading, manual, pullDistance, onManualLoad }) {
             : React.createElement("span", { className: "ps-history-label" }, label));
 }
 
+/**
+ * The queued-prompts strip: its header and one line block per message, each
+ * shown once. A durably queued message carries its actions: Steer now (send
+ * it to the running turn now, in place of waiting) and Cancel. One being
+ * converted shows "Steering…"; one whose conversion did not happen says why
+ * and stays queued. On phones the strip scrolls inside a bounded height, so
+ * the composer stays on screen.
+ */
+function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
+    return React.createElement("div", { className: "ps-outbox-strip", "data-testid": "queued-actions", "data-session-id": sessionId },
+        React.createElement(Line, { line: normalizeLines([header])[0], theme }),
+        blocks.map((block) => React.createElement("div", {
+            key: block.itemId,
+            className: `ps-queued-item is-${block.phase}`,
+            "data-testid": "queued-item",
+            "data-phase": block.phase,
+            "data-item-id": block.itemId,
+        },
+        React.createElement("div", { className: "ps-queued-item-lines" },
+            normalizeLines(block.lines).map((line, index) => React.createElement(Line, { key: index, line, theme }))),
+        block.phaseLabel || block.canSteer || block.canCancel
+            ? React.createElement("div", { className: "ps-queued-item-actions" },
+                block.phaseLabel
+                    ? React.createElement("span", { className: "ps-queued-item-phase", role: "status" }, block.phaseLabel)
+                    : null,
+                block.canSteer
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-queued-steer",
+                        "data-testid": "queued-steer-now",
+                        title: "Send this message to the running turn now, in place of waiting",
+                        onPointerDown: (event) => event.preventDefault(),
+                        onClick: () => { controller.convertQueuedToSteer(sessionId, block.itemId).catch(() => {}); },
+                    }, "Steer now")
+                    : null,
+                block.canCancel
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-queued-cancel",
+                        "data-testid": "queued-cancel",
+                        title: "Cancel this queued message",
+                        onPointerDown: (event) => event.preventDefault(),
+                        onClick: () => { controller.cancelOutboxItem(sessionId, block.itemId).catch(() => {}); },
+                    }, "Cancel")
+                    : null)
+            : null,
+        block.notice
+            ? React.createElement("div", { className: "ps-queued-item-notice", role: "status", "data-testid": "queued-notice" }, block.notice)
+            : null)));
+}
+
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -7185,6 +7240,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             activeOutbox: activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
                 ? state.outbox.bySessionId[activeSessionId]
                 : EMPTY_ARRAY,
+            // Steer now on a queued message needs the viewer's steering decision.
+            steeringEnabled: state.turnControl?.steeringEnabled === true,
             branding: state.branding,
             connection: state.connection,
             sessionsById: state.sessions.byId,
@@ -7223,7 +7280,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         ui: {
             inspectorTab: viewState.inspectorTab,
         },
+        turnControl: { steeringEnabled: viewState.steeringEnabled },
     }), [
+        viewState.steeringEnabled,
         viewState.activeHistory,
         viewState.activeSessionId,
         viewState.activeOutbox,
@@ -7270,18 +7329,16 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // outbox overlay), NOT appended to the transcript — it must stay put while
     // chat content scrolls, and it drops the instant the turn ends.
     const pinnedActivityLines = liveActivityLines;
-    const outboxLines = React.useMemo(
-        () => selectOutboxOverlayLines(selectorState, contentWidth, { tableMode: "sentinel" }),
+    const outbox = React.useMemo(
+        () => selectOutboxOverlayBlocks(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
     );
-    const stickyBottom = React.useMemo(
-        () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
-        [outboxLines, pinnedActivityLines],
-    );
-    const transcriptLines = React.useMemo(
-        () => activityInHeader && outboxLines.length ? [...lines, ...outboxLines] : lines,
-        [activityInHeader, lines, outboxLines],
-    );
+    const outboxStrip = outbox.header
+        ? React.createElement(OutboxStrip, { controller, sessionId: viewState.activeSessionId, header: outbox.header, blocks: outbox.blocks, theme })
+        : null;
+    // Compact views (MoA panels, Zen) keep the strip at the end of the
+    // transcript, where it scrolls; the others pin it above the composer.
+    const outboxStripKey = outbox.blocks.map((block) => `${block.itemId}:${block.phase}:${block.lines.length}:${block.notice || ""}`).join("|");
     // Read-only gating: a view-only viewer (shared_read / read grant, no write)
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
@@ -7340,8 +7397,11 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
         color: chrome.color,
         focused: viewState.focused,
-        lines: transcriptLines,
-        bottomStickyLines: activityInHeader ? EMPTY_ARRAY : stickyBottom,
+        lines,
+        scrollTail: activityInHeader ? outboxStrip : null,
+        scrollTailKey: activityInHeader ? outboxStripKey : "",
+        bottomStickyTop: activityInHeader ? null : outboxStrip,
+        bottomStickyLines: activityInHeader ? EMPTY_ARRAY : pinnedActivityLines,
         reserveBottomSticky: !activityInHeader,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
@@ -9704,68 +9764,12 @@ function KeptSteerText({ controller, kept, sessionId }) {
         }, "Discard"));
 }
 
-/**
- * One row per durably queued message of the composer's session, with its
- * actions: Steer now (send it to the running turn now, replacing the queued
- * message) and Cancel. A message being converted shows "Steering…"; one whose
- * conversion did not happen shows why and stays queued.
- */
-function QueuedMessageActions({ controller, sessionId }) {
-    const blocks = useControllerSelector(controller, (state) => selectQueuedMessageActions(state, sessionId), shallowEqualBlocks);
-    if (blocks.length === 0) return null;
-    return React.createElement("div", { className: "ps-queued-actions", "data-testid": "queued-actions" },
-        blocks.map((block) => {
-            const text = block.text.replace(/\s+/g, " ").trim();
-            return React.createElement("div", {
-                key: block.itemId,
-                className: `ps-queued-item is-${block.phase}`,
-                "data-testid": "queued-item",
-                "data-phase": block.phase,
-                "data-item-id": block.itemId,
-            },
-            React.createElement("span", { className: "ps-queued-item-text", title: text }, `✓ ${text}`),
-            block.phaseLabel
-                ? React.createElement("span", { className: "ps-queued-item-phase", role: "status" }, block.phaseLabel)
-                : null,
-            block.canSteer
-                ? React.createElement("button", {
-                    type: "button",
-                    className: "ps-mini-button ps-queued-steer",
-                    "data-testid": "queued-steer-now",
-                    title: "Send this message to the running turn now, in place of waiting",
-                    onPointerDown: (event) => event.preventDefault(),
-                    onClick: () => { controller.convertQueuedToSteer(sessionId, block.itemId).catch(() => {}); },
-                }, "Steer now")
-                : null,
-            block.canCancel
-                ? React.createElement("button", {
-                    type: "button",
-                    className: "ps-mini-button ps-queued-cancel",
-                    "data-testid": "queued-cancel",
-                    title: "Cancel this queued message",
-                    onPointerDown: (event) => event.preventDefault(),
-                    onClick: () => { controller.cancelOutboxItem(sessionId, block.itemId).catch(() => {}); },
-                }, "Cancel")
-                : null,
-            block.notice
-                ? React.createElement("span", { className: "ps-queued-item-notice", role: "status", "data-testid": "queued-notice" }, block.notice)
-                : null);
-        }));
-}
-
 /** The busy Send content during an image upload: a turning glyph, and a label where it fits. */
 function UploadSpinner({ label }) {
     const frame = useSpinnerFrame(true);
     return React.createElement(React.Fragment, null,
         React.createElement("span", { className: "ps-send-spinner", "aria-hidden": true }, frame),
         label ? React.createElement("span", { className: "ps-send-busy-label" }, label) : null);
-}
-
-function shallowEqualBlocks(a, b) {
-    if (a === b) return true;
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((block, index) => block.itemId === b[index].itemId && block.phase === b[index].phase && block.text === b[index].text
-        && block.canSteer === b[index].canSteer && block.canCancel === b[index].canCancel && block.notice === b[index].notice);
 }
 
 function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
@@ -10012,9 +10016,6 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
         } : {}),
     },
-        promptState.sessionId
-            ? React.createElement(QueuedMessageActions, { controller, sessionId: promptState.sessionId })
-            : null,
         promptState.stopNotice
             ? React.createElement(TurnControlNotice, { controller, notice: promptState.stopNotice, sessionId: promptState.sessionId })
             : null,

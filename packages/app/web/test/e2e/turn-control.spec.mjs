@@ -115,7 +115,7 @@ async function fakePortal(page, { sessions, steering = true, canWrite = true, ha
         wire(sessionId, { composerScope = page, transcriptScope = page } = {}) {
             const composer = composerScope.locator(`.ps-prompt-shell[data-session-id="${sessionId}"]`);
             return {
-                state, composer,
+                state, composer, sessionId,
                 transcript: transcriptScope.locator(`.ps-scroll-panel[data-session-id="${sessionId}"]`),
                 input: composer.getByTestId("composer-input"),
                 steerButton: composer.getByTestId("turn-steer-button"),
@@ -700,12 +700,17 @@ async function shot(page, name) {
 }
 
 /** The queued-message rows of a composer. */
-const queuedRows = (wire) => ({
-    item: wire.composer.getByTestId("queued-item"),
-    steerNow: wire.composer.getByTestId("queued-steer-now"),
-    cancel: wire.composer.getByTestId("queued-cancel"),
-    notice: wire.composer.getByTestId("queued-notice"),
-});
+/** The queued-prompts strip of the wire's session (in its chat panel), with its rows and actions. */
+const queuedRows = (wire) => {
+    const strip = wire.composer.page().locator(`[data-testid="queued-actions"][data-session-id="${wire.sessionId}"]`);
+    return {
+        strip,
+        item: strip.getByTestId("queued-item"),
+        steerNow: strip.getByTestId("queued-steer-now"),
+        cancel: strip.getByTestId("queued-cancel"),
+        notice: strip.getByTestId("queued-notice"),
+    };
+};
 
 /** Send `text` while the turn runs; it is durably queued. Returns its client message id. */
 async function queueMessage(wire, text = QUEUED_TEXT) {
@@ -893,3 +898,74 @@ test("MoA: a panel picks up the viewer's steering decision while it stays open",
     await page.clock.fastForward(35_000);
     await expect(a.steerButton).toHaveCount(1);
 });
+
+// QC-X3: Steer now and Cancel live inside the queued-prompts strip, one line
+// per queued message, each message shown once. On phones the strip scrolls
+// inside a bounded height, so the input and Stop, Steer and Send stay on
+// screen with any number of queued messages.
+async function queueMany(wire, count) {
+    const texts = Array.from({ length: count }, (_, i) => `queued message number ${i + 1} with enough words to wrap on a phone`);
+    for (const text of texts) {
+        await wire.input.fill(text);
+        await wire.sendButton.click();
+        await expect(queuedRows(wire).strip.getByText(text)).toHaveCount(1);
+    }
+    await expect(queuedRows(wire).strip.locator('[data-testid="queued-item"][data-phase="queued"]')).toHaveCount(count);
+    return texts;
+}
+
+async function expectQueuedLayout(page, wire, texts) {
+    const rows = queuedRows(wire);
+    await expect(rows.steerNow).toHaveCount(texts.length);
+    await expect(rows.cancel).toHaveCount(texts.length);
+    for (const text of texts) await expect(page.getByText(text)).toHaveCount(1);
+    await wire.input.fill("x");
+    await expectControlsFit({ input: wire.input, stop: wire.stopButton, steer: wire.steerButton, send: wire.sendButton });
+    await wire.input.fill("");
+    // The strip's visible area (the bounded bottom-sticky area, or the transcript in compact views) ends above the composer.
+    const visibleBottom = await rows.strip.evaluate((el) => el.closest(".ps-panel-bottom-sticky, .ps-scroll-panel").getBoundingClientRect().bottom);
+    expect(visibleBottom).toBeLessThanOrEqual((await wire.composer.boundingBox()).y + 2);
+}
+
+for (const viewport of [{ width: 360, height: 740 }, { width: 390, height: 844 }]) {
+    for (const count of [1, 2, 5]) {
+        test(`phone chat ${viewport.width}x${viewport.height}, ${count} queued: each once in the strip with its actions; the composer stays on screen`, async ({ page }) => {
+            await page.setViewportSize(viewport);
+            const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+            const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
+            await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
+            await expectQueuedLayout(page, chat, await queueMany(chat, count));
+            if (count === 2) await shot(page, `convert-phone-${viewport.width}-two-queued`);
+        });
+    }
+    test(`phone Zen ${viewport.width}x${viewport.height}, 5 queued: the composer stays on screen`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+        await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
+        const zen = portal.wire(SID, { composerScope: page.locator(".ps-mobile-zen-composer") });
+        await expect(zen.turnState).toHaveAttribute("data-accepts-controls", "true");
+        await expectQueuedLayout(page, zen, await queueMany(zen, 5));
+    });
+    test(`phone MoA ${viewport.width}x${viewport.height}, 5 queued in the focused panel: the composer stays on screen`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile() });
+        await openMoa(page, portal);
+        await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
+        const a = moaWire(page, portal, SID, "pa");
+        await expectQueuedLayout(page, a, await queueMany(a, 5));
+    });
+}
+
+for (const theme of THEMES) {
+    test(`desktop and MoA (${theme.name}), 2 queued: one strip line each, with Steer now and Cancel`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: theme.profile });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+        await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
+        const wire = portal.wire(SID);
+        await expectQueuedLayout(page, wire, await queueMany(wire, 2));
+        await shot(page, `convert-desktop-two-queued-${theme.name}`);
+    });
+}

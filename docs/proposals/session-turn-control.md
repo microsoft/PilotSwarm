@@ -1418,9 +1418,15 @@ Still queued."). A refusal does the same. `already_received` says the agent
 already has the message; its own receipt clears it. A request id is reused
 only to retry a request that got no answer; any definite answer ends it.
 
-Portal selectors: `queued-actions`, `queued-item` (`data-phase`:
-`queued`, `steering`, `cancelling`; `data-item-id`), `queued-steer-now`,
-`queued-cancel`, `queued-notice`. The transcript steer item keeps
+The portal shows the actions inside the queued-prompts strip, one line per
+message, so each message appears once. In the chat view the strip sits in
+the bounded bottom area above the composer (at most 34% of the pane; it
+scrolls), so the input and Stop, Steer and Send stay on screen with any
+number of queued messages. In the compact views (MoA panels, Zen) the strip
+ends the transcript and scrolls with it. Portal selectors: `queued-actions`
+(the strip, with `data-session-id`), `queued-item` (one per message;
+`data-phase`: `pending`, `queued`, `steering`, `cancelling`, `rejected`;
+`data-item-id`), `queued-steer-now`, `queued-cancel`, `queued-notice`. The transcript steer item keeps
 `control-steer`; its `data-outcome` can be `not_delivered_still_queued`.
 
 ## 5. Recovery and edge cases
