@@ -139,6 +139,7 @@ for (const viewport of [{ name: "desktop", width: 1600, height: 950 }, { name: "
         await expect(send).toHaveAttribute("aria-busy", "true");
         await expect(send).toHaveAttribute("data-state", "uploading");
         if (viewport.name === "desktop") await expect(send).toContainText("Uploading…");
+        else await expect(send.locator(".ps-send-spinner")).toBeVisible();
         await expect(input).toHaveValue("look at these two pictures");
         await input.press("Enter");
         const file = test.info().outputPath(`upload-busy-${viewport.name}.png`);
