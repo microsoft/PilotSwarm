@@ -99,6 +99,10 @@ Do not guess these answers when the user has not provided them. Offer the standa
   Provision shared/personal runtime providers through the management API or
   Admin Console, then call `setModelDefault` and `setSystemModelDefault` as
   needed. Env-backed catalog credentials are legacy bootstrap compatibility.
+- Do not copy a sample `toolCatalog` opt-in without validating the target
+  Chat Completions endpoint. Omit it by default; router names do not enable
+  overflow dispatch. Put an approved policy on the model entry in its
+  provider-type catalog, not in a prompt or environment flag.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
 - Prefer a checked-in type-only `.model_providers.example.json` plus a local

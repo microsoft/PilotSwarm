@@ -681,8 +681,8 @@ environment flag, session prompt, or hard-coded model allowlist. Shared and
 personal instances inherit the type's model settings. Use separate catalog
 types when endpoints need different validated policies.
 
-Only `openai`, `openai-proxy`, and `azure` Chat Completions paths support this
-strategy. Native GitHub/Anthropic paths and models resolving to Responses
+Only `openai`, `openai-proxy`, `azure`, and `foundry-wif` Chat Completions paths
+support this strategy. Native GitHub/Anthropic paths and models resolving to Responses
 reject the opt-in at catalog load. `maxDeclarations` must be a positive safe
 integer and `overflowStrategy` must be `typed-dispatch`; invalid objects and
 unknown keys fail the catalog load. No provider-level default is inferred.
