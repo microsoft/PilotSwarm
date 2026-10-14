@@ -124,11 +124,11 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
             expect(guarded).toEqual([{ name: "compat_echo", args: { value: "violet-739" } }]);
             expect(events.some(event => event.type === "assistant.usage")).toBe(true);
             const firstTools = server.requests[0].body.tools;
-            const advertised = firstTools.flatMap(tool => tool.function?.parameters?.anyOf
-                ? tool.function.parameters.anyOf.map(alternative => alternative.properties.tool_name.enum[0])
+            const advertised = firstTools.flatMap(tool => tool.function?.parameters?.properties?.call?.anyOf
+                ? tool.function.parameters.properties.call.anyOf.map(alternative => alternative.properties.tool_name.enum[0])
                 : [tool.function?.name ?? tool.custom?.name ?? tool.name]);
             expect(advertised).toEqual(expect.arrayContaining(tools.map(tool => tool.name)));
-            const dispatcher = firstTools.find(tool => tool.function?.parameters?.anyOf?.some(alternative => alternative.properties.tool_name.enum[0] === "compat_echo"));
+            const dispatcher = firstTools.find(tool => tool.function?.parameters?.properties?.call?.anyOf?.some(alternative => alternative.properties.tool_name.enum[0] === "compat_echo"));
             expect(dispatcher).toBeDefined();
             await session.sendAndWait({ prompt: "Say hello again" }, 20_000);
             const id = session.sessionId;
@@ -145,7 +145,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
             expect(guarded.at(-1)).toEqual({ name: "compat_echo", args: { value: "violet-739" } });
             expect(server.requests.every(request => request.body.tools.length <= 128)).toBe(true);
             expect(server.requests.some(request => request.body.messages.some(message => message.tool_calls?.some(call =>
-                call.function.name === dispatcher.function.name && JSON.parse(call.function.arguments).tool_name === "compat_echo",
+                call.function.name === dispatcher.function.name && JSON.parse(call.function.arguments).call?.tool_name === "compat_echo",
             )))).toBe(true);
         }, { maxTools: 128 });
     });

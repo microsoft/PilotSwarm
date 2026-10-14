@@ -184,7 +184,7 @@ for (const maxDeclarations of [1, 8, 128]) {
         context.mock.method(globalThis, "fetch", async forwarded => {
             const wire = await forwarded.json();
             assert.equal(wire.tools.length, maxDeclarations);
-            assert.equal(wire.tools.at(-1).function.parameters.anyOf.length, 5);
+            assert.equal(wire.tools.at(-1).function.parameters.properties.call.anyOf.length, 5);
             return jsonResponse({ choices: [] });
         });
         await new ByokRequestCompatibility(policy).sendRequest(catalogRequest({ model: "primitive", tools: catalogTools(maxDeclarations + 4) }), {});
@@ -259,7 +259,10 @@ for (const count of [129, 139, 200]) {
             assert.deepEqual(wire.future_field, body.future_field);
             assert.equal(forwarded.headers.get("x-test"), "keep");
             const dispatcher = wire.tools.at(-1).function;
-            const alternatives = dispatcher.parameters.anyOf;
+            for (const key of ["anyOf", "oneOf", "allOf"]) assert.equal(Object.hasOwn(dispatcher.parameters, key), false);
+            assert.equal(dispatcher.parameters.type, "object");
+            assert.deepEqual(dispatcher.parameters.required, ["call"]);
+            const alternatives = dispatcher.parameters.properties.call.anyOf;
             const retained = wire.tools.slice(0, -1);
             for (const alternative of alternatives) {
                 const original = tools.find(tool => tool.function.name === alternative.properties.tool_name.enum[0]);
@@ -275,7 +278,7 @@ for (const count of [129, 139, 200]) {
             return jsonResponse({
                 id: "response-42", model: "model-router", usage: { prompt_tokens: 100, completion_tokens: 10 },
                 choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: expected.map(call => ({
-                    ...call, function: { name: dispatcher.name, arguments: JSON.stringify({ tool_name: call.function.name, arguments: JSON.parse(call.function.arguments) }) },
+                    ...call, function: { name: dispatcher.name, arguments: JSON.stringify({ call: { tool_name: call.function.name, arguments: JSON.parse(call.function.arguments) } }) },
                 })) } }],
             });
         });
@@ -311,7 +314,7 @@ test("forced and strict tools stay direct, names cannot collide, and history kee
         assert.equal(dispatcher.name, "pilotswarm_tool_dispatch_1");
         assert.equal(wire.messages[0].tool_calls[0].id, "history-id");
         assert.equal(wire.messages[0].tool_calls[0].function.name, dispatcher.name);
-        assert.deepEqual(JSON.parse(wire.messages[0].tool_calls[0].function.arguments), { tool_name: historic, arguments: { value: "historic" } });
+        assert.deepEqual(JSON.parse(wire.messages[0].tool_calls[0].function.arguments), { call: { tool_name: historic, arguments: { value: "historic" } } });
         assert.deepEqual(wire.messages[1], body.messages[1]);
         assert.deepEqual(wire.messages[2], body.messages[2]);
         return jsonResponse({ choices: [] });
@@ -371,7 +374,14 @@ test("restricted tool-choice lists fail closed instead of being broadened by gro
     assert.equal(fetch.mock.callCount(), 0);
 });
 
-for (const args of ["{", '{"tool_name":"not_in_catalog","arguments":{}}', '{"tool_name":"catalog_tool_138","arguments":[]}', '{"tool_name":"catalog_tool_138","arguments":{},"extra":true}']) {
+for (const args of [
+    "{",
+    '{"call":{"tool_name":"not_in_catalog","arguments":{}}}',
+    '{"call":{"tool_name":"catalog_tool_138","arguments":[]}}',
+    '{"call":{"tool_name":"catalog_tool_138","arguments":{},"extra":true}}',
+    '{"call":{"tool_name":"catalog_tool_138","arguments":{}},"extra":true}',
+    '{"tool_name":"catalog_tool_138","arguments":{}}',
+]) {
     test(`malformed or out-of-catalog dispatch arguments are rejected: ${args}`, async context => {
         context.mock.method(globalThis, "fetch", async request => {
             const wire = await request.json();
@@ -387,7 +397,7 @@ test("streamed text stays live while fragmented parallel calls restore names, ar
     context.mock.method(globalThis, "fetch", async request => {
         const wire = await request.json();
         const name = wire.tools.at(-1).function.name;
-        const args = JSON.stringify({ tool_name: tools.at(-1).function.name, arguments: { value: "quoted \"text\" and \u2603" } });
+        const args = JSON.stringify({ call: { tool_name: tools.at(-1).function.name, arguments: { value: "quoted \"text\" and \u2603" } } });
         const frame = (delta, finishReason = null, usage) => `data: ${JSON.stringify({
             id: "stream-42", model: "model-router", choices: [{ index: 0, delta, finish_reason: finishReason }], ...(usage ? { usage } : {}),
         })}\r\n\r\n`;
@@ -452,7 +462,7 @@ test("a null terminal delta still flushes the completed dispatch call", async co
         const chunks = [
             { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "null-delta", type: "function", function: {
                 name: wire.tools.at(-1).function.name,
-                arguments: JSON.stringify({ tool_name: "catalog_tool_138", arguments: { value: "retained" } }),
+                arguments: JSON.stringify({ call: { tool_name: "catalog_tool_138", arguments: { value: "retained" } } }),
             } }] }, finish_reason: null }] },
             { choices: [{ index: 0, delta: null, finish_reason: "tool_calls" }] },
         ];

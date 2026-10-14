@@ -52,25 +52,26 @@ function groupOverflowTools(body: JsonObject, policy?: ToolCatalogCapability): T
         type: "function",
         function: {
             name,
-            description: "Invoke one of the tools described by this schema. Select its tool_name and supply its original arguments. Each alternative describes one available tool.",
+            description: "Invoke one of the tools described by this schema. Set call.tool_name and supply its original arguments in call.arguments. Each alternative of call describes one available tool.",
+            // Some routed backends reject anyOf/oneOf/allOf at the schema root.
             parameters: {
                 type: "object",
                 properties: {
-                    tool_name: { type: "string", enum: [...toolNames] },
-                    arguments: { type: "object" },
-                },
-                required: ["tool_name", "arguments"],
-                additionalProperties: false,
-                anyOf: grouped.map((tool: JsonObject) => ({
-                    type: "object",
-                    ...(typeof tool.function.description === "string" ? { description: tool.function.description } : {}),
-                    properties: {
-                        tool_name: { type: "string", enum: [tool.function.name] },
-                        arguments: tool.function.parameters,
+                    call: {
+                        anyOf: grouped.map((tool: JsonObject) => ({
+                            type: "object",
+                            ...(typeof tool.function.description === "string" ? { description: tool.function.description } : {}),
+                            properties: {
+                                tool_name: { type: "string", enum: [tool.function.name] },
+                                arguments: tool.function.parameters,
+                            },
+                            required: ["tool_name", "arguments"],
+                            additionalProperties: false,
+                        })),
                     },
-                    required: ["tool_name", "arguments"],
-                    additionalProperties: false,
-                })),
+                },
+                required: ["call"],
+                additionalProperties: false,
             },
         },
     };
@@ -81,7 +82,7 @@ function groupOverflowTools(body: JsonObject, policy?: ToolCatalogCapability): T
             let args;
             try { args = JSON.parse(call.function.arguments); } catch { return call; }
             if (!isObject(args)) return call;
-            return { ...call, function: { ...call.function, name, arguments: JSON.stringify({ tool_name: call.function.name, arguments: args }) } };
+            return { ...call, function: { ...call.function, name, arguments: JSON.stringify({ call: { tool_name: call.function.name, arguments: args } }) } };
         }) };
     }) : body.messages;
     return { name, toolNames, body: { ...body, tools: [...body.tools.filter((tool: JsonObject) => !groupedSet.has(tool)), dispatcher], ...(messages ? { messages } : {}) } };
@@ -93,11 +94,12 @@ function restoreToolCall(call: JsonObject, group: ToolGroup): JsonObject {
     try { args = JSON.parse(call.function.arguments); } catch {
         throw new Error("Tool dispatcher returned invalid JSON; refusing this tool call.");
     }
-    if (!isObject(args) || typeof args.tool_name !== "string" || !group.toolNames.has(args.tool_name)
-        || !isObject(args.arguments) || Object.keys(args).some(key => key !== "tool_name" && key !== "arguments")) {
+    const selected = isObject(args) && Object.keys(args).length === 1 ? args.call : undefined;
+    if (!isObject(selected) || typeof selected.tool_name !== "string" || !group.toolNames.has(selected.tool_name)
+        || !isObject(selected.arguments) || Object.keys(selected).some(key => key !== "tool_name" && key !== "arguments")) {
         throw new Error("Tool dispatcher returned an invalid tool or arguments; refusing this tool call.");
     }
-    return { ...call, function: { ...call.function, name: args.tool_name, arguments: JSON.stringify(args.arguments) } };
+    return { ...call, function: { ...call.function, name: selected.tool_name, arguments: JSON.stringify(selected.arguments) } };
 }
 
 async function restoreGroupedResponse(response: Response, group: ToolGroup): Promise<Response> {
