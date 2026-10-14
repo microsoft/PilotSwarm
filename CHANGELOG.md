@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.3 — 2026-10-14
 
 **Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later
 listens for controls through the session catalog. Stop ends the turn and
@@ -45,6 +45,26 @@ with one outcome, shown in the portal and TUI transcripts.
   `cms_turn_start` is dropped (stop 0082 workers before migrating). A steer
   reads **Delivered** as soon as the model has read it, also if the turn is
   then stopped.
+
+**Azure AI Foundry with no key.** New provider type `foundry-wif` for
+Foundry's OpenAI-compatible `/openai/v1` endpoint. The worker gets an Entra
+token through `DefaultAzureCredential`; nothing is stored. Its identity needs
+the **Cognitive Services OpenAI User** role on the Foundry account. Models
+under it accept `wireApi`. See the
+[configuration reference](docs/developer/reference/configuration.md).
+
+**Canvas git checks on Windows.** A workspace on a `subst` drive no longer
+fails the canvas git checks. Git for Windows reports the backing path while
+Node keeps the drive letter; the check now compares the folders themselves.
+
+**Azure deployment.**
+
+- Worker and portal images are built from the checked-in source, not
+  installed from npm.
+- New optional `FOUNDRY_LOCATION`: put the Foundry account in another Azure
+  region when the stamp's region lacks the model deployments.
+- New optional `NPM_REGISTRY`: the package registry used by image builds.
+- Local deployment caches stay out of image builds.
 
 ## 0.8.2 — 2026-10-04
 
