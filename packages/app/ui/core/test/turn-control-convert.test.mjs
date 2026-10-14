@@ -210,6 +210,32 @@ test("a second Steer while the queue is being steered does nothing: one batch, i
     assert.equal(selectSteerAction(h.store.getState(), SID).sending, false);
 });
 
+test("while the queue is being steered, Steer on typed text or a selected message does nothing either", async () => {
+    const answers = [];
+    let seq = 70;
+    const h = harness({ steer: () => new Promise((resolve) => answers.push(() => resolve({ outcome: "accepted", steerId: seq++, turn: 2 }))) });
+    const [a, b] = [h.queue("a"), h.queue("b")];
+    const batch = h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Not awaited: a steer that went out would wait for its held answer.
+    h.controller.setPrompt("typed meanwhile");
+    h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.store.getState().ui.prompt, "typed meanwhile");
+    h.controller.setPrompt("");
+    h.controller.enterPendingPromptEdit(SID, b.id);
+    h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.calls.steer.length, 1);
+    assert.equal(h.store.getState().ui.statusText, "Steering your queued messages; wait for it to finish");
+    h.controller.exitPendingPromptEdit();
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    answers.shift()();
+    await batch;
+    assert.deepEqual(h.calls.steer.map((call) => call.replacesClientMessageId), [a.id, b.id]);
+});
+
 test("past the open-steer cap the first messages go; the rest stay queued with the too-many notice and are not sent", async () => {
     let call = 0;
     const h = harness({ steer: () => (++call === 1 ? { outcome: "accepted", steerId: 70, turn: 2 } : { outcome: "too_many" }) });

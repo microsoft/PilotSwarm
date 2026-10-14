@@ -11035,6 +11035,12 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
             return;
         }
+        // One steer of the queue at a time; nothing else steers meanwhile, so
+        // the requests go in order.
+        if (this._turnControlEntry(sessionId).steeringQueue) {
+            this.dispatch({ type: "ui/status", text: "Steering your queued messages; wait for it to finish" });
+            return;
+        }
         // A selected queued message: Steer sends it as a steer.
         const promptEdit = this.getPromptEditSessionMatch(sessionId);
         const selected = promptEdit && this.getSessionOutbox(sessionId).find((item) => item.id === promptEdit.itemId);
