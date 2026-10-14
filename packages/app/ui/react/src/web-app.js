@@ -9753,6 +9753,14 @@ function QueuedMessageActions({ controller, sessionId }) {
         }));
 }
 
+/** The busy Send content during an image upload: a turning glyph, and a label where it fits. */
+function UploadSpinner({ label }) {
+    const frame = useSpinnerFrame(true);
+    return React.createElement(React.Fragment, null,
+        React.createElement("span", { className: "ps-send-spinner", "aria-hidden": true }, frame),
+        label ? React.createElement("span", { className: "ps-send-busy-label" }, label) : null);
+}
+
 function shallowEqualBlocks(a, b) {
     if (a === b) return true;
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
@@ -9785,6 +9793,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             stopNotice: turnControl.stopNotice,
             keptSteers: turnControl.kept,
             hasOutbox: outbox.length > 0,
+            uploading: Boolean(activeSessionId && state.ui.promptUpload?.sessionId === activeSessionId),
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -10191,22 +10200,34 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     onClick: steerTurn,
                 }, "↪")
                 : null,
+            // While the images of a send upload, Send is busy: the message goes
+            // once, when the upload ends, and the draft stays meanwhile.
             React.createElement("button", {
                 type: "button",
-                className: `ps-send-button${mobile ? " is-inline" : ""}`,
-                title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
-                    ? "Send all queued prompts"
-                    : promptState.hasOutbox
-                        ? "Queue prompt behind the pending batch"
-                        : "Send prompt",
-                "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
-                    ? "Send queued prompts"
-                    : promptState.hasOutbox
-                        ? "Queue prompt"
-                        : "Send prompt",
+                className: `ps-send-button${mobile ? " is-inline" : ""}${promptState.uploading ? " is-uploading" : ""}`,
+                "data-testid": "composer-send",
+                "data-state": promptState.uploading ? "uploading" : "ready",
+                disabled: promptState.uploading,
+                "aria-busy": promptState.uploading ? "true" : undefined,
+                title: promptState.uploading
+                    ? "Uploading the images; the message goes when they finish"
+                    : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                        ? "Send all queued prompts"
+                        : promptState.hasOutbox
+                            ? "Queue prompt behind the pending batch"
+                            : "Send prompt",
+                "aria-label": promptState.uploading
+                    ? "Uploading images"
+                    : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                        ? "Send queued prompts"
+                        : promptState.hasOutbox
+                            ? "Queue prompt"
+                            : "Send prompt",
                 onPointerDown: (event) => event.preventDefault(),
                 onClick: sendPrompt,
-            }, sendLabel),
+            }, promptState.uploading
+                ? React.createElement(UploadSpinner, { label: mobile ? "" : "Uploading…" })
+                : sendLabel),
         ),
     );
 }

@@ -31,7 +31,8 @@ with one outcome, shown in the portal and TUI transcripts.
   suppressed as a duplicate re-checks; one failing store listener no longer
   stops the others. The retry of a failed turn keeps the prompt's client
   message ids, sender and images (orchestration 1.0.81). A second submit during an image upload
-  no longer sends the message twice.
+  no longer sends the message twice, and the portal's Send button shows the
+  upload as busy ("Uploading…"; a spinner on phones).
 - **Steer now and Cancel on queued messages.** Each queued message shows
   **Steer now** and **Cancel** in the portal (chat view, Master of Agents and
   phones); in the TUI, select it with `↑`, then `Ctrl+T` steers now and `d`

@@ -6,6 +6,8 @@
 // re-reads the selected session's new events) is held after start-up, so
 // only the path under test can deliver the receipt, and each case asserts
 // within 4 s, before the controller's 10 s re-check could clear the item.
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
@@ -106,3 +108,49 @@ test("a MoA panel whose history holds the receipt clears the queued item", async
     await expect(status).toBeVisible();
     await expect(status).not.toContainText("queued", FAST);
 });
+
+// While the images of a send upload, the Send button is busy (disabled,
+// aria-busy, "Uploading…" or a spinner on a phone) and the draft stays.
+for (const viewport of [{ name: "desktop", width: 1600, height: 950 }, { name: "phone", width: 390, height: 844 }]) {
+    test(`${viewport.name}: Send is busy while the images upload; one message goes when they finish`, async ({ page }) => {
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        const portal = await fakePortal(page);
+        let releaseUpload;
+        const uploadDone = new Promise((resolve) => { releaseUpload = resolve; });
+        const uploads = [];
+        await page.route("**/api/v1/sessions/*/artifacts/*", async (route) => {
+            uploads.push(route.request().url());
+            await uploadDone;
+            return route.fulfill({ json: { ok: true, result: { filename: decodeURIComponent(route.request().url().split("/").pop()), sizeBytes: 3 } } });
+        });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID_A}`);
+        await expect.poll(() => portal.subscriptions(SID_A)).toBeGreaterThan(0);
+        const input = page.getByTestId("composer-input");
+        await input.fill("look at these two pictures");
+        const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+        await page.locator('.ps-prompt-shell input[type="file"]').setInputFiles([
+            { name: "one.png", mimeType: "image/png", buffer: png },
+            { name: "two.png", mimeType: "image/png", buffer: png },
+        ]);
+        const send = page.getByTestId("composer-send");
+        await send.click();
+        await expect.poll(() => uploads.length).toBeGreaterThan(0);
+        await expect(send).toBeDisabled();
+        await expect(send).toHaveAttribute("aria-busy", "true");
+        await expect(send).toHaveAttribute("data-state", "uploading");
+        if (viewport.name === "desktop") await expect(send).toContainText("Uploading…");
+        await expect(input).toHaveValue("look at these two pictures");
+        await input.press("Enter");
+        const file = test.info().outputPath(`upload-busy-${viewport.name}.png`);
+        await page.screenshot({ path: file });
+        if (process.env.PS_UX_SHOTS_DIR) {
+            fs.mkdirSync(process.env.PS_UX_SHOTS_DIR, { recursive: true });
+            fs.copyFileSync(file, path.join(process.env.PS_UX_SHOTS_DIR, `upload-busy-${viewport.name}.png`));
+        }
+        releaseUpload();
+        await expect.poll(() => portal.sends.length).toBe(1);
+        await expect(send).toBeEnabled();
+        await expect(send).not.toHaveAttribute("aria-busy", "true");
+        expect(portal.sends[0].prompt).toContain("look at these two pictures");
+    });
+}

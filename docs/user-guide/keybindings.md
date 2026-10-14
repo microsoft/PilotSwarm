@@ -126,7 +126,7 @@ Notes:
   - `✓` queued — durably enqueued to the orchestration, waiting to be processed
   - `✓✓` sent — persisted as a `user.message` in the durable transcript; the LLM has it
 - A queued item becomes sent as soon as the client sees its `user.message`, whichever way it arrives: the live stream, a history load, the replay after a reconnect, or the history a MoA panel loaded. A queued item still waiting after 10 seconds gets one re-read of the session's latest messages.
-- While images upload, a second submit sends nothing; the message goes once, when the upload ends.
+- While images upload, a second submit sends nothing; the message goes once, when the upload ends. The status line says "Uploading N images..."; in the portal the Send button is busy (disabled, "Uploading…", a spinner on phones) and the draft stays.
 - Multiple synchronous sends coalesce into a single durable enqueue. Pressing `Enter` on an empty draft forces an immediate dispatch of any still-pending items.
 - Pressing `↑` at the top prompt boundary recalls the most recent pending item for editing. Pressing `↓` at the bottom boundary moves forward through pending items and eventually returns to the live draft.
 - `Esc` while editing a recalled pending item cancels that item before it becomes durable.

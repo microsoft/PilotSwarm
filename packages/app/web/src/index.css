@@ -3677,6 +3677,17 @@ body.is-resizing-pane-y iframe {
 .ps-control-notice-text { flex: 1 1 auto; min-width: 0; }
 .ps-control-notice .ps-mini-button { min-height: 32px; }
 
+/* Send while the images of a send upload: busy, not clickable. */
+.ps-send-button.is-uploading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: progress;
+  opacity: 0.85;
+}
+.ps-send-spinner { font-family: var(--ps-font-mono, monospace); }
+
 /* Queued messages of the composer's session, with Steer now and Cancel. */
 .ps-queued-actions {
   grid-column: 1 / -1;

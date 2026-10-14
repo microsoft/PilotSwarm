@@ -1590,6 +1590,9 @@ function baseReducer(state, action) {
                 },
             };
 
+        case "ui/promptUpload":
+            return { ...state, ui: { ...state.ui, promptUpload: action.upload || null } };
+
         case "ui/promptAttachments":
             return {
                 ...state,

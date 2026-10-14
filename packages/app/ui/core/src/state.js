@@ -418,6 +418,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             promptCursor: 0,
             promptRows: 1,
             promptAttachments: [],
+            // The image upload of a send in progress: { sessionId, count } (busy Send).
+            promptUpload: null,
             promptEdit: null,
             statusText: "Starting PilotSwarm...",
             // A persisted theme id may name a theme that no longer ships —

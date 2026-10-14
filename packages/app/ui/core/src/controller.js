@@ -9508,6 +9508,7 @@ export class PilotSwarmUiController {
                 return;
             }
             this._attachmentUploadInFlight = true;
+            this.dispatch({ type: "ui/promptUpload", upload: { sessionId, count: pendingImages.length } });
             const uploadItem = this.buildOutboxItem("", "pending");
             this.dispatch({ type: "ui/status", text: `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...` });
             try {
@@ -9518,6 +9519,7 @@ export class PilotSwarmUiController {
                 return;
             } finally {
                 this._attachmentUploadInFlight = false;
+                this.dispatch({ type: "ui/promptUpload", upload: null });
             }
         }
         const outboundPrompt = prompt.trim()
