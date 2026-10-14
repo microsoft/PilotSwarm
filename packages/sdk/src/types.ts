@@ -1914,7 +1914,9 @@ export interface SteerTurnOptions {
     /**
      * Convert a queued message: the client message id of the queued message
      * this steer replaces. Refused `already_received` once that message
-     * reached a turn.
+     * reached a turn. It must be one of the `clientMessageIds` given when the
+     * message was sent; a message sent without client message ids cannot be
+     * converted (the steer is accepted but the message also runs).
      */
     replacesClientMessageId?: string;
     caller?: TurnControlCaller;

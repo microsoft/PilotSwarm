@@ -2574,6 +2574,10 @@ export class PilotSwarmManagementClient {
      * `already_received` once the message reached a turn; a new request for
      * the same message repeats the first answer while its steer is open or
      * delivered. A steer that is not delivered leaves the message queued.
+     * `replacesClientMessageId` must be one of the `clientMessageIds` given in
+     * `options.clientMessageIds` when the message was sent; a message sent
+     * without client message ids cannot be converted (the steer is accepted
+     * but the message also runs).
      */
     async steerSessionTurn(sessionId: string, opts: SteerTurnOptions): Promise<SteerTurnResult> {
         this._ensureStarted();

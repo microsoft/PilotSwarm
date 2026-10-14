@@ -66,14 +66,17 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 + "steering now — send the text with send_message instead and do not retry this request_id. Retry with "
                 + "the same request_id only after a lost response. To convert a queued message, pass its client message "
                 + "id as replaces_client_message_id with its text: a delivered steer replaces it; already_received means "
-                + "it already reached a turn, and a steer that is not delivered leaves it queued.",
+                + "it already reached a turn, and a steer that is not delivered leaves it queued. "
+                + "replaces_client_message_id must be one of the client message ids given when the message was sent; "
+                + "a message sent without client message ids cannot be converted (the steer is accepted but the "
+                + "message also runs).",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose running turn to steer"),
                 text: z.string().min(1).describe("The guidance for the model"),
                 request_id: requestIdShape().optional().describe(
                     "Idempotency key. Reuse it only to retry after a transport failure; a new id is generated when omitted"),
                 replaces_client_message_id: requestIdShape().optional().describe(
-                    "Convert a queued message: the client message id of the queued message this steer replaces"),
+                    "Convert a queued message: one of the client message ids given when that message was sent"),
             },
         },
         withToolErrors(async ({ session_id, text, request_id, replaces_client_message_id }) => {

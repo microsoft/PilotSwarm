@@ -386,6 +386,11 @@ on the turn-control path; list rows do not carry these fields).
   such a steer is never carried. A new request for the same message returns
   the first answer while its steer is open or delivered. Do not re-send the
   message yourself: it is its own fallback.
+  `replacesClientMessageId` must be one of the `clientMessageIds` given in
+  `options.clientMessageIds` when the message was sent. A message sent
+  without client message ids cannot be converted: the steer is accepted but
+  the message also runs, so its text runs twice. The server cannot tell an
+  unknown id from a message that has not arrived yet.
 - **Outcome.** Each accepted control gets one outcome event
   (`session.control_outcome`): a steer is `delivered`, `carried` (it runs
   with the next turn), or `not_delivered`; a Stop is `stopped` or
