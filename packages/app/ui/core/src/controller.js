@@ -11095,17 +11095,26 @@ export class PilotSwarmUiController {
      * (too_many) each message not sent says so too. All stay queued and run.
      */
     async steerQueuedMessages(sessionId, itemIds) {
-        for (const [index, itemId] of itemIds.entries()) {
-            const outcome = await this.convertQueuedToSteer(sessionId, itemId);
-            if (outcome === "accepted") continue;
-            if (outcome === "too_many") {
-                for (const rest of itemIds.slice(index + 1)) {
-                    if (this.getSessionOutbox(sessionId).find((item) => item.id === rest)?.phase === "queued") {
+        // One batch per session: a second Steer meanwhile does nothing, so the
+        // requests go in order.
+        if (this._turnControlEntry(sessionId).steeringQueue) return;
+        this._setTurnControl(sessionId, { steeringQueue: true });
+        const queued = (itemId) => this.getSessionOutbox(sessionId).find((item) => item.id === itemId)?.phase === "queued";
+        try {
+            for (const [index, itemId] of itemIds.entries()) {
+                // Sent or cancelled meanwhile (a selected message, for one).
+                if (!queued(itemId)) continue;
+                const outcome = await this.convertQueuedToSteer(sessionId, itemId);
+                if (outcome === "accepted") continue;
+                if (outcome === "too_many") {
+                    for (const rest of itemIds.slice(index + 1).filter(queued)) {
                         this._updateOutboxItem(sessionId, rest, { convertNotice: { reason: "too_many" } });
                     }
                 }
+                return;
             }
-            return;
+        } finally {
+            this._setTurnControl(sessionId, { steeringQueue: null });
         }
     }
 

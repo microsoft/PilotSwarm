@@ -139,7 +139,7 @@ test("Ctrl+T with an empty prompt steers every queued text message in order; the
     assert.deepEqual(h.calls.map((call) => [call.text, call.replacesClientMessageId]), [["first queued", a.id], ["second queued", b.id]]);
     const strip = selectOutboxOverlayLines(h.store.getState(), 80).map((line) => line.map((run) => run.text).join("")).join("\n");
     assert.match(strip, /queued prompts: 2 steering/);
-    assert.match(strip, /↪ You: first queued/);
+    assert.match(strip, /↪ You: first queued\n  steering/);
 
     const img = harness();
     img.controller.setSessionOutboxItems("s1", [

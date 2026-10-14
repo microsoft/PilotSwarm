@@ -1025,6 +1025,40 @@ test("phone 390x844 (terminal-green): running steerable, the hold menu, and the 
     await shot(page, "composer-phone-390-empty-two-queued-terminal-green");
 });
 
+test("phone 390x844, keyboard: Enter steers; ArrowUp opens the menu on Steer now, ArrowDown moves to Queue, Enter queues; focus returns to the input", async ({ page }) => {
+    const { wire } = await openPhoneView(page, "chat", { viewport: PHONES[0] });
+    await wire.input.fill("prefer the shorter answer");
+    await wire.sendButton.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => wire.state.steers.length).toBe(1);
+    expect(wire.state.steers[0]).toMatchObject({ text: "prefer the shorter answer" });
+    await wire.input.fill("queue this from the keyboard");
+    await expect(wire.sendButton).toHaveAttribute("data-state", "ready");
+    await wire.sendButton.focus();
+    await page.keyboard.press("ArrowUp");
+    const menu = wire.composer.getByTestId("steer-hold-menu");
+    await expect(menu.getByTestId("steer-hold-steer")).toBeFocused();
+    await expect(menu.getByTestId("steer-hold-steer")).toHaveClass(/is-lit/);
+    await page.keyboard.press("ArrowDown");
+    await expect(menu.getByTestId("steer-hold-queue")).toBeFocused();
+    await expect(menu.getByTestId("steer-hold-queue")).toHaveClass(/is-lit/);
+    await page.keyboard.press("Enter");
+    await expect(menu).toHaveCount(0);
+    await expect(queuedRows(wire).item.filter({ hasText: "queue this from the keyboard" })).toHaveAttribute("data-phase", "queued");
+    await expect(wire.input).toBeFocused();
+    await wire.input.fill("escape keeps the text");
+    await expect(wire.sendButton).toHaveAttribute("data-action", "steer");
+    await expect(wire.sendButton).toHaveAttribute("data-state", "ready");
+    await wire.sendButton.focus();
+    await page.keyboard.press("ArrowUp");
+    await expect(menu).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(wire.input).toBeFocused();
+    await expect(wire.input).toHaveValue("escape keeps the text");
+    expect(wire.state.steers).toHaveLength(1);
+});
+
 // The hold menu, in Chromium and WebKit: hold the blue button about 0.45 s
 // (with typed text) and Steer now / Queue open above it, Steer now lit.
 for (const browserName of ["chromium", "webkit"]) {

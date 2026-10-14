@@ -7,7 +7,8 @@
  *
  * States: { phase: "idle" } | { phase: "pressed", canHold } |
  * { phase: "open", highlight: "steer" | "queue" | null }.
- * Events: down { canHold }, hold (the timer), move { over }, up { over },
+ * Events: down { canHold }, hold (the timer), open (the keyboard), move
+ * { over }, up { over },
  * pick { item } (a tap on an item), dismiss, cancel (the browser took the
  * gesture). `over` is "steer", "queue", "button" or null.
  * Returns { state, action } with action null, "steer" or "queue".
@@ -26,6 +27,8 @@ export function nextSteerHold(state, event) {
             return state?.phase === "pressed" && state.canHold
                 ? { state: { phase: "open", highlight: "steer" }, action: null }
                 : { state, action: null };
+        case "open":
+            return { state: { phase: "open", highlight: "steer" }, action: null };
         case "move":
             return state?.phase === "open"
                 ? { state: { phase: "open", highlight: MENU_ITEMS.has(event.over) ? event.over : null }, action: null }

@@ -9786,7 +9786,9 @@ function TurnStateStatus({ turnState, acceptsControls, stopping }) {
  * separate Steer button). A tap steers what the composer holds: the typed
  * text, or with an empty box every queued message (the count shows). With
  * typed text a hold opens "Steer now" (lit) and "Queue" above it
- * (nextSteerHold). The browser's own long-press menu and text selection are
+ * (nextSteerHold); from the keyboard, Enter or Space steers and ArrowUp (or
+ * the context-menu key) opens the menu, where the arrows move and Enter
+ * picks. The browser's own long-press menu and text selection are
  * suppressed on it.
  */
 function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
@@ -9794,11 +9796,19 @@ function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
     const menuRef = React.useRef(null);
     const holdRef = React.useRef({ phase: "idle" });
     const timerRef = React.useRef(null);
+    // The menu was opened from the keyboard: it takes the focus on its lit
+    // item, and gives it to the composer input when it closes (before the
+    // action, which can replace this button).
+    const keyboardMenuRef = React.useRef(false);
     const [hold, setHold] = React.useState(holdRef.current);
     const apply = React.useCallback((event) => {
         const next = nextSteerHold(holdRef.current, event);
         holdRef.current = next.state;
         setHold(next.state);
+        if (next.state.phase === "idle" && keyboardMenuRef.current) {
+            keyboardMenuRef.current = false;
+            buttonRef.current?.closest(".ps-prompt-shell")?.querySelector("textarea")?.focus();
+        }
         if (next.action === "steer") onSteer();
         else if (next.action === "queue") onQueue();
     }, [onSteer, onQueue]);
@@ -9811,6 +9821,16 @@ function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
         return buttonRef.current && buttonRef.current.contains(node) ? "button" : null;
     };
     const open = hold.phase === "open";
+    React.useEffect(() => {
+        if (open && keyboardMenuRef.current) menuRef.current?.querySelector(`[data-hold-item="${holdRef.current.highlight || "steer"}"]`)?.focus();
+    }, [open]);
+    const onMenuKeyDown = (event) => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        const item = holdRef.current.highlight === "queue" ? "steer" : "queue";
+        apply({ type: "move", over: item });
+        menuRef.current?.querySelector(`[data-hold-item="${item}"]`)?.focus();
+    };
     // A press or tap anywhere else closes the menu; nothing is sent.
     React.useEffect(() => {
         if (!open) return undefined;
@@ -9829,7 +9849,7 @@ function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
     const ready = steer.state === "ready";
     return React.createElement("span", { className: "ps-steer-send" },
         open
-            ? React.createElement("div", { ref: menuRef, className: "ps-steer-hold-menu", role: "menu", "aria-label": "Steer or queue", "data-testid": "steer-hold-menu" },
+            ? React.createElement("div", { ref: menuRef, className: "ps-steer-hold-menu", role: "menu", "aria-label": "Steer or queue", "data-testid": "steer-hold-menu", onKeyDown: onMenuKeyDown },
                 [["steer", "↪", "Steer now", "into the running turn"], ["queue", "+", "Queue", "runs after this turn"]].map(([item, mark, title, sub]) => (
                     React.createElement("button", {
                         key: item,
@@ -9874,6 +9894,12 @@ function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
             onPointerCancel: () => { clearTimer(); apply({ type: "cancel" }); },
             // Keyboard activation (no pointer): steer.
             onClick: (event) => { if (event.detail === 0) onSteer(); },
+            onKeyDown: (event) => {
+                if (!canHold || open || !(event.key === "ArrowUp" || event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
+                event.preventDefault();
+                keyboardMenuRef.current = true;
+                apply({ type: "open" });
+            },
         }, "↪", steer.count ? React.createElement("span", { className: "ps-steer-count" }, steer.count) : null));
 }
 
@@ -9908,7 +9934,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             steerTarget: steerAction.target,
             steerCount: steerAction.count,
             steerBlocked: steerAction.blocked,
-            steerPhase: turnControl.steer?.phase || null,
+            steerSending: steerAction.sending,
             stopPhase: turnControl.stop?.phase || null,
             steerNotice: turnControl.steerNotice,
             stopNotice: turnControl.stopNotice,
@@ -10091,7 +10117,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const steer = {
         target: promptState.steerTarget,
         count: promptState.steerTarget === "queue" ? promptState.steerCount : 0,
-        state: promptState.steerPhase === "sending" ? "sending"
+        state: promptState.steerSending ? "sending"
             : promptState.steerTarget !== "none" && !promptState.steerBlocked ? "ready" : "disabled",
         title: promptState.steerBlocked
             || (promptState.steerTarget === "text" ? "Steer this text into the running turn now (Ctrl+T)"
@@ -10100,7 +10126,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                         ? `Steer your ${promptState.steerCount} queued message${promptState.steerCount === 1 ? "" : "s"} now`
                         : "Type guidance to steer the running turn"),
     };
-    const showSteer = promptState.steerAvailable || promptState.steerPhase === "sending";
+    const showSteer = promptState.steerAvailable || promptState.steerSending;
     // Phones have no separate Steer button: while a turn accepts steering the
     // blue button steers (a hold with typed text offers Queue). It stays the
     // plain send/queue button for staged images, a pending batch to send, or

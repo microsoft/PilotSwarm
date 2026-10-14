@@ -33,6 +33,11 @@ test("release on the button keeps the menu open for a tap on an item; release or
     assert.deepEqual(run([...held, { type: "move", over: null }]).state, { phase: "open", highlight: null });
 });
 
+test("the keyboard opens the menu (Steer now lit); arrows move the light; a pick does it", () => {
+    assert.deepEqual(run([{ type: "open" }]).state, { phase: "open", highlight: "steer" });
+    assert.deepEqual(run([{ type: "open" }, { type: "move", over: "queue" }, { type: "pick", item: "queue" }]), { state: { phase: "idle" }, actions: ["queue"] });
+});
+
 test("a cancelled press (the browser took the gesture), or one that slides off before the hold, sends nothing", () => {
     assert.deepEqual(run([{ type: "down", canHold: true }, { type: "up", over: null }]), { state: { phase: "idle" }, actions: [] });
     assert.deepEqual(run([{ type: "down", canHold: true }, { type: "cancel" }]), { state: { phase: "idle" }, actions: [] });

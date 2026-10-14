@@ -139,19 +139,19 @@ test("no answer: queued again; Steer now retries with the same request id until 
 test("Steer acts on the typed text, else a selected queued message, else every queued message (not while idle, legacy or steering off)", () => {
     const h = harness();
     const action = () => selectSteerAction(h.store.getState(), SID);
-    assert.deepEqual(action(), { available: true, target: "none", count: 0, itemIds: [], blocked: null });
+    assert.deepEqual(action(), { available: true, target: "none", count: 0, itemIds: [], blocked: null, sending: false });
     const x = h.queue("first");
     const pending = h.controller.buildOutboxItem("not yet durable", "pending");
     h.controller.setSessionOutboxItems(SID, [...h.controller.getSessionOutbox(SID), pending]);
     const y = h.queue("second");
-    assert.deepEqual(action(), { available: true, target: "queue", count: 2, itemIds: [x.id, y.id], blocked: null });
+    assert.deepEqual(action(), { available: true, target: "queue", count: 2, itemIds: [x.id, y.id], blocked: null, sending: false });
     h.controller.setPrompt("typed guidance");
-    assert.deepEqual(action(), { available: true, target: "text", count: 0, itemIds: [], blocked: null });
+    assert.deepEqual(action(), { available: true, target: "text", count: 0, itemIds: [], blocked: null, sending: false });
     h.controller.setPrompt("");
     h.controller.enterPendingPromptEdit(SID, y.id);
-    assert.deepEqual(action(), { available: true, target: "selected", count: 1, itemIds: [y.id], blocked: null });
+    assert.deepEqual(action(), { available: true, target: "selected", count: 1, itemIds: [y.id], blocked: null, sending: false });
     h.controller.enterPendingPromptEdit(SID, pending.id);
-    assert.deepEqual(action(), { available: true, target: "selected", count: 0, itemIds: [], blocked: "Only a queued message can be steered" });
+    assert.deepEqual(action(), { available: true, target: "selected", count: 0, itemIds: [], blocked: "Only a queued message can be steered", sending: false });
     for (const options of [{ flags: { effective: false } }, { session: { status: "idle", acceptsTurnControl: false } }, { session: { acceptsTurnControl: false } }, { session: { serviceKind: "distiller" } }]) {
         const off = harness(options);
         off.queue();
@@ -164,9 +164,9 @@ test("a message with an image cannot be steered: with one queued, Steer on the q
     const x = h.queue("text only");
     const withImage = h.queue("look", { attachments: [{ filename: "a.png", contentType: "image/png", sizeBytes: 3 }] });
     const blocked = "A queued message has an image; images cannot be steered";
-    assert.deepEqual(selectSteerAction(h.store.getState(), SID), { available: true, target: "queue", count: 2, itemIds: [], blocked });
+    assert.deepEqual(selectSteerAction(h.store.getState(), SID), { available: true, target: "queue", count: 2, itemIds: [], blocked, sending: false });
     h.controller.enterPendingPromptEdit(SID, withImage.id);
-    assert.deepEqual(selectSteerAction(h.store.getState(), SID), { available: true, target: "selected", count: 0, itemIds: [], blocked: "This message has an image; images cannot be steered" });
+    assert.deepEqual(selectSteerAction(h.store.getState(), SID), { available: true, target: "selected", count: 0, itemIds: [], blocked: "This message has an image; images cannot be steered", sending: false });
     h.controller.enterPendingPromptEdit(SID, x.id);
     assert.equal(selectSteerAction(h.store.getState(), SID).blocked, null);
 });
@@ -190,6 +190,24 @@ test("Steer with an empty box and a queued image sends nothing and says why", as
     await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
     assert.equal(h.calls.steer.length, 0);
     assert.equal(h.store.getState().ui.statusText, "A queued message has an image; images cannot be steered");
+});
+
+test("a second Steer while the queue is being steered does nothing: one batch, in order", async () => {
+    const answers = [];
+    let seq = 70;
+    const h = harness({ steer: () => new Promise((resolve) => answers.push(() => resolve({ outcome: "accepted", steerId: seq++, turn: 2 }))) });
+    const [a, b] = [h.queue("a"), h.queue("b")];
+    const first = h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(selectSteerAction(h.store.getState(), SID).sending, true);
+    await h.controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(h.calls.steer.length, 1);
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    answers.shift()();
+    await first;
+    assert.deepEqual(h.calls.steer.map((call) => call.replacesClientMessageId), [a.id, b.id]);
+    assert.equal(selectSteerAction(h.store.getState(), SID).sending, false);
 });
 
 test("past the open-steer cap the first messages go; the rest stay queued with the too-many notice and are not sent", async () => {
@@ -298,12 +316,17 @@ test("no answer, then the steer's record and a delivered outcome arrive: the con
     assert.equal(h.item(x.id), undefined);
 });
 
-test("the strip shows each message once: its blocks are exactly the flattened strip lines", () => {
-    const h = harness();
+test("the strip shows each message once: the flattened strip (TUI) is each block's lines and its phase and notice", async () => {
+    const h = harness({ steer: { outcome: "too_many" } });
     const a = h.queue("first queued message");
     const b = h.queue("second queued message");
     const { header, blocks } = selectOutboxOverlayBlocks(h.store.getState(), 60);
     assert.deepEqual(selectOutboxOverlayLines(h.store.getState(), 60), [header, ...blocks.flatMap((block) => block.lines)]);
+    await h.controller.convertQueuedToSteer(SID, a.id);
+    await h.controller.cancelOutboxItem(SID, b.id);
+    const flat = selectOutboxOverlayLines(h.store.getState(), 60).map((line) => line.map((run) => run.text).join("")).join("\n");
+    assert.match(flat, /first queued message\n +Could not steer: too many open steers on this turn\. Still queued\./);
+    assert.match(flat, /second queued message\n +Cancelling · takes effect when the turn ends/);
     assert.deepEqual(blocks.map((block) => block.itemId), [a.id, b.id]);
     const text = (block) => block.lines.map((line) => line.map((run) => run.text).join("")).join("\n");
     assert.match(text(blocks[0]), /first queued message/);

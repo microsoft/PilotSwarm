@@ -3430,6 +3430,8 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
         steer: entry?.steer || null,
         stop: entry?.stop || null,
+        // The queue is being steered (one batch per session at a time).
+        steeringQueue: entry?.steeringQueue === true,
         steerNotice,
         stopNotice,
         // Steer texts that could not return to the composer, oldest first.
@@ -3446,11 +3448,14 @@ const hasImages = (item) => Array.isArray(item?.attachments) && item.attachments
  * Ctrl+T): the typed text; else a selected queued message; else, with an
  * empty box, every queued message in order. A steer is text only, so a
  * message with an image cannot be steered, and with one queued the queue
- * cannot be steered either. `blocked` says why Steer does nothing.
+ * cannot be steered either. `blocked` says why Steer does nothing;
+ * `sending` is true while a steer or a steer of the queue is in flight.
  */
 export function selectSteerAction(state, sessionId = state?.sessions?.activeSessionId) {
     const outbox = sessionId && Array.isArray(state?.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
-    const action = { available: selectTurnControlView(state, sessionId).canSteer, target: "none", count: 0, itemIds: [], blocked: null };
+    const view = selectTurnControlView(state, sessionId);
+    const action = { available: view.canSteer, target: "none", count: 0, itemIds: [], blocked: null,
+        sending: view.steer?.phase === "sending" || view.steeringQueue };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
     if (promptEdit) {
         const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
@@ -3824,9 +3829,14 @@ export function selectOutboxOverlayBlocks(state, maxWidth = 80, options = {}) {
     return { header, blocks, revision };
 }
 
+/** The strip as lines (TUI): each block's lines, then its phase and notice. */
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
     const { header, blocks } = selectOutboxOverlayBlocks(state, maxWidth, options);
-    return header ? [header, ...blocks.flatMap((block) => block.lines)] : [];
+    if (!header) return [];
+    return [header, ...blocks.flatMap((block) => {
+        const status = [block.phaseLabel, block.notice].filter(Boolean).join(" · ");
+        return status ? [...block.lines, [{ text: `  ${status}`, color: block.notice ? "yellow" : "gray" }]] : block.lines;
+    })];
 }
 
 export function selectActiveArtifactLinks(state) {
@@ -6119,7 +6129,7 @@ export function selectStatusBar(state) {
     const editingPendingOutbox = state.ui.promptEdit?.sessionId === activeSession?.sessionId;
     const selectedQueuedOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "queued";
     const steerAction = selectSteerAction(state, activeSession?.sessionId);
-    const steerReady = steerAction.available && !steerAction.blocked;
+    const steerReady = steerAction.available && !steerAction.blocked && !steerAction.sending;
     const selectedQueuedCanSteer = selectedQueuedOutbox && steerReady;
     const selectedCancellingOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "cancelling";
     const fullscreenHint = paneFullscreen === focus ? "v/esc close fullscreen" : "v fullscreen";
