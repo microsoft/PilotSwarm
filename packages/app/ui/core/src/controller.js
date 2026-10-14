@@ -11191,8 +11191,11 @@ export class PilotSwarmUiController {
     _applyConvertOutcome(sessionId, steerSeq, outcome) {
         if (!Number.isFinite(steerSeq) || outcome === "delivered") return;
         const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.convert?.steerSeq === steerSeq);
-        if (item?.phase === "steering") this._returnConvertToQueue(sessionId, item.id, { reason: "not_delivered" }, null);
-        else if (item?.phase === "queued") this._updateOutboxItem(sessionId, item.id, { convert: null, convertNotice: { reason: "not_delivered" } });
+        // Read by the model, then not delivered: the turn was stopped and
+        // discarded (D10), not ended before the read.
+        const notice = { reason: item?.convert?.confirmed ? "stopped_after_read" : "not_delivered" };
+        if (item?.phase === "steering") this._returnConvertToQueue(sessionId, item.id, notice, null);
+        else if (item?.phase === "queued") this._updateOutboxItem(sessionId, item.id, { convert: null, convertNotice: notice });
     }
 
     /** The recorded steer of a conversion that got no answer: learn its position, and a loaded outcome. */

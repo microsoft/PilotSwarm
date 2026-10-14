@@ -92,6 +92,9 @@ import { useControllerSelector } from "./use-controller-state.js";
 const MOBILE_BREAKPOINT = 920;
 // Phones: the one-line composer (no "you" label, the blue button steers).
 const PHONE_MEDIA_QUERY = "(max-width: 600px)";
+// A touch keyboard (no hover, coarse pointer): its return key adds a line and
+// the button sends. With a physical keyboard Enter sends at every width.
+const TOUCH_KEYBOARD_MEDIA_QUERY = "(hover: none) and (pointer: coarse)";
 const GRID_CELL_WIDTH = 7;
 const GRID_CELL_HEIGHT = 19;
 const PORTAL_SESSION_COLUMN_RATIO = 0.24;
@@ -9959,6 +9962,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY);
+    const touchKeyboard = useMediaQuery(TOUCH_KEYBOARD_MEDIA_QUERY);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
@@ -10239,9 +10243,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             value: promptState.value,
             readOnly: selectedReadOnly,
             placeholder,
-            // On touch, Enter inserts a newline (the chevron sends) — the
-            // keyboard must not advertise a send that will not happen.
-            enterKeyHint: mobile ? "enter" : "send",
+            // On a touch keyboard, Enter inserts a newline (the button sends) —
+            // the keyboard must not advertise a send that will not happen.
+            enterKeyHint: touchKeyboard ? "enter" : "send",
             onFocus: () => controller.setFocus("prompt"),
             onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
@@ -10289,7 +10293,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     cancelPending();
                     return;
                 }
-                if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !mobile) {
+                if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !touchKeyboard) {
                     event.preventDefault();
                     sendPrompt();
                 }

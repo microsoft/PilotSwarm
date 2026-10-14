@@ -636,7 +636,7 @@ as your app's portal.
 | New session | **New** button (top-left) |
 | Switch session | Click in list |
 | Previous / next view (desktop) | **Back / Forward** arrows between Filter and Canvas, or compact arrows beside the exit/restore control when chrome is hidden; `Alt+-` / `Alt++` on Windows, `Option+-` / `Option++` on macOS. Works in the composer and preserves drafts; other text fields and open dialogs retain their keys. |
-| Send prompt | Type, press `Enter` (Shift+Enter for newline) |
+| Send prompt | Type, press `Enter` (Shift+Enter for newline). With a physical keyboard this works at every window width; on a touch keyboard the return key adds a line, so tap the Send button |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
 | Steer the running turn | `↪` button between Stop and Send (needs the `sessions.steering` feature); sends the composer text as guidance for the running turn. Phone: tap the blue `↪` button; hold it for **Steer now** or **Queue** |
 | Steer queued messages | Empty box: `↪ N` steers every queued message. Desktop: select one with `↑` or a click on its line, then `↪` steers it and `✕` deletes it |

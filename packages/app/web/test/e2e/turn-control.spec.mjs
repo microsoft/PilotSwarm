@@ -773,6 +773,12 @@ for (const theme of THEMES) {
         await expect(wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${seq}"]`)).toHaveAttribute("data-outcome", "delivered");
         await expect(rows.item).toHaveCount(1);
         await shot(page, `composer-desktop-delivered-${theme.name}`);
+        // The turn is then stopped: the read steer is discarded (D10) and the message is queued again, once.
+        wire.event("session.control_outcome", { seq, turn: 3, outcome: "not_delivered" });
+        const back = rows.item.filter({ hasText: "also cover MotherDuck" });
+        await expect(back).toHaveAttribute("data-phase", "queued");
+        await expect(back.getByTestId("queued-notice")).toHaveText("The turn was stopped, so the steer was discarded. Still queued; it runs next.");
+        await shot(page, `composer-desktop-stopped-after-read-${theme.name}`);
         expect(wire.state.sends).toHaveLength(2);
     });
 
@@ -1057,6 +1063,55 @@ test("phone 390x844, keyboard: Enter steers; ArrowUp opens the menu on Steer now
     await expect(wire.input).toBeFocused();
     await expect(wire.input).toHaveValue("escape keeps the text");
     expect(wire.state.steers).toHaveLength(1);
+});
+
+// Enter is decided by the input, not the width: with a physical keyboard
+// (a fine pointer) Enter sends and Shift+Enter adds a line at every width;
+// a touch keyboard's return key adds a line and the button sends.
+test("narrow desktop 700x800 with a keyboard: Shift+Enter adds a line, Enter sends", async ({ page }) => {
+    await page.setViewportSize({ width: 700, height: 800 });
+    const wire = await open(page, { detail: { status: "idle", acceptsTurnControl: false, activeTurnIndex: null } });
+    await wire.input.fill("first line");
+    await wire.input.press("Shift+Enter");
+    await wire.input.pressSequentially("second line");
+    await expect(wire.input).toHaveValue("first line\nsecond line");
+    expect(wire.state.sends).toHaveLength(0);
+    await wire.input.press("Enter");
+    await expect.poll(() => wire.state.sends.length).toBe(1);
+    expect(wire.state.sends[0].prompt).toBe("first line\nsecond line");
+    await expect(wire.input).toHaveValue("");
+    await shot(page, "composer-desktop-700-enter-sent");
+});
+
+test("phone-width Zen 390x844 with a keyboard (fine pointer): Enter sends", async ({ page }) => {
+    const { wire } = await openPhoneView(page, "zen", { viewport: PHONES[0] });
+    await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+    await expect(wire.sendButton).toHaveAttribute("data-action", "send");
+    await expect(wire.input).toHaveAttribute("enterkeyhint", "send");
+    await wire.input.fill("sent with the Enter key");
+    await wire.input.press("Enter");
+    await expect.poll(() => wire.state.sends.length).toBe(1);
+    await expect(wire.input).toHaveValue("");
+});
+
+test("phone with a touch keyboard (390x844, touch, mobile): Enter adds a line; the button sends", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: PHONES[0], isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    try {
+        const { wire } = await openPhoneView(page, "chat", { viewport: PHONES[0] });
+        await wire.setDetail({ status: "idle", acceptsTurnControl: false, activeTurnIndex: null });
+        await expect(wire.sendButton).toHaveAttribute("data-action", "send");
+        await expect(wire.input).toHaveAttribute("enterkeyhint", "enter");
+        await wire.input.fill("first line");
+        await wire.input.press("Enter");
+        await wire.input.pressSequentially("second line");
+        await expect(wire.input).toHaveValue("first line\nsecond line");
+        expect(wire.state.sends).toHaveLength(0);
+        await wire.sendButton.tap();
+        await expect.poll(() => wire.state.sends.length).toBe(1);
+    } finally {
+        await context.close();
+    }
 });
 
 // The hold menu, in Chromium and WebKit: hold the blue button about 0.45 s

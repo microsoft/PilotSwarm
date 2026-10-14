@@ -427,7 +427,25 @@ test("once the model has read the converted steer, its line leaves the strip; a 
     // The turn is then stopped: the steer is not delivered and the message is queued again.
     h.event("session.control_outcome", { seq: 70, turn: 2, outcome: "not_delivered" }, 81);
     assert.equal(h.item(x.id).phase, "queued");
-    assert.equal(h.block(x.id).notice, "Could not steer: the turn ended before the agent read it. Still queued.");
+    assert.equal(h.block(x.id).notice, "The turn was stopped, so the steer was discarded. Still queued; it runs next.");
+});
+
+test("not delivered after the model read the steer (the turn was stopped): the notice says the steer was discarded; never read: the turn ended first", async () => {
+    const read = harness();
+    const x = read.queue();
+    await read.controller.convertQueuedToSteer(SID, x.id);
+    read.event("session.steer_confirmed", { seq: 70, turn: 2, messageId: "m-1" }, 80);
+    read.event("session.control_outcome", { seq: 70, turn: 2, outcome: "not_delivered" }, 81);
+    assert.equal(read.item(x.id).phase, "queued");
+    assert.equal(read.block(x.id).notice, "The turn was stopped, so the steer was discarded. Still queued; it runs next.");
+    const flat = selectOutboxOverlayLines(read.store.getState(), 120).map((line) => line.map((run) => run.text).join("")).join("\n");
+    assert.match(flat, /The turn was stopped, so the steer was discarded\. Still queued; it runs next\./);
+
+    const unread = harness();
+    const y = unread.queue();
+    await unread.controller.convertQueuedToSteer(SID, y.id);
+    unread.event("session.control_outcome", { seq: 70, turn: 2, outcome: "not_delivered" }, 81);
+    assert.equal(unread.block(y.id).notice, "Could not steer: the turn ended before the agent read it. Still queued.");
 });
 
 test("a confirmation already loaded when the steer is accepted takes the line out at once", async () => {

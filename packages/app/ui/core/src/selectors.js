@@ -3755,6 +3755,7 @@ const CONVERT_NOTICE_REASONS = {
 export function formatConvertNotice(notice) {
     if (!notice?.reason) return null;
     if (notice.reason === "already_received") return "Could not steer: the agent already has this message.";
+    if (notice.reason === "stopped_after_read") return "The turn was stopped, so the steer was discarded. Still queued; it runs next.";
     const reason = CONVERT_NOTICE_REASONS[notice.reason] || notice.detail || "the steer failed";
     return `Could not steer: ${reason}. Still queued.`;
 }
