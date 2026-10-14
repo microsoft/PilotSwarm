@@ -10,9 +10,9 @@
  *   <root>/remotes/<repo>.git    bare, owned by the service, mode 0755
  *
  * Rules on push, in the sandbox's pre-receive hook (section 5.4): no branch
- * deletion, no push to a protected branch (main, master, release/*), no
- * non-fast-forward update. The service itself keeps the protected branches
- * equal to the mirror, with a local fetch that no hook sees.
+ * deletion, no push to a protected branch (the default branch, main, master,
+ * release/*), no non-fast-forward update. The service itself keeps the
+ * protected branches equal to the mirror, with a local fetch that no hook sees.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -30,13 +30,14 @@ export const SANDBOX_PROTECTED = ["main", "master"];
 function preReceiveScript() {
     return `#!/bin/sh
 status=0
+default_ref=$(git symbolic-ref HEAD 2>/dev/null || true)
 while read old new ref; do
     case "$new" in
         *[!0]*) ;;
         *) echo "${SANDBOX_PRE_RECEIVE_MESSAGES.deletion}: $ref" >&2; status=1; continue ;;
     esac
     case "$ref" in
-        refs/heads/main|refs/heads/master|refs/heads/release/*)
+        refs/heads/main|refs/heads/master|refs/heads/release/*|"$default_ref")
             echo "${SANDBOX_PRE_RECEIVE_MESSAGES.protectedBranch}: $ref" >&2; status=1; continue ;;
     esac
     case "$old" in
@@ -94,6 +95,16 @@ export function createSandboxRemotes(options) {
     const remotesDir = path.join(path.resolve(options.root), "remotes");
     const prefix = options.urlPrefix ?? "/git/";
     const sandboxPath = (repo) => path.join(remotesDir, `${repo}.git`);
+    const mirrorHead = async (mirror) => {
+        const head = await options.runGit(["-C", mirror, "symbolic-ref", "HEAD"]);
+        if (!head.startsWith("refs/heads/")) throw new Error(`mirror HEAD is not a branch: ${head}`);
+        return head;
+    };
+    const followMirrorHead = async (target, mirror, head = undefined) => {
+        const next = head ?? await mirrorHead(mirror);
+        await options.runGit(["-C", target, "show-ref", "--verify", "--hash", next]);
+        await options.runGit(["-C", target, "symbolic-ref", "HEAD", next]);
+    };
 
     /** Makes the sandbox if it is not there: bare, the hook, and every branch and tag of the mirror. */
     async function ensure(repo, mirror) {
@@ -105,8 +116,7 @@ export function createSandboxRemotes(options) {
             await options.runGit(["-C", target, "config", "receive.denyDeletes", "true"]);
             await options.runGit(["-C", target, "config", "receive.denyNonFastForwards", "true"]);
             await options.runGit(["-C", target, "fetch", "-q", mirror, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
-            const head = await options.runGit(["-C", mirror, "symbolic-ref", "HEAD"]).catch(() => "");
-            if (head) await options.runGit(["-C", target, "symbolic-ref", "HEAD", head]);
+            await followMirrorHead(target, mirror);
         }
         const hook = path.join(target, "hooks", "pre-receive");
         fs.mkdirSync(path.dirname(hook), { recursive: true });
@@ -119,10 +129,14 @@ export function createSandboxRemotes(options) {
     async function syncFromMirror(repo, mirror) {
         const target = sandboxPath(repo);
         if (!fs.existsSync(target)) return;
+        const head = await mirrorHead(mirror);
+        const defaultBranch = head.slice("refs/heads/".length);
         const branches = (await options.runGit(["-C", mirror, "for-each-ref", "--format=%(refname:short)", "refs/heads/"]))
-            .split("\n").map((line) => line.trim()).filter((name) => SANDBOX_PROTECTED.includes(name) || name.startsWith("release/"));
+            .split("\n").map((line) => line.trim())
+            .filter((name) => name === defaultBranch || SANDBOX_PROTECTED.includes(name) || name.startsWith("release/"));
         const refspecs = [...branches.map((name) => `+refs/heads/${name}:refs/heads/${name}`), "+refs/tags/*:refs/tags/*"];
         await options.runGit(["-C", target, "fetch", "-q", mirror, ...refspecs]);
+        await followMirrorHead(target, mirror, head);
     }
 
     /**

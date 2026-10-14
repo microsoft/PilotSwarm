@@ -209,6 +209,8 @@ export function createRepoService(options) {
     const entryTtlMs = options.entryTtlMs ?? DEFAULT_ENTRY_TTL_MS;
     const now = options.now ?? (() => Date.now());
     const runGit = options.runGit ?? defaultRunGit;
+    const scheduleTimeout = options.setTimeout ?? setTimeout;
+    const cancelTimeout = options.clearTimeout ?? clearTimeout;
     const isWorkerAlive = options.isWorkerAlive ?? (() => true);
     const stateFile = options.stateFile ?? null;
     // Sandbox remotes get tokens from this service: random, short-lived, in
@@ -347,9 +349,16 @@ export function createRepoService(options) {
      * names a missing branch checks out nothing.
      */
     async function followUpstreamHead(mirror) {
-        const symref = await runGit(["-C", mirror, "ls-remote", "--symref", "origin", "HEAD"]).catch(() => "");
+        const symref = await runGit(["-C", mirror, "ls-remote", "--symref", "origin", "HEAD"]);
         const match = /^ref:\s+(refs\/heads\/\S+)\s+HEAD/m.exec(symref);
-        if (match) await runGit(["-C", mirror, "symbolic-ref", "HEAD", match[1]]);
+        if (!match) throw new Error(`upstream did not advertise a symbolic HEAD for ${mirror}`);
+        try {
+            await runGit(["-C", mirror, "show-ref", "--verify", "--hash", match[1]]);
+        } catch {
+            await runGit(["-C", mirror, "fetch", "-q", "origin", `+${match[1]}:${match[1]}`]);
+            await runGit(["-C", mirror, "show-ref", "--verify", "--hash", match[1]]);
+        }
+        await runGit(["-C", mirror, "symbolic-ref", "HEAD", match[1]]);
     }
 
     /**
@@ -711,6 +720,7 @@ export function createRepoService(options) {
             repoConfig(repo);
             const mirror = await ensureMirror(repo);
             await runGit(["-C", mirror, "fetch", "-q", "--prune", "origin"]);
+            await followUpstreamHead(mirror);
             return { fetched: true };
         },
 
@@ -761,6 +771,7 @@ export function createRepoService(options) {
             const mirror = mirrorPath(repo);
             if (!fs.existsSync(mirror)) continue;
             await runGit(["-C", mirror, "fetch", "-q", "--prune", "origin"]);
+            await followUpstreamHead(mirror);
             if (config?.sandbox) await sandboxes.syncFromMirror(repo, mirror);
         }
     }
@@ -786,8 +797,24 @@ export function createRepoService(options) {
     });
 
     let refreshTimer = null;
+    let refreshIntervalMs = 0;
     let idleTimer = null;
     let idlePassRunning = false;
+    const scheduleRefresh = (log) => {
+        refreshTimer = scheduleTimeout(async () => {
+            refreshTimer = null;
+            try {
+                await refresh();
+            } catch (error) {
+                log(`[repo-service] refresh failed: ${error?.message ?? error}`);
+            } finally {
+                if (refreshIntervalMs > 0) {
+                    scheduleRefresh(log);
+                }
+            }
+        }, refreshIntervalMs);
+        refreshTimer.unref?.();
+    };
     return {
         server,
         prepare,
@@ -795,9 +822,9 @@ export function createRepoService(options) {
         removeIdleClones,
         /** Refreshes every `intervalMs` in the background; errors are logged, not thrown. */
         startRefresh(intervalMs, log = console.error) {
-            if (refreshTimer || !(intervalMs > 0)) return;
-            refreshTimer = setInterval(() => { refresh().catch((error) => log(`[repo-service] refresh failed: ${error?.message ?? error}`)); }, intervalMs);
-            refreshTimer.unref?.();
+            if (refreshIntervalMs > 0 || !(intervalMs > 0)) return;
+            refreshIntervalMs = intervalMs;
+            scheduleRefresh(log);
         },
         /** Runs the idle pass every `intervalMs` in the background; off when idleCloneMs is 0. */
         startIdleCleanup(intervalMs = idleCheckIntervalMs(idleCloneMs)) {
@@ -824,7 +851,8 @@ export function createRepoService(options) {
             return `http://${address.address}:${address.port}`;
         },
         async close() {
-            if (refreshTimer) clearInterval(refreshTimer);
+            refreshIntervalMs = 0;
+            if (refreshTimer) cancelTimeout(refreshTimer);
             refreshTimer = null;
             if (idleTimer) clearInterval(idleTimer);
             idleTimer = null;
