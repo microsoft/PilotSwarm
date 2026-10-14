@@ -51,7 +51,29 @@ for (const themeId of ['terminal-green', 'win95', 'winamp', 'ms-dos']) {
                 const actual = await geometry();
                 for (const key of Object.keys(expected)) expect(Math.abs(actual[key] - expected[key]), key).toBeLessThan(1);
             };
+            // Phones (<= 600 px): while Stop shows, the turn state and the
+            // actions take their own row under the input (owner decision A).
+            // The composer then grows by exactly that row and the transcript
+            // and footer move up by it; the footer itself does not change.
+            const composerRows = () => page.locator('.ps-prompt-shell').evaluate(shell => {
+                const style = getComputedStyle(shell);
+                return { rows: style.gridTemplateRows.split(' ').map(parseFloat), gap: parseFloat(style.rowGap) || 0 };
+            });
+            const assertOneActionRowTaller = async (idleGeometry, idleRows) => {
+                const running = await composerRows();
+                expect(idleRows.rows).toHaveLength(1);
+                expect(running.rows).toHaveLength(2);
+                expect(Math.abs(running.rows[0] - idleRows.rows[0]), 'input row').toBeLessThan(1);
+                const row = running.rows[1] + running.gap;
+                const actual = await geometry();
+                expect(Math.abs(idleGeometry.transcriptBottom - actual.transcriptBottom - row), 'transcriptBottom').toBeLessThan(1);
+                expect(Math.abs(idleGeometry.footerTop - actual.footerTop - row), 'footerTop').toBeLessThan(1);
+                expect(Math.abs(actual.footerHeight - idleGeometry.footerHeight), 'footerHeight').toBeLessThan(1);
+                const shellBox = await page.locator('.ps-prompt-shell').boundingBox();
+                expect((await input.boundingBox()).width / shellBox.width, 'input width share').toBeGreaterThanOrEqual(0.7);
+            };
             const idle = await geometry();
+            const idleRows = await composerRows();
             await expect(stop).toHaveCount(0);
             await update({ status: 'running', statusVersion: 5, updatedAt: T0 + 5000 });
             await expect(footer).not.toContainText('Working');
@@ -60,13 +82,15 @@ for (const themeId of ['terminal-green', 'win95', 'winamp', 'ms-dos']) {
             await update({ status: 'running', statusVersion: 7, updatedAt: T0 + 1000 });
             await expect(footer).toContainText('Working');
             await expect(stop).toBeVisible();
-            await assertSame(idle);
+            await assertOneActionRowTaller(idle, idleRows);
+            const running = await geometry();
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 2000 });
             await expect(footer).not.toContainText('Working');
             await expect(stop).toHaveCount(0);
             await assertSame(idle);
             await update({ status: 'running', statusVersion: 9, updatedAt: T0 + 3000 });
             await expect(stop).toBeVisible();
+            await assertSame(running);
             await input.fill('Preserve this queued prompt');
             await chat.getByRole('button', { name: 'Send prompt', exact: true }).click();
             await page.clock.runFor(100);

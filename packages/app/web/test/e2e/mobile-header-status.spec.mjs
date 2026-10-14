@@ -77,7 +77,28 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
                 const actual = await geometry();
                 for (const key of Object.keys(expected)) expect(Math.abs(actual[key] - expected[key]), key).toBeLessThan(1);
             };
+            // Phones (<= 600 px): while Stop shows, the turn state and the
+            // actions take their own row under the input (owner decision A).
+            // The composer then grows by exactly that row; the input row and
+            // the header do not move.
+            const composerRows = () => surface.locator('.ps-prompt-shell').evaluate(shell => {
+                const style = getComputedStyle(shell);
+                return { rows: style.gridTemplateRows.split(' ').map(parseFloat), gap: parseFloat(style.rowGap) || 0 };
+            });
+            const assertOneActionRowTaller = async (idleGeometry, idleRows) => {
+                const running = await composerRows();
+                expect(idleRows.rows).toHaveLength(1);
+                expect(running.rows).toHaveLength(2);
+                expect(Math.abs(running.rows[0] - idleRows.rows[0]), 'input row').toBeLessThan(1);
+                const actual = await geometry();
+                expect(Math.abs(idleGeometry.transcriptBottom - actual.transcriptBottom - (running.rows[1] + running.gap)), 'one action row').toBeLessThan(1);
+                expect(Math.abs(actual.headerTop - idleGeometry.headerTop), 'headerTop').toBeLessThan(1);
+                expect(Math.abs(actual.headerHeight - idleGeometry.headerHeight), 'headerHeight').toBeLessThan(1);
+                const shellBox = await surface.locator('.ps-prompt-shell').boundingBox();
+                expect((await input.boundingBox()).width / shellBox.width, 'input width share').toBeGreaterThanOrEqual(0.7);
+            };
             const idle = await geometry();
+            const idleRows = await composerRows();
             await expect(stop).toHaveCount(0);
             await expect(chat.locator('.ps-panel-bottom-sticky')).toHaveCount(0);
             await update({ status: 'running', statusVersion: 5, updatedAt: T0 + 5000 });
@@ -87,7 +108,8 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await update({ status: 'running', statusVersion: 7, updatedAt: T0 + 1000 });
             await expect(footer).toContainText('Working');
             await expect(stop).toBeEnabled();
-            await assertSame(idle);
+            await assertOneActionRowTaller(idle, idleRows);
+            const running = await geometry();
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 2000 });
             await expect(footer).not.toContainText('Working');
             await expect(stop).toHaveCount(0);
@@ -95,13 +117,15 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await assertSame(idle);
             await update({ status: 'running', statusVersion: 9, updatedAt: T0 + 3000 });
             await expect(footer).toContainText('Working');
+            await expect(stop).toBeEnabled();
+            await assertSame(running);
             await input.fill('Preserve this queued prompt');
             await surface.getByRole('button', { name: 'Send prompt', exact: true }).click();
             await page.clock.runFor(100);
             await expect.poll(() => sends).toBe(1);
             await expect(chat).toContainText('Preserve this queued prompt');
             await expect(footer).toContainText('1 queued');
-            await assertSame(idle);
+            await assertSame(running);
             expect(await chat.getByText(/Preserve this queued prompt/).count()).toBe(1);
             const queued = await geometry();
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 9000 });
@@ -123,7 +147,9 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             const sendBox = await surface.locator('.ps-send-button').boundingBox();
             expect(stopBox.width).toBeGreaterThanOrEqual(44);
             expect(stopBox.height).toBeGreaterThanOrEqual(44);
-            expect(inputBox.x + inputBox.width).toBeLessThanOrEqual(stopBox.x);
+            // The controls have their own row under the input.
+            expect(inputBox.y + inputBox.height).toBeLessThanOrEqual(stopBox.y);
+            expect(Math.abs((sendBox.y + sendBox.height / 2) - (stopBox.y + stopBox.height / 2))).toBeLessThan(2);
             expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(sendBox.x);
             expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(320);
             expect(stopBox.y + stopBox.height).toBeLessThanOrEqual(400);

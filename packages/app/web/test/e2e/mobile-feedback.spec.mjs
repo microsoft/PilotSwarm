@@ -17,8 +17,10 @@ for (const browserName of ['chromium', 'webkit']) {
  const maximize=page.locator('.ps-chat-panel').getByRole('button',{name:'Enter mobile zen'});
  await expect(maximize).toBeVisible();
  await expect(page.locator('.ps-toolbar').getByRole('button',{name:'Enter mobile zen'})).toHaveCount(0);
- const label=await page.locator('.ps-prompt-label').boundingBox(), input=await page.locator('.ps-prompt-input').boundingBox();
- expect(Math.abs(label.y+label.height/2-input.y-input.height/2)).toBeLessThan(2);
+ // One layout read: the turn chip can change phase between two separate
+ // reads, and a running turn moves the input up one action row on phones.
+ const centres=await page.evaluate(()=>[".ps-prompt-label",".ps-prompt-input"].map(s=>{const r=document.querySelector(s).getBoundingClientRect();return r.y+r.height/2;}));
+ expect(Math.abs(centres[0]-centres[1])).toBeLessThan(2);
  const status=await page.locator('.ps-chat-panel .ps-panel-title-right').boundingBox();
  expect((await maximize.boundingBox()).x).toBeGreaterThanOrEqual(status.x+status.width);
  const main=page.getByRole('button',{name:'Sessions — list and chat (tap for chat only)',exact:true});

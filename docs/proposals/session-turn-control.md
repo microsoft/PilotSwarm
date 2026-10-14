@@ -1703,6 +1703,7 @@ All decisions are decided by the owner.
 | D4 | Sessions without a session store | today's crash behaviour; no crash guarantee for steers |
 | D5 | A Stop that arrives after the turn finished | answered "too late", and it cancels any carried steers |
 | D6 | A carried steer whose consuming turn ends stopped | option A: it is not run again; its outcome stays `carried`; clients show "Carried, then stopped" (2026-10-13) |
+| D7 | Phone composer (viewport 600 px or less) while a turn runs | option A: the turn state, Stop, Steer and Send take their own row under the input, so the composer is exactly one action row taller than when idle. Nothing moves within a phase. The input keeps at least 70% of the composer width while Stop shows, and the controls fit on their row at 320 x 400 (2026-10-14) |
 
 ### 8.2 Checks
 
