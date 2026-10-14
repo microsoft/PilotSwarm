@@ -3686,7 +3686,6 @@ body.is-resizing-pane-y iframe {
   cursor: progress;
   opacity: 0.85;
 }
-.ps-send-spinner { font-family: var(--ps-font-mono, monospace); }
 
 /* Queued messages of the composer's session, with Steer now and Cancel. */
 .ps-queued-actions {
