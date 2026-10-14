@@ -5467,7 +5467,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Use a one-shot CopilotSession to generate the title.
             // Prefer the default provider from the registry (works without GitHub token).
             const defaultProvider = sessionManager.resolveDefaultProvider();
-            const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider);
+            const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry

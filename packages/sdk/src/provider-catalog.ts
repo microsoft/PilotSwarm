@@ -421,13 +421,15 @@ export function resolveProviderCredential(
         ? credential.secretRef.apiVersion
         : type.apiVersion;
     // A model may set its own request format; the type's value is the fallback.
-    const wireApi = effectiveWireApi(type, types.getDescriptor(`${type.id}:${modelName}`));
+    const descriptor = types.getDescriptor(`${type.id}:${modelName}`);
+    const wireApi = effectiveWireApi(type, descriptor);
 
     return {
         providerId: credential.name,
         type: type.type,
         modelName,
         ...(workloadIdentity ? { usesWorkloadIdentity: true } : {}),
+        ...(descriptor?.toolCatalog ? { toolCatalog: descriptor.toolCatalog } : {}),
         sdkProvider: {
             type: sdkType,
             baseUrl: sdkType === "azure" ? `${baseUrl.replace(/\/$/, "")}/deployments/${modelName}` : baseUrl,

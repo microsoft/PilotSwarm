@@ -72,6 +72,12 @@ export interface ModelEntry {
      * on "completions".
      */
     wireApi?: "completions" | "responses";
+    toolCatalog?: ToolCatalogCapability;
+}
+
+export interface ToolCatalogCapability {
+    maxDeclarations: number;
+    overflowStrategy: "typed-dispatch";
 }
 
 /** What a BYOK model accepts when it can see images. Limits are optional. */
@@ -213,6 +219,7 @@ export interface ModelDescriptor {
     vision?: ModelVisionCapability;
     /** The model's own request format — see ModelEntry.wireApi. */
     wireApi?: "completions" | "responses";
+    toolCatalog?: ToolCatalogCapability;
 }
 
 /** Resolved provider info for a specific model — ready to use. */
@@ -234,6 +241,7 @@ export interface ResolvedProvider {
      * loggable.
      */
     usesWorkloadIdentity?: boolean;
+    toolCatalog?: ToolCatalogCapability;
     /**
      * Copilot SDK ProviderConfig — passed to SessionConfig.provider.
      * Undefined for type=github (uses githubToken instead).
@@ -254,6 +262,20 @@ export interface ResolvedProvider {
 // ─── Request format ──────────────────────────────────────────────
 
 const WIRE_APIS = new Set(["completions", "responses"]);
+
+export function normalizeToolCatalog(value: unknown, label = "model"): ToolCatalogCapability | undefined {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`Invalid toolCatalog on ${label}: expected an object.`);
+    }
+    const config = value as Record<string, unknown>;
+    if (!Number.isSafeInteger(config.maxDeclarations) || (config.maxDeclarations as number) < 1
+        || config.overflowStrategy !== "typed-dispatch"
+        || Object.keys(config).some(key => key !== "maxDeclarations" && key !== "overflowStrategy")) {
+        throw new Error(`Invalid toolCatalog on ${label}: use a positive integer maxDeclarations and overflowStrategy "typed-dispatch".`);
+    }
+    return { maxDeclarations: config.maxDeclarations as number, overflowStrategy: "typed-dispatch" };
+}
 
 /**
  * The request format for one model. The model's own `wireApi` wins, then the
@@ -354,6 +376,11 @@ export class ModelProviderRegistry {
                 const contextWindowSizes = normalizeContextWindowSizes(entry.contextWindowSizes, supportedContextTiers);
                 const qualified = `${p.id}:${entry.name}`;
                 if (entry.wireApi !== undefined) validateModelWireApi(p, qualified, entry.wireApi);
+                const toolCatalog = normalizeToolCatalog(entry.toolCatalog, qualified);
+                if (toolCatalog && (!["openai", "azure"].includes(toSdkProviderType(p.type))
+                    || ![undefined, "completions"].includes(effectiveWireApi(p, entry)))) {
+                    throw new Error(`Invalid toolCatalog on ${qualified}: typed-dispatch requires an OpenAI-compatible Chat Completions endpoint.`);
+                }
                 const desc: ModelDescriptor = {
                     qualifiedName: qualified,
                     modelName: entry.name,
@@ -368,6 +395,7 @@ export class ModelProviderRegistry {
                     ...(Object.keys(contextWindowSizes).length > 0 ? { contextWindowSizes } : {}),
                     ...(entry.vision ? { vision: entry.vision } : {}),
                     ...(entry.wireApi !== undefined ? { wireApi: entry.wireApi } : {}),
+                    ...(toolCatalog ? { toolCatalog } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
@@ -468,6 +496,7 @@ export class ModelProviderRegistry {
             type: provider.type,
             modelName: desc.modelName,
             ...(usesWorkloadIdentity ? { usesWorkloadIdentity: true } : {}),
+            ...(desc.toolCatalog ? { toolCatalog: desc.toolCatalog } : {}),
             sdkProvider: {
                 type: sdkProviderType,
                 baseUrl: resolvedUrl,

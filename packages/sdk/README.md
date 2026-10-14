@@ -47,6 +47,26 @@ capabilities, load only the guidance they need, and attach selected permitted
 tools or MCP servers at the next turn boundary. Existing sessions retain the V1
 framework unless the feature is enabled, and Base V2 requires native tasks.
 
+The `model-router` deployment rejects Chat Completions requests containing more
+than 128 tool declarations. Only when the outgoing request's `model` is exactly
+`model-router`, PilotSwarm keeps 127 declarations direct and groups the overflow
+functions into one typed dispatch schema. Other model or deployment names keep
+their original catalogs, even above 128 tools; aliases do not opt in implicitly.
+Every grouped function keeps its description and argument schema; returned calls
+are restored to their original names, arguments and IDs before runtime permission
+hooks and handlers. This is a wire-format adaptation, not tool removal or another
+agent/model turn. The check runs per request, including after a session resumes
+or switches models. The existing BYOK `snippy` cleanup is unchanged.
+
+Forced tool choices, strict functions, document-relative schema references and
+unrecognized tool options stay direct. Restricted or unsupported tool-choice
+lists are not rewritten. If the limit cannot be met without changing those
+contracts, the request fails before transport rather than weakening schemas.
+Catalogs at or below the limit,
+GitHub Copilot, Anthropic and Responses transports are unchanged. Tool-call
+fragments are buffered until complete, while ordinary response text still streams.
+Grouping does not reduce the catalog's token footprint or enlarge model context.
+
 Artifact note:
 
 - `write_artifact` remains the standard way for agents to create downloadable files.
