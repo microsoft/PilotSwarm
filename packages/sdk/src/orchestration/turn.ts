@@ -74,6 +74,10 @@ interface RetryContext {
     requiredTool?: string;
     turnSystemPrompt?: string;
     cycleOrigin?: "cron" | "cron_at";
+    /** 1.0.81: the prompt's envelope, kept for its retry: client message ids, sender, images. */
+    clientMessageIds?: string[];
+    sender?: MessageSender;
+    attachments?: PromptAttachmentRef[];
     /** Phase tag stamped on emitted lossy_handoff / dehydrate events. */
     phase: "runTurn.throw" | "turn.result.error";
 }
@@ -198,12 +202,22 @@ function* handleConnectionClosedRetry(
     state.retryCount = 0;
 }
 
+/** 1.0.81: the retried prompt keeps its client message ids, sender and images. */
+function promptEnvelope(rc: RetryContext): Partial<OrchestrationInput> {
+    return {
+        ...(rc.clientMessageIds?.length ? { clientMessageIds: rc.clientMessageIds } : {}),
+        ...(rc.sender ? { sender: rc.sender } : {}),
+        ...(rc.attachments?.length ? { attachments: rc.attachments } : {}),
+    };
+}
+
 function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: RetryContext): Partial<OrchestrationInput> {
     if (rc.phase === "turn.result.error") {
         return {
             prompt: rc.sourcePrompt,
             ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
             ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
+            ...promptEnvelope(rc),
             retryCount: state.retryCount,
             needsHydration: state.needsHydration,
         };
@@ -220,6 +234,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
         ...(rc.systemOnlyTurn ? { bootstrapPrompt: true } : {}),
         ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
         ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
+        ...promptEnvelope(rc),
         retryCount: state.retryCount,
         needsHydration: state.needsHydration,
         // 1.0.81: only the retry of a thrown turn carries its key.
@@ -614,6 +629,9 @@ export function* processPrompt(
             requiredTool,
             cycleOrigin,
             turnSystemPrompt,
+            clientMessageIds,
+            sender,
+            attachments,
             phase: "runTurn.throw",
         };
 
@@ -1587,6 +1605,9 @@ export function* handleTurnResult(
                 systemOnlyTurn: false,
                 requiredTool,
                 cycleOrigin,
+                clientMessageIds,
+                sender,
+                attachments,
                 phase: "turn.result.error",
             };
 

@@ -626,7 +626,8 @@ export class HttpApiTransport {
 
     // ── Streaming ───────────────────────────────────────────────────────
 
-    subscribeSession(sessionId, handler) {
+    /** `onResubscribe` (optional) runs after a reconnect, to read events missed during the gap. */
+    subscribeSession(sessionId, handler, onResubscribe) {
         // The canvas data plane rides the SAME subscription: plane pushes
         // (patch pings off the database's NOTIFY) are mirrored into complete
         // `session.canvas_data`-shaped events, so every consumer keeps its
@@ -674,7 +675,7 @@ export class HttpApiTransport {
             }
             handler(event);
         };
-        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped);
+        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, onResubscribe);
         const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
             if (message?.kind === "kv") {
                 // A KV change: not part of the tick mirror (per-key rev, not

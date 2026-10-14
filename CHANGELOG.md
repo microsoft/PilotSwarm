@@ -24,6 +24,14 @@ with one outcome, shown in the portal and TUI transcripts.
   running turn (queued for its next turn when it cannot be steered), and the
   new `stop_agent_turn` stops a sub-agent's current turn without ending it.
   The child's transcript names the parent agent on those items.
+- A sent message no longer stays shown as queued. The portal and TUI clear a
+  queued item from its receipt also when the receipt was already loaded, came
+  in a MoA panel's history or arrived during a reconnect gap; a queued item
+  still waiting after 10 s gets one exact re-read; a resend the server
+  suppressed as a duplicate re-checks; one failing store listener no longer
+  stops the others. The retry of a failed turn keeps the prompt's client
+  message ids, sender and images (orchestration 1.0.81). A second submit during an image upload
+  no longer sends the message twice.
 
 ## 0.8.2 — 2026-10-04
 

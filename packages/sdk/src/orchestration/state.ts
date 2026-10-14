@@ -1,5 +1,5 @@
 import { sanitizePromptAttachmentRefs } from "../types.js";
-import type { MessageSender } from "../message-sender.js";
+import { normalizeMessageSender, type MessageSender } from "../message-sender.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { RegenState, PendingEpochCommit } from "../types.js";
 export type { RegenState, PendingEpochCommit } from "../types.js";
@@ -11,7 +11,7 @@ import type {
     TurnAction,
     LateSteer,
 } from "../types.js";
-import { cloneContextUsage } from "./utils.js";
+import { cloneContextUsage, validClientMessageIds } from "./utils.js";
 
 export interface ActiveTimer {
     deadlineMs: number;
@@ -100,6 +100,9 @@ export interface DurableSessionState {
     pendingPrompt?: string;
     /** Attachment refs for the carried pendingPrompt — dropped silently before 1.0.65's carry fix. */
     pendingAttachments?: import("../types.js").PromptAttachmentRef[];
+    /** 1.0.81: the client message ids and sender of the carried pendingPrompt. */
+    pendingClientMessageIds?: string[];
+    pendingSender?: MessageSender;
     pendingRequiredTool?: string;
     pendingSystemPrompt?: string;
     runtimeModelNotice?: string;
@@ -466,6 +469,10 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         pendingPrompt: input.prompt,
         pendingAttachments: sanitizePromptAttachmentRefs(input.attachments),
+        pendingClientMessageIds: input.prompt && validClientMessageIds(input.clientMessageIds).length > 0
+            ? validClientMessageIds(input.clientMessageIds)
+            : undefined,
+        pendingSender: input.prompt ? normalizeMessageSender(input.sender) : undefined,
         pendingRequiredTool: input.requiredTool,
         pendingSystemPrompt: input.systemPrompt,
         runtimeModelNotice: input.runtimeModelNotice,

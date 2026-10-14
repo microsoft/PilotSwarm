@@ -25,6 +25,20 @@ function createTransport({ responses = [] } = {}) {
     return { transport, calls };
 }
 
+test("session subscription hands the reconnect replay hook to the API client", () => {
+    const { transport } = createTransport();
+    let hook = null;
+    transport.api.subscribeSession = (_sessionId, _handler, onResubscribe) => { hook = onResubscribe; return () => {}; };
+    transport.api.subscribeCanvasLive = () => () => {};
+    transport.api.subscribeLive = () => () => {};
+    const replays = [];
+    const off = transport.subscribeSession("s1", () => {}, () => replays.push("s1"));
+    assert.equal(typeof hook, "function");
+    hook();
+    assert.deepEqual(replays, ["s1"]);
+    off();
+});
+
 test("session subscription forwards native task snapshots transiently and releases both live topics", () => {
     const { transport } = createTransport();
     const callbacks = new Map();

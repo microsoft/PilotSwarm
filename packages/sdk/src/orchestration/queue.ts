@@ -749,19 +749,23 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         const requiredTool = state.pendingRequiredTool;
         const cycleOrigin = state.pendingCycleOrigin;
         const pendingAttachments = state.pendingAttachments;
+        const pendingClientMessageIds = state.pendingClientMessageIds;
+        const pendingSender = state.pendingSender;
         state.pendingPrompt = undefined;
         state.bootstrapPrompt = false;
         state.pendingRequiredTool = undefined;
         state.pendingCycleOrigin = undefined;
         state.pendingAttachments = undefined;
+        state.pendingClientMessageIds = undefined;
+        state.pendingSender = undefined;
         yield* processPrompt(
             runtime,
             prompt,
             isBootstrap,
             requiredTool,
-            undefined,
+            pendingClientMessageIds,
             cycleOrigin,
-            undefined,
+            pendingSender,
             pendingAttachments && pendingAttachments.length > 0 ? pendingAttachments : undefined,
         );
         return true;

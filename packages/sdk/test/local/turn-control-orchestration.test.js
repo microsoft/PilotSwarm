@@ -522,6 +522,72 @@ describe("1.0.81 turn control orchestration", () => {
         });
     });
 
+    describe("a retried prompt keeps its client message ids across continue-as-new", () => {
+        const canInputs = (h) => h.calls.filter((c) => c.effect === "can").map((c) => c.input);
+        const ids = ["cm-1", "cm-2"];
+
+        for (const [name, failure] of [
+            ["a thrown turn", new Error("transient worker failure")],
+            ["a returned error", { type: "error", message: "model failed" }],
+            ["a lost Copilot connection", new Error("Connection is closed.")],
+        ]) {
+            it(`${name}: the retry's runTurn carries the ids`, () => {
+                const h = harness({ blobEnabled: true });
+                h.run(failure, "original prompt", ids);
+                expect(h.turns[0][3].clientMessageIds).toEqual(ids);
+                const [can] = canInputs(h);
+                expect(can).toMatchObject({ prompt: "original prompt", retryCount: 1, clientMessageIds: ids });
+
+                const retry = harness(can);
+                retry.results.push({ type: "completed", content: "done" });
+                retry.drive(decide(retry.runtime));
+                expect(retry.turns[0][0]).toBe("original prompt");
+                expect(retry.turns[0][3].clientMessageIds).toEqual(ids);
+                expect(retry.runtime.state.pendingClientMessageIds).toBeUndefined();
+            });
+        }
+
+        it("the lossy handoff after the connection retries keeps the ids too", () => {
+            let h = harness({ blobEnabled: true });
+            h.run(new Error("Connection is closed."), "original prompt", ids);
+            for (let attempt = 0; attempt < 10; attempt++) {
+                const [can] = canInputs(h);
+                expect(can.clientMessageIds).toEqual(ids);
+                if (can.retryCount === 0) return;
+                h = harness(can);
+                h.results.push(new Error("Connection is closed."));
+                h.drive(decide(h.runtime));
+            }
+            throw new Error("no lossy handoff continue-as-new");
+        });
+
+        it("the retry keeps the whole prompt envelope: ids, sender and images", () => {
+            const sender = { kind: "user", provider: "dev", subject: "alice", display: "Alice" };
+            const attachments = [{ filename: "a.png", contentType: "image/png", sizeBytes: 10 }];
+            const h = harness({ blobEnabled: true });
+            h.results.push(new Error("transient worker failure"));
+            h.drive(processPrompt(h.runtime, "look at this", false, undefined, ids, undefined, sender, attachments));
+            const [can] = canInputs(h);
+            expect(can).toMatchObject({ prompt: "look at this", clientMessageIds: ids, sender, attachments });
+
+            const retry = harness(can);
+            retry.results.push({ type: "completed", content: "done" });
+            retry.drive(decide(retry.runtime));
+            expect(retry.turns[0][3]).toMatchObject({ clientMessageIds: ids, sender, attachments });
+            expect(retry.runtime.state.pendingSender).toBeUndefined();
+        });
+
+        it("a prompt without ids carries none, and a new prompt never inherits carried ids", () => {
+            const h = harness({ blobEnabled: true });
+            h.run(new Error("transient worker failure"), "original prompt");
+            const [can] = canInputs(h);
+            expect(can.clientMessageIds).toBeUndefined();
+            const fresh = harness({ clientMessageIds: ["stale"] });
+            fresh.run({ type: "completed", content: "fresh" }, "a new prompt", ["cm-new"]);
+            expect(fresh.turns[0][3].clientMessageIds).toEqual(["cm-new"]);
+        });
+    });
+
     describe("the retry of a thrown turn keeps its turnKey (no double commit)", () => {
         const keyOf = (turn) => turn[3]?.snapshot?.turnKey;
         const canInputs = (h) => h.calls.filter((c) => c.effect === "can").map((c) => c.input);

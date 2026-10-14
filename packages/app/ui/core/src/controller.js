@@ -97,6 +97,11 @@ const FLEET_STATS_DEFAULT_WINDOW_DAYS = 30;
 const SESSION_REFRESH_FAILED_STATUS = "Session refresh failed";
 const AUTO_HISTORY_SCROLL_PAGE_COUNT = 3;
 const SESSION_REFRESH_PAGE_LIMIT = 200;
+// A queued outbox item still waiting for its receipt after this long gets one
+// re-read of the session's latest receipts (by exact client message id).
+const OUTBOX_RECHECK_MS = 10_000;
+const OUTBOX_RECHECK_LIMIT = 50;
+const OUTBOX_RECEIPT_EVENT_TYPES = ["user.message", "system.message", "pending_messages.cancelled"];
 const FULLSCREENABLE_PANES = new Set([
     FOCUS_REGIONS.SESSIONS,
     FOCUS_REGIONS.CHAT,
@@ -2169,6 +2174,33 @@ export class PilotSwarmUiController {
         return true;
     }
 
+    /**
+     * Self-heal for a queued item whose receipt this controller never saw: one
+     * re-read after OUTBOX_RECHECK_MS while the item is still queued. Bounded:
+     * one timer per dispatched envelope, cleared by stop().
+     */
+    scheduleOutboxRecheck(sessionId, itemId) {
+        if (!this._outboxRecheckTimers) this._outboxRecheckTimers = new Set();
+        const timer = setTimeout(() => {
+            this._outboxRecheckTimers.delete(timer);
+            const item = this.getSessionOutbox(sessionId).find((entry) => entry.id === itemId);
+            if (item?.phase === "queued") this.recheckOutboxReceipts(sessionId).catch(() => {});
+        }, OUTBOX_RECHECK_MS);
+        timer.unref?.();
+        this._outboxRecheckTimers.add(timer);
+    }
+
+    /** Re-read the session's latest receipts and reconcile the outbox by exact client message id. */
+    async recheckOutboxReceipts(sessionId) {
+        if (!sessionId || typeof this.transport.getSessionEventsBefore !== "function") return;
+        const rows = await this.transport.getSessionEventsBefore(
+            sessionId, Number.MAX_SAFE_INTEGER, OUTBOX_RECHECK_LIMIT, OUTBOX_RECEIPT_EVENT_TYPES,
+        );
+        for (const event of Array.isArray(rows) ? rows : []) {
+            this.reconcileOutboxAgainstEvent(sessionId, event, { exact: true });
+        }
+    }
+
     acknowledgeCancelledOutboxPrompt(sessionId, clientMessageIds = []) {
         if (!sessionId) return false;
         const ids = new Set((clientMessageIds || []).filter((id) => typeof id === "string" && id));
@@ -2284,6 +2316,7 @@ export class PilotSwarmUiController {
                 item.id === mergedItem.id ? { ...item, phase: "queued" } : item
             ));
             this.setSessionOutboxItems(sessionId, updated);
+            this.scheduleOutboxRecheck(sessionId, mergedItem.id);
 
             this.syncSessionEvents(sessionId).catch(() => {});
             this.scheduleSessionsRefresh(250);
@@ -2621,6 +2654,8 @@ export class PilotSwarmUiController {
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
         this._liveTurnIdleTimers?.clear();
+        for (const timer of this._outboxRecheckTimers || []) clearTimeout(timer);
+        this._outboxRecheckTimers?.clear();
         if (this.catalogTimer) clearInterval(this.catalogTimer);
         this.catalogTimer = null;
         if (this.activeSessionDetailTimer) clearTimeout(this.activeSessionDetailTimer);
@@ -3016,9 +3051,12 @@ export class PilotSwarmUiController {
             return existingHistory;
         }
         let history = this.getState().history.bySessionId.get(sessionId) || existingHistory;
+        // Events a live update already added are re-reads: exact ids only.
+        const appended = new Set();
         for (const event of newEvents) {
             if (event.seq <= (history.lastSeq || 0)) continue;
             history = appendEventToHistory(history, event);
+            appended.add(event);
         }
         history = {
             ...history,
@@ -3030,7 +3068,7 @@ export class PilotSwarmUiController {
         };
         this.dispatch({ type: "history/set", sessionId, history });
         for (const event of newEvents) {
-            this.reconcileOutboxAgainstEvent(sessionId, event);
+            this.reconcileOutboxAgainstEvent(sessionId, event, { exact: !appended.has(event) });
         }
         const derivedModel = extractSessionModelFromEvents(newEvents);
         const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
@@ -3146,8 +3184,9 @@ export class PilotSwarmUiController {
             // user.message arrived before the page subscribed (e.g., because
             // ensureSessionHistory ran first on attach, or after a force
             // refresh) stays stuck as "queued" or "cancelling" forever.
+            // Historical events: exact client message ids only.
             for (const event of events || []) {
-                this.reconcileOutboxAgainstEvent(sessionId, event);
+                this.reconcileOutboxAgainstEvent(sessionId, event, { exact: true });
             }
             const derivedModel = extractSessionModelFromEvents(events);
             const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
@@ -5903,8 +5942,13 @@ export class PilotSwarmUiController {
      *
      * Session turn control: a pending Stop's notice is the same kind of local
      * state; it goes when that Stop's `session.control_outcome` arrives.
+     *
+     * `exact`: an old event re-read after the fact (already in history, a
+     * history load or expansion, a MoA panel's loaded history, a receipt
+     * re-check) acknowledges only by client message id. A text match there could clear a newer item that
+     * repeats an earlier message's text.
      */
-    reconcileOutboxAgainstEvent(sessionId, event) {
+    reconcileOutboxAgainstEvent(sessionId, event, { exact = false } = {}) {
         if (!sessionId || !event) return;
         if (event.eventType === "session.control_outcome") {
             const notice = this._turnControlEntry(sessionId).stopNotice;
@@ -5923,9 +5967,9 @@ export class PilotSwarmUiController {
                     // from its leading protocol marker. The preserved IDs are
                     // still an exact receipt. Never text-match a system event:
                     // its content can quote unrelated pending user input.
-                    this.acknowledgeOutboxPrompt(sessionId, event.eventType === "user.message" ? content : undefined, id);
+                    this.acknowledgeOutboxPrompt(sessionId, event.eventType === "user.message" && !exact ? content : undefined, id);
                 }
-            } else if (event.eventType === "user.message" && typeof content === "string" && content.trim()) {
+            } else if (!exact && event.eventType === "user.message" && typeof content === "string" && content.trim()) {
                 // Fallback: text-match acknowledgement until clientMessageId is
                 // plumbed through every layer.
                 this.acknowledgeOutboxPrompt(sessionId, content);
@@ -5937,6 +5981,17 @@ export class PilotSwarmUiController {
                 ? event.data.clientMessageIds.filter((id) => typeof id === "string")
                 : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
             this.acknowledgeCancelledOutboxPrompt(sessionId, clientMessageIds);
+            return;
+        }
+        // The server dropped a resend whose ids it already holds: the earlier
+        // send was accepted. Its receipt, if recorded, may predate what this
+        // controller loaded, so re-read the receipts once. An item whose
+        // original has not run yet stays queued until its own receipt.
+        if (event.eventType === "session.message_duplicate_suppressed") {
+            const duplicates = new Set(Array.isArray(event.data?.duplicateClientMessageIds) ? event.data.duplicateClientMessageIds : []);
+            const waiting = this.getSessionOutbox(sessionId).some((item) => (
+                Array.isArray(item?.clientMessageIds) && item.clientMessageIds.some((id) => duplicates.has(id))));
+            if (waiting) this.recheckOutboxReceipts(sessionId).catch(() => {});
         }
     }
 
@@ -6298,7 +6353,12 @@ export class PilotSwarmUiController {
             sessionId,
             state.history.bySessionId.get(sessionId) || { chat: [], activity: [], events: [], lastSeq: 0 },
         );
-        if (event.seq <= (existing.lastSeq || 0)) return false;
+        if (event.seq <= (existing.lastSeq || 0)) {
+            // Already in history, but this controller may hold an outbox item
+            // it did not hold when the event first arrived.
+            this.reconcileOutboxAgainstEvent(sessionId, event, { exact: true });
+            return false;
+        }
         this.dispatch({
             type: "history/set",
             sessionId,
@@ -6462,6 +6522,9 @@ export class PilotSwarmUiController {
         this.activeSessionSubscriptionId = sessionId;
         this.activeSessionUnsub = this.transport.subscribeSession(sessionId, (event) => {
             this.mergeSessionEvent(sessionId, event);
+        }, () => {
+            // After a reconnect: read the events missed during the gap.
+            this.syncSessionEvents(sessionId).catch(() => {});
         });
         this.syncSessionEvents(sessionId).catch(() => {});
     }
@@ -9426,6 +9489,9 @@ export class PilotSwarmUiController {
         // Image attachments upload FIRST (artifact = source of truth), then the
         // message references them by filename. A failed upload keeps the prompt
         // and the staged images — a message never goes out half-attached.
+        // The composer keeps its text and images until an upload ends, so any
+        // submit meanwhile would send the same message again.
+        if (this._attachmentUploadInFlight) return;
         const pendingImages = promptAttachments.filter((a) => a?.kind === "image");
         let attachmentRefs = null;
         if (pendingImages.length > 0) {
@@ -9434,6 +9500,7 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/status", text: "This transport does not support image attachments." });
                 return;
             }
+            this._attachmentUploadInFlight = true;
             const uploadItem = this.buildOutboxItem("", "pending");
             this.dispatch({ type: "ui/status", text: `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...` });
             try {
@@ -9442,14 +9509,18 @@ export class PilotSwarmUiController {
             } catch (error) {
                 this.dispatch({ type: "ui/status", text: `Image upload failed: ${error?.message || error}` });
                 return;
+            } finally {
+                this._attachmentUploadInFlight = false;
             }
         }
         const outboundPrompt = prompt.trim()
             ? prompt
             : (attachmentRefs && attachmentRefs.length > 0 ? "See the attached image(s)." : prompt);
         this.queuePromptInOutbox(sessionId, outboundPrompt, attachmentRefs ? { attachments: attachmentRefs } : null);
-        this.setPrompt("", 0);
-        this.setPromptAttachments([]);
+        // Clear what was sent; keep a draft or images added during an upload.
+        if (this.getState().ui.prompt === rawPrompt) this.setPrompt("", 0);
+        const sent = new Set(promptAttachments);
+        this.setPromptAttachments(this.getPromptAttachments().filter((attachment) => !sent.has(attachment)));
         await this.dispatchPendingOutbox(sessionId).catch(() => {});
     }
 
@@ -10461,7 +10532,7 @@ export class PilotSwarmUiController {
                 history,
             });
             for (const event of history?.events || []) {
-                this.reconcileOutboxAgainstEvent(sessionId, event);
+                this.reconcileOutboxAgainstEvent(sessionId, event, { exact: true });
             }
 
             const hadChatBefore = Array.isArray(currentHistory?.chat) && currentHistory.chat.length > 0;

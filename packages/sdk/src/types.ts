@@ -1004,6 +1004,10 @@ export interface OrchestrationInput {
     prompt?: string;
     /** Image attachment refs riding a carried prompt across continue-as-new (1.0.65+). */
     attachments?: PromptAttachmentRef[];
+    /** 1.0.81: the client message ids of a carried prompt (the retry of a failed turn), so its receipt matches the sender's outbox. */
+    clientMessageIds?: string[];
+    /** 1.0.81: who sent the carried prompt (the retry of a failed turn). */
+    sender?: import("./message-sender.js").MessageSender;
     /** Internal: require the next prompt turn to use a specific tool if available. */
     requiredTool?: string;
     /** Internal: system guidance carried alongside the next prompt without becoming user text. */

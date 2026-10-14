@@ -437,6 +437,17 @@ corresponding consuming, give-up, or terminal path. Control outcomes remain
 immutable; the separate closing record identifies what happened to carried
 guidance.
 
+### The prompt envelope on a retry (1.0.81)
+
+The retry of a failed turn continues as new with the turn's prompt. In 1.0.81
+it also carries the prompt's envelope: its `clientMessageIds`, `sender` and
+image `attachments` (input fields; state `pendingClientMessageIds`,
+`pendingSender`, `pendingAttachments`), and the retried turn passes them to the
+worker again. A retry that records the prompt (for example after a lossy
+handoff) records it with the ids the sender's outbox waits for and the right
+sender, and the model still gets the images. No new yields; frozen versions
+keep the earlier carry.
+
 ### Rolling deployment and rollback
 
 The frozen 1.0.80 tree keeps its literal version and original Stop race. New

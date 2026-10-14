@@ -561,6 +561,10 @@ export function buildContinueInput(
         ...(promptForInput && state.pendingAttachments?.length
             ? { attachments: [...state.pendingAttachments] }
             : {}),
+        ...(promptForInput && state.pendingClientMessageIds?.length
+            ? { clientMessageIds: [...state.pendingClientMessageIds] }
+            : {}),
+        ...(promptForInput && state.pendingSender ? { sender: state.pendingSender } : {}),
         ...(carriedRequiredTool ? { requiredTool: carriedRequiredTool } : {}),
         ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
         ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),
