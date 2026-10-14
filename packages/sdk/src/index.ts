@@ -301,7 +301,7 @@ export {
     decodeReasoningEffortFromBaseUrl,
     encodeReasoningEffortInBaseUrl,
 } from "./model-providers.js";
-export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider, ReasoningEffort, ContextTier } from "./model-providers.js";
+export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider, ReasoningEffort, ContextTier, ToolCatalogCapability } from "./model-providers.js";
 export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 export type { PromptLayeringKind } from "./prompt-layering.js";
 export {

@@ -1,11 +1,11 @@
 import { CopilotClient, CopilotRequestHandler, RuntimeConnection } from "@github/copilot-sdk";
 import type { CopilotClientOptions, CopilotRequestContext } from "@github/copilot-sdk";
 import { createParser } from "eventsource-parser";
+import { normalizeToolCatalog, type ToolCatalogCapability } from "./model-providers.js";
 
 type JsonObject = Record<string, any>;
 type ToolGroup = { body: JsonObject; name: string; toolNames: Set<string> };
-const MODEL_ROUTER_MAX_TOOLS = 128;
-const MODEL_ROUTER_DEPLOYMENT = /^model-router(?:-\d+k-openai)?$/;
+export type ToolCatalogPolicyResolver = (request: Request, context: CopilotRequestContext, model: string) => ToolCatalogCapability | undefined;
 const SCHEMA_DOCUMENT_KEYS = new Set(["$ref", "$id", "$schema", "$anchor", "$dynamicRef", "$dynamicAnchor", "$recursiveRef", "$recursiveAnchor"]);
 
 function isObject(value: unknown): value is JsonObject {
@@ -18,15 +18,16 @@ function hasSchemaDocumentScope(value: unknown): boolean {
     return Object.entries(value).some(([key, child]) => SCHEMA_DOCUMENT_KEYS.has(key) || hasSchemaDocumentScope(child));
 }
 
-function groupOverflowTools(body: JsonObject): ToolGroup | undefined {
-    if (typeof body.model !== "string" || !MODEL_ROUTER_DEPLOYMENT.test(body.model)
-        || !Array.isArray(body.tools) || body.tools.length <= MODEL_ROUTER_MAX_TOOLS) return;
+function groupOverflowTools(body: JsonObject, policy?: ToolCatalogCapability): ToolGroup | undefined {
+    if (!policy || typeof body.model !== "string" || !body.model
+        || !Array.isArray(body.tools) || body.tools.length <= policy.maxDeclarations) return;
+    const maxDeclarations = policy.maxDeclarations;
     const choice = body.tool_choice;
     const forcedName = isObject(choice) && choice.type === "function" && isObject(choice.function)
         && typeof choice.function.name === "string" && Object.keys(choice.function).length === 1
         && Object.keys(choice).every(key => key === "type" || key === "function") ? choice.function.name : undefined;
     if (choice != null && !["auto", "none", "required"].includes(choice) && forcedName === undefined) {
-        throw new Error("The 128-tool limit cannot be adapted with a restricted or unsupported tool choice. Select a compatible model or reduce the configured tool catalog.");
+        throw new Error(`The ${maxDeclarations}-tool limit cannot be adapted with a restricted or unsupported tool choice. Select a compatible model or reduce the configured tool catalog.`);
     }
     const candidates = body.tools.filter((tool: unknown) => isObject(tool)
         && tool.type === "function" && isObject(tool.function)
@@ -36,9 +37,9 @@ function groupOverflowTools(body: JsonObject): ToolGroup | undefined {
         && !hasSchemaDocumentScope(tool.function.parameters)
         && Object.keys(tool).every(key => key === "type" || key === "function")
         && Object.keys(tool.function).every(key => ["name", "description", "parameters", "strict"].includes(key)));
-    const required = body.tools.length - MODEL_ROUTER_MAX_TOOLS + 1;
+    const required = body.tools.length - maxDeclarations + 1;
     if (candidates.length < required) {
-        throw new Error("The 128-tool limit cannot be met without changing strict or unsupported tool schemas. Select a compatible model or reduce the configured tool catalog.");
+        throw new Error(`The ${maxDeclarations}-tool limit cannot be met without changing strict or unsupported tool schemas. Select a compatible model or reduce the configured tool catalog.`);
     }
     const grouped = candidates.slice(-required);
     const groupedSet = new Set(grouped);
@@ -189,12 +190,18 @@ export function needsByokRequestCompatibility(provider: unknown): boolean {
  * all model traffic through Node, including WebSockets. Never attach it to a
  * GitHub Copilot client (native transport/auth and CAPI parameters must remain
  * intact), or an Anthropic/WIF client. Remove once the provider compatibility
- * tests pass without it. Only requests for the legacy model-router deployment
- * or a context-sized OpenAI router (`model-router-<tokens>k-openai`) group
- * oversized catalogs through a typed dispatch function; restore calls before
- * the runtime's permission/tool hooks. Other models keep their catalogs.
+ * tests pass without it. An explicit toolCatalog capability may group catalogs
+ * above its declared limit through a typed dispatch function; restore calls
+ * before the runtime's permission/tool hooks. Deployment names never enable it.
  */
 export class ByokRequestCompatibility extends CopilotRequestHandler {
+    private readonly toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver;
+
+    constructor(toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver) {
+        super();
+        this.toolCatalog = typeof toolCatalog === "function" ? toolCatalog : normalizeToolCatalog(toolCatalog);
+    }
+
     protected override async sendRequest(
         request: Request,
         context: CopilotRequestContext,
@@ -207,7 +214,10 @@ export class ByokRequestCompatibility extends CopilotRequestHandler {
             if (isObject(body)) {
                 const hasSnippy = Object.prototype.hasOwnProperty.call(body, "snippy");
                 if (hasSnippy) delete body.snippy;
-                group = groupOverflowTools(body);
+                const policy = typeof this.toolCatalog === "function"
+                    ? (typeof body.model === "string" ? normalizeToolCatalog(this.toolCatalog(request, context, body.model)) : undefined)
+                    : this.toolCatalog;
+                group = groupOverflowTools(body, policy);
                 if (hasSnippy || group) {
                     const headers = new Headers(request.headers);
                     headers.delete("content-length");
@@ -221,14 +231,21 @@ export class ByokRequestCompatibility extends CopilotRequestHandler {
 }
 
 /** Shared by durable sessions and the short-lived title/distillation clients. */
-export function createCopilotClient(options: CopilotClientOptions, provider?: unknown): CopilotClient {
+export function createCopilotClient(
+    options: CopilotClientOptions,
+    provider?: unknown,
+    toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver,
+): CopilotClient {
+    if (toolCatalog && !needsByokRequestCompatibility(provider)) {
+        throw new Error("toolCatalog requires an OpenAI-compatible Chat Completions provider.");
+    }
     return new CopilotClient({
         ...options,
         // Do not let ambient COPILOT_SDK_DEFAULT_CONNECTION opt a multi-tenant
         // worker into the experimental process-global in-process transport.
         // Stdio uses the pinned SDK runtime and honors COPILOT_CLI_PATH.
         connection: RuntimeConnection.forStdio(),
-        ...(needsByokRequestCompatibility(provider) ? { requestHandler: new ByokRequestCompatibility() } : {}),
+        ...(needsByokRequestCompatibility(provider) ? { requestHandler: new ByokRequestCompatibility(toolCatalog) } : {}),
     });
 }
 
