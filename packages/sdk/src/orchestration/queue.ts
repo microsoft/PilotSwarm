@@ -16,7 +16,7 @@ import {
     promptIdsIntersectCancellation,
     publishStatus,
     queueFollowup,
-    recordCancelledMessageIds,
+    dropCancelledPrompt,
     wrapWithResumeContext,
 } from "./lifecycle.js";
 import { shouldWakeParentForChildDigest } from "../child-notifications.js";
@@ -31,6 +31,7 @@ import {
     MAX_PREDISPATCH_SWEEP,
     NON_BLOCKING_TIMER_MS,
     PREDISPATCH_CANCEL_SWEEP_MS,
+    addCancelledMessageIds,
     touchRecentClientMessageIds,
     timerGate,
     type ActiveTimer,
@@ -380,9 +381,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 if (typeof id === "string" && id) {
                     validCancelIds.push(id);
                     cancelledThisDrain.add(id);
-                    state.cancelledMessageIds.add(id);
                 }
             }
+            addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[drain] received cancel tombstone (ids=${validCancelIds.join(",")})`);
             }
@@ -392,7 +393,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
                 if (ids.some((id) => cancelledThisDrain.has(id))) {
                     ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                    yield* recordCancelledMessageIds(runtime, ids, "drain-stash");
+                    yield* dropCancelledPrompt(runtime, ids, "drain-stash");
                     stash.splice(s, 1);
                 }
             }
@@ -452,7 +453,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const incomingClientMessageIds: string[] = validClientMessageIds(msg.clientMessageIds);
             if (promptIdsIntersectCancellation(runtime, incomingClientMessageIds)) {
                 ctx.traceInfo(`[drain] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "drain-incoming");
+                yield* dropCancelledPrompt(runtime, incomingClientMessageIds, "drain-incoming");
                 continue;
             }
 
@@ -611,7 +612,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 
         if (msg && Array.isArray(msg.cancelPending) && msg.cancelPending.length > 0) {
             const validCancelIds = validClientMessageIds(msg.cancelPending);
-            for (const id of validCancelIds) state.cancelledMessageIds.add(id);
+            addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[predispatch] received cancel tombstone (ids=${validCancelIds.join(",")})`);
                 for (let s = stash.length - 1; s >= 0; s--) {
@@ -620,7 +621,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                     const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
                     if (ids.some((id) => validCancelIds.includes(id))) {
                         ctx.traceInfo(`[predispatch] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                        yield* recordCancelledMessageIds(runtime, ids, "predispatch-stash");
+                        yield* dropCancelledPrompt(runtime, ids, "predispatch-stash");
                         stash.splice(s, 1);
                     }
                 }
@@ -674,7 +675,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             const incomingClientMessageIds = validClientMessageIds(msg.clientMessageIds);
             if (promptIdsIntersectCancellation(runtime, incomingClientMessageIds)) {
                 ctx.traceInfo(`[predispatch] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "predispatch-incoming");
+                yield* dropCancelledPrompt(runtime, incomingClientMessageIds, "predispatch-incoming");
                 continue;
             }
             const duplicateIds = duplicateClientMessageIds(runtime, incomingClientMessageIds, pendingClientMessageIds);
@@ -783,7 +784,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 }
                 if (promptIdsIntersectCancellation(runtime, ids)) {
                     ctx.traceInfo(`[decide] dropping FIFO prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                    yield* recordCancelledMessageIds(runtime, ids, "decide-fifo");
+                    yield* dropCancelledPrompt(runtime, ids, "decide-fifo");
                     return true;
                 }
 
@@ -812,7 +813,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
                     if (promptIdsIntersectCancellation(runtime, peekIds)) {
                         ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
-                        yield* recordCancelledMessageIds(runtime, peekIds, "decide-merge");
+                        yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
                         continue;
                     }
                     // Never merge an agent's bootstrap kickoff with a person's

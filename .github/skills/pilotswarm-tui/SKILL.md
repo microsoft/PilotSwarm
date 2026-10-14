@@ -134,7 +134,13 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   separate TUI Discard key: `Ctrl+T` on an empty prompt restores it, and
   clearing the prompt discards it; the portal shows Restore and Discard.
   This divergence is deliberate (no extra key). Steer is unavailable while a pending or
-  queued outbox message is selected. Stop and Steer notices are kept per
+  cancelling outbox message is selected. With a queued (`✓`) message selected
+  (`↑`), `Ctrl+T` steers now with that message (it replaces the queued message
+  when delivered; otherwise it stays queued) and `d` cancels it; the status
+  hint shows `ctrl-t steer now` only while it applies, and `?` help lists both.
+  The portal shows a row per queued message above the input with **Steer
+  now** and **Cancel** (`queued-item`, `queued-steer-now`, `queued-cancel`,
+  `queued-notice`); a steer reads Delivered as soon as it is confirmed. Stop and Steer notices are kept per
   kind, so one never hides the other's Retry. Portal: a readable turn-status chip and a Steer button beside Stop, an inline notice for every
   refusal, fallback and failure (with Retry for an unconfirmed request), and
   transcript items: a steer reads as a user message with a `steer` badge and

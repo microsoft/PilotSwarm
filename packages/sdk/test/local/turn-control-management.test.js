@@ -64,8 +64,8 @@ function createFakeCatalog({ row = null, add = () => ({ seq: 41, turn: 3 }), out
         }),
         // Models cms_turn_control_add: a retried request id gets its first
         // answer, then a new Steer is refused when steering is not allowed.
-        turnControlAdd: async (sessionId, kind, text, requestId, actor, steeringAllowed = true) => {
-            calls.add.push({ sessionId, kind, text, requestId, actor, steeringAllowed });
+        turnControlAdd: async (sessionId, kind, text, requestId, actor, steeringAllowed = true, replacesClientMessageId) => {
+            calls.add.push({ sessionId, kind, text, requestId, actor, steeringAllowed, ...(replacesClientMessageId !== undefined ? { replacesClientMessageId } : {}) });
             const retried = recordedSteers.some((steer) => steer.requestId === requestId);
             if (kind === "steer" && !steeringAllowed && !retried) return { refused: "steering_disabled" };
             const answer = typeof add === "function" ? add({ sessionId, kind, text, requestId, actor }) : add;
@@ -223,6 +223,27 @@ describe("steerSessionTurn (fake catalog)", () => {
         const flag = { cluster: { enabled: false, allowUserOverride: false }, users: [{ owner: ALICE, enabled: true }] };
         const result = await createMgmt(createFakeCatalog({ flag })).steerSessionTurn("s1", { text: "x", requestId: "a", caller: { viewer: { principal: ALICE, isAdmin: false } } });
         expect(result).toEqual({ outcome: "steering_disabled" });
+    });
+
+    it("converts a queued message: the replaced id passes to the catalog, and already_received maps through", async () => {
+        const fake = createFakeCatalog({ add: ({ requestId }) => (requestId === "late" ? { refused: "already_received" } : { seq: 42, turn: 3 }) });
+        const mgmt = createMgmt(fake);
+        expect(await mgmt.steerSessionTurn("s1", { text: "queued text", requestId: "conv", replacesClientMessageId: "cm-1" }))
+            .toEqual({ outcome: "accepted", steerId: 42, turn: 3 });
+        expect(fake.calls.add[0]).toMatchObject({ kind: "steer", text: "queued text", requestId: "conv", replacesClientMessageId: "cm-1" });
+        expect(await mgmt.steerSessionTurn("s1", { text: "queued text", requestId: "late", replacesClientMessageId: "cm-1" }))
+            .toEqual({ outcome: "already_received" });
+        await mgmt.steerSessionTurn("s1", { text: "plain", requestId: "plain" });
+        expect(fake.calls.add[2]).not.toHaveProperty("replacesClientMessageId");
+    });
+
+    it("rejects an invalid replaced id before recording", async () => {
+        const fake = createFakeCatalog();
+        const mgmt = createMgmt(fake);
+        for (const replacesClientMessageId of ["", "   ", 7, "c".repeat(201)]) {
+            await expect(mgmt.steerSessionTurn("s1", { text: "x", requestId: "r", replacesClientMessageId })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+        }
+        expect(fake.calls.add).toHaveLength(0);
     });
 
     it("rejects empty text and a missing or invalid request id before recording", async () => {
@@ -433,6 +454,20 @@ describe("Web API mode (fake catalog, real runtime and router)", () => {
             await harness.close();
         }
     });
+
+    it("forwards a replaced id and maps already_received as direct mode does", async () => {
+        const flag = { cluster: { enabled: true, allowUserOverride: false } };
+        const fake = createFakeCatalog({ flag, add: { refused: "already_received" } });
+        const mgmt = createMgmt(fake);
+        const harness = await startWebHarness(mgmt);
+        try {
+            const viaWeb = await harness.web.steerSessionTurn("s1", { text: "queued text", requestId: "w", replacesClientMessageId: "cm-9" });
+            expect(viaWeb).toEqual({ outcome: "already_received" });
+            expect(fake.calls.add[0]).toMatchObject({ requestId: "w", replacesClientMessageId: "cm-9" });
+        } finally {
+            await harness.close();
+        }
+    });
 });
 
 // ─── Part 2: real PostgreSQL ─────────────────────────────────────
@@ -526,6 +561,17 @@ describe("turn control against real PostgreSQL", () => {
             const current = (await catalog.features.read(admin, "cluster")).flags.find((flag) => flag.featureKey === STEERING).revision;
             await catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: current, requestId: `enable-again-${sessionId}`, enabled: true, allowUserOverride: false });
         }
+    });
+
+    it("converts a queued message: the steer stores the replaced id; a recorded message is already_received", async () => {
+        const sessionId = await runningSession("tc-convert");
+        const answer = await runtime.call("steerSessionTurn", { sessionId, options: { text: "queued text", requestId: "conv-1", replacesClientMessageId: "cm-q" } }, authOf(ALICE));
+        expect(answer).toMatchObject({ outcome: "accepted", turn: 0 });
+        const [event] = await catalog.getSessionEvents(sessionId, 0, 100, [TURN_CONTROL_EVENT_TYPES.steer]);
+        expect(event.data).toMatchObject({ text: "queued text", replacesClientMessageId: "cm-q" });
+        await catalog.recordEvents(sessionId, [{ eventType: "user.message", data: { content: "ran", clientMessageIds: ["cm-ran"] } }]);
+        expect(await runtime.call("steerSessionTurn", { sessionId, options: { text: "ran", requestId: "conv-2", replacesClientMessageId: "cm-ran" } }, authOf(ALICE)))
+            .toEqual({ outcome: "already_received" });
     });
 
     it("records a Stop and returns its outcome once turn end writes it", async () => {

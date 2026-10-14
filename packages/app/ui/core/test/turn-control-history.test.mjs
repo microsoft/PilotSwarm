@@ -14,6 +14,7 @@ import {
     createStore,
     resolveTurnControlOutcome,
     selectChatLines,
+    TURN_CONTROL_OUTCOME_LABELS,
 } from "../src/index.js";
 
 const SID = "s1";
@@ -42,11 +43,30 @@ function bothPaths(events) {
     return bulk;
 }
 
-test("history paging requests every turn-control transcript input, never the confirmation", () => {
-    for (const type of ["user.steer", "user.stop", "session.control_outcome", "session.carried_steers_closed"]) {
+test("history paging requests every turn-control transcript input, the confirmation included (decision C)", () => {
+    for (const type of ["user.steer", "user.stop", "session.control_outcome", "session.carried_steers_closed", "session.steer_confirmed"]) {
         assert.ok(CHAT_HISTORY_EVENT_TYPES.includes(type), type);
     }
-    assert.equal(CHAT_HISTORY_EVENT_TYPES.includes("session.steer_confirmed"), false);
+});
+
+const confirmed = (seq, controlSeq, turn = 1) => evt(seq, "session.steer_confirmed", { seq: controlSeq, turn, messageId: `m-${controlSeq}` });
+const converted = (seq, text, replaces, turn = 1) => evt(seq, "user.steer", { turn, text, requestId: `r-${seq}`, actor: null, replacesClientMessageId: replaces });
+
+test("decision C: a steer reads Delivered once confirmed, and keeps it when the turn is then stopped", () => {
+    assert.deepEqual(bothPaths([steer(2, "use metric"), confirmed(3, 2)]).map((item) => item.outcome), ["delivered"]);
+    const stopped = bothPaths([steer(2, "use metric"), confirmed(3, 2), stop(4), outcome(5, 2, "not_delivered"), outcome(6, 4, "stopped")]);
+    assert.deepEqual(stopped.map((item) => item.outcome), ["delivered", "stopped"]);
+    // Unconfirmed and stopped: still not delivered.
+    assert.deepEqual(bothPaths([steer(2, "late"), stop(3), outcome(4, 2, "not_delivered"), outcome(5, 3, "stopped")]).map((item) => item.outcome), ["not_delivered", "stopped"]);
+});
+
+test("a converted queued message: not delivered reads 'Not delivered · still queued', confirmed or not; delivered reads Delivered", () => {
+    const missed = bothPaths([converted(2, "queued text", "cm-1"), outcome(3, 2, "not_delivered")]);
+    assert.deepEqual(missed.map((item) => item.outcome), ["not_delivered_still_queued"]);
+    const confirmedThenStopped = bothPaths([converted(2, "queued text", "cm-1"), confirmed(3, 2), stop(4), outcome(5, 2, "not_delivered"), outcome(6, 4, "stopped")]);
+    assert.deepEqual(confirmedThenStopped.map((item) => item.outcome), ["not_delivered_still_queued", "stopped"]);
+    assert.deepEqual(bothPaths([converted(2, "queued text", "cm-1"), confirmed(3, 2), outcome(4, 2, "delivered")]).map((item) => item.outcome), ["delivered"]);
+    assert.equal(TURN_CONTROL_OUTCOME_LABELS.not_delivered_still_queued, "Not delivered · still queued");
 });
 
 test("every steer outcome renders, bulk and live, once", () => {

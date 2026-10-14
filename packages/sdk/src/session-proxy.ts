@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -1656,6 +1656,8 @@ export function registerActivities(
             let lastErr: unknown;
             for (let attempt = 1; attempt <= 3; attempt += 1) {
                 try {
+                    // Test-only probe: a turn end that never succeeds (design 5.1, double fault).
+                    await faultPointAsync("turn.control.before-end", { sessionId: input.sessionId });
                     return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried);
                 } catch (err) {
                     lastErr = err;
@@ -1693,6 +1695,8 @@ export function registerActivities(
                 } else if (end.late.length > 0) {
                     out = { ...result, lateSteers: end.late } as TurnResult;
                 }
+                // Queued messages that delivered converted steers replaced (migration 0083).
+                if (end.replaced?.length) out = { ...out, replacedClientMessageIds: end.replaced } as TurnResult;
             }
             if (tc.carriedTaken && tc.carried.length > 0 && out.type !== "error") {
                 out = { ...out, carriedSteersConsumed: true } as TurnResult;
@@ -4155,46 +4159,34 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 : input.prompt;
             const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(promptForRecord);
             const isRetryAttempt = (input.retryCount ?? 0) > 0;
-            // Turn control (V4): an earlier attempt of this turn already passed
-            // turn start, so it recorded the prompt and the system message. A
-            // worker loss re-dispatches the same activity with the same input
-            // (retryCount 0); record them once. `turnHigh` is read from the row
-            // loaded above, before T3. Known limits (Docs.md): a crash between
-            // these records and T3 still records them again, and two attempts
-            // running at the same time (design 3.9) can both read the old value.
-            const turnAlreadyStarted = Boolean(tc)
-                && typeof catalogSessionRow?.turnHigh === "number"
-                && catalogSessionRow.turnHigh >= tc!.turn;
-            if (turnAlreadyStarted) {
-                activityCtx.traceInfo(`[runTurn] turn ${tc!.turn} of ${input.sessionId} already started in an earlier attempt; prompt not recorded again`);
-            }
-            if (catalog && input.config.turnSystemPrompt && !isRetryAttempt && !turnAlreadyStarted) {
-                const persistedSystemPrompt = decorateRehydrationSystemPrompt(
-                    input.config.turnSystemPrompt,
-                    workerNodeId,
-                );
-                trackEventWrite(cmsRetryBestEffort(
-                    `runTurn.recordEvent system-prompt session=${input.sessionId}`,
-                    () => catalog!.recordEvents(input.sessionId, [{
-                        eventType: "system.message",
-                        data: { content: persistedSystemPrompt },
-                    }], workerNodeId),
-                    (msg) => activityCtx.traceInfo(msg),
-                ));
-            }
             // 1.0.81: a turn that only runs carried steers records nothing new;
             // the steers are already in the transcript.
             const isCarriedWake = promptForRecord === CARRIED_STEERS_WAKE_PROMPT;
-            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && !turnAlreadyStarted && !isCarriedWake && promptForRecord) {
-                const promptEventType = isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message";
-                // v1.0.47: when the orchestration tagged the turn with one or
-                // more clientMessageIds (the UI-generated identities of the
-                // contributing local outbox items), persist them on the
-                // durable user.message event so the client can ack/cancel by
-                // exact id rather than text match.
-                const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
-                    ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
-                    : [];
+            // v1.0.47: when the orchestration tagged the turn with one or
+            // more clientMessageIds (the UI-generated identities of the
+            // contributing local outbox items), persist them on the durable
+            // user.message event so the client can ack/cancel by exact id
+            // rather than text match.
+            const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
+                ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                : [];
+            // The turn's prompt records: its system note, then its prompt.
+            // V3 writes them best-effort below. Turn control (V4, migration
+            // 0083) writes them in turn start's transaction, so a prompt is
+            // recorded before its turn can accept any control. There, a
+            // prompt with client message ids also goes to turn start on a
+            // retry: it is recorded only when no prompt record holds its ids,
+            // which repairs a turn whose earlier attempt never recorded it.
+            // A record without ids is recorded on the turn's first start only.
+            const promptRecords: TurnStartRecord[] = [];
+            if (catalog && input.config.turnSystemPrompt && !isRetryAttempt) {
+                promptRecords.push({
+                    eventType: "system.message",
+                    data: { content: decorateRehydrationSystemPrompt(input.config.turnSystemPrompt, workerNodeId) },
+                });
+            }
+            if (catalog && !isTimerPrompt && !input.bootstrap && !isCarriedWake && promptForRecord
+                && (!isRetryAttempt || (tc && incomingClientMessageIds.length > 0))) {
                 const eventData: Record<string, unknown> = { content: promptForRecord };
                 if (incomingClientMessageIds.length > 0) {
                     eventData.clientMessageIds = incomingClientMessageIds;
@@ -4212,15 +4204,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (eventAttachments.length > 0) {
                     eventData.attachments = eventAttachments;
                 }
-                const capturedPromptEventType = promptEventType;
-                trackEventWrite(cmsRetryBestEffort(
-                    `runTurn.recordEvent ${capturedPromptEventType} session=${input.sessionId}`,
-                    () => catalog!.recordEvents(input.sessionId, [{
-                        eventType: capturedPromptEventType,
-                        data: eventData,
-                    }], workerNodeId),
-                    (msg) => activityCtx.traceInfo(msg),
-                ));
+                promptRecords.push({
+                    eventType: isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message",
+                    data: eventData,
+                });
+            }
+            if (!tc) {
+                for (const record of promptRecords) {
+                    trackEventWrite(cmsRetryBestEffort(
+                        `runTurn.recordEvent ${record.eventType} session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [record], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    ));
+                }
             }
 
             // Mark session as "running" in CMS before the turn, and publish the
@@ -4250,7 +4246,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             if (tc) {
                 const started = await cmsRetryCritical(
                     `runTurn.preTurn turnStart session=${input.sessionId} turn=${tc.turn}`,
-                    () => catalog!.turnStart(input.sessionId, tc.turn),
+                    () => catalog!.turnStart(input.sessionId, tc.turn, promptRecords, workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
                 );
                 tc.started = true;
@@ -6064,7 +6060,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         runtime.registerActivity("updateCmsState", async (
             activityCtx: any,
             input: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null; closeControls?: boolean },
-        ): Promise<void> => {
+        ): Promise<{ replacedClientMessageIds: string[] } | void> => {
             activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}${input.closeControls ? " closeControls" : ""}`);
             const updates: { state: string; lastError?: string | null; waitReason?: string | null; closeControls?: boolean } = {
                 state: input.state,
@@ -6077,6 +6073,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 () => catalog.updateSession(input.sessionId, { ...updates }),
                 (msg) => activityCtx.traceInfo(msg),
             );
+            if (input.closeControls !== true) return;
+            // A give-up: the turn's result never reached the orchestration. A
+            // turn end that ran in an attempt may already have delivered
+            // converted steers; their queued messages must not run as well.
+            const replacedClientMessageIds = await cmsRetryCritical(
+                `updateCmsState turnReplaced session=${input.sessionId}`,
+                () => catalog.turnReplaced(input.sessionId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            return { replacedClientMessageIds };
         });
 
         runtime.registerActivity("updateSessionModel", async (

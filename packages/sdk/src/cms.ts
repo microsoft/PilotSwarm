@@ -13,7 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
@@ -1182,9 +1182,19 @@ export interface SessionCatalog {
      * a new Steer is refused with `steering_disabled` when it is false. A
      * Stop ignores it.
      */
-    turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed?: boolean): Promise<TurnControlAddResult>;
-    /** Worker T3: mark the turn running and return its open controls. Replaces setActiveTurnIndex on the turn-control path. */
-    turnStart(sessionId: string, turn: number): Promise<TurnStartResult>;
+    /**
+     * `replacesClientMessageId` (migration 0083): the queued message a Steer
+     * replaces. Refused `already_received` once that message is recorded; a
+     * new request for the same message repeats the first answer while its
+     * steer is open or delivered.
+     */
+    turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed?: boolean, replacesClientMessageId?: string): Promise<TurnControlAddResult>;
+    /**
+     * Worker T3: mark the turn running and return its open controls. Replaces
+     * setActiveTurnIndex on the turn-control path. Records the turn's prompt
+     * and system message (`records`) in the same transaction (migration 0083).
+     */
+    turnStart(sessionId: string, turn: number, records?: TurnStartRecord[], workerNodeId?: string): Promise<TurnStartResult>;
     /** Worker: one batched look for the worker's running turns. */
     turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]>;
     /**
@@ -1194,6 +1204,8 @@ export interface SessionCatalog {
      * Redelivery passes the same carried seqs; closing is idempotent.
      */
     turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+    /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
+    turnReplaced(sessionId: string, turn?: number): Promise<string[]>;
     /**
      * A dedicated LISTEN connection for the worker's turn-control hub, reached
      * the way this catalog reaches its database. Optional: without it the hub
@@ -1541,6 +1553,7 @@ function sqlForSchema(schema: string) {
             turnStart:                  `${s}.cms_turn_start`,
             turnLook:                   `${s}.cms_turn_look`,
             turnEnd:                    `${s}.cms_turn_end`,
+            turnReplaced:               `${s}.cms_turn_replaced`,
             getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
             getSessionTokensByModel:    `${s}.cms_get_session_tokens_by_model`,
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
@@ -1937,23 +1950,29 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Session turn control (migration 0082) ───────────────────
 
     /** Adds a control atomically, or returns its refusal or existing request-id receipt. */
-    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed = true): Promise<TurnControlAddResult> {
+    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed = true, replacesClientMessageId?: string): Promise<TurnControlAddResult> {
         const { rows } = await this.turnControlQuery(
             "turnControlAdd",
-            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb, $6::boolean) AS r`,
-            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null, steeringAllowed],
+            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb, $6::boolean, $7::text) AS r`,
+            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null, steeringAllowed, replacesClientMessageId ?? null],
         );
         const r = rows[0]?.r ?? {};
         if (r.refused) return { refused: r.refused };
         return { seq: Number(r.seq), turn: Number(r.turn), ...(r.repeat ? { repeat: true as const } : {}) };
     }
 
-    /** Marks a turn active and returns its controls, stopped disposition, or stale-start refusal. */
-    async turnStart(sessionId: string, turn: number): Promise<TurnStartResult> {
+    /**
+     * Marks a turn active and returns its controls, stopped disposition, or
+     * stale-start refusal. `records` (the turn's prompt and system message)
+     * are written in the same transaction: a record with client message ids
+     * whenever no prompt record holds one of them, one without ids on the
+     * turn's first start only.
+     */
+    async turnStart(sessionId: string, turn: number, records: TurnStartRecord[] = [], workerNodeId?: string): Promise<TurnStartResult> {
         const { rows } = await this.turnControlQuery(
             "turnStart",
-            `SELECT ${this.sql.fn.turnStart}($1, $2) AS r`,
-            [sessionId, turn],
+            `SELECT ${this.sql.fn.turnStart}($1, $2, $3::jsonb, $4::text) AS r`,
+            [sessionId, turn, JSON.stringify(records), workerNodeId ?? null],
         );
         const r = rows[0]?.r ?? {};
         if (r.stale) return { stale: true };
@@ -1982,7 +2001,18 @@ export class PgSessionCatalog implements SessionCatalog {
         return {
             stopped: r.stopped === true,
             late: Array.isArray(r.late) ? r.late.map((l: any) => ({ seq: Number(l.seq), text: String(l.text ?? "") })) : [],
+            replaced: toStringList(r.replaced),
         };
+    }
+
+    /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
+    async turnReplaced(sessionId: string, turn?: number): Promise<string[]> {
+        const { rows } = await this.turnControlQuery(
+            "turnReplaced",
+            `SELECT ${this.sql.fn.turnReplaced}($1, $2::int) AS r`,
+            [sessionId, turn ?? null],
+        );
+        return toStringList(rows[0]?.r);
     }
 
     /** Runs a turn-control procedure; a catalog without migration 0082 reports TurnControlUnavailableError. */
@@ -3924,6 +3954,11 @@ export class PgSessionCatalog implements SessionCatalog {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
+
+/** A JSON array of strings from a procedure answer. */
+function toStringList(raw: unknown): string[] {
+    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+}
 
 /** Map the JSON controls of the turn-control procedures. */
 function toTurnControls(raw: unknown): TurnControl[] {

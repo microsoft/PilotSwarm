@@ -194,6 +194,7 @@ export type {
     TurnLookRow,
     TurnEndKind,
     TurnEndResult,
+    TurnStartRecord,
     LateSteer,
     CarriedSteersCloseReason,
     UserSteerEventData,

@@ -107,9 +107,10 @@ These keys work whenever focus is not in the prompt editor.
 | `Option+Enter` / `Alt+Enter` | Insert a newline |
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
-| `Ctrl+T` | Steer: send the prompt text as guidance for the running turn (needs the `sessions.steering` feature and a turn that accepts it; otherwise the status line says why). Press again to resend an unconfirmed steer. On an empty prompt it restores steer text that was kept (not delivered); clear the prompt to discard it (the portal has a separate Discard button) |
+| `Ctrl+T` | Steer: send the prompt text as guidance for the running turn (needs the `sessions.steering` feature and a turn that accepts it; otherwise the status line says why). Press again to resend an unconfirmed steer. On an empty prompt it restores steer text that was kept (not delivered); clear the prompt to discard it (the portal has a separate Discard button). With a queued (`✓`) prompt selected: **steer now** with that message; it replaces the queued message when the model reads it, and otherwise stays queued and runs as usual (the portal shows **Steer now** on each queued message) |
 | `Option+T` / `Alt+T` | Give up an unconfirmed Stop or Steer (or clear a refused steer's notice); its steer text returns to the prompt after your draft |
-| `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
+| `Esc` | Leave prompt mode and return to Sessions, cancel the selected pending (`○`) prompt, or leave a selected queued (`✓`) prompt |
+| `d` | With a queued (`✓`) prompt selected: cancel it |
 | `←` / `→` | Move cursor by character |
 | `↑` / `↓` | Move cursor vertically across prompt lines, then enter/leave queued pending-prompt editing at the top/bottom boundary |
 | `Option+←` / `Option+→` | Move cursor by word |
@@ -129,6 +130,7 @@ Notes:
 - Multiple synchronous sends coalesce into a single durable enqueue. Pressing `Enter` on an empty draft forces an immediate dispatch of any still-pending items.
 - Pressing `↑` at the top prompt boundary recalls the most recent pending item for editing. Pressing `↓` at the bottom boundary moves forward through pending items and eventually returns to the live draft.
 - `Esc` while editing a recalled pending item cancels that item before it becomes durable.
+- A selected queued (`✓`) item is read-only: `d` cancels it, `Ctrl+T` steers now with it (the status line shows `ctrl-t steer now` when that applies), and `Enter` or `Esc` returns to a new prompt.
 
 ## Modals and Dialogs
 

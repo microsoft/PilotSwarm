@@ -32,6 +32,18 @@ with one outcome, shown in the portal and TUI transcripts.
   stops the others. The retry of a failed turn keeps the prompt's client
   message ids, sender and images (orchestration 1.0.81). A second submit during an image upload
   no longer sends the message twice.
+- **Steer now and Cancel on queued messages.** Each queued message shows
+  **Steer now** and **Cancel** in the portal (chat view, Master of Agents and
+  phones); in the TUI, select it with `↑`, then `Ctrl+T` steers now and `d`
+  cancels. Steer now sends the message as a steer that replaces it
+  (`steerSessionTurn` `replacesClientMessageId`, MCP
+  `replaces_client_message_id`, refusal `already_received`): when the model
+  reads it, the queued message is dropped; otherwise it stays queued and runs
+  as usual, so its text runs once. Migration 0083: the turn's prompt is
+  recorded in the turn-start transaction, and the 0082 two-argument
+  `cms_turn_start` is dropped (stop 0082 workers before migrating). A steer
+  reads **Delivered** as soon as the model has read it, also if the turn is
+  then stopped.
 
 ## 0.8.2 — 2026-10-04
 

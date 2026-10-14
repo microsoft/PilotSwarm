@@ -1,7 +1,7 @@
 # Session turn control: Stop and Steer through the CMS
 
 **Status:** Approved; implemented on `waldemort/turn-control`.
-**Date:** 2026-10-13, revision 8.
+**Date:** 2026-10-14, revision 9.
 **Owner:** Affan Dar (@affandar).
 **Supersedes:** the steering-ledger design in draft PR 141 (spec) and PR 142
 (implementation), and the "async turns" exploration that followed them.
@@ -28,7 +28,7 @@ the turn's result.
 9. [Alternatives considered](#9-alternatives-considered)
 10. [Appendices](#10-appendices)
 
-What changed since revision 5: [Changes in revisions 6 to 8](#changes-in-revisions-6-to-8).
+What changed since revision 5: [Changes in revisions 6 to 8](#changes-in-revisions-6-to-8) and [Changes in revision 9](#changes-in-revision-9).
 
 ## Changes in revisions 6 to 8
 
@@ -87,6 +87,24 @@ commit `1803c8cb`.
 | New tool `stop_agent_turn(agent_id, reason?)` stops a child's current turn through `stopSessionTurn` (legacy path for an older turn), waits up to 15 s and keeps the child alive. | `cancel_agent` ends the whole child. | 4.13 |
 | A parent's control records the sender `{ kind: "agent", sessionId, display }`. The portal and the TUI name the parent agent on the item; portal items carry `data-actor-kind`. `sessions.steering` resolves for the parent session's owner. Stop is not gated. | A person reading the child's transcript must see who steered or stopped it. | 4.10, 4.13 |
 | The turn after a stopped turn that left nothing saved (a stopped first turn) starts a fresh conversation quietly, without a lossy handoff or a restart notice; auto-titling ignores `[SYSTEM: ...]` notices. | A pre-existing fault, also on `main`, that the UX pass found after a Stop of a first turn. | 5.1 |
+
+## Changes in revision 9
+
+Revision 9 adds converting a queued message to a steer (Steer now) and a
+visible Cancel for every queued message (4.14), and records two owner
+decisions: a steer reads "Delivered" as soon as it is confirmed (D8), and the
+phone composer is one action row taller while a turn runs (D7). The owner
+approved the plan and its changes on 2026-10-14. Migration 0083 carries the
+schema; its delta is in `packages/sdk/src/migrations/0083_diff.md`.
+
+| Change | Why | Section |
+|---|---|---|
+| A steer may name the queued message it replaces (`replacesClientMessageId`). A delivered converted steer replaces the message: the orchestration drops it, so it never runs as its own turn. Any other outcome leaves it queued. | Steer now for a message the person already sent. Its text runs exactly once. | 4.14 |
+| The V4 turn's prompt and system message are recorded inside turn start's transaction (`cms_turn_start(p_session, p_turn, p_records, p_worker)`). The best-effort writes on the V4 path are removed. A record with client message ids is written on any start when no prompt record holds its ids; one without ids on the first start only. | "Received" must be true before a turn can accept a control (`already_received`). It also removes both known limits of the duplicate-prompt guard and repairs a turn whose earlier attempt never recorded its prompt. | 4.2, 4.7, 5.1 |
+| A converted steer is never carried: after the cursor it is `not_delivered`. | A carried steer is closed `gave_up` when its consuming turn is given up; the message would then never run. | 4.14, 5.2 |
+| The orchestration's cancel set survives continue-as-new (the newest 200 ids; an id leaves when its prompt is dropped). | An error result's retry continued as new and lost the set, so a replaced message, or a cancelled one, ran. | 4.14 |
+| The give-up state write (`closeControls`) returns the replaced messages of the given-up turn. | A turn end that delivered a converted steer, followed by retries that all threw, would otherwise leave the message queued. | 4.14, 5.1 |
+| **D8.** A steer reads "Delivered" as soon as `session.steer_confirmed` arrives, and keeps it when the turn is then stopped. The kept-text offer after a Stop is unchanged. A converted steer that is not delivered reads "Not delivered · still queued". | Owner decision (2026-10-14). | 4.10, 5.2, 8.1 |
 
 ## 1. Problem statement
 
@@ -685,10 +703,11 @@ procedure below ignores events with `seq <= turn_base_seq`.
 |---|---|---|
 | `cms_turn_open_controls` | `(p_session TEXT, p_turn INT) RETURNS TABLE (seq BIGINT, kind TEXT, text TEXT, created_at TIMESTAMPTZ)` | Open controls of one turn, in position order. |
 | `cms_turn_open_controls_json` | `(p_session TEXT, p_turn INT, p_after BIGINT DEFAULT 0) RETURNS JSONB` | The same as `[{seq, kind, text, createdAt}]`, after a position. |
-| `cms_turn_control_add` | `(p_session TEXT, p_kind TEXT, p_text TEXT, p_request_id TEXT, p_actor JSONB, p_steering_allowed BOOLEAN DEFAULT true) RETURNS JSONB` | Client: add a Steer or a Stop. |
-| `cms_turn_start` | `(p_session TEXT, p_turn INT) RETURNS JSONB` | Worker, T3. |
+| `cms_turn_control_add` | `(p_session TEXT, p_kind TEXT, p_text TEXT, p_request_id TEXT, p_actor JSONB, p_steering_allowed BOOLEAN DEFAULT true, p_replaces TEXT DEFAULT NULL) RETURNS JSONB` | Client: add a Steer or a Stop. `p_replaces` (0083): the queued message a Steer replaces (4.14). |
+| `cms_turn_start` | `(p_session TEXT, p_turn INT, p_records JSONB, p_worker TEXT) RETURNS JSONB` | Worker, T3. Since 0083 it also writes the turn's prompt records (4.7); the 0082 two-argument form is dropped. |
 | `cms_turn_look` | `(p_turns JSONB) RETURNS TABLE (session_id TEXT, turn INT, controls JSONB)` | Worker: one read for all live turns. Input `[{session, turn, after}]`. |
-| `cms_turn_end` | `(p_session TEXT, p_turn INT, p_cursor BIGINT, p_result TEXT, p_carried BIGINT[] DEFAULT NULL) RETURNS JSONB` | Worker, T8. `p_result` is `stopped`, `error` or `other`. Returns `{stopped, late}`. |
+| `cms_turn_end` | `(p_session TEXT, p_turn INT, p_cursor BIGINT, p_result TEXT, p_carried BIGINT[] DEFAULT NULL) RETURNS JSONB` | Worker, T8. `p_result` is `stopped`, `error` or `other`. Returns `{stopped, late, replaced}` (`replaced` since 0083). |
+| `cms_turn_replaced` | `(p_session TEXT, p_turn INT DEFAULT NULL) RETURNS TEXT[]` | 0083: the replaced messages of the turn's delivered converted steers (the latest started turn when NULL). |
 | `cms_complete_turn_writeback` | the same 23 parameters, now `RETURNS BOOLEAN` | Worker, T6. Dropped and created again, because PostgreSQL cannot change a return type in place. Fenced against a newer started turn. |
 | `cms_update_session` | unchanged | Closes controls on `closeControls` and on terminal states. |
 | `cms_turn_close_all` | `(p_session TEXT, p_reason TEXT) RETURNS VOID` | Helper. The caller holds the row lock. |
@@ -1018,9 +1037,8 @@ if (pre.kind === "already-committed") {                                  // an e
     return finishTurnControl(stored, savedControlCursor(pre.result, turn), { alwaysEnd: true });   // T8 only
 }
 // T2: existing budget and workspace gates. A refused turn returns here, before T3.
-// Existing: record the prompt as user.message, except for the carried wake prompt and when
-//   the session row loaded before T3 has turnHigh >= turn (an earlier attempt passed T3); state = running.
-const st = await cmsRetryCritical(() => catalog.turnStart(S, turn));     // T3, replaces setActiveTurnIndex; throws on failure
+// Build the prompt records (system message, prompt), except for the carried wake prompt; state = running.
+const st = await cmsRetryCritical(() => catalog.turnStart(S, turn, records, worker));   // T3: marks the turn running and writes the records (0083); throws on failure
 if ("stale" in st) throw staleTurnError();
 let start = 0;
 if (lifecycle && (st.stopped || st.controls.length > 0))
@@ -1099,17 +1117,19 @@ Notes:
   orchestration clears delivered workspace notes from it. Turn control does
   not change workspace attach (the runTurn gates) or release
   (`releaseAffinity`, worker eviction and shutdown).
-- **Duplicate prompt after worker loss.** A worker loss gives
-  the same activity input to another worker. Before this change the next
-  worker recorded the prompt and the turn's system message again; this
-  duplicate already exists on `main` and on V3. On V4, when the session row
-  that the activity already loads before T3 has `turnHigh >= turnIndex`, both
-  records are skipped. No CMS call is added. Known limits: a crash between the
-  prompt record and T3 still records the prompt again, and two attempts of one
-  turn that run at the same time (3.9) can both read the old `turnHigh` and
-  both record it.
+- **Prompt records (0083).** On V4 the turn's system message and prompt are
+  written by T3, in the transaction that marks the turn running, so a prompt
+  is recorded before its turn accepts any control (4.14). A record with client
+  message ids is written on any start when no prompt record of the session
+  holds one of its ids; it is also passed on a retry, which repairs a turn
+  whose earlier attempt never recorded it. A record without ids is written on
+  the turn's first start only, and not on a retry. A worker loss, a crash
+  before T3 and two attempts of one turn (3.9) therefore record the prompt
+  once. There are no best-effort prompt writes on the V4 path; V3 is
+  unchanged.
 - **Fault points.** `turn.control.after-start` (T3), `after-writeback` (T6),
-  `after-commit` (T7) and `after-end` (T8) (P10). Session-scoped hold points
+  `after-commit` (T7), `before-end` (each T8 attempt; the double-fault test of
+  5.1) and `after-end` (T8) (P10). Session-scoped hold points
   `turn.control.before-send` (after T3, before the initial send) and
   `turn.control.before-writeback` (after the gate closed, before T6) (P23).
 - **Cancellation.** PilotSwarm already polls `activityCtx.isCancelled()` every
@@ -1336,6 +1356,68 @@ no orchestration yield and no orchestration change.
   agent tuner's read-only set) and is refused to native tasks. The base
   prompts name both controls in one sentence.
 
+### 4.14 Convert a queued message (Steer now) and Cancel
+
+A message the person sent while a turn runs waits in the orchestration's queue
+(the outbox shows it `✓` queued). Every such message gets two visible
+actions: **Steer now** and **Cancel**. Cancel is the existing tombstone
+(`cancelPendingMessage`) and is never gated. Steer now is offered only while
+the session's running turn accepts turn control, `sessions.steering` is
+effective for the viewer, and the message has no images (a steer is text
+only). The TUI acts on the queued message selected with `↑`: `Ctrl+T` steers
+now, `d` cancels.
+
+Steer now sends the message's text as a steer that names it:
+`steerSessionTurn(sessionId, { text, requestId, replacesClientMessageId })`
+(management client, Web API, MCP `replaces_client_message_id`).
+
+```text
+client: X queued, "Steering…" ─► cms_turn_control_add(..., p_replaces = X)
+   request-id retry → first answer │ same X, open or delivered → first answer
+   steering_disabled │ X recorded as a prompt → already_received │ no_turn │ legacy_turn │ too_many
+   else user.steer { ..., replacesClientMessageId: X }
+turn end: X's steer ≤ cursor (not stopped) → delivered; otherwise not_delivered (never carried)
+result.replacedClientMessageIds = X of the turn's delivered converted steers
+orchestration: before anything else, X joins the cancel set and is recorded
+   pending_messages.cancelled { clientMessageIds: [X], reason: "converted_to_steer" }
+   → drain/dispatch drops X; it never runs as its own turn
+```
+
+Why the text runs exactly once (for a session with a store; D4 otherwise):
+
+- **Received before controllable.** T3 records X's prompt in the transaction
+  that marks its turn running (4.7), and both lock the session row. A steer
+  that names a message whose turn started is refused `already_received`.
+- **No dispatch during a turn.** A V4 turn is a plain `yield` of `runTurn`
+  (no race, no dequeue). Until its result is handled, X can only be in the
+  duroxide queue or the FIFO (both check the cancel set when they drop a
+  prompt), in `pendingPrompt` (only the retried or initial prompt of a turn,
+  which is either recorded or never started), or merged into the running
+  turn (recorded).
+- **Delivered means saved.** `delivered` needs the published save (a stopped
+  turn is not saved: its steers are `not_delivered`). An error result keeps
+  the replacement: its retry starts from that saved conversation.
+- **The drop survives continue-as-new.** The cancel set is carried (the newest
+  200 ids; an id leaves when its prompt is dropped). Eviction needs more than
+  200 cancelled or converted prompts waiting at once.
+- **Give-up.** The give-up state write returns `cms_turn_replaced` of the
+  given-up turn, applied like a result. The one accepted residual is the
+  double fault in 5.1.
+- **Not delivered.** X stays queued and runs in its own place. The client
+  never re-sends it: X is its own fallback.
+
+The client keeps X queued with the phase `steering` ("Steering…") until X is
+dropped (its `pending_messages.cancelled` receipt) or its steer's outcome is
+not `delivered`; then X is queued again with a notice ("Could not steer: <reason>.
+Still queued."). A refusal does the same. `already_received` says the agent
+already has the message; its own receipt clears it. A request id is reused
+only to retry a request that got no answer; any definite answer ends it.
+
+Portal selectors: `queued-actions`, `queued-item` (`data-phase`:
+`queued`, `steering`, `cancelling`; `data-item-id`), `queued-steer-now`,
+`queued-cancel`, `queued-notice`. The transcript steer item keeps
+`control-steer`; its `data-outcome` can be `not_delivered_still_queued`.
+
 ## 5. Recovery and edge cases
 
 ### 5.1 Every crash point
@@ -1346,7 +1428,7 @@ the activity lock expires.
 | Crash between | Left behind | Next attempt | Verdict |
 |---|---|---|---|
 | T1 and the prompt record | nothing new | runs normally | as today |
-| the prompt record and T3 | the prompt recorded, `turn_high` not yet moved | runs normally, and records the prompt again | as today; known limit of the duplicate-prompt guard |
+| the prompt record and T3 | nothing: since 0083 the V4 prompt is recorded inside T3's transaction | runs normally and records the prompt once | correct (4.7) |
 | T3 and T6 | turn marked running, prompt recorded, controls open | starts from the previous saved turn. Turn start returns all open controls. A Stop ends the turn without a model run. Steers are folded in. The prompt is not recorded again. | correct (3.5) |
 | T6 and T7 | running mark cleared, controls open, nothing saved | as above. Turn start marks the turn running again. | correct, one model re-run (3.6) |
 | T7 and T8 | turn saved with its cursor, controls open | existing "already saved" path, no model run, then turn end with the saved cursor and the carried seqs | correct (3.7) |
@@ -1356,6 +1438,7 @@ the activity lock expires.
 | thrown error | controls open, carried steers kept by the orchestration | the orchestration retries the same turn index. Turn start returns the controls; the carried steers ride in the input. | correct (3.12) |
 | T7 and a throw (for example turn end fails after its in-place retries) | turn saved under the attempt's turnKey, controls open | the retry of a thrown turn sends the same turnKey again (1.0.81), so it takes the "already saved" path: no model run, then turn end | correct; before this rule, a new key ran the model again and saved twice |
 | session without a store | no saved conversation | re-runs from nothing. A stopped turn's earlier delivered steer is labelled `not_delivered`, although the live conversation keeps it. | as today (D4) |
+| double fault: T7 saved a conversation that holds a converted steer, then every retry fails before T8 and the orchestration gives up | the give-up write closes the open converted steer `not_delivered`; the queued message stays queued | the message runs once, as its own turn | accepted residual (owner, 2026-10-14): the text is in the saved conversation and runs once more as the message; nothing is lost. Ordinary steers behave the same way (labelled "Not delivered"). Test: `turn-control-convert-live` "double fault". |
 
 **The turn after a stopped turn.** A stopped turn's snapshot is not saved
 (on every version, as before turn control), so the next turn starts from the
@@ -1388,6 +1471,18 @@ save, then turn end.
 
 A turn the orchestration gives up on gets `not_delivered` for its open steers
 and `stopped` for its open Stops. So does any terminal state (P20).
+
+A converted steer (4.14) is never carried: after the cursor it gets
+`not_delivered`, also without a Stop, and its queued message runs in its
+place.
+
+**Labels (D8).** Clients label a steer "Delivered" as soon as its
+`session.steer_confirmed` arrives, before the outcome, and keep that label
+when the turn is then stopped (outcome `not_delivered`). The kept-text offer
+after a Stop is unchanged: a stopped turn is not saved, so the next turn may
+not hold the steer. A converted steer whose outcome is `not_delivered` reads
+"Not delivered · still queued", confirmed or not, because its message runs
+next.
 
 When a steer becomes `carried`: it was accepted before the end-of-turn write
 (T6), no Stop is open, and the saved conversation does not hold it. In
@@ -1704,6 +1799,8 @@ All decisions are decided by the owner.
 | D5 | A Stop that arrives after the turn finished | answered "too late", and it cancels any carried steers |
 | D6 | A carried steer whose consuming turn ends stopped | option A: it is not run again; its outcome stays `carried`; clients show "Carried, then stopped" (2026-10-13) |
 | D7 | Phone composer (viewport 600 px or less) while a turn runs | option A: the turn state, Stop, Steer and Send take their own row under the input, so the composer is exactly one action row taller than when idle. Nothing moves within a phase. The input keeps at least 70% of the composer width while Stop shows, and the controls fit on their row at 320 x 400 (2026-10-14) |
+| D8 | When a steer reads "Delivered" | as soon as `session.steer_confirmed` arrives; it stays "Delivered" when the turn is then stopped. A label change only: the kept-text offer after a Stop is unchanged (2026-10-14) |
+| D9 | Convert a queued message (4.14) | a delivered converted steer replaces the message; any other outcome leaves it queued; a converted steer is never carried; the double fault of 5.1 is an accepted residual (2026-10-14) |
 
 ### 8.2 Checks
 

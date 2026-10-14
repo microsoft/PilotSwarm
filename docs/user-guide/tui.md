@@ -564,7 +564,8 @@ high-frequency ones:
 | `V` / `Space` / `Esc` | Multi-select |
 | `Ctrl+A` | Attach file |
 | `Ctrl+X` | Stop the running turn |
-| `Ctrl+T` | Steer the running turn with the prompt text |
+| `Ctrl+T` | Steer the running turn with the prompt text; with a queued message selected (`↑`), steer now with that message |
+| `d` | With a queued message selected (`↑`): cancel it |
 | `r` | Refresh |
 | `a` | Linked-item picker |
 | `Shift+A` | Admin Console |

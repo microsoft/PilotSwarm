@@ -125,7 +125,14 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await expect.poll(() => sends).toBe(1);
             await expect(chat).toContainText('Preserve this queued prompt');
             await expect(footer).toContainText('1 queued');
-            await assertSame(running);
+            // The queued message's row (Steer now, Cancel) joins the composer:
+            // the transcript gives up exactly that row; the header stays.
+            const queuedRow = surface.getByTestId('queued-actions');
+            await expect(surface.getByTestId('queued-item')).toHaveAttribute('data-phase', 'queued');
+            const rowSpace = await queuedRow.evaluate(el => el.getBoundingClientRect().height + (parseFloat(getComputedStyle(el.parentElement).rowGap) || 0));
+            const withRow = await geometry();
+            expect(Math.abs(running.transcriptBottom - withRow.transcriptBottom - rowSpace), 'one queued row').toBeLessThan(1);
+            expect(Math.abs(withRow.headerTop - running.headerTop), 'headerTop').toBeLessThan(1);
             expect(await chat.getByText(/Preserve this queued prompt/).count()).toBe(1);
             const queued = await geometry();
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 9000 });

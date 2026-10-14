@@ -52,6 +52,8 @@ import {
     selectSessionRows,
     selectSelectedFileBrowserItem,
     selectTurnControlView,
+    canConvertQueuedItem,
+    formatConvertNotice,
     selectVisibleSessionRows,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
@@ -1926,7 +1928,8 @@ export class PilotSwarmUiController {
         const items = this.getSessionOutbox(sessionId);
         const item = items.find((candidate) => candidate.id === itemId);
         if (!item) return false;
-        if (item.phase === "cancelling") return false;
+        // A message being converted waits for its steer's answer.
+        if (item.phase === "cancelling" || item.phase === "steering") return false;
 
         if (this.getPromptEditSessionMatch(sessionId)?.itemId === itemId) {
             this.exitPendingPromptEdit({ restoreDraft: true });
@@ -1938,7 +1941,7 @@ export class PilotSwarmUiController {
 
         if (item.phase === "queued") {
             this.setSessionOutboxItems(sessionId, items.map((candidate) => (
-                candidate.id === itemId ? { ...candidate, phase: "cancelling" } : candidate
+                candidate.id === itemId ? { ...candidate, phase: "cancelling", convertNotice: null } : candidate
             )));
             if (typeof this.transport?.cancelPendingMessage === "function") {
                 try {
@@ -2207,8 +2210,10 @@ export class PilotSwarmUiController {
         if (ids.size === 0) return false;
 
         const items = this.getSessionOutbox(sessionId);
+        // The orchestration dropped the message: a cancel, or a conversion to
+        // a delivered steer. Whatever the local phase, it will never run.
         const nextItems = items.filter((item) => {
-            if (item?.phase !== "cancelling") return true;
+            if (item?.phase === "pending") return true;
             const itemIds = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [item.id];
             return !itemIds.some((id) => ids.has(id));
         });
@@ -5955,6 +5960,7 @@ export class PilotSwarmUiController {
             if (notice?.reason === "stop_pending" && notice.controlSeq === Number(event.data?.seq)) {
                 this._setTurnControl(sessionId, { stopNotice: null });
             }
+            this._applyConvertOutcome(sessionId, Number(event.data?.seq), event.data?.outcome);
         }
         if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
@@ -11003,6 +11009,13 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
             return;
         }
+        // A selected queued message: Steer converts it (Steer now).
+        const promptEdit = this.getPromptEditSessionMatch(sessionId);
+        const selected = promptEdit && this.getSessionOutbox(sessionId).find((item) => item.id === promptEdit.itemId);
+        if (selected?.phase === "queued") {
+            await this.convertQueuedToSteer(sessionId, selected.id);
+            return;
+        }
         const entry = this._turnControlEntry(sessionId);
         if (entry.steer?.phase === "sending") return;
         // A retry resends the request's own immutable text and never reads
@@ -11042,6 +11055,80 @@ export class PilotSwarmUiController {
         // The text moves into the request: it is immutable until an answer.
         this.setPrompt("", 0);
         await this._sendSteer(sessionId, request);
+    }
+
+    /**
+     * Steer now: send a durably queued message as a steer that replaces it.
+     * The message stays queued ("Steering…") until the orchestration drops it
+     * (its steer was delivered) or the steer misses (queued again, with a
+     * notice). Nothing is re-sent: the queued message is its own fallback,
+     * so its text runs exactly once. A request id is reused only to retry a
+     * request that got no answer.
+     */
+    async convertQueuedToSteer(sessionId, itemId) {
+        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.id === itemId);
+        if (!item) return false;
+        if (typeof this.transport.steerSessionTurn !== "function") {
+            this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
+            return false;
+        }
+        if (!canConvertQueuedItem(this.getState(), sessionId, item)) {
+            this.dispatch({ type: "ui/status", text: item.phase === "queued"
+                ? "Steer now needs a running turn that accepts steering, and a message without images"
+                : "Only a queued message can be steered now" });
+            return false;
+        }
+        if (this.getPromptEditSessionMatch(sessionId)?.itemId === itemId) {
+            this.exitPendingPromptEdit({ restoreDraft: true });
+        }
+        const requestId = item.convert?.retry ? item.convert.requestId : this._newTurnControlRequestId();
+        const replacesClientMessageId = Array.isArray(item.clientMessageIds) && item.clientMessageIds[0] ? item.clientMessageIds[0] : item.id;
+        this._updateOutboxItem(sessionId, itemId, { phase: "steering", convert: { requestId }, convertNotice: null });
+        this.dispatch({ type: "ui/status", text: "Steering the running turn with the queued message…" });
+        let result;
+        try {
+            result = await this.transport.steerSessionTurn(sessionId, { text: item.text, requestId, replacesClientMessageId });
+        } catch (error) {
+            const reason = classifyTurnControlError(error);
+            this._returnConvertToQueue(sessionId, itemId, { reason, detail: error?.message || String(error) },
+                reason === "unconfirmed" ? { requestId, retry: true } : null);
+            return false;
+        }
+        const outcome = result?.outcome || "error";
+        if (outcome !== "accepted") {
+            if (outcome === "steering_disabled") this.dispatch({ type: "turnControl/steering", enabled: false });
+            this._returnConvertToQueue(sessionId, itemId, { reason: outcome }, null);
+            return false;
+        }
+        const steerSeq = Number(result.steerId);
+        this._updateOutboxItem(sessionId, itemId, { convert: { requestId, steerSeq } });
+        this.dispatch({ type: "ui/status", text: "Steer accepted; the queued message waits for it" });
+        // A repeated answer can name a steer whose outcome is already loaded.
+        const known = (this.getState().history.bySessionId.get(sessionId)?.events || [])
+            .find((event) => event.eventType === "session.control_outcome" && Number(event.data?.seq) === steerSeq);
+        if (known) this._applyConvertOutcome(sessionId, steerSeq, known.data?.outcome);
+        this.syncSessionEvents(sessionId).catch(() => {});
+        return true;
+    }
+
+    /** A converted message's steer got its outcome: anything but delivered queues the message again. */
+    _applyConvertOutcome(sessionId, steerSeq, outcome) {
+        if (!Number.isFinite(steerSeq) || outcome === "delivered") return;
+        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.phase === "steering" && candidate.convert?.steerSeq === steerSeq);
+        if (item) this._returnConvertToQueue(sessionId, item.id, { reason: "not_delivered" }, null);
+    }
+
+    _returnConvertToQueue(sessionId, itemId, notice, convert) {
+        const item = this.getSessionOutbox(sessionId).find((candidate) => candidate.id === itemId);
+        if (item?.phase !== "steering") return;
+        this._updateOutboxItem(sessionId, itemId, { phase: "queued", convert: convert || null, convertNotice: notice });
+        this.dispatch({ type: "ui/status", text: formatConvertNotice(notice) });
+    }
+
+    _updateOutboxItem(sessionId, itemId, patch) {
+        this.setSessionOutboxItems(sessionId, this.getSessionOutbox(sessionId).map((item) => (
+            item.id === itemId ? { ...item, ...patch } : item
+        )));
     }
 
     async _sendSteer(sessionId, request) {

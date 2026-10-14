@@ -13,6 +13,7 @@ import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
+import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -406,6 +407,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
+        { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
     ];
 }
 

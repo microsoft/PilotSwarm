@@ -4,6 +4,8 @@
 // calls and a routed WebSocket for live session events. Every selector and
 // every attribute value of the contract table is reached here, in the single
 // session view, in the Master of Agents dashboard and in the phone focus views.
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
@@ -472,7 +474,7 @@ test("a lost Stop and a lost Steer each keep their own notice and Retry", async 
 // several sessions, must send each control to the session it shows.
 
 const TWO_SESSIONS = { [SID]: { title: "Agent A" }, [SID2]: { title: "Agent B" } };
-const moaProfile = () => ({ themeId: "terminal-green", moa: { version: 2, aspectRatio: 2, composerMode: "shared",
+const moaProfile = (themeId = "terminal-green") => ({ themeId, moa: { version: 2, aspectRatio: 2, composerMode: "shared",
     tree: { id: "split", type: "split", direction: "row", ratio: 50,
         first: { id: "pa", type: "chat", sessionId: SID }, second: { id: "pb", type: "chat", sessionId: SID2 } } } });
 const moaPanel = (page, id) => page.locator(`[data-moa-panel="${id}"]`);
@@ -674,3 +676,188 @@ test("phone chat 390x844: Stop and Steer fit under a wide input and act on the s
     await steerAndStop(chat, SID, "phone chat steer");
     await expectIdlePhoneComposer(chat, 224);
 });
+
+// ── Convert a queued message (Steer now) or cancel it ────────────────────
+// Every durably queued message has a row in the composer with Steer now and
+// Cancel. Steer now sends its text as a steer that replaces it; the row stays
+// "Steering…" until the message is dropped (delivered) or the steer misses
+// (queued again, with a notice). Screenshots go to the test output and, when
+// PS_UX_SHOTS_DIR is set, to that folder (the UX report).
+
+const THEMES = [{ name: "default", profile: null }, { name: "terminal-green", profile: { themeId: "terminal-green" } }];
+const QUEUED_TEXT = "and let me know what the agent is doing in this space";
+
+async function shot(page, name) {
+    const file = test.info().outputPath(`${name}.png`);
+    await page.screenshot({ path: file });
+    const dir = process.env.PS_UX_SHOTS_DIR;
+    if (dir) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.copyFileSync(file, path.join(dir, `${name}.png`));
+    }
+}
+
+/** The queued-message rows of a composer. */
+const queuedRows = (wire) => ({
+    item: wire.composer.getByTestId("queued-item"),
+    steerNow: wire.composer.getByTestId("queued-steer-now"),
+    cancel: wire.composer.getByTestId("queued-cancel"),
+    notice: wire.composer.getByTestId("queued-notice"),
+});
+
+/** Send `text` while the turn runs; it is durably queued. Returns its client message id. */
+async function queueMessage(wire, text = QUEUED_TEXT) {
+    await wire.input.fill(text);
+    await wire.sendButton.click();
+    const rows = queuedRows(wire);
+    await expect(rows.item).toHaveAttribute("data-phase", "queued");
+    await expect(rows.item).toContainText(text);
+    return rows.item.getAttribute("data-item-id");
+}
+
+/** A steer route that records the steer as the server does, once the test releases it. */
+function heldSteer(wire) {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    return {
+        release: () => release(),
+        handler: async ({ answer, body }) => {
+            await gate;
+            const steerId = wire.event("user.steer", { turn: 3, text: body.text, requestId: body.requestId, actor: null,
+                ...(body.replacesClientMessageId ? { replacesClientMessageId: body.replacesClientMessageId } : {}) });
+            return answer({ outcome: "accepted", steerId, turn: 3 });
+        },
+    };
+}
+
+for (const theme of THEMES) {
+    test(`desktop (${theme.name}): Steer now converts a queued message: Steering…, then Delivered and the queue empty; after a reload one row`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        let held;
+        const wire = await open(page, { profile: theme.profile, handlers: { steer: (args) => held.handler(args) } });
+        held = heldSteer(wire);
+        const id = await queueMessage(wire);
+        const rows = queuedRows(wire);
+        await expect(rows.steerNow).toBeVisible();
+        await expect(rows.cancel).toBeVisible();
+        await shot(page, `convert-desktop-queued-${theme.name}`);
+
+        await rows.steerNow.click();
+        await expect(rows.item).toHaveAttribute("data-phase", "steering");
+        await expect(rows.item).toContainText("Steering…");
+        await expect(rows.steerNow).toHaveCount(0);
+        await expect(rows.cancel).toHaveCount(0);
+        expect(wire.state.steers).toHaveLength(1);
+        expect(wire.state.steers[0]).toMatchObject({ text: QUEUED_TEXT, replacesClientMessageId: id, sessionId: SID });
+        await shot(page, `convert-desktop-steering-${theme.name}`);
+
+        held.release();
+        await expect.poll(() => wire.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
+        const steerSeq = wire.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
+        await expect(rows.item).toHaveAttribute("data-phase", "steering");
+        wire.event("session.steer_confirmed", { seq: steerSeq, turn: 3, messageId: "m-1" });
+        const steerItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${steerSeq}"]`);
+        await expect(steerItem).toHaveAttribute("data-outcome", "delivered");
+        wire.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "delivered" });
+        wire.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "converted_to_steer" });
+        await expect(rows.item).toHaveCount(0);
+        await expect(steerItem).toHaveAttribute("data-outcome", "delivered");
+        await expect(steerItem).toContainText(QUEUED_TEXT);
+        await shot(page, `convert-desktop-delivered-${theme.name}`);
+
+        await page.reload();
+        await expect(wire.transcript.getByTestId("control-steer")).toHaveCount(1);
+        await expect(wire.transcript.getByTestId("control-steer")).toHaveAttribute("data-outcome", "delivered");
+        await expect(wire.transcript.getByText(QUEUED_TEXT)).toHaveCount(1);
+        await expect(rows.item).toHaveCount(0);
+        expect(wire.state.sends).toHaveLength(1);
+    });
+
+    test(`desktop (${theme.name}): a steer that misses leaves the message queued with a notice; the transcript says still queued`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        let held;
+        const wire = await open(page, { profile: theme.profile, handlers: { steer: (args) => held.handler(args) } });
+        held = heldSteer(wire);
+        held.release();
+        await queueMessage(wire);
+        const rows = queuedRows(wire);
+        await rows.steerNow.click();
+        await expect.poll(() => wire.state.sessions[SID].events.filter((e) => e.eventType === "user.steer").length).toBe(1);
+        const steerSeq = wire.state.sessions[SID].events.find((e) => e.eventType === "user.steer").seq;
+        wire.event("session.control_outcome", { seq: steerSeq, turn: 3, outcome: "not_delivered" });
+        await expect(rows.item).toHaveAttribute("data-phase", "queued");
+        await expect(rows.notice).toHaveText("Could not steer: the turn ended before the agent read it. Still queued.");
+        const steerItem = wire.transcript.locator(`[data-testid="control-steer"][data-control-seq="${steerSeq}"]`);
+        await expect(steerItem).toHaveAttribute("data-outcome", "not_delivered_still_queued");
+        await expect(steerItem).toContainText("Not delivered · still queued");
+        await expect(rows.steerNow).toBeVisible();
+        await shot(page, `convert-desktop-not-delivered-${theme.name}`);
+        expect(wire.state.sends).toHaveLength(1);
+    });
+
+    test(`desktop (${theme.name}): steering off: Cancel only; Cancel drops the message`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        const portal = await fakePortal(page, { steering: false, profile: theme.profile, sessions: { [SID]: { title: "Turn control" } } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+        await expect.poll(() => portal.liveSubscriptions(SID)).toBeGreaterThan(0);
+        const wire = portal.wire(SID);
+        await page.route("**/api/v1/sessions/*/cancel-pending", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: {} }) }));
+        const id = await queueMessage(wire);
+        const rows = queuedRows(wire);
+        await expect(rows.cancel).toBeVisible();
+        await expect(rows.steerNow).toHaveCount(0);
+        await shot(page, `convert-desktop-steering-off-${theme.name}`);
+        await rows.cancel.click();
+        await expect(rows.item).toHaveAttribute("data-phase", "cancelling");
+        wire.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "drain-incoming" });
+        await expect(rows.item).toHaveCount(0);
+        expect(wire.state.steers).toEqual([]);
+    });
+
+    test(`MoA (${theme.name}): the queued rows and Steer now belong to the focused panel's session`, async ({ page }) => {
+        await page.setViewportSize({ width: 1600, height: 950 });
+        let held;
+        const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: moaProfile(theme.profile?.themeId || "workspace-dark"),
+            handlers: { steer: (args) => held.handler(args) } });
+        await openMoa(page, portal);
+        const a = moaWire(page, portal, SID, "pa"), b = moaWire(page, portal, SID2, "pb");
+        await expect.poll(() => portal.liveSubscriptions(SID2)).toBeGreaterThan(0);
+        await moaPanel(page, "pb").locator("header").first().click();
+        await expect(moaPanel(page, "pb")).toHaveClass(/is-focused/);
+        held = heldSteer(b);
+        held.release();
+        const id = await queueMessage(b, "queued for agent B");
+        await expect(queuedRows(b).steerNow).toBeVisible();
+        await shot(page, `convert-moa-${theme.name}`);
+        await queuedRows(b).steerNow.click();
+        await expect.poll(() => portal.state.steers.length).toBe(1);
+        expect(portal.state.steers[0]).toMatchObject({ sessionId: SID2, replacesClientMessageId: id });
+        await moaPanel(page, "pa").locator("header").first().click();
+        await expect(moaPanel(page, "pa")).toHaveClass(/is-focused/);
+        await expect(queuedRows(a).item).toHaveCount(0);
+    });
+
+    for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
+        test(`phone ${viewport.width}x${viewport.height} (${theme.name}): a queued message shows Steer now and Cancel while the turn runs; Cancel drops it`, async ({ page }) => {
+            await page.setViewportSize(viewport);
+            const portal = await fakePortal(page, { sessions: TWO_SESSIONS, profile: theme.profile });
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${SID}`);
+            await page.route("**/api/v1/sessions/*/cancel-pending", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: {} }) }));
+            const chat = portal.wire(SID, { composerScope: page.locator(".ps-chat-composer") });
+            await expect(chat.turnState).toHaveAttribute("data-accepts-controls", "true");
+            const id = await queueMessage(chat);
+            const rows = queuedRows(chat);
+            await expectControlsFit({ steerNow: rows.steerNow, cancel: rows.cancel, input: chat.input, stop: chat.stopButton });
+            for (const button of [rows.steerNow, rows.cancel]) {
+                const box = await button.boundingBox();
+                expect(Math.min(box.width, box.height), "a touch target of at least 40 px").toBeGreaterThanOrEqual(40);
+            }
+            await shot(page, `convert-phone-${viewport.width}-queued-${theme.name}`);
+            await rows.cancel.click();
+            await expect(rows.item).toHaveAttribute("data-phase", "cancelling");
+            chat.event("pending_messages.cancelled", { clientMessageIds: [id], reason: "drain-incoming" });
+            await expect(rows.item).toHaveCount(0);
+            await shot(page, `convert-phone-${viewport.width}-after-cancel-${theme.name}`);
+        });
+    }
+}

@@ -46,6 +46,7 @@ import {
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
+    selectQueuedMessageActions,
     selectCanvasView,
     selectFileBrowserItems,
     selectFilesFilterModal,
@@ -9703,6 +9704,62 @@ function KeptSteerText({ controller, kept, sessionId }) {
         }, "Discard"));
 }
 
+/**
+ * One row per durably queued message of the composer's session, with its
+ * actions: Steer now (send it to the running turn now, replacing the queued
+ * message) and Cancel. A message being converted shows "Steering…"; one whose
+ * conversion did not happen shows why and stays queued.
+ */
+function QueuedMessageActions({ controller, sessionId }) {
+    const blocks = useControllerSelector(controller, (state) => selectQueuedMessageActions(state, sessionId), shallowEqualBlocks);
+    if (blocks.length === 0) return null;
+    return React.createElement("div", { className: "ps-queued-actions", "data-testid": "queued-actions" },
+        blocks.map((block) => {
+            const text = block.text.replace(/\s+/g, " ").trim();
+            return React.createElement("div", {
+                key: block.itemId,
+                className: `ps-queued-item is-${block.phase}`,
+                "data-testid": "queued-item",
+                "data-phase": block.phase,
+                "data-item-id": block.itemId,
+            },
+            React.createElement("span", { className: "ps-queued-item-text", title: text }, `✓ ${text}`),
+            block.phaseLabel
+                ? React.createElement("span", { className: "ps-queued-item-phase", role: "status" }, block.phaseLabel)
+                : null,
+            block.canSteer
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button ps-queued-steer",
+                    "data-testid": "queued-steer-now",
+                    title: "Send this message to the running turn now, in place of waiting",
+                    onPointerDown: (event) => event.preventDefault(),
+                    onClick: () => { controller.convertQueuedToSteer(sessionId, block.itemId).catch(() => {}); },
+                }, "Steer now")
+                : null,
+            block.canCancel
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button ps-queued-cancel",
+                    "data-testid": "queued-cancel",
+                    title: "Cancel this queued message",
+                    onPointerDown: (event) => event.preventDefault(),
+                    onClick: () => { controller.cancelOutboxItem(sessionId, block.itemId).catch(() => {}); },
+                }, "Cancel")
+                : null,
+            block.notice
+                ? React.createElement("span", { className: "ps-queued-item-notice", role: "status", "data-testid": "queued-notice" }, block.notice)
+                : null);
+        }));
+}
+
+function shallowEqualBlocks(a, b) {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((block, index) => block.itemId === b[index].itemId && block.phase === b[index].phase && block.text === b[index].text
+        && block.canSteer === b[index].canSteer && block.canCancel === b[index].canCancel && block.notice === b[index].notice);
+}
+
 function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
@@ -9946,6 +10003,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
         } : {}),
     },
+        promptState.sessionId
+            ? React.createElement(QueuedMessageActions, { controller, sessionId: promptState.sessionId })
+            : null,
         promptState.stopNotice
             ? React.createElement(TurnControlNotice, { controller, notice: promptState.stopNotice, sessionId: promptState.sessionId })
             : null,

@@ -90,7 +90,15 @@ async function main() {
         record(`steer ${refusal} → not an error, accepted false, send_message hint`,
             !res.isError && body.accepted === false && body.outcome === refusal && /send_message/.test(body.hint ?? ""));
     }
-    for (const refusal of ["not_found", "too_many", "request_id_reused", "steering_disabled"]) {
+    {
+        const calls = [];
+        const { res } = await call(makeCtx(calls, { steer: { outcome: "accepted", steerId: 42, turn: 3 } }),
+            "steer_session_turn", { session_id: UUID, text: "queued text", request_id: "conv", replaces_client_message_id: "cm-1" });
+        record("steer converting a queued message → replacesClientMessageId reaches the client",
+            !res.isError && JSON.stringify(op(calls, "steerSessionTurn")[0]?.[2])
+                === JSON.stringify({ text: "queued text", requestId: "conv", replacesClientMessageId: "cm-1" }));
+    }
+    for (const refusal of ["not_found", "too_many", "request_id_reused", "steering_disabled", "already_received"]) {
         const { res, body } = await call(makeCtx([], { steer: { outcome: refusal } }),
             "steer_session_turn", { session_id: UUID, text: "x", request_id: `r-${refusal}` });
         record(`steer ${refusal} → accepted false, no fallback hint`,

@@ -419,38 +419,73 @@ describe("runTurnV4: carried steers (P12, P17, D6)", () => {
     });
 });
 
-describe("runTurnV4: an attempt re-dispatched after turn start records the prompt once", () => {
+describe("runTurnV4: the turn's prompt is recorded by turn start (migration 0083)", () => {
     const recorded = (h) => h.recordedEvents.filter((e) => e.eventType === "user.message" || e.eventType === "system.message").map((e) => e.eventType);
-    const input = { turnIndex: 4, prompt: "check the build", config: { turnSystemPrompt: "turn note" } };
+    const records = (v4) => v4.calls.find((c) => c[0] === "turnStart")[3].map((r) => [r.eventType, r.data.content, r.data.clientMessageIds]);
+    const input = { turnIndex: 4, prompt: "check the build", clientMessageIds: ["x1"], config: { turnSystemPrompt: "turn note" } };
 
-    it("the first attempt records the prompt and the system message", async () => {
+    it("the first attempt passes the system message and the prompt to turn start and writes neither itself", async () => {
         const v4 = turnControlCatalog({ writeback: false });
-        const h = makeRunTurnHarness({
-            catalogExtras: { ...v4.extras, getSession: vi.fn(async (sessionId) => ({ sessionId, owner: null, turnHigh: 3 })) },
-        });
+        const h = makeRunTurnHarness({ catalogExtras: v4.extras });
         await h.runTurn("s", input, "runTurnV4");
-        expect(recorded(h)).toEqual(["system.message", "user.message"]);
-        expect(v4.calls.map((c) => c[0])).toContain("turnStart");
+        expect(records(v4)).toEqual([
+            ["system.message", expect.stringContaining("turn note"), undefined],
+            ["user.message", "check the build", ["x1"]],
+        ]);
+        expect(recorded(h)).toEqual([]);
     });
 
-    it("an attempt after an earlier one passed turn start (worker loss) records nothing again", async () => {
-        const v4 = turnControlCatalog({ writeback: false });
+    it("a retry passes a prompt with ids again (turn start records it only once), and nothing without ids", async () => {
+        const withIds = turnControlCatalog({ writeback: false });
+        await makeRunTurnHarness({ catalogExtras: withIds.extras }).runTurn("s", { ...input, retryCount: 1 }, "runTurnV4");
+        expect(records(withIds)).toEqual([["user.message", "check the build", ["x1"]]]);
+
+        const withoutIds = turnControlCatalog({ writeback: false });
+        await makeRunTurnHarness({ catalogExtras: withoutIds.extras }).runTurn("s", { ...input, clientMessageIds: undefined, retryCount: 1 }, "runTurnV4");
+        expect(records(withoutIds)).toEqual([]);
+    });
+
+    it("runTurnV3 keeps writing the records itself, as before", async () => {
+        const v3 = turnControlCatalog({ writeback: false });
+        const h = makeRunTurnHarness({ catalogExtras: v3.extras });
+        await h.runTurn("s", input, "runTurnV3");
+        expect(recorded(h)).toEqual(["system.message", "user.message"]);
+        expect(v3.calls.some((c) => c[0] === "turnStart")).toBe(false);
+    });
+});
+
+describe("runTurnV4: queued messages replaced by delivered converted steers", () => {
+    it("ride on the result from turn end: a normal end, an end that maps to stopped, and the already-saved path", async () => {
+        const normal = turnControlCatalog({ writeback: true, end: { stopped: false, late: [], replaced: ["x1"] } });
+        expect(await makeRunTurnHarness({ catalogExtras: normal.extras }).runTurn("s", { turnIndex: 1 }, "runTurnV4"))
+            .toMatchObject({ type: "completed", replacedClientMessageIds: ["x1"] });
+
+        const none = turnControlCatalog({ writeback: true, end: { stopped: false, late: [], replaced: [] } });
+        expect(await makeRunTurnHarness({ catalogExtras: none.extras }).runTurn("s", { turnIndex: 1 }, "runTurnV4"))
+            .not.toHaveProperty("replacedClientMessageIds");
+
+        const { sessionStateDir, store } = lifecycleDirs();
+        const saved = turnControlCatalog({ writeback: true, endFailures: 3, end: { stopped: false, late: [], replaced: ["x2"] } });
+        const sessionId = `tc-${randomUUID()}`;
         const h = makeRunTurnHarness({
-            catalogExtras: { ...v4.extras, getSession: vi.fn(async (sessionId) => ({ sessionId, owner: null, turnHigh: 4 })) },
+            catalogExtras: saved.extras, sessionStore: store, sessionStateDir,
+            turn: async () => { makeSessionLayout(sessionStateDir, sessionId); return { type: "completed", content: "saved answer" }; },
         });
-        const result = await h.runTurn("s", input, "runTurnV4");
-        expect(result.type).toBe("completed");
-        expect(recorded(h)).toEqual([]);
+        const retryInput = { turnIndex: 4, snapshot: { turnKey: "k4" } };
+        await expect(h.runTurn(sessionId, retryInput, "runTurnV4")).rejects.toThrow(/database unavailable/);
+        expect(await h.runTurn(sessionId, retryInput, "runTurnV4")).toMatchObject({ content: "saved answer", replacedClientMessageIds: ["x2"] });
         expect(h.session.runTurn).toHaveBeenCalledTimes(1);
     });
 
-    it("runTurnV3 keeps recording on a re-dispatch, as before", async () => {
-        const v3 = turnControlCatalog({ writeback: false });
-        const h = makeRunTurnHarness({
-            catalogExtras: { ...v3.extras, getSession: vi.fn(async (sessionId) => ({ sessionId, owner: null, turnHigh: 4 })) },
-        });
-        await h.runTurn("s", input, "runTurnV3");
-        expect(recorded(h)).toEqual(["system.message", "user.message"]);
+    it("a give-up state write returns the replaced ids of the latest started turn", async () => {
+        const turnReplaced = vi.fn(async () => ["x3"]);
+        const h = makeRunTurnHarness({ catalogExtras: { turnReplaced } });
+        const write = h.handlers.updateCmsState;
+        const ctx = { traceInfo() {} };
+        expect(await write(ctx, { sessionId: "s", state: "error", lastError: "gave up", closeControls: true })).toEqual({ replacedClientMessageIds: ["x3"] });
+        expect(turnReplaced).toHaveBeenCalledWith("s");
+        expect(await write(ctx, { sessionId: "s", state: "idle" })).toBeUndefined();
+        expect(turnReplaced).toHaveBeenCalledTimes(1);
     });
 });
 

@@ -52,13 +52,14 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     // Canvas revisions — kept in backward chat paging so the TUI's artifact
     // link line survives history loads (the portal skips the line either way).
     "session.canvas_updated",
-    // Session turn control: the Steer and Stop transcript items, and the two
-    // label inputs (their outcome and the carried-steer closing record).
-    // `session.steer_confirmed` is deliberately absent: it is not a chat item.
+    // Session turn control: the Steer and Stop transcript items, and the
+    // three label inputs: the outcome, the carried-steer closing record and
+    // the confirmation (a confirmed steer reads Delivered, decision C).
     "user.steer",
     "user.stop",
     "session.control_outcome",
     "session.carried_steers_closed",
+    "session.steer_confirmed",
 ];
 
 // ─── Session turn control (Stop and Steer) ──────────────────────
@@ -78,6 +79,8 @@ export const TURN_CONTROL_OUTCOME_LABELS = {
     carried_then_stopped: "Carried, then stopped",
     carried_not_run: "Carried, not run",
     not_delivered: "Not delivered",
+    // A converted queued message whose steer missed: the message runs in its place.
+    not_delivered_still_queued: "Not delivered · still queued",
     stopped: "Stopped",
     too_late: "Too late",
     stop_forced: "Stopped (forced)",
@@ -97,6 +100,10 @@ const CARRIED_CLOSE_OUTCOMES = {
 export function resolveTurnControlOutcome(item) {
     if (item?.kind === "turn-stop-legacy") return item.outcome === "stop_forced" ? "stop_forced" : "stopped";
     const outcome = item?.controlOutcome;
+    // A converted queued message whose steer missed runs as its own turn.
+    if (outcome === "not_delivered" && item.replacesClientMessageId) return "not_delivered_still_queued";
+    // Decision C: confirmed by the model reads Delivered, also when the turn is then stopped.
+    if (item?.controlConfirmed && (!outcome || outcome === "not_delivered")) return "delivered";
     if (!outcome) return "pending";
     if (outcome === "carried") return CARRIED_CLOSE_OUTCOMES[item.carriedReason] || "carried";
     return outcome;
@@ -118,6 +125,7 @@ function buildTurnControlItem(event) {
         turn: Number.isFinite(Number(data.turn)) ? Number(data.turn) : null,
         text: typeof data.text === "string" ? data.text : "",
         ...(typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
+        ...(typeof data.replacesClientMessageId === "string" ? { replacesClientMessageId: data.replacesClientMessageId } : {}),
         ...(data.actor && typeof data.actor === "object" ? { sender: data.actor } : {}),
         time: formatTimestamp(event.createdAt),
         createdAt: eventTimeMs(event),
@@ -144,11 +152,17 @@ function buildLegacyStopItem(event) {
     };
 }
 
-/** Outcome (`session.control_outcome`) and closing (`carried_steers_closed`) inputs, by control seq. */
+/** Outcome (`session.control_outcome`), closing (`carried_steers_closed`) and confirmation (`steer_confirmed`) inputs, by control seq. */
 function collectTurnControlLabels(events) {
     const outcomes = new Map();
     const closed = new Map();
+    const confirmed = new Set();
     for (const event of events || []) {
+        if (event?.eventType === "session.steer_confirmed") {
+            const seq = Number(event.data?.seq);
+            if (Number.isFinite(seq)) confirmed.add(seq);
+            continue;
+        }
         if (event?.eventType === "session.control_outcome") {
             const seq = Number(event.data?.seq);
             if (Number.isFinite(seq) && !outcomes.has(seq) && typeof event.data?.outcome === "string") {
@@ -164,25 +178,30 @@ function collectTurnControlLabels(events) {
             }
         }
     }
-    return { outcomes, closed };
+    return { outcomes, closed, confirmed };
 }
+
+const hasTurnControlLabels = (labels) => labels.outcomes.size > 0 || labels.closed.size > 0 || labels.confirmed.size > 0;
 
 function labelTurnControlItem(item, labels) {
     if (item?.kind !== "turn-control") return item;
     const controlOutcome = labels.outcomes.get(item.controlSeq) || item.controlOutcome;
     const carriedReason = labels.closed.get(item.controlSeq) || item.carriedReason;
-    if (controlOutcome === item.controlOutcome && carriedReason === item.carriedReason) return item;
+    const controlConfirmed = labels.confirmed.has(item.controlSeq) || item.controlConfirmed === true;
+    if (controlOutcome === item.controlOutcome && carriedReason === item.carriedReason
+        && controlConfirmed === (item.controlConfirmed === true)) return item;
     return {
         ...item,
         ...(controlOutcome ? { controlOutcome } : {}),
         ...(carriedReason ? { carriedReason } : {}),
+        ...(controlConfirmed ? { controlConfirmed } : {}),
     };
 }
 
 /** Apply one label event to the loaded control items (live path). */
 function applyTurnControlLabelEvent(chat, event) {
     const labels = collectTurnControlLabels([event]);
-    if (labels.outcomes.size === 0 && labels.closed.size === 0) return chat;
+    if (!hasTurnControlLabels(labels)) return chat;
     let changed = false;
     const next = chat.map((item) => {
         const labelled = labelTurnControlItem(item, labels);
@@ -1529,7 +1548,7 @@ export function buildHistoryModel(events = [], options = {}) {
         if (activityItem) activity.push(activityItem);
     }
     const controlLabels = collectTurnControlLabels(storedEvents);
-    const labelledChat = controlLabels.outcomes.size || controlLabels.closed.size
+    const labelledChat = hasTurnControlLabels(controlLabels)
         ? chat.map((item) => labelTurnControlItem(item, controlLabels))
         : chat;
 
@@ -1619,6 +1638,8 @@ export function appendEventToHistory(history, event) {
         next.chat = applyTurnControlLabelEvent(next.chat, event);
         return next;
     }
+    // A label input that also keeps its activity line.
+    if (event.eventType === "session.steer_confirmed") next.chat = applyTurnControlLabelEvent(next.chat, event);
 
     if (event.eventType === "user.message") {
         next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));

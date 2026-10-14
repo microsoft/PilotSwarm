@@ -153,7 +153,7 @@ group membership is per-viewer state, not a property of the session. See
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
 | stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body: `reason?`, `timeoutMs?`, `requestId?`) | Stop the running turn. Outcome `stopped`, `too_late`, `no_active_turn` (`detail` names any other refusal), `timeout` (with `controlSeq` when the Stop was accepted) or `stop_forced` (turns of orchestration 1.0.80 and older). See [Stop and Steer](#stop-and-steer). |
-| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steer` | sessionId (path), options (body: `text`, `requestId`) | Add guidance to the running turn. Access `session:write`; needs the `sessions.steering` feature. Outcome `accepted` (`steerId`, `turn`, `repeat?`) or a refusal. See [Stop and Steer](#stop-and-steer). |
+| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steer` | sessionId (path), options (body: `text`, `requestId`, `replacesClientMessageId?`) | Add guidance to the running turn; with `replacesClientMessageId`, convert that queued message. Access `session:write`; needs the `sessions.steering` feature. Outcome `accepted` (`steerId`, `turn`, `repeat?`) or a refusal. See [Stop and Steer](#stop-and-steer). |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). With `startReplacement: false`, remove it and start nothing; refused (409 `SYSTEM_AGENT_LOADED`) while a live worker loads the agent. |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |
@@ -366,7 +366,7 @@ on the turn-control path; list rows do not carry these fields).
 
 | Operation | Answer |
 | --- | --- |
-| `steerSessionTurn` | `{ outcome: "accepted", steerId, turn, repeat? }`, or `{ outcome }` with a refusal: `no_turn` (no running turn), `legacy_turn` (the turn does not listen for controls), `not_found`, `too_many` (20 open controls on the turn), `request_id_reused` (the id was used for a different request), `steering_disabled` |
+| `steerSessionTurn` | `{ outcome: "accepted", steerId, turn, repeat? }`, or `{ outcome }` with a refusal: `no_turn` (no running turn), `legacy_turn` (the turn does not listen for controls), `not_found`, `too_many` (20 open controls on the turn), `request_id_reused` (the id was used for a different request), `steering_disabled`, `already_received` (the queued message named by `replacesClientMessageId` already reached a turn) |
 | `stopSessionTurn` | `stopped`, `too_late` (the turn had already finished its model run), `no_active_turn`, `timeout` (no outcome observed before `timeoutMs`; `controlSeq` identifies an accepted Stop), or `stop_forced` on the earlier path |
 
 - **Caller.** The Web API sets `options.caller` (the sender recorded on the
@@ -378,6 +378,14 @@ on the turn-control path; list rows do not carry these fields).
   the first answer and records nothing new. After a definite `no_turn` or
   `legacy_turn` Steer refusal, send the text as an ordinary message with a
   new client message id instead, and do not retry that id.
+- **Converting a queued message.** Pass the queued message's client message
+  id as `replacesClientMessageId` and its text as `text`. A `delivered`
+  steer replaces the message: the orchestration records
+  `pending_messages.cancelled` with reason `converted_to_steer` and the
+  message never runs as its own turn. Any other outcome leaves it queued;
+  such a steer is never carried. A new request for the same message returns
+  the first answer while its steer is open or delivered. Do not re-send the
+  message yourself: it is its own fallback.
 - **Outcome.** Each accepted control gets one outcome event
   (`session.control_outcome`): a steer is `delivered`, `carried` (it runs
   with the next turn), or `not_delivered`; a Stop is `stopped` or

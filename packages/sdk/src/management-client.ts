@@ -320,6 +320,15 @@ function validTurnControlRequestId(value: unknown, operation: string): string | 
     return value;
 }
 
+/** A converted queued message's client message id: absent, or a non-empty string within the request-id bound. */
+function validReplacesClientMessageId(value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string" || !value.trim() || value.length > TURN_CONTROL_REQUEST_ID_MAX) {
+        throw invalidTurnControlRequest(`steerSessionTurn replacesClientMessageId must be a non-empty string of at most ${TURN_CONTROL_REQUEST_ID_MAX} characters`);
+    }
+    return value;
+}
+
 const STOP_TIMEOUT_MAX_MS = 300_000;
 
 /** A Stop's outcome wait: the default when omitted, else a finite duration in range. */
@@ -2558,6 +2567,13 @@ export class PilotSwarmManagementClient {
      * `opts.caller` is trusted: the Web API overwrites it from the
      * authenticated request. The text size limit is the ordinary message
      * limit of the transport (the Web API's JSON body limit).
+     *
+     * Convert a queued message: pass its client message id as
+     * `replacesClientMessageId` and its text as `text`. A delivered steer
+     * replaces the message, which then never runs as its own turn. Refused
+     * `already_received` once the message reached a turn; a new request for
+     * the same message repeats the first answer while its steer is open or
+     * delivered. A steer that is not delivered leaves the message queued.
      */
     async steerSessionTurn(sessionId: string, opts: SteerTurnOptions): Promise<SteerTurnResult> {
         this._ensureStarted();
@@ -2569,12 +2585,13 @@ export class PilotSwarmManagementClient {
         if (requestId === undefined) {
             throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
         }
+        const replaces = validReplacesClientMessageId(opts?.replacesClientMessageId);
         // The flag gates new steers only. The catalog checks it under the
         // session row lock after its request-id retry lookup, so a retry of
         // an already recorded request id still gets its first answer (or
         // request_id_reused) after the flag was turned off.
         const steeringAllowed = await this._steeringEnabled(opts?.caller);
-        const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts?.caller, steeringAllowed);
+        const added = await this._turnControlAdd(sessionId, "steer", text, requestId, opts?.caller, steeringAllowed, replaces);
         if ("refused" in added) return { outcome: added.refused };
         return {
             outcome: "accepted",
@@ -2655,10 +2672,11 @@ export class PilotSwarmManagementClient {
         requestId: string,
         caller: TurnControlCaller | undefined,
         steeringAllowed = true,
+        replacesClientMessageId?: string,
     ): Promise<TurnControlAddResult> {
         const actor = normalizeMessageSender(caller?.sender) ?? null;
         try {
-            return await this._catalog!.turnControlAdd(sessionId, kind, text, requestId, actor, steeringAllowed);
+            return await this._catalog!.turnControlAdd(sessionId, kind, text, requestId, actor, steeringAllowed, replacesClientMessageId);
         } catch (error) {
             if (error instanceof TurnControlUnavailableError) {
                 // Without the procedures nothing was recorded, so no retry can be owed an answer.

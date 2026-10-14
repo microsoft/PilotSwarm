@@ -25,6 +25,7 @@ import {
     continueInput,
     continueInputWithPrompt,
     drainLeadingQueuedScheduleActions,
+    dropConvertedMessages,
     ensureTaskContext,
     flushPendingChildDigestIntoPrompt,
     maybeSummarize,
@@ -196,7 +197,8 @@ function* handleConnectionClosedRetry(
         retriesExhausted: true,
         lossyHandoff: false,
     });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
     state.carriedSteers = [];
     state.thrownTurnKey = null;
     state.retryCount = 0;
@@ -259,7 +261,8 @@ export function* projectAuthFailure(
         type: "error",
         content: blockedDetail,
     });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null, { closeControls: true });
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
     runtime.state.carriedSteers = [];
     runtime.state.retryCount = 0;
 }
@@ -279,7 +282,8 @@ function* projectNonRetryableTurnFailure(
         type: "error",
         content: errorMessage,
     });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", errorMessage, null, { closeControls: true });
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", errorMessage, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
     runtime.state.carriedSteers = [];
     if (runtime.options.parentSessionId && !runtime.state.reportedFirstCompletionToParent) {
         try {
@@ -312,13 +316,14 @@ function* handleGenericRetry(
         // (2026-08-24 campaign). Persist the failure on the session row;
         // the next successful turn's writeback clears it.
         // (New yield — part of the 1.0.69 schedule, first shipped there.)
-        yield runtime.manager.updateCmsState(
+        const closed: any = yield runtime.manager.updateCmsState(
             runtime.input.sessionId,
             "error",
             `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`,
             null,
             { closeControls: true },
         );
+        yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
         state.carriedSteers = [];
         state.thrownTurnKey = null;
         state.retryCount = 0;
@@ -462,7 +467,8 @@ export function* processPrompt(
                         error: giveUpMessage,
                         retriesExhausted: true,
                     });
-                    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
+                    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
+                    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
                     state.carriedSteers = [];
                     state.thrownTurnKey = null;
                     state.retryCount = 0;
@@ -646,6 +652,9 @@ export function* processPrompt(
     state.config.turnSystemPrompt = undefined;
 
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+    // Queued messages that delivered converted steers replaced never run as
+    // their own turn. Handled before anything else can dequeue them.
+    yield* dropConvertedMessages(runtime, (result as any)?.replacedClientMessageIds);
     // Carried steers leave the state only on proof of consumption (plan P12),
     // which includes a stopped consuming turn (D6). A returned error keeps
     // them even when the model ran: its retry re-sends the same prompt and

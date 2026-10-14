@@ -33,12 +33,15 @@ import {
     timerGate,
     workspaceChangedNote,
     extraFoldersChangedNote,
+    addCancelledMessageIds,
+    touchRecentClientMessageIds,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
     appendSystemContext,
     extractPromptSystemContext,
     mergePrompt,
+    validClientMessageIds,
 } from "./utils.js";
 
 // ─── Custom status / KV helpers ─────────────────────────────
@@ -401,6 +404,33 @@ export function* recordCancelledMessageIds(
     }]);
 }
 
+/**
+ * Drop a cancelled prompt. Its ids leave the cancel set (the prompt is
+ * consumed) and join the duplicate window, so a re-send of the same message
+ * is still suppressed.
+ */
+export function* dropCancelledPrompt(
+    runtime: DurableSessionRuntime,
+    ids: string[],
+    reason: string,
+): Generator<any, void, any> {
+    for (const id of ids) runtime.state.cancelledMessageIds.delete(id);
+    touchRecentClientMessageIds(runtime.state, ids);
+    yield* recordCancelledMessageIds(runtime, ids, reason);
+}
+
+/**
+ * 1.0.81: queued messages that delivered converted steers replaced (from a
+ * turn result or a give-up write). They join the cancel set before anything
+ * is dequeued, so they never run as their own turn.
+ */
+export function* dropConvertedMessages(runtime: DurableSessionRuntime, raw: unknown): Generator<any, void, any> {
+    const ids = validClientMessageIds(raw);
+    if (ids.length === 0) return;
+    addCancelledMessageIds(runtime.state, ids);
+    yield* recordCancelledMessageIds(runtime, ids, "converted_to_steer");
+}
+
 // ─── Pending child-digest accumulation ──────────────────────
 
 export function bufferChildUpdate(
@@ -552,6 +582,7 @@ export function buildContinueInput(
         ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
         ...(state.recentClientMessageIds?.length ? { recentClientMessageIds: [...state.recentClientMessageIds] } : {}),
+        ...(state.cancelledMessageIds.size > 0 ? { cancelledMessageIds: [...state.cancelledMessageIds] } : {}),
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(state.runtimeModelNotice ? { runtimeModelNotice: state.runtimeModelNotice } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),

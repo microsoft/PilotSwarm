@@ -159,6 +159,7 @@
     "test/local/tool-name-collisions.test.js",
     "test/local/transcript-selection.test.js",
     "test/local/tui-reference-autocomplete-contracts.test.js",
+    "test/local/turn-control-convert-live.test.js",
     "test/local/turn-control-crash.test.js",
     "test/local/turn-control-live.test.js",
     "test/local/turn-control-multi-worker.test.js",

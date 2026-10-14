@@ -174,13 +174,26 @@ pause between two messages.
   accepts guidance. Type a correction and press Steer — the model receives
   it at its next model call, without stopping the turn. The transcript shows
   your text with a `steer` badge and its outcome: **Pending**,
-  **Delivered**, **Will run next** (it arrived as the turn ended; it
+  **Delivered** (as soon as the model has read it, also if you then stop
+  the turn), **Will run next** (it arrived as the turn ended; it
   runs with the next turn), **Carried, ran next**, **Carried, then
   stopped**, **Carried, not run** or **Not delivered** (the turn was
   stopped first). If no turn accepts guidance any more, the text is sent
   as an ordinary message instead and a notice says so. If the answer is
   lost on the network, the notice offers **Retry**, which resends the
   same request so it is recorded once.
+- **A queued message: Steer now or Cancel**: a message you send while a
+  turn runs waits, queued (`✓`). Above the input, each queued message has
+  **Steer now** and **Cancel**. **Steer now** (needs the
+  `sessions.steering` feature, a turn that accepts guidance, and a message
+  without images) sends it to the running turn now, as a steer that replaces
+  the queued message: the row shows **Steering…**, and when the model reads
+  it the row goes away and the transcript shows the steer as **Delivered**.
+  If the turn ends or is stopped first, the message stays queued and runs as
+  usual (the row says why, and the steer reads **Not delivered · still
+  queued**); its text runs once either way. **Cancel** removes the queued
+  message before it runs. Both work the same in the chat view, Master of
+  Agents (the focused panel) and on a phone.
 - **A parent agent's Stop and Steer**: a parent agent can steer or stop its
   sub-agent's running turn too (`message_agent` with `deliver: "now"`,
   `stop_agent_turn`). In the sub-agent's transcript those items name the
@@ -620,6 +633,7 @@ as your app's portal.
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
 | Steer the running turn | `↪` button between Stop and Send (needs the `sessions.steering` feature); sends the composer text as guidance for the running turn |
+| Steer now / cancel a queued message | **Steer now** or **Cancel** on the queued message's row above the input |
 | Attach file | Paperclip icon, or drag-and-drop |
 | Cycle inspector tabs | Click the tab; on mobile, swipe |
 | Rename session | Row menu → Rename |

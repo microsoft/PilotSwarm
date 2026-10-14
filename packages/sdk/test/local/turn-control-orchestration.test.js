@@ -75,6 +75,7 @@ function harness(overrides = {}) {
             case "session.hydrate":
                 if (overrides.hydrateError) throw new Error(overrides.hydrateError);
                 return undefined;
+            case "manager.updateCmsState": return overrides.updateCmsStateResult;
             case "manager.listChildSessions": return "[]";
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
             case "manager.resolveAgentConfig": return null;
@@ -93,13 +94,14 @@ function harness(overrides = {}) {
         }
         throw new Error("generator exceeded bound");
     }
+    const { updateCmsStateResult: _updateCmsStateResult, ...inputOverrides } = overrides;
     const runtime = drive(createRuntime(ctx, {
         sessionId: "turn-control-fixture",
         config: {},
         iteration: 4,
         isSystem: true,
         blobEnabled: false,
-        ...overrides,
+        ...inputOverrides,
     }, { currentVersion: "1.0.81", latestVersion: "1.0.81" }));
     const run = (result, prompt = "original prompt", ids) => {
         results.push(result);
@@ -639,6 +641,119 @@ describe("1.0.81 turn control orchestration", () => {
 
             h.run({ type: "completed", content: "next" }, "a new prompt");
             expect(keyOf(h.turns[1])).not.toBe("recorded-guid-old");
+        });
+    });
+    describe("a converted queued message (replaced by a delivered steer)", () => {
+        const cancelled = (h) => h.calls.flatMap((c) => c.effect === "manager.recordSessionEvent" ? c.args[1] : [])
+            .filter((e) => e.eventType === "pending_messages.cancelled").map((e) => e.data);
+        const canInputs = (h) => h.calls.filter((c) => c.effect === "can").map((c) => c.input);
+        const queued = (id, prompt = "queued text") => ({ prompt, clientMessageIds: [id] });
+
+        it("the result's replaced ids are recorded once as converted_to_steer before any dequeue, and the message never runs", () => {
+            const h = harness();
+            h.run({ type: "completed", content: "done", replacedClientMessageIds: ["x1"] }, "running prompt", ["y1"]);
+            expect(cancelled(h)).toEqual([{ clientMessageIds: ["x1"], reason: "converted_to_steer" }]);
+            // Between the turn and its handled result nothing is dequeued: X cannot be dispatched first.
+            const turnAt = h.calls.findIndex((c) => c.effect === "session.runTurn");
+            const recordAt = h.calls.findIndex((c) => c.effect === "manager.recordSessionEvent"
+                && c.args[1].some((e) => e.eventType === "pending_messages.cancelled"));
+            expect(turnAt).toBeGreaterThanOrEqual(0);
+            expect(recordAt).toBeGreaterThan(turnAt);
+            expect(h.calls.slice(turnAt, recordAt).filter((c) => c.effect === "dequeue" || c.effect === "race")).toEqual([]);
+
+            h.messages.push(queued("x1"));
+            h.drive(drain(h.runtime));
+            expect(h.drive(decide(h.runtime))).toBe(false);
+            expect(h.turns).toHaveLength(1);
+            expect(cancelled(h)).toHaveLength(1);
+            // Consumed: the id leaves the cancel set; a duplicate re-send is caught by the duplicate window.
+            expect(h.runtime.state.cancelledMessageIds.has("x1")).toBe(false);
+            expect(h.runtime.state.recentClientMessageIds).toContain("x1");
+            h.messages.push(queued("x1"));
+            h.drive(drain(h.runtime));
+            expect(h.drive(decide(h.runtime))).toBe(false);
+            expect(h.turns).toHaveLength(1);
+        });
+
+        it("a message already in the FIFO is dropped at dispatch", () => {
+            const h = harness();
+            appendToFifo(h.runtime, [{ kind: "prompt", prompt: "queued text", clientMessageIds: ["x1"] }]);
+            h.run({ type: "completed", content: "done", replacedClientMessageIds: ["x1"] });
+            h.drive(decide(h.runtime));
+            expect(h.turns).toHaveLength(1);
+            expect(h.runtime.state.cancelledMessageIds.has("x1")).toBe(false);
+        });
+
+        it("an error result's replaced ids survive the retry's continue-as-new", () => {
+            const h = harness({ blobEnabled: true });
+            h.run({ type: "error", message: "model failed", replacedClientMessageIds: ["x1"] }, "running prompt", ["y1"]);
+            const [can] = canInputs(h);
+            expect(can.cancelledMessageIds).toEqual(["x1"]);
+            const retry = harness(can);
+            retry.messages.push(queued("x1"));
+            retry.results.push({ type: "completed", content: "retried" });
+            retry.drive(decide(retry.runtime));
+            retry.drive(drain(retry.runtime));
+            retry.drive(decide(retry.runtime));
+            expect(retry.turns.map((t) => t[0])).toEqual(["running prompt"]);
+        });
+
+        it("a give-up write's replaced ids are dropped the same way", () => {
+            const h = harness({ retryCount: 2, updateCmsStateResult: { replacedClientMessageIds: ["x1"] } });
+            h.run({ type: "error", message: "transient" }, "running prompt", ["y1"]);
+            expect(cancelled(h)).toEqual([{ clientMessageIds: ["x1"], reason: "converted_to_steer" }]);
+            h.messages.push(queued("x1"));
+            h.drive(drain(h.runtime));
+            h.drive(decide(h.runtime));
+            expect(h.turns).toHaveLength(1);
+        });
+
+        it("a turn without converted steers records no cancellation", () => {
+            const h = harness({ retryCount: 2 });
+            h.run({ type: "completed", content: "done" });
+            h.run({ type: "error", message: "transient" });
+            expect(cancelled(h)).toEqual([]);
+        });
+
+        it("an ordinary cancel tombstone survives continue-as-new", () => {
+            const h = harness();
+            h.messages.push({ cancelPending: ["c1"] });
+            h.drive(drain(h.runtime));
+            const next = buildContinueInput(h.runtime, {});
+            expect(next.cancelledMessageIds).toEqual(["c1"]);
+            const resumed = harness(next);
+            resumed.messages.push(queued("c1"));
+            resumed.drive(drain(resumed.runtime));
+            expect(resumed.drive(decide(resumed.runtime))).toBe(false);
+            expect(resumed.turns).toEqual([]);
+        });
+
+        it("the cancel set keeps the newest 200 ids: 200 waiting prompts are all dropped, a 201st evicts the oldest", () => {
+            const ids = (n) => Array.from({ length: n }, (_, i) => `c${i}`);
+            const all = harness();
+            all.messages.push({ cancelPending: ids(200) });
+            all.drive(drain(all.runtime));
+            const kept = harness(buildContinueInput(all.runtime, {}));
+            expect(kept.runtime.state.cancelledMessageIds.size).toBe(200);
+            for (const id of ids(200)) kept.messages.push(queued(id, `text ${id}`));
+            kept.drive(drain(kept.runtime));
+            expect(kept.drive(decide(kept.runtime))).toBe(false);
+            expect(kept.turns).toEqual([]);
+
+            const over = harness();
+            over.messages.push({ cancelPending: ids(201) });
+            over.drive(drain(over.runtime));
+            expect(over.runtime.state.cancelledMessageIds.has("c0")).toBe(false);
+            expect(over.runtime.state.cancelledMessageIds.size).toBe(200);
+            const next = buildContinueInput(over.runtime, {});
+            expect(next.cancelledMessageIds).toHaveLength(200);
+            expect(next.cancelledMessageIds[0]).toBe("c1");
+            const resumed = harness(next);
+            resumed.messages.push(queued("c0", "evicted"), queued("c1", "kept"));
+            resumed.results.push({ type: "completed", content: "ran" });
+            resumed.drive(drain(resumed.runtime));
+            resumed.drive(decide(resumed.runtime));
+            expect(resumed.turns.map((t) => t[0])).toEqual(["evicted"]);
         });
     });
 });

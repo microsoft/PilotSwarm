@@ -72,6 +72,12 @@ type WorkspaceAttachCarrier = {
  */
 type LateSteersCarrier = {
     lateSteers?: LateSteer[];
+    /**
+     * Queued messages that this turn's delivered converted steers replaced
+     * (migration 0083). The orchestration drops them; they never run as
+     * their own turn.
+     */
+    replacedClientMessageIds?: string[];
 };
 
 /**
@@ -1053,6 +1059,12 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
+    /**
+     * 1.0.81: cancelled or converted client message ids whose prompt has not
+     * been dropped yet, oldest to newest (max 200). Carried so a cancel or a
+     * conversion still drops its prompt after continue-as-new.
+     */
+    cancelledMessageIds?: string[];
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -1832,7 +1844,9 @@ export type TurnControlRefusal =
     | "not_found"
     | "too_many"
     | "request_id_reused"
-    | "steering_disabled";
+    | "steering_disabled"
+    /** The queued message a Steer would replace already reached a turn (migration 0083). */
+    | "already_received";
 
 /** Answer of the control-add procedure. A retry with the same request id gets the first answer and `repeat`. */
 export type TurnControlAddResult =
@@ -1869,6 +1883,14 @@ export type TurnEndKind = "stopped" | "error" | "other";
 export interface TurnEndResult {
     stopped: boolean;
     late: LateSteer[];
+    /** Queued messages replaced by this turn's delivered converted steers. */
+    replaced: string[];
+}
+
+/** A prompt record that turn start writes in its own transaction (migration 0083). */
+export interface TurnStartRecord {
+    eventType: "user.message" | "system.message";
+    data: Record<string, unknown>;
 }
 
 /** Why carried steers left the session's pending state. */
@@ -1889,6 +1911,12 @@ export interface SteerTurnOptions {
     text: string;
     /** Required. Reuse it only to retry after a transport failure. */
     requestId: string;
+    /**
+     * Convert a queued message: the client message id of the queued message
+     * this steer replaces. Refused `already_received` once that message
+     * reached a turn.
+     */
+    replacesClientMessageId?: string;
     caller?: TurnControlCaller;
 }
 
@@ -1910,10 +1938,12 @@ export interface UserSteerEventData {
     text: string;
     requestId: string;
     actor: import("./message-sender.js").MessageSender | null;
+    /** The queued message this steer replaces (a converted queued message, migration 0083). Never set on a Stop. */
+    replacesClientMessageId?: string;
 }
 
 /** `user.stop` event data. `text` is the reason. */
-export type UserStopEventData = UserSteerEventData;
+export type UserStopEventData = Omit<UserSteerEventData, "replacesClientMessageId">;
 
 /** `session.control_outcome` event data. */
 export interface ControlOutcomeEventData {

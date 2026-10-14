@@ -448,6 +448,25 @@ handoff) records it with the ids the sender's outbox waits for and the right
 sender, and the model still gets the images. No new yields; frozen versions
 keep the earlier carry.
 
+### Converted queued messages and the cancel set (1.0.81)
+
+A steer may replace a queued message (Steer now; session turn control design
+4.14). A turn result carries `replacedClientMessageIds`: the queued messages
+that the turn's delivered converted steers replaced. Right after the result is
+parsed, before anything can be dequeued, the orchestration adds them to
+`state.cancelledMessageIds` and records `pending_messages.cancelled` with
+reason `converted_to_steer` (one `recordSessionEvent` yield, only when the
+list is not empty). The existing drop paths then drop the message wherever it
+waits: the duroxide queue (`drain-incoming`, `predispatch-incoming`), a drain
+stash or the FIFO (`decide-fifo`, `decide-merge`). The give-up state writes
+(`updateCmsState` with `closeControls`) return the same list for the given-up
+turn, and the orchestration applies it the same way.
+
+The cancel set is carried across continue-as-new (`cancelledMessageIds`
+input, the newest 200 ids). An id leaves the set, and joins the 20-id
+duplicate window, when its prompt is dropped. Before this, a retry's
+continue-as-new lost the set, so a replaced or cancelled message could run.
+
 ### Rolling deployment and rollback
 
 The frozen 1.0.80 tree keeps its literal version and original Stop race. New

@@ -1791,7 +1791,8 @@ function buildPendingOutboxMessage(sessionId, item) {
             ? "cancelling"
             : item.phase === "rejected"
                 ? "rejected"
-                : item.phase === "queued"
+                // A message being converted (Steer now) is still durably queued.
+                : item.phase === "queued" || item.phase === "steering"
                     ? "queued"
                     : "pending",
     };
@@ -3333,6 +3334,7 @@ const TURN_CONTROL_OUTCOME_COLORS = {
     carried_then_stopped: "yellow",
     carried_not_run: "gray",
     not_delivered: "gray",
+    not_delivered_still_queued: "yellow",
     stopped: "red",
     too_late: "yellow",
     stop_forced: "red",
@@ -3688,6 +3690,63 @@ export function selectActiveOutboxMessages(state) {
     return Array.isArray(state.outbox?.bySessionId?.[sessionId])
         ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
         : [];
+}
+
+// Convert a queued message (Steer now): the notice a queued item shows when a
+// conversion did not happen. The message itself stays queued and runs.
+const CONVERT_NOTICE_REASONS = {
+    not_delivered: "the turn ended before the agent read it",
+    no_turn: "no turn is running",
+    legacy_turn: "this turn does not accept steering",
+    steering_disabled: "steering is not enabled for you",
+    too_many: "too many open steers on this turn",
+    not_found: "the session was not found",
+    request_id_reused: "the request id was already used for a different request",
+    unconfirmed: "no answer from the server",
+    forbidden: "you may not steer this session",
+    too_long: "the message is too long to steer",
+};
+
+export function formatConvertNotice(notice) {
+    if (!notice?.reason) return null;
+    if (notice.reason === "already_received") return "Could not steer: the agent already has this message.";
+    const reason = CONVERT_NOTICE_REASONS[notice.reason] || notice.detail || "the steer failed";
+    return `Could not steer: ${reason}. Still queued.`;
+}
+
+/**
+ * Whether Steer now is offered for a queued outbox item: a durably queued
+ * text message (no images: a steer is text only) of a session whose running
+ * turn accepts steering for this viewer.
+ */
+export function canConvertQueuedItem(state, sessionId, item) {
+    const session = sessionId ? state?.sessions?.byId?.[sessionId] : null;
+    return Boolean(session && !session.isGroup && !session.serviceKind
+        && session.acceptsTurnControl === true && session.status === "running"
+        && state?.turnControl?.steeringEnabled === true
+        && item?.phase === "queued" && !(Array.isArray(item.attachments) && item.attachments.length > 0));
+}
+
+const OUTBOX_PHASE_LABELS = { steering: "Steering…", cancelling: "Cancelling…" };
+
+/**
+ * The durably queued messages of a session with their actions: Steer now
+ * (convert to a steer of the running turn) and Cancel. The portal renders one
+ * row each; the TUI acts on the selected one (Ctrl+T steer now, d cancel).
+ */
+export function selectQueuedMessageActions(state, sessionId = state?.sessions?.activeSessionId) {
+    const items = sessionId && Array.isArray(state?.outbox?.bySessionId?.[sessionId]) ? state.outbox.bySessionId[sessionId] : [];
+    return items
+        .filter((item) => item?.id && (item.phase === "queued" || item.phase === "steering" || item.phase === "cancelling"))
+        .map((item) => ({
+            itemId: item.id,
+            phase: item.phase,
+            text: String(item.text || ""),
+            phaseLabel: OUTBOX_PHASE_LABELS[item.phase] || null,
+            canSteer: canConvertQueuedItem(state, sessionId, item),
+            canCancel: item.phase === "queued",
+            notice: formatConvertNotice(item.convertNotice),
+        }));
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
@@ -6022,6 +6081,8 @@ export function selectStatusBar(state) {
     const hasPendingOutbox = activeOutbox.some((item) => item?.phase === "pending");
     const editingPendingOutbox = state.ui.promptEdit?.sessionId === activeSession?.sessionId;
     const selectedQueuedOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "queued";
+    const selectedQueuedCanSteer = selectedQueuedOutbox && canConvertQueuedItem(state, state.ui.promptEdit.sessionId,
+        (state.outbox?.bySessionId?.[state.ui.promptEdit.sessionId] || []).find((item) => item?.id === state.ui.promptEdit.itemId));
     const selectedCancellingOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "cancelling";
     const fullscreenHint = paneFullscreen === focus ? "v/esc close fullscreen" : "v fullscreen";
     if (state.ui.modal?.type === "artifactUpload") {
@@ -6140,7 +6201,7 @@ export function selectStatusBar(state) {
             ? `type answer · enter reply · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
             : editingPendingOutbox
                 ? selectedQueuedOutbox
-                    ? `queued prompt selected · d delete · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    ? `queued prompt selected · ${selectedQueuedCanSteer ? "ctrl-t steer now · " : ""}d delete · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : selectedCancellingOutbox
                         ? `cancelling prompt selected · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                         : `edit pending prompt · enter send batch · up/down cycle pending · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
@@ -9498,7 +9559,7 @@ const KEYBINDING_HELP = [
         ["m", "cycle inspector tab"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
-        ["ctrl-t", "prompt: steer the running turn with the prompt text (steering feature)", { dim: true }],
+        ["ctrl-t", "prompt: steer the running turn with the prompt text, or steer now with a selected queued message (steering feature)", { dim: true }],
         ["alt-t", "prompt: give up an unconfirmed Stop/Steer; steer text returns to the prompt", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
@@ -9543,6 +9604,9 @@ const KEYBINDING_HELP = [
         ["alt/ctrl-j", "newline"],
         ["ctrl-a", "attach artifact"],
         ["@ / @@", "artifact / session reference"],
+        ["↑ / ↓", "at the top / bottom line: select queued and pending messages"],
+        ["d", "selected queued message: cancel it"],
+        ["ctrl-t", "selected queued message: steer now (sends it to the running turn)"],
     ] },
     { section: "Overlays", bindings: [
         ["Esc / q", "close"],

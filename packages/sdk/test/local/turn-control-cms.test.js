@@ -298,31 +298,31 @@ describe("turn control procedures (migration 0082)", () => {
         it("a turn that finished otherwise: delivered, carried, too late", async () => {
             const { s, first, second, end } = await turnWith({ result: "other", cursorAfterFirst: true });
             expect(await outcomes(s)).toEqual({ [first.seq]: "delivered", [second.seq]: "carried" });
-            expect(end).toEqual({ stopped: false, late: [{ seq: second.seq, text: "second" }] });
+            expect(end).toEqual({ stopped: false, late: [{ seq: second.seq, text: "second" }], replaced: [] });
 
             const withStop = await turnWith({ result: "other", cursorAfterFirst: true, withStop: true });
             expect(await outcomes(withStop.s)).toEqual({
                 [withStop.first.seq]: "delivered", [withStop.second.seq]: "not_delivered", [withStop.st.seq]: "too_late",
             });
-            expect(withStop.end).toEqual({ stopped: false, late: [] });
+            expect(withStop.end).toEqual({ stopped: false, late: [], replaced: [] });
         }, TIMEOUT);
 
         it("a turn that returned an error: delivered, carried into the retry, or stopped by an open Stop", async () => {
             const plain = await turnWith({ result: "error", cursorAfterFirst: true });
             expect(await outcomes(plain.s)).toEqual({ [plain.first.seq]: "delivered", [plain.second.seq]: "carried" });
-            expect(plain.end).toEqual({ stopped: false, late: [{ seq: plain.second.seq, text: "second" }] });
+            expect(plain.end).toEqual({ stopped: false, late: [{ seq: plain.second.seq, text: "second" }], replaced: [] });
 
             const stopped = await turnWith({ result: "error", cursorAfterFirst: true, withStop: true });
             expect(await outcomes(stopped.s)).toEqual({
                 [stopped.first.seq]: "delivered", [stopped.second.seq]: "not_delivered", [stopped.st.seq]: "stopped",
             });
-            expect(stopped.end).toEqual({ stopped: true, late: [] });
+            expect(stopped.end).toEqual({ stopped: true, late: [], replaced: [] });
         }, TIMEOUT);
 
         it("a stopped turn: every steer not delivered, even one at or below the cursor", async () => {
             const { s, first, second, st, end } = await turnWith({ result: "stopped", cursorAfterFirst: true, withStop: true });
             expect(await outcomes(s)).toEqual({ [first.seq]: "not_delivered", [second.seq]: "not_delivered", [st.seq]: "stopped" });
-            expect(end).toEqual({ stopped: true, late: [] });
+            expect(end).toEqual({ stopped: true, late: [], replaced: [] });
         }, TIMEOUT);
 
         it("is idempotent: a second call writes nothing and answers the same", async () => {
@@ -510,7 +510,7 @@ describe("turn control procedures (migration 0082)", () => {
 
         expect(await catalog.turnStart(s, 0)).toEqual({ stopped: false, controls: [] });
         await catalog.turnStart(s, 1);
-        expect(await catalog.turnEnd(s, 1, 0, "other", [])).toEqual({ stopped: false, late: [] });
+        expect(await catalog.turnEnd(s, 1, 0, "other", [])).toEqual({ stopped: false, late: [], replaced: [] });
         await catalog.turnStart(s, 2);
         const fresh = await steer(s, "new", rid());
         expect(fresh.turn).toBe(2);

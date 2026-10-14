@@ -419,14 +419,28 @@ function clonePendingShutdown(input: OrchestrationInput["pendingShutdown"]): Pen
     };
 }
 
-export function normalizeRecentClientMessageIds(value: unknown): string[] {
+export function normalizeRecentClientMessageIds(value: unknown, limit = RECENT_CLIENT_MESSAGE_ID_LIMIT): string[] {
     if (!Array.isArray(value)) return [];
     const ids: string[] = [];
     for (const raw of value) {
         if (typeof raw !== "string" || !raw || ids.includes(raw)) continue;
         ids.push(raw);
     }
-    return ids.slice(-RECENT_CLIENT_MESSAGE_ID_LIMIT);
+    return ids.slice(-limit);
+}
+
+/** 1.0.81: cancelled ids kept while their prompt has not been dropped (oldest evicted first). */
+export const CANCELLED_MESSAGE_ID_LIMIT = 200;
+
+/** Add cancelled or converted ids; past the limit the oldest is evicted. */
+export function addCancelledMessageIds(state: DurableSessionState, ids: string[]): void {
+    for (const id of ids) {
+        if (!id || state.cancelledMessageIds.has(id)) continue;
+        state.cancelledMessageIds.add(id);
+        if (state.cancelledMessageIds.size > CANCELLED_MESSAGE_ID_LIMIT) {
+            state.cancelledMessageIds.delete(state.cancelledMessageIds.values().next().value as string);
+        }
+    }
 }
 
 export function touchRecentClientMessageIds(state: DurableSessionState, ids: string[]): void {
@@ -518,7 +532,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         lastCommandVersion: 0,
         lastCommandId: undefined,
 
-        cancelledMessageIds: new Set<string>(),
+        cancelledMessageIds: new Set<string>(normalizeRecentClientMessageIds(input.cancelledMessageIds, CANCELLED_MESSAGE_ID_LIMIT)),
         emittedCancelledMessageIds: new Set<string>(),
         recentClientMessageIds: normalizeRecentClientMessageIds(input.recentClientMessageIds),
 

@@ -392,7 +392,8 @@ test("a fallback behind an outbox send in flight is sent once its own send succe
     assert.equal(view().notice.clientMessageId, calls.send[1].clientMessageIds[0]);
 });
 
-for (const phase of ["pending", "attempted-pending", "queued", "cancelling"]) {
+// A selected queued message is converted instead (turn-control-convert.test.mjs).
+for (const phase of ["pending", "attempted-pending", "cancelling"]) {
     test(`Steer is unavailable while a ${phase} outbox message is selected and leaves it intact`, async () => {
         const { controller, store, calls, view } = harness({ steer: { outcome: "accepted", steerId: 1, turn: 0 } });
         controller.setPrompt("my normal draft");

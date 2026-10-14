@@ -64,20 +64,27 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 + "Needs the sessions.steering feature. accepted: recorded once; its outcome (delivered, carried to the "
                 + "next turn, not delivered) appears in the session events. no_turn or legacy_turn: no turn accepts "
                 + "steering now — send the text with send_message instead and do not retry this request_id. Retry with "
-                + "the same request_id only after a lost response.",
+                + "the same request_id only after a lost response. To convert a queued message, pass its client message "
+                + "id as replaces_client_message_id with its text: a delivered steer replaces it; already_received means "
+                + "it already reached a turn, and a steer that is not delivered leaves it queued.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session whose running turn to steer"),
                 text: z.string().min(1).describe("The guidance for the model"),
                 request_id: requestIdShape().optional().describe(
                     "Idempotency key. Reuse it only to retry after a transport failure; a new id is generated when omitted"),
+                replaces_client_message_id: requestIdShape().optional().describe(
+                    "Convert a queued message: the client message id of the queued message this steer replaces"),
             },
         },
-        withToolErrors(async ({ session_id, text, request_id }) => {
+        withToolErrors(async ({ session_id, text, request_id, replaces_client_message_id }) => {
             if (!(await requireSession(session_id))) {
                 return errorResult("session not found", { session_id });
             }
             const requestId = request_id ?? randomUUID();
-            const result = await ctx.mgmt.steerSessionTurn(session_id, { text, requestId });
+            const result = await ctx.mgmt.steerSessionTurn(session_id, {
+                text, requestId,
+                ...(replaces_client_message_id ? { replacesClientMessageId: replaces_client_message_id } : {}),
+            });
             if (result.outcome === "accepted") {
                 return jsonResult({
                     accepted: true,

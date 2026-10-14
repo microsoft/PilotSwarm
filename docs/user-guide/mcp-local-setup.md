@@ -66,7 +66,8 @@ one (`/…/pilotswarm/packages/app/mcp/dist/bin/pilotswarm-mcp.js`).
 ## What you can do (tool families)
 
 - **Sessions & turns**: create/message/answer/rename/complete/abort/delete,
-  `stop_turn`, `steer_session_turn`, queued-message cancel, custom events.
+  `stop_turn`, `steer_session_turn` (with `replaces_client_message_id` it
+  converts a queued message to a steer), queued-message cancel, custom events.
 - **Sub-agents (read-only)**: `list_agents`, `get_agent_tree`,
   `get_session_tree_stats`, `list_child_outcomes` — spawning stays inside the
   parent session's reasoning loop by design.
