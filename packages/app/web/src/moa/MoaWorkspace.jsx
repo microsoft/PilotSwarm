@@ -476,6 +476,8 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
                     if (!current) { reportGone(); return; }
                     if (current.sessionId !== node.sessionId) throw new Error("Unexpected session response.");
                     child.dispatch({ type: "sessions/merged", session: current });
+                    // The viewer's steering decision, on the controller's 30 s cadence.
+                    void child.refreshSteeringFeature();
                     await child.syncSessionEvents(node.sessionId);
                 } catch (e) {
                     if (sessionUnavailable(e)) { reportGone(); return; }

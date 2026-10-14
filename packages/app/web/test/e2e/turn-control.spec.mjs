@@ -96,6 +96,8 @@ async function fakePortal(page, { sessions, steering = true, canWrite = true, ha
     let liveSeq = 1_000_000;
     const portal = {
         state,
+        /** Change the viewer's sessions.steering decision; clients see it at their next read. */
+        setSteering(value) { steering = value; },
         liveSubscriptions: (sessionId) => liveSubscriptions.get(sessionId) || 0,
         /** Push a durable session event to every socket subscribed to the session (seq above the REST window). */
         event(sessionId, eventType, data) {
@@ -877,4 +879,17 @@ test("opened without a deep link: the profile's restored running session offers 
     await wire.input.fill("");
     await queueMessage(wire);
     await expect(queuedRows(wire).steerNow).toBeVisible();
+});
+
+test("MoA: a panel picks up the viewer's steering decision while it stays open", async ({ page }) => {
+    await page.clock.install();
+    const portal = await fakePortal(page, { sessions: TWO_SESSIONS, steering: false, profile: moaProfile() });
+    await openMoa(page, portal);
+    const a = moaWire(page, portal, SID, "pa");
+    await moaPanel(page, "pa").locator("header").first().click();
+    await expect(a.turnState).toHaveAttribute("data-accepts-controls", "true");
+    await expect(a.steerButton).toHaveCount(0);
+    portal.setSteering(true);
+    await page.clock.fastForward(35_000);
+    await expect(a.steerButton).toHaveCount(1);
 });
