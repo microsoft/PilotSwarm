@@ -92,6 +92,9 @@ Builder templates should assume:
 - if an app needs a custom model catalog, check in a credential-free
   `.model_providers.example.json` provider-type template and create a local
   gitignored `.model_providers.json` from it
+- omit sample `toolCatalog` opt-ins unless the target Chat Completions endpoint
+  has been validated; model/router names do not activate overflow dispatch,
+  and an approved policy belongs on the model entry in the provider-type catalog
 - builder templates should create runtime shared/personal providers, defaults,
   and budgets through Admin Console or management APIs; `.env` may carry a
   bootstrap key for local startup, but the catalog must not carry live keys

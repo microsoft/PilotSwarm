@@ -87,6 +87,10 @@ Do not guess these answers when the user has not provided them. Offer the standa
   `PilotSwarmManagementClient`, and configure `setModelDefault` /
   `setSystemModelDefault`; do not put credentials or `defaultModel` in new
   catalogs.
+- Do not copy a sample `toolCatalog` opt-in without validating the target
+  Chat Completions endpoint. Omit it by default; router names do not enable
+  overflow dispatch. Put an approved policy on the model entry in its
+  provider-type catalog, not in a prompt or environment flag.
 - For local-first scaffolds, offer GitHub Copilot as the first runtime provider
   type unless the user asks for another; do not hard-code a provider instance
   or credential into the catalog.

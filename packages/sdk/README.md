@@ -47,6 +47,33 @@ capabilities, load only the guidance they need, and attach selected permitted
 tools or MCP servers at the next turn boundary. Existing sessions retain the V1
 framework unless the feature is enabled, and Base V2 requires native tasks.
 
+Tool-catalog overflow dispatch is off by default. A model on a validated
+OpenAI-compatible Chat Completions endpoint can opt in with
+`toolCatalog: { "maxDeclarations": 128, "overflowStrategy": "typed-dispatch" }`
+in its provider-type catalog. Only above that configured declaration limit does
+PilotSwarm retain direct declarations and group eligible overflow functions into
+one typed dispatch schema. With 140 eligible tools and a limit of 128, it keeps
+127 direct declarations and represents the other 13 through the dispatcher.
+Model and deployment names, including `model-router`, never enable dispatch.
+Every grouped function keeps its description and argument schema; returned calls
+are restored to their original names, arguments and IDs before runtime permission
+hooks and handlers. The dispatcher has an object root with paired tool-name and
+argument alternatives inside a nested `call` property, rather than a root-level
+union rejected by some Completions endpoints. This is a wire-format adaptation,
+not tool removal or another agent/model turn. The check runs per request, including after a session resumes
+or switches models. The existing BYOK `snippy` cleanup is unchanged.
+
+Forced tool choices, strict functions, document-relative schema references and
+unrecognized tool options stay direct. Restricted or unsupported tool-choice
+lists are not rewritten. If the limit cannot be met without changing those
+contracts, the request fails before transport rather than weakening schemas.
+Catalogs at or below the limit,
+GitHub Copilot, Anthropic and Responses transports are unchanged. Tool-call
+fragments are buffered until complete, while ordinary response text still streams.
+Grouping does not reduce the catalog's token footprint or enlarge model context.
+See [Tool Catalog Overflow](../../docs/developer/reference/configuration.md#tool-catalog-overflow-toolcatalog)
+for configuration, runtime-provider inheritance and activation constraints.
+
 Artifact note:
 
 - `write_artifact` remains the standard way for agents to create downloadable files.

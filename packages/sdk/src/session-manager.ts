@@ -17,7 +17,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
-import type { ModelProviderRegistry } from "./model-providers.js";
+import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -1246,7 +1246,7 @@ export class SessionManager {
      * Used by activities (e.g. summarizeSession) that need a lightweight LLM
      * without requiring a GitHub token.
      */
-    resolveDefaultProvider(): { modelName: string; sdkProvider: any } | undefined {
+    resolveDefaultProvider(): { modelName: string; sdkProvider: any; toolCatalog?: ToolCatalogCapability } | undefined {
         const registry = this.workerDefaults.modelProviders;
         if (!registry?.defaultModel) return undefined;
         const resolved = registry.resolve(registry.defaultModel);
@@ -1255,7 +1255,11 @@ export class SessionManager {
             // The same treatment a real session gets. A workload-identity
             // provider carries no key, so without the callback this hands the
             // SDK a provider with no credential at all and every request 401s.
-            return { modelName: resolved.modelName, sdkProvider: attachWorkloadIdentity(resolved) };
+            return {
+                modelName: resolved.modelName,
+                sdkProvider: attachWorkloadIdentity(resolved),
+                ...(resolved.toolCatalog ? { toolCatalog: resolved.toolCatalog } : {}),
+            };
         } catch {
             // An unconfigured worker reports "no usable provider" here rather
             // than throwing into an activity that only wanted to write a
@@ -1270,7 +1274,7 @@ export class SessionManager {
      * distiller walks its fallback chain on that (a dead session model must
      * not block the regeneration that exists to escape it).
      */
-    resolveModelSessionOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string } | null {
+    resolveModelSessionOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null {
         const registry = this.workerDefaults.modelProviders;
         if (!registry) {
             return this.githubToken ? { gitHubToken: this.githubToken } : null;
@@ -1284,7 +1288,11 @@ export class SessionManager {
             // catch below turns that into null, which is the "does not
             // resolve" answer this returns for any other unusable model.
             if (resolved.sdkProvider) {
-                return { model: resolved.modelName, provider: attachWorkloadIdentity(resolved) };
+                return {
+                    model: resolved.modelName,
+                    provider: attachWorkloadIdentity(resolved),
+                    ...(resolved.toolCatalog ? { toolCatalog: resolved.toolCatalog } : {}),
+                };
             }
             if (resolved.githubToken) return { model: resolved.modelName, gitHubToken: resolved.githubToken };
             return null;
@@ -1341,7 +1349,28 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        }, byokOpenAi ? { type: "openai" } : undefined);
+        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
+            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
+            if (!config) return undefined;
+            // Policy lookup must never fail the model request itself: a model
+            // removed by a catalog reload (or an unparsable URL) keeps the
+            // catalog unchanged and lets the provider answer.
+            try {
+                const registry = this.workerDefaults.modelProviders;
+                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
+                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
+                const resolved = registry?.resolve(descriptor.qualifiedName);
+                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
+                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
+                const endpoint = new URL(provider.baseUrl);
+                const target = new URL(request.url);
+                if (target.origin !== endpoint.origin
+                    || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
+                return descriptor.toolCatalog;
+            } catch {
+                return undefined;
+            }
+        } : undefined);
         this.clients.set(clientKey, created);
         return created;
     }

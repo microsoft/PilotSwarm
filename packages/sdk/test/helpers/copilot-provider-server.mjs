@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 
 /** Synthetic provider, real Copilot runtime. Never receives live credentials. */
-export async function createCopilotProviderServer() {
+export async function createCopilotProviderServer({ maxTools } = {}) {
     const requests = [];
     const server = createServer(async (req, res) => {
         try {
@@ -15,6 +15,25 @@ export async function createCopilotProviderServer() {
                 return;
             }
             const anthropic = new URL(req.url, "http://test").pathname.endsWith("/messages");
+            if (!anthropic && maxTools !== undefined && body.tools?.length > maxTools) {
+                res.writeHead(400, { "content-type": "application/json" });
+                res.end(JSON.stringify({ error: { message: `Invalid tools: maximum length ${maxTools}, got ${body.tools.length}.`, type: "invalid_request_error", param: "tools" } }));
+                return;
+            }
+            const forbiddenRootKeywords = ["oneOf", "anyOf", "allOf", "enum", "const", "not"];
+            const invalidTool = !anthropic && body.tools?.find(declaration => {
+                const schema = declaration.function?.parameters;
+                return schema !== undefined && (schema?.type !== "object"
+                    || forbiddenRootKeywords.some(keyword => Object.hasOwn(schema, keyword)));
+            });
+            if (invalidTool) {
+                res.writeHead(400, { "content-type": "application/json" });
+                res.end(JSON.stringify({ error: {
+                    message: `Invalid schema for function '${invalidTool.function.name}': schema must have type 'object' and not have 'oneOf'/'anyOf'/'allOf'/'enum'/'const'/'not' at the top level.`,
+                    type: "invalid_request_error", param: "tools", code: "invalid_function_parameters",
+                } }));
+                return;
+            }
             const messages = body.messages || [];
             const last = messages.at(-1);
             const hasResult = last?.role === "tool" || (Array.isArray(last?.content) && last.content.some(c => c.type === "tool_result"));
@@ -45,8 +64,14 @@ export async function createCopilotProviderServer() {
                 res.end();
                 return;
             }
+            const dispatcher = body.tools?.find(declaration => declaration.function?.parameters?.properties?.call?.anyOf?.some(
+                alternative => alternative.properties?.tool_name?.enum?.includes("compat_echo"),
+            ));
+            const functionCall = dispatcher
+                ? { name: dispatcher.function.name, arguments: JSON.stringify({ call: { tool_name: "compat_echo", arguments: args } }) }
+                : { name: "compat_echo", arguments: JSON.stringify(args) };
             const assistant = tool
-                ? { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "compat_echo", arguments: JSON.stringify(args) } }] }
+                ? { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: functionCall }] }
                 : { role: "assistant", content: text };
             const finish_reason = tool ? "tool_calls" : "stop";
             if (!body.stream) {
