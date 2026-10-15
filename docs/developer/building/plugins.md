@@ -531,7 +531,7 @@ Completions:
 ]
 ```
 
-Only `openai`, `openai-proxy` and `azure` models accept `wireApi`. Any other
+Only `openai`, `openai-proxy`, `azure`, and `foundry-wif` models accept `wireApi`. Any other
 value or type fails the catalog load, naming the `provider:model`. See
 [Configuration](../reference/configuration.md#request-format-wireapi).
 

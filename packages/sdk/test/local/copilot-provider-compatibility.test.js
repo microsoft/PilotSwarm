@@ -145,7 +145,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
             expect(guarded.at(-1)).toEqual({ name: "compat_echo", args: { value: "violet-739" } });
             expect(server.requests.every(request => request.body.tools.length <= 128)).toBe(true);
             expect(server.requests.some(request => request.body.messages.some(message => message.tool_calls?.some(call =>
-                call.function.name === dispatcher.function.name && JSON.parse(call.function.arguments).call?.tool_name === "compat_echo",
+                call.function.name === dispatcher.function.name && JSON.parse(call.function.arguments).call.tool_name === "compat_echo",
             )))).toBe(true);
         }, { maxTools: 128 });
     });

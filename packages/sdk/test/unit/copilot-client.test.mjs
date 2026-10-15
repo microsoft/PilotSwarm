@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility } from "../../dist/copilot-client.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
+import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const TOOL_CATALOG = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
 
@@ -150,6 +151,34 @@ function jsonResponse(body) {
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json", "x-request-id": "request-42" } });
 }
 
+for (const count of [82, 128, 129, 201, 256]) {
+    test(`dispatcher root schema is accepted by a bounded local provider with ${count} logical tools`, async context => {
+        const server = await createCopilotProviderServer({ maxTools: 128 });
+        context.after(() => server.close());
+        const request = new Request(`${server.baseUrl}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                model: "schema-regression",
+                messages: [{ role: "user", content: "Validate the tool schema without invoking a tool." }],
+                tools: catalogTools(count),
+            }),
+        });
+        const response = await new ByokRequestCompatibility(TOOL_CATALOG).sendRequest(request, {});
+        assert.equal(response.status, 200, await response.clone().text());
+        assert.equal(server.requests.length, 1);
+        const wire = server.requests[0].body.tools;
+        assert.equal(wire.length, Math.min(count, 128));
+        if (count > 128) {
+            const schema = wire.at(-1).function.parameters;
+            assert.equal(schema.type, "object");
+            for (const keyword of ["oneOf", "anyOf", "allOf", "enum", "const", "not"]) {
+                assert.equal(Object.hasOwn(schema, keyword), false, `${keyword} must not appear at the schema root`);
+            }
+        }
+    });
+}
+
 for (const model of ["gpt-5.6-terra", "gpt-4o", "model-router", "model-router-128k-openai", "model-router-272k-openai", "model-router-922k-openai", "model-router-preview", "model-router-128k-claude", "model-router-128-openai", "custom-model-router", "MODEL-ROUTER", undefined, null]) {
     test(`models without opt-in keep oversized catalogs and responses unchanged: ${model}`, async context => {
         const request = catalogRequest({ model, tools: catalogTools(139) });
@@ -246,7 +275,7 @@ for (const count of [0, 127, 128]) {
     });
 }
 
-for (const count of [129, 139, 200]) {
+for (const count of [129, 139, 200, 201, 256]) {
     test(`${count} tools retain every schema and restore every overflow call`, async context => {
         const tools = catalogTools(count);
         const body = { model: "model-router", tools, messages: [{ role: "user", content: "Preserve this prompt" }], future_field: { keep: true } };
@@ -259,9 +288,8 @@ for (const count of [129, 139, 200]) {
             assert.deepEqual(wire.future_field, body.future_field);
             assert.equal(forwarded.headers.get("x-test"), "keep");
             const dispatcher = wire.tools.at(-1).function;
-            for (const key of ["anyOf", "oneOf", "allOf"]) assert.equal(Object.hasOwn(dispatcher.parameters, key), false);
-            assert.equal(dispatcher.parameters.type, "object");
             assert.deepEqual(dispatcher.parameters.required, ["call"]);
+            assert.equal(dispatcher.parameters.additionalProperties, false);
             const alternatives = dispatcher.parameters.properties.call.anyOf;
             const retained = wire.tools.slice(0, -1);
             for (const alternative of alternatives) {
@@ -375,12 +403,14 @@ test("restricted tool-choice lists fail closed instead of being broadened by gro
 });
 
 for (const args of [
-    "{",
+    "{", "{}",
+    '{"tool_name":"catalog_tool_138","arguments":{}}',
+    '{"call":[]}',
     '{"call":{"tool_name":"not_in_catalog","arguments":{}}}',
     '{"call":{"tool_name":"catalog_tool_138","arguments":[]}}',
+    '{"call":{"tool_name":"catalog_tool_138"}}',
     '{"call":{"tool_name":"catalog_tool_138","arguments":{},"extra":true}}',
     '{"call":{"tool_name":"catalog_tool_138","arguments":{}},"extra":true}',
-    '{"tool_name":"catalog_tool_138","arguments":{}}',
 ]) {
     test(`malformed or out-of-catalog dispatch arguments are rejected: ${args}`, async context => {
         context.mock.method(globalThis, "fetch", async request => {

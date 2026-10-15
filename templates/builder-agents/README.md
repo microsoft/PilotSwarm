@@ -55,6 +55,12 @@ provider instances, credentials, defaults, and budgets are runtime CMS state;
 runnable scaffolds should teach Admin Console or management API setup rather
 than copying provider keys into the catalog.
 
+Leave tool-catalog overflow dispatch off in generated scaffolds unless the
+target Chat Completions endpoint has been validated. A model entry may opt in
+with `toolCatalog: { "maxDeclarations": 128, "overflowStrategy": "typed-dispatch" }`;
+router names alone do not enable it. Shared/personal instances inherit the
+type's model policy. See [Tool Catalog Overflow](../../docs/developer/reference/configuration.md#tool-catalog-overflow-toolcatalog).
+
 PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
 
 PilotSwarm also ships optional SDK-bundled named agents under its `default-agents` tier. They stay hidden unless an app opts in through `session-policy.json` with `creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`. Builder templates should teach that opt-in instead of copying bundled agent files, unless the app needs to customize the agent.

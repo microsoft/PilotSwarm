@@ -129,6 +129,52 @@ test("pooled clients fence tool policy by current session model and endpoint, in
     }), { sessionId: "configured-session" });
 });
 
+test("keyless Foundry inherits overflow policy without exposing a key or acquiring a live token", async context => {
+    const toolCatalog = { maxDeclarations: 2, overflowStrategy: "typed-dispatch" };
+    const types = new ModelProviderRegistry({ providers: [{
+        id: "keyless", type: "foundry-wif", baseUrl: "https://example.invalid/openai/v1",
+        models: [{ name: "primitive", wireApi: "completions", toolCatalog }],
+    }] });
+    const credential = {
+        name: "shared-keyless", typeId: "keyless", class: "shared", ownerUserId: null,
+        baseUrl: null, secretRef: { kind: "workloadIdentity" },
+    };
+    const runtime = buildRuntimeRegistry(types, [credential], "shared-keyless:primitive");
+    const manager = new SessionManager(undefined, null, { modelProviders: runtime });
+    for (const resolved of [
+        types.resolve("keyless:primitive"),
+        resolveProviderCredential(types, credential, "primitive"),
+        runtime.resolve("shared-keyless:primitive"),
+    ]) {
+        assert.deepEqual(resolved.toolCatalog, toolCatalog);
+        assert.equal(resolved.usesWorkloadIdentity, true);
+        assert.equal(resolved.sdkProvider.type, "openai");
+        assert.equal(Object.hasOwn(resolved.sdkProvider, "apiKey"), false);
+        assert.equal(Object.hasOwn(resolved.sdkProvider, "toolCatalog"), false);
+    }
+    assert.deepEqual(manager.resolveDefaultProvider().toolCatalog, toolCatalog);
+    assert.deepEqual(manager.resolveModelSessionOptions("shared-keyless:primitive").toolCatalog, toolCatalog);
+    assert.equal(typeof manager._resolveProviderConfig("shared-keyless:primitive").provider.bearerTokenProvider, "function");
+    manager.setConfig("keyless-session", { model: "shared-keyless:primitive" });
+    const client = await manager.ensureClient(undefined, true);
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        assert.equal(wire.tools.length, 2);
+        assert.equal(wire.tools.at(-1).function.name, "pilotswarm_tool_dispatch");
+        return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } });
+    });
+    await client.requestHandler.sendRequest(new Request("https://example.invalid/openai/v1/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "primitive", tools: Array.from({ length: 3 }, (_, index) => ({
+            type: "function", function: { name: `tool_${index}`, parameters: { type: "object", properties: {} } },
+        })) }),
+    }), { sessionId: "keyless-session" });
+    assert.throws(() => new ModelProviderRegistry({ providers: [{
+        id: "keyless", type: "foundry-wif", baseUrl: "https://example.invalid/openai/v1",
+        models: [{ name: "primitive", wireApi: "responses", toolCatalog }],
+    }] }), /typed-dispatch requires/);
+});
+
 test("a model's wireApi applies when the provider sets none; a sibling without one leaves the key out", () => {
     const config = foundry({ models: [{ name: "gpt-5.6", wireApi: "responses" }, { name: "plain" }] });
     assertWireApiOnEveryPath(resolveOnEveryPath(config, "gpt-5.6"), "responses");

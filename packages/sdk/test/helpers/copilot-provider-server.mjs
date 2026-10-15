@@ -20,11 +20,18 @@ export async function createCopilotProviderServer({ maxTools } = {}) {
                 res.end(JSON.stringify({ error: { message: `Invalid tools: maximum length ${maxTools}, got ${body.tools.length}.`, type: "invalid_request_error", param: "tools" } }));
                 return;
             }
-            // Routed non-OpenAI backends reject combinators at a tool schema root.
-            const rootCombinator = body.tools?.find(declaration => ["anyOf", "oneOf", "allOf"].some(key => Object.hasOwn(declaration.function?.parameters ?? {}, key)));
-            if (!anthropic && rootCombinator) {
+            const forbiddenRootKeywords = ["oneOf", "anyOf", "allOf", "enum", "const", "not"];
+            const invalidTool = !anthropic && body.tools?.find(declaration => {
+                const schema = declaration.function?.parameters;
+                return schema !== undefined && (schema?.type !== "object"
+                    || forbiddenRootKeywords.some(keyword => Object.hasOwn(schema, keyword)));
+            });
+            if (invalidTool) {
                 res.writeHead(400, { "content-type": "application/json" });
-                res.end(JSON.stringify({ error: { message: `Invalid schema for function '${rootCombinator.function.name}': anyOf, oneOf and allOf are not supported at the top level.`, type: "invalid_request_error", param: "tools" } }));
+                res.end(JSON.stringify({ error: {
+                    message: `Invalid schema for function '${invalidTool.function.name}': schema must have type 'object' and not have 'oneOf'/'anyOf'/'allOf'/'enum'/'const'/'not' at the top level.`,
+                    type: "invalid_request_error", param: "tools", code: "invalid_function_parameters",
+                } }));
                 return;
             }
             const messages = body.messages || [];
