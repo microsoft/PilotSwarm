@@ -163,7 +163,35 @@ Your worker can also contribute defaults to every session through:
 - `skillDirectories`
 - `customAgents`
 - `mcpServers` — inline configs apply to every session (legacy); plugin `.mcp.json` servers instead form a catalog that agents opt into via `mcpServers:` / `inheritDefaultMcpServers:` frontmatter
+- `repositoryMcpEnabled` — defaults to `true`; set to `false` when sessions use caller-controlled repositories so the underlying runtime's native repository config discovery cannot add or replace MCP servers. Deployment and agent-package MCP grants, plus explicitly adopted repository instructions and skills, remain available.
 - `systemMessage`
+
+### Repository MCP trust policy
+
+Repository files and MCP execution do not always share a trust boundary. A
+host application may allow a session to attach a repository selected or
+modified by a caller while separately governing which MCP endpoints may run,
+which credentials they receive, and which agents may use them. In that model,
+native repository configuration discovery would let a checkout change
+executable MCP configuration without going through the application's catalog
+or authorization policy.
+
+Set the worker-level policy explicitly when that boundary applies:
+
+```typescript
+const worker = new PilotSwarmWorker({
+  store: process.env.DATABASE_URL!,
+  repositoryMcpEnabled: false,
+  pluginDirs: ["./plugin"],
+});
+```
+
+This setting disables only native repository configuration discovery. MCP
+servers approved through worker configuration, deployment plugins, or agent
+packages remain available, as do repository instructions and skills that the
+workspace provider explicitly adopts. The default is `true` so existing
+single-tenant and repository-trusting applications retain their current
+behavior.
 
 `default.agent.md` in your app plugin is layered underneath the embedded PilotSwarm framework base prompt. It extends the app-wide instructions for your sessions; it does not replace PilotSwarm's framework rules.
 
