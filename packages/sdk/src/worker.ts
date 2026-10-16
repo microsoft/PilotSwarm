@@ -2,6 +2,7 @@ import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import {
     AGENT_CHILD_BOOTSTRAP_CAPABILITY,
     AGENT_HANDOFF_CAPABILITY,
+    TURN_CONTROL_CAPABILITY,
     WORKSPACE_CAPABILITY,
 } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
@@ -30,6 +31,7 @@ import { createSubmitWorkflowResultTool } from "./workflow-orchestration/result-
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
+import { TurnControlHub } from "./turn-control.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
@@ -41,7 +43,7 @@ import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
-import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
+import { DEFAULT_CMS_SCHEMA, resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
@@ -231,6 +233,8 @@ export class PilotSwarmWorker {
     private _evictionTimer: ReturnType<typeof setInterval> | null = null;
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
+    /** Session turn control: the worker's LISTEN hub (design 4.4). */
+    private _turnControlHub: TurnControlHub | null = null;
     private _started = false;
     private _runtimeStartup: Promise<void> | null = null;
     private _stopRequested = false;
@@ -750,6 +754,26 @@ export class PilotSwarmWorker {
             }
         }
 
+        // Session turn control: one LISTEN connection per worker (design 4.4).
+        // Without a PostgreSQL client config the hub still runs on its 5 s look.
+        if (this._catalog) {
+            // The catalog provider owns how its database is reached (TLS,
+            // credentials); the hub only uses PostgreSQL LISTEN.
+            const catalog = this._catalog;
+            const createClient = catalog.createTurnControlListener
+                ? () => catalog.createTurnControlListener!()
+                : null;
+            this._turnControlHub = new TurnControlHub({
+                catalog: this._catalog,
+                // resolveStorageConfig always fills it; the type keeps it optional.
+                schema: storage.runtime.cmsSchema ?? DEFAULT_CMS_SCHEMA,
+                createClient,
+                log: (message) => console.warn(message),
+            });
+            await this._turnControlHub.start();
+            this.sessionManager.setTurnControlHub(this._turnControlHub);
+        }
+
         if (this._catalog?.features) {
             this._featureFlags = new FeatureFlagCache(this._catalog.features);
             this.sessionManager.setFeatureFlagCache(this._featureFlags);
@@ -887,6 +911,7 @@ export class PilotSwarmWorker {
                     AGENT_HANDOFF_CAPABILITY,
                     WORKSPACE_CAPABILITY,
                     AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+                    TURN_CONTROL_CAPABILITY,
                 ],
             },
             orchestrationConcurrency,
@@ -1126,6 +1151,13 @@ export class PilotSwarmWorker {
         // while the catalog/provider it uses are still open.
         await this._providerReconciliation;
         await this.sessionManager.shutdown();
+        // After the runtime drained its activities, so a Stop that arrives
+        // during a graceful drain still reaches running turns.
+        if (this._turnControlHub) {
+            this.sessionManager.setTurnControlHub(null);
+            await this._turnControlHub.stop();
+            this._turnControlHub = null;
+        }
         if (this._catalog) {
             try { await this._catalog.close(); } catch {}
             this._catalog = null;
@@ -1150,13 +1182,13 @@ export class PilotSwarmWorker {
 
     /**
      * Graceful drain (lifecycle protocol §3.8):
-     *   1. Stop fetching — duroxide's shutdown flag makes dispatch slots
-     *      finish their in-flight item and claim nothing new.
+     *   1. Stop fetching — duroxide's shutdown cancels its pollers, so
+     *      dispatch slots finish their in-flight item and claim nothing new.
      *   2. Finish in-flight — running turns complete within the drain
      *      budget; their snapshot commits land inside the runTurn activity.
-     *      (duroxide sleeps the FULL budget before returning; turns longer
-     *      than the budget are aborted — crash semantics, lossless for
-     *      every committed turn.)
+     *      (duroxide returns as soon as in-flight work drains; turns still
+     *      running at the end of the budget are aborted — crash semantics,
+     *      lossless for every committed turn.)
      *   3. Evict all — purely local for sessions with a committed marker
      *      (the store already holds their state); legacy dehydrate for
      *      unmarked sessions whose local files may be the only copy.

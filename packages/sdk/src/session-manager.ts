@@ -17,7 +17,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
-import type { ModelProviderRegistry } from "./model-providers.js";
+import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -638,6 +638,9 @@ const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
  */
 const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
 
+/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind. */
+const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
+
 function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -658,7 +661,7 @@ function buildEffectivePromptLayers(
     const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
     const layers: PromptLayerDescriptor[] = [];
     if (workerDefaults.frameworkBaseDescriptor) layers.push({ ...workerDefaults.frameworkBaseDescriptor,
-        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.0.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
+        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.1.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
     if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
         if (boundAgentCopy?.descriptor) layers.push(boundAgentCopy.descriptor);
@@ -820,6 +823,8 @@ export class SessionManager {
     }
     private sessions = new Map<string, ManagedSession>();
     private featureFlags: FeatureFlagCache | null = null;
+    /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
+    private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1212,6 +1217,16 @@ export class SessionManager {
         return this.workspaceProvider;
     }
 
+    /** Session turn control: set by the worker after it starts the hub. */
+    setTurnControlHub(hub: import("./turn-control.js").TurnControlHub | null): void {
+        this.turnControlHub = hub;
+    }
+
+    /** The worker's hub for activity registration, or null when unavailable. */
+    getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
+        return this.turnControlHub;
+    }
+
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
         this.unsubscribeFeatureFlags?.();
         this.featureFlags = cache;
@@ -1264,7 +1279,7 @@ export class SessionManager {
      * Used by activities (e.g. summarizeSession) that need a lightweight LLM
      * without requiring a GitHub token.
      */
-    resolveDefaultProvider(): { modelName: string; sdkProvider: any } | undefined {
+    resolveDefaultProvider(): { modelName: string; sdkProvider: any; toolCatalog?: ToolCatalogCapability } | undefined {
         const registry = this.workerDefaults.modelProviders;
         if (!registry?.defaultModel) return undefined;
         const resolved = registry.resolve(registry.defaultModel);
@@ -1273,7 +1288,11 @@ export class SessionManager {
             // The same treatment a real session gets. A workload-identity
             // provider carries no key, so without the callback this hands the
             // SDK a provider with no credential at all and every request 401s.
-            return { modelName: resolved.modelName, sdkProvider: attachWorkloadIdentity(resolved) };
+            return {
+                modelName: resolved.modelName,
+                sdkProvider: attachWorkloadIdentity(resolved),
+                ...(resolved.toolCatalog ? { toolCatalog: resolved.toolCatalog } : {}),
+            };
         } catch {
             // An unconfigured worker reports "no usable provider" here rather
             // than throwing into an activity that only wanted to write a
@@ -1288,7 +1307,7 @@ export class SessionManager {
      * distiller walks its fallback chain on that (a dead session model must
      * not block the regeneration that exists to escape it).
      */
-    resolveModelSessionOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string } | null {
+    resolveModelSessionOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null {
         const registry = this.workerDefaults.modelProviders;
         if (!registry) {
             return this.githubToken ? { gitHubToken: this.githubToken } : null;
@@ -1302,7 +1321,11 @@ export class SessionManager {
             // catch below turns that into null, which is the "does not
             // resolve" answer this returns for any other unusable model.
             if (resolved.sdkProvider) {
-                return { model: resolved.modelName, provider: attachWorkloadIdentity(resolved) };
+                return {
+                    model: resolved.modelName,
+                    provider: attachWorkloadIdentity(resolved),
+                    ...(resolved.toolCatalog ? { toolCatalog: resolved.toolCatalog } : {}),
+                };
             }
             if (resolved.githubToken) return { model: resolved.modelName, gitHubToken: resolved.githubToken };
             return null;
@@ -1359,7 +1382,28 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        }, byokOpenAi ? { type: "openai" } : undefined);
+        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
+            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
+            if (!config) return undefined;
+            // Policy lookup must never fail the model request itself: a model
+            // removed by a catalog reload (or an unparsable URL) keeps the
+            // catalog unchanged and lets the provider answer.
+            try {
+                const registry = this.workerDefaults.modelProviders;
+                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
+                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
+                const resolved = registry?.resolve(descriptor.qualifiedName);
+                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
+                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
+                const endpoint = new URL(provider.baseUrl);
+                const target = new URL(request.url);
+                if (target.origin !== endpoint.origin
+                    || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
+                return descriptor.toolCatalog;
+            } catch {
+                return undefined;
+            }
+        } : undefined);
         this.clients.set(clientKey, created);
         return created;
     }
@@ -1759,7 +1803,7 @@ export class SessionManager {
      */
     async abortWarmSessionTurn(
         sessionId: string,
-        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number },
+        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number; cancelTurnTasks?: boolean },
     ): Promise<AbortTurnResult> {
         const managed = this.sessions.get(sessionId);
         if (!managed) {
@@ -1789,6 +1833,24 @@ export class SessionManager {
             // Abort RPC failure is non-fatal: the force-settle escalation below
             // still unwinds the turn.
             void err;
+        }
+
+        // Session turn control (V4 Stop): stop the background tasks this turn
+        // started. A shell the CLI moved to the background keeps the turn open
+        // (no session.idle) and survives the abort; tasks of earlier turns are
+        // kept. Bounded and never throws: the grace wait below is the backstop.
+        if (opts.cancelTurnTasks) {
+            try {
+                const cancelled = await withWorkspaceDeadline(
+                    // From the stopped turn's start to the Stop: never a later turn's tasks.
+                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } }),
+                    "stop task cancel",
+                    STOP_TASK_CANCEL_DEADLINE_MS,
+                );
+                if (cancelled > 0) emitSessionManagerTrace(sessionId, `stop cancelled ${cancelled} background task(s) of turn ${active.turnIndex}`);
+            } catch (error: unknown) {
+                emitSessionManagerTrace(sessionId, `stop could not cancel the turn's background tasks: ${normalizeError(error).message}`, { level: "warn" });
+            }
         }
 
         const graceMs = opts.unwindGraceMs ?? 8_000;

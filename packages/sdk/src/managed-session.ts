@@ -12,6 +12,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import {
     CHECK_WORKFLOWS_TOOL_SPEC,
@@ -394,6 +395,24 @@ const LOAD_AGENT_TOOL_SPEC = {
         },
     },
     handler: async () => "stub",
+} as const;
+
+/** message_agent's delivery choice and stop_agent_turn (parent turn controls). Shared by the stubs and the live tools. */
+const MESSAGE_AGENT_DELIVER_SCHEMA = {
+    type: "string",
+    enum: ["next_turn", "now"],
+    description: "next_turn (default): queue the message as the sub-agent's next prompt. now: steer it into the sub-agent's RUNNING turn, which reads it at its next model call; use it to redirect a child mid-task. Without a running turn that takes steers, the message is queued for the next turn and the result says so.",
+} as const;
+const STOP_AGENT_TURN_DESCRIPTION =
+    "Stop the CURRENT turn of a running sub-agent and keep the sub-agent alive (cancel_agent ends the sub-agent instead). "
+    + "Give it its next task with message_agent. Waits up to 15 seconds and reports stopped, too late (the turn had already finished its model run), no running turn, or still pending.";
+const STOP_AGENT_TURN_PARAMETERS = {
+    type: "object",
+    properties: {
+        agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+        reason: { type: "string", description: "Optional reason, shown in the sub-agent's transcript" },
+    },
+    required: ["agent_id"],
 } as const;
 
 const CHILD_SESSION_RESULT_SCHEMA = {
@@ -912,6 +931,17 @@ export class ManagedSession {
     private stopRequest: { reason: string; requestedAt: number } | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
     private settleTurnResolver: (() => void) | null = null;
+    /** Rejecter for the current turn's completion promise — failTurn(). */
+    private settleTurnRejecter: ((err: unknown) => void) | null = null;
+    /** Session turn control: the running turn's send gate and steers (null without turn control). */
+    private steer: SteerTurnState | null = null;
+    /**
+     * Turn control: the previous run was settled early by assistant.idle
+     * { aborted } after a Stop, so its session.idle may still arrive. The
+     * next run ignores a session.idle that comes before its own user.message
+     * or assistant.turn_start.
+     */
+    private staleIdlePending = false;
 
     constructor(
         sessionId: string,
@@ -1304,13 +1334,14 @@ export class ManagedSession {
         const messageAgentTool = defineTool("message_agent", {
             description:
                 "Send a message to a running sub-agent. " +
-                "The message is enqueued as a prompt for the sub-agent's next turn.",
+                "By default the message is enqueued as a prompt for the sub-agent's next turn; deliver \"now\" steers it into the running turn.",
             parameters: {
                 type: "object",
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     message: { type: "string", description: "The message to send to the sub-agent" },
                     contract_patch: { type: "object", description: "Optional structured patch to the child contract for follow-up work. Use 'wakeOn' here to update the parent wake policy for this child mid-flight (e.g. quiet a chatty watcher with wakeOn='material_change' or wake it up with 'any')." },
+                    deliver: MESSAGE_AGENT_DELIVER_SCHEMA,
                 },
                 required: ["agent_id", "message"],
             },
@@ -1395,7 +1426,7 @@ export class ManagedSession {
     }
 
     /**
-     * Child management tool definitions (complete, cancel, delete).
+     * Child management tool definitions (complete, cancel, stop turn, delete).
      * Separated for clarity but included in subAgentToolDefs().
      */
     static _childManagementToolDefs(): Tool<any>[] {
@@ -1455,7 +1486,13 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [completeAgentTool, cancelAgentTool, deleteAgentTool];
+        const stopAgentTurnTool = defineTool("stop_agent_turn", {
+            description: STOP_AGENT_TURN_DESCRIPTION,
+            parameters: STOP_AGENT_TURN_PARAMETERS,
+            handler: async () => "stub",
+        });
+
+        return [completeAgentTool, cancelAgentTool, stopAgentTurnTool, deleteAgentTool];
     }
 
     /**
@@ -1478,6 +1515,10 @@ export class ManagedSession {
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        const binding = opts?.turnControl ?? null;
+        const steer = binding ? new SteerTurnState() : null;
+        this.steer = steer;
+        if (binding && steer) binding.attach(this.steerPort(steer));
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
@@ -1509,7 +1550,69 @@ export class ManagedSession {
             this.activeTurn = null;
             this.stopRequest = null;
             this.settleTurnResolver = null;
+            this.settleTurnRejecter = null;
+            if (steer) {
+                steer.ended = true;
+                steer.gate = "closed";
+            }
+            if (this.steer === steer) this.steer = null;
+            binding?.detach();
         }
+    }
+
+    // ── Session turn control: the send gate (design 4.6) ─────────
+
+    /** Close the running turn's send gate, if it has one (Stop, abort, forced settle, failure, idle). */
+    private closeSteerGate(): void {
+        if (this.steer) this.steer.gate = "closed";
+    }
+
+    /**
+     * The send-gate port of one controlled run. Every call is bound to `steer`:
+     * once that run ended, or another run started, the gate reads closed, a
+     * send is refused and a failure reaches no turn.
+     */
+    private steerPort(steer: SteerTurnState): import("./turn-control.js").TurnControlSessionPort {
+        const current = () => this.steer === steer && !steer.ended;
+        return {
+            gate: () => (current() ? steer.gate : "closed"),
+            close: () => { steer.gate = "closed"; },
+            sendSteer: (text, onConfirmed) => this.sendSteerOn(steer, text, onConfirmed),
+            failTurn: (err) => {
+                if (!current()) return;
+                steer.gate = "closed";
+                try { this.settleTurnRejecter?.(err); } catch {}
+            },
+        };
+    }
+
+    /**
+     * Send a steer into the running turn with mode "immediate". The watch for
+     * its user.message is armed before the send, because the event can come
+     * before send() resolves. `onConfirmed` runs once, when the run confirms
+     * the steer. A send that throws fails the turn (the caller's chain does).
+     * A send that resolves after its run ended confirms nothing.
+     */
+    private async sendSteerOn(steer: SteerTurnState, text: string, onConfirmed: (messageId: string) => void): Promise<void> {
+        if (this.steer !== steer || steer.ended || steer.gate !== "open") throw new Error("The steer gate is not open");
+        steer.inFlight += 1;
+        let messageId: string;
+        try {
+            messageId = await this.copilotSession.send({ prompt: text, mode: "immediate" } as any);
+        } finally {
+            steer.inFlight -= 1;
+        }
+        if (steer.ended) return;
+        // Compare SDK event order, not RPC completion time: confirmation and
+        // its following idle can both precede the send result.
+        const seenAt = steer.seen.get(messageId);
+        if (seenAt !== undefined) {
+            steer.lastConfirmOrder = Math.max(steer.lastConfirmOrder, seenAt);
+            onConfirmed(messageId);
+        } else {
+            steer.unconfirmed.set(messageId, onConfirmed);
+        }
+        steer.trySettle();
     }
 
     /** The in-flight turn, if any. Read by the lock-bypassing stop path. */
@@ -1524,6 +1627,8 @@ export class ManagedSession {
      */
     requestStop(reason: string): { turnIndex: number } | null {
         if (!this.activeTurn) return null;
+        // Never send a steer after a Stop or an abort (spike cell C5b).
+        this.closeSteerGate();
         this.stopRequest = { reason, requestedAt: Date.now() };
         return { turnIndex: this.activeTurn.turnIndex };
     }
@@ -1537,6 +1642,7 @@ export class ManagedSession {
      */
     forceSettleTurn(reason: string): boolean {
         if (!this.activeTurn) return false;
+        this.closeSteerGate();
         if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
         try { this.settleTurnResolver?.(); } catch {}
         return true;
@@ -2549,7 +2655,7 @@ export class ManagedSession {
         const messageAgentTool = defineTool("message_agent", {
             description:
                 "Send a message to a running sub-agent. " +
-                "The message is enqueued as a prompt for the sub-agent's next turn. " +
+                "By default the message is enqueued as a prompt for the sub-agent's next turn; deliver \"now\" steers it into the running turn. " +
                 "Calling message_agent does NOT finish your turn. After it succeeds, continue with the remaining workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer.",
             parameters: {
                 type: "object",
@@ -2557,13 +2663,17 @@ export class ManagedSession {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     message: { type: "string", description: "The message to send to the sub-agent" },
                     contract_patch: { type: "object", description: "Optional structured patch to the child contract for follow-up work. Use 'wakeOn' here to update the parent wake policy for this child mid-flight (e.g. quiet a chatty watcher with wakeOn='material_change' or wake it up with 'any')." },
+                    deliver: MESSAGE_AGENT_DELIVER_SCHEMA,
                 },
                 required: ["agent_id", "message"],
             },
-            handler: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
+            handler: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown>; deliver?: MessageAgentDelivery }, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("message_agent");
+                if (args.deliver !== undefined && !MESSAGE_AGENT_DELIVER_SCHEMA.enum.includes(args.deliver)) {
+                    return "Error: deliver must be next_turn or now.";
+                }
                 if (controlBridge) {
-                    return await controlBridge.messageAgent(args);
+                    return await controlBridge.messageAgent(args, { toolCallId: invocation?.toolCallId });
                 }
                 turnState.pendingActions.push({
                     type: "message_agent",
@@ -2761,6 +2871,16 @@ export class ManagedSession {
             },
         });
 
+        const stopAgentTurnTool = defineTool("stop_agent_turn", {
+            description: STOP_AGENT_TURN_DESCRIPTION,
+            parameters: STOP_AGENT_TURN_PARAMETERS,
+            handler: async (args: { agent_id: string; reason?: string }, invocation?: { toolCallId?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("stop_agent_turn");
+                if (!controlBridge?.stopAgentTurn) return "Error: stop_agent_turn is unavailable in this session.";
+                return await controlBridge.stopAgentTurn(args, { toolCallId: invocation?.toolCallId });
+            },
+        });
+
         const deleteAgentTool = defineTool("delete_agent", {
             description:
                 "Gracefully delete a sub-agent entirely. " +
@@ -2785,7 +2905,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2897,6 +3017,7 @@ export class ManagedSession {
                     listSessionsTool,
                     completeAgentTool,
                     cancelAgentTool,
+                    stopAgentTurnTool,
                     deleteAgentTool,
                 ];
 
@@ -3364,18 +3485,54 @@ export class ManagedSession {
         // A live turn emits a steady event stream (streaming deltas, tool
         // executions, usage updates); a dead subprocess emits nothing.
         let lastEventAt = Date.now();
+        // Turn control: ignore a stale session.idle of an early-settled
+        // previous run until this run's own work is seen.
+        let swallowStaleIdle = this.staleIdlePending;
+        this.staleIdlePending = false;
+        const isStaleIdle = (eventType: string, event: any): boolean => {
+            if (!swallowStaleIdle || isNativeChildEvent(event)) return false;
+            if (eventType === "user.message" || eventType === "assistant.turn_start") {
+                swallowStaleIdle = false;
+                return false;
+            }
+            return eventType === "session.idle";
+        };
 
+        // The model run the handlers below settle: the first run, then each
+        // corrective run in this turn (nextRun). Every run settles the same
+        // way, on session.idle (or an aborted assistant.idle after our Stop).
+        let settleRun: () => void = () => {};
+        let failRun: (err: unknown) => void = () => {};
+        const nextRun = (): Promise<void> => new Promise<void>((resolve, reject) => {
+            settleRun = resolve;
+            failRun = reject;
+        });
         const turnComplete = new Promise<void>((resolve, reject) => {
-            // Hang-escalation hook: forceSettleTurn() resolves this promise when
-            // the SDK never fires session.idle (see stop-turn plan, edge E3).
-            this.settleTurnResolver = resolve;
+            settleRun = resolve;
+            failRun = reject;
+            // Hang-escalation hook: forceSettleTurn() resolves the current run
+            // when the SDK never fires session.idle (see stop-turn plan, edge E3).
+            this.settleTurnResolver = () => settleRun();
+            this.settleTurnRejecter = (err) => failRun(err);
             // Catch-all event handler — captures every event and fires onEvent immediately.
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
                     lastEventAt = Date.now();
                     const eventType = event.type ?? event.eventType ?? "unknown";
+                    if (isStaleIdle(eventType, event)) return;
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;
+                    // Session turn control: a top-level idle closes the send gate
+                    // before anything observes the event (no observer may send
+                    // after it: spike cell C4c).
+                    if (eventType === "session.idle" && this.steer && !isNativeChildEvent(event)) {
+                        this.steer.gate = "closed";
+                    }
+                    // Session turn control: a user.message confirms a steer by its messageId.
+                    if (eventType === "user.message" && this.steer && !isNativeChildEvent(event)) {
+                        const messageId = (rawEventData as any)?.messageId;
+                        if (typeof messageId === "string") this.steer.onUserMessage(messageId);
+                    }
 
                     if (typeof rawEventData === "object" && rawEventData !== null) {
                         eventData = { ...rawEventData };
@@ -3611,14 +3768,54 @@ export class ManagedSession {
                 );
             }
 
+            // Turn control (V4 Stop): after an abort, CLI 1.0.83 sends no
+            // session.idle while the turn waits on a shell it moved to the
+            // background (a steer did that); it sends assistant.idle
+            // { aborted: true }. After our own Stop that ends the run.
+            // Ordinary turns, steers and timeouts still settle on session.idle.
+            unsubscribers.push(
+                this.copilotSession.on("assistant.idle", (event: any) => {
+                    if (isNativeChildEvent(event)) return;
+                    const steer = this.steer;
+                    if (!steer || !this.stopRequest || event.data?.aborted !== true) return;
+                    steer.gate = "closed";
+                    flushStreamingProgress(true);
+                    publishReasoningSnapshot("session.idle", true);
+                    liveTurn?.finishTurn();
+                    steer.onIdle();
+                    this.staleIdlePending = true;
+                    settleRun();
+                }),
+            );
+
             // session.idle = turn finished (normal completion or post-abort)
             unsubscribers.push(
                 this.copilotSession.on("session.idle", (event: any) => {
                     if (isNativeChildEvent(event)) return;
+                    if (swallowStaleIdle) return;
+                    const steer = this.steer;
+                    if (steer) steer.gate = "closed";
                     flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
                     liveTurn?.finishTurn();
-                    resolve();
+                    if (!steer) {
+                        settleRun();
+                        return;
+                    }
+                    // Turn control: close the send gate before anything else. A
+                    // steer sent but not yet confirmed keeps the turn open until
+                    // its user.message and the following idle; a send after
+                    // idle would start a new CLI run (spike cells C4a-C4c). The
+                    // turn timeout still bounds the wait. A stopped turn settles
+                    // at once: its steers are not delivered anyway.
+                    steer.gate = "closed";
+                    steer.onIdle();
+                    if (this.stopRequest) {
+                        settleRun();
+                        return;
+                    }
+                    steer.settle = settleRun;
+                    steer.trySettle();
                 }),
             );
         });
@@ -3629,7 +3826,11 @@ export class ManagedSession {
         let turnTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = TURN_TIMEOUT > 0
             ? new Promise<void>((_, reject) => {
-                turnTimeoutTimer = setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+                turnTimeoutTimer = setTimeout(() => {
+                    // The guard aborts the run next: no steer may be sent from here on (spike cell C5b).
+                    this.closeSteerGate();
+                    reject(new Error("Turn timed out"));
+                }, TURN_TIMEOUT);
                 (turnTimeoutTimer as any).unref?.();
             })
             : null;
@@ -3646,6 +3847,7 @@ export class ManagedSession {
                     inactivityTimer = setTimeout(() => {
                         const idleMs = Date.now() - lastEventAt;
                         if (idleMs >= INACTIVITY_TIMEOUT) {
+                            this.closeSteerGate();
                             reject(new Error(
                                 `No events from the Copilot CLI subprocess for ${Math.round(idleMs / 1000)}s — `
                                 + `${TURN_INACTIVITY_ERROR_MARKER}; treating the turn as lost.`,
@@ -3667,20 +3869,30 @@ export class ManagedSession {
             .filter((p): p is Promise<void> => p !== null);
         for (const guard of guards) guard.catch(() => {});
 
-        // Re-armable idle waiter used by the tool-call-as-text guard to wait for
-        // the model's response to a mid-turn correction without tearing down the
-        // event subscriptions set up above.
-        const waitForNextIdle = (): Promise<void> => new Promise<void>((resolve) => {
-            const unsub = this.copilotSession.on("session.idle", (event: any) => {
-                if (isNativeChildEvent(event)) return;
-                flushStreamingProgress(true);
-                publishReasoningSnapshot("session.idle", true);
-                liveTurn?.finishTurn();
-                unsub();
-                resolve();
-            });
-            unsubscribers.push(unsub);
-        });
+        // A corrective model run inside this turn (the tool-call-as-text and
+        // required-tool guards). It runs like the first run: turn control holds
+        // controls until the corrective prompt is sent, then applies steers and
+        // Stop live, and the run settles through the same handlers. A Stop,
+        // applied or still held, means no corrective prompt is sent. Returns
+        // false when the turn stops instead.
+        const runCorrection = async (message: Record<string, unknown>): Promise<boolean> => {
+            const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
+            if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
+            if (this.stopRequest) return false;
+            const done = nextRun();
+            if (this.steer) this.steer.gate = "pending";
+            await this.copilotSession.send(message as any);
+            if (this.steer && this.steer.gate === "pending") {
+                this.steer.gate = "open";
+                opts?.turnControl?.gateOpened();
+            }
+            if (guards.length > 0) {
+                await Promise.race([done, ...guards]);
+            } else {
+                await done;
+            }
+            return true;
+        };
 
         const effectivePrompt = opts?.requiredTool
             ? [
@@ -3694,6 +3906,15 @@ export class ManagedSession {
 
         try {
             normalizeCopilotSessionMessageHistory(this.copilotSession as any);
+
+            // Turn control: a Stop that arrived before the prompt was sent
+            // ends the turn without a model run (plan P21).
+            const heldStop = opts?.turnControl?.heldStop() ?? null;
+            if (this.steer && heldStop !== null) {
+                this.steer.gate = "closed";
+                if (!this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
+                return { type: "stopped", reason: heldStop };
+            }
 
             // Fire the prompt — non-blocking. Image attachments arrive as
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
@@ -3714,6 +3935,13 @@ export class ManagedSession {
                     }
                     : {}),
             });
+
+            // Turn control: the prompt is sent, so steers may follow. Controls
+            // held until now are applied in order.
+            if (this.steer && this.steer.gate === "pending") {
+                this.steer.gate = "open";
+                opts?.turnControl?.gateOpened();
+            }
 
             // Wait for session.idle, or a guard rejection (wall-clock cap /
             // inactivity watchdog) when enabled.
@@ -3748,13 +3976,7 @@ export class ManagedSession {
                 if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
 
                 finalContent = undefined;
-                const nextIdle = waitForNextIdle();
-                await this.copilotSession.send({ prompt: buildTextEmittedToolCallCorrection(offendingTool) });
-                if (guards.length > 0) {
-                    await Promise.race([nextIdle, ...guards]);
-                } else {
-                    await nextIdle;
-                }
+                if (!(await runCorrection({ prompt: buildTextEmittedToolCallCorrection(offendingTool) }))) break;
             }
 
             if (textEmittedToolCallRef.current) {
@@ -3794,16 +4016,7 @@ export class ManagedSession {
                 if (opts.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
 
                 finalContent = undefined;
-                const nextIdle = waitForNextIdle();
-                await this.copilotSession.send({
-                    prompt: buildRequiredToolCorrection(opts.requiredTool),
-                    requiredTool: opts.requiredTool,
-                } as any);
-                if (guards.length > 0) {
-                    await Promise.race([nextIdle, ...guards]);
-                } else {
-                    await nextIdle;
-                }
+                if (!(await runCorrection({ prompt: buildRequiredToolCorrection(opts.requiredTool), requiredTool: opts.requiredTool }))) break;
             }
 
             if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
@@ -3823,6 +4036,9 @@ export class ManagedSession {
                 } as any;
             }
         } catch (err: any) {
+            // Every error unwind ends the run, and the guards below abort it:
+            // close the send gate before any abort (spike cell C5b).
+            this.closeSteerGate();
             const errMsg = err.message ?? String(err);
             // Session workspaces: set_session_workspace told the model the
             // change was accepted. A turn that then fails still carries the
@@ -3952,6 +4168,7 @@ export class ManagedSession {
      * Session remains alive for future runTurn() calls.
      */
     abort(): void {
+        this.closeSteerGate();
         void Promise.resolve(this.copilotSession.abort()).catch(() => {});
     }
 
@@ -4071,9 +4288,22 @@ export class ManagedSession {
      * rpc.tasks.cancel stops them (docs/proposals/session-workspaces.md 4.5).
      * Returns how many cancels were sent. Throws if tasks remain after the
      * last round.
+     *
+     * `startedWithin` ({ since, until }, ms since the epoch) limits the
+     * cancel to tasks the CLI reports as started in that window, for example
+     * the tasks of one stopped turn. The upper bound keeps a slow task list,
+     * or a cancel still running after its caller gave up, off the tasks of a
+     * later turn. A task without a readable `startedAt` is kept: nothing is
+     * killed on missing data.
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200 }: { rounds?: number; pauseMs?: number } = {}): Promise<number> {
-        const active = backgroundTaskRuns;
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: { rounds?: number; pauseMs?: number; startedWithin?: { since: number; until: number } } = {}): Promise<number> {
+        const startedInScope = (task: { startedAt?: unknown }) => {
+            if (!startedWithin) return true;
+            const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
+                : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
+            return Number.isFinite(at) && at >= startedWithin.since && at <= startedWithin.until;
+        };
+        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
@@ -4170,5 +4400,59 @@ export class ManagedSession {
     /** Get the underlying CopilotSession (for direct access when needed). */
     getCopilotSession(): CopilotSession {
         return this.copilotSession;
+    }
+}
+
+/**
+ * Session turn control: the running turn's send gate and its sent but not yet
+ * confirmed steers (design 4.6). Settles the turn at an idle only when no
+ * steer is in flight or unconfirmed and an idle came after the last
+ * confirmation.
+ *
+ * @internal
+ */
+class SteerTurnState {
+    gate: "pending" | "open" | "closed" = "pending";
+    /** The run that owns this state returned. */
+    ended = false;
+    /** send() calls not yet resolved. */
+    inFlight = 0;
+    /** Sent steers whose user.message has not been seen: messageId → callback. */
+    readonly unconfirmed = new Map<string, (messageId: string) => void>();
+    /** user.message ids seen, with their event order (a confirmation can come before send() resolves). */
+    readonly seen = new Map<string, number>();
+    private order = 0;
+    private lastIdleOrder = -1;
+    lastConfirmOrder = -1;
+    /** Resolves the turn once settlement is allowed (set at the first idle). */
+    settle: (() => void) | null = null;
+
+    onUserMessage(messageId: string): void {
+        this.order += 1;
+        const cb = this.unconfirmed.get(messageId);
+        if (cb) {
+            this.unconfirmed.delete(messageId);
+            this.lastConfirmOrder = this.order;
+            cb(messageId);
+        } else {
+            this.seen.set(messageId, this.order);
+        }
+        this.trySettle();
+    }
+
+    onIdle(): void {
+        this.order += 1;
+        this.lastIdleOrder = this.order;
+    }
+
+    trySettle(): void {
+        if (!this.settle) return;
+        if (this.inFlight > 0 || this.unconfirmed.size > 0) return;
+        // A confirmation after the most recent idle belongs to work whose
+        // answer still needs a later idle, even if its send has already returned.
+        if (this.lastIdleOrder <= this.lastConfirmOrder) return;
+        const settle = this.settle;
+        this.settle = null;
+        settle();
     }
 }

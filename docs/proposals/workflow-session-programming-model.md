@@ -395,7 +395,7 @@ pilotswarm workflows list
 pilotswarm workflows show <definition-id>
 ```
 
-CMS migrations `0084` and `0089` retain the authored YAML, ownership, source
+CMS migrations `0086` and `0091` retain the authored YAML, ownership, source
 hash, requested Git ref,
 resolved commit, and package artifact identity for audit and recompilation. It
 stores the package hash as a first-class definition invariant and stores the
@@ -406,6 +406,12 @@ to the existing artifact store under a content-addressed filename and pinned
 before the CMS row is written. JavaScript handler functions, Git credentials,
 and machine-local package paths are not serialized. Workers must load the
 pinned package artifact that owns those identities.
+
+The merged CMS lineage reserves `0082` and `0083` for turn control and assigns
+workflow sessions `0084` through `0092`. Development databases that applied
+the pre-merge workflow numbering (`0082` through `0090`) do not share this
+ledger and require an explicit clean rebuild or migration-ledger cutover before
+using the merged lineage.
 
 Unlike `pg_durable`, the initial registry does not split each node into its own
 row. PilotSwarm already has a complete authored YAML artifact, and Duroxide

@@ -161,7 +161,8 @@ These read-only endpoints expose the workflow query model. They do not drive wor
 | renameSession | `PATCH /api/v1/management/sessions/:sessionId` | sessionId (path), title (body) | Rename a session. |
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
-| stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
+| stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body: `reason?`, `timeoutMs?`, `requestId?`) | Stop the running turn. Stop discards the turn: the agent does not remember the stopped request or its partial work; send it again to continue. Outcome `stopped`, `too_late`, `no_active_turn` (`detail` names any other refusal), `timeout` (with `controlSeq` when the Stop was accepted) or `stop_forced` (turns of orchestration 1.0.80 and older). See [Stop and Steer](#stop-and-steer). |
+| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steer` | sessionId (path), options (body: `text`, `requestId`, `replacesClientMessageId?`) | Add guidance to the running turn; with `replacesClientMessageId`, convert that queued message. Access `session:write`; needs the `sessions.steering` feature. Outcome `accepted` (`steerId`, `turn`, `repeat?`) or a refusal. See [Stop and Steer](#stop-and-steer). |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). With `startReplacement: false`, remove it and start nothing; refused (409 `SYSTEM_AGENT_LOADED`) while a live worker loads the agent. |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |
@@ -364,6 +365,61 @@ curl -s "$BASE/management/sessions/$SID/events?limit=50" | jq '.result[].eventTy
 ```
 
 
+## Stop and Steer
+
+Stop and Steer act on a session's running turn (session turn control). A turn
+of orchestration 1.0.81 or later listens for them through the session catalog;
+the detailed session view (`getSession`) says whether it does:
+`activeTurnIndex`, `turnHigh` and `acceptsTurnControl` (true while a turn runs
+on the turn-control path; list rows do not carry these fields).
+
+| Operation | Answer |
+| --- | --- |
+| `steerSessionTurn` | `{ outcome: "accepted", steerId, turn, repeat? }`, or `{ outcome }` with a refusal: `no_turn` (no running turn), `legacy_turn` (the turn does not listen for controls), `not_found`, `too_many` (20 open controls on the turn), `request_id_reused` (the id was used for a different request), `steering_disabled`, `already_received` (the queued message named by `replacesClientMessageId` already reached a turn) |
+| `stopSessionTurn` | `stopped`, `too_late` (the turn had already finished its model run), `no_active_turn`, `timeout` (no outcome observed before `timeoutMs`; `controlSeq` identifies an accepted Stop), or `stop_forced` on the earlier path |
+
+- **Caller.** The Web API sets `options.caller` (the sender recorded on the
+  control and the viewer for which `sessions.steering` resolves) from the
+  authenticated request and ignores body values. Direct-mode callers may pass
+  `caller`; without a viewer the flag resolves at cluster scope.
+- **Request ids.** `requestId` is required for Steer and optional for Stop.
+  Retry with the same id only after a transport failure: the retry returns
+  the first answer and records nothing new. After a definite `no_turn` or
+  `legacy_turn` Steer refusal, send the text as an ordinary message with a
+  new client message id instead, and do not retry that id.
+- **Converting a queued message.** Pass the queued message's client message
+  id as `replacesClientMessageId` and its text as `text`. A `delivered`
+  steer replaces the message: the orchestration records
+  `pending_messages.cancelled` with reason `converted_to_steer` and the
+  message never runs as its own turn. Any other outcome leaves it queued;
+  such a steer is never carried. A new request for the same message returns
+  the first answer while its steer is open or delivered. Do not re-send the
+  message yourself: it is its own fallback.
+  `replacesClientMessageId` must be one of the `clientMessageIds` given in
+  `options.clientMessageIds` when the message was sent. A message sent
+  without client message ids cannot be converted: the steer is accepted but
+  the message also runs, so its text runs twice. The server cannot tell an
+  unknown id from a message that has not arrived yet.
+- **Outcome.** Each accepted control gets one outcome event
+  (`session.control_outcome`): a steer is `delivered`, `carried` (it runs
+  with the next turn), or `not_delivered`; a Stop is `stopped` or
+  `too_late`. A carried steer's later fate is the
+  `session.carried_steers_closed` event (`ran`, `stopped`, `gave_up`,
+  `terminal`).
+- **Limits.** Steer `text` must be non-empty; the request body has the same
+  2 MB JSON limit as an ordinary message (413 `PAYLOAD_TOO_LARGE`). Stop
+  `timeoutMs` is 0 to 300,000 ms (default 30,000). Stop is never gated by a
+  feature flag or refused for the open-control cap. `sessions.steering` gates new steers only: a retry of an
+  already recorded request id still returns its first answer after the flag
+  is turned off.
+- **Parent agents.** An agent controls its own sub-agent's running turn with
+  two tools on the same paths: `message_agent` with `deliver: "now"` steers
+  it (after a `no_turn`, `legacy_turn`, `steering_disabled` or `too_many`
+  refusal the message is queued for the next turn instead), and
+  `stop_agent_turn` stops the turn and keeps the sub-agent alive. The
+  control's sender is the parent agent (`kind: "agent"`), and
+  `sessions.steering` resolves for the parent session's owner.
+
 ## Feature flags
 
 Settings → Feature flags exposes personal preferences and admin cluster/user controls.
@@ -392,6 +448,10 @@ All mutations return the committed revision. Stale writes return 409
 original result. Reads include `effective`, `source`, `userOverrideIgnored`, and
 configured cluster/user settings. A successful save does not prove worker adoption;
 workers report applied revisions/capability in their `feature-flags` state.
+
+`sessions.steering` gates Steer in the management client, the Web API, MCP,
+the portal and the TUI. It is off by default and users cannot override it until
+an operator allows it (`allowUserOverride` on the cluster setting).
 
 The SDK management client exposes the same operation names with a trusted
 `FeatureViewer` first argument. Web clients derive the viewer from authentication.

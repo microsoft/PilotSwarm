@@ -177,6 +177,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "similarFacts",
     "startFactsEmbedder",
     "startWorkflow",
+    "steerSessionTurn",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
@@ -1721,6 +1722,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Steer the running turn (options: { text, requestId, replacesClientMessageId? }); needs the sessions.steering feature. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received.
+     * @remarks `POST /management/sessions/:sessionId/steer` — access: `session:write`
+     */
+    steerSessionTurn(params: {
+        sessionId: string;
+        options?: any;
+    }): Promise<any>;
+
+    /**
      * Stop the durable embedder loop. [enhanced, admin]
      * @remarks `POST /facts/embedder/stop` — access: `fleet:admin` (admin)
      */
@@ -1729,7 +1739,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Abort the in-flight turn.
+     * Stop the running turn (options: { reason?, timeoutMs?, requestId? }). Outcome stopped | too_late | no_active_turn | timeout (with controlSeq when accepted) | stop_forced (older turns).
      * @remarks `POST /management/sessions/:sessionId/stop-turn` — access: `session:write`
      */
     stopSessionTurn(params: {
@@ -2038,6 +2048,7 @@ export function createManagementOps(
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
         startWorkflow: (params: Record<string, unknown> = {}) => callOp("startWorkflow", params),
+        steerSessionTurn: (params: Record<string, unknown> = {}) => callOp("steerSessionTurn", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),

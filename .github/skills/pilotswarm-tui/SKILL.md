@@ -119,7 +119,51 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   icon-only down-triangle dashboard picker at the far right; never prepend
   the dashboard name or add a second mobile tab row. Both compact focus
   composers retain Stop during a running turn, with a 44px touch target and
-  disabled pending-request state beside Send.
+  disabled pending-request state beside Send. Phones (600 px or less) have
+  no separate Steer button: the composer is one line (`[input][📎][■][blue
+  button]`, no "you" label) and does not grow when a turn starts; while the
+  turn accepts steering the blue button shows `↪` (`composer-send`,
+  `data-action="steer"`): a tap steers, and with typed text a hold (about
+  0.45 s) opens "Steer now" (lit) and "Queue" (`steer-hold-menu`).
+- Session turn control (Stop and Steer). TUI: `Ctrl+X` (or `Ctrl+Esc`) stops
+  the running turn; `Ctrl+T` in the prompt pane sends the prompt text as a
+  steer when the turn accepts controls (`acceptsTurnControl` from the
+  detailed session view) and the viewer's `sessions.steering` feature is on;
+  otherwise the status line says why. The same key resends an unconfirmed
+  request with its original request id, and `Alt+T` gives unresolved
+  requests up (steer text returns to the prompt after the draft; the
+  portal's Dismiss). The status hints show `ctrl-x stop` / `ctrl-t steer`
+  (or `retry`, `restore steer text`, `alt-t give up`) only while they apply,
+  and `?` help lists all three. Kept steer text (not delivered) has no
+  separate TUI Discard key: `Ctrl+T` on an empty prompt restores it, and
+  clearing the prompt discards it; the portal shows Restore and Discard.
+  This divergence is deliberate (no extra key). Steer is unavailable while a pending or
+  cancelling outbox message is selected. With a queued (`✓`) message selected
+  (`↑`), `Ctrl+T` steers now with that message (it replaces the queued message
+  when delivered; otherwise it stays queued) and `d` cancels it; the status
+  hint shows `ctrl-t steer now` only while it applies, and `?` help lists both.
+  With an empty prompt and queued messages, `Ctrl+T` steers them all in order
+  (hint `ctrl-t steer N queued`; refused when one has an image). The portal's
+  `↪` does the same (D11): typed text, the selected message (`↑` or a click
+  on its line, desktop only; `✕` deletes it), or with an empty box the whole
+  queue (`↪ N`, `data-steer-target`, `data-count`). The queued-prompts strip
+  has no buttons (`queued-actions`, `queued-item`, `queued-notice`), so each
+  message appears once; a steered line reads "↪ steering" and leaves the
+  strip once the model reads it. The strip is bounded above the composer in
+  the chat view and ends the transcript in MoA panels and Zen. Stop and Steer notices are kept per
+  kind, so one never hides the other's Retry. Portal: no visible turn status (a hidden `session-turn-state` keeps `data-turn-state` and `data-accepts-controls` and names the status) and a Steer button beside Stop, an inline notice for every
+  refusal, fallback and failure (with Retry for an unconfirmed request), and
+  transcript items: a steer reads as a user message with a `steer` badge and
+  its outcome, a Stop as a short line with its outcome. Both surfaces name a
+  parent agent's control (`stop_agent_turn`, `message_agent` deliver "now")
+  by the parent's title instead of "You"; portal items carry
+  `data-actor-kind` (`user` or `agent`). Labels for carried
+  steers come only from `session.carried_steers_closed`. Keep the portal
+  `data-testid` contract (`composer-input`, `turn-stop-button`,
+  `turn-steer-button`, `session-turn-state`, `control-steer`,
+  `control-stop`, `control-outcome-badge`, `control-stop-legacy`,
+  `control-notice`, `control-retry-button`, `transcript-user-message`)
+  stable and scoped by `data-session-id`; the UX test pass asserts it.
 - MoA's Close panel action uses a panel outline with an × and neutral styling.
   Keep it distinct from the Session group's trash/lifecycle action; closing a
   panel changes only its layout, leaving the session available.
@@ -142,7 +186,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Persist portal theme, owner filter, pinned sessions, collapsed-session ids, active (selected) session id, chat transcript/summary mode, and pane split adjustments in `users.profile_settings` so browser/mobile sessions share the same preferences. The portal must not read or write browser localStorage/cookies for these preferences; it may only clear old legacy keys/cookies at startup. The native TUI persists the same `pinnedSessionIds`, `collapsedSessionIds`, `activeSessionId`, theme/filter/view mode, and pane adjustments in its user config file. If no stored `activeSessionId`/`collapsedSessionIds` exist yet, the shared default is the main PilotSwarm system session selected with every group/parent session collapsed.
 - A portal `?session=<id>` deep link is explicit navigation: it must select and visibly highlight that session in the Sessions list, expand its ancestors, and retain the transient filter exception when current filters would otherwise hide it. A prior empty-space list deselection must not suppress the linked row highlight.
 - In the native TUI, keep the session/chat divider shared and capped: it is the chat resize control, and it must not let the top sessions pane grow beyond 50% of the full window height.
-- Busy/system-session prompt sends now use a shared pending outbox: queued prompts render in chat as pending user items, `Enter` on an empty draft flushes the queued batch, `Up`/`Down` at the prompt boundary navigate queued items, and `Esc` cancels the selected queued item. Keep portal, TUI, status hints, and docs aligned with that behavior.
+- Busy/system-session prompt sends now use a shared pending outbox: queued prompts render in chat as pending user items, `Enter` on an empty draft flushes the queued batch, `Up`/`Down` at the prompt boundary navigate queued items, `Esc` cancels a selected pending (`○`) item and leaves a selected queued (`✓`) item, and `d` cancels a selected queued item (status hint `d cancel`). Keep portal, TUI, status hints, and docs aligned with that behavior.
 - Pending-question answers render an optimistic asked/answered transcript item as soon as the user submits. Keep that item visible while `sendAnswer` is in flight and after it is accepted, then let the durable `user.message` transcript replace it once history sync catches up; stale session refreshes must not restore the old question card or hide the submitted exchange. Recognize both legacy and `(answered by …)` wrappers: the question remains a Question card and only the answer is human-authored. Use event sender metadata for identity, not the wrapper text.
 - Session warnings, including provider/API errors, remain stable while retrying and across stale idle/waiting refreshes. Use server status versions before timestamps to recognize recovery. Recovery resolves the active status, not the historical warning: keep the notice at its original transcript position and append later chat below it. Durable `session.error` events belong in chat history and backward paging. Capture status-only notices once in shared state; reconcile them with their durable event without duplicating or remounting the card. Keep the card's DOM key independent of retry counts and error text. Do not special-case only lost Copilot connections.
 - Creating a session explicitly selects and reveals its chat, including from mobile diagnostics/canvas or the desktop Master of Agents workspace. Seed the returned session before catalog refresh, preserve the outgoing draft, and keep selection through paged/stale catalogs and filters. A late load of the previous session must not take over the live subscription. Do not alter saved Master of Agents layouts when returning to normal chat.
@@ -154,7 +198,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - The Admin Console (`Shift+A` in the native TUI; toolbar `Admin` button in the portal) is a workspace-replacing surface for per-user settings. It must never display the raw GitHub Copilot key text — `selectAdminConsole` and `selectAdminGhcpKeyEditorModal` only carry the `githubCopilotKeySet` boolean and a masked editor value. The TUI and portal share the `state.admin` slice in `ui-core` and route every mutation through the controller (`beginAdminEditGhcpKey`, `setAdminGhcpKeyDraft`, `cancelAdminEditGhcpKey`, `saveAdminGhcpKey`, `clearAdminGhcpKey`, `refreshAdminProfile`); keep both hosts in sync if you add a new admin setting. Do not globally block New/New+Model when the per-user GitHub key is unset: GitHub models should fail only at create time when neither env `GITHUB_TOKEN` nor the per-user key is available, and non-GitHub providers must remain usable.
 - In Admin Console → My Providers, portal `Update Key` and native TUI `Shift+U` replace the selected personal provider credential in place. Keep the password draft masked and clear it before awaiting the update. Never implement this as delete/recreate: provider identity, defaults, routing references, and usage history must remain intact.
 - Admin role is not necessarily a user-resource bypass: honor server-provided `adminScope`/package `canEdit` for session/package actions. `cluster` keeps configuration/accounting and admin system-session access, but other content follows ownership/shares. Show the policy read-only, clear revoked content and reject late responses; never infer authority from hidden buttons alone. See `docs/proposals/cluster-scoped-admin.md`.
-- Outbox items render with three visible delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`). Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/app/ui/core/src/selectors.js](../../../packages/app/ui/core/src/selectors.js) consistent across portal and TUI.
+- Outbox items render with three visible delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`). Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/app/ui/core/src/selectors.js](../../../packages/app/ui/core/src/selectors.js) consistent across portal and TUI. Every path that delivers a receipt reconciles the outbox (live events, including ones already in history; bulk loads; the reconnect replay through `onResubscribe`; a MoA panel reconciles its loaded history when it links the parent outbox). A queued item without a receipt gets one 10 s exact-id re-read (`recheckOutboxReceipts`), also after `session.message_duplicate_suppressed`; never a text match there.
 
 ## Keybinding Rule
 

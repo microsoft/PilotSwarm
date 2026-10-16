@@ -115,3 +115,21 @@ test("getOperation returns the table entry", () => {
     assert.equal(getOperation("listSessions").method, "GET");
     assert.equal(getOperation("missing"), null);
 });
+
+test("Stop and Steer share session:write and carry their options in the body", () => {
+    const steer = getOperation("steerSessionTurn");
+    assert.equal(steer.access, "session:write", "Steer needs the same write access as sending a message");
+    assert.equal(steer.method, "POST");
+    assert.equal(steer.path, "/management/sessions/:sessionId/steer");
+    assert.equal(getOperation("stopSessionTurn").access, "session:write");
+    assert.equal(getOperation("sendMessage").access, steer.access);
+
+    const built = buildOperationRequest("steerSessionTurn", { sessionId: "s/1", options: { text: "use metric", requestId: "r-1" } });
+    assert.equal(built.method, "POST");
+    assert.equal(built.path, `${API_PREFIX}/management/sessions/s%2F1/steer`);
+    assert.deepEqual(built.body, { options: { text: "use metric", requestId: "r-1" } });
+
+    const stop = buildOperationRequest("stopSessionTurn", { sessionId: "s1", options: { requestId: "r-2", reason: "enough" } });
+    assert.equal(stop.path, `${API_PREFIX}/management/sessions/s1/stop-turn`);
+    assert.deepEqual(stop.body, { options: { requestId: "r-2", reason: "enough" } }, "the request id reaches the server unchanged");
+});

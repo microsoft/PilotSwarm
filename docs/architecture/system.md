@@ -689,16 +689,17 @@ Sub-agents are not sub-orchestrations in the duroxide sense. Each sub-agent is a
 
 ### 8.2 Built-in Agent Tools
 
-Eight tools are injected into every session by `ManagedSession` to enable sub-agent delegation:
+Nine tools are injected into every session by `ManagedSession` to enable sub-agent delegation:
 
 | Tool | Parameters | TurnResult type | What it does |
 |------|-----------|-----------------|-------------|
 | `spawn_agent` | `task`, `system_message?`, `model?`, `tool_names?` | `spawn_agent` | Creates a child session + orchestration. Returns agent ID. |
-| `message_agent` | `agent_id`, `message` | `message_agent` | Sends a follow-up message to a running sub-agent. |
+| `message_agent` | `agent_id`, `message`, `contract_patch?`, `deliver?` | `message_agent` | Sends a follow-up message to a running sub-agent. `deliver: "now"` steers it into the sub-agent's running turn instead (session turn control); without such a turn the message is queued as usual. |
 | `check_agents` | — | `check_agents` | Returns status of all sub-agents (running/completed/failed). |
 | `wait_for_agents` | `agent_ids?` | `wait_for_agents` | Blocks until sub-agents finish. Returns their results. |
 | `complete_agent` | `agent_id` | `complete_agent` | Marks a sub-agent as completed and stops its orchestration. |
 | `cancel_agent` | `agent_id`, `reason?` | `cancel_agent` | Cancels a running sub-agent. |
+| `stop_agent_turn` | `agent_id`, `reason?` | — (inline) | Stops the sub-agent's current turn and keeps the sub-agent alive. Reports stopped, too late, no running turn, or still pending. |
 | `delete_agent` | `agent_id`, `reason?` | `delete_agent` | Deletes a sub-agent entirely. |
 | `list_sessions` | filters | `list_sessions` | Lists sessions visible to this session (discovery). |
 

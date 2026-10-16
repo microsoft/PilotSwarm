@@ -10,6 +10,7 @@ These keys work whenever focus is not in the prompt editor.
 |-----|--------|
 | `q` | Quit |
 | `Ctrl+C` | Quit immediately |
+| `Ctrl+X` / `Ctrl+Esc` | Stop the running turn of the active session (any pane); press again to resend an unconfirmed Stop |
 | `Esc` | Return focus to Sessions |
 | `Tab` / `Shift+Tab` | Cycle focus between panes |
 | `h` / `l` | Move focus left / right |
@@ -106,7 +107,10 @@ These keys work whenever focus is not in the prompt editor.
 | `Option+Enter` / `Alt+Enter` | Insert a newline |
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
-| `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
+| `Ctrl+T` | Steer: send the prompt text as guidance for the running turn (needs the `sessions.steering` feature and a turn that accepts it; otherwise the status line says why). Press again to resend an unconfirmed steer. On an empty prompt it restores steer text that was kept (not delivered); clear the prompt to discard it (the portal has a separate Discard button). With a queued (`✓`) prompt selected: **steer now** with that message; it replaces the queued message when the model reads it, and otherwise stays queued and runs as usual. With an empty prompt and queued messages (and no kept steer text): steer every queued message now, in order (refused when one has an image). The portal's `↪` button does the same; on a phone, tap the blue `↪` button |
+| `Option+T` / `Alt+T` | Give up an unconfirmed Stop or Steer (or clear a refused steer's notice); its steer text returns to the prompt after your draft |
+| `Esc` | Leave prompt mode and return to Sessions, cancel the selected pending (`○`) prompt, or leave a selected queued (`✓`) prompt |
+| `d` | With a queued (`✓`) prompt selected: cancel it |
 | `←` / `→` | Move cursor by character |
 | `↑` / `↓` | Move cursor vertically across prompt lines, then enter/leave queued pending-prompt editing at the top/bottom boundary |
 | `Option+←` / `Option+→` | Move cursor by word |
@@ -121,9 +125,12 @@ Notes:
   - `○` pending — client-only, not yet acknowledged by the runtime
   - `✓` queued — durably enqueued to the orchestration, waiting to be processed
   - `✓✓` sent — persisted as a `user.message` in the durable transcript; the LLM has it
+- A queued item becomes sent as soon as the client sees its `user.message`, whichever way it arrives: the live stream, a history load, the replay after a reconnect, or the history a MoA panel loaded. A queued item still waiting after 10 seconds gets one re-read of the session's latest messages.
+- While images upload, a second submit sends nothing; the message goes once, when the upload ends. The status line says "Uploading N images..."; in the portal the Send button is busy (disabled, "Uploading…", a spinner on phones) and the draft stays.
 - Multiple synchronous sends coalesce into a single durable enqueue. Pressing `Enter` on an empty draft forces an immediate dispatch of any still-pending items.
 - Pressing `↑` at the top prompt boundary recalls the most recent pending item for editing. Pressing `↓` at the bottom boundary moves forward through pending items and eventually returns to the live draft.
 - `Esc` while editing a recalled pending item cancels that item before it becomes durable.
+- A selected queued (`✓`) item is read-only: `d` cancels it, `Ctrl+T` steers now with it (the status line shows `ctrl-t steer now` when that applies), and `Enter` or `Esc` returns to a new prompt.
 
 ## Modals and Dialogs
 

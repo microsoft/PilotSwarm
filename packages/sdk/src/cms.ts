@@ -18,8 +18,20 @@ import {
     type SessionKind,
     type SessionOwnerInfo,
     type SessionSummaryState,
+    type TurnControlKind,
+    type TurnControlAddResult,
+    type TurnStartResult,
+    type TurnLookInput,
+    type TurnLookRow,
+    type TurnEndKind,
+    type TurnEndResult,
+    type TurnControl,
+    type TurnStartRecord,
 } from "./types.js";
 import type { CompiledWorkflowManifest } from "./workflow-orchestration/compiler.js";
+import type { MessageSender } from "./message-sender.js";
+import { TurnControlUnavailableError } from "./turn-control-contract.js";
+import type { TurnControlListenClient } from "./turn-control.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -144,6 +156,13 @@ export interface SessionRow {
      * stopSessionTurn() to address the turn-scoped stop queue.
      */
     activeTurnIndex: number | null;
+    /**
+     * Session turn control: the highest turn started on the turn-control path
+     * in this orchestration lifetime (-1 for none). A running turn accepts
+     * Stop and Steer through the CMS when it equals `activeTurnIndex`.
+     * Absent before migration 0082.
+     */
+    turnHigh?: number | null;
     /** If this session is a sub-agent, the parent session's ID. */
     parentSessionId: string | null;
     /** Whether this is a system session (e.g. Sweeper Agent). */
@@ -254,6 +273,12 @@ export interface SessionRowUpdates {
     agentId?: string | null;
     splash?: string | null;
     splashMobile?: string | null;
+    /**
+     * Session turn control (orchestration give-up paths): close every open
+     * control (Stop → stopped, Steer → not_delivered) and every unclosed
+     * carried steer (gave_up). Needs migration 0082.
+     */
+    closeControls?: boolean;
 }
 
 /** Identity used to scope group placements (a user's private organization). */
@@ -1330,6 +1355,45 @@ export interface SessionCatalog {
     /** Publish the in-flight turn index (stop-turn targeting). */
     setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
+    // ── Session turn control (migration 0082) ───────────────────
+    /** Client: add a Steer or a Stop to the running turn, or get a refusal. */
+    /**
+     * `steeringAllowed` (default true): the resolved Steer feature flag. A
+     * retried request id gets its first answer before the flag is checked;
+     * a new Steer is refused with `steering_disabled` when it is false. A
+     * Stop ignores it.
+     */
+    /**
+     * `replacesClientMessageId` (migration 0083): the queued message a Steer
+     * replaces. Refused `already_received` once that message is recorded; a
+     * new request for the same message repeats the first answer while its
+     * steer is open or delivered.
+     */
+    turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed?: boolean, replacesClientMessageId?: string): Promise<TurnControlAddResult>;
+    /**
+     * Worker T3: mark the turn running and return its open controls. Replaces
+     * setActiveTurnIndex on the turn-control path. Records the turn's prompt
+     * and system message (`records`) in the same transaction (migration 0083).
+     */
+    turnStart(sessionId: string, turn: number, records?: TurnStartRecord[], workerNodeId?: string): Promise<TurnStartResult>;
+    /** Worker: one batched look for the worker's running turns. */
+    turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]>;
+    /**
+     * Worker T8: give every open control one outcome from the saved cursor,
+     * and close the carried steers folded into this turn (`carried`) as ran
+     * or stopped unless `kind` is error. An error leaves them open for retry.
+     * Redelivery passes the same carried seqs; closing is idempotent.
+     */
+    turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+    /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
+    turnReplaced(sessionId: string, turn?: number): Promise<string[]>;
+    /**
+     * A dedicated LISTEN connection for the worker's turn-control hub, reached
+     * the way this catalog reaches its database. Optional: without it the hub
+     * runs on its periodic look only.
+     */
+    createTurnControlListener?(): Promise<TurnControlListenClient>;
+
     /** Soft-delete a session (set deleted_at). */
     softDeleteSession(sessionId: string): Promise<void>;
 
@@ -1570,8 +1634,11 @@ export interface SessionCatalog {
     /** Insert one per-turn metrics row. */
     insertTurnMetric(input: InsertTurnMetricInput): Promise<void>;
 
-    /** Complete one turn's CMS writeback atomically. */
-    completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<void>;
+    /**
+     * Complete one turn's CMS writeback atomically. Resolves true when the
+     * turn has open controls after the write (migration 0082), else false.
+     */
+    completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean>;
 
     /** Get bounded per-session turn metrics, newest-first. */
     getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]>;
@@ -1768,6 +1835,11 @@ function sqlForSchema(schema: string) {
             insertTurnMetric:           `${s}.cms_insert_turn_metric`,
             completeTurnWriteback:      `${s}.cms_complete_turn_writeback`,
             setActiveTurnIndex:         `${s}.cms_set_active_turn_index`,
+            turnControlAdd:             `${s}.cms_turn_control_add`,
+            turnStart:                  `${s}.cms_turn_start`,
+            turnLook:                   `${s}.cms_turn_look`,
+            turnEnd:                    `${s}.cms_turn_end`,
+            turnReplaced:               `${s}.cms_turn_replaced`,
             getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
             getSessionTokensByModel:    `${s}.cms_get_session_tokens_by_model`,
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
@@ -1841,6 +1913,8 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
+    private listenConfig: Record<string, unknown> | null = null;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
@@ -1895,7 +1969,26 @@ export class PgSessionCatalog implements SessionCatalog {
             console.error('[cms] pool idle client error (non-fatal):', err.message);
         });
 
-        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const catalog = new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
+        const { max: _max, idleTimeoutMillis: _idle, ...listenConfig } = poolConfig as Record<string, unknown>;
+        catalog.listenConfig = listenConfig;
+        return catalog;
+    }
+
+    /**
+     * Session turn control: one dedicated LISTEN connection to the same
+     * database, with the same connection settings (TLS, credentials) as this
+     * catalog's pool. The worker's hub gets its connection here, so the
+     * catalog provider owns how the database is reached.
+     */
+    async createTurnControlListener(): Promise<TurnControlListenClient> {
+        if (!this.listenConfig) throw new TurnControlUnavailableError("createTurnControlListener");
+        const { default: pg } = await import("pg");
+        return new pg.Client({
+            application_name: "pilotswarm-turn-control",
+            ...this.listenConfig,
+            keepAlive: true,
+        }) as unknown as TurnControlListenClient;
     }
 
 
@@ -2131,6 +2224,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
         if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
         if (updates.splashMobile !== undefined) jsonUpdates.splashMobile = updates.splashMobile;
+        if (updates.closeControls === true) jsonUpdates.closeControls = true;
 
         if (Object.keys(jsonUpdates).length === 0) return;
 
@@ -2145,6 +2239,85 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.sql.fn.setActiveTurnIndex}($1, $2)`,
             [sessionId, turnIndex],
         );
+    }
+
+    // ── Session turn control (migration 0082) ───────────────────
+
+    /** Adds a control atomically, or returns its refusal or existing request-id receipt. */
+    async turnControlAdd(sessionId: string, kind: TurnControlKind, text: string, requestId: string, actor: MessageSender | null, steeringAllowed = true, replacesClientMessageId?: string): Promise<TurnControlAddResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnControlAdd",
+            `SELECT ${this.sql.fn.turnControlAdd}($1, $2, $3, $4, $5::jsonb, $6::boolean, $7::text) AS r`,
+            [sessionId, kind, text, requestId, actor ? JSON.stringify(actor) : null, steeringAllowed, replacesClientMessageId ?? null],
+        );
+        const r = rows[0]?.r ?? {};
+        if (r.refused) return { refused: r.refused };
+        return { seq: Number(r.seq), turn: Number(r.turn), ...(r.repeat ? { repeat: true as const } : {}) };
+    }
+
+    /**
+     * Marks a turn active and returns its controls, stopped disposition, or
+     * stale-start refusal. `records` (the turn's prompt and system message)
+     * are written in the same transaction: a record with client message ids
+     * whenever no prompt record holds one of them, one without ids on the
+     * turn's first start only.
+     */
+    async turnStart(sessionId: string, turn: number, records: TurnStartRecord[] = [], workerNodeId?: string): Promise<TurnStartResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnStart",
+            `SELECT ${this.sql.fn.turnStart}($1, $2, $3::jsonb, $4::text) AS r`,
+            [sessionId, turn, JSON.stringify(records), workerNodeId ?? null],
+        );
+        const r = rows[0]?.r ?? {};
+        if (r.stale) return { stale: true };
+        return { stopped: r.stopped === true, controls: toTurnControls(r.controls) };
+    }
+
+    /** Reads open controls after each turn's cursor in one query; an empty batch performs no query. */
+    async turnLook(turns: TurnLookInput[]): Promise<TurnLookRow[]> {
+        if (turns.length === 0) return [];
+        const { rows } = await this.turnControlQuery(
+            "turnLook",
+            `SELECT * FROM ${this.sql.fn.turnLook}($1::jsonb)`,
+            [JSON.stringify(turns.map((t) => ({ session: t.sessionId, turn: t.turn, after: t.after })))],
+        );
+        return rows.map((row: any) => ({ sessionId: row.session_id, turn: Number(row.turn), controls: toTurnControls(row.controls) }));
+    }
+
+    /** Closes controls after the save and records carried-steer disposition idempotently. */
+    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult> {
+        const { rows } = await this.turnControlQuery(
+            "turnEnd",
+            `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`,
+            [sessionId, turn, cursor, kind, carried],
+        );
+        const r = rows[0]?.r ?? {};
+        return {
+            stopped: r.stopped === true,
+            late: Array.isArray(r.late) ? r.late.map((l: any) => ({ seq: Number(l.seq), text: String(l.text ?? "") })) : [],
+            replaced: toStringList(r.replaced),
+        };
+    }
+
+    /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
+    async turnReplaced(sessionId: string, turn?: number): Promise<string[]> {
+        const { rows } = await this.turnControlQuery(
+            "turnReplaced",
+            `SELECT ${this.sql.fn.turnReplaced}($1, $2::int) AS r`,
+            [sessionId, turn ?? null],
+        );
+        return toStringList(rows[0]?.r);
+    }
+
+    /** Runs a turn-control procedure; a catalog without migration 0082 reports TurnControlUnavailableError. */
+    private async turnControlQuery(operation: string, text: string, values: unknown[]): Promise<{ rows: any[] }> {
+        try {
+            return await this.pool.query(text, values);
+        } catch (err: any) {
+            // A schema before migration 0082 has no turn-control procedures.
+            if (isUndefinedFunctionError(err)) throw new TurnControlUnavailableError(operation);
+            throw err;
+        }
     }
 
     async softDeleteSession(sessionId: string): Promise<void> {
@@ -2242,13 +2415,13 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
-        // Join the two regeneration columns from the raw sessions table in the
+        // Join later-added session columns from the raw sessions table in the
         // same round-trip rather than widening the shared cms_get_session
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
                 `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
-                    s.context_tier, s.model_resolution_source
+                    s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
@@ -3503,9 +3676,9 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<void> {
-        await this.pool.query(
-            `SELECT ${this.sql.fn.completeTurnWriteback}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+    async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.completeTurnWriteback}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) AS has_controls`,
             [
                 input.sessionId,
                 input.agentId,
@@ -3532,6 +3705,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.currentIteration,
             ],
         );
+        // VOID before migration 0082: null, so false.
+        return rows[0]?.has_controls === true;
     }
 
     async getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]> {
@@ -4614,6 +4789,22 @@ export class PgSessionCatalog implements SessionCatalog {
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
+/** A JSON array of strings from a procedure answer. */
+function toStringList(raw: unknown): string[] {
+    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+}
+
+/** Map the JSON controls of the turn-control procedures. */
+function toTurnControls(raw: unknown): TurnControl[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((c: any) => ({
+        seq: Number(c.seq),
+        kind: c.kind === "stop" ? "stop" : "steer",
+        text: String(c.text ?? ""),
+        createdAt: typeof c.createdAt === "string" ? c.createdAt : new Date(c.createdAt).toISOString(),
+    }));
+}
+
 /** Map a PG row (snake_case) to SessionRow (camelCase). */
 function rowToSessionRow(row: any): SessionRow {
     const owner = row.owner_provider && row.owner_subject
@@ -4647,6 +4838,7 @@ function rowToSessionRow(row: any): SessionRow {
         lastError: row.last_error ?? null,
         waitReason: row.wait_reason ?? null,
         activeTurnIndex: row.active_turn_index ?? null,
+        turnHigh: row.turn_high ?? null,
         parentSessionId: row.parent_session_id ?? null,
         isSystem: row.is_system ?? false,
         serviceKind: row.service_kind ?? null,

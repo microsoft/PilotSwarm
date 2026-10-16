@@ -114,12 +114,11 @@ function createHarness({ turnResults = [], queue = [] } = {}) {
                 if (msg == null) throw new Error(`dequeue underflow (${effect.name ?? "?"})`);
                 return msg;
             }
+            case "runTurn":
+                // 1.0.81 yields the turn directly; it no longer races a Stop queue.
+                if (script.length === 0) throw new Error("runTurn past the script");
+                return script.shift();
             case "race": {
-                // The turn race: the scripted result wins over the stop queue.
-                if (effect.left?.effect === "runTurn") {
-                    if (script.length === 0) throw new Error("runTurn past the script");
-                    return { index: 0, value: script.shift() };
-                }
                 // An idle race (timer vs messages): a queued message wins.
                 const sides = [effect.left, effect.right];
                 const dequeueIx = sides.findIndex((s) => s?.effect === "dequeueEvent");

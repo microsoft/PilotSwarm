@@ -785,10 +785,10 @@ The feature branch already provides:
 | Dedicated workflow orchestration version boundary | Implemented as `1.0.0`; definition kinds select process-local or registered compiled execution without another version |
 | Basic workflow controller | Implemented for process-local graphs and persisted compiled manifests |
 | One-shot agent-state dispatch | Implemented for named agents with runtime-bound structured result submission |
-| Authoritative execution records and current projection | Implemented in CMS migration `0083` |
-| Definition compiler and durable graph registry | Initial `v1alpha1` compiler implemented; migration `0084` stores authored YAML, Git provenance, package artifact identity, and one normalized compiled-manifest snapshot |
+| Authoritative execution records and current projection | Implemented in CMS migration `0085` |
+| Definition compiler and durable graph registry | Initial `v1alpha1` compiler implemented; migration `0086` stores authored YAML, Git provenance, package artifact identity, and one normalized compiled-manifest snapshot |
 | Git-backed definition registration API | Implemented as an authenticated `fleet:admin` REST operation with allowlisted repository resolution, immutable commit pinning, and definition lookup |
-| Registered workflow start admission | Implemented through SDK and `POST /api/v1/workflows`; migration `0085` atomically enforces request idempotency, owner-declared primary keys, and explicit rerun attempts |
+| Registered workflow start admission | Implemented through SDK and `POST /api/v1/workflows`; migration `0087` atomically enforces request idempotency, owner-declared primary keys, and explicit rerun attempts |
 
 The initial controller accepts an `in-memory` definition that names a graph
 registered in the worker process. The same workflow orchestration additionally

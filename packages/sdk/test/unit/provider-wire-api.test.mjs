@@ -64,6 +64,117 @@ const foundry = (over = {}) => ({
     id: "foundry", type: "openai", baseUrl: "https://example.invalid/openai/v1", apiKey: "type-key", ...over,
 });
 
+test("tool catalog opt-in survives runtime provider instances and short-lived resolution without SDK metadata leakage", () => {
+    const toolCatalog = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
+    const types = new ModelProviderRegistry({ providers: [foundry({ models: [
+        { name: "primitive", wireApi: "completions", toolCatalog },
+        { name: "plain" },
+    ] })] });
+    const credential = {
+        name: "shared-foundry", typeId: "foundry", class: "shared", ownerUserId: null,
+        baseUrl: null, secretRef: { kind: "apiKey", value: "instance-key" },
+    };
+    const runtime = buildRuntimeRegistry(types, [credential], "shared-foundry:primitive");
+    const manager = new SessionManager(undefined, null, { modelProviders: runtime });
+    for (const resolved of [types.resolve("foundry:primitive"), resolveProviderCredential(types, credential, "primitive"), runtime.resolve("shared-foundry:primitive")]) {
+        assert.deepEqual(resolved.toolCatalog, toolCatalog);
+        assert.equal(Object.hasOwn(resolved.sdkProvider, "toolCatalog"), false);
+    }
+    assert.deepEqual(runtime.getDescriptor("shared-foundry:primitive").toolCatalog, toolCatalog);
+    assert.deepEqual(manager.resolveDefaultProvider().toolCatalog, toolCatalog);
+    assert.deepEqual(manager.resolveModelSessionOptions("shared-foundry:primitive").toolCatalog, toolCatalog);
+    assert.equal(manager.resolveModelSessionOptions("shared-foundry:plain").toolCatalog, undefined);
+    assert.equal(runtime.getDescriptor("shared-foundry:plain").toolCatalog, undefined);
+});
+
+test("pooled clients fence tool policy by current session model and endpoint, including catalog reload", async context => {
+    const makeRegistry = (enabled) => new ModelProviderRegistry({ providers: [foundry({ models: [{
+        name: "primitive",
+        ...(enabled ? { toolCatalog: { maxDeclarations: 2, overflowStrategy: "typed-dispatch" } } : {}),
+    }] })] });
+    const manager = new SessionManager(undefined, null, { modelProviders: makeRegistry(true) });
+    manager.setConfig("configured-session", { model: "foundry:primitive" });
+    const client = await manager.ensureClient(undefined, true);
+    const tools = Array.from({ length: 3 }, (entry, index) => ({
+        type: "function", function: { name: `tool_${index}`, parameters: { type: "object", properties: {} } },
+    }));
+    for (const [sessionId, model, url, expectedCount] of [
+        ["configured-session", "primitive", "https://example.invalid/openai/v1/chat/completions", 2],
+        [undefined, "primitive", "https://example.invalid/openai/v1/chat/completions", 3],
+        ["unknown-session", "primitive", "https://example.invalid/openai/v1/chat/completions", 3],
+        ["configured-session", "different-model", "https://example.invalid/openai/v1/chat/completions", 3],
+        ["configured-session", "primitive", "https://other.invalid/openai/v1/chat/completions", 3],
+        ["configured-session", "primitive", "https://example.invalid/other/chat/completions", 3],
+    ]) {
+        const request = new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, tools }) });
+        context.mock.method(globalThis, "fetch", async forwarded => {
+            assert.equal((await forwarded.json()).tools.length, expectedCount);
+            if (expectedCount === 3) assert.equal(forwarded, request);
+            return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } });
+        });
+        await client.requestHandler.sendRequest(request, { sessionId });
+    }
+    manager.setModelProviders(makeRegistry(false));
+    context.mock.method(globalThis, "fetch", async request => {
+        assert.equal((await request.json()).tools.length, 3);
+        return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } });
+    });
+    await client.requestHandler.sendRequest(new Request("https://example.invalid/openai/v1/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "primitive", tools }),
+    }), { sessionId: "configured-session" });
+    // A reload that removes the session's model must not fail the request in the policy lookup.
+    manager.setModelProviders(new ModelProviderRegistry({ providers: [foundry({ models: [{ name: "replacement" }] })] }));
+    await client.requestHandler.sendRequest(new Request("https://example.invalid/openai/v1/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "primitive", tools }),
+    }), { sessionId: "configured-session" });
+});
+
+test("keyless Foundry inherits overflow policy without exposing a key or acquiring a live token", async context => {
+    const toolCatalog = { maxDeclarations: 2, overflowStrategy: "typed-dispatch" };
+    const types = new ModelProviderRegistry({ providers: [{
+        id: "keyless", type: "foundry-wif", baseUrl: "https://example.invalid/openai/v1",
+        models: [{ name: "primitive", wireApi: "completions", toolCatalog }],
+    }] });
+    const credential = {
+        name: "shared-keyless", typeId: "keyless", class: "shared", ownerUserId: null,
+        baseUrl: null, secretRef: { kind: "workloadIdentity" },
+    };
+    const runtime = buildRuntimeRegistry(types, [credential], "shared-keyless:primitive");
+    const manager = new SessionManager(undefined, null, { modelProviders: runtime });
+    for (const resolved of [
+        types.resolve("keyless:primitive"),
+        resolveProviderCredential(types, credential, "primitive"),
+        runtime.resolve("shared-keyless:primitive"),
+    ]) {
+        assert.deepEqual(resolved.toolCatalog, toolCatalog);
+        assert.equal(resolved.usesWorkloadIdentity, true);
+        assert.equal(resolved.sdkProvider.type, "openai");
+        assert.equal(Object.hasOwn(resolved.sdkProvider, "apiKey"), false);
+        assert.equal(Object.hasOwn(resolved.sdkProvider, "toolCatalog"), false);
+    }
+    assert.deepEqual(manager.resolveDefaultProvider().toolCatalog, toolCatalog);
+    assert.deepEqual(manager.resolveModelSessionOptions("shared-keyless:primitive").toolCatalog, toolCatalog);
+    assert.equal(typeof manager._resolveProviderConfig("shared-keyless:primitive").provider.bearerTokenProvider, "function");
+    manager.setConfig("keyless-session", { model: "shared-keyless:primitive" });
+    const client = await manager.ensureClient(undefined, true);
+    context.mock.method(globalThis, "fetch", async request => {
+        const wire = await request.json();
+        assert.equal(wire.tools.length, 2);
+        assert.equal(wire.tools.at(-1).function.name, "pilotswarm_tool_dispatch");
+        return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } });
+    });
+    await client.requestHandler.sendRequest(new Request("https://example.invalid/openai/v1/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "primitive", tools: Array.from({ length: 3 }, (_, index) => ({
+            type: "function", function: { name: `tool_${index}`, parameters: { type: "object", properties: {} } },
+        })) }),
+    }), { sessionId: "keyless-session" });
+    assert.throws(() => new ModelProviderRegistry({ providers: [{
+        id: "keyless", type: "foundry-wif", baseUrl: "https://example.invalid/openai/v1",
+        models: [{ name: "primitive", wireApi: "responses", toolCatalog }],
+    }] }), /typed-dispatch requires/);
+});
+
 test("a model's wireApi applies when the provider sets none; a sibling without one leaves the key out", () => {
     const config = foundry({ models: [{ name: "gpt-5.6", wireApi: "responses" }, { name: "plain" }] });
     assertWireApiOnEveryPath(resolveOnEveryPath(config, "gpt-5.6"), "responses");

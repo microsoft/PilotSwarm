@@ -12,13 +12,15 @@ import type { MigrationEntry } from "./pg-migrator.js";
 import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
-import { workflowExecutionsMigration } from "./migrations/workflow-executions-0083.js";
-import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0084.js";
-import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0085.js";
-import { workflowAgentPackageRegistrationMigration } from "./migrations/workflow-agent-package-registration-0087.js";
-import { workflowAgentPackageDeletionGuardMigration } from "./migrations/workflow-agent-package-deletion-0088.js";
-import { workflowDefinitionOwnershipMigration } from "./migrations/workflow-definition-ownership-0089.js";
-import { workflowFailuresMigration } from "./migrations/workflow-failures-0090.js";
+import { turnControlMigration } from "./migrations/turn-control-0082.js";
+import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
+import { workflowExecutionsMigration } from "./migrations/workflow-executions-0085.js";
+import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0086.js";
+import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0087.js";
+import { workflowAgentPackageRegistrationMigration } from "./migrations/workflow-agent-package-registration-0089.js";
+import { workflowAgentPackageDeletionGuardMigration } from "./migrations/workflow-agent-package-deletion-0090.js";
+import { workflowDefinitionOwnershipMigration } from "./migrations/workflow-definition-ownership-0091.js";
+import { workflowFailuresMigration } from "./migrations/workflow-failures-0092.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -411,19 +413,21 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
-        { version: "0082", name: "workflow_session_kind", sql: migration_0082_workflow_session_kind(schema) },
-        { version: "0083", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
-        { version: "0084", name: "workflow_definitions", sql: workflowDefinitionsMigration(schema) },
-        { version: "0085", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
-        { version: "0086", name: "workflow_agent_package_version_pins", sql: migration_0086_workflow_agent_package_version_pins(schema) },
-        { version: "0087", name: "workflow_agent_package_registration", sql: workflowAgentPackageRegistrationMigration(schema) },
-        { version: "0088", name: "workflow_agent_package_deletion_guard", sql: workflowAgentPackageDeletionGuardMigration(schema) },
-        { version: "0089", name: "workflow_definition_ownership", sql: workflowDefinitionOwnershipMigration(schema) },
-        { version: "0090", name: "workflow_failures", sql: workflowFailuresMigration(schema) },
+        { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
+        { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
+        { version: "0084", name: "workflow_session_kind", sql: migration_0084_workflow_session_kind(schema) },
+        { version: "0085", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
+        { version: "0086", name: "workflow_definitions", sql: workflowDefinitionsMigration(schema) },
+        { version: "0087", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
+        { version: "0088", name: "workflow_agent_package_version_pins", sql: migration_0088_workflow_agent_package_version_pins(schema) },
+        { version: "0089", name: "workflow_agent_package_registration", sql: workflowAgentPackageRegistrationMigration(schema) },
+        { version: "0090", name: "workflow_agent_package_deletion_guard", sql: workflowAgentPackageDeletionGuardMigration(schema) },
+        { version: "0091", name: "workflow_definition_ownership", sql: workflowDefinitionOwnershipMigration(schema) },
+        { version: "0092", name: "workflow_failures", sql: workflowFailuresMigration(schema) },
     ];
 }
 
-function migration_0086_workflow_agent_package_version_pins(schema: string): string {
+function migration_0088_workflow_agent_package_version_pins(schema: string): string {
     const s = `"${schema}"`;
     return `
 DROP FUNCTION IF EXISTS ${s}.cms_get_agent_packages_install_manifest();
@@ -469,7 +473,7 @@ $$ LANGUAGE sql;
 }
 
 /** Additive discriminator; every pre-existing and omitted value remains an agent session. */
-function migration_0082_workflow_session_kind(schema: string): string {
+function migration_0084_workflow_session_kind(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.sessions
