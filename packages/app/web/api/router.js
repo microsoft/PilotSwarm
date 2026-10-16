@@ -43,6 +43,14 @@ const ERROR_STATUS_BY_CODE = {
     // and immutable-version / scope-mismatch conflicts.
     VALIDATION_FAILED: 400,
     CONFLICT: 409,
+    WORKFLOW_DEFINITION_BAD_SCOPE: 400,
+    WORKFLOW_DEFINITION_INVALID: 400,
+    WORKFLOW_DEFINITION_FORBIDDEN: 403,
+    WORKFLOW_DEFINITION_CONFLICT: 409,
+    WORKFLOW_AGENT_PACKAGE_SCOPE_INVALID: 400,
+    WORKFLOW_AGENT_PACKAGE_UNRESOLVED: 400,
+    WORKFLOW_AGENT_NOT_DECLARED: 400,
+    WORKFLOW_AGENT_PACKAGE_UNAVAILABLE: 409,
 };
 
 // Domain/lifecycle errors the runtime throws with actionable, non-sensitive
@@ -54,6 +62,11 @@ const CLIENT_ERROR_MESSAGE = /must be|is required|cannot be|Unsupported|is not s
 function statusForError(error) {
     const byCode = ERROR_STATUS_BY_CODE[error?.code];
     if (byCode) return byCode;
+    if (error?.code === "WORKFLOW_GIT_REPOSITORY_REFUSED") return 403;
+    if (error?.code === "WORKFLOW_GIT_RESOLUTION_FAILED") return 502;
+    if (
+        /^WORKFLOW_(?:GIT_(?:SOURCE|REF|PATH|WORKFLOW|COMMIT)|YAML|PACKAGE|TRANSITION)_/.test(error?.code || "")
+    ) return 400;
     if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return error.status;
     const message = String(error?.message || "");
     if (/is not started|terminal orchestration|cannot accept new messages|already/i.test(message)) return 409;

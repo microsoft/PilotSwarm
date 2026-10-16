@@ -2007,6 +2007,274 @@ function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
     return null;
 }
 
+function parseWorkflowEventData(value) {
+    if (!value || typeof value === "object") return value || null;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
+}
+
+function workflowTimestampMillis(value) {
+    if (value == null || value === "") return null;
+    if (Number.isFinite(Number(value))) return Number(value);
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatWorkflowTimestamp(value) {
+    const millis = workflowTimestampMillis(value);
+    return millis == null ? "—" : (formatTimestamp(millis) || "—");
+}
+
+function formatWorkflowDuration(start, end) {
+    const startMillis = workflowTimestampMillis(start);
+    const endMillis = workflowTimestampMillis(end);
+    if (startMillis == null || endMillis == null || endMillis < startMillis) return null;
+    const durationMs = endMillis - startMillis;
+    return durationMs < 1000 ? `${durationMs} ms` : `${(durationMs / 1000).toFixed(2)} s`;
+}
+
+function buildWorkflowTransitionMap(events = []) {
+    const transitionBySequence = new Map();
+    const transitionSequenceByEventId = new Map();
+    for (const event of events) {
+        if (event?.kind === "ActivityScheduled") {
+            const payload = parseWorkflowEventData(event.data);
+            if (payload?.name !== "executeWorkflowTransitionV2") continue;
+            const history = payload?.input?.context?.executionHistory;
+            const executionSequence = Array.isArray(history)
+                ? history.at(-1)?.executionSequence
+                : null;
+            if (!Number.isFinite(Number(executionSequence))) continue;
+            const sequence = Number(executionSequence);
+            transitionBySequence.set(sequence, {
+                scheduledAt: event.timestampMs,
+                completedAt: null,
+                result: null,
+            });
+            transitionSequenceByEventId.set(Number(event.eventId), sequence);
+        } else if (event?.kind === "ActivityCompleted") {
+            const sequence = transitionSequenceByEventId.get(Number(event.sourceEventId));
+            if (sequence == null) continue;
+            const transition = transitionBySequence.get(sequence);
+            if (!transition) continue;
+            transition.completedAt = event.timestampMs;
+            transition.result = parseWorkflowEventData(event.data);
+        }
+    }
+    return transitionBySequence;
+}
+
+function workflowSelectedTarget(executions, index, projection, transition) {
+    const execution = executions[index];
+    const nextExecution = executions[index + 1] || null;
+    const terminalTarget = !nextExecution
+        && execution?.status === "accepted"
+        && Number(projection?.currentExecutionSequence) === Number(execution?.executionSequence)
+        && projection?.currentStateId
+        && projection.currentStateId !== execution.stateId
+        ? projection.currentStateId
+        : null;
+    return transition?.result?.target || nextExecution?.stateId || terminalTarget;
+}
+
+function buildWorkflowChildContextMessage(state, session) {
+    const parentSessionId = session?.parentSessionId;
+    const parent = parentSessionId ? state.sessions?.byId?.[parentSessionId] : null;
+    if (!parentSessionId || parent?.sessionKind !== "workflow") return null;
+
+    const overviewState = state.workflowOverview?.bySessionId?.[parentSessionId] || null;
+    const executionState = state.workflowExecutions?.bySessionId?.[parentSessionId] || null;
+    const executions = Array.isArray(executionState?.data)
+        ? [...executionState.data].sort(
+            (left, right) => Number(left.executionSequence) - Number(right.executionSequence),
+        )
+        : [];
+    const executionIndex = executions.findIndex(item => item?.childSessionId === session.sessionId);
+    const execution = executionIndex >= 0 ? executions[executionIndex] : null;
+    const projection = overviewState?.data?.projection || null;
+    const transitionMap = buildWorkflowTransitionMap(
+        state.executionHistory?.bySessionId?.[parentSessionId]?.events || [],
+    );
+    const transition = execution
+        ? transitionMap.get(Number(execution.executionSequence)) || null
+        : null;
+    const selectedTarget = execution
+        ? workflowSelectedTarget(executions, executionIndex, projection, transition)
+        : null;
+    const childHistory = state.history?.bySessionId?.get(session.sessionId) || null;
+    const childExecutionHistory = state.executionHistory?.bySessionId?.[session.sessionId] || null;
+    const childMessages = Array.isArray(childHistory?.chat)
+        ? childHistory.chat.filter(message => message && typeof message === "object")
+        : [];
+    const promptIndex = childMessages.findIndex(message => message.role === "user");
+    const transcriptPrompt = promptIndex >= 0 ? childMessages[promptIndex] : null;
+    const orchestrationPrompt = Array.isArray(childExecutionHistory?.events)
+        ? childExecutionHistory.events.reduce((found, event) => {
+            if (found || event?.kind !== "ActivityScheduled") return found;
+            const payload = parseWorkflowEventData(event.data);
+            if (payload?.name !== "runTurnV3") return null;
+            const prompt = payload?.input?.prompt;
+            return typeof prompt === "string" && prompt.trim() ? prompt : null;
+        }, null)
+        : null;
+    const promptText = orchestrationPrompt || transcriptPrompt?.text || null;
+    const transcript = childMessages.filter((_, messageIndex) => messageIndex !== promptIndex);
+    const lines = [
+        `**Parent workflow:** ${parent.title || parentSessionId}`,
+        "",
+    ];
+    const content = [];
+    const cell = value => String(value ?? "")
+        .replace(/\|/g, "\\|")
+        .replace(/[\r\n]+/g, " ")
+        .trim() || "—";
+    const quote = value => String(value ?? "")
+        .split(/\r?\n/)
+        .map(line => `> ${line}`)
+        .join("\n");
+
+    if (executionState?.loadState === "failed") {
+        lines.push("_Workflow execution context is unavailable._");
+    } else if (executionState?.loadState !== "loaded") {
+        lines.push("_Loading workflow execution context…_");
+    } else if (!execution) {
+        lines.push("_This child session is not linked to an available workflow execution._");
+    } else {
+        const actionDuration = formatWorkflowDuration(execution.admittedAt, execution.acceptedAt);
+        const transitionDuration = formatWorkflowDuration(
+            transition?.scheduledAt,
+            transition?.completedAt,
+        );
+        const executionLines = [
+            `**State:** ${execution.stateId ?? "—"}`,
+            `**Sequence:** ${execution.executionSequence ?? "—"}`,
+            `**Execution status:** ${execution.status ?? "—"}`,
+            `**Waiting on:** ${execution.waitingOn ?? "—"}`,
+            `**Action admitted:** \`${formatWorkflowTimestamp(execution.admittedAt)}\``,
+            `**Result accepted:** \`${formatWorkflowTimestamp(execution.acceptedAt)}\``,
+            ...(actionDuration ? [`**Action duration:** ${actionDuration}`] : []),
+        ];
+        lines.push(...executionLines, "", "### Agent prompt", "");
+        content.push({
+            type: "markdown",
+            text: lines.join("\n"),
+        });
+        if (promptText) {
+            lines.push(quote(promptText));
+            content.push({
+                type: "messages",
+                messages: [{
+                    id: `workflow-child-prompt:${session.sessionId}:${execution.executionSequence}`,
+                    role: "user",
+                    text: promptText,
+                    sender: {
+                        kind: "agent",
+                        sessionId: parentSessionId,
+                        display: `${parent.title || "Workflow"} · task`,
+                    },
+                    createdAt: execution.admittedAt,
+                }],
+            });
+        } else if (childHistory?.loadState === "loading" || childExecutionHistory?.loading) {
+            lines.push("_Loading authorized child-session prompt…_");
+            content.push({ type: "markdown", text: "_Loading authorized child-session prompt…_" });
+        } else if (childHistory?.loadState === "failed" || childExecutionHistory?.error) {
+            lines.push("_Child-session prompt is unavailable._");
+            content.push({ type: "markdown", text: "_Child-session prompt is unavailable._" });
+        } else {
+            lines.push("_No agent prompt has been recorded yet._");
+            content.push({ type: "markdown", text: "_No agent prompt has been recorded yet._" });
+        }
+        lines.push("", "### Agent transcript", "");
+        content.push({ type: "markdown", text: "### Agent transcript" });
+        if (transcript.length > 0) {
+            transcript.forEach((message, messageIndex) => {
+                if (messageIndex > 0) lines.push("");
+                lines.push(`**${cell(message.role || "message")}**`, quote(message.text));
+            });
+            content.push({
+                type: "messages",
+                messages: transcript,
+            });
+        } else if (childHistory?.loadState === "loading") {
+            lines.push("_Loading authorized child-session transcript…_");
+            content.push({ type: "markdown", text: "_Loading authorized child-session transcript…_" });
+        } else if (childHistory?.loadState === "failed") {
+            lines.push("_Child-session transcript is unavailable._");
+            content.push({ type: "markdown", text: "_Child-session transcript is unavailable._" });
+        } else {
+            lines.push("_No agent response has been recorded yet._");
+            content.push({ type: "markdown", text: "_No agent response has been recorded yet._" });
+        }
+
+        const resultLines = ["### Submitted workflow result", ""];
+        if (execution.status === "accepted") {
+            resultLines.push(`**Outcome:** ${execution.outcome ?? "—"}`);
+        } else {
+            resultLines.push("_The state has not submitted a workflow result yet._");
+        }
+        if (execution.status === "accepted") {
+            let output;
+            try {
+                output = JSON.stringify(execution.output, null, 2);
+            } catch {
+                output = String(execution.output);
+            }
+            resultLines.push("", "**Output:**", "", "```json", output ?? "null", "```");
+        }
+        resultLines.push("", "### Transition function", "");
+        if (execution.status !== "accepted") {
+            resultLines.push("_Not invoked; waiting for the state result._");
+        } else if (transition?.completedAt != null) {
+            resultLines.push(
+                `**Invoked:** \`${formatWorkflowTimestamp(transition.scheduledAt)}\``,
+                `**Completed:** \`${formatWorkflowTimestamp(transition.completedAt)}\``,
+                ...(transitionDuration ? [`**Duration:** ${transitionDuration}`] : []),
+                `**Result:** ${transition.result?.kind ?? "—"}`,
+                `**Selected next state:** ${selectedTarget ?? "—"}`,
+            );
+        } else if (transition) {
+            resultLines.push(
+                `**Invoked:** \`${formatWorkflowTimestamp(transition.scheduledAt)}\``,
+                "_Transition execution has not completed yet._",
+            );
+        } else {
+            resultLines.push(
+                "_Transition timing is not available yet._",
+                `**Selected next state:** ${selectedTarget ?? "—"}`,
+            );
+        }
+        lines.push("", ...resultLines);
+        content.push({ type: "markdown", text: resultLines.join("\n") });
+    }
+
+    const title = execution
+        ? `Workflow execution context · ${execution.stateId} · #${execution.executionSequence}`
+        : "Workflow execution context";
+    return {
+        id: `workflow-child-context:${session.sessionId}`,
+        kind: "workflow-child-context",
+        role: "system",
+        noChrome: true,
+        text: [`## ${title}`, "", ...lines].join("\n"),
+        workflowSummaryText: "",
+        workflowSections: [{
+            key: `workflow-child-context:${session.sessionId}`,
+            title,
+            defaultOpen: true,
+            text: lines.join("\n"),
+            ...(execution ? { content } : {}),
+            parentSessionId,
+            parentTitle: parent.title || parentSessionId,
+        }],
+        embedsTranscript: Boolean(execution),
+        createdAt: execution?.admittedAt || session.createdAt || Date.now(),
+    };
+}
+
 export function selectActiveChat(state) {
     const sessionId = state.sessions.activeSessionId;
     const session = sessionId ? state.sessions.byId[sessionId] || null : null;
@@ -2051,21 +2319,433 @@ export function selectActiveChat(state) {
             createdAt: session.updatedAt || Date.now(),
         }];
     }
+    if (session?.sessionKind === "workflow") {
+        const overviewState = state.workflowOverview?.bySessionId?.[sessionId] || null;
+        const overview = overviewState?.data || null;
+        const executionState = state.workflowExecutions?.bySessionId?.[sessionId] || null;
+        const cell = (value) => String(value ?? "")
+            .replace(/\|/g, "\\|")
+            .replace(/[\r\n]+/g, " ")
+            .trim() || "—";
+        const quote = (value) => String(value ?? "")
+            .split(/\r?\n/)
+            .map(line => `> ${line}`)
+            .join("\n");
+        const indentedJson = (value) => {
+            let formatted;
+            try {
+                formatted = JSON.stringify(value, null, 2);
+            } catch {
+                formatted = String(value);
+            }
+            return String(formatted ?? "null")
+                .split(/\r?\n/)
+                .map(line => `    ${line}`)
+                .join("\n");
+        };
+        const lines = [
+            `# ${session.title || "Workflow session"}`,
+        ];
+        const workflowSections = [];
+        let workflowSummaryText = null;
+        if (overviewState?.loadState === "failed") {
+            lines.push("", "Workflow topology is unavailable.");
+        } else if (overviewState?.loadState === "loaded" && !overview) {
+            lines.push("", "Workflow topology was not found.");
+        } else if (!overview) {
+            lines.push("", "Loading workflow topology…");
+        } else {
+            const graph = overview.graph || {};
+            const projection = overview.projection || null;
+            const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+            const edges = Array.isArray(graph.edges) ? graph.edges : [];
+            const executions = Array.isArray(overview.executions) ? overview.executions : [];
+            const parentExecutionHistory = state.executionHistory?.bySessionId?.[sessionId] || null;
+            const transitionBySequence = buildWorkflowTransitionMap(parentExecutionHistory?.events || []);
+            const targetsByState = new Map(nodes.map(node => [node.id, []]));
+            for (const edge of edges) {
+                if (!targetsByState.has(edge?.from) || typeof edge?.to !== "string") continue;
+                targetsByState.get(edge.from).push(edge.to);
+            }
+            const latestByState = new Map();
+            for (const execution of executions) latestByState.set(execution.stateId, execution);
+            const mermaidNodeIds = new Map(nodes.map((node, index) => [node.id, `n${index}`]));
+            const mermaidLabel = (value) => String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/[\r\n]+/g, " ");
+            const diagram = [
+                "```mermaid",
+                "flowchart TD",
+                ...nodes.map((node) => {
+                    const markers = [
+                        node.id === graph.initialStateId ? "initial" : "",
+                        node.id === projection?.currentStateId ? "current" : "",
+                    ].filter(Boolean);
+                    const suffix = markers.length > 0 ? ` (${markers.join(", ")})` : "";
+                    return `  ${mermaidNodeIds.get(node.id)}["${mermaidLabel(`${node.id} · ${node.type}${suffix}`)}"]`;
+                }),
+                ...edges
+                    .filter(edge => mermaidNodeIds.has(edge?.from) && mermaidNodeIds.has(edge?.to))
+                    .map(edge => `  ${mermaidNodeIds.get(edge.from)} --> ${mermaidNodeIds.get(edge.to)}`),
+                "```",
+            ];
+            lines.push(
+                "",
+                `**Status:** ${cell(projection?.status || "pending")}`,
+                `**Current state:** ${cell(projection?.currentStateId)}`,
+            );
+            workflowSummaryText = lines.join("\n");
+            const definitionLines = [
+                `**Graph:** ${cell(graph.graphId)}`,
+                "",
+                ...diagram,
+                "",
+                "### Topology",
+                "",
+                "| State | Type | Allowed targets | Activity |",
+                "|---|---|---|---|",
+            ];
+            for (const node of nodes) {
+                const execution = latestByState.get(node.id);
+                const activity = projection?.currentStateId === node.id
+                    ? `current${projection.waitingOn ? ` (${projection.waitingOn})` : ""}`
+                    : execution?.status || "";
+                definitionLines.push(
+                    `| ${cell(node.id)}${node.id === graph.initialStateId ? " (initial)" : ""} | `
+                    + `${cell(node.type)} | ${cell(targetsByState.get(node.id)?.join(", "))} | ${cell(activity)} |`,
+                );
+            }
+            const progressionLines = [];
+            const fullExecutions = Array.isArray(executionState?.data)
+                ? [...executionState.data].sort(
+                    (left, right) => Number(left.executionSequence) - Number(right.executionSequence),
+                )
+                : [];
+            const progressionExecutions = fullExecutions.length > 0 ? fullExecutions : executions;
+            if (progressionExecutions.length > 0) {
+                progressionLines.push(
+                    "| Sequence | State | Status | Action admitted | Result accepted | Transition completed |",
+                    "|---:|---|---|---|---|---|",
+                    ...progressionExecutions.map(execution => {
+                        const transition = transitionBySequence.get(Number(execution.executionSequence));
+                        return `| ${cell(execution.executionSequence)} | ${cell(execution.stateId)} | `
+                            + `${cell(execution.status)} | ${cell(formatWorkflowTimestamp(execution.admittedAt))} | `
+                            + `${cell(formatWorkflowTimestamp(execution.acceptedAt))} | `
+                            + `${cell(formatWorkflowTimestamp(transition?.completedAt))} |`;
+                    }),
+                );
+            } else {
+                progressionLines.push("_No state execution has been admitted yet._");
+            }
+            const nodeActionSections = [];
+            let nodeActionStatusText = null;
+            if (executionState?.loadState === "failed") {
+                nodeActionStatusText = "Execution detail is unavailable.";
+            } else if (executionState?.loadState !== "loaded") {
+                nodeActionStatusText = "Loading execution detail…";
+            } else if (fullExecutions.length === 0) {
+                nodeActionStatusText = "_No state execution has been admitted yet._";
+            } else {
+                const currentSequence = projection?.currentExecutionSequence;
+                const currentIndex = Math.max(
+                    0,
+                    fullExecutions.findIndex(
+                        execution => execution.executionSequence === currentSequence,
+                    ),
+                );
+                const selectedIndex = currentIndex >= 0
+                    && fullExecutions[currentIndex]?.executionSequence === currentSequence
+                    ? currentIndex
+                    : fullExecutions.length - 1;
+
+                fullExecutions.forEach((execution, index) => {
+                    const transition = transitionBySequence.get(Number(execution.executionSequence)) || null;
+                    const selectedTarget = workflowSelectedTarget(
+                        fullExecutions,
+                        index,
+                        projection,
+                        transition,
+                    );
+                    const childSessionId = execution.childSessionId;
+                    const childHistory = childSessionId
+                        ? state.history?.bySessionId?.get(childSessionId)
+                        : null;
+                    const childExecutionHistory = childSessionId
+                        ? state.executionHistory?.bySessionId?.[childSessionId]
+                        : null;
+                    const childMessages = Array.isArray(childHistory?.chat)
+                        ? childHistory.chat.filter(message => message && typeof message === "object")
+                        : [];
+                    const promptIndex = childMessages.findIndex(message => message.role === "user");
+                    const transcriptPrompt = promptIndex >= 0 ? childMessages[promptIndex] : null;
+                    const orchestrationPrompt = Array.isArray(childExecutionHistory?.events)
+                        ? childExecutionHistory.events.reduce((found, event) => {
+                            if (found || event?.kind !== "ActivityScheduled") return found;
+                            let payload = event.data;
+                            if (typeof payload === "string") {
+                                try {
+                                    payload = JSON.parse(payload);
+                                } catch {
+                                    return null;
+                                }
+                            }
+                            if (payload?.name !== "runTurnV3") return null;
+                            const prompt = payload?.input?.prompt;
+                            return typeof prompt === "string" && prompt.trim() ? prompt : null;
+                        }, null)
+                        : null;
+                    const promptText = orchestrationPrompt || transcriptPrompt?.text || null;
+                    const transcript = childMessages.filter((_, messageIndex) => messageIndex !== promptIndex);
+                    const sectionLines = [
+                        `**State:** ${cell(execution.stateId)}`,
+                        `**Sequence:** ${cell(execution.executionSequence)}`,
+                        `**Execution status:** ${cell(execution.status)}`,
+                        `**Waiting on:** ${cell(execution.waitingOn)}`,
+                        `**Action admitted:** \`${formatWorkflowTimestamp(execution.admittedAt)}\``,
+                        `**Result accepted:** \`${formatWorkflowTimestamp(execution.acceptedAt)}\``,
+                    ];
+                    const actionDuration = formatWorkflowDuration(execution.admittedAt, execution.acceptedAt);
+                    if (actionDuration) sectionLines.push(`**Action duration:** ${actionDuration}`);
+                    const sectionContent = [{
+                        type: "markdown",
+                        text: sectionLines.join("\n"),
+                    }];
+
+                    if (childSessionId) {
+                        sectionLines.push("", "### Agent prompt", "");
+                        sectionContent.push({
+                            type: "markdown",
+                            text: "### Agent prompt",
+                        });
+                        if (promptText) {
+                            sectionLines.push(quote(promptText));
+                            sectionContent.push({
+                                type: "messages",
+                                messages: [{
+                                    id: `workflow-prompt:${sessionId}:${execution.executionSequence}`,
+                                    role: "user",
+                                    text: promptText,
+                                    sender: {
+                                        kind: "agent",
+                                        sessionId,
+                                        display: `${session.title || "Workflow"} · task`,
+                                    },
+                                    createdAt: execution.admittedAt,
+                                }],
+                            });
+                        } else if (childHistory?.loadState === "loading" || childExecutionHistory?.loading) {
+                            sectionLines.push("_Loading authorized child-session prompt…_");
+                            sectionContent.push({
+                                type: "markdown",
+                                text: "_Loading authorized child-session prompt…_",
+                            });
+                        } else if (
+                            childHistory?.loadState === "failed"
+                            || childExecutionHistory?.error
+                            || !state.sessions.byId[childSessionId]
+                        ) {
+                            sectionLines.push("_Child-session prompt is unavailable._");
+                            sectionContent.push({
+                                type: "markdown",
+                                text: "_Child-session prompt is unavailable._",
+                            });
+                        } else {
+                            sectionLines.push("_No agent prompt has been recorded yet._");
+                            sectionContent.push({
+                                type: "markdown",
+                                text: "_No agent prompt has been recorded yet._",
+                            });
+                        }
+                        sectionLines.push("", "### Agent transcript", "");
+                        sectionContent.push({
+                            type: "markdown",
+                            text: "### Agent transcript",
+                        });
+                        if (transcript.length > 0) {
+                            transcript.forEach((message, messageIndex) => {
+                                if (messageIndex > 0) sectionLines.push("");
+                                sectionLines.push(`**${cell(message.role || "message")}**`, quote(message.text));
+                            });
+                            sectionContent.push({
+                                type: "messages",
+                                messages: transcript,
+                            });
+                        } else if (childHistory?.loadState === "loading") {
+                            sectionLines.push("_Loading authorized child-session transcript…_");
+                            sectionContent.push({
+                                type: "markdown",
+                                text: "_Loading authorized child-session transcript…_",
+                            });
+                        } else if (childHistory?.loadState === "failed" || !state.sessions.byId[childSessionId]) {
+                            sectionLines.push("_Child-session transcript is unavailable._");
+                            sectionContent.push({
+                                type: "markdown",
+                                text: "_Child-session transcript is unavailable._",
+                            });
+                        } else {
+                            sectionLines.push("_No agent response has been recorded yet._");
+                            sectionContent.push({
+                                type: "markdown",
+                                text: "_No agent response has been recorded yet._",
+                            });
+                        }
+                    } else {
+                        sectionLines.push("", "_This state does not use a child agent session._");
+                        sectionContent.push({
+                            type: "markdown",
+                            text: "_This state does not use a child agent session._",
+                        });
+                    }
+
+                    const postActivityStart = sectionLines.length;
+                    sectionLines.push("", "### Submitted workflow result", "");
+                    if (execution.status === "accepted") {
+                        sectionLines.push(
+                            `**Outcome:** ${cell(execution.outcome)}`,
+                            "",
+                            "**Output:**",
+                            "",
+                            indentedJson(execution.output),
+                        );
+                    } else {
+                        sectionLines.push("_The state has not submitted a workflow result yet._");
+                    }
+
+                    sectionLines.push("", "### Transition function", "");
+                    if (execution.status !== "accepted") {
+                        sectionLines.push("_Not invoked; waiting for the state result._");
+                    } else if (transition?.completedAt != null) {
+                        const transitionDuration = formatWorkflowDuration(
+                            transition.scheduledAt,
+                            transition.completedAt,
+                        );
+                        sectionLines.push(
+                            `**Invoked:** \`${formatWorkflowTimestamp(transition.scheduledAt)}\``,
+                            `**Completed:** \`${formatWorkflowTimestamp(transition.completedAt)}\``,
+                            ...(transitionDuration ? [`**Duration:** ${transitionDuration}`] : []),
+                            "",
+                            `Invoked with outcome \`${cell(execution.outcome)}\` and the submitted output.`,
+                            "",
+                            `**Result:** ${cell(transition.result?.kind)}`,
+                            `**Selected next state:** ${cell(selectedTarget)}`,
+                        );
+                    } else if (transition) {
+                        sectionLines.push(
+                            `**Invoked:** \`${formatWorkflowTimestamp(transition.scheduledAt)}\``,
+                            "",
+                            "_Transition execution has not completed yet._",
+                        );
+                    } else if (selectedTarget) {
+                        const transitionHistoryLoaded = parentExecutionHistory?.fetchedAt != null
+                            || parentExecutionHistory?.error;
+                        sectionLines.push(
+                            `Invoked with outcome \`${cell(execution.outcome)}\` and the submitted output.`,
+                            "",
+                            transitionHistoryLoaded
+                                ? "_Exact transition timing is unavailable in the retained workflow execution history._"
+                                : "_Exact transition timing is loading from the workflow execution history._",
+                            "",
+                            `**Selected next state:** ${cell(selectedTarget)}`,
+                        );
+                    } else {
+                        sectionLines.push(
+                            `Accepted outcome \`${cell(execution.outcome)}\` and the submitted output.`,
+                            "",
+                            "_Waiting for the transition invocation/result to be projected._",
+                        );
+                    }
+                    sectionContent.push({
+                        type: "markdown",
+                        text: sectionLines.slice(postActivityStart).join("\n"),
+                    });
+
+                    const resultLabel = execution.outcome || execution.status || "pending";
+                    const title = `${cell(execution.stateId)} · #${cell(execution.executionSequence)} · `
+                        + `${cell(resultLabel)}${selectedTarget ? ` → ${cell(selectedTarget)}` : ""}`;
+                    nodeActionSections.push({
+                        key: `${sessionId}:${execution.executionSequence}`,
+                        title,
+                        defaultOpen: index === selectedIndex,
+                        text: sectionLines.join("\n"),
+                        content: sectionContent,
+                    });
+                });
+            }
+            workflowSections.push(
+                {
+                    key: `${sessionId}:definition`,
+                    title: "Workflow definition",
+                    defaultOpen: false,
+                    text: definitionLines.join("\n"),
+                },
+                {
+                    key: `${sessionId}:progression`,
+                    title: "Execution progression",
+                    defaultOpen: true,
+                    text: progressionLines.join("\n"),
+                },
+                {
+                    key: `${sessionId}:node-actions`,
+                    title: `Node action details${nodeActionSections.length > 0 ? ` (${nodeActionSections.length})` : ""}`,
+                    defaultOpen: true,
+                    text: nodeActionStatusText || "",
+                    sections: nodeActionSections,
+                },
+            );
+            lines.push(
+                "",
+                "## Workflow definition",
+                "",
+                ...definitionLines,
+                "",
+                "## Execution progression",
+                "",
+                ...progressionLines,
+                "",
+                "## Node action details",
+                "",
+            );
+            if (nodeActionStatusText) lines.push(nodeActionStatusText);
+            for (const section of nodeActionSections) {
+                lines.push("", `### ${section.title}`, "", ...section.text.split("\n"));
+            }
+        }
+        return [{
+            id: `workflow-session:${sessionId}`,
+            kind: "workflow-session",
+            role: "system",
+            noChrome: true,
+            text: lines.join("\n"),
+            workflowSummaryText: workflowSummaryText || lines.join("\n"),
+            workflowSections,
+            createdAt: session.updatedAt || session.createdAt || Date.now(),
+        }];
+    }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
+    const workflowChildContext = buildWorkflowChildContextMessage(state, session);
+    if (workflowChildContext?.embedsTranscript) {
+        return [workflowChildContext];
+    }
+    const withWorkflowChildContext = messages => (
+        workflowChildContext ? [workflowChildContext, ...messages] : messages
+    );
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
-        if (splash.length) return splash;
+        if (splash.length) return withWorkflowChildContext(splash);
     }
     if (!chat.length && ["loading", "failed"].includes(history?.loadState)) {
-        return [{
+        return withWorkflowChildContext([{
             id: `history-load:${sessionId}:${history.loadState}`,
             role: "system",
             noChrome: true,
             text: history.loadState === "loading"
                 ? "Loading conversation…"
                 : "Could not load this conversation. Select the session again to retry.",
-        }];
+        }]);
     }
     const events = history?.events || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
@@ -2078,7 +2758,7 @@ export function selectActiveChat(state) {
     const sessionErrorMessage = session?.chatWarnings?.length ? null : buildSessionErrorMessage(session, events);
 
     if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage && !session?.chatWarnings?.length) {
-        return createSplashCard(state.branding, session);
+        return withWorkflowChildContext(createSplashCard(state.branding, session));
     }
 
     const messages = withSessionWarnings(chat.length > 0 ? chat : createSplashCard(state.branding, session), session, events);
@@ -2108,7 +2788,7 @@ export function selectActiveChat(state) {
             };
         }
     }
-    return messages;
+    return withWorkflowChildContext(messages);
 }
 
 function prefixRuns(text, color = "gray", options = {}) {
@@ -2772,6 +3452,51 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
     if (message?.liveTurn && options.tableMode !== "sentinel" && message.reasoningText) {
         const reasoning = buildThinkingCardLines({ ...message, text: message.reasoningText }, maxWidth);
         return message.text ? [...reasoning, ...buildChatMessageLines({ ...message, reasoningText: "" }, maxWidth, options)] : reasoning;
+    }
+
+    if (
+        options.tableMode === "sentinel"
+        && Array.isArray(message.workflowSections)
+        && message.workflowSections.length > 0
+    ) {
+        const summaryLines = trimLeadingBlankLines(parseMarkdownLines(
+            decorateArtifactLinksForChat(message.workflowSummaryText || ""),
+            { width: Math.max(20, maxWidth), tableMode: options.tableMode },
+        ));
+        const buildWorkflowSectionContentLines = section => {
+            if (!Array.isArray(section.content)) {
+                return trimLeadingBlankLines(parseMarkdownLines(
+                    decorateArtifactLinksForChat(section.text || ""),
+                    { width: Math.max(20, maxWidth), tableMode: options.tableMode },
+                ));
+            }
+            return section.content.flatMap(part => {
+                if (part?.type === "messages") {
+                    return (part.messages || []).flatMap(item => buildChatMessageLines(item, maxWidth, options));
+                }
+                return trimLeadingBlankLines(parseMarkdownLines(
+                    decorateArtifactLinksForChat(part?.text || ""),
+                    { width: Math.max(20, maxWidth), tableMode: options.tableMode },
+                ));
+            });
+        };
+        const buildWorkflowSectionLines = section => [
+            {
+                kind: "workflowSectionStart",
+                sectionKey: section.key,
+                title: section.title,
+                defaultOpen: section.defaultOpen === true,
+                parentSessionId: section.parentSessionId || null,
+                parentTitle: section.parentTitle || null,
+            },
+            ...buildWorkflowSectionContentLines(section),
+            ...(Array.isArray(section.sections)
+                ? section.sections.flatMap(buildWorkflowSectionLines)
+                : []),
+            { kind: "workflowSectionEnd" },
+        ];
+        const sectionLines = message.workflowSections.flatMap(buildWorkflowSectionLines);
+        return [...summaryLines, ...sectionLines];
     }
 
     // Chrome-less message: render the text as plain markdown directly into

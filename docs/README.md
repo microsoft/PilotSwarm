@@ -42,7 +42,9 @@ The Web API — the one integration surface — and every client over it.
 Building **on** PilotSwarm, deploying it, and contributing **to** it.
 
 **Building apps**
+- [Building workflows](./building-workflows.md) — decide whether workflows fit, then author, register, test, invoke, and debug them
 - [SDK apps](./developer/building/sdk-apps.md) (+ [agents](./developer/building/sdk-agents.md), [facts & graph](./developer/building/facts-and-graph.md))
+- [Workflow session internals](./developer/building/workflow-sessions.md) — architecture, durability invariants, and provider contracts
 - [CLI/TUI apps](./developer/building/cli-apps.md) (+ [agents](./developer/building/cli-agents.md))
 - [Plugin architecture & layering](./developer/building/plugins.md) · [Builder agent templates](./developer/building/builder-agents.md)
 - [Examples](./developer/building/examples.md) — runnable samples incl. the DevOps Command Center

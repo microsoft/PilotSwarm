@@ -13,7 +13,22 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
+import {
+    systemSessionProtectedError,
+    type SessionKind,
+    type SessionOwnerInfo,
+    type SessionSummaryState,
+    type TurnControlKind,
+    type TurnControlAddResult,
+    type TurnStartResult,
+    type TurnLookInput,
+    type TurnLookRow,
+    type TurnEndKind,
+    type TurnEndResult,
+    type TurnControl,
+    type TurnStartRecord,
+} from "./types.js";
+import type { CompiledWorkflowManifest } from "./workflow-orchestration/compiler.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
@@ -113,6 +128,7 @@ export interface HourlyTokenBucketRow {
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
+    sessionKind: SessionKind;
     orchestrationId: string | null;
     title: string | null;
     titleLocked: boolean;
@@ -309,6 +325,107 @@ export interface ChildOutcomeRow {
     completedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
+}
+
+export interface WorkflowExecutionRow {
+    workflowSessionId: string;
+    executionSequence: number;
+    graphId: string;
+    stateId: string;
+    childSessionId: string | null;
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+    waitingDetails: unknown;
+    status: "admitted" | "accepted";
+    outcome: string | null;
+    output: unknown;
+    admittedAt: Date;
+    acceptedAt: Date | null;
+    updatedAt: Date;
+}
+
+export interface WorkflowProjectionRow {
+    workflowSessionId: string;
+    graphId: string;
+    status: string;
+    currentStateId: string | null;
+    currentExecutionSequence: number | null;
+    waitingOn: "activity" | "agent-result" | "question" | "observed-condition" | null;
+    waitingDetails: unknown;
+    terminalOutcome: string | null;
+    result: unknown;
+    completedAt: Date | null;
+    updatedAt: Date;
+}
+
+export interface WorkflowOverviewRow {
+    workflowSessionId: string;
+    graph: {
+        graphId: string;
+        initialStateId: string;
+        nodes: Array<{
+            id: string;
+            type: string;
+        }>;
+        edges: Array<{
+            from: string;
+            to: string;
+        }>;
+    };
+    projection: {
+        status: string;
+        currentStateId: string | null;
+        currentExecutionSequence: number | null;
+        waitingOn: WorkflowProjectionRow["waitingOn"];
+    } | null;
+    executions: Array<{
+        executionSequence: number;
+        stateId: string;
+        status: WorkflowExecutionRow["status"];
+        waitingOn: WorkflowExecutionRow["waitingOn"];
+    }>;
+}
+
+export interface WorkflowDefinitionRow {
+    definitionId: string;
+    graphId: string;
+    name: string;
+    version: string;
+    scope: AgentPackageScope;
+    owner: AgentPrincipal | null;
+    createdBy: string | null;
+    apiVersion: string;
+    compilerVersion: string;
+    sourceYaml: string;
+    sourceSha256: string;
+    packageSha256: string;
+    packageArtifactFilename: string;
+    packageSource: Record<string, unknown>;
+    compiledSha256: string;
+    initialStateId: string;
+    inputSchema: Record<string, unknown>;
+    configuration: Record<string, unknown>;
+    compiledManifest: CompiledWorkflowManifest;
+    createdAt: Date;
+}
+
+export type WorkflowDefinitionRecord = WorkflowDefinitionRow;
+
+export interface WorkflowAdmissionRecord {
+    sessionId: string;
+    definitionId: string;
+    primaryKeyValues: unknown[] | null;
+    primaryKeySha256: string | null;
+    attempt: number;
+    inputs: Record<string, unknown>;
+    parentSessionId: string | null;
+    owner: SessionOwnerInfo;
+    groupId: string | null;
+    visibility: SessionVisibility | null;
+    rerunReason: string | null;
+    orchestrationId: string;
+    created: boolean;
+    deduplicated: boolean;
+    needsStart: boolean;
 }
 
 // ─── Session Metric Summary Types ────────────────────────────────
@@ -881,6 +998,9 @@ export interface AgentPackageInstallEntry {
      * would fight over the same directory.
      */
     packageId: string;
+    versionId: string;
+    /** True when this is the package's currently active version. */
+    isActive: boolean;
     name: string;
     scope: AgentPackageScope;
     owner: AgentPrincipal | null;
@@ -917,6 +1037,28 @@ export interface PublishAgentPackageResult {
     status: "published" | "noop";
     packageId: string;
     versionId: string;
+}
+
+export interface WorkflowDefinitionRegistrationInput {
+    definitionId: string;
+    scope?: AgentPackageScope;
+    owner?: AgentPrincipal | null;
+    createdBy?: string | null;
+    isAdmin?: boolean;
+    sourceYaml: string;
+    sourceSha256: string;
+    packageSha256: string;
+    packageArtifactFilename: string;
+    packageSource: Record<string, unknown>;
+    compiledSha256: string;
+    manifest: CompiledWorkflowManifest;
+}
+
+export interface WorkflowAgentPackageRegistrationInput {
+    packageId: string;
+    versionId: string;
+    package: PublishAgentPackageInput;
+    definition: WorkflowDefinitionRegistrationInput;
 }
 
 // ─── Worker registry (migration 0040) ────────────────────────────
@@ -963,6 +1105,28 @@ export interface FleetDirectiveRow {
     desired: Record<string, unknown>;
     updatedAt: Date;
     updatedBy: string | null;
+}
+
+export interface PackageArtifactLockTarget {
+    sessionId: string;
+    filename: string;
+}
+
+/**
+ * Catalog operations that must run on the PostgreSQL session holding package
+ * artifact advisory locks. Keeping these operations lock-bound avoids needing
+ * a second pool connection while a lock is held.
+ */
+export interface PackageArtifactLockScope {
+    publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+    registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+    countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number>;
+    countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 }
 
 export interface SessionCatalog {
@@ -1093,6 +1257,15 @@ export interface SessionCatalog {
 
     /** Atomic publish — see cms_publish_agent_package. Throws AGENT_PACKAGE_* errors. */
     publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    /**
+     * Serialize publication and collection for the same content-addressed
+     * package artifacts. Callers perform artifact-store operations inside the
+     * callback and catalog operations through the supplied lock-bound scope.
+     */
+    withPackageArtifactLocks<T>(
+        targets: PackageArtifactLockTarget[],
+        fn: (scope: PackageArtifactLockScope) => Promise<T>,
+    ): Promise<T>;
     listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]>;
     /**
      * One package. `selector` picks WHICH copy of the name (own / shared /
@@ -1129,6 +1302,13 @@ export interface SessionCatalog {
     revokeAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
     /** Editors of the shared copy of `name`. Visible to anyone who can see the package. */
     listAgentPackageEditors(name: string): Promise<AgentPackageEditorInfo[]>;
+    /** Every content-addressed package artifact currently referenced by committed catalog metadata. */
+    listPackageArtifactReferences(): Promise<{
+        workflowArtifactFilenames: string[];
+        agentArtifactFilenames: string[];
+    }>;
+    /** How many workflow definitions reference this content-addressed snapshot (>0 ⇒ never delete it). */
+    countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number>;
     /** How many published versions reference this content-addressed blob (>0 ⇒ never delete it). */
     countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 
@@ -1139,6 +1319,7 @@ export interface SessionCatalog {
 
     /** Insert a new session. No-op if session already exists. */
     createSession(sessionId: string, opts?: {
+        sessionKind?: SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1332,6 +1513,102 @@ export interface SessionCatalog {
 
     /** List child outcome records for a parent session. */
     listChildOutcomes(parentSessionId: string): Promise<ChildOutcomeRow[]>;
+
+    /** Idempotently admit one durable workflow state execution. */
+    recordWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+        waitingDetails?: unknown;
+    }): Promise<void>;
+
+    /** Atomically accept one execution result and update its current projection. */
+    acceptWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        outcome: string;
+        output: unknown;
+    }): Promise<void>;
+
+    /** Atomically record terminal workflow state and its parent child outcome. */
+    completeWorkflowProjection(input: {
+        workflowSessionId: string;
+        parentSessionId?: string | null;
+        graphId: string;
+        terminalStateId: string;
+        outcome: string;
+        summary: string;
+        result: Record<string, unknown>;
+        completedAt: Date;
+    }): Promise<void>;
+
+    /** Atomically record an orchestration failure and advance a running projection. */
+    failWorkflowProjection(input: {
+        workflowSessionId: string;
+        errorMessage?: string | null;
+        failedAt: Date;
+    }): Promise<boolean>;
+
+    /** Read the current rebuildable workflow projection. */
+    getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null>;
+
+    /** Rebuild the current projection from authoritative execution/completion facts. */
+    rebuildWorkflowProjection(workflowSessionId: string): Promise<void>;
+
+    /** Read authoritative workflow executions in admission order. */
+    listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]>;
+
+    /** Read the sanitized topology and execution status visible to a session reader. */
+    getWorkflowOverview(workflowSessionId: string): Promise<WorkflowOverviewRow | null>;
+
+    /** Persist one immutable authored definition and its normalized compiled states. */
+    registerWorkflowDefinition(input: WorkflowDefinitionRegistrationInput): Promise<WorkflowDefinitionRecord>;
+
+    /** Atomically publish agent-package metadata and persist its workflow definition. */
+    registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord>;
+
+    /** Read one immutable workflow definition and its ordered compiled states. */
+    getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null>;
+    /** Viewer-filtered definition read for API and workflow admission. */
+    getWorkflowDefinitionForViewer?(
+        definitionId: string,
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord | null>;
+    /** Definitions visible to this viewer, newest first. */
+    listWorkflowDefinitions(
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord[]>;
+
+    /** Atomically reserve or deduplicate one registered workflow execution. */
+    admitWorkflow(input: {
+        sessionId: string;
+        definitionId: string;
+        inputs: Record<string, unknown>;
+        primaryKeyValues: unknown[] | null;
+        primaryKeySha256: string | null;
+        owner: SessionOwnerInfo;
+        parentSessionId?: string | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+        idempotencyKey: string;
+        requestSha256: string;
+        forceRerun: boolean;
+        rerunReason?: string | null;
+        isAdmin: boolean;
+    }): Promise<WorkflowAdmissionRecord>;
+
+    /** Mark a reserved workflow admission started after idempotent Duroxide start. */
+    markWorkflowAdmissionStarted(sessionId: string, orchestrationId: string): Promise<void>;
 
     // ── Events (written from worker, read from client) ───────
 
@@ -1542,6 +1819,15 @@ function sqlForSchema(schema: string) {
             upsertChildOutcome:         `${s}.cms_upsert_child_outcome`,
             getChildOutcome:            `${s}.cms_get_child_outcome`,
             listChildOutcomes:          `${s}.cms_list_child_outcomes`,
+            recordWorkflowExecution:    `${s}.cms_record_workflow_execution`,
+            acceptWorkflowExecution:    `${s}.cms_accept_workflow_execution`,
+            completeWorkflowProjection: `${s}.cms_complete_workflow`,
+            failWorkflowProjection:     `${s}.cms_fail_workflow`,
+            rebuildWorkflowProjection:  `${s}.cms_rebuild_workflow_projection`,
+            registerWorkflowDefinition: `${s}.cms_register_workflow_definition`,
+            registerWorkflowDefinitionWithAgentPackage: `${s}.cms_register_workflow_definition_with_agent_package`,
+            admitWorkflow:               `${s}.cms_admit_workflow`,
+            markWorkflowAdmissionStarted: `${s}.cms_mark_workflow_admission_started`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
@@ -1715,6 +2001,7 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Writes ───────────────────────────────────────────────
 
     async createSession(sessionId: string, opts?: {
+        sessionKind?: SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1785,6 +2072,13 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
                     [sessionId, JSON.stringify(opts!.creationConfig)],
+                );
+            }
+
+            if (opts?.sessionKind === "workflow") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET session_kind = 'workflow' WHERE session_id = $1`,
+                    [sessionId],
                 );
             }
 
@@ -2057,7 +2351,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // Service columns join the raw table (same reasoning as getSession —
         // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessions}($1, $2) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
@@ -2075,7 +2369,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
@@ -2099,7 +2393,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
@@ -2126,7 +2420,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
+                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
                     s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
@@ -2366,7 +2660,9 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1, $2, $3)`,
+            `SELECT g.*, s.session_kind
+               FROM ${this.sql.fn.listGroupSessions}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [groupId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -2433,6 +2729,448 @@ export class PgSessionCatalog implements SessionCatalog {
             [parentSessionId],
         );
         return rows.map(rowToChildOutcomeRow);
+    }
+
+    async recordWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        waitingOn: "activity" | "agent-result" | "question" | "observed-condition";
+        waitingDetails?: unknown;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.recordWorkflowExecution}($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                input.workflowSessionId,
+                input.executionSequence,
+                input.graphId,
+                input.stateId,
+                input.childSessionId ?? null,
+                input.waitingOn,
+                JSON.stringify(input.waitingDetails ?? null),
+            ],
+        );
+    }
+
+    async acceptWorkflowExecution(input: {
+        workflowSessionId: string;
+        executionSequence: number;
+        graphId: string;
+        stateId: string;
+        childSessionId?: string | null;
+        outcome: string;
+        output: unknown;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.acceptWorkflowExecution}($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                input.workflowSessionId,
+                input.executionSequence,
+                input.graphId,
+                input.stateId,
+                input.childSessionId ?? null,
+                input.outcome,
+                JSON.stringify(input.output),
+            ],
+        );
+    }
+
+    async completeWorkflowProjection(input: {
+        workflowSessionId: string;
+        parentSessionId?: string | null;
+        graphId: string;
+        terminalStateId: string;
+        outcome: string;
+        summary: string;
+        result: Record<string, unknown>;
+        completedAt: Date;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.completeWorkflowProjection}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                input.workflowSessionId,
+                input.parentSessionId ?? null,
+                input.graphId,
+                input.terminalStateId,
+                input.outcome,
+                input.summary,
+                JSON.stringify(input.result),
+                input.completedAt,
+            ],
+        );
+    }
+
+    async failWorkflowProjection(input: {
+        workflowSessionId: string;
+        errorMessage?: string | null;
+        failedAt: Date;
+    }): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.failWorkflowProjection}($1, $2, $3) AS changed`,
+            [
+                input.workflowSessionId,
+                input.errorMessage ?? null,
+                input.failedAt,
+            ],
+        );
+        return rows[0]?.changed === true;
+    }
+
+    async getWorkflowProjection(workflowSessionId: string): Promise<WorkflowProjectionRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_projections WHERE workflow_session_id = $1`,
+            [workflowSessionId],
+        );
+        return rows.length > 0 ? rowToWorkflowProjectionRow(rows[0]) : null;
+    }
+
+    async rebuildWorkflowProjection(workflowSessionId: string): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.rebuildWorkflowProjection}($1)`,
+            [workflowSessionId],
+        );
+    }
+
+    async listWorkflowExecutions(workflowSessionId: string): Promise<WorkflowExecutionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_state_executions
+              WHERE workflow_session_id = $1
+              ORDER BY execution_sequence`,
+            [workflowSessionId],
+        );
+        return rows.map(rowToWorkflowExecutionRow);
+    }
+
+    async getWorkflowOverview(workflowSessionId: string): Promise<WorkflowOverviewRow | null> {
+        const [definitionResult, projectionResult, executionResult] = await Promise.all([
+            this.pool.query(
+                `SELECT d.graph_id,
+                        d.initial_state_id,
+                        COALESCE((
+                            SELECT jsonb_agg(
+                                jsonb_build_object(
+                                    'id', state_entry.state->>'id',
+                                    'type', state_entry.state->>'type',
+                                    'allowedTargets', COALESCE(
+                                        state_entry.state#>'{transition,allowedTargets}',
+                                        '[]'::jsonb
+                                    )
+                                )
+                                ORDER BY state_entry.ordinality
+                            )
+                              FROM jsonb_array_elements(d.compiled_manifest_json->'states')
+                                   WITH ORDINALITY AS state_entry(state, ordinality)
+                        ), '[]'::jsonb) AS graph_states
+                   FROM "${this.sql.schema}".workflow_admissions a
+                   JOIN "${this.sql.schema}".workflow_definitions d
+                     ON d.definition_id = a.definition_id
+                  WHERE a.session_id = $1`,
+                [workflowSessionId],
+            ),
+            this.pool.query(
+                `SELECT status, current_state_id, current_execution_sequence,
+                        waiting_on
+                   FROM "${this.sql.schema}".workflow_projections
+                  WHERE workflow_session_id = $1`,
+                [workflowSessionId],
+            ),
+            this.pool.query(
+                `SELECT execution_sequence, state_id, status, waiting_on
+                   FROM "${this.sql.schema}".workflow_state_executions
+                  WHERE workflow_session_id = $1
+                  ORDER BY execution_sequence DESC
+                  LIMIT 100`,
+                [workflowSessionId],
+            ),
+        ]);
+        if (definitionResult.rows.length === 0) return null;
+
+        const row = definitionResult.rows[0];
+        const rawStates: unknown[] = Array.isArray(row.graph_states)
+            ? row.graph_states
+            : [];
+        const nodes = rawStates
+            .filter((state: unknown): state is Record<string, unknown> => Boolean(state && typeof state === "object"))
+            .map(state => ({
+                id: typeof state.id === "string" ? state.id : "",
+                type: typeof state.type === "string" ? state.type : "unknown",
+            }))
+            .filter(state => state.id.length > 0);
+        const nodeIds = new Set(nodes.map(node => node.id));
+        const seenEdges = new Set<string>();
+        const edges: WorkflowOverviewRow["graph"]["edges"] = [];
+        for (const state of rawStates) {
+            if (!state || typeof state !== "object") continue;
+            const stateRecord = state as Record<string, unknown>;
+            if (typeof stateRecord.id !== "string") continue;
+            const allowedTargets = stateRecord.allowedTargets;
+            const targets = Array.isArray(allowedTargets) ? allowedTargets : [];
+            for (const target of targets) {
+                if (typeof target !== "string" || !nodeIds.has(target)) continue;
+                const key = `${stateRecord.id}\0${target}`;
+                if (seenEdges.has(key)) continue;
+                seenEdges.add(key);
+                edges.push({ from: stateRecord.id, to: target });
+            }
+        }
+
+        return {
+            workflowSessionId,
+            graph: {
+                graphId: String(row.graph_id),
+                initialStateId: String(row.initial_state_id),
+                nodes,
+                edges,
+            },
+            projection: projectionResult.rows.length > 0
+                ? {
+                    status: String(projectionResult.rows[0].status),
+                    currentStateId: projectionResult.rows[0].current_state_id ?? null,
+                    currentExecutionSequence: projectionResult.rows[0].current_execution_sequence == null
+                        ? null
+                        : Number(projectionResult.rows[0].current_execution_sequence),
+                    waitingOn: projectionResult.rows[0].waiting_on ?? null,
+                }
+                : null,
+            executions: executionResult.rows
+                .map((execution: {
+                    execution_sequence: string | number;
+                    state_id: string;
+                    status: WorkflowExecutionRow["status"];
+                    waiting_on: WorkflowExecutionRow["waitingOn"];
+                }) => ({
+                    executionSequence: Number(execution.execution_sequence),
+                    stateId: String(execution.state_id),
+                    status: execution.status as WorkflowExecutionRow["status"],
+                    waitingOn: execution.waiting_on as WorkflowExecutionRow["waitingOn"],
+                }))
+                .reverse(),
+        };
+    }
+
+    private async _registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord> {
+        const scope = input.scope ?? "shared";
+        const owner = input.owner ?? null;
+        const { rows } = await db.query(
+            `SELECT ${this.sql.fn.registerWorkflowDefinition}(
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                $17, $18, $19, $20, $21
+            ) AS definition_id`,
+            [
+                input.definitionId,
+                input.manifest.graphId,
+                input.manifest.metadata.name,
+                input.manifest.metadata.version,
+                input.manifest.apiVersion,
+                input.manifest.compilerVersion,
+                input.sourceYaml,
+                input.sourceSha256,
+                input.packageSha256,
+                input.packageArtifactFilename,
+                JSON.stringify(input.packageSource),
+                input.compiledSha256,
+                input.manifest.initialState,
+                JSON.stringify(input.manifest.inputSchema),
+                JSON.stringify(input.manifest.configuration),
+                JSON.stringify(input.manifest),
+                scope,
+                owner?.provider ?? null,
+                owner?.subject ?? null,
+                input.createdBy ?? null,
+                input.isAdmin ?? true,
+            ],
+        );
+        const persistedDefinitionId = rows[0]?.definition_id;
+        const registered = typeof persistedDefinitionId === "string"
+            ? await this._getWorkflowDefinition(persistedDefinitionId, db)
+            : null;
+        if (!registered) {
+            throw Object.assign(
+                new Error(`Workflow definition '${input.manifest.graphId}' was not persisted.`),
+                { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
+            );
+        }
+        return registered;
+    }
+
+    async registerWorkflowDefinition(
+        input: WorkflowDefinitionRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
+        return this._registerWorkflowDefinition(input, this.pool);
+    }
+
+    private async _registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord> {
+        const { rows } = await db.query(
+            `SELECT * FROM ${this.sql.fn.registerWorkflowDefinitionWithAgentPackage}($1, $2, $3, $4)`,
+            [
+                input.packageId,
+                input.versionId,
+                JSON.stringify(input.package),
+                JSON.stringify(input.definition),
+            ],
+        );
+        const persistedDefinitionId = rows[0]?.definition_id;
+        const registered = typeof persistedDefinitionId === "string"
+            ? await this._getWorkflowDefinition(persistedDefinitionId, db)
+            : null;
+        if (!registered) {
+            throw Object.assign(
+                new Error(`Workflow definition '${input.definition.manifest.graphId}' was not persisted.`),
+                { code: "WORKFLOW_DEFINITION_PERSISTENCE_FAILED" },
+            );
+        }
+        return registered;
+    }
+
+    async registerWorkflowDefinitionWithAgentPackage(
+        input: WorkflowAgentPackageRegistrationInput,
+    ): Promise<WorkflowDefinitionRecord> {
+        return this._registerWorkflowDefinitionWithAgentPackage(input, this.pool);
+    }
+
+    private async _getWorkflowDefinition(
+        definitionId: string,
+        db: any,
+    ): Promise<WorkflowDefinitionRecord | null> {
+        const definitionResult = await db.query(
+            `SELECT * FROM "${this.sql.schema}".workflow_definitions WHERE definition_id = $1`,
+            [definitionId],
+        );
+        if (definitionResult.rows.length === 0) return null;
+        return rowToWorkflowDefinitionRow(definitionResult.rows[0]);
+    }
+
+    async getWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord | null> {
+        return this._getWorkflowDefinition(definitionId, this.pool);
+    }
+
+    async getWorkflowDefinitionForViewer(
+        definitionId: string,
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord | null> {
+        const { rows } = await this.pool.query(
+            `SELECT *
+               FROM "${this.sql.schema}".workflow_definitions
+              WHERE definition_id = $1
+                AND (
+                    scope = 'shared'
+                    OR $4
+                    OR (
+                        owner_provider = $2
+                        AND owner_subject = $3
+                    )
+                )`,
+            [
+                definitionId,
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                isAdmin,
+            ],
+        );
+        return rows.length > 0 ? rowToWorkflowDefinitionRow(rows[0]) : null;
+    }
+
+    async listWorkflowDefinitions(
+        viewer: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<WorkflowDefinitionRecord[]> {
+        const { rows } = await this.pool.query(
+            `SELECT *
+               FROM "${this.sql.schema}".workflow_definitions
+              WHERE scope = 'shared'
+                 OR $3
+                 OR (
+                    owner_provider = $1
+                    AND owner_subject = $2
+                 )
+              ORDER BY created_at DESC, graph_id`,
+            [
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                isAdmin,
+            ],
+        );
+        return rows.map(rowToWorkflowDefinitionRow);
+    }
+
+    async admitWorkflow(input: {
+        sessionId: string;
+        definitionId: string;
+        inputs: Record<string, unknown>;
+        primaryKeyValues: unknown[] | null;
+        primaryKeySha256: string | null;
+        owner: SessionOwnerInfo;
+        parentSessionId?: string | null;
+        groupId?: string | null;
+        visibility?: SessionVisibility | null;
+        idempotencyKey: string;
+        requestSha256: string;
+        forceRerun: boolean;
+        rerunReason?: string | null;
+        isAdmin: boolean;
+    }): Promise<WorkflowAdmissionRecord> {
+        let rows: any[];
+        try {
+            ({ rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.admitWorkflow}(
+                    $1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9,
+                    $10, $11, $12, $13, $14, $15, $16, $17
+                )`,
+                [
+                    input.sessionId,
+                    input.definitionId,
+                    JSON.stringify(input.inputs),
+                    input.primaryKeyValues === null
+                        ? null
+                        : JSON.stringify(input.primaryKeyValues),
+                    input.primaryKeySha256,
+                    input.owner.provider,
+                    input.owner.subject,
+                    input.owner.email ?? null,
+                    input.owner.displayName ?? null,
+                    input.parentSessionId ?? null,
+                    input.groupId ?? null,
+                    input.visibility ?? null,
+                    input.idempotencyKey,
+                    input.requestSha256,
+                    input.forceRerun,
+                    input.rerunReason ?? null,
+                    input.isAdmin,
+                ],
+            ));
+        } catch (error) {
+            throw normalizeWorkflowCatalogError(error);
+        }
+        if (rows.length !== 1) {
+            throw Object.assign(
+                new Error("Workflow admission did not return exactly one execution."),
+                { code: "WORKFLOW_ADMISSION_FAILED" },
+            );
+        }
+        return rowToWorkflowAdmissionRecord(rows[0]);
+    }
+
+    async markWorkflowAdmissionStarted(
+        sessionId: string,
+        orchestrationId: string,
+    ): Promise<void> {
+        try {
+            await this.pool.query(
+                `SELECT ${this.sql.fn.markWorkflowAdmissionStarted}($1, $2)`,
+                [sessionId, orchestrationId],
+            );
+        } catch (error) {
+            throw normalizeWorkflowCatalogError(error);
+        }
     }
 
     // ── Events ───────────────────────────────────────────────
@@ -3747,10 +4485,13 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+    private async _publishAgentPackage(
+        input: PublishAgentPackageInput,
+        db: any,
+    ): Promise<PublishAgentPackageResult> {
         const packageId = randomUUID();
         const versionId = randomUUID();
-        const { rows } = await this.pool.query(
+        const { rows } = await db.query(
             `SELECT * FROM ${this.sql.fn.publishAgentPackage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [
                 packageId, versionId, input.name, input.scope,
@@ -3766,6 +4507,51 @@ export class PgSessionCatalog implements SessionCatalog {
             packageId: String(row.package_id ?? packageId),
             versionId: String(row.version_id ?? versionId),
         };
+    }
+
+    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+        return this._publishAgentPackage(input, this.pool);
+    }
+
+    async withPackageArtifactLocks<T>(
+        targets: PackageArtifactLockTarget[],
+        fn: (scope: PackageArtifactLockScope) => Promise<T>,
+    ): Promise<T> {
+        const identities = [...new Set(
+            targets.map(target => `${target.sessionId}\n${target.filename}`),
+        )].sort();
+        const client = await this.pool.connect();
+        const acquired: string[] = [];
+        try {
+            for (const identity of identities) {
+                await client.query(
+                    "SELECT pg_advisory_lock(hashtextextended('package-artifact:' || $1, 0))",
+                    [identity],
+                );
+                acquired.push(identity);
+            }
+            const scope: PackageArtifactLockScope = {
+                publishAgentPackage: input =>
+                    this._publishAgentPackage(input, client),
+                registerWorkflowDefinition: input =>
+                    this._registerWorkflowDefinition(input, client),
+                registerWorkflowDefinitionWithAgentPackage: input =>
+                    this._registerWorkflowDefinitionWithAgentPackage(input, client),
+                countWorkflowPackageArtifactRefs: artifactFilename =>
+                    this._countWorkflowPackageArtifactRefs(artifactFilename, client),
+                countAgentPackageArtifactRefs: artifactFilename =>
+                    this._countAgentPackageArtifactRefs(artifactFilename, client),
+            };
+            return await fn(scope);
+        } finally {
+            for (const identity of acquired.reverse()) {
+                await client.query(
+                    "SELECT pg_advisory_unlock(hashtextextended('package-artifact:' || $1, 0))",
+                    [identity],
+                ).catch(() => {});
+            }
+            client.release();
+        }
     }
 
     async listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
@@ -3841,6 +4627,8 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         return rows.map((row: any) => ({
             packageId: row.package_id,
+            versionId: row.version_id,
+            isActive: row.is_active !== false,
             name: row.name,
             scope: row.scope === "user" ? "user" as const : "shared" as const,
             owner: rowToAgentPrincipal(row),
@@ -3912,18 +4700,64 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToAgentPackageEditor);
     }
 
+    async listPackageArtifactReferences(): Promise<{
+        workflowArtifactFilenames: string[];
+        agentArtifactFilenames: string[];
+    }> {
+        const [workflow, agent] = await Promise.all([
+            this.pool.query(
+                `SELECT DISTINCT package_artifact_filename AS filename
+                   FROM "${this.sql.schema}".workflow_definitions`,
+            ),
+            this.pool.query(
+                `SELECT DISTINCT artifact_filename AS filename
+                   FROM "${this.sql.schema}".agent_package_versions`,
+            ),
+        ]);
+        return {
+            workflowArtifactFilenames: workflow.rows.map(
+                (row: { filename: unknown }) => String(row.filename),
+            ),
+            agentArtifactFilenames: agent.rows.map(
+                (row: { filename: unknown }) => String(row.filename),
+            ),
+        };
+    }
+
+    private async _countWorkflowPackageArtifactRefs(
+        artifactFilename: string,
+        db: any,
+    ): Promise<number> {
+        const { rows } = await db.query(
+            `SELECT count(*)::int AS n FROM "${this.sql.schema}".workflow_definitions WHERE package_artifact_filename = $1`,
+            [artifactFilename],
+        );
+        return Number(rows?.[0]?.n ?? 0);
+    }
+
+    async countWorkflowPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        return this._countWorkflowPackageArtifactRefs(artifactFilename, this.pool);
+    }
+
     /**
      * How many published version rows reference this artifact blob filename.
      * Blob files are content-addressed (name@semver.sha), so identical bytes
      * published under the same name+semver in two scopes share ONE file. A
      * cleanup path must never delete a blob this reports > 0 for.
      */
-    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
-        const { rows } = await this.pool.query(
+    private async _countAgentPackageArtifactRefs(
+        artifactFilename: string,
+        db: any,
+    ): Promise<number> {
+        const { rows } = await db.query(
             `SELECT count(*)::int AS n FROM "${this.sql.schema}".agent_package_versions WHERE artifact_filename = $1`,
             [artifactFilename],
         );
         return Number(rows?.[0]?.n ?? 0);
+    }
+
+    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        return this._countAgentPackageArtifactRefs(artifactFilename, this.pool);
     }
 
     async upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void> {
@@ -3983,6 +4817,7 @@ function rowToSessionRow(row: any): SessionRow {
         : null;
     return {
         sessionId: row.session_id,
+        sessionKind: row.session_kind === "workflow" ? "workflow" : "agent",
         orchestrationId: row.orchestration_id ?? null,
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,
@@ -4061,6 +4896,109 @@ function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
     };
+}
+
+function rowToWorkflowExecutionRow(row: any): WorkflowExecutionRow {
+    return {
+        workflowSessionId: row.workflow_session_id,
+        executionSequence: Number(row.execution_sequence),
+        graphId: row.graph_id,
+        stateId: row.state_id,
+        childSessionId: row.child_session_id ?? null,
+        waitingOn: row.waiting_on,
+        waitingDetails: row.waiting_details_json ?? null,
+        status: row.status,
+        outcome: row.outcome ?? null,
+        output: row.output_json ?? null,
+        admittedAt: new Date(row.admitted_at),
+        acceptedAt: row.accepted_at ? new Date(row.accepted_at) : null,
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowProjectionRow(row: any): WorkflowProjectionRow {
+    return {
+        workflowSessionId: row.workflow_session_id,
+        graphId: row.graph_id,
+        status: row.status,
+        currentStateId: row.current_state_id ?? null,
+        currentExecutionSequence: row.current_execution_sequence === null
+            ? null
+            : Number(row.current_execution_sequence),
+        waitingOn: row.waiting_on ?? null,
+        waitingDetails: row.waiting_details_json ?? null,
+        terminalOutcome: row.terminal_outcome ?? null,
+        result: row.result_json ?? null,
+        completedAt: row.completed_at ? new Date(row.completed_at) : null,
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToWorkflowDefinitionRow(row: any): WorkflowDefinitionRow {
+    return {
+        definitionId: row.definition_id,
+        graphId: row.graph_id,
+        name: row.name,
+        version: row.version,
+        scope: row.scope === "user" ? "user" : "shared",
+        owner: row.owner_provider && row.owner_subject
+            ? {
+                provider: String(row.owner_provider),
+                subject: String(row.owner_subject),
+            }
+            : null,
+        createdBy: row.created_by ?? null,
+        apiVersion: row.api_version,
+        compilerVersion: row.compiler_version,
+        sourceYaml: row.source_yaml,
+        sourceSha256: row.source_sha256,
+        packageSha256: row.package_sha256,
+        packageArtifactFilename: row.package_artifact_filename,
+        packageSource: row.package_source_json ?? {},
+        compiledSha256: row.compiled_sha256,
+        initialStateId: row.initial_state_id,
+        inputSchema: row.input_schema_json ?? {},
+        configuration: row.configuration_json ?? {},
+        compiledManifest: row.compiled_manifest_json,
+        createdAt: new Date(row.created_at),
+    };
+}
+
+function rowToWorkflowAdmissionRecord(row: any): WorkflowAdmissionRecord {
+    return {
+        sessionId: row.session_id,
+        definitionId: row.definition_id,
+        primaryKeyValues: Array.isArray(row.primary_key_json)
+            ? row.primary_key_json
+            : null,
+        primaryKeySha256: row.primary_key_sha256 ?? null,
+        attempt: Number(row.attempt),
+        inputs: row.inputs_json ?? {},
+        parentSessionId: row.parent_session_id ?? null,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        groupId: row.group_id ?? null,
+        visibility: row.visibility ?? null,
+        rerunReason: row.rerun_reason ?? null,
+        orchestrationId: row.orchestration_id,
+        created: row.created === true,
+        deduplicated: row.deduplicated === true,
+        needsStart: row.needs_start === true,
+    };
+}
+
+function normalizeWorkflowCatalogError(error: unknown): Error {
+    if (!(error instanceof Error)) return new Error(String(error));
+    const match = /^([A-Z][A-Z0-9_]+):\s*(.+)$/s.exec(error.message);
+    if (!match?.[1].startsWith("WORKFLOW_")) return error;
+    return Object.assign(new Error(match[2]), {
+        code: match[1],
+        cause: error,
+    });
 }
 
 /** Map a PG row to SessionEvent. */

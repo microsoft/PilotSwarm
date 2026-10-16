@@ -38,7 +38,7 @@ test("the latest version is 1.0.81", () => {
     );
 });
 
-test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
+test("1.0.70 through 1.0.80 are frozen in their own directories", () => {
     assert.ok(existsSync(join(SRC, "orchestration_1_0_70/index.ts")), "the frozen copy must exist");
     assert.ok(existsSync(join(SRC, "orchestration_1_0_71/index.ts")), "the latest frozen copy must exist");
     const registry = read("orchestration-registry.ts");
@@ -68,7 +68,7 @@ test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
     assert.match(registry, /\{ version: "1\.0\.73", handler: durableSessionOrchestration_1_0_73 \}/);
     assert.match(read("orchestration_1_0_73/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.73";/);
     assert.match(read("orchestration_1_0_73/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
-    for (const patch of [74, 75, 76, 77, 78, 79]) {
+    for (const patch of [74, 75, 76, 77, 78, 79, 80]) {
         assert.match(registry, new RegExp(`import \\{ durableSessionOrchestration_1_0_${patch} \\} from "\\.\\/orchestration_1_0_${patch}\\/index\\.js";`));
         assert.match(registry, new RegExp(`\\{ version: "1\\.0\\.${patch}", handler: durableSessionOrchestration_1_0_${patch} \\}`));
         assert.match(read(`orchestration_1_0_${patch}/runtime.ts`), new RegExp(`CURRENT_ORCHESTRATION_VERSION = "1\\.0\\.${patch}";`));

@@ -347,6 +347,11 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSessionId,
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            sessionsById: state.sessions.byId,
+            historyBySessionId: state.history.bySessionId,
+            executionHistoryBySessionId: state.executionHistory?.bySessionId || null,
+            workflowOverviewBySessionId: state.workflowOverview?.bySessionId || null,
+            workflowExecutionsBySessionId: state.workflowExecutions?.bySessionId || null,
             activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages (and tag the owner) in shared sessions.
@@ -361,10 +366,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
     }, shallowEqualObject);
     const contentWidth = Math.max(20, width - 4);
     const selectorState = React.useMemo(() => {
-        const historyMap = new Map();
-        if (chatView.activeSessionId && chatView.activeHistory) {
-            historyMap.set(chatView.activeSessionId, chatView.activeHistory);
-        }
         return {
             branding: chatView.branding,
             auth: { principal: chatView.authPrincipal },
@@ -375,10 +376,19 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             ui: {},
             sessions: {
                 activeSessionId: chatView.activeSessionId,
-                byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
+                byId: chatView.sessionsById,
             },
             history: {
-                bySessionId: historyMap,
+                bySessionId: chatView.historyBySessionId,
+            },
+            executionHistory: {
+                bySessionId: chatView.executionHistoryBySessionId || {},
+            },
+            workflowOverview: {
+                bySessionId: chatView.workflowOverviewBySessionId || {},
+            },
+            workflowExecutions: {
+                bySessionId: chatView.workflowExecutionsBySessionId || {},
             },
             // The queued-prompt overlay reads state.outbox; without it here the
             // TUI ChatPane's synthetic selectorState always saw an empty outbox
@@ -394,6 +404,11 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeHistory,
         chatView.activeSessionId,
         chatView.activeSession,
+        chatView.sessionsById,
+        chatView.historyBySessionId,
+        chatView.executionHistoryBySessionId,
+        chatView.workflowOverviewBySessionId,
+        chatView.workflowExecutionsBySessionId,
         chatView.activeOutbox,
         chatView.authPrincipal,
         chatView.branding,

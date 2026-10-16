@@ -9,7 +9,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager, agentOwnerKey, packageAgentKey } from "../../dist/session-manager.js";
+import {
+    SessionManager,
+    agentOwnerKey,
+    packageAgentKey,
+    packageCopyKey,
+} from "../../dist/session-manager.js";
 import { resolveTopLevelAgentConfig } from "../../dist/orchestration/runtime.js";
 import { PilotSwarmClient } from "../../dist/client.js";
 
@@ -25,6 +30,7 @@ const tool = (name, result = name, description = name) => ({
 });
 const copy = (id, prompt, { owner = null, tools = ["catalog"], version = "1" } = {}) => ({
     prompt, toolNames: tools, kind: "app-agent", packageId: id,
+    packageVersionId: `version-${version}`, packageActive: true,
     packageScope: owner ? "user" : "shared", packageOwner: owner,
     descriptor: { layerKind: "agent", layerId: id, name: "analyst", schemaVersion: "3", version, type: "app" },
 });
@@ -38,6 +44,7 @@ function fixture(t, { owner = ALICE, hydrate = false } = {}) {
         frameworkBasePrompt: "FRAMEWORK", appDefaultPrompt: "APP DEFAULT",
         frameworkBaseToolNames: ["framework_tool"], appDefaultToolNames: ["app_tool"],
         agentPromptLookup: {}, agentMcpServers: {}, baseMcpServers: { base: { type: "http", url: "https://base.example" } },
+        packageSkillsByPackage: new Map(),
     };
     const persist = hydrate ? {
         exists: async () => true,
@@ -71,12 +78,12 @@ function fixture(t, { owner = ALICE, hydrate = false } = {}) {
         if (copies.length) defaults.agentPromptLookup.analyst = { ...copies[0], copies };
         else delete defaults.agentPromptLookup.analyst;
         for (const key of Object.keys(defaults.agentMcpServers)) delete defaults.agentMcpServers[key];
-        if (shared) defaults.agentMcpServers[packageAgentKey(shared.packageId, "analyst")] = { specialist: { type: "http", url: sharedMcp } };
-        if (privateCopy) defaults.agentMcpServers[packageAgentKey(privateCopy.packageId, "analyst")] = { specialist: { type: "http", url: privateMcp } };
+        if (shared) defaults.agentMcpServers[packageAgentKey(shared.packageId, "analyst", shared.packageVersionId)] = { specialist: { type: "http", url: sharedMcp } };
+        if (privateCopy) defaults.agentMcpServers[packageAgentKey(privateCopy.packageId, "analyst", privateCopy.packageVersionId)] = { specialist: { type: "http", url: privateMcp } };
         const staticTools = [tool("framework_tool"), tool("app_tool"), ...extraStatic];
         const byPackage = new Map();
-        if (shared) byPackage.set(shared.packageId, new Map(sharedTools.map(t => [t.name, t])));
-        if (privateCopy) byPackage.set(privateCopy.packageId, new Map(privateTools.map(t => [t.name, t])));
+        if (shared) byPackage.set(packageCopyKey(shared.packageId, shared.packageVersionId), new Map(sharedTools.map(t => [t.name, t])));
+        if (privateCopy) byPackage.set(packageCopyKey(privateCopy.packageId, privateCopy.packageVersionId), new Map(privateTools.map(t => [t.name, t])));
         manager.setToolRegistry(new Map([...staticTools, ...sharedTools, ...privateTools].map(t => [t.name, t])), {
             byPackage, staticNames: new Set(staticTools.map(t => t.name)),
         });
@@ -110,6 +117,58 @@ for (const mode of ["create", "hydrate"]) {
         assert.ok(declaration(sdk, "spawn_agent"));
     });
 }
+
+test("an exact package version pin selects one immutable prompt, tool, MCP, and skill copy", async t => {
+    const h = fixture(t);
+    const active = copy("shared-package", "ACTIVE INSTRUCTIONS", { version: "2" });
+    const pinned = {
+        ...copy("shared-package", "PINNED INSTRUCTIONS", { version: "1" }),
+        packageActive: false,
+    };
+    h.defaults.agentPromptLookup.analyst = {
+        ...active,
+        copies: [pinned, active],
+    };
+    h.defaults.agentMcpServers = {
+        [packageAgentKey("shared-package", "analyst", "version-1")]: {
+            specialist: { type: "http", url: "https://pinned.example" },
+        },
+        [packageAgentKey("shared-package", "analyst", "version-2")]: {
+            specialist: { type: "http", url: "https://active.example" },
+        },
+    };
+    h.defaults.packageSkillsByPackage.set(
+        packageCopyKey("shared-package", "version-1"),
+        [{ name: "review", description: "pinned", prompt: "PINNED SKILL" }],
+    );
+    h.manager.setToolRegistry(new Map(), {
+        byPackage: new Map([
+            [
+                packageCopyKey("shared-package", "version-1"),
+                new Map([["catalog", tool("catalog", "pinned-handler")]]),
+            ],
+            [
+                packageCopyKey("shared-package", "version-2"),
+                new Map([["catalog", tool("catalog", "active-handler")]]),
+            ],
+        ]),
+        staticNames: new Set(),
+    });
+
+    const session = await h.manager.getOrCreate("pinned-child", {
+        ...named,
+        boundAgentPackageVersionId: "version-1",
+    }, { turnIndex: 0 });
+    const sdk = h.calls.at(-1).config;
+    assert.match(await prompt(sdk), /PINNED INSTRUCTIONS/);
+    assert.doesNotMatch(await prompt(sdk), /ACTIVE INSTRUCTIONS/);
+    assert.equal(await handler(session, "catalog")(), "pinned-handler");
+    assert.equal(sdk.mcpServers.specialist.url, "https://pinned.example");
+    assert.deepEqual(
+        await h.manager._skillCatalogForSession("pinned-child"),
+        [{ name: "review", description: "pinned", prompt: "PINNED SKILL" }],
+    );
+});
 
 test("private binding rechecks ownership on a different worker; never falls back to the shared copy", async t => {
     const alice = fixture(t);

@@ -1723,6 +1723,8 @@ export class PilotSwarmUiController {
         this.sessionHistoryLoads = new Map();
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
+        this.workflowOverviewLoads = new Map();
+        this.workflowExecutionLoads = new Map();
         this.outboxFlushPromises = new Map();
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
@@ -2672,6 +2674,8 @@ export class PilotSwarmUiController {
         this.sessionRefreshTimer = null;
         this.sessionHistoryExpansionLoads.clear();
         this.sessionOrchestrationStatsLoads.clear();
+        this.workflowOverviewLoads.clear();
+        this.workflowExecutionLoads.clear();
         this.detachActiveSession();
         this.detachLogStream();
         await this.transport.stop();
@@ -5928,6 +5932,21 @@ export class PilotSwarmUiController {
             this.ensureSessionHistory(sessionId, { force: true }),
             this.syncSessionDetail(sessionId).catch(() => {}),
         ]);
+        const selectedSession = this.getState().sessions.byId[sessionId] || null;
+        const workflowSessionId = selectedSession?.sessionKind === "workflow"
+            ? sessionId
+            : selectedSession?.parentSessionId
+                && this.getState().sessions.byId[selectedSession.parentSessionId]?.sessionKind === "workflow"
+                ? selectedSession.parentSessionId
+                : null;
+        if (workflowSessionId) {
+            await this.ensureWorkflowContextForSession(sessionId, { force: true }).catch((error) => {
+                this.dispatch({
+                    type: "ui/status",
+                    text: `Could not load workflow details: ${error?.message || error}`,
+                });
+            });
+        }
         if (this.navigationGeneration !== navigationGeneration
             || this.getState().sessions.activeSessionId !== sessionId) return;
         this.attachActiveSession(sessionId);
@@ -5939,6 +5958,137 @@ export class PilotSwarmUiController {
         // one indexed limit-1 row is noise against the burst above.
         this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
         this.ensureCanvasSnapshot(sessionId).catch(() => {});
+    }
+
+    async ensureWorkflowContextForSession(sessionId, { force = false } = {}) {
+        const state = this.getState();
+        const session = state.sessions.byId[sessionId] || null;
+        const workflowSessionId = session?.sessionKind === "workflow"
+            ? sessionId
+            : session?.parentSessionId
+                && state.sessions.byId[session.parentSessionId]?.sessionKind === "workflow"
+                ? session.parentSessionId
+                : null;
+        if (!workflowSessionId) return null;
+        const [overview, executions, executionHistory] = await Promise.all([
+            this.ensureWorkflowOverview(workflowSessionId, { force }),
+            this.ensureWorkflowExecutions(workflowSessionId, { force }),
+            this.ensureExecutionHistory(workflowSessionId, { force }),
+            workflowSessionId !== sessionId
+                ? this.ensureExecutionHistory(sessionId, { force })
+                : null,
+        ]);
+        if (workflowSessionId === sessionId) {
+            // Child transcripts are supplementary detail. Load them in the
+            // background so large or long-running workflows do not block the
+            // parent session from becoming interactive.
+            this.ensureWorkflowChildHistories(workflowSessionId).catch(() => {});
+        }
+        return { workflowSessionId, overview, executions, executionHistory };
+    }
+
+    async ensureWorkflowOverview(sessionId, { force = false } = {}) {
+        if (!sessionId || typeof this.transport.getWorkflowOverview !== "function") return null;
+        if (this.workflowOverviewLoads.has(sessionId)) return this.workflowOverviewLoads.get(sessionId);
+        const existing = this.getState().workflowOverview?.bySessionId?.[sessionId];
+        if (!force && existing?.loadState === "loaded") return existing.data ?? null;
+
+        this.dispatch({
+            type: "workflowOverview/loading",
+            sessionId,
+            preserveData: existing?.loadState === "loaded",
+        });
+        const pending = this.transport.getWorkflowOverview(sessionId);
+        this.workflowOverviewLoads.set(sessionId, pending);
+        try {
+            const overview = await pending;
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowOverview/loaded",
+                    sessionId,
+                    overview,
+                    loadedAt: Date.now(),
+                });
+            }
+            return overview;
+        } catch (error) {
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowOverview/failed",
+                    sessionId,
+                    error: error?.message || String(error),
+                });
+            }
+            throw error;
+        } finally {
+            if (this.workflowOverviewLoads.get(sessionId) === pending) {
+                this.workflowOverviewLoads.delete(sessionId);
+            }
+        }
+    }
+
+    async ensureWorkflowExecutions(sessionId, { force = false } = {}) {
+        if (!sessionId || typeof this.transport.listWorkflowExecutions !== "function") return [];
+        if (this.workflowExecutionLoads.has(sessionId)) return this.workflowExecutionLoads.get(sessionId);
+        const existing = this.getState().workflowExecutions?.bySessionId?.[sessionId];
+        if (!force && existing?.loadState === "loaded") return existing.data ?? [];
+
+        this.dispatch({
+            type: "workflowExecutions/loading",
+            sessionId,
+            preserveData: existing?.loadState === "loaded",
+        });
+        const pending = this.transport.listWorkflowExecutions(sessionId);
+        this.workflowExecutionLoads.set(sessionId, pending);
+        try {
+            const executions = await pending;
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowExecutions/loaded",
+                    sessionId,
+                    executions,
+                    loadedAt: Date.now(),
+                });
+            }
+            return executions;
+        } catch (error) {
+            if (this.getState().sessions.byId[sessionId]) {
+                this.dispatch({
+                    type: "workflowExecutions/failed",
+                    sessionId,
+                    error: error?.message || String(error),
+                });
+            }
+            throw error;
+        } finally {
+            if (this.workflowExecutionLoads.get(sessionId) === pending) {
+                this.workflowExecutionLoads.delete(sessionId);
+            }
+        }
+    }
+
+    async ensureWorkflowChildHistories(sessionId, { force = false } = {}) {
+        const state = this.getState();
+        const executions = state.workflowExecutions?.bySessionId?.[sessionId]?.data;
+        if (!Array.isArray(executions) || executions.length === 0) return [];
+        const childSessionIds = [...new Set(executions
+            .map(execution => execution?.childSessionId)
+            .filter(childSessionId => childSessionId && state.sessions.byId[childSessionId]))];
+        const histories = new Array(childSessionIds.length);
+        let nextIndex = 0;
+        const workerCount = Math.min(6, childSessionIds.length);
+        await Promise.all(Array.from({ length: workerCount }, async () => {
+            while (nextIndex < childSessionIds.length) {
+                const index = nextIndex++;
+                const childSessionId = childSessionIds[index];
+                const [history] = await Promise.all([
+                    this.ensureSessionHistory(childSessionId, { force }),
+                    this.ensureExecutionHistory(childSessionId, { force }),
+                ]);
+                histories[index] = history;
+            }
+        }));
+        return histories;
     }
 
     /**
@@ -6587,6 +6737,10 @@ export class PilotSwarmUiController {
         const patch = buildSessionMergePatch(previousSession, session);
         if (patch || previousSession?.rowVisualStatusCandidate) {
             this.dispatch({ type: "sessions/merged", session: patch || { sessionId } });
+        }
+        const currentSession = this.getState().sessions.byId[sessionId] || session;
+        if (this.getState().sessions.activeSessionId === sessionId) {
+            this.ensureWorkflowContextForSession(sessionId, { force: true }).catch(() => {});
         }
         this.maybeFlushQueuedOutbox(sessionId, session);
     }
@@ -9405,6 +9559,13 @@ export class PilotSwarmUiController {
             if (!created?.sessionId) return;
             sessionId = created.sessionId;
             activeSession = this.getState().sessions.byId[sessionId] || null;
+        }
+        if (activeSession?.sessionKind === "workflow") {
+            this.dispatch({
+                type: "ui/status",
+                text: "Workflow sessions are controller-backed and do not accept chat messages.",
+            });
+            return;
         }
 
         // Empty Enter on a session with pending outbox items forces an immediate
