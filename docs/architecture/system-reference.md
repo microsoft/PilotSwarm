@@ -777,6 +777,9 @@ If the wait depends on node-local state, the agent can instead call `wait_on_wor
 5. orchestration enters waiting state and schedules a durable timer for 60s
 6. if a user message arrives first, it interrupts the wait and is delivered immediately
 7. if the timer fires, orchestration continueAsNew() with a synthetic system wake-up prompt
+   (1.0.82+: first, if the wake-up carries nothing else, runCronPrecheck asks the worker's
+   registered precheck; an enforced skip records session.cron_precheck and re-arms the
+   timer without a model turn)
 8. the next completed turn re-arms cron automatically until the agent calls cron(action="cancel")
 ```
 

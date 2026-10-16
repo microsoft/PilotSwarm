@@ -916,6 +916,8 @@ export interface PilotSwarmSessionInfo {
 export interface CronSchedule {
     intervalSeconds: number;
     reason: string;
+    /** 1.0.82: consecutive wake-ups a cron precheck skipped since this schedule's last model turn. */
+    precheckSkips?: number;
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────

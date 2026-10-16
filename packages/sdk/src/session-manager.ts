@@ -792,6 +792,8 @@ export class SessionManager {
     private featureFlags: FeatureFlagCache | null = null;
     /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
     private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
+    /** Worker-registered cron prechecks, in registration order. */
+    private cronPrechecks: import("./cron-precheck.js").CronPrecheckRegistration[] = [];
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1192,6 +1194,17 @@ export class SessionManager {
     /** The worker's hub for activity registration, or null when unavailable. */
     getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
         return this.turnControlHub;
+    }
+
+    /** Replace a same-named precheck or append a new one. */
+    addCronPrecheck(registration: import("./cron-precheck.js").CronPrecheckRegistration): void {
+        const existing = this.cronPrechecks.findIndex((entry) => entry.name === registration.name);
+        if (existing >= 0) this.cronPrechecks[existing] = registration;
+        else this.cronPrechecks.push(registration);
+    }
+
+    getCronPrechecks(): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
+        return this.cronPrechecks;
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {

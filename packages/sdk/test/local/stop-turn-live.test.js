@@ -80,7 +80,7 @@ async function testStopsRunningTurnMidFlight(env, { legacy = false } = {}) {
             assert(started, "test_block tool never started — cannot exercise mid-flight stop");
             const version = await sessionOrchestrationVersion(client, session.sessionId);
             console.log(`  Turn is mid-flight (blocking tool executing) on orchestration ${version}. Stopping…`);
-            assertEqual(version, legacy ? "1.0.80" : "1.0.81", "session runs the intended orchestration version");
+            assertEqual(version, legacy ? "1.0.80" : "1.0.82", "session runs the intended orchestration version");
             if (!legacy) {
                 const detail = await mgmt.getSession(session.sessionId);
                 assertEqual(detail.acceptsTurnControl, true, "a 1.0.81 turn accepts controls while it runs");

@@ -444,6 +444,11 @@ workers report applied revisions/capability in their `feature-flags` state.
 the portal and the TUI. It is off by default and users cannot override it until
 an operator allows it (`allowUserOverride` on the cluster setting).
 
+`sessions.cron_precheck_skip` lets a worker-registered cron precheck skip an
+empty cron wake-up without calling the model. It is off by default and
+operator-controlled; while it is off, prechecks run in shadow mode only. See
+[Cron Prechecks](../developer/building/sdk-apps.md#cron-prechecks).
+
 The SDK management client exposes the same operation names with a trusted
 `FeatureViewer` first argument. Web clients derive the viewer from authentication.
 MCP tools use snake case (for example `set_cluster_feature_flag`). Direct MCP mode

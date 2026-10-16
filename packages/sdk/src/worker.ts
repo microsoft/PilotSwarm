@@ -1,7 +1,8 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
+import { AGENT_HANDOFF_CAPABILITY, CRON_PRECHECK_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
+import { validateCronPrecheckRegistration, type CronPrecheckRegistration } from "./cron-precheck.js";
 import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
@@ -546,6 +547,20 @@ export class PilotSwarmWorker {
     }
 
     /**
+     * Register cron prechecks: application code that runs when an interval
+     * `cron` schedule of a matching agent fires, before the model is called.
+     * A `skip` answer is enforced only while the `sessions.cron_precheck_skip`
+     * feature is on for the session owner; otherwise it is recorded as a
+     * shadow decision and the model turn runs. Register the same prechecks on
+     * every worker: the check runs on whichever worker takes the activity, and
+     * a worker without a match runs the model turn.
+     */
+    registerCronPrechecks(registrations: CronPrecheckRegistration[]): void {
+        const validated = registrations.map(validateCronPrecheckRegistration);
+        for (const registration of validated) this.sessionManager.addCronPrecheck(registration);
+    }
+
+    /**
      * SessionManager resolves tool names against one merged map: statically
      * registered tools win over package tools on a name collision (the
      * static registration is deployment code; a package must not shadow it).
@@ -874,7 +889,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, CRON_PRECHECK_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,

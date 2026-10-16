@@ -253,6 +253,53 @@ For remote mode:
 - the client does not execute tools
 - blob storage is recommended if you want reliable dehydration across nodes
 
+## Cron Prechecks
+
+An agent that polls on a `cron` schedule pays for a full model turn on every
+wake-up, including the many that only find nothing to do. A cron precheck is
+worker code that runs first and answers whether the cycle has work:
+
+```ts
+worker.registerCronPrechecks([{
+  name: "job-queue",
+  agents: ["job-poller"],              // agent ids from the session catalog
+  reasons: ["poll the job queue"],     // optional: exact cron reasons
+  timeoutMs: 10_000,                   // optional, at most 60s
+  maxConsecutiveSkips: 12,             // optional: run the model at least every 13th cycle
+  check: async ({ sessionId, reason, consecutiveSkips, signal }) => {
+    const pending = await countEligibleJobs({ signal });
+    return pending > 0
+      ? { action: "run", detail: `${pending} jobs` }
+      : { action: "skip", detail: "queue empty" };
+  },
+}]);
+```
+
+When an interval `cron` schedule of a matching agent fires (orchestration
+1.0.82 and later), the orchestration runs the precheck in an activity before
+any hydration or model call. A `skip` answer records the decision and re-arms
+the same schedule; the model sees nothing for that cycle.
+
+- **Shadow, then enforce.** Every decision is recorded as a
+  `session.cron_precheck` event (`precheck`, `outcome`, `skipped`, `enforced`,
+  `consecutiveSkips`, `durationMs`, `detail`). A `skip` is enforced only while
+  the `sessions.cron_precheck_skip` feature flag is on for the session owner;
+  it is off and operator-controlled by default. Register the precheck first,
+  compare its decisions with the turns that ran, then turn the flag on.
+- **Fail open.** A thrown, timed-out or malformed answer, a worker without a
+  matching registration, or unresolved feature configuration runs the model
+  turn as before.
+- **Only an empty wake-up is eligible.** A wake-up that carries child updates,
+  a held note, carried steers or stashed prompts runs the model without
+  asking. User messages are never affected.
+- **Keep it read-only and bounded.** The check runs on whichever worker takes
+  the activity, so register the same prechecks on every worker. It should
+  answer from authoritative state; return `run` when unsure.
+- If the agent's turn renews a lease or heartbeat, set `maxConsecutiveSkips`
+  so the model still runs often enough, or renew it in the check.
+
+`cron_at` wall-clock schedules are not prechecked.
+
 ## Layered-App Checklist
 
 For apps you expect other LLMs or engineers to extend, keep these layers separate:

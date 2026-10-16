@@ -31,10 +31,10 @@ import { fileURLToPath } from "node:url";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 const read = (rel) => readFileSync(join(SRC, rel), "utf8");
 
-test("the latest version is 1.0.81", () => {
+test("the latest version is 1.0.82", () => {
     assert.match(
         read("orchestration-version.ts"),
-        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.81";/,
+        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.82";/,
     );
 });
 
@@ -54,12 +54,13 @@ test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
     );
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_73 \} from "\.\/orchestration_1_0_73\/index\.js";/);
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_80 \} from "\.\/orchestration_1_0_80\/index\.js";/);
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_81 \} from "\.\/orchestration\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_81 \} from "\.\/orchestration_1_0_81\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_82 \} from "\.\/orchestration\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.70", handler: durableSessionOrchestration_1_0_70 \}/);
     assert.match(registry, /\{ version: "1\.0\.71", handler: durableSessionOrchestration_1_0_71 \}/);
     assert.match(
         registry,
-        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_81 \}/,
+        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_82 \}/,
     );
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_72 \} from "\.\/orchestration_1_0_72\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.72", handler: durableSessionOrchestration_1_0_72 \}/);
@@ -103,7 +104,7 @@ test("a frozen orchestration self-identifies with its OWN version", () => {
         read("orchestration/runtime.ts"),
         /export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;/,
     );
-    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_81\(/);
+    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_82\(/);
     assert.match(read("orchestration_1_0_73/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
     assert.match(read("orchestration_1_0_71/index.ts"), /export function\* durableSessionOrchestration_1_0_71\(/);
     assert.match(read("orchestration_1_0_70/index.ts"), /export function\* durableSessionOrchestration_1_0_70\(/);
