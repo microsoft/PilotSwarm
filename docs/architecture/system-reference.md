@@ -779,7 +779,7 @@ If the wait depends on node-local state, the agent can instead call `wait_on_wor
 7. if the timer fires, orchestration continueAsNew() with a synthetic system wake-up prompt
    (1.0.82+: first, if the wake-up carries nothing else, runCronPrecheck asks the worker's
    registered precheck; an enforced skip records session.cron_precheck and re-arms the
-   timer without a model turn)
+   timer without a model turn; with no registered precheck the wake-up runs as before)
 8. the next completed turn re-arms cron automatically until the agent calls cron(action="cancel")
 ```
 

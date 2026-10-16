@@ -4,48 +4,32 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-    CRON_PRECHECK_SKIP_FEATURE,
-    cronPrecheckSkipEnforced,
     evaluateCronPrecheck,
     findCronPrecheck,
     validateCronPrecheckRegistration,
 } from "../../src/cron-precheck.ts";
-import { FEATURE_FLAGS } from "../../src/feature-flags.ts";
 
-const owner = { provider: "test", subject: "alice" };
-const flags = (enabled) => ({
-    resolve: (key, featureOwner, options) => {
-        expect(key).toBe(CRON_PRECHECK_SKIP_FEATURE);
-        expect(options).toEqual({ fallback: false });
-        return { enabled: enabled && featureOwner?.subject === "alice", source: "cluster", revision: "1", stale: false };
-    },
-});
 const input = { sessionId: "s1", reason: "check the work queue", intervalSeconds: 300, consecutiveSkips: 0 };
-const session = { agentId: "work-poller", owner };
-const registration = (check, extra = {}) => validateCronPrecheckRegistration({ name: "queue", agents: ["work-poller"], check, ...extra });
+const session = { agentId: "work-poller" };
+// Enforced unless a test says otherwise; the shadow test omits enforce.
+const registration = (check, extra = {}) => validateCronPrecheckRegistration({ name: "queue", agents: ["work-poller"], enforce: true, check, ...extra });
 
 describe("cron precheck evaluation", () => {
-    it("defines an operator-controlled flag that is off by default", () => {
-        expect(FEATURE_FLAGS[CRON_PRECHECK_SKIP_FEATURE]).toMatchObject({
-            defaultEnabled: false,
-            defaultAllowUserOverride: false,
-            requiredCapability: null,
-        });
-    });
-
-    it("records a skip without enforcing it while the flag is off (shadow)", async () => {
+    it("records a skip without enforcing it by default (shadow)", async () => {
         const { result, event } = await evaluateCronPrecheck({
-            registrations: [registration(() => ({ action: "skip", detail: "queue empty" }))],
-            input, session, featureFlags: flags(false),
+            registrations: [validateCronPrecheckRegistration({
+                name: "queue", agents: ["work-poller"], check: () => ({ action: "skip", detail: "queue empty" }),
+            })],
+            input, session,
         });
         expect(result).toEqual({ skip: false, outcome: "skip", precheck: "queue", enforced: false });
         expect(event).toMatchObject({ precheck: "queue", outcome: "skip", skipped: false, enforced: false, detail: "queue empty" });
     });
 
-    it("enforces a skip while the flag is on for the owner", async () => {
+    it("enforces a skip for a registration with enforce: true", async () => {
         const { result, event } = await evaluateCronPrecheck({
             registrations: [registration(() => ({ action: "skip" }))],
-            input, session, featureFlags: flags(true),
+            input, session,
         });
         expect(result).toEqual({ skip: true, outcome: "skip", precheck: "queue", enforced: true });
         expect(event).toMatchObject({ skipped: true });
@@ -55,7 +39,7 @@ describe("cron precheck evaluation", () => {
         let seen;
         await evaluateCronPrecheck({
             registrations: [registration((context) => { seen = context; return { action: "run" }; })],
-            input: { ...input, consecutiveSkips: 3 }, session, featureFlags: flags(true),
+            input: { ...input, consecutiveSkips: 3 }, session,
         });
         expect(seen).toMatchObject({ sessionId: "s1", agentId: "work-poller", reason: input.reason, intervalSeconds: 300, consecutiveSkips: 3 });
         expect(seen.signal).toBeInstanceOf(AbortSignal);
@@ -64,21 +48,21 @@ describe("cron precheck evaluation", () => {
     it("runs the model on a thrown, invalid or timed-out handler", async () => {
         const thrown = await evaluateCronPrecheck({
             registrations: [registration(() => { throw new Error("backend down"); })],
-            input, session, featureFlags: flags(true),
+            input, session,
         });
         expect(thrown.result).toMatchObject({ skip: false, outcome: "error" });
         expect(thrown.event.detail).toBe("backend down");
 
         const invalid = await evaluateCronPrecheck({
             registrations: [registration(() => ({ action: "maybe" }))],
-            input, session, featureFlags: flags(true),
+            input, session,
         });
         expect(invalid.result).toMatchObject({ skip: false, outcome: "invalid" });
 
         let aborted = false;
         const timeout = await evaluateCronPrecheck({
             registrations: [registration(({ signal }) => new Promise(() => { signal.addEventListener("abort", () => { aborted = true; }); }), { timeoutMs: 20 })],
-            input, session, featureFlags: flags(true),
+            input, session,
         });
         expect(timeout.result).toMatchObject({ skip: false, outcome: "timeout" });
         expect(aborted).toBe(true);
@@ -88,7 +72,7 @@ describe("cron precheck evaluation", () => {
         let called = false;
         const { result } = await evaluateCronPrecheck({
             registrations: [registration(() => { called = true; return { action: "skip" }; }, { maxConsecutiveSkips: 2 })],
-            input: { ...input, consecutiveSkips: 2 }, session, featureFlags: flags(true),
+            input: { ...input, consecutiveSkips: 2 }, session,
         });
         expect(result).toMatchObject({ skip: false, outcome: "max_skips" });
         expect(called).toBe(false);
@@ -97,12 +81,12 @@ describe("cron precheck evaluation", () => {
     it("is unbound for other agents, other reasons, or a missing session", async () => {
         const regs = [registration(() => ({ action: "skip" }), { reasons: ["check the work queue"] })];
         for (const [sess, inp] of [
-            [{ agentId: "other", owner }, input],
+            [{ agentId: "other" }, input],
             [session, { ...input, reason: "different" }],
             [null, input],
-            [{ agentId: null, owner }, input],
+            [{ agentId: null }, input],
         ]) {
-            const { result, event } = await evaluateCronPrecheck({ registrations: regs, input: inp, session: sess, featureFlags: flags(true) });
+            const { result, event } = await evaluateCronPrecheck({ registrations: regs, input: inp, session: sess });
             expect(result).toEqual({ skip: false, outcome: "unbound" });
             expect(event).toBeNull();
         }
@@ -114,10 +98,6 @@ describe("cron precheck evaluation", () => {
         expect(findCronPrecheck(regs, "owner:pkg:1.0.0", input.reason)).toBeNull();
     });
 
-    it("is not enforced without a feature cache", () => {
-        expect(cronPrecheckSkipEnforced(null, owner)).toBe(false);
-    });
-
     it("rejects malformed registrations", () => {
         const check = () => ({ action: "run" });
         expect(() => validateCronPrecheckRegistration({ name: "", agents: ["a"], check })).toThrow(/name/);
@@ -127,5 +107,6 @@ describe("cron precheck evaluation", () => {
         expect(() => validateCronPrecheckRegistration({ name: "x", agents: ["a"], check, timeoutMs: 60_001 })).toThrow(/timeoutMs/);
         expect(() => validateCronPrecheckRegistration({ name: "x", agents: ["a"], check, maxConsecutiveSkips: 0 })).toThrow(/maxConsecutiveSkips/);
         expect(() => validateCronPrecheckRegistration({ name: "x", agents: ["a"], check, reasons: [""] })).toThrow(/reasons/);
+        expect(() => validateCronPrecheckRegistration({ name: "x", agents: ["a"], check, enforce: "yes" })).toThrow(/enforce/);
     });
 });

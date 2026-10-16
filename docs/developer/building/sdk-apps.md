@@ -264,6 +264,7 @@ worker.registerCronPrechecks([{
   name: "job-queue",
   agents: ["job-poller"],              // agent ids from the session catalog
   reasons: ["poll the job queue"],     // optional: exact cron reasons
+  enforce: true,                       // optional: default false records decisions only (shadow)
   timeoutMs: 10_000,                   // optional, at most 60s
   maxConsecutiveSkips: 12,             // optional: run the model at least every 13th cycle
   check: async ({ sessionId, reason, consecutiveSkips, signal }) => {
@@ -282,13 +283,14 @@ the same schedule; the model sees nothing for that cycle.
 
 - **Shadow, then enforce.** Every decision is recorded as a
   `session.cron_precheck` event (`precheck`, `outcome`, `skipped`, `enforced`,
-  `consecutiveSkips`, `durationMs`, `detail`). A `skip` is enforced only while
-  the `sessions.cron_precheck_skip` feature flag is on for the session owner;
-  it is off and operator-controlled by default. Register the precheck first,
-  compare its decisions with the turns that ran, then turn the flag on.
-- **Fail open.** A thrown, timed-out or malformed answer, a worker without a
-  matching registration, or unresolved feature configuration runs the model
-  turn as before.
+  `consecutiveSkips`, `durationMs`, `detail`). A `skip` skips the model turn
+  only for a registration with `enforce: true`; without it the precheck runs
+  in shadow mode and the model turn runs. Register the precheck in shadow
+  mode first, compare its decisions with the turns that ran, then set
+  `enforce: true` (for example from deployment configuration). Turning
+  enforcement off again needs a configuration change and a worker restart.
+- **Fail open.** A thrown, timed-out or malformed answer, or a worker without
+  a matching registration, runs the model turn as before.
 - **Only an empty wake-up is eligible.** A wake-up that carries child updates,
   a held note, carried steers or stashed prompts runs the model without
   asking. User messages are never affected.

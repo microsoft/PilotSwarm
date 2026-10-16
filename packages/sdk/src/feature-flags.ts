@@ -21,13 +21,6 @@ export const FEATURE_FLAGS = {
         defaultAllowUserOverride: false,
         requiredCapability: null,
     },
-    "sessions.cron_precheck_skip": {
-        displayName: "Skip idle cron turns",
-        description: "Let a worker-registered cron precheck skip a scheduled cron wake-up that has no work, so the model is not called for that cycle. Without it, prechecks run in shadow mode only and every wake-up reaches the model. Operator-controlled.",
-        defaultEnabled: false,
-        defaultAllowUserOverride: false,
-        requiredCapability: null,
-    },
     "debug.enable_model_event_logging": {
         displayName: "Model event logging",
         description: "Record the Copilot CLI's model trace events (model.message, model.messages_snapshot, model.tool_execution, model.model_call_success) in the session event log. They repeat the whole conversation on every turn and are large; turn on only for debugging.",

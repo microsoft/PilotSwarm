@@ -549,9 +549,9 @@ export class PilotSwarmWorker {
     /**
      * Register cron prechecks: application code that runs when an interval
      * `cron` schedule of a matching agent fires, before the model is called.
-     * A `skip` answer is enforced only while the `sessions.cron_precheck_skip`
-     * feature is on for the session owner; otherwise it is recorded as a
-     * shadow decision and the model turn runs. Register the same prechecks on
+     * A `skip` answer skips the model turn only for a registration with
+     * `enforce: true`; otherwise it is recorded as a shadow decision and the
+     * model turn runs. Register the same prechecks on
      * every worker: the check runs on whichever worker takes the activity, and
      * a worker without a match runs the model turn.
      */

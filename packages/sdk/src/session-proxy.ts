@@ -6187,8 +6187,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const { result, event } = await evaluateCronPrecheck({
             registrations,
             input,
-            session: row ? { agentId: row.agentId ?? null, owner: row.owner ?? null } : null,
-            featureFlags: sessionManager.getFeatureFlagCache?.() ?? null,
+            session: row ? { agentId: row.agentId ?? null } : null,
         });
         if (event) {
             activityCtx.traceInfo(

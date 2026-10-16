@@ -9,21 +9,15 @@
  * sees a skipped cycle: the orchestration records the decision and re-arms the
  * same schedule.
  *
- * Rollout is two-staged:
- *   - A registered precheck always runs and its decision is recorded as a
- *     `session.cron_precheck` event (shadow mode).
- *   - The decision is enforced only while the `sessions.cron_precheck_skip`
- *     feature flag is on for the session owner. Off, unresolved or stale
- *     configuration means the model turn runs as before.
+ * Rollout is two-staged, per registration:
+ *   - By default (`enforce` unset or false) a registered precheck runs and its
+ *     decision is recorded as a `session.cron_precheck` event, but the model
+ *     turn still runs (shadow mode).
+ *   - With `enforce: true`, a `skip` answer skips the model turn.
  *
  * Fail open: a missing match, a thrown or timed-out handler, or an invalid
  * answer all run the normal model turn.
  */
-
-import type { FeatureFlagCache } from "./feature-flag-cache.js";
-import type { FeatureOwner } from "./feature-flags.js";
-
-export const CRON_PRECHECK_SKIP_FEATURE = "sessions.cron_precheck_skip";
 
 export const CRON_PRECHECK_DEFAULT_TIMEOUT_MS = 10_000;
 export const CRON_PRECHECK_MAX_TIMEOUT_MS = 60_000;
@@ -57,6 +51,11 @@ export interface CronPrecheckRegistration {
     agents: string[];
     /** Optional exact cron reasons. Omitted: every interval cron of a matching agent. */
     reasons?: string[];
+    /**
+     * Skip the model turn when the check answers `skip`. Default false: the
+     * decision is only recorded (shadow mode) and the model turn runs.
+     */
+    enforce?: boolean;
     /** Handler timeout. Defaults to 10s; capped at 60s. A timeout runs the model turn. */
     timeoutMs?: number;
     /**
@@ -95,7 +94,6 @@ export interface CronPrecheckResult {
 
 export interface CronPrecheckSession {
     agentId: string | null;
-    owner?: { provider?: string | null; subject?: string | null } | null;
 }
 
 export function validateCronPrecheckRegistration(registration: CronPrecheckRegistration): CronPrecheckRegistration {
@@ -111,6 +109,9 @@ export function validateCronPrecheckRegistration(registration: CronPrecheckRegis
         throw new TypeError(`Cron precheck "${name}" reasons must be non-empty strings`);
     }
     if (typeof registration.check !== "function") throw new TypeError(`Cron precheck "${name}" requires a check function`);
+    if (registration.enforce !== undefined && typeof registration.enforce !== "boolean") {
+        throw new TypeError(`Cron precheck "${name}" enforce must be a boolean`);
+    }
     if (registration.timeoutMs !== undefined
         && (!Number.isInteger(registration.timeoutMs) || registration.timeoutMs < 1 || registration.timeoutMs > CRON_PRECHECK_MAX_TIMEOUT_MS)) {
         throw new TypeError(`Cron precheck "${name}" timeoutMs must be an integer from 1 to ${CRON_PRECHECK_MAX_TIMEOUT_MS}`);
@@ -145,18 +146,6 @@ export function findCronPrecheck(
         && (!registration.reasons || registration.reasons.includes(reason))) ?? null;
 }
 
-/** Enforcement follows the session owner's feature setting; unresolved means shadow only. */
-export function cronPrecheckSkipEnforced(
-    cache: Pick<FeatureFlagCache, "resolve"> | null | undefined,
-    owner: CronPrecheckSession["owner"],
-): boolean {
-    if (!cache) return false;
-    const featureOwner: FeatureOwner | null = owner?.provider && owner?.subject
-        ? { provider: owner.provider, subject: owner.subject }
-        : null;
-    return cache.resolve(CRON_PRECHECK_SKIP_FEATURE, featureOwner, { fallback: false }).enabled === true;
-}
-
 export interface CronPrecheckEvaluation {
     result: CronPrecheckResult;
     /** Event payload to record, or null when no precheck applies. */
@@ -171,7 +160,6 @@ export async function evaluateCronPrecheck(params: {
     registrations: readonly CronPrecheckRegistration[];
     input: CronPrecheckInput;
     session: CronPrecheckSession | null;
-    featureFlags: Pick<FeatureFlagCache, "resolve"> | null | undefined;
     now?: () => number;
 }): Promise<CronPrecheckEvaluation> {
     const { registrations, input, session } = params;
@@ -181,7 +169,7 @@ export async function evaluateCronPrecheck(params: {
     if (!registration) return { result: { skip: false, outcome: "unbound" }, event: null };
 
     const consecutiveSkips = Number.isInteger(input.consecutiveSkips) && input.consecutiveSkips! > 0 ? input.consecutiveSkips! : 0;
-    const enforced = cronPrecheckSkipEnforced(params.featureFlags, session.owner);
+    const enforced = registration.enforce === true;
     const base = { precheck: registration.name, enforced, consecutiveSkips };
 
     if (registration.maxConsecutiveSkips !== undefined && consecutiveSkips >= registration.maxConsecutiveSkips) {

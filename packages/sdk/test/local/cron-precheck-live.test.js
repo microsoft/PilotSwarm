@@ -3,9 +3,9 @@
  * timers and the Copilot CLI, with the model replaced by scripted-model.mjs so
  * every model request is counted.
  *
- *  1. Enforced (flag on): empty cycles are skipped with no model request; the
- *     first cycle the precheck reports work runs the model.
- *  2. Shadow (flag off): the precheck's skip is recorded, and the model still
+ *  1. Enforced (`enforce: true`): empty cycles are skipped with no model
+ *     request; the first cycle the precheck reports work runs the model.
+ *  2. Shadow (default): the precheck's skip is recorded, and the model still
  *     runs the cycle.
  *
  * Run: npx vitest run test/local/cron-precheck-live.test.js
@@ -14,8 +14,7 @@ import { describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 import { scriptTurns } from "../helpers/scripted-model.mjs";
-import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
-import { CRON_PRECHECK_SKIP_FEATURE } from "../../src/cron-precheck.ts";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
 
 const TIMEOUT = 240_000;
 const AGENT = "work-poller";
@@ -65,7 +64,6 @@ async function precheckEvents(env, sessionId) {
 describe("cron precheck (live)", () => {
     it("an enforced skip calls no model until the precheck reports work", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await setClusterFeature(env, CRON_PRECHECK_SKIP_FEATURE, true, { allowUserOverride: false });
         await withScriptedModel(env, { respond: script() }, async ({ client, worker, model, qualifiedModel }) => {
             let hasWork = false;
             const seen = [];
@@ -73,6 +71,7 @@ describe("cron precheck (live)", () => {
                 name: "queue",
                 agents: [AGENT],
                 reasons: [REASON],
+                enforce: true,
                 check: ({ consecutiveSkips }) => {
                     seen.push(consecutiveSkips);
                     return hasWork ? { action: "run", detail: "one job" } : { action: "skip", detail: "queue empty" };
@@ -101,7 +100,6 @@ describe("cron precheck (live)", () => {
 
     it("shadow mode records the skip and still runs the model", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await setClusterFeature(env, CRON_PRECHECK_SKIP_FEATURE, false, { allowUserOverride: false });
         await withScriptedModel(env, { respond: script() }, async ({ client, worker, model, qualifiedModel }) => {
             worker.registerCronPrechecks([{
                 name: "queue",

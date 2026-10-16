@@ -36,7 +36,6 @@ export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
-export { CRON_PRECHECK_SKIP_FEATURE } from "./cron-precheck.js";
 export type { CronPrecheckAnswer, CronPrecheckContext, CronPrecheckRegistration } from "./cron-precheck.js";
 export { FeatureStore } from "./feature-store.js";
 export { FEATURE_OPERATION_SPECS, featureToolParameters } from "./feature-tools.js";

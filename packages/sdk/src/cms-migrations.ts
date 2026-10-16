@@ -14,7 +14,6 @@ import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-def
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
-import { cronPrecheckSkipFlagMigration } from "./migrations/cron-precheck-skip-flag-0084.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -409,7 +408,6 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
-        { version: "0084", name: "cron_precheck_skip_flag", sql: cronPrecheckSkipFlagMigration(schema) },
     ];
 }
 

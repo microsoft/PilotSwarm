@@ -7,13 +7,12 @@ precheck (`worker.registerCronPrechecks`) for an agent's interval `cron`
 schedule. On orchestration 1.0.82, a wake-up that carries nothing else asks
 the precheck first; a `skip` answer re-arms the schedule without hydrating
 the session or calling the model. Decisions are recorded as
-`session.cron_precheck` events. Skips are enforced only while the new
-`sessions.cron_precheck_skip` feature flag (migration 0084; off,
-operator-controlled) is on for the session owner, so a precheck can run in
-shadow mode first. Failures, timeouts and unbound sessions run the model turn
-as before. The activity is routed by a new worker capability tag, so older
-workers never receive it during a rolling deploy. Orchestration 1.0.81 is
-frozen.
+`session.cron_precheck` events. A registration skips the model only with
+`enforce: true`; by default it runs in shadow mode, recording decisions while
+the model turn runs as before. Failures, timeouts and unbound sessions run the
+model turn as before. With no registered precheck, cron behaves as today. The
+activity is routed by a new worker capability tag, so older workers never
+receive it during a rolling deploy. Orchestration 1.0.81 is frozen.
 
 ## 0.8.3 — 2026-10-14
 
