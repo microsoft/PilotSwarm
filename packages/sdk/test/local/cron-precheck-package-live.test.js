@@ -16,6 +16,7 @@ import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 import { scriptTurns } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { FilesystemArtifactStore, publishAgentPackageDir } from "../../src/index.ts";
+import { startPrecheckMcpServer } from "../helpers/cron-precheck-mcp.mjs";
 
 const TIMEOUT = 240_000;
 const OWNER = { provider: "test", subject: "cron-precheck-package-owner" };
@@ -33,18 +34,20 @@ async function waitFor(predicate, timeoutMs, label) {
     throw new Error(`timed out waiting for ${label}`);
 }
 
-function writePackage(dir) {
+function writePackage(dir, mcpConfig) {
     fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
     fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
     fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
         name: "precheck-kit", version: "1.0.0", description: "cron precheck fixture",
     }));
+    if (mcpConfig) fs.writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify({ queue: mcpConfig }));
     fs.writeFileSync(path.join(dir, "agents", `${AGENT}.agent.md`), [
         "---",
         `name: ${AGENT}`,
         "description: Fixture poller whose queue cycle is prechecked",
-        "schemaVersion: 1",
+        `schemaVersion: ${mcpConfig ? 2 : 1}`,
         "version: 1.0.0",
+        ...(mcpConfig ? ["mcpServers:", "  - queue"] : []),
         "cronPrechecks:",
         "  - reasonPrefix: \"Run the fixture queue cycle\"",
         "    precheck: queue-gate",
@@ -60,9 +63,14 @@ function writePackage(dir) {
         "    createTools: () => [],",
         "    createCronPrechecks: () => [{",
         "        name: \"queue-gate\",",
-        "        check: async ({ sessionId, reason, consecutiveSkips }) => {",
+        "        check: async ({ sessionId, reason, consecutiveSkips, callMcpTool }) => {",
         "            state.calls.push({ sessionId, reason, consecutiveSkips });",
-        "            return state.hasWork ? { action: \"run\", detail: \"one job\" } : { action: \"skip\", detail: \"queue empty\" };",
+        ...(mcpConfig ? [
+            "            const result = await callMcpTool('queue', 'queue_status', { scope: 'both' });",
+            "            const hasWork = result.structuredContent?.hasWork;",
+            "            if (typeof hasWork !== 'boolean') throw new Error('Invalid queue result');",
+        ] : ["            const hasWork = state.hasWork;"]),
+        "            return hasWork ? { action: \"run\", detail: \"one job\" } : { action: \"skip\", detail: \"queue empty\" };",
         "        },",
         "    }],",
         "};",
@@ -72,14 +80,15 @@ function writePackage(dir) {
 }
 
 describe("package cron precheck (live)", () => {
-    it("an agent-definition binding attaches the package precheck; empty cycles call no model", { timeout: TIMEOUT }, async () => {
+    it.each([false, true])("a package precheck (MCP=%s) skips empty cycles without model calls", { timeout: TIMEOUT }, async (mcp) => {
         const env = await getEnv();
+        const fixture = mcp ? await startPrecheckMcpServer() : null;
         const state = (globalThis.__cronPrecheckFixture ??= { hasWork: false, calls: [] });
         const catalog = await createCatalog(env);
         const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
         try {
             await publishAgentPackageDir({ catalog, artifactStore }, {
-                dir: writePackage(path.join(env.baseDir, "precheck-kit")),
+                dir: writePackage(path.join(env.baseDir, "precheck-kit"), fixture?.config),
                 scope: "shared", owner: OWNER, createdBy: "fixture@test", isAdmin: false,
             });
             const respond = scriptTurns([
@@ -96,7 +105,7 @@ describe("package cron precheck (live)", () => {
                 expect(started.data).toMatchObject({ reason: REASON, precheck: "queue-gate" });
                 const armedRequests = model.sessionRequests(KICKOFF).length;
 
-                await waitFor(() => state.calls.length >= 2, 75_000, "two skipped cycles");
+                await waitForEventCount(catalog, session.sessionId, "session.cron_precheck", 2, 75_000);
                 expect(model.sessionRequests(KICKOFF).length).toBe(armedRequests);
                 expect(state.calls.slice(0, 2).map((call) => [call.sessionId, call.reason, call.consecutiveSkips])).toEqual([
                     [session.sessionId, REASON, 0],
@@ -104,6 +113,11 @@ describe("package cron precheck (live)", () => {
                 ]);
 
                 state.hasWork = true;
+                if (fixture) {
+                    expect(fixture.state.calls.length).toBeGreaterThanOrEqual(2);
+                    expect(fixture.state.calls[0]).toEqual({ name: "queue_status", arguments: { scope: "both" } });
+                    fixture.state.hasWork = true;
+                }
                 await waitFor(() => model.sessionRequests(KICKOFF).length > armedRequests, 45_000, "the model to run a cycle");
                 const events = (await catalog.getSessionEvents(session.sessionId, undefined, 500, ["session.cron_precheck"]))
                     .map((event) => event.data);
@@ -116,6 +130,7 @@ describe("package cron precheck (live)", () => {
         } finally {
             delete globalThis.__cronPrecheckFixture;
             await catalog.close();
+            if (fixture) await fixture.close();
         }
     });
 });

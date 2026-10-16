@@ -22,6 +22,16 @@ schedule without a precheck behaves exactly as today. The activity is routed by
 a new worker capability tag, so older workers never receive it during a
 rolling deploy. Orchestration 1.0.81 is frozen.
 
+**Prechecks can call MCP directly, without a model.** The callback receives
+`callMcpTool(server, tool, arguments)` backed by the session's current
+base/bound-agent grants and authorized persisted capability selections.
+Package provenance, owner visibility and server tool allowlists still apply.
+HTTP, SSE and stdio use configured headers/env/cwd; no model session or tool
+catalog is hydrated. Each call closes its connection, honors the precheck's
+abort signal, and fails open on connection, protocol or tool errors. Transport
+errors recorded in events omit endpoint and credential details. Interactive
+OAuth is not initiated; unavailable credentials run the normal cycle.
+
 ## 0.8.3 — 2026-10-14
 
 **Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later

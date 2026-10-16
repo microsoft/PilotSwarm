@@ -286,6 +286,43 @@ cronPrechecks:
   when unsure. See [Cron Prechecks](developer/building/sdk-apps.md#cron-prechecks)
   for the full behavior.
 
+#### Calling MCP without a model
+
+The runtime supplies `callMcpTool(server, tool, args)` to each precheck. It
+connects directly to a server already authorized for this session; the package
+does not need to bundle an MCP client or run a CLI:
+
+```js
+export default {
+    createTools: () => [],
+    createCronPrechecks: () => [{
+        name: "queue-gate",
+        check: async ({ callMcpTool }) => {
+            const result = await callMcpTool("queue", "queue_status", { scope: "both" });
+            const hasWork = result.structuredContent?.hasWork;
+            if (typeof hasWork !== "boolean") throw new Error("Invalid queue status");
+            return { action: hasWork ? "run" : "skip" };
+        },
+    }],
+};
+```
+
+Declare `queue` in the agent's `mcpServers` and its connection in the package
+or deployment MCP configuration as usual (§6). This helper grants no new
+servers or tools: the current session owner, exact bound package and server's
+`tools` allowlist apply. It also honors authorized persisted `use_package`
+MCP selections. Configured HTTP/SSE headers and stdio env/cwd are reused, but
+the model-facing MCP connection is not reused. Each call opens and closes its
+own connection, and the precheck deadline cancels it. Await every call; the
+helper becomes unusable when the check ends. Interactive OAuth and MCP model
+sampling are not provided.
+
+Connection, protocol and MCP `isError` results throw, so the normal cycle
+runs unless the handler explicitly handles the error. Do not turn an unknown
+or failed response into `skip`. Use deterministic, preferably read-only tools;
+activity retries can repeat calls. MCP tools that internally use an LLM may
+still incur backend model cost.
+
 ## 6. MCP servers — `.mcp.json` + `mcp-servers/`
 
 `.mcp.json` maps server names to configs. Each server needs `command`

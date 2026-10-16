@@ -330,6 +330,22 @@ same schedule; the model sees nothing for that cycle.
 - If the agent's turn renews a lease or heartbeat, set `maxConsecutiveSkips`
   so the model still runs often enough, or renew it in the check.
 
+**Direct MCP checks.** The callback also receives
+`callMcpTool(server, tool, arguments)`. It invokes an MCP tool directly, without
+creating a Copilot session or loading model context. It resolves only the
+session's current base/bound-agent grants and authorized persisted capability
+selections, not the entire deployment catalog. Bound package ownership,
+`allowedAgents` and the server's `tools` allowlist remain in force.
+HTTP/SSE use configured headers; stdio uses configured command/args/env/cwd.
+Each call has a fresh connection closed on completion or precheck cancellation.
+Await calls and validate results before returning `skip`; MCP error results
+throw and transport errors omit credentials from the recorded explanation.
+The helper does not initiate interactive OAuth or offer model sampling.
+Servers that need unavailable credentials fail open. Use deterministic,
+idempotent tools: durable activity retries may repeat a call, and an MCP tool
+that itself invokes a model still has backend model cost. Package authors need
+no MCP SDK dependency; see the [package example](../../building-agent-packages.md#calling-mcp-without-a-model).
+
 `cron_at` wall-clock schedules are not prechecked.
 
 ## Layered-App Checklist

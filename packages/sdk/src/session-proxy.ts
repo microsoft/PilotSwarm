@@ -59,6 +59,7 @@ import {
 import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import { evaluateCronPrecheck, type CronPrecheckInput, type CronPrecheckResult } from "./cron-precheck.js";
+import { callCronPrecheckMcpTool } from "./cron-precheck-mcp.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
 import fs from "node:fs";
@@ -6178,6 +6179,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const { result, event } = await evaluateCronPrecheck({
             registrations: sessionManager.getCronPrechecksFor(input.packageId),
             input,
+            callMcpTool: async (signal, server, tool, args) => {
+                const servers = await sessionManager.getCronPrecheckMcpServers(input);
+                return callCronPrecheckMcpTool(servers, signal, server, tool, args);
+            },
         });
         activityCtx.traceInfo(
             `[runCronPrecheck] session=${input.sessionId} precheck=${result.precheck} outcome=${result.outcome} shadow=${result.shadow === true} skip=${result.skip}`,

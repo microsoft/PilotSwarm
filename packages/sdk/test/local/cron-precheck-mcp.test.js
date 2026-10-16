@@ -1,0 +1,190 @@
+import { describe, expect, it, vi } from "vitest";
+import { fileURLToPath } from "node:url";
+import { callCronPrecheckMcpTool } from "../../src/cron-precheck-mcp.ts";
+import { evaluateCronPrecheck } from "../../src/cron-precheck.ts";
+import { SessionManager, packageAgentKey } from "../../src/session-manager.ts";
+import { startPrecheckMcpServer } from "../helpers/cron-precheck-mcp.mjs";
+
+const input = { sessionId: "s1", precheck: "queue", reason: "poll", intervalSeconds: 300 };
+const agent = { boundAgentName: "poller", boundAgentPackageId: "shared" };
+const owner = { provider: "test", subject: "alice" };
+const serverConfig = { type: "http", url: "http://127.0.0.1:1/mcp", tools: ["queue_status"] };
+
+describe("non-LLM MCP precheck calls", () => {
+    for (const sse of [false, true]) {
+        it(`${sse ? "SSE" : "HTTP"} uses configured authentication and tool arguments`, async () => {
+            const fixture = await startPrecheckMcpServer({ sse });
+            const controller = new AbortController();
+            try {
+                const config = { ...fixture.config, headers: { Authorization: "Bearer fixture-only" } };
+                const result = await callCronPrecheckMcpTool({ queue: config }, controller.signal, "queue", "queue_status", { scope: "both" });
+                expect(result.structuredContent).toEqual({ hasWork: false });
+                expect(fixture.state.calls).toEqual([{ name: "queue_status", arguments: { scope: "both" } }]);
+                expect(fixture.state.headers.every(headers => headers.authorization === "Bearer fixture-only")).toBe(true);
+            } finally { controller.abort(); await fixture.close(); }
+        });
+    }
+
+    it("stdio uses configured cwd/env and terminates the child process", async () => {
+        const cwd = fileURLToPath(new URL("../helpers", import.meta.url));
+        const result = await callCronPrecheckMcpTool({
+            queue: {
+                command: process.execPath, args: [fileURLToPath(new URL("../helpers/cron-precheck-stdio.mjs", import.meta.url))],
+                tools: ["*"], cwd, env: { PRECHECK_FIXTURE_VALUE: "configured" },
+            },
+        }, new AbortController().signal, "queue", "queue_status");
+        const response = JSON.parse(result.content[0].text);
+        expect(response.cwd).toBe(cwd);
+        expect(response.value).toBe("configured");
+        expect(() => process.kill(response.pid, 0)).toThrow();
+    });
+
+    it("rejects unknown servers, prototype names and tools outside the grant before connecting", async () => {
+        const signal = new AbortController().signal;
+        await expect(callCronPrecheckMcpTool({ queue: serverConfig }, signal, "missing", "queue_status")).rejects.toThrow(/unauthorized/);
+        await expect(callCronPrecheckMcpTool({}, signal, "toString", "queue_status")).rejects.toThrow(/unauthorized/);
+        await expect(callCronPrecheckMcpTool({ queue: serverConfig }, signal, "queue", "delete_all")).rejects.toThrow(/not authorized/);
+    });
+
+    it("fails open for server tool errors, invalid results, denied tools and connection failures", async () => {
+        const fixture = await startPrecheckMcpServer();
+        try {
+            for (const mode of ["tool_error", "malformed", "denied", "unreachable", "unauthorized"]) {
+                fixture.state.fail = mode === "tool_error";
+                fixture.state.malformed = mode === "malformed";
+                fixture.state.unauthorized = mode === "unauthorized";
+                const { result, event } = await evaluateCronPrecheck({
+                    input,
+                    registrations: [{ name: "queue", check: async ({ callMcpTool }) => {
+                        await callMcpTool("queue", mode === "denied" ? "delete_all" : "queue_status");
+                        return { action: "skip" };
+                    } }],
+                    callMcpTool: (signal, server, tool, args) => callCronPrecheckMcpTool({
+                        queue: mode === "unreachable" ? serverConfig : fixture.config,
+                    }, signal, server, tool, args),
+                });
+                expect(result).toMatchObject({ outcome: "error", skip: false });
+                expect(event.detail).not.toContain(fixture.config.url);
+            }
+        } finally { await fixture.close(); }
+    });
+
+    it.each(["call", "initialize"])("bounds a hung MCP %s and rejects calls after evaluation", async (phase) => {
+        const fixture = await startPrecheckMcpServer();
+        fixture.state.hang = phase === "call";
+        fixture.state.hangInitialize = phase === "initialize";
+        let caller;
+        try {
+            const { result } = await evaluateCronPrecheck({
+                input,
+                registrations: [{ name: "queue", timeoutMs: 100, check: async ({ callMcpTool }) => {
+                    caller = callMcpTool;
+                    await callMcpTool("queue", "queue_status");
+                    return { action: "skip" };
+                } }],
+                callMcpTool: (signal, server, tool, args) => callCronPrecheckMcpTool({ queue: fixture.config }, signal, server, tool, args),
+            });
+            expect(result).toMatchObject({ outcome: "timeout", skip: false });
+            expect(() => caller("queue", "queue_status")).toThrow();
+        } finally { await fixture.close(); }
+    });
+
+    it("does not disclose malformed endpoint credentials in operator events", async () => {
+        const { result, event } = await evaluateCronPrecheck({
+            input,
+            registrations: [{ name: "queue", check: async ({ callMcpTool }) => {
+                await callMcpTool("queue", "queue_status");
+                return { action: "skip" };
+            } }],
+            callMcpTool: (signal, server, tool, args) => callCronPrecheckMcpTool({
+                queue: { ...serverConfig, url: "invalid-url-with-fixture-secret" },
+            }, signal, server, tool, args),
+        });
+        expect(result).toMatchObject({ outcome: "error", skip: false });
+        expect(event.detail).not.toContain("fixture-secret");
+    });
+
+    it("records unavailable MCP services as a failed-open precheck", async () => {
+        const { result } = await evaluateCronPrecheck({
+            input,
+            registrations: [{ name: "queue", check: async ({ callMcpTool }) => {
+                await callMcpTool("queue", "queue_status");
+                return { action: "skip" };
+            } }],
+        });
+        expect(result).toMatchObject({ outcome: "error", skip: false });
+    });
+});
+
+describe("precheck session MCP grants without model hydration", () => {
+    function setup(extra = {}) {
+        const shared = { kind: "app-agent", prompt: "", namespace: "kit", packageId: "shared", packageScope: "shared" };
+        const personal = { kind: "app-agent", prompt: "", packageId: "personal", packageScope: "user", packageOwner: owner };
+        const defaults = {
+            baseMcpServers: { base: serverConfig },
+            agentPromptLookup: { poller: { ...shared, copies: [shared, personal] } },
+            agentMcpServers: {
+                [packageAgentKey("shared", "poller")]: { queue: serverConfig },
+                [packageAgentKey("personal", "poller")]: { private_queue: serverConfig },
+            },
+            ...extra,
+        };
+        const manager = new SessionManager(undefined, null, defaults);
+        const catalog = {
+            getSession: vi.fn(async () => ({ owner })),
+            getSessionCapabilities: vi.fn(async () => ({ revision: 0, selections: [] })),
+        };
+        manager.setSessionCatalog(catalog);
+        vi.spyOn(manager, "getOrCreate").mockImplementation(() => { throw new Error("must not hydrate"); });
+        return { manager, catalog, defaults };
+    }
+
+    it("uses the exact bound package, never a same-named personal copy or the deployment catalog", async () => {
+        const { manager } = setup({ mcpServers: { ungranted: serverConfig } });
+        const servers = await manager.getCronPrecheckMcpServers({ ...input, packageId: "shared", agent });
+        expect(Object.keys(servers).sort()).toEqual(["base", "queue"]);
+        expect(manager.getOrCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects another user's private package and stale precheck provenance", async () => {
+        const { manager, catalog } = setup();
+        await expect(manager.getCronPrecheckMcpServers({ ...input, packageId: "personal", agent })).rejects.toThrow(/no longer bound/);
+        catalog.getSession.mockResolvedValue({ owner: { provider: "test", subject: "bob" } });
+        await expect(manager.getCronPrecheckMcpServers({ ...input, packageId: "personal", agent: { ...agent, boundAgentPackageId: "personal" } })).rejects.toThrow();
+    });
+
+    it("re-resolves grants after worker registry changes instead of reusing warm connections", async () => {
+        const { manager, defaults } = setup();
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).toHaveProperty("queue");
+        delete defaults.agentMcpServers[packageAgentKey("shared", "poller")];
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).not.toHaveProperty("queue");
+    });
+
+    it("honors persisted capability selections, owner visibility, restrictions and revocation", async () => {
+        const source = {
+            id: "selected", name: "extra", source: "published", revision: "v1", scope: "user", owner,
+            packageId: "selected", artifacts: [], tools: new Map(),
+            mcpServers: {
+                selected_queue: serverConfig,
+                restricted: { ...serverConfig, allowedAgents: ["deployment-only"] },
+                admitted: { ...serverConfig, allowedAgents: ["kit:poller"] },
+            },
+        };
+        const { manager, catalog } = setup({ getCapabilitySources: () => [source] });
+        const select = names => catalog.getSessionCapabilities.mockResolvedValue({
+            revision: 1, selections: [{ sourceId: "selected", tools: [], mcpServers: names }],
+        });
+        select(["selected_queue"]);
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).toHaveProperty("selected_queue");
+        select(["restricted"]);
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).not.toHaveProperty("restricted");
+        select(["admitted"]);
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).toHaveProperty("admitted");
+        select(["selected_queue"]);
+        catalog.getSession.mockResolvedValue({ owner: { provider: "test", subject: "bob" } });
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).not.toHaveProperty("selected_queue");
+        catalog.getSession.mockResolvedValue({ owner });
+        select([]);
+        expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).not.toHaveProperty("selected_queue");
+    });
+});

@@ -20,13 +20,22 @@
  * `shadow: true` records its decisions but never skips.
  */
 
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { SerializableSessionConfig } from "./types.js";
+
+export type CronPrecheckMcpCaller = (
+    server: string,
+    tool: string,
+    args?: Record<string, unknown>,
+) => Promise<CallToolResult>;
+
 export const CRON_PRECHECK_DEFAULT_TIMEOUT_MS = 10_000;
 export const CRON_PRECHECK_MAX_TIMEOUT_MS = 60_000;
 export const CRON_PRECHECK_NAME_MAX_CHARS = 100;
 const CRON_PRECHECK_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const CRON_PRECHECK_DETAIL_MAX_CHARS = 500;
 
-/** What a precheck handler is told about the wake-up. Serializable values only. */
+/** Wake-up facts and activity-scoped services; never serialized into history. */
 export interface CronPrecheckContext {
     sessionId: string;
     /** The cron schedule's reason, exactly as the agent set it. */
@@ -36,6 +45,8 @@ export interface CronPrecheckContext {
     consecutiveSkips: number;
     /** Aborted when the handler exceeds its timeout. */
     signal: AbortSignal;
+    /** Call an authorized MCP tool without a model. Connections close after each call. */
+    callMcpTool: CronPrecheckMcpCaller;
 }
 
 export interface CronPrecheckAnswer {
@@ -73,6 +84,8 @@ export interface CronPrecheckInput {
     reason: string;
     intervalSeconds: number;
     consecutiveSkips?: number;
+    /** Only agent identity metadata, not prompts, model state or credentials. */
+    agent?: Pick<SerializableSessionConfig, "boundAgentName" | "boundAgentPackageId" | "boundAgentSource" | "agentIdentity" | "toolNames">;
 }
 
 export type CronPrecheckOutcome =
@@ -220,6 +233,7 @@ export async function evaluateCronPrecheck(params: {
     registrations: readonly CronPrecheckRegistration[];
     input: CronPrecheckInput;
     now?: () => number;
+    callMcpTool?: (signal: AbortSignal, server: string, tool: string, args?: Record<string, unknown>) => Promise<CallToolResult>;
 }): Promise<CronPrecheckEvaluation> {
     const { registrations, input } = params;
     const now = params.now ?? Date.now;
@@ -257,6 +271,11 @@ export async function evaluateCronPrecheck(params: {
                 intervalSeconds: input.intervalSeconds,
                 consecutiveSkips,
                 signal: controller.signal,
+                callMcpTool: (server, tool, args) => {
+                    controller.signal.throwIfAborted();
+                    if (!params.callMcpTool) throw new Error("MCP access is unavailable for this cron precheck");
+                    return params.callMcpTool(controller.signal, server, tool, args);
+                },
             })),
             new Promise<"timeout">((resolve) => {
                 timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -276,6 +295,7 @@ export async function evaluateCronPrecheck(params: {
         detail = String((err as Error)?.message ?? err).slice(0, CRON_PRECHECK_DETAIL_MAX_CHARS);
     } finally {
         if (timer) clearTimeout(timer);
+        controller.abort();
     }
 
     const skipped = outcome === "skip" && !shadow;

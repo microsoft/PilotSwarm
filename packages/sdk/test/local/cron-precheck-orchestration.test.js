@@ -120,6 +120,7 @@ describe("1.0.82 cron precheck", () => {
             reason: SCHEDULE.reason,
             intervalSeconds: SCHEDULE.intervalSeconds,
             consecutiveSkips: 0,
+            agent: {},
         }]);
         expect(h.runtime.state.cronSchedule).toEqual({ ...SCHEDULE, precheckSkips: 1 });
         expect(h.runtime.state.activeTimer).toMatchObject({

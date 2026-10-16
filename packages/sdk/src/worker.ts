@@ -2019,6 +2019,7 @@ export class PilotSwarmWorker {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
             const copyOf = (agent: any) => ({
                 prompt: agent.prompt,
+                namespace: agent.namespace ?? undefined,
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 nativeTaskTools: agent.nativeTaskTools,

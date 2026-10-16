@@ -1719,6 +1719,13 @@ export function* processTimer(
                         reason: activeCron.reason,
                         intervalSeconds: activeCron.intervalSeconds,
                         consecutiveSkips: activeCron.precheckSkips ?? 0,
+                        agent: {
+                            boundAgentName: runtime.input.config.boundAgentName,
+                            boundAgentPackageId: runtime.input.config.boundAgentPackageId,
+                            boundAgentSource: runtime.input.config.boundAgentSource,
+                            agentIdentity: runtime.input.config.agentIdentity,
+                            toolNames: runtime.input.config.toolNames,
+                        },
                     });
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] cron precheck failed (${err?.message ?? err}); running the cycle`);
