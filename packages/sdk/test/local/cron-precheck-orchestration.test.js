@@ -208,5 +208,15 @@ describe("1.0.82 cron precheck", () => {
         expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", precheck: "queue" });
         applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll" });
         expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll" });
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll", precheckPackageId: "pkg-1" });
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll" }, "a package without a precheck name is dropped");
+    });
+
+    it("a package precheck sends its package to the activity", () => {
+        const h = harness({ cronSchedule: { ...SCHEDULE, precheckPackageId: "pkg-1" } });
+        h.fire({ skip: true, outcome: "skip", precheck: "queue" });
+        expect(h.prechecks[0]).toMatchObject({ precheck: "queue", packageId: "pkg-1" });
+        expect(h.turns).toHaveLength(0);
+        expect(buildContinueInput(h.runtime).cronSchedule).toEqual({ ...SCHEDULE, precheckPackageId: "pkg-1", precheckSkips: 1 });
     });
 });

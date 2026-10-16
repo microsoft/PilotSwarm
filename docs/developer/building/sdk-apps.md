@@ -257,11 +257,19 @@ For remote mode:
 
 An agent that polls on a `cron` schedule pays for a full model turn on every
 wake-up, including the many that only find nothing to do. A cron precheck is
-worker code that runs first and answers whether the cycle has work. The
-application registers named prechecks; a schedule opts in by name.
+code that runs first and answers whether the cycle has work. Prechecks are
+named, and a schedule opts in by name.
+
+**Where a precheck comes from:**
+
+- **An agent package** (no deployment code): the package's
+  `tools/worker-module.js` exports `createCronPrechecks()` beside
+  `createTools()`. Workers load it with the package, and only sessions bound to
+  that package's agents can use it. See
+  [Building agent packages](../../building-agent-packages.md#cron-prechecks).
+- **Application worker code:**
 
 ```ts
-// Worker: register the check as code.
 worker.registerCronPrechecks([{
   name: "job-queue",
   timeoutMs: 10_000,          // optional, at most 60s
@@ -276,15 +284,27 @@ worker.registerCronPrechecks([{
 }]);
 ```
 
-A schedule opts in in either of two ways:
+**How a schedule opts in**, first match wins:
 
-- **From the prompt.** The agent's instructions tell it to arm the schedule
-  with the precheck, and the agent calls
-  `cron(seconds=300, reason="poll the job queue", precheck="job-queue")`.
-  The cron tool rejects a name the worker has not registered.
-- **From the session.** `client.createSession({ ..., cronPrecheck: "job-queue" })`
-  sets a default for the session's `cron` calls; a call that names a precheck
-  overrides it.
+1. **The cron call names it.** The agent calls
+   `cron(seconds=300, reason="poll the job queue", precheck="job-queue")`.
+   The cron tool rejects a name that is not available to the session.
+2. **The agent definition binds the reason** (recommended for recurring
+   agents: deterministic, no reliance on the model). In the `.agent.md`
+   frontmatter:
+
+   ```yaml
+   cronPrechecks:
+     - reasonPrefix: "poll the job queue"   # or reason: for an exact match
+       precheck: job-queue
+   ```
+
+   Only cron schedules this agent arms with a matching reason get the
+   precheck; its other cron uses and interactive messages are unaffected.
+3. **The session default.** `client.createSession({ ..., cronPrecheck: "job-queue" })`.
+
+A worker-registered name wins over a same-named package precheck, as with
+tools.
 
 A schedule without a precheck behaves exactly as before: no check and no
 extra activity. Calling `cron` again replaces the schedule, including its

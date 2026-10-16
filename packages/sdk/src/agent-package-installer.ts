@@ -20,6 +20,7 @@ import type { ArtifactStore } from "./session-store.js";
 import type { AgentPackageInstallEntry, SessionCatalog } from "./cms.js";
 import { extractAgentPackageTarGz } from "./agent-package-format.js";
 import { fetchAgentPackageTarGz } from "./agent-package-service.js";
+import { validateCronPrecheckRegistration, type CronPrecheckRegistration } from "./cron-precheck.js";
 
 const META_FILENAME = ".pilotswarm-meta.json";
 
@@ -207,4 +208,38 @@ export async function loadAgentPackageTools(
     }
     if (!Array.isArray(tools)) return [];
     return tools.filter((t) => t && typeof (t as any).name === "string");
+}
+
+/**
+ * Import a package worker-module and return its cron prechecks, validated.
+ * The same cache-busted URL as `loadAgentPackageTools`, so both read one
+ * module instance. Module contract:
+ *   export default { createCronPrechecks({ workerNodeId }) => CronPrecheckRegistration[] }  // or
+ *   export default { cronPrechecks: CronPrecheckRegistration[] }
+ * A malformed or duplicate registration throws, so the package is
+ * quarantined rather than half-loaded.
+ */
+export async function loadAgentPackageCronPrechecks(
+    pkg: InstalledAgentPackage,
+    context: { workerNodeId?: string },
+): Promise<CronPrecheckRegistration[]> {
+    if (!pkg.workerModulePath) return [];
+    const url = `${pathToFileURL(pkg.workerModulePath).href}?v=${pkg.sha256.slice(0, 12)}`;
+    const mod: any = await import(url);
+    const surface = mod?.default ?? mod;
+    let declared: unknown = [];
+    if (typeof surface?.createCronPrechecks === "function") {
+        declared = await surface.createCronPrechecks({ workerNodeId: context.workerNodeId });
+    } else if (Array.isArray(surface?.cronPrechecks)) {
+        declared = surface.cronPrechecks;
+    }
+    if (declared == null) return [];
+    if (!Array.isArray(declared)) throw new Error("createCronPrechecks must return an array");
+    const prechecks = declared.map((entry) => validateCronPrecheckRegistration(entry as CronPrecheckRegistration));
+    const names = new Set<string>();
+    for (const precheck of prechecks) {
+        if (names.has(precheck.name)) throw new Error(`duplicate cron precheck "${precheck.name}"`);
+        names.add(precheck.name);
+    }
+    return prechecks;
 }

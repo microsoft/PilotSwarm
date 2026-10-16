@@ -3,11 +3,18 @@
  * fail-open handling. No database or model.
  */
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
+    chooseCronPrecheck,
     evaluateCronPrecheck,
     normalizeCronPrecheckName,
+    validateCronPrecheckBindings,
     validateCronPrecheckRegistration,
 } from "../../src/cron-precheck.ts";
+import { loadAgentFiles } from "../../src/agent-loader.ts";
+import { loadAgentPackageCronPrechecks } from "../../src/agent-package-installer.ts";
 
 const input = { sessionId: "s1", precheck: "queue", reason: "check the work queue", intervalSeconds: 300, consecutiveSkips: 0 };
 const registration = (check, extra = {}) => validateCronPrecheckRegistration({ name: "queue", check, ...extra });
@@ -102,5 +109,166 @@ describe("cron precheck evaluation", () => {
         expect(() => validateCronPrecheckRegistration({ name: "x", check, maxConsecutiveSkips: 0 })).toThrow(/maxConsecutiveSkips/);
         expect(() => validateCronPrecheckRegistration({ name: "x", check, shadow: "yes" })).toThrow(/shadow/);
         expect(validateCronPrecheckRegistration({ name: " x ", check }).name).toBe("x");
+    });
+});
+
+describe("choosing a schedule's cron precheck", () => {
+    const sources = {
+        staticNames: ["app-gate"],
+        packageId: "pkg-1",
+        packageNames: ["queue-gate", "app-gate"],
+        bindings: [
+            { reason: "exact cycle", precheck: "queue-gate" },
+            { reasonPrefix: "Run the queue cycle", precheck: "queue-gate" },
+            { reasonPrefix: "Missing", precheck: "not-exported" },
+        ],
+    };
+
+    it("uses nothing when no precheck is named, bound or defaulted", () => {
+        expect(chooseCronPrecheck({ reason: "plain poll", sources })).toEqual({ ok: true });
+        expect(chooseCronPrecheck({ reason: "plain poll" })).toEqual({ ok: true });
+    });
+
+    it("binds by exact reason or reason prefix from the agent definition, with the package", () => {
+        expect(chooseCronPrecheck({ reason: "exact cycle", sources })).toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+        expect(chooseCronPrecheck({ reason: "exact cycle!", sources })).toEqual({ ok: true });
+        expect(chooseCronPrecheck({ reason: "Run the queue cycle (scope=both)", sources }))
+            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+    });
+
+    it("keeps an unavailable binding so the fire records it and runs the model", () => {
+        expect(chooseCronPrecheck({ reason: "Missing gate", sources })).toEqual({ ok: true, precheck: "not-exported", packageId: "pkg-1" });
+    });
+
+    it("lets a worker-registered name win over the same package name", () => {
+        expect(chooseCronPrecheck({ explicit: "app-gate", reason: "x", sources })).toEqual({ ok: true, precheck: "app-gate" });
+    });
+
+    it("an explicit name beats the binding, and the binding beats the session default", () => {
+        expect(chooseCronPrecheck({ explicit: "app-gate", reason: "exact cycle", sessionDefault: "queue-gate", sources }))
+            .toEqual({ ok: true, precheck: "app-gate" });
+        expect(chooseCronPrecheck({ reason: "exact cycle", sessionDefault: "app-gate", sources }))
+            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+        expect(chooseCronPrecheck({ reason: "plain", sessionDefault: "queue-gate", sources }))
+            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+        expect(chooseCronPrecheck({ reason: "plain", sessionDefault: "elsewhere", sources }))
+            .toEqual({ ok: true, precheck: "elsewhere" });
+    });
+
+    it("rejects an explicit name that is not available and lists what is", () => {
+        const rejected = chooseCronPrecheck({ explicit: "typo", reason: "x", sources });
+        expect(rejected.ok).toBe(false);
+        expect(rejected.error).toContain("Available prechecks: app-gate, queue-gate");
+        expect(chooseCronPrecheck({ explicit: "queue-gate", reason: "x", sources: { staticNames: [] } }).error)
+            .toContain("No cron prechecks are available");
+    });
+
+    it("validates agent-definition bindings", () => {
+        expect(validateCronPrecheckBindings([{ reasonPrefix: " Run ", precheck: " gate " }])).toEqual([{ reasonPrefix: "Run", precheck: "gate" }]);
+        expect(() => validateCronPrecheckBindings([{ precheck: "gate" }])).toThrow(/exactly one/);
+        expect(() => validateCronPrecheckBindings([{ reason: "a", reasonPrefix: "b", precheck: "gate" }])).toThrow(/exactly one/);
+        expect(() => validateCronPrecheckBindings([{ reason: "a", precheck: "bad name" }])).toThrow(/precheck name/);
+        expect(() => validateCronPrecheckBindings([{ reason: "a", precheck: "gate", extra: "x" }])).toThrow(/unknown field/);
+        expect(() => validateCronPrecheckBindings("nope")).toThrow(/list/);
+    });
+});
+
+describe("cron precheck declarations in agent definitions and packages", () => {
+    const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "ps-cron-precheck-"));
+
+    it("parses a cronPrechecks block from agent frontmatter, with CRLF line endings", () => {
+        const dir = tempDir();
+        try {
+            fs.writeFileSync(path.join(dir, "poller.agent.md"), [
+                "---",
+                "name: poller",
+                "schemaVersion: 1",
+                "version: 1.0.0",
+                "cronPrechecks:",
+                "  - reasonPrefix: \"Run the queue cycle\"",
+                "    precheck: queue-gate",
+                "  # a comment",
+                "  - reason: 'exact cycle'",
+                "    precheck: other-gate",
+                "tools:",
+                "  - read_facts",
+                "---",
+                "",
+                "Poll the queue.",
+            ].join("\r\n"));
+            const [agent] = loadAgentFiles(dir);
+            expect(agent.cronPrechecks).toEqual([
+                { reasonPrefix: "Run the queue cycle", precheck: "queue-gate" },
+                { reason: "exact cycle", precheck: "other-gate" },
+            ]);
+            expect(agent.tools).toEqual(["read_facts"]);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("accepts column-0 list items and never leaks them into tools", () => {
+        const dir = tempDir();
+        try {
+            fs.writeFileSync(path.join(dir, "flat.agent.md"), [
+                "---", "name: flat", "schemaVersion: 1", "version: 1.0.0",
+                "tools:", "  - read_facts",
+                "cronPrechecks:", "- reasonPrefix: Run the queue cycle", "  precheck: queue-gate",
+                "skills:", "  - ops",
+                "---", "", "Body.",
+            ].join("\n"));
+            const [agent] = loadAgentFiles(dir);
+            expect(agent.cronPrechecks).toEqual([{ reasonPrefix: "Run the queue cycle", precheck: "queue-gate" }]);
+            expect(agent.tools).toEqual(["read_facts"]);
+            expect(agent.skills).toEqual(["ops"]);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("skips an agent whose cronPrechecks block is malformed", () => {
+        const dir = tempDir();
+        try {
+            fs.writeFileSync(path.join(dir, "broken.agent.md"), [
+                "---", "name: broken", "schemaVersion: 1", "version: 1.0.0",
+                "cronPrechecks:", "  - precheck: queue-gate", "---", "", "Body.",
+            ].join("\n"));
+            fs.writeFileSync(path.join(dir, "empty.agent.md"), [
+                "---", "name: empty", "schemaVersion: 1", "version: 1.0.0",
+                "cronPrechecks:", "tools:", "  - read_facts", "---", "", "Body.",
+            ].join("\n"));
+            expect(loadAgentFiles(dir)).toEqual([]);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("loads and validates prechecks a package worker module exports", async () => {
+        const dir = tempDir();
+        try {
+            const write = (file, body) => {
+                const full = path.join(dir, file);
+                fs.writeFileSync(full, body);
+                return { workerModulePath: full, sha256: "a".repeat(64) };
+            };
+            const good = write("good.mjs",
+                "export default { createTools: () => [], createCronPrechecks: ({ workerNodeId }) => [{ name: ' queue-gate ', check: async () => ({ action: 'skip', detail: workerNodeId }) }] };\n");
+            const [precheck] = await loadAgentPackageCronPrechecks(good, { workerNodeId: "w1" });
+            expect(precheck.name).toBe("queue-gate");
+            expect(await precheck.check({})).toEqual({ action: "skip", detail: "w1" });
+
+            const none = write("none.mjs", "export default { createTools: () => [] };\n");
+            expect(await loadAgentPackageCronPrechecks(none, {})).toEqual([]);
+            expect(await loadAgentPackageCronPrechecks({ workerModulePath: null, sha256: "b".repeat(64) }, {})).toEqual([]);
+
+            const duplicate = write("duplicate.mjs",
+                "export default { cronPrechecks: [{ name: 'g', check: () => ({ action: 'run' }) }, { name: 'g', check: () => ({ action: 'run' }) }] };\n");
+            await expect(loadAgentPackageCronPrechecks(duplicate, {})).rejects.toThrow(/duplicate/);
+
+            const invalid = write("invalid.mjs", "export default { cronPrechecks: [{ name: 'g' }] };\n");
+            await expect(loadAgentPackageCronPrechecks(invalid, {})).rejects.toThrow(/check function/);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

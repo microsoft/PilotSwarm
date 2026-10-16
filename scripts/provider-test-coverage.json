@@ -36,6 +36,7 @@
     "test/local/copilot-provider-compatibility.test.js",
     "test/local/cron-at-schedule.test.js",
     "test/local/cron-precheck-orchestration.test.js",
+    "test/local/cron-precheck-package-live.test.js",
     "test/local/cron-precheck.test.js",
     "test/local/cron-tool.test.js",
     "test/local/cross-session-messaging.test.js",

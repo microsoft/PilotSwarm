@@ -6176,7 +6176,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: CronPrecheckInput,
     ): Promise<CronPrecheckResult> => {
         const { result, event } = await evaluateCronPrecheck({
-            registrations: sessionManager.getCronPrechecks(),
+            registrations: sessionManager.getCronPrechecksFor(input.packageId),
             input,
         });
         activityCtx.traceInfo(

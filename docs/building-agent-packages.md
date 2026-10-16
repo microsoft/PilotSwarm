@@ -172,6 +172,7 @@ Frontmatter fields:
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
 | `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
+| `cronPrechecks` | optional | Bind this agent's `cron` schedules to a cron precheck by reason: a list of `{ reason \| reasonPrefix, precheck }`. A matching schedule asks the precheck (from this package's worker module, §5) before each wake-up and skips wake-ups that have no work, without a model call. Other cron uses and interactive messages are unaffected. Any schema version. |
 
 **Rejected at validation**: `system: true` (background agents belong to the
 deployment), an agent named `default`, names colliding with a built-in agent
@@ -249,6 +250,41 @@ export default {
   activate the needed permitted tools with `use_package`; no agent file is
   required for a tools-only package. Session and deployment restrictions still
   apply, and loading a skill alone does not attach tools.
+
+### Cron prechecks
+
+A package whose agent polls on a `cron` schedule can skip empty cycles without
+a model call. Export named cron prechecks beside the tools, and bind them to the
+agent's cron reason in its frontmatter (`cronPrechecks`, §3):
+
+```js
+export default {
+    createTools: ({ workerNodeId }) => [/* … */],
+    createCronPrechecks: ({ workerNodeId }) => [{
+        name: "queue-gate",
+        // timeoutMs (<= 60000), maxConsecutiveSkips and shadow are optional.
+        check: async ({ sessionId, reason, intervalSeconds, consecutiveSkips, signal }) =>
+            (await countDueWork({ signal })) > 0
+                ? { action: "run", detail: "work due" }
+                : { action: "skip", detail: "no work" },
+    }],
+};
+```
+
+```yaml
+cronPrechecks:
+  - reasonPrefix: "Run the queue cycle"
+    precheck: queue-gate
+```
+
+- Each worker loads prechecks with the package; no deployment code changes.
+  Only sessions bound to this package's agents can use them.
+- `run` continues with the normal model turn. `skip` re-arms the schedule
+  without one. A thrown, timed-out or malformed answer runs the model turn,
+  and a malformed or duplicate export quarantines the package.
+- Keep the check bounded and answer from authoritative state; return `run`
+  when unsure. See [Cron Prechecks](developer/building/sdk-apps.md#cron-prechecks)
+  for the full behavior.
 
 ## 6. MCP servers — `.mcp.json` + `mcp-servers/`
 

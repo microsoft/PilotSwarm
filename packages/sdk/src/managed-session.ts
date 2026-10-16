@@ -12,7 +12,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
-import { normalizeCronPrecheckName } from "./cron-precheck.js";
+import { chooseCronPrecheck } from "./cron-precheck.js";
 import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
@@ -1851,23 +1851,19 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
-                // An explicit precheck must name a registered one, so a typo
-                // fails here instead of silently never skipping. The session
-                // default is applied as configured; an unregistered default
-                // runs every wake-up (fail open) and records why.
-                let precheck: string | undefined;
-                if (args.precheck !== undefined && args.precheck !== null && String(args.precheck).trim() !== "") {
-                    const named = normalizeCronPrecheckName(args.precheck);
-                    const registered = this.config.cronPrecheckNames ?? [];
-                    if (!named || !registered.includes(named)) {
-                        return registered.length > 0
-                            ? `Error: unknown cron precheck "${String(args.precheck)}". Registered prechecks: ${registered.join(", ")}.`
-                            : `Error: unknown cron precheck "${String(args.precheck)}". This worker has no registered cron prechecks; omit precheck.`;
-                    }
-                    precheck = named;
-                } else {
-                    precheck = normalizeCronPrecheckName(this.config.cronPrecheck) ?? undefined;
-                }
+                // An explicit precheck must name an available one, so a typo
+                // fails here instead of silently never skipping. Otherwise the
+                // agent definition's reason binding, then the session default,
+                // applies; an unavailable one runs every wake-up (fail open)
+                // and records why.
+                const choice = chooseCronPrecheck({
+                    explicit: args.precheck,
+                    reason,
+                    sessionDefault: this.config.cronPrecheck,
+                    sources: this.config.cronPrecheckSources,
+                });
+                if (!choice.ok) return choice.error;
+                const { precheck, packageId: precheckPackageId } = choice;
 
                 turnState.queuedActions.push({
                     type: "cron",
@@ -1875,6 +1871,7 @@ export class ManagedSession {
                     intervalSeconds,
                     reason,
                     ...(precheck ? { precheck } : {}),
+                    ...(precheck && precheckPackageId ? { precheckPackageId } : {}),
                 });
                 return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason, ...(precheck ? { precheck } : {}) });
             },
@@ -4330,7 +4327,7 @@ export class ManagedSession {
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
-        if (config.cronPrecheckNames !== undefined) this.config.cronPrecheckNames = config.cronPrecheckNames;
+        if (config.cronPrecheckSources !== undefined) this.config.cronPrecheckSources = config.cronPrecheckSources;
         if (Object.prototype.hasOwnProperty.call(config, "cronPrecheck")) this.config.cronPrecheck = config.cronPrecheck;
     }
 

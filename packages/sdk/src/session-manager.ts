@@ -129,6 +129,8 @@ export interface AgentCopyEntry {
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
     nativeTaskTools?: NativeTaskTools;
+    /** The agent definition's cron-reason-to-precheck bindings. */
+    cronPrechecks?: import("./cron-precheck.js").CronPrecheckBinding[];
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     packageId?: string;
@@ -794,6 +796,8 @@ export class SessionManager {
     private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
     /** Worker-registered cron prechecks, in registration order. */
     private cronPrechecks: import("./cron-precheck.js").CronPrecheckRegistration[] = [];
+    /** Cron prechecks exported by agent packages, by package ID. */
+    private packageCronPrechecks = new Map<string, Map<string, import("./cron-precheck.js").CronPrecheckRegistration>>();
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1205,6 +1209,16 @@ export class SessionManager {
 
     getCronPrechecks(): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
         return this.cronPrechecks;
+    }
+
+    /** Swapped in whole on every package refresh, like the package tool registry. */
+    setPackageCronPrechecks(byPackage: Map<string, Map<string, import("./cron-precheck.js").CronPrecheckRegistration>>): void {
+        this.packageCronPrechecks = byPackage;
+    }
+
+    /** The prechecks a schedule may resolve: its package's when it names one, otherwise the worker's. */
+    getCronPrechecksFor(packageId?: string | null): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
+        return packageId ? [...(this.packageCronPrechecks.get(packageId)?.values() ?? [])] : this.cronPrechecks;
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
@@ -2371,7 +2385,14 @@ export class SessionManager {
         config.featureToolFingerprint = createHash("sha256")
             .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
             .digest("hex");
-        config.cronPrecheckNames = this.cronPrechecks.map((registration) => registration.name);
+        config.cronPrecheckSources = {
+            staticNames: this.cronPrechecks.map((registration) => registration.name),
+            ...(boundAgentCopy?.packageId ? {
+                packageId: boundAgentCopy.packageId,
+                packageNames: [...(this.packageCronPrechecks.get(boundAgentCopy.packageId)?.keys() ?? [])],
+            } : {}),
+            ...(boundAgentCopy?.cronPrechecks?.length ? { bindings: boundAgentCopy.cronPrechecks.map((binding) => ({ ...binding })) } : {}),
+        };
         const nativeOwner = catalogRow?.owner ?? null;
         // An unreadable owner must not bypass a user-level OFF by resolving
         // cluster policy. Ownerless resolution is only for standalone managers.

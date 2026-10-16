@@ -1715,6 +1715,7 @@ export function* processTimer(
                     precheck = yield runtime.manager.runCronPrecheck({
                         sessionId: runtime.input.sessionId,
                         precheck: activeCron.precheck,
+                        ...(activeCron.precheckPackageId ? { packageId: activeCron.precheckPackageId } : {}),
                         reason: activeCron.reason,
                         intervalSeconds: activeCron.intervalSeconds,
                         consecutiveSkips: activeCron.precheckSkips ?? 0,

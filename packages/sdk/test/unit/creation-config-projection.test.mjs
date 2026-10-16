@@ -60,7 +60,7 @@ test("waitThreshold falls back to the client default", () => {
 test("a cron precheck default rides through only when set", () => {
     assert.equal(projectSerializableSessionConfig({ cronPrecheck: "job-queue" }, 30).cronPrecheck, "job-queue");
     assert.ok(!("cronPrecheck" in projectSerializableSessionConfig({}, 30)), "absent stays absent");
-    assert.ok(!("cronPrecheckNames" in projectSerializableSessionConfig({ cronPrecheckNames: ["job-queue"] }, 30)),
+    assert.ok(!("cronPrecheckSources" in projectSerializableSessionConfig({ cronPrecheckSources: { staticNames: ["job-queue"] } }, 30)),
         "the worker's runtime-only name list never rides durable state");
 });
 

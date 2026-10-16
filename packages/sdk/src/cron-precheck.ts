@@ -3,9 +3,11 @@
  * wake-up reaches the model, whether the wake-up has any work to do.
  *
  * A recurring agent that only polls ("is there a job? no, sleep") pays for a
- * full model turn on every empty cycle. The application registers named
- * prechecks on the worker (`PilotSwarmWorker.registerCronPrechecks`). A
- * schedule opts in by name: the agent calls
+ * full model turn on every empty cycle. Named prechecks come from worker code
+ * (`PilotSwarmWorker.registerCronPrechecks`) or from an agent package, whose
+ * `tools/worker-module.js` exports `createCronPrechecks()` beside its tools.
+ * A schedule opts in by name: the agent definition binds a cron reason to a
+ * precheck (`cronPrechecks` frontmatter), the agent calls
  * `cron(seconds, reason, precheck="<name>")`, or the session was created with
  * a default `cronPrecheck`. When that schedule fires, the precheck runs in an
  * activity and answers `run` or `skip`. The model never sees a skipped cycle:
@@ -66,6 +68,8 @@ export interface CronPrecheckRegistration {
 export interface CronPrecheckInput {
     sessionId: string;
     precheck: string;
+    /** Set when the precheck comes from the agent package the session is bound to. */
+    packageId?: string;
     reason: string;
     intervalSeconds: number;
     consecutiveSkips?: number;
@@ -114,6 +118,92 @@ export function validateCronPrecheckRegistration(registration: CronPrecheckRegis
         throw new TypeError(`Cron precheck "${name}" maxConsecutiveSkips must be a positive integer`);
     }
     return { ...registration, name };
+}
+
+/**
+ * Agent-definition binding: a cron schedule the agent arms whose reason
+ * matches gets this precheck. Exactly one of `reason` (exact match) or
+ * `reasonPrefix` is set.
+ */
+export interface CronPrecheckBinding {
+    reason?: string;
+    reasonPrefix?: string;
+    precheck: string;
+}
+
+export const CRON_PRECHECK_MAX_BINDINGS = 20;
+
+export function validateCronPrecheckBindings(value: unknown): CronPrecheckBinding[] {
+    if (!Array.isArray(value)) throw new Error("cronPrechecks must be a list");
+    if (value.length > CRON_PRECHECK_MAX_BINDINGS) throw new Error(`cronPrechecks allows at most ${CRON_PRECHECK_MAX_BINDINGS} entries`);
+    return value.map((entry, index) => {
+        if (!entry || typeof entry !== "object") throw new Error(`cronPrechecks entry ${index + 1} must be a mapping`);
+        const unknown = Object.keys(entry).filter((key) => !["reason", "reasonPrefix", "precheck"].includes(key));
+        if (unknown.length > 0) throw new Error(`cronPrechecks entry ${index + 1} has unknown field ${unknown[0]}`);
+        const precheck = normalizeCronPrecheckName((entry as any).precheck);
+        if (!precheck) throw new Error(`cronPrechecks entry ${index + 1} needs a valid precheck name`);
+        const reason = typeof (entry as any).reason === "string" ? (entry as any).reason.trim() : "";
+        const reasonPrefix = typeof (entry as any).reasonPrefix === "string" ? (entry as any).reasonPrefix.trim() : "";
+        if (Boolean(reason) === Boolean(reasonPrefix)) {
+            throw new Error(`cronPrechecks entry ${index + 1} needs exactly one of reason or reasonPrefix`);
+        }
+        return reason ? { reason, precheck } : { reasonPrefix, precheck };
+    });
+}
+
+/** What the cron tool may attach: worker-registered names, plus the bound agent package's prechecks and bindings. */
+export interface CronPrecheckSources {
+    staticNames: string[];
+    packageId?: string;
+    packageNames?: string[];
+    bindings?: CronPrecheckBinding[];
+}
+
+export type CronPrecheckChoice =
+    | { ok: true; precheck?: string; packageId?: string }
+    | { ok: false; error: string };
+
+/**
+ * Choose a cron schedule's precheck. An explicit name must be available; an
+ * agent binding matching the reason comes next, then the session default.
+ * A worker-registered name wins over a same-named package precheck, like
+ * tools. A binding or default whose name is not available is kept, so the
+ * fire records it as unregistered and runs the model turn.
+ */
+export function chooseCronPrecheck(params: {
+    explicit?: unknown;
+    reason: string;
+    sessionDefault?: unknown;
+    sources?: CronPrecheckSources | null;
+}): CronPrecheckChoice {
+    const sources = params.sources ?? { staticNames: [] };
+    const lookup = (name: string): { precheck: string; packageId?: string } | null => {
+        if (sources.staticNames.includes(name)) return { precheck: name };
+        if (sources.packageId && sources.packageNames?.includes(name)) return { precheck: name, packageId: sources.packageId };
+        return null;
+    };
+    if (params.explicit !== undefined && params.explicit !== null && String(params.explicit).trim() !== "") {
+        const named = normalizeCronPrecheckName(params.explicit);
+        const found = named ? lookup(named) : null;
+        if (found) return { ok: true, ...found };
+        const available = [...new Set([...sources.staticNames, ...(sources.packageNames ?? [])])];
+        return {
+            ok: false,
+            error: available.length > 0
+                ? `Error: unknown cron precheck "${String(params.explicit)}". Available prechecks: ${available.join(", ")}.`
+                : `Error: unknown cron precheck "${String(params.explicit)}". No cron prechecks are available to this session; omit precheck.`,
+        };
+    }
+    const binding = (sources.bindings ?? []).find((entry) => entry.reason !== undefined
+        ? params.reason === entry.reason
+        : params.reason.startsWith(entry.reasonPrefix ?? "\u0000"));
+    if (binding) {
+        return { ok: true, ...(lookup(binding.precheck)
+            ?? { precheck: binding.precheck, ...(sources.packageId ? { packageId: sources.packageId } : {}) }) };
+    }
+    const defaulted = normalizeCronPrecheckName(params.sessionDefault);
+    if (defaulted) return { ok: true, ...(lookup(defaulted) ?? { precheck: defaulted }) };
+    return { ok: true };
 }
 
 export interface CronPrecheckEvaluation {

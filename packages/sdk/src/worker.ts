@@ -39,7 +39,7 @@ import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
-import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
+import { installAgentPackages, loadAgentPackageCronPrechecks, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
 import os from "node:os";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -547,9 +547,12 @@ export class PilotSwarmWorker {
     }
 
     /**
-     * Register named cron prechecks: application code that runs before an
-     * interval `cron` wake-up reaches the model. A schedule opts in by name,
-     * through `cron(seconds, reason, precheck="<name>")` or the session's
+     * Register named cron prechecks from application code: code that runs
+     * before an interval `cron` wake-up reaches the model. An agent package
+     * can instead export them from its `tools/worker-module.js`
+     * (`createCronPrechecks`). A schedule opts in by name, through the agent
+     * definition's `cronPrechecks` reason binding,
+     * `cron(seconds, reason, precheck="<name>")`, or the session's
      * `cronPrecheck` default; a schedule without one is unchanged. A `skip`
      * answer skips the model turn unless the registration is `shadow`.
      * Register the same prechecks on every worker: the check runs on
@@ -1368,6 +1371,9 @@ export class PilotSwarmWorker {
             // hand each session the handler from the copy its agent bound to.
             const packageTools = new Map<string, Tool<any>>();
             const packageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
+            // Cron prechecks a package exports beside its tools. Keyed by
+            // package so only sessions bound to that package's agents use them.
+            const packagePrechecksByPackage = new Map<string, Map<string, CronPrecheckRegistration>>();
             for (const pkg of result.packages) {
                 if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
                 try {
@@ -1387,10 +1393,14 @@ export class PilotSwarmWorker {
                     }
                     const ownMap = new Map<string, Tool<any>>();
                     for (const tool of tools) {
-                        packageTools.set((tool as any).name, tool);
                         ownMap.set((tool as any).name, tool);
                     }
+                    const prechecks = await loadAgentPackageCronPrechecks(pkg, { workerNodeId: this.config.workerNodeId });
+                    for (const tool of tools) packageTools.set((tool as any).name, tool);
                     if (ownMap.size > 0) packageToolsByPackage.set(pkg.packageId, ownMap);
+                    if (prechecks.length > 0) {
+                        packagePrechecksByPackage.set(pkg.packageId, new Map(prechecks.map((entry) => [entry.name, entry])));
+                    }
                 } catch (error: any) {
                     pkg.status = "error";
                     pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
@@ -1425,6 +1435,7 @@ export class PilotSwarmWorker {
             this._agentPackageTools = packageTools;
             this._agentPackageToolsByPackage = packageToolsByPackage;
             this._pushMergedToolRegistry();
+            this.sessionManager.setPackageCronPrechecks(packagePrechecksByPackage);
 
             this._agentPackagesEpoch = result.epoch;
             // Heartbeat state keys by name for the common case, but two
@@ -2011,6 +2022,7 @@ export class PilotSwarmWorker {
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 nativeTaskTools: agent.nativeTaskTools,
+                ...(agent.cronPrechecks?.length ? { cronPrechecks: agent.cronPrechecks.map((binding: any) => ({ ...binding })) } : {}),
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,
                 ...(agent.packageId ? {
