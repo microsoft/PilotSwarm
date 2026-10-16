@@ -44,8 +44,12 @@ function collapsedSessionIdsToArray(collapsedIds) {
         .sort();
 }
 
-function setupTuiHostRuntime() {
-    const logFile = "/tmp/duroxide-tui.log";
+function setupTuiHostRuntime(configuredLogFile) {
+    const hasCustomLogFile = configuredLogFile !== undefined;
+    if (hasCustomLogFile && (typeof configuredLogFile !== "string" || !configuredLogFile.trim())) {
+        throw new TypeError("logFile must be a non-empty path string.");
+    }
+    const logFile = hasCustomLogFile ? path.resolve(configuredLogFile) : "/tmp/duroxide-tui.log";
     const originalConsole = {
         log: console.log.bind(console),
         warn: console.warn.bind(console),
@@ -55,8 +59,11 @@ function setupTuiHostRuntime() {
     const originalEmitWarning = process.emitWarning.bind(process);
 
     try {
+        if (hasCustomLogFile) fs.mkdirSync(path.dirname(logFile), { recursive: true });
         fs.writeFileSync(logFile, "");
-    } catch {}
+    } catch (error) {
+        if (hasCustomLogFile) throw error;
+    }
 
     try {
         const { initTracing } = require("duroxide");
@@ -65,7 +72,9 @@ function setupTuiHostRuntime() {
             logLevel: process.env.LOG_LEVEL || "info",
             logFormat: "compact",
         });
-    } catch {}
+    } catch (error) {
+        if (hasCustomLogFile) throw error;
+    }
 
     const appendLog = (...parts) => {
         try {
@@ -142,6 +151,20 @@ async function createTransport(config, authNotify) {
     });
 }
 
+/**
+ * Run the terminal host; normal quit stops the controller and exits the process.
+ * @param {object} config
+ * @param {"local" | "remote"} config.mode
+ * @param {string} [config.store] Direct-mode store connection.
+ * @param {string | null} [config.apiUrl] Web API URL for remote mode.
+ * @param {boolean} [config.deviceCode] Use device-code authentication.
+ * @param {object} [config.branding] TUI branding.
+ * @param {string} [config.logFile] Host diagnostic path, resolved against cwd.
+ *   Creates parent directories and truncates the file at startup. Invalid paths
+ *   and log/tracing initialization failures reject startup. Omit to retain the
+ *   best-effort /tmp/duroxide-tui.log default.
+ * @returns {Promise<void>}
+ */
 export async function startTuiApp(config) {
     // Auth-failure guidance is buffered until the controller exists, then
     // shown on the status line (see createTransport).
@@ -151,7 +174,15 @@ export async function startTuiApp(config) {
         },
     };
     const transport = await createTransport(config, authNotify);
-    const restoreHostRuntime = setupTuiHostRuntime();
+    const restoreHostRuntime = setupTuiHostRuntime(config.logFile);
+    try {
+        await runTuiApp(config, transport, authNotify, restoreHostRuntime);
+    } finally {
+        restoreHostRuntime();
+    }
+}
+
+async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
     const platform = createTuiPlatform();
     const userConfig = readConfig();
     const store = createStore(appReducer, createInitialState({
